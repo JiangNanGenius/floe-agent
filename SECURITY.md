@@ -6,9 +6,7 @@ Floe Agent is in the planning and technical-validation phase. There is no suppor
 
 ## Reporting a vulnerability
 
-Do not publish exploitable details in a public issue.
-
-Until GitHub private vulnerability reporting is enabled for the repository, contact the repository owner through the private contact method listed on their GitHub profile and include:
+Do not publish exploitable details in a public issue. Use **Security → Report a vulnerability** in the GitHub repository to open a private report, and include:
 
 - The affected commit or version.
 - The impacted component and operating environment.
