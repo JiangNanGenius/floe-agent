@@ -87,6 +87,7 @@ targets:
         product: FloeVNC
     settings:
       base:
+        DEVELOPMENT_TEAM: QYL72C43K6
         PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios
         PRODUCT_NAME: Floe Agent
         TARGETED_DEVICE_FAMILY: "1,2"

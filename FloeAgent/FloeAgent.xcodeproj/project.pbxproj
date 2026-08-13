@@ -17,6 +17,7 @@
 		4707D8E92893B0ED9C62F8F9 /* FloeCore in Frameworks */ = {isa = PBXBuildFile; productRef = 8C092D204147366710DA8E8D /* FloeCore */; };
 		557E5740D65A080E412BDBA3 /* FloeSync in Frameworks */ = {isa = PBXBuildFile; productRef = CB9AC1549FA61B1132625EA1 /* FloeSync */; };
 		6B0D3A07EB93CDB1FF10B326 /* FloeSyncCore in Frameworks */ = {isa = PBXBuildFile; productRef = 42F46C3ACBB2BE695D007080 /* FloeSyncCore */; };
+		75B75F5F8C25D5B60B5E4541 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 37BB930D0175C1FF7EE714EE /* Assets.xcassets */; };
 		79513D3F13F2694F56459286 /* FloeModels in Frameworks */ = {isa = PBXBuildFile; productRef = 6D3CC5A66BC37258D46FDF3D /* FloeModels */; };
 		A1730325CB40AA74E22D3C28 /* FloeVNC in Frameworks */ = {isa = PBXBuildFile; productRef = 8D67ACB7499F21D8B8B49FE4 /* FloeVNC */; };
 		ABAF2700584FE5E93C50DA1B /* FloeSSH in Frameworks */ = {isa = PBXBuildFile; productRef = DEFB59A49152ED0F642C4865 /* FloeSSH */; };
@@ -29,6 +30,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		37BB930D0175C1FF7EE714EE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		397DA23AB1A49D66682CE2D2 /* M0DiagnosticsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M0DiagnosticsModel.swift; sourceTree = "<group>"; };
 		4B364052541A17BBD46A6C70 /* FloeAgent */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeAgent; path = .; sourceTree = SOURCE_ROOT; };
 		699FBAE02E34D628B5FC48B7 /* iPhoneBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPhoneBackgroundPolicy.swift; sourceTree = "<group>"; };
@@ -124,6 +126,7 @@
 		D945ACAB4A3BFCBED5DF65AE /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				37BB930D0175C1FF7EE714EE /* Assets.xcassets */,
 				916ACA33CDE6532714E49272 /* Info.plist */,
 			);
 			path = Resources;
@@ -145,6 +148,7 @@
 			buildConfigurationList = B1532B1CAF0880096576D78A /* Build configuration list for PBXNativeTarget "FloeAgent" */;
 			buildPhases = (
 				635456F5C5F24F3879B481C5 /* Sources */,
+				22D9CE5B0F8FCF5F1DDC40F7 /* Resources */,
 				DB3143927DF1F8F8F1F9C9EF /* Frameworks */,
 			);
 			buildRules = (
@@ -180,6 +184,9 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					3AFAF3B3CB6F0777A7C6B07F = {
+						DevelopmentTeam = QYL72C43K6;
+					};
 				};
 			};
 			buildConfigurationList = A666E10011811E9C82F7FDFB /* Build configuration list for PBXProject "FloeAgent" */;
@@ -203,6 +210,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		22D9CE5B0F8FCF5F1DDC40F7 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				75B75F5F8C25D5B60B5E4541 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		635456F5C5F24F3879B481C5 /* Sources */ = {
@@ -229,6 +247,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FloeApp/Resources/Info.plist;
@@ -375,6 +394,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FloeApp/Resources/Info.plist;
