@@ -22,7 +22,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Generate Xcode project
         run: |
@@ -89,7 +89,7 @@ jobs:
       run:
         working-directory: FloeAgent
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Linux build dependencies
         run: |
@@ -100,4 +100,17 @@ jobs:
         run: swift package resolve
 
       - name: Build cross-platform targets
-        run: swift build
+        run: |
+          products=(
+            FloeCore
+            FloeModels
+            FloeProviders
+            FloeAgentRuntime
+            FloeTools
+            FloePersistence
+            FloeSecurity
+            FloeSyncCore
+          )
+          for product in "${products[@]}"; do
+            swift build --product "$product"
+          done
