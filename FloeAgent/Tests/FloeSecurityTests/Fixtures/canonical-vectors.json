@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "description": "Canonical JSON golden vectors. Each entry: input JSON text and the exact canonical serialization the encoder must produce.",
+  "vectors": [
+    { "input": {"b": 1, "a": 2}, "canonical": "{\"a\":2,\"b\":1}" },
+    { "input": {"x": [1, 2, 3]}, "canonical": "{\"x\":[1,2,3]}" },
+    { "input": {"nested": {"z": true, "y": false}}, "canonical": "{\"nested\":{\"y\":false,\"z\":true}}" },
+    { "input": {"s": "héllo"}, "canonical": "{\"s\":\"héllo\"}" },
+    { "input": {}, "canonical": "{}" }
+  ]
+}

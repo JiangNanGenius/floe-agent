@@ -1,0 +1,119 @@
+// FloeCore — Provider configuration profile.
+// See docs/DEVELOPMENT_PLAN.md §2.2, §4.1.
+
+import Foundation
+
+/// Broad provider family, used to pick default endpoints and auth shapes.
+public enum ProviderKind: String, Sendable, Codable, CaseIterable, Hashable {
+    case openAI
+    case anthropic
+    case volcengineArk
+    case alibabaStudio
+    case custom
+}
+
+/// Reference to a Keychain item holding a secret. The secret itself is never
+/// stored in the database or CloudKit; only this reference is.
+public struct SecretReference: Sendable, Codable, Hashable {
+    /// Keychain account identifier.
+    public var keychainAccount: String
+    /// Whether the Keychain item syncs via iCloud Keychain.
+    public var synchronizable: Bool
+
+    public init(keychainAccount: String, synchronizable: Bool) {
+        self.keychainAccount = keychainAccount
+        self.synchronizable = synchronizable
+    }
+}
+
+/// Configuration for one model provider endpoint.
+public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
+    public var id: UUID
+    public var kind: ProviderKind
+    /// Wire protocol the endpoint speaks. May differ from `kind` for
+    /// OpenAI-compatible third-party gateways.
+    public var wireProtocol: ModelProtocol
+    public var baseURL: URL
+    /// Reference to the API key in Keychain. `nil` means unauthenticated
+    /// endpoint (e.g. local inference).
+    public var secretRef: SecretReference?
+    public var region: String?
+    /// Non-secret headers sent with every request (e.g. organization IDs).
+    public var nonSecretHeaders: [String: String]
+    public var isEnabled: Bool
+    /// `true` only after the user has acknowledged the risk of plain HTTP
+    /// to a localhost or private-network endpoint.
+    public var allowsPlainHTTP: Bool
+    public var createdAt: Date
+    public var updatedAt: Date
+    /// CloudKit optimistic-locking revision, incremented per sync.
+    public var syncRevision: Int64
+
+    public init(
+        id: UUID = UUID(),
+        kind: ProviderKind,
+        wireProtocol: ModelProtocol,
+        baseURL: URL,
+        secretRef: SecretReference? = nil,
+        region: String? = nil,
+        nonSecretHeaders: [String: String] = [:],
+        isEnabled: Bool = true,
+        allowsPlainHTTP: Bool = false,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date(),
+        syncRevision: Int64 = 0
+    ) {
+        self.id = id
+        self.kind = kind
+        self.wireProtocol = wireProtocol
+        self.baseURL = baseURL
+        self.secretRef = secretRef
+        self.region = region
+        self.nonSecretHeaders = nonSecretHeaders
+        self.isEnabled = isEnabled
+        self.allowsPlainHTTP = allowsPlainHTTP
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.syncRevision = syncRevision
+    }
+
+    /// Validates invariants enforced by the security model.
+    /// - Throws: `FloeError.invalidConfiguration` on violation.
+    public func validate() throws {
+        let scheme = baseURL.scheme?.lowercased() ?? ""
+        if scheme == "http" {
+            guard allowsPlainHTTP else {
+                throw FloeError.invalidConfiguration(
+                    "Plain HTTP requires explicit allowsPlainHTTP acknowledgement"
+                )
+            }
+            guard baseURL.isLocalOrPrivateNetwork else {
+                throw FloeError.invalidConfiguration(
+                    "Plain HTTP is only permitted for localhost or private-network endpoints"
+                )
+            }
+        } else if scheme != "https" {
+            throw FloeError.invalidConfiguration("Endpoint must use http or https scheme")
+        }
+    }
+}
+
+extension URL {
+    /// True for localhost, loopback, and RFC 1918 / link-local addresses.
+    var isLocalOrPrivateNetwork: Bool {
+        guard let host = self.host?.lowercased() else { return false }
+        if host == "localhost" || host == "::1" || host.hasSuffix(".local") { return true }
+        if host.hasPrefix("127.") { return true }
+        if host.hasPrefix("10.") { return true }
+        if host.hasPrefix("192.168.") { return true }
+        if host.hasPrefix("169.254.") { return true }
+        // 172.16.0.0 – 172.31.255.255
+        if host.hasPrefix("172.") {
+            let parts = host.split(separator: ".")
+            if parts.count > 1, let second = Int(parts[1]), (16...31).contains(second) {
+                return true
+            }
+        }
+        return false
+    }
+}
