@@ -48,7 +48,8 @@ Xcode; the generated `.xcodeproj` is git-ignored).
 
 - `build-test` (macos-26): xcodegen + pin check + SPM build/test + app builds on iPhone
   and iPad simulators + gitleaks + syft SBOM + license inventory.
-- `spm-only` (ubuntu-latest, Swift 6.2): cross-platform build + test regression net.
+- `spm-linux-build` (ubuntu-latest, Swift 6.2): cross-platform compile gate. Full tests
+  run on macOS because Debian's system SQLite omits GRDB snapshot linker symbols.
 
 ## Open implementation gates
 

@@ -2,9 +2,10 @@
 # Two jobs:
 #   build-test (macos-26, full Xcode): SPM build/test + xcodegen +
 #     xcodebuild for the iOS app, secret scan, SBOM, license inventory.
-#   spm-only (ubuntu-latest, Swift 6.2): cross-platform targets only —
+#   spm-linux-build (ubuntu-latest, Swift 6.2): cross-platform compile only —
 #     SSE parser, catastrophic gate, canonical JSON, audit chain, GRDB
-#     schema form the Linux regression net.
+#     schema remain portable. Tests run on the Apple job because Debian's
+#     system SQLite omits GRDB's SQLITE_ENABLE_SNAPSHOT linker symbols.
 name: CI
 
 on:
@@ -81,7 +82,7 @@ jobs:
             FloeAgent/FloeAgent-iPad.xcresult
           if-no-files-found: ignore
 
-  spm-only:
+  spm-linux-build:
     runs-on: ubuntu-latest
     container: swift:6.2
     defaults:
@@ -100,6 +101,3 @@ jobs:
 
       - name: Build cross-platform targets
         run: swift build
-
-      - name: Test cross-platform targets
-        run: swift test
