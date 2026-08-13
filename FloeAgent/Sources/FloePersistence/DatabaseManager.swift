@@ -22,18 +22,20 @@ public actor DatabaseManager {
     private var migrator = DatabaseMigrator()
 
     /// Schema version tracked in `user_version`-aligned migrations.
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
 
     public init(path: URL) throws {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())
         self.queue = nil
         V1Initial.register(into: &migrator)
+        V2ConfigSync.register(into: &migrator)
     }
 
     private init(inMemory: Void) throws {
         self.pool = nil
         self.queue = try DatabaseQueue(configuration: Self.configuration())
         V1Initial.register(into: &migrator)
+        V2ConfigSync.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {

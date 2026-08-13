@@ -39,6 +39,16 @@ targets:
           - arm64
           - metal
           - iphone-performance-gaming-tier
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
     entitlements:
       path: FloeApp/Entitlements/Floe.entitlements
       properties:
@@ -46,6 +56,8 @@ targets:
           - iCloud.org.floeagent.ios
         com.apple.developer.icloud-services:
           - CloudKit
+        com.apple.developer.user-fonts:
+          - app-usage
     dependencies:
       - package: FloeAgentPackages
         product: FloeCore

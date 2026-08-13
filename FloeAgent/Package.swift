@@ -26,11 +26,11 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.8.0"),
         .package(url: "https://github.com/apple/swift-nio.git", exact: "2.88.0"),
+        .package(url: "https://github.com/Wellz26/swift-nio-ssh.git", exact: "0.3.6"),
         // NOTE: dev plan pinned apple/swift-nio-ssh 0.11.0 (does not exist).
-        // Citadel main depends on the Wellz26 fork 0.3.x; a direct
-        // apple/swift-nio-ssh pin creates a package-identity conflict, so
-        // the direct dependency is omitted (Citadel pulls the fork).
-        // Deviation flagged.
+        // Citadel uses the API-compatible Wellz26 fork 0.3.x. FloeSSH imports
+        // NIOSSH directly for strict host-key validation, so this direct pin
+        // intentionally matches Citadel's transitive package identity.
         // NOTE: dev plan pinned Citadel 0.11.0 (does not exist). Latest tag
         // 0.9.2 requires swift-crypto <2.1 (conflicts with our 4.1.0 pin);
         // main branch (this revision) supports swift-crypto 3.12.3+.
@@ -202,7 +202,10 @@ let package = Package(
                 "FloeSecurity",
                 "FloePersistence",
                 .product(name: "Citadel", package: "Citadel"),
-                .product(name: "SwiftTerm", package: "SwiftTerm")
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOSSH", package: "swift-nio-ssh"),
+                .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeSSH",
             swiftSettings: [
@@ -307,6 +310,26 @@ let package = Package(
             dependencies: ["FloeSecurity", "FloeTestSupport"],
             path: "Tests/FloeSecurityTests",
             resources: [.process("Fixtures")],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+
+        .testTarget(
+            name: "FloeDocumentsTests",
+            dependencies: ["FloeDocuments"],
+            path: "Tests/FloeDocumentsTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+
+        .testTarget(
+            name: "FloeSSHTests",
+            dependencies: ["FloeSSH"],
+            path: "Tests/FloeSSHTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency")

@@ -1,0 +1,11 @@
+FROM debian:bookworm-slim@sha256:362e64223cc0da95422b3b13c045186fc0a81250e765d31c025fbddf257f6143
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends xvfb x11vnc fluxbox xterm ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY vnc-entrypoint.sh /usr/local/bin/vnc-entrypoint
+RUN chmod 0755 /usr/local/bin/vnc-entrypoint
+
+EXPOSE 5900
+ENTRYPOINT ["/usr/local/bin/vnc-entrypoint"]

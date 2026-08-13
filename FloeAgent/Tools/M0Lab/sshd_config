@@ -1,0 +1,9 @@
+Port 22
+ListenAddress 0.0.0.0
+PasswordAuthentication yes
+KbdInteractiveAuthentication no
+PermitRootLogin no
+AllowUsers floe
+UsePAM no
+PrintMotd no
+Subsystem sftp internal-sftp

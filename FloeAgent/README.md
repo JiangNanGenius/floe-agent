@@ -2,13 +2,14 @@
 
 Private AI agent workspace for iPhone and iPad. Your models. Your files. Your machines.
 
-Framework status: **audited, buildable foundation; M1 is not yet complete**. The shared
-modules pass 151 tests and the iOS app compiles for an iOS 27 simulator with an iOS 26
-deployment target. CloudKit record synchronization, production tool runners, app lock,
-Files workflows, and the M0 integration spikes remain open.
+Framework status: **M0 integration implementation in progress; M0 and M1 are not yet
+accepted**. The iOS app compiles with an iOS 26 deployment target. CloudKit configuration
+sync, iCloud Keychain secret migration, SSH jump/PTY, loopback forwarding, RoyalVNC Metal
+rendering, and coordinated document working-copy support now have real implementations
+and a DEBUG diagnostics screen. Physical-device and Collabora evidence is still required.
 
-See [`docs/FRAMEWORK_AUDIT_2026-08-13.md`](../docs/FRAMEWORK_AUDIT_2026-08-13.md)
-for the review findings, fixes, evidence, and remaining gates.
+See [`docs/M0_VALIDATION_REPORT.md`](docs/M0_VALIDATION_REPORT.md) for the implemented M0
+surface, reproducible commands, current evidence, and blockers.
 
 ## Module map
 
@@ -20,10 +21,10 @@ for the review findings, fixes, evidence, and remaining gates.
 | FloeTools | cross-platform | AgentTool protocol, ToolCatalog (compile-time whitelist), ToolContext/CancellationToken |
 | FloeSecurity | cross-platform | Three approval policies, CatastrophicActionGate (27 patterns), AuditChain (HMAC-SHA256 hash chain, HKDF device key), CanonicalJSONEncoder, KeychainStore, ApprovalGrantStore |
 | FloeAgentRuntime | cross-platform | AgentState machine (§7 diagram), AgentCheckpoint v1, FloeAgentRuntime actor with full cancel semantics |
-| FloePersistence | cross-platform | DatabaseManager (GRDB actor facade), schema v1 (13 STRICT tables + FTS5 + append-only audit triggers), provider/model configuration CRUD |
+| FloePersistence | cross-platform | DatabaseManager (GRDB actor facade), schema v2, provider/model CRUD, CloudKit metadata/state and known-host storage |
 | FloeSyncCore | cross-platform | Per-field `updatedAt` merge, tombstone resolution, SyncStatus |
-| FloeSync / FloeDocuments / FloeImages / FloeSSH / FloeVNC | iOS-only | CloudKit engine skeleton, DocumentCommand + bridge protocol, ImageOperation + validate, RemoteHostProfile + RemoteRun lifecycle, VNCAction + VisualActionBudget |
-| FloeApp | iOS-only | SwiftUI entry (iPhone TabView / iPad NavigationSplitView), per-window scene accounting, PlatformBackgroundPolicy + iPhone/iPad implementations |
+| FloeSync / FloeDocuments / FloeImages / FloeSSH / FloeVNC | iOS-only | CKSyncEngine configuration sync, safe document workspace, image operations, SSH/jump/PTY/forwarding, RoyalVNC Metal session |
+| FloeApp | iOS-only | SwiftUI entry, adaptive navigation, per-window background policy, DEBUG M0 diagnostics |
 
 ## Building
 
@@ -55,11 +56,12 @@ Xcode; the generated `.xcodeproj` is git-ignored).
 
 - Provider adapters have real HTTP/SSE plumbing but `listModels` returns empty (M2).
 - Tool execution routes through `CatalogToolExecutor` stubs until M2 runners land.
-- `ConfigSyncEngine` creates a `CKSyncEngine`, but its delegate still does not upload,
-  apply, delete, or persist CloudKit records. Two-device sync is not implemented.
-- The SwiftUI destinations are navigation placeholders; provider settings, app lock,
-  Files import/edit/save, terminal, and VNC surfaces are not production UI.
-- SSH, Office, and VNC M0 spikes have not been demonstrated on minimum hardware.
+- CloudKit code now uploads/applies/deletes Provider and Model records and persists engine
+  state, but two-device sync and server conflict behavior still require signed-device proof.
+- The M0 diagnostics UI exercises Files, terminal and VNC integration; it is not the final
+  production UI. App lock and production provider settings remain open.
+- SSH and VNC compile with their real dependencies but have not been demonstrated on
+  minimum hardware. Collabora is gated by build storage/tooling and is not embedded yet.
 - CJK full-text search: FTS5 `unicode61` tokenizes CJK runs as single tokens; substring
   queries need a segmenting tokenizer (M2+ decision).
 - GRDB exposes no public sqlite3 authorizer; audit append-only is enforced with

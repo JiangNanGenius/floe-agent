@@ -43,6 +43,9 @@ enum AppDestination: String, Hashable, CaseIterable, Identifiable {
 @MainActor
 final class AppModel: ObservableObject {
     @Published var selection: AppDestination = .home
+#if DEBUG
+    let diagnostics = M0DiagnosticsModel()
+#endif
 
     /// Runtime-selected background policy (see Platform/).
     let backgroundPolicy: any PlatformBackgroundPolicy
@@ -83,7 +86,7 @@ struct RootView: View {
     private var iPhoneRoot: some View {
         TabView(selection: $appModel.selection) {
             ForEach(AppDestination.allCases) { destination in
-                PlaceholderView(title: destination.title)
+                NavigationStack { destinationView(destination) }
                     .tabItem { Label(destination.title, systemImage: icon(for: destination)) }
                     .tag(destination)
             }
@@ -113,8 +116,21 @@ struct RootView: View {
             }
             .navigationTitle("Floe Agent")
         } detail: {
-            PlaceholderView(title: appModel.selection.title)
+            destinationView(appModel.selection)
         }
+    }
+
+    @ViewBuilder
+    private func destinationView(_ destination: AppDestination) -> some View {
+#if DEBUG
+        if destination == .settings {
+            SettingsView(diagnostics: appModel.diagnostics)
+        } else {
+            PlaceholderView(title: destination.title)
+        }
+#else
+        PlaceholderView(title: destination.title)
+#endif
     }
 
     private func icon(for destination: AppDestination) -> String {
