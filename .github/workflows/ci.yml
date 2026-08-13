@@ -2,7 +2,7 @@
 # Two jobs:
 #   build-test (macos-26, full Xcode): SPM build/test + xcodegen +
 #     xcodebuild for the iOS app, secret scan, SBOM, license inventory.
-#   spm-only (ubuntu-latest, Swift 6.4): cross-platform targets only —
+#   spm-only (ubuntu-latest, Swift 6.2): cross-platform targets only —
 #     SSE parser, catastrophic gate, canonical JSON, audit chain, GRDB
 #     schema form the Linux regression net.
 name: CI
@@ -80,7 +80,7 @@ jobs:
 
   spm-only:
     runs-on: ubuntu-latest
-    container: swift:6.4
+    container: swift:6.2
     defaults:
       run:
         working-directory: FloeAgent

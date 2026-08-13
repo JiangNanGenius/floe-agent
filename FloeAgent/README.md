@@ -27,7 +27,7 @@ for the review findings, fixes, evidence, and remaining gates.
 
 ## Building
 
-Requirements: Swift 6.4-compatible toolchain and a full Xcode installation. The local
+Requirements: Swift 6.2 or newer and a full Xcode installation. The local
 build script discovers `/Applications/Xcode.app` or `/Applications/Xcode-beta.app`
 without changing the machine's global `xcode-select` setting.
 
@@ -48,7 +48,7 @@ Xcode; the generated `.xcodeproj` is git-ignored).
 
 - `build-test` (macos-26): xcodegen + pin check + SPM build/test + app builds on iPhone
   and iPad simulators + gitleaks + syft SBOM + license inventory.
-- `spm-only` (ubuntu-latest, Swift 6.4): cross-platform build + test regression net.
+- `spm-only` (ubuntu-latest, Swift 6.2): cross-platform build + test regression net.
 
 ## Open implementation gates
 
