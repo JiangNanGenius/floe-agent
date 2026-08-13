@@ -7,7 +7,10 @@
 #     schema form the Linux regression net.
 name: CI
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
 
 jobs:
   build-test:
