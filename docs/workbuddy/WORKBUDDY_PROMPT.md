@@ -1,6 +1,6 @@
 # Prompt to send to WorkBuddy
 
-Continue the Floe Agent project in `/Volumes/TECLAST/IOS AI AGENT` on branch `agent/alpha-daily` and implement the complete daily-usable Alpha iteration.
+Continue the Floe Agent project in `/Volumes/TECLAST/IOS AI AGENT` on branch `agent/alpha-daily` and implement the complete daily-usable Alpha iteration. Use this exact existing directory only: do not create a Git worktree, temporary clone, duplicate repository, or alternate workspace.
 
 Before editing, read these files in full and treat them as binding:
 

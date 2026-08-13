@@ -4,7 +4,7 @@ This plan tells WorkBuddy how to maximize completed, testable product value in o
 
 ## Operating contract
 
-- Work only on `agent/alpha-daily` in the existing repository.
+- Work only on `agent/alpha-daily` in `/Volumes/TECLAST/IOS AI AGENT`. Do not create another worktree, clone, repository copy or alternate workspace.
 - Read `PRODUCT.md`, `DESIGN.md`, `docs/ALPHA_DAILY_PLAN.md`, existing audit/validation reports and package structure before editing.
 - Preserve user changes and MPL-2.0 licensing. Never print, commit or transmit secrets.
 - Prefer small compilable commits with descriptive messages. Push the branch after meaningful checkpoints.
