@@ -48,11 +48,11 @@ jobs:
             -resultBundlePath FloeAgent-iPhone.xcresult \
             build
 
-      - name: xcodebuild iPad Simulator
+      - name: xcodebuild iPad mini (A17 Pro) Simulator
         run: |
           xcodebuild \
             -scheme FloeAgent \
-            -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
+            -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
             -resultBundlePath FloeAgent-iPad.xcresult \
             build
 
