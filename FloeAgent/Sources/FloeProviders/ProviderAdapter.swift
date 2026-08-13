@@ -98,6 +98,30 @@ struct SSEBytePump: Sendable {
             let task = Task {
                 var parser = SSEParser()
                 do {
+                    #if os(Linux)
+                    // FoundationNetworking does not expose URLSession.bytes(for:).
+                    // Linux is a build/test target, not an app runtime, so use a
+                    // bounded-lifetime buffered fallback to keep wire parsing and
+                    // contract tests portable. Apple platforms remain truly streaming.
+                    let (data, response) = try await URLSession.shared.data(for: urlRequest)
+                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                        let body = String(decoding: data.prefix(4096), as: UTF8.self)
+                        continuation.yield(SSEEvent(
+                            event: "__http_error__",
+                            data: "\(http.statusCode)\n\(body)"
+                        ))
+                        continuation.finish()
+                        return
+                    }
+                    try Task.checkCancellation()
+                    for event in parser.feed(data) {
+                        continuation.yield(event)
+                    }
+                    for event in try parser.finish() {
+                        continuation.yield(event)
+                    }
+                    continuation.finish()
+                    #else
                     let (bytes, response) = try await URLSession.shared.bytes(for: urlRequest)
                     if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                         var body = ""
@@ -133,6 +157,7 @@ struct SSEBytePump: Sendable {
                         continuation.yield(event)
                     }
                     continuation.finish()
+                    #endif
                 } catch is CancellationError {
                     continuation.finish()
                 } catch {
