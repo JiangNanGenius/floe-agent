@@ -101,16 +101,15 @@ jobs:
 
       - name: Build cross-platform targets
         run: |
-          products=(
-            FloeCore
-            FloeModels
-            FloeProviders
-            FloeAgentRuntime
-            FloeTools
-            FloePersistence
-            FloeSecurity
+          for product in \
+            FloeCore \
+            FloeModels \
+            FloeProviders \
+            FloeAgentRuntime \
+            FloeTools \
+            FloePersistence \
+            FloeSecurity \
             FloeSyncCore
-          )
-          for product in "${products[@]}"; do
+          do
             swift build --product "$product"
           done
