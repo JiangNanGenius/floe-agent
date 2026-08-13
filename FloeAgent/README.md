@@ -46,7 +46,7 @@ Xcode; the generated `.xcodeproj` is git-ignored).
 
 `.github/workflows/ci.yml` runs two jobs:
 
-- `build-test` (macos-15): xcodegen + pin check + SPM build/test + app builds on iPhone
+- `build-test` (macos-26): xcodegen + pin check + SPM build/test + app builds on iPhone
   and iPad simulators + gitleaks + syft SBOM + license inventory.
 - `spm-only` (ubuntu-latest, Swift 6.4): cross-platform build + test regression net.
 

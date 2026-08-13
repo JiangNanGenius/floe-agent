@@ -1,6 +1,6 @@
 # Floe Agent CI.
 # Two jobs:
-#   build-test (macos-15, full Xcode): SPM build/test + xcodegen +
+#   build-test (macos-26, full Xcode): SPM build/test + xcodegen +
 #     xcodebuild for the iOS app, secret scan, SBOM, license inventory.
 #   spm-only (ubuntu-latest, Swift 6.4): cross-platform targets only —
 #     SSE parser, catastrophic gate, canonical JSON, audit chain, GRDB
@@ -11,9 +11,12 @@ on: [push, pull_request]
 
 jobs:
   build-test:
-    runs-on: macos-15
+    runs-on: macos-26
+    defaults:
+      run:
+        working-directory: FloeAgent
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
 
@@ -68,16 +71,19 @@ jobs:
         with:
           name: ci-artifacts
           path: |
-            sbom.spdx.json
-            LICENSES-THIRD-PARTY.md
-            .gitleaks-report.json
-            FloeAgent-iPhone.xcresult
-            FloeAgent-iPad.xcresult
+            FloeAgent/sbom.spdx.json
+            FloeAgent/LICENSES-THIRD-PARTY.md
+            FloeAgent/.gitleaks-report.json
+            FloeAgent/FloeAgent-iPhone.xcresult
+            FloeAgent/FloeAgent-iPad.xcresult
           if-no-files-found: ignore
 
   spm-only:
     runs-on: ubuntu-latest
     container: swift:6.4
+    defaults:
+      run:
+        working-directory: FloeAgent
     steps:
       - uses: actions/checkout@v4
 
