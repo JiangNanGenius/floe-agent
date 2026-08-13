@@ -27,6 +27,7 @@
 		C2A979185D804135CE278ADA /* FloeDocuments in Frameworks */ = {isa = PBXBuildFile; productRef = 42091B03632EF4B82CED17C8 /* FloeDocuments */; };
 		C5EF7D89863A823AEC36B81F /* FloeAgentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */; };
 		E40E39F14DBED467D850E91A /* FloeAgentRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = EF4C9E5ED2F18E4E1CB8A527 /* FloeAgentRuntime */; };
+		EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = A6797B7DAA890D6378153058 /* Localizable.xcstrings */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -38,6 +39,7 @@
 		84E9CA8571729543928880E3 /* M0DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M0DiagnosticsView.swift; sourceTree = "<group>"; };
 		916ACA33CDE6532714E49272 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeAgentApp.swift; sourceTree = "<group>"; };
+		A6797B7DAA890D6378153058 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		C748393AFE6A38ADCB6FC166 /* FloeAgent.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = FloeAgent.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E3EF97C2442DD744CEB320A0 /* PlatformBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformBackgroundPolicy.swift; sourceTree = "<group>"; };
 		EB400574B41454793B7461C2 /* iPadBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPadBackgroundPolicy.swift; sourceTree = "<group>"; };
@@ -128,6 +130,7 @@
 			children = (
 				37BB930D0175C1FF7EE714EE /* Assets.xcassets */,
 				916ACA33CDE6532714E49272 /* Info.plist */,
+				A6797B7DAA890D6378153058 /* Localizable.xcstrings */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -195,6 +198,7 @@
 			knownRegions = (
 				Base,
 				en,
+				"zh-Hans",
 			);
 			mainGroup = 803D098B2BC01A91E2C0353D;
 			minimizedProjectReferenceProxies = 1;
@@ -217,6 +221,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				75B75F5F8C25D5B60B5E4541 /* Assets.xcassets in Resources */,
+				EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -1,0 +1,181 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "action.approve" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Approve" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "批准" } }
+      }
+    },
+    "action.cancel" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cancel" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消" } }
+      }
+    },
+    "action.deny" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Deny" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "拒绝" } }
+      }
+    },
+    "action.retry" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Retry" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "重试" } }
+      }
+    },
+    "action.stop" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Stop" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "停止" } }
+      }
+    },
+    "app.name" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Floe Agent" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Floe Agent" } }
+      }
+    },
+    "approval.required" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Approval required" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需要批准" } }
+      }
+    },
+    "empty.conversations" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Start a task to create your first conversation." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "开始一个任务来创建首次对话。" } }
+      }
+    },
+    "empty.hosts" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Add a host you are authorized to operate." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "添加一台你有权操作的主机。" } }
+      }
+    },
+    "empty.providers" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Add a model provider to begin." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "添加模型提供商后即可开始。" } }
+      }
+    },
+    "home.active_tasks" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Active Tasks" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "进行中的任务" } }
+      }
+    },
+    "home.new_task.placeholder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "What should Floe do?" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "想让 Floe 做什么？" } }
+      }
+    },
+    "home.pending_approvals" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Pending Approvals" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "待批准" } }
+      }
+    },
+    "home.recent" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Recent" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最近" } }
+      }
+    },
+    "state.completed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Completed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已完成" } }
+      }
+    },
+    "state.disconnected" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Disconnected" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已断开连接" } }
+      }
+    },
+    "state.failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "失败" } }
+      }
+    },
+    "state.running" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Running" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "运行中" } }
+      }
+    },
+    "state.unknown" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Status unknown" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "状态未知" } }
+      }
+    },
+    "state.waiting_approval" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Waiting for approval" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "等待批准" } }
+      }
+    },
+    "tab.chat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Chat" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "对话" } }
+      }
+    },
+    "tab.files" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Files" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "文件" } }
+      }
+    },
+    "tab.home" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Home" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "首页" } }
+      }
+    },
+    "tab.hosts" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Hosts" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "主机" } }
+      }
+    },
+    "tab.more" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "More" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "更多" } }
+      }
+    }
+  },
+  "version" : "1.0"
+}
