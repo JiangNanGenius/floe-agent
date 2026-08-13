@@ -101,7 +101,7 @@ jobs:
 
       - name: Build cross-platform targets
         run: |
-          for product in \
+          for target in \
             FloeCore \
             FloeModels \
             FloeProviders \
@@ -111,5 +111,5 @@ jobs:
             FloeSecurity \
             FloeSyncCore
           do
-            swift build --product "$product"
+            swift build --target "$target"
           done
