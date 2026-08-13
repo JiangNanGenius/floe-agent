@@ -1,0 +1,483 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		089D513D837438C091ED08A0 /* FloePersistence in Frameworks */ = {isa = PBXBuildFile; productRef = B1B02F2500B5B465399C11B7 /* FloePersistence */; };
+		0DB52308023E1468A623C1C7 /* M0DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84E9CA8571729543928880E3 /* M0DiagnosticsView.swift */; };
+		265F22EEB8BC48C7AF62FDCD /* PlatformBackgroundPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EF97C2442DD744CEB320A0 /* PlatformBackgroundPolicy.swift */; };
+		2D1426A11BF0547700CA8D5D /* iPadBackgroundPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB400574B41454793B7461C2 /* iPadBackgroundPolicy.swift */; };
+		3324AFAEF977E427D066CD85 /* iPhoneBackgroundPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 699FBAE02E34D628B5FC48B7 /* iPhoneBackgroundPolicy.swift */; };
+		33744B55369D187E0173FB77 /* FloeSecurity in Frameworks */ = {isa = PBXBuildFile; productRef = 87B8E278FC454AFE6AF6C9E9 /* FloeSecurity */; };
+		405D2CF50F65452FBB99CE0D /* FloeImages in Frameworks */ = {isa = PBXBuildFile; productRef = EBF97B079841247A01DFCE52 /* FloeImages */; };
+		4707D8E92893B0ED9C62F8F9 /* FloeCore in Frameworks */ = {isa = PBXBuildFile; productRef = 8C092D204147366710DA8E8D /* FloeCore */; };
+		557E5740D65A080E412BDBA3 /* FloeSync in Frameworks */ = {isa = PBXBuildFile; productRef = CB9AC1549FA61B1132625EA1 /* FloeSync */; };
+		6B0D3A07EB93CDB1FF10B326 /* FloeSyncCore in Frameworks */ = {isa = PBXBuildFile; productRef = 42F46C3ACBB2BE695D007080 /* FloeSyncCore */; };
+		79513D3F13F2694F56459286 /* FloeModels in Frameworks */ = {isa = PBXBuildFile; productRef = 6D3CC5A66BC37258D46FDF3D /* FloeModels */; };
+		A1730325CB40AA74E22D3C28 /* FloeVNC in Frameworks */ = {isa = PBXBuildFile; productRef = 8D67ACB7499F21D8B8B49FE4 /* FloeVNC */; };
+		ABAF2700584FE5E93C50DA1B /* FloeSSH in Frameworks */ = {isa = PBXBuildFile; productRef = DEFB59A49152ED0F642C4865 /* FloeSSH */; };
+		B2196F0D1CCA995A3F4F8C0D /* FloeTools in Frameworks */ = {isa = PBXBuildFile; productRef = 8E8F4CD97A741A8F515EC80E /* FloeTools */; };
+		BAFCFD696F2EA6A8D174FBBD /* M0DiagnosticsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 397DA23AB1A49D66682CE2D2 /* M0DiagnosticsModel.swift */; };
+		C289286498042D0530D1590B /* FloeProviders in Frameworks */ = {isa = PBXBuildFile; productRef = B6555425212C5867CBB75D36 /* FloeProviders */; };
+		C2A979185D804135CE278ADA /* FloeDocuments in Frameworks */ = {isa = PBXBuildFile; productRef = 42091B03632EF4B82CED17C8 /* FloeDocuments */; };
+		C5EF7D89863A823AEC36B81F /* FloeAgentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */; };
+		E40E39F14DBED467D850E91A /* FloeAgentRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = EF4C9E5ED2F18E4E1CB8A527 /* FloeAgentRuntime */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		397DA23AB1A49D66682CE2D2 /* M0DiagnosticsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M0DiagnosticsModel.swift; sourceTree = "<group>"; };
+		4B364052541A17BBD46A6C70 /* FloeAgent */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeAgent; path = .; sourceTree = SOURCE_ROOT; };
+		699FBAE02E34D628B5FC48B7 /* iPhoneBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPhoneBackgroundPolicy.swift; sourceTree = "<group>"; };
+		6E4B5351714B8B79EF8E8055 /* Floe.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Floe.entitlements; sourceTree = "<group>"; };
+		84E9CA8571729543928880E3 /* M0DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M0DiagnosticsView.swift; sourceTree = "<group>"; };
+		916ACA33CDE6532714E49272 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeAgentApp.swift; sourceTree = "<group>"; };
+		C748393AFE6A38ADCB6FC166 /* FloeAgent.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = FloeAgent.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E3EF97C2442DD744CEB320A0 /* PlatformBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformBackgroundPolicy.swift; sourceTree = "<group>"; };
+		EB400574B41454793B7461C2 /* iPadBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPadBackgroundPolicy.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		DB3143927DF1F8F8F1F9C9EF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4707D8E92893B0ED9C62F8F9 /* FloeCore in Frameworks */,
+				79513D3F13F2694F56459286 /* FloeModels in Frameworks */,
+				C289286498042D0530D1590B /* FloeProviders in Frameworks */,
+				E40E39F14DBED467D850E91A /* FloeAgentRuntime in Frameworks */,
+				B2196F0D1CCA995A3F4F8C0D /* FloeTools in Frameworks */,
+				089D513D837438C091ED08A0 /* FloePersistence in Frameworks */,
+				33744B55369D187E0173FB77 /* FloeSecurity in Frameworks */,
+				557E5740D65A080E412BDBA3 /* FloeSync in Frameworks */,
+				6B0D3A07EB93CDB1FF10B326 /* FloeSyncCore in Frameworks */,
+				C2A979185D804135CE278ADA /* FloeDocuments in Frameworks */,
+				405D2CF50F65452FBB99CE0D /* FloeImages in Frameworks */,
+				ABAF2700584FE5E93C50DA1B /* FloeSSH in Frameworks */,
+				A1730325CB40AA74E22D3C28 /* FloeVNC in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		039830B0F46D9F3BB31E08A6 /* Platform */ = {
+			isa = PBXGroup;
+			children = (
+				EB400574B41454793B7461C2 /* iPadBackgroundPolicy.swift */,
+				699FBAE02E34D628B5FC48B7 /* iPhoneBackgroundPolicy.swift */,
+				E3EF97C2442DD744CEB320A0 /* PlatformBackgroundPolicy.swift */,
+			);
+			path = Platform;
+			sourceTree = "<group>";
+		};
+		5A4895F660C5D22041A0F155 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */,
+				397DA23AB1A49D66682CE2D2 /* M0DiagnosticsModel.swift */,
+				84E9CA8571729543928880E3 /* M0DiagnosticsView.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		803D098B2BC01A91E2C0353D = {
+			isa = PBXGroup;
+			children = (
+				D503CE8C555DE955FC1B0FEE /* FloeApp */,
+				D38FE95FA512115C4664ECFE /* Packages */,
+				D2F4766B4780E506300D05AC /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		D2F4766B4780E506300D05AC /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C748393AFE6A38ADCB6FC166 /* FloeAgent.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		D38FE95FA512115C4664ECFE /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				4B364052541A17BBD46A6C70 /* FloeAgent */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		D503CE8C555DE955FC1B0FEE /* FloeApp */ = {
+			isa = PBXGroup;
+			children = (
+				5A4895F660C5D22041A0F155 /* App */,
+				F9736247E976C4B2AE821D94 /* Entitlements */,
+				039830B0F46D9F3BB31E08A6 /* Platform */,
+				D945ACAB4A3BFCBED5DF65AE /* Resources */,
+			);
+			path = FloeApp;
+			sourceTree = "<group>";
+		};
+		D945ACAB4A3BFCBED5DF65AE /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				916ACA33CDE6532714E49272 /* Info.plist */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		F9736247E976C4B2AE821D94 /* Entitlements */ = {
+			isa = PBXGroup;
+			children = (
+				6E4B5351714B8B79EF8E8055 /* Floe.entitlements */,
+			);
+			path = Entitlements;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		3AFAF3B3CB6F0777A7C6B07F /* FloeAgent */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B1532B1CAF0880096576D78A /* Build configuration list for PBXNativeTarget "FloeAgent" */;
+			buildPhases = (
+				635456F5C5F24F3879B481C5 /* Sources */,
+				DB3143927DF1F8F8F1F9C9EF /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = FloeAgent;
+			packageProductDependencies = (
+				8C092D204147366710DA8E8D /* FloeCore */,
+				6D3CC5A66BC37258D46FDF3D /* FloeModels */,
+				B6555425212C5867CBB75D36 /* FloeProviders */,
+				EF4C9E5ED2F18E4E1CB8A527 /* FloeAgentRuntime */,
+				8E8F4CD97A741A8F515EC80E /* FloeTools */,
+				B1B02F2500B5B465399C11B7 /* FloePersistence */,
+				87B8E278FC454AFE6AF6C9E9 /* FloeSecurity */,
+				CB9AC1549FA61B1132625EA1 /* FloeSync */,
+				42F46C3ACBB2BE695D007080 /* FloeSyncCore */,
+				42091B03632EF4B82CED17C8 /* FloeDocuments */,
+				EBF97B079841247A01DFCE52 /* FloeImages */,
+				DEFB59A49152ED0F642C4865 /* FloeSSH */,
+				8D67ACB7499F21D8B8B49FE4 /* FloeVNC */,
+			);
+			productName = FloeAgent;
+			productReference = C748393AFE6A38ADCB6FC166 /* FloeAgent.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		34A505482FC52A1ABA7CBF4B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = A666E10011811E9C82F7FDFB /* Build configuration list for PBXProject "FloeAgent" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 803D098B2BC01A91E2C0353D;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				22A88FCEEDE1E3AC97A571ED /* XCLocalSwiftPackageReference "." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = D2F4766B4780E506300D05AC /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				3AFAF3B3CB6F0777A7C6B07F /* FloeAgent */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		635456F5C5F24F3879B481C5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C5EF7D89863A823AEC36B81F /* FloeAgentApp.swift in Sources */,
+				BAFCFD696F2EA6A8D174FBBD /* M0DiagnosticsModel.swift in Sources */,
+				0DB52308023E1468A623C1C7 /* M0DiagnosticsView.swift in Sources */,
+				265F22EEB8BC48C7AF62FDCD /* PlatformBackgroundPolicy.swift in Sources */,
+				2D1426A11BF0547700CA8D5D /* iPadBackgroundPolicy.swift in Sources */,
+				3324AFAEF977E427D066CD85 /* iPhoneBackgroundPolicy.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		06D6A3B826D9F96AE81F4773 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FloeApp/Resources/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios;
+				PRODUCT_NAME = "Floe Agent";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		5C5756D612406C3AF5913AC7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		85FD2445DECE581FB7300C8B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		B42180383A323CEE990BB7DA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FloeApp/Resources/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios;
+				PRODUCT_NAME = "Floe Agent";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A666E10011811E9C82F7FDFB /* Build configuration list for PBXProject "FloeAgent" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				85FD2445DECE581FB7300C8B /* Debug */,
+				5C5756D612406C3AF5913AC7 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B1532B1CAF0880096576D78A /* Build configuration list for PBXNativeTarget "FloeAgent" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B42180383A323CEE990BB7DA /* Debug */,
+				06D6A3B826D9F96AE81F4773 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		22A88FCEEDE1E3AC97A571ED /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		42091B03632EF4B82CED17C8 /* FloeDocuments */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeDocuments;
+		};
+		42F46C3ACBB2BE695D007080 /* FloeSyncCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeSyncCore;
+		};
+		6D3CC5A66BC37258D46FDF3D /* FloeModels */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeModels;
+		};
+		87B8E278FC454AFE6AF6C9E9 /* FloeSecurity */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeSecurity;
+		};
+		8C092D204147366710DA8E8D /* FloeCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeCore;
+		};
+		8D67ACB7499F21D8B8B49FE4 /* FloeVNC */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeVNC;
+		};
+		8E8F4CD97A741A8F515EC80E /* FloeTools */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeTools;
+		};
+		B1B02F2500B5B465399C11B7 /* FloePersistence */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloePersistence;
+		};
+		B6555425212C5867CBB75D36 /* FloeProviders */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeProviders;
+		};
+		CB9AC1549FA61B1132625EA1 /* FloeSync */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeSync;
+		};
+		DEFB59A49152ED0F642C4865 /* FloeSSH */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeSSH;
+		};
+		EBF97B079841247A01DFCE52 /* FloeImages */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeImages;
+		};
+		EF4C9E5ED2F18E4E1CB8A527 /* FloeAgentRuntime */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeAgentRuntime;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 34A505482FC52A1ABA7CBF4B /* Project object */;
+}

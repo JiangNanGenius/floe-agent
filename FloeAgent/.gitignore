@@ -1,7 +1,16 @@
 # Xcode
 build/
 DerivedData/
+# Xcode Cloud must discover the generated app project after cloning. Commit
+# only FloeAgent.xcodeproj; XcodeGen remains the source of truth.
 *.xcodeproj
+!FloeAgent.xcodeproj/
+!FloeAgent.xcodeproj/project.pbxproj
+!FloeAgent.xcodeproj/project.xcworkspace/
+!FloeAgent.xcodeproj/project.xcworkspace/contents.xcworkspacedata
+!FloeAgent.xcodeproj/xcshareddata/
+!FloeAgent.xcodeproj/xcshareddata/xcschemes/
+!FloeAgent.xcodeproj/xcshareddata/xcschemes/FloeAgent.xcscheme
 *.xcworkspace
 xcuserdata/
 *.xcuserstate
