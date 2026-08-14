@@ -65,8 +65,9 @@ private struct MoreDestinationRouter: View {
     }
 }
 
-/// Runs history: every run with honest state.
-private struct RunsHistoryView: View {
+/// Runs history: every run with honest state. Internal so the iPad router
+/// in FloeAgentApp can reach the same screen the iPhone More tab uses.
+struct RunsHistoryView: View {
     let viewModel: MoreViewModel
 
     var body: some View {
@@ -102,8 +103,9 @@ private struct RunsHistoryView: View {
 }
 
 /// Privacy: honest statement of the data model (secrets in Keychain,
-/// no analytics/ads, no Floe backend).
-private struct PrivacyView: View {
+/// no analytics/ads, no Floe backend). Internal so the iPad router in
+/// FloeAgentApp reaches the same screen the iPhone More tab uses.
+struct PrivacyView: View {
     var body: some View {
         List {
             Section {

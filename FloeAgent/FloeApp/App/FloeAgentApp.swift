@@ -293,9 +293,9 @@ private struct MoreListView: View {
     }
 }
 
-/// Routes a More sub-destination to its screen. Providers and Diagnostics
-/// are real screens today (provider management lands in T03; diagnostics is
-/// the committed M0 validation UI); the rest are honest empty states.
+/// Routes a More sub-destination to its screen. Runs, Settings and Privacy
+/// resolve to the same real screens the iPhone More tab uses; only the
+/// non-DEBUG diagnostics fallback remains a placeholder.
 private struct MoreDestinationView: View {
     let sub: MoreDestination
 
@@ -309,11 +309,7 @@ private struct MoreDestinationView: View {
     var body: some View {
         switch sub {
         case .runs:
-            ShellPlaceholderView(
-                title: sub.title,
-                systemImage: sub.systemImage,
-                messageKey: "empty.runs"
-            )
+            RunsHistoryView(viewModel: MoreViewModel(center: environment.conversationCenter))
         case .setupGuide:
             SetupGuideLauncherView()
         case .providers:
@@ -321,17 +317,9 @@ private struct MoreDestinationView: View {
         case .auxiliaryModels:
             AuxiliaryModelsView(center: environment.conversationCenter)
         case .settings:
-            ShellPlaceholderView(
-                title: sub.title,
-                systemImage: sub.systemImage,
-                messageKey: "empty.settings"
-            )
+            SettingsRootView()
         case .privacy:
-            ShellPlaceholderView(
-                title: sub.title,
-                systemImage: sub.systemImage,
-                messageKey: "empty.privacy"
-            )
+            PrivacyView()
         case .diagnostics:
 #if DEBUG
             M0DiagnosticsView(model: router.diagnostics)
