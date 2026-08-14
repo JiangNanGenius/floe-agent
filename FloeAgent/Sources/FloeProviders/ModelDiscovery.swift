@@ -59,11 +59,12 @@ enum ModelDiscovery {
         for (field, value) in provider.nonSecretHeaders {
             request.setValue(value, forHTTPHeaderField: field)
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try ensureSuccess(response, data: data)
+        let (data, response) = try await BoundedHTTP.data(for: request, maxBytes: 4 * 1_024 * 1_024)
+        try ensureSuccess(response, data: data, secret: credentials.apiKey)
         let decoded = try JSONDecoder().decode(OpenAIModelListResponse.self, from: data)
-        return decoded.data.map { item in
-            ModelProfile(
+        return decoded.data.prefix(500).compactMap { item in
+            guard !item.id.isEmpty, item.id.utf8.count <= 256 else { return nil }
+            return ModelProfile(
                 providerID: provider.id,
                 remoteModelID: item.id,
                 displayName: item.id,
@@ -89,11 +90,12 @@ enum ModelDiscovery {
         for (field, value) in provider.nonSecretHeaders {
             request.setValue(value, forHTTPHeaderField: field)
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try ensureSuccess(response, data: data)
+        let (data, response) = try await BoundedHTTP.data(for: request, maxBytes: 4 * 1_024 * 1_024)
+        try ensureSuccess(response, data: data, secret: credentials.apiKey)
         let decoded = try JSONDecoder().decode(AnthropicModelListResponse.self, from: data)
-        return decoded.data.map { item in
-            ModelProfile(
+        return decoded.data.prefix(500).compactMap { item in
+            guard !item.id.isEmpty, item.id.utf8.count <= 256 else { return nil }
+            return ModelProfile(
                 providerID: provider.id,
                 remoteModelID: item.id,
                 displayName: item.displayName ?? item.id,
@@ -106,10 +108,13 @@ enum ModelDiscovery {
     /// Throws a normalized provider error for non-2xx responses. The body is
     /// truncated and never includes credentials (the request carries them,
     /// not the response).
-    private static func ensureSuccess(_ response: URLResponse, data: Data) throws {
+    private static func ensureSuccess(_ response: URLResponse, data: Data, secret: String?) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
-            let body = SecretRedactor.redact(String(decoding: data.prefix(512), as: UTF8.self))
+            let body = SecretRedactor.redact(
+                String(decoding: data.prefix(512), as: UTF8.self),
+                secret: secret
+            )
             throw FloeError.internalError("Model discovery failed (HTTP \(http.statusCode)): \(body)")
         }
     }

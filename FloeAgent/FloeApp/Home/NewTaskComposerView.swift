@@ -20,13 +20,26 @@ struct NewTaskComposerView: View {
     let onSend: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("home.composer.title", systemImage: "sparkles")
+                    .font(.headline)
+                Spacer()
+                if let modelName {
+                    Text(modelName)
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
             HStack(alignment: .bottom, spacing: 8) {
                 TextField(text: $draft, axis: .vertical) {
                     Text("home.new_task.placeholder")
                 }
                 .lineLimit(1...4)
                 .textFieldStyle(.plain)
+                .padding(.vertical, 6)
                 .disabled(!providerConfigured)
                 .accessibilityLabel("home.new_task.placeholder")
 
@@ -34,8 +47,8 @@ struct NewTaskComposerView: View {
                     onSend()
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(canSend ? FloeTheme.primary : Color.secondary)
+                        .font(.system(size: 29, weight: .semibold))
+                        .foregroundStyle(canSend ? AnyShapeStyle(FloeTheme.brandGradient) : AnyShapeStyle(Color.secondary))
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend)
@@ -44,32 +57,25 @@ struct NewTaskComposerView: View {
             }
 
             HStack(spacing: 10) {
-                // Model indicator (read-only; model editing lives in Providers).
-                if let modelName {
-                    Label(modelName, systemImage: "cpu")
-                        .font(FloeTheme.Typography.metadata)
-                        .foregroundStyle(.secondary)
-                } else {
+                if modelName == nil {
                     Label("composer.no_model", systemImage: "cpu")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(FloeTheme.pending)
+                } else {
+                    Label("home.composer.ready", systemImage: "checkmark.circle.fill")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.success)
                 }
                 Spacer()
-                // Attachment affordance (wired in T05; present but inert now).
-                Button {
-                    // Attachments land in T05.
-                } label: {
-                    Image(systemName: "paperclip")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("composer.attach")
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(FloeTheme.chromeMaterial)
+        .padding(16)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20)
+                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.05), radius: 14, y: 7)
     }
 }
 #endif

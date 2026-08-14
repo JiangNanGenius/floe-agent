@@ -33,6 +33,9 @@ final class AppRouter: ObservableObject {
 
     /// Conversation currently opened in the thread detail, if any.
     @Published var selectedConversationID: UUID?
+    /// iPhone Chat navigation path. iPad uses selectedConversationID to
+    /// project the same thread into the split-view detail column.
+    @Published var chatPath: [UUID] = []
     /// Run currently inspected (thread detail / runs history), if any.
     @Published var selectedRunID: UUID?
     /// Host currently inspected (host detail / terminal / VNC), if any.
@@ -97,6 +100,16 @@ final class AppRouter: ObservableObject {
     func navigate(to destination: AppDestination) {
         selection = destination
         sidebarSelection = .primary(destination)
+    }
+
+    /// Opens one conversation through the idiom-appropriate presentation.
+    /// Keeping this operation here prevents Home and Chat from drifting into
+    /// separate navigation behavior.
+    func openConversation(_ conversationID: UUID, runID: UUID? = nil) {
+        selectedConversationID = conversationID
+        selectedRunID = runID
+        navigate(to: .chat)
+        chatPath = [conversationID]
     }
 
     private func policyPhase(for phase: ScenePhase) -> PolicyScenePhase {

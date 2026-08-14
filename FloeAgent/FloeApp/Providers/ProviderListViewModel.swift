@@ -19,6 +19,7 @@ final class ProviderListViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     /// Per-provider secret sync status (e.g. `.waitingForSecret`).
     @Published private(set) var secretStatus: [UUID: SyncStatus] = [:]
+    @Published var errorMessage: String?
 
     let center: ConversationCenter
     private let secretStore = KeychainSecretStore()
@@ -60,7 +61,15 @@ final class ProviderListViewModel: ObservableObject {
     }
 
     func delete(_ provider: ProviderProfile) async {
-        try? await center.deleteProvider(id: provider.id)
+        do {
+            // Remove the secret first. If metadata deletion then fails, the
+            // provider remains visible in an honest waiting-for-secret state
+            // instead of leaving an unreachable Keychain/iCloud credential.
+            try await secretStore.deleteSecret(scope: .provider(provider.id))
+            try await center.deleteProvider(id: provider.id)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
         await load()
     }
 }

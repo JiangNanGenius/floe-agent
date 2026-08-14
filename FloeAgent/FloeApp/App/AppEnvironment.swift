@@ -30,7 +30,7 @@ final class AppEnvironment: ObservableObject {
     // MARK: Security
 
     let keychain: KeychainStore
-    let catastrophicGate: CatastrophicActionGate?
+    let catastrophicGate: CatastrophicActionGate
 
     // MARK: Coordinators
 
@@ -51,6 +51,9 @@ final class AppEnvironment: ObservableObject {
     /// workbench on this and shows an honest recovery state on failure.
     @Published private(set) var persistenceReady = false
     @Published private(set) var bootstrapError: String?
+    /// True only for the emergency in-memory environment. Production
+    /// actions remain unavailable because this state is not durable.
+    let isEphemeral: Bool
 
     private init(
         database: DatabaseManager,
@@ -59,7 +62,8 @@ final class AppEnvironment: ObservableObject {
         configurationStore: ModelConfigurationStore,
         remoteSessionRegistry: any RemoteSessionRegistry,
         keychain: KeychainStore,
-        catastrophicGate: CatastrophicActionGate?
+        catastrophicGate: CatastrophicActionGate,
+        isEphemeral: Bool = false
     ) {
         self.database = database
         self.conversationStore = conversationStore
@@ -68,6 +72,7 @@ final class AppEnvironment: ObservableObject {
         self.remoteSessionRegistry = remoteSessionRegistry
         self.keychain = keychain
         self.catastrophicGate = catastrophicGate
+        self.isEphemeral = isEphemeral
     }
 
     /// Builds the production environment against the on-disk database,
@@ -93,7 +98,8 @@ final class AppEnvironment: ObservableObject {
                 configurationStore: ModelConfigurationStore(database: database),
                 remoteSessionRegistry: SQLiteRemoteSessionRegistry(database: database),
                 keychain: KeychainStore(service: "org.floeagent.ios.providers"),
-                catastrophicGate: try? CatastrophicActionGate.withBundledPatterns()
+                catastrophicGate: (try? CatastrophicActionGate.withBundledPatterns())
+                    ?? .failClosed(reason: "Catastrophic-action rules are unavailable")
             )
         } catch {
             // Fall back to an in-memory database so the app still launches and
@@ -106,7 +112,9 @@ final class AppEnvironment: ObservableObject {
                 configurationStore: ModelConfigurationStore(database: database),
                 remoteSessionRegistry: SQLiteRemoteSessionRegistry(database: database),
                 keychain: KeychainStore(service: "org.floeagent.ios.providers"),
-                catastrophicGate: try? CatastrophicActionGate.withBundledPatterns()
+                catastrophicGate: (try? CatastrophicActionGate.withBundledPatterns())
+                    ?? .failClosed(reason: "Catastrophic-action rules are unavailable"),
+                isEphemeral: true
             )
             environment.bootstrapError = error.localizedDescription
         }
@@ -119,8 +127,15 @@ final class AppEnvironment: ObservableObject {
     func bootstrap() async {
         do {
             try await database.migrate()
-            persistenceReady = true
-            bootstrapError = nil
+            if isEphemeral {
+                persistenceReady = false
+                if bootstrapError == nil {
+                    bootstrapError = "Durable storage is unavailable. Floe Agent is in recovery mode."
+                }
+            } else {
+                persistenceReady = true
+                bootstrapError = nil
+            }
         } catch {
             persistenceReady = false
             bootstrapError = error.localizedDescription
@@ -137,7 +152,8 @@ final class AppEnvironment: ObservableObject {
             configurationStore: ModelConfigurationStore(database: database),
             remoteSessionRegistry: SQLiteRemoteSessionRegistry(database: database),
             keychain: KeychainStore(service: "org.floeagent.ios.providers"),
-            catastrophicGate: try? CatastrophicActionGate.withBundledPatterns()
+            catastrophicGate: (try? CatastrophicActionGate.withBundledPatterns())
+                ?? .failClosed(reason: "Catastrophic-action rules are unavailable")
         )
     }
 }

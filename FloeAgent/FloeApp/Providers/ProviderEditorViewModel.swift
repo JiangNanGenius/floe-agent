@@ -98,12 +98,11 @@ final class ProviderEditorViewModel: ObservableObject {
         }
         let hasKey = !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || existing?.secretRef != nil
-        let secretRef = hasKey
-            ? (existing?.secretRef ?? SecretReference(
-                keychainAccount: "provider.\(providerID.uuidString)",
-                synchronizable: syncEnabled
-            ))
-            : nil
+        let secretRef = hasKey ? SecretReference(
+            keychainAccount: existing?.secretRef?.keychainAccount
+                ?? "provider.\(providerID.uuidString)",
+            synchronizable: syncEnabled
+        ) : nil
         let profile = ProviderProfile(
             id: providerID,
             kind: selectedPreset.kind,
@@ -130,10 +129,11 @@ final class ProviderEditorViewModel: ObservableObject {
         testState = .testing
         errorMessage = nil
         do {
-            // Persist the API key first so credentials resolve for the test.
-            try await persistSecretIfNeeded()
             let profile = try buildProfile()
-            let credentials = resolveCredentials(profile)
+            let enteredKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            let credentials = enteredKey.isEmpty
+                ? resolveCredentials(profile)
+                : ProviderCredentials(apiKey: enteredKey)
             let adapter = adapterFactory.adapter(for: profile)
             try await adapter.testConnection(provider: profile, credentials: credentials)
             if supportsDiscovery {
@@ -181,8 +181,8 @@ final class ProviderEditorViewModel: ObservableObject {
         defer { isSaving = false }
         errorMessage = nil
         do {
-            try await persistSecretIfNeeded()
             try await secretStore.setSyncEnabled(syncEnabled, for: providerID)
+            try await persistSecretIfNeeded()
             let profile = try buildProfile()
             try await center.saveProvider(profile)
             for model in discoveredModels + manualModels {

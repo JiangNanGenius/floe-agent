@@ -35,11 +35,14 @@ struct RootView: View {
     @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showOnboarding = false
 
     var body: some View {
         Group {
-            if UIDevice.current.userInterfaceIdiom == .pad {
+            if !environment.persistenceReady {
+                persistenceState
+            } else if horizontalSizeClass == .regular {
                 iPadRoot
             } else {
                 iPhoneRoot
@@ -48,13 +51,31 @@ struct RootView: View {
         .onChange(of: scenePhase, initial: true) { _, newPhase in
             router.handleScenePhase(newPhase, environment: environment)
         }
-        .task {
+        .task(id: environment.persistenceReady) {
+            guard environment.persistenceReady else { return }
             router.reconcileOnLaunch(environment: environment)
             await presentOnboardingIfNeeded()
         }
         .sheet(isPresented: $showOnboarding) {
             OnboardingView(center: environment.conversationCenter)
                 .interactiveDismissDisabled()
+                .presentationSizing(.form)
+        }
+    }
+
+    @ViewBuilder
+    private var persistenceState: some View {
+        if let error = environment.bootstrapError {
+            ContentUnavailableView {
+                Label("storage.unavailable", systemImage: "externaldrive.badge.exclamationmark")
+            } description: {
+                Text(error)
+            }
+            .background(FloeTheme.readingSurface)
+        } else {
+            ProgressView("storage.preparing")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(FloeTheme.readingSurface)
         }
     }
 
@@ -72,7 +93,15 @@ struct RootView: View {
         TabView(selection: $router.selection) {
             ForEach(AppDestination.allCases) { destination in
                 Tab(value: destination) {
-                    NavigationStack { PrimaryDestinationView(destination, environment: environment) }
+                    if destination == .chat {
+                        NavigationStack(path: $router.chatPath) {
+                            PrimaryDestinationView(destination, environment: environment)
+                        }
+                    } else {
+                        NavigationStack {
+                            PrimaryDestinationView(destination, environment: environment)
+                        }
+                    }
                 } label: {
                     Label(destination.title, systemImage: destination.systemImage)
                 }
@@ -119,14 +148,35 @@ struct RootView: View {
         }
     }
 
-    /// Column 3: the selected thread / terminal / document. T02–T05 push
-    /// real content here; for now it is an honest empty state.
+    /// Column 3 projects the current selection into a stable work surface.
+    @ViewBuilder
     private var detailColumn: some View {
-        ShellPlaceholderView(
-            title: LocalizedStringKey("app.name"),
-            systemImage: "sidebar.right",
-            messageKey: "empty.detail"
-        )
+        switch router.sidebarSelection ?? .primary(router.selection) {
+        case .primary(.home):
+            HomeOverviewDetailView()
+        case .primary(.chat):
+            if let conversationID = router.selectedConversationID {
+                NavigationStack {
+                    ThreadDetailView(
+                        conversationID: conversationID,
+                        center: environment.conversationCenter
+                    )
+                }
+                .id(conversationID)
+            } else {
+                ShellPlaceholderView(
+                    title: LocalizedStringKey("tab.chat"),
+                    systemImage: "bubble.left.and.bubble.right",
+                    messageKey: "empty.detail"
+                )
+            }
+        default:
+            ShellPlaceholderView(
+                title: LocalizedStringKey("app.name"),
+                systemImage: "sidebar.right",
+                messageKey: "empty.detail"
+            )
+        }
     }
 }
 

@@ -111,6 +111,39 @@ public extension ProviderAdapter {
 
 // MARK: - Shared SSE plumbing
 
+/// Reads a non-streaming response with an application-level byte ceiling.
+/// The Apple path stops reading as soon as the limit is crossed instead of
+/// first buffering the complete body in memory.
+enum BoundedHTTP {
+    static func data(
+        for request: URLRequest,
+        session: URLSession = .shared,
+        maxBytes: Int
+    ) async throws -> (Data, URLResponse) {
+        #if os(Linux)
+        let (data, response) = try await session.data(for: request)
+        guard data.count <= maxBytes else {
+            throw FloeError.validationFailed("Provider response exceeds \(maxBytes) bytes")
+        }
+        return (data, response)
+        #else
+        let (bytes, response) = try await session.bytes(for: request)
+        if response.expectedContentLength > Int64(maxBytes) {
+            throw FloeError.validationFailed("Provider response exceeds \(maxBytes) bytes")
+        }
+        var data = Data()
+        data.reserveCapacity(min(maxBytes, max(0, Int(response.expectedContentLength))))
+        for try await byte in bytes {
+            guard data.count < maxBytes else {
+                throw FloeError.validationFailed("Provider response exceeds \(maxBytes) bytes")
+            }
+            data.append(byte)
+        }
+        return (data, response)
+        #endif
+    }
+}
+
 /// Feeds an HTTP byte stream through `SSEParser` and emits decoded SSE
 /// events. Cancellation of the consuming task cancels the URLSession task.
 struct SSEBytePump: Sendable {
@@ -198,6 +231,12 @@ struct SSEBytePump: Sendable {
 
 /// Extracts an HTTP error AgentEvent from the pump's sentinel event.
 func httpErrorEvent(from sseEvent: SSEEvent) -> AgentEvent? {
+    if sseEvent.event == "__floe_sse_error__" {
+        return .error(AgentEvent.NormalizedError(
+            kind: .malformed,
+            providerMessage: sseEvent.data
+        ))
+    }
     guard sseEvent.event == "__http_error__" else { return nil }
     let lines = sseEvent.data.split(separator: "\n", maxSplits: 1)
     let status = Int(lines.first ?? "") ?? 500

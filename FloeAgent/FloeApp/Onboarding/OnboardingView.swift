@@ -20,51 +20,134 @@ struct OnboardingView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
-                Spacer()
-                Image(systemName: "antenna.radiowaves.left.and.right")
-                    .font(.system(size: 56))
-                    .foregroundStyle(FloeTheme.brandGradient)
-                    .accessibilityHidden(true)
+            ScrollView {
+                VStack(spacing: 28) {
+                    onboardingHeader
+                    privacyPromise
+                    actions
+                }
+                .frame(maxWidth: 560)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 36)
+                .frame(maxWidth: .infinity)
+            }
+            .background(FloeTheme.groupedSurface)
+            .navigationBarTitleDisplayMode(.inline)
+            .task {
+                await viewModel.load()
+                if viewModel.isConfigured { dismiss() }
+            }
+            .onChange(of: viewModel.isConfigured) { _, configured in
+                if configured { dismiss() }
+            }
+        }
+    }
+
+    private var onboardingHeader: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Circle()
+                    .fill(FloeTheme.brandGradient)
+                    .frame(width: 82, height: 82)
+                Image(systemName: "wave.3.right.circle.fill")
+                    .font(.system(size: 42, weight: .medium))
+                    .foregroundStyle(.white)
+            }
+            .shadow(color: FloeTheme.primary.opacity(0.22), radius: 18, y: 8)
+            .accessibilityHidden(true)
+
+            VStack(spacing: 8) {
                 Text("onboarding.title")
-                    .font(FloeTheme.Typography.title)
+                    .font(.largeTitle.weight(.bold))
                     .multilineTextAlignment(.center)
                 Text("onboarding.subtitle")
                     .font(FloeTheme.Typography.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-                Spacer()
-                NavigationLink {
-                    ProviderEditorView(center: viewModel.center, existing: nil)
-                } label: {
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var privacyPromise: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            OnboardingPoint(
+                icon: "person.crop.circle.badge.checkmark",
+                title: "onboarding.point.no_account.title",
+                detail: "onboarding.point.no_account.detail"
+            )
+            Divider()
+            OnboardingPoint(
+                icon: "key.horizontal",
+                title: "onboarding.point.your_keys.title",
+                detail: "onboarding.point.your_keys.detail"
+            )
+            Divider()
+            OnboardingPoint(
+                icon: "checkmark.shield",
+                title: "onboarding.point.approvals.title",
+                detail: "onboarding.point.approvals.detail"
+            )
+        }
+        .padding(20)
+        .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 22))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        }
+    }
+
+    private var actions: some View {
+        VStack(spacing: 10) {
+            NavigationLink {
+                ProviderEditorView(center: viewModel.center, existing: nil)
+            } label: {
+                HStack {
                     Text("onboarding.add_provider")
-                        .frame(maxWidth: .infinity)
-                        .frame(minHeight: FloeTheme.minimumTarget)
+                        .font(.headline)
+                    Spacer()
+                    Image(systemName: "arrow.right")
                 }
-                .buttonStyle(.borderedProminent)
-                .padding(.horizontal)
-                NavigationLink {
-                    ProviderListView(center: viewModel.center)
-                } label: {
-                    Text("onboarding.view_providers")
-                        .frame(minHeight: FloeTheme.minimumTarget)
-                }
-                .padding(.bottom)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 18)
+                .frame(maxWidth: .infinity, minHeight: 52)
+                .background(FloeTheme.brandGradient, in: RoundedRectangle(cornerRadius: 16))
             }
-            .navigationTitle("onboarding.title")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    if viewModel.isConfigured {
-                        Button("action.done") { dismiss() }
-                    }
-                }
+            .buttonStyle(.plain)
+
+            NavigationLink {
+                ProviderListView(center: viewModel.center)
+            } label: {
+                Text("onboarding.view_providers")
+                    .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget)
             }
-            .task { await viewModel.load() }
-            .onChange(of: viewModel.isConfigured) { _, configured in
-                if configured { dismiss() }
+            .buttonStyle(.plain)
+            .foregroundStyle(FloeTheme.primary)
+        }
+    }
+}
+
+private struct OnboardingPoint: View {
+    let icon: String
+    let title: LocalizedStringKey
+    let detail: LocalizedStringKey
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(FloeTheme.primary)
+                .frame(width: 28)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.headline)
+                Text(detail)
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            Spacer(minLength: 0)
         }
     }
 }

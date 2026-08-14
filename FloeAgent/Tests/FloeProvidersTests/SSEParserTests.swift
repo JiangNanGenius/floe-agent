@@ -152,6 +152,17 @@ struct SSEParserTests {
         #expect(events.count == 1)
         #expect(events[0].data == " two-spaces")
     }
+
+    @Test("An oversized line becomes one bounded provider error event")
+    func oversizedLineIsBounded() throws {
+        var parser = SSEParser()
+        let oversized = Array(("data: " + String(repeating: "x", count: 1_048_641) + "\n\n").utf8)
+        var events = parser.feed(oversized)
+        events += try parser.finish()
+        #expect(events.count == 1)
+        #expect(events[0].event == "__floe_sse_error__")
+        #expect(events[0].data.contains("limit"))
+    }
 }
 
 // MARK: - Wire translation

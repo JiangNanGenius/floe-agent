@@ -249,6 +249,38 @@ struct AgentRuntimeTests {
         #expect(sink.transitions.contains("executingTool"))
     }
 
+    @Test("Human approval with a mismatched host scope does not execute")
+    func waitingApprovalRejectsMismatchedScope() async throws {
+        let adapter = MockAdapter()
+        let hostID = UUID()
+        let call = try ToolCall(
+            id: "call_scoped",
+            toolName: "test.echo",
+            argumentsJSON: Data("{}".utf8),
+            scope: .host(hostID)
+        )
+        adapter.script = [
+            [.toolRequest(call)],
+            [.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor, sideEffecting: true)
+        let audit = MockAuditSink()
+        let runtime = makeRuntime(adapter: adapter, executor: executor, audit: audit)
+
+        let startTask = Task { try await runtime.start(goal: "run remotely") }
+        try await waitForState("waitingApproval", in: runtime)
+        await runtime.resolveApproval(.allow(
+            scope: ApprovalScope(toolName: "test.echo"),
+            expiresAt: nil
+        ))
+        try await startTask.value
+
+        #expect(executor.executedCalls.isEmpty)
+        #expect(audit.entries.contains { $0.decision == "deny:scope-mismatch-or-expired" })
+        #expect(await runtime.state.name == "completed")
+    }
+
     @Test("Deny routes tool result back into the model (waitingApproval → streamingModel)")
     func waitingApprovalDeny() async throws {
         let adapter = MockAdapter()

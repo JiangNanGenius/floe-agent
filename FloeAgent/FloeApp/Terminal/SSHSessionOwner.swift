@@ -54,7 +54,7 @@ final class SSHSessionOwner {
             do {
                 for try await chunk in pty.output {
                     if Task.isCancelled { break }
-                    await self.append(chunk)
+                    self.append(chunk)
                 }
             } catch {
                 // Stream threw; the disconnect handler marks honest state.

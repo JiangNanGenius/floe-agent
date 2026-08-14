@@ -22,49 +22,76 @@ struct HomeWorkbenchView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            NewTaskComposerView(
-                draft: $viewModel.draft,
-                modelName: viewModel.activeModelName,
-                canSend: viewModel.canSend,
-                providerConfigured: viewModel.hasConfiguredProvider,
-                onSend: sendTask
-            )
-            Divider()
-            workbenchList
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 26) {
+                workbenchHeader
+                NewTaskComposerView(
+                    draft: $viewModel.draft,
+                    modelName: viewModel.activeModelName,
+                    canSend: viewModel.canSend,
+                    providerConfigured: viewModel.hasConfiguredProvider,
+                    onSend: sendTask
+                )
+                if !viewModel.hasConfiguredProvider {
+                    connectionStatusSection
+                }
+                activeTasksSection
+                pendingApprovalsSection
+                recentSessionsSection
+            }
+            .frame(maxWidth: 720)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 24)
+            .frame(maxWidth: .infinity)
         }
-        .background(FloeTheme.readingSurface)
+        .background(FloeTheme.groupedSurface)
         .navigationTitle("tab.home")
         .task { await viewModel.load() }
         .refreshable { await viewModel.load() }
+        .overlay {
+            if viewModel.isLoading && viewModel.activeTasks.isEmpty {
+                ProgressView()
+                    .controlSize(.large)
+            }
+        }
     }
 
     // MARK: - Sections
 
-    private var workbenchList: some View {
-        List {
-            if !viewModel.hasConfiguredProvider {
-                connectionStatusSection
+    private var workbenchHeader: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("home.workspace.title")
+                    .font(.title2.weight(.bold))
+                Text("home.workspace.subtitle")
+                    .font(FloeTheme.Typography.body)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            activeTasksSection
-            pendingApprovalsSection
-            recentSessionsSection
-        }
-        .listStyle(.insetGrouped)
-        .overlay {
-            if viewModel.isLoading && viewModel.activeTasks.isEmpty {
-                ProgressView()
-            }
+            Spacer(minLength: 8)
+            Image(systemName: "waveform.path.ecg.rectangle")
+                .font(.title2)
+                .foregroundStyle(FloeTheme.brandGradient)
+                .frame(width: 48, height: 48)
+                .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 14))
+                .accessibilityHidden(true)
         }
     }
 
     /// Active (non-terminal) runs.
     private var activeTasksSection: some View {
-        Section("home.active_tasks") {
+        VStack(alignment: .leading, spacing: 12) {
+            WorkbenchSectionHeader(
+                title: "home.active_tasks",
+                icon: "bolt.horizontal.circle",
+                count: viewModel.activeTasks.count
+            )
             if viewModel.activeTasks.isEmpty {
-                Text("home.no_active")
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
+                WorkbenchEmptyRow(
+                    title: "home.no_active",
+                    detail: "home.no_active.detail",
+                    icon: "checkmark.circle"
+                )
             } else {
                 ForEach(viewModel.activeTasks) { run in
                     Button {
@@ -82,7 +109,9 @@ struct HomeWorkbenchView: View {
                             Spacer()
                             StatusPill(state: run.state)
                         }
-                        .frame(minHeight: FloeTheme.minimumTarget)
+                        .padding(.horizontal, 14)
+                        .frame(minHeight: 58)
+                        .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 14))
                     }
                     .buttonStyle(.plain)
                 }
@@ -92,11 +121,19 @@ struct HomeWorkbenchView: View {
 
     /// Pending approvals across all live runs.
     private var pendingApprovalsSection: some View {
-        Section("home.pending_approvals") {
+        VStack(alignment: .leading, spacing: 12) {
+            WorkbenchSectionHeader(
+                title: "home.pending_approvals",
+                icon: "checkmark.shield",
+                count: viewModel.pendingApprovals.count,
+                tint: viewModel.pendingApprovals.isEmpty ? .secondary : FloeTheme.pending
+            )
             if viewModel.pendingApprovals.isEmpty {
-                Text("home.no_pending")
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
+                WorkbenchEmptyRow(
+                    title: "home.no_pending",
+                    detail: "home.no_pending.detail",
+                    icon: "shield.checkered"
+                )
             } else {
                 ForEach(viewModel.pendingApprovals) { approval in
                     ApprovalCardView(approval: approval) { decision in
@@ -109,11 +146,18 @@ struct HomeWorkbenchView: View {
 
     /// Recent SSH/VNC sessions with honest lifecycle state.
     private var recentSessionsSection: some View {
-        Section("home.recent") {
+        VStack(alignment: .leading, spacing: 12) {
+            WorkbenchSectionHeader(
+                title: "home.recent",
+                icon: "terminal",
+                count: viewModel.recentSessions.count
+            )
             if viewModel.recentSessions.isEmpty {
-                Text("home.no_sessions")
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
+                WorkbenchEmptyRow(
+                    title: "home.no_sessions",
+                    detail: "home.no_sessions.detail",
+                    icon: "rectangle.connected.to.line.below"
+                )
             } else {
                 ForEach(viewModel.recentSessions) { session in
                     HStack {
@@ -127,7 +171,9 @@ struct HomeWorkbenchView: View {
                         Spacer()
                         SessionStatePill(state: session.state)
                     }
-                    .frame(minHeight: FloeTheme.minimumTarget)
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 56)
+                    .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 14))
                 }
             }
         }
@@ -135,9 +181,15 @@ struct HomeWorkbenchView: View {
 
     /// Connection status, shown only when no provider is configured.
     private var connectionStatusSection: some View {
-        Section("home.connection") {
+        VStack(alignment: .leading, spacing: 12) {
+            WorkbenchSectionHeader(
+                title: "home.connection",
+                icon: "antenna.radiowaves.left.and.right",
+                count: nil,
+                tint: FloeTheme.pending
+            )
             HStack(spacing: 10) {
-                Image(systemName: "antenna.radiowaves.left.and.right")
+                Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(FloeTheme.pending)
                     .accessibilityHidden(true)
                 Text("chat.add_provider.hint")
@@ -150,6 +202,12 @@ struct HomeWorkbenchView: View {
                 .buttonStyle(.borderedProminent)
                 .frame(minHeight: FloeTheme.minimumTarget)
             }
+            .padding(14)
+            .background(FloeTheme.pending.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(FloeTheme.pending.opacity(0.18), lineWidth: 1)
+            }
         }
     }
 
@@ -158,16 +216,126 @@ struct HomeWorkbenchView: View {
     private func sendTask() {
         Task {
             if let conversationID = await viewModel.sendNewTask() {
-                router.navigate(to: .chat)
-                router.selectedConversationID = conversationID
+                router.openConversation(conversationID)
             }
         }
     }
 
     private func openRun(_ run: RunRecord) {
-        router.navigate(to: .chat)
-        router.selectedConversationID = run.conversationID
-        router.selectedRunID = run.id
+        router.openConversation(run.conversationID, runID: run.id)
+    }
+}
+
+/// A deliberate iPad detail surface for Home. The middle column remains the
+/// actionable workbench while this column explains what can be opened there.
+struct HomeOverviewDetailView: View {
+    var body: some View {
+        VStack(spacing: 28) {
+            Spacer()
+            ZStack {
+                RoundedRectangle(cornerRadius: 28)
+                    .fill(FloeTheme.brandGradient)
+                    .frame(width: 108, height: 108)
+                    .shadow(color: FloeTheme.primary.opacity(0.2), radius: 24, y: 10)
+                Image(systemName: "waveform.path.ecg.rectangle.fill")
+                    .font(.system(size: 48, weight: .medium))
+                    .foregroundStyle(.white)
+            }
+            .accessibilityHidden(true)
+
+            VStack(spacing: 9) {
+                Text("home.detail.title")
+                    .font(.largeTitle.weight(.bold))
+                Text("home.detail.subtitle")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 520)
+            }
+
+            HStack(spacing: 12) {
+                HomeCapability(icon: "bubble.left.and.text.bubble.right", title: "home.capability.threads")
+                HomeCapability(icon: "checkmark.shield", title: "home.capability.approvals")
+                HomeCapability(icon: "terminal", title: "home.capability.remote")
+            }
+            Spacer()
+        }
+        .padding(36)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(FloeTheme.readingSurface)
+        .navigationTitle("app.name")
+    }
+}
+
+private struct HomeCapability: View {
+    let icon: String
+    let title: LocalizedStringKey
+
+    var body: some View {
+        VStack(spacing: 9) {
+            Image(systemName: icon)
+                .font(.title2)
+                .foregroundStyle(FloeTheme.primary)
+            Text(title)
+                .font(FloeTheme.Typography.metadata.weight(.medium))
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: 132, minHeight: 90)
+        .padding(10)
+        .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 18))
+    }
+}
+
+private struct WorkbenchSectionHeader: View {
+    let title: LocalizedStringKey
+    let icon: String
+    let count: Int?
+    var tint: Color = .secondary
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .foregroundStyle(tint)
+                .accessibilityHidden(true)
+            Text(title)
+                .font(FloeTheme.Typography.section)
+            Spacer()
+            if let count {
+                Text(count, format: .number)
+                    .font(FloeTheme.Typography.metadata.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.secondary.opacity(0.1), in: Capsule())
+                    .accessibilityLabel(String(count))
+            }
+        }
+    }
+}
+
+private struct WorkbenchEmptyRow: View {
+    let title: LocalizedStringKey
+    let detail: LocalizedStringKey
+    let icon: String
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(width: 30)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(FloeTheme.Typography.body.weight(.medium))
+                Text(detail)
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 14))
     }
 }
 

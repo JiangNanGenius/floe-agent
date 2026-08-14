@@ -9,12 +9,13 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import SwiftTerm
+import UIKit
 
 /// The terminal screen for one SSH session.
 struct TerminalView: View {
     @StateObject private var viewModel: TerminalViewModel
     @Environment(\.dismiss) private var dismiss
-    @State private var input = ""
 
     init(sessionID: UUID, center: RemoteSessionCenter) {
         _viewModel = StateObject(
@@ -26,9 +27,16 @@ struct TerminalView: View {
         VStack(spacing: 0) {
             statusBar
             Divider()
-            outputScroll
-            Divider()
-            inputBar
+            SSHEmulatorView(
+                output: viewModel.outputData,
+                isInteractive: viewModel.isInteractive,
+                onSend: { data in
+                    Task { await viewModel.send(data) }
+                },
+                onResize: { columns, rows in
+                    Task { await viewModel.resize(columns: columns, rows: rows) }
+                }
+            )
         }
         .background(FloeTheme.readingSurface)
         .navigationTitle("hosts.terminal")
@@ -46,9 +54,9 @@ struct TerminalView: View {
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             }
         }
-        .task { await viewModel.refresh() }
+        .task { viewModel.refresh() }
         .onReceive(viewModel.center.objectWillChange) { _ in
-            Task { await viewModel.refresh() }
+            viewModel.refresh()
         }
     }
 
@@ -68,57 +76,6 @@ struct TerminalView: View {
         .background(FloeTheme.chromeMaterial)
     }
 
-    private var outputScroll: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                Text(viewModel.outputText.isEmpty
-                     ? String(localized: "terminal.no_output")
-                     : viewModel.outputText)
-                    .font(FloeTheme.Typography.evidence)
-                    .foregroundStyle(viewModel.outputText.isEmpty ? .secondary : .primary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-                    .id("output-tail")
-            }
-            .background(Color.black.opacity(0.92))
-            .onChange(of: viewModel.outputText) { _, _ in
-                proxy.scrollTo("output-tail", anchor: .bottom)
-            }
-        }
-    }
-
-    private var inputBar: some View {
-        HStack(spacing: 8) {
-            TextField(text: $input) {
-                Text("terminal.input")
-            }
-            .textInputAutocapitalization(.never)
-            .font(FloeTheme.Typography.evidence)
-            .disabled(!viewModel.isInteractive)
-            .onSubmit { send() }
-            Button {
-                send()
-            } label: {
-                Image(systemName: "return")
-                    .foregroundStyle(FloeTheme.primary)
-            }
-            .buttonStyle(.plain)
-            .disabled(!viewModel.isInteractive || input.isEmpty)
-            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-            .accessibilityLabel("terminal.send")
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(FloeTheme.chromeMaterial)
-    }
-
-    private func send() {
-        let text = input + "\n"
-        input = ""
-        Task { await viewModel.send(text) }
-    }
-
     private var statusText: String {
         guard let state = viewModel.snapshot?.record.state else {
             return String(localized: "state.unknown")
@@ -132,7 +89,7 @@ struct TerminalView: View {
         }
     }
 
-    private var statusColor: Color {
+    private var statusColor: SwiftUI.Color {
         switch viewModel.snapshot?.record.state {
         case .connected: FloeTheme.success
         case .connecting: FloeTheme.primary
@@ -140,6 +97,97 @@ struct TerminalView: View {
         case .disconnected: FloeTheme.destructive
         default: FloeTheme.unknown
         }
+    }
+}
+
+/// SwiftTerm-backed PTY renderer. It interprets ANSI/VT sequences, owns the
+/// software/hardware keyboard surface, and forwards raw bytes and resize
+/// events to the long-lived SSH session owned by RemoteSessionCenter.
+private struct SSHEmulatorView: UIViewRepresentable {
+    let output: Data
+    let isInteractive: Bool
+    let onSend: @MainActor (Data) -> Void
+    let onResize: @MainActor (Int, Int) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onSend: onSend, onResize: onResize)
+    }
+
+    func makeUIView(context: Context) -> SwiftTerm.TerminalView {
+        let terminal = SwiftTerm.TerminalView(frame: .zero)
+        terminal.terminalDelegate = context.coordinator
+        terminal.nativeForegroundColor = .white
+        terminal.nativeBackgroundColor = .black
+        terminal.backgroundColor = .black
+        terminal.allowMouseReporting = true
+        return terminal
+    }
+
+    func updateUIView(_ terminal: SwiftTerm.TerminalView, context: Context) {
+        context.coordinator.onSend = onSend
+        context.coordinator.onResize = onResize
+        context.coordinator.isInteractive = isInteractive
+
+        let newBytes: Data
+        if output.starts(with: context.coordinator.renderedOutput) {
+            newBytes = output.dropFirst(context.coordinator.renderedOutput.count)
+        } else {
+            terminal.getTerminal().resetToInitialState()
+            newBytes = output
+        }
+        if !newBytes.isEmpty {
+            let bytes = [UInt8](newBytes)
+            terminal.feed(byteArray: bytes[...])
+        }
+        context.coordinator.renderedOutput = output
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, @preconcurrency SwiftTerm.TerminalViewDelegate {
+        var renderedOutput = Data()
+        var isInteractive = false
+        var onSend: @MainActor (Data) -> Void
+        var onResize: @MainActor (Int, Int) -> Void
+
+        init(
+            onSend: @escaping @MainActor (Data) -> Void,
+            onResize: @escaping @MainActor (Int, Int) -> Void
+        ) {
+            self.onSend = onSend
+            self.onResize = onResize
+        }
+
+        func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {
+            guard isInteractive else { return }
+            onSend(Data(data))
+        }
+
+        func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {
+            guard newCols > 0, newRows > 0 else { return }
+            onResize(newCols, newRows)
+        }
+
+        func clipboardCopy(source: SwiftTerm.TerminalView, content: Data) {
+            UIPasteboard.general.string = String(decoding: content, as: UTF8.self)
+        }
+
+        func requestOpenLink(
+            source: SwiftTerm.TerminalView,
+            link: String,
+            params: [String: String]
+        ) {
+            guard let url = URL(string: link), ["https", "http"].contains(url.scheme?.lowercased()) else {
+                return
+            }
+            UIApplication.shared.open(url)
+        }
+
+        func setTerminalTitle(source: SwiftTerm.TerminalView, title: String) {}
+        func hostCurrentDirectoryUpdate(source: SwiftTerm.TerminalView, directory: String?) {}
+        func scrolled(source: SwiftTerm.TerminalView, position: Double) {}
+        func bell(source: SwiftTerm.TerminalView) {}
+        func iTermContent(source: SwiftTerm.TerminalView, content: ArraySlice<UInt8>) {}
+        func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) {}
     }
 }
 #endif

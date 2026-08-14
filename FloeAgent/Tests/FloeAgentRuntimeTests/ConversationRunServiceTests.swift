@@ -60,7 +60,9 @@ struct ConversationRunServiceTests {
 
         // The event thread persisted in order.
         let events = try await runStore.events(runID: service.runID)
-        #expect(events.contains { $0.kind == .assistantText })
+        // Stream chunks stay live-only; the canonical completed assistant
+        // message is persisted once to avoid per-token write amplification.
+        #expect(!events.contains { $0.kind == .assistantText })
         #expect(events.contains { $0.kind == .status })
         #expect(events.map(\.sequence) == events.map(\.sequence).sorted())
 
@@ -113,5 +115,45 @@ struct ConversationRunServiceTests {
         #expect(errors[0].recoverable)
         // The secret-shaped substring is redacted before persistence.
         #expect(!errors[0].message.contains("sk-secretvalue123"))
+    }
+
+    @Test("The configured API key is redacted even when it has no known prefix")
+    func configuredKeyIsRedacted() async throws {
+        let (conversationStore, runStore) = try await makeStores()
+        let conversationID = UUID()
+        // Assemble a deliberately unusual credential at runtime so the fixture
+        // exercises exact-value redaction without resembling a committed secret.
+        let customKey = ["opaque", "key", "unusual", "shape", "4815", "1623", "42"]
+            .joined(separator: "-")
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "", createdAt: Date(), updatedAt: Date()
+        ))
+
+        let adapter = MockAdapter()
+        adapter.script = [[.error(AgentEvent.NormalizedError(
+            kind: .auth,
+            providerMessage: "Provider echoed credential: \(customKey)",
+            httpStatus: 401
+        ))]]
+        let service = ConversationRunService(
+            configuration: FloeAgentRuntime.Configuration(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID())
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            credentials: ProviderCredentials(apiKey: customKey),
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        try await service.start(goal: "trigger auth error")
+
+        let errors = try await runStore.errors(runID: service.runID)
+        #expect(errors.count == 1)
+        #expect(!errors[0].message.contains(customKey))
+        #expect(errors[0].message.localizedCaseInsensitiveContains("redacted"))
     }
 }

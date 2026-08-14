@@ -71,7 +71,7 @@ final class VNCSessionOwner {
 
     private func apply(_ action: VNCAction, to session: VNCSession) {
         switch action {
-        case .click(let point, let button):
+        case .click(let point, _):
             let x = UInt16(clamping: point.x)
             let y = UInt16(clamping: point.y)
             session.mouseMove(x: x, y: y)

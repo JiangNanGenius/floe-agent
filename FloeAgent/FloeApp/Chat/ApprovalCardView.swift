@@ -116,10 +116,7 @@ struct ApprovalCardView: View {
 
             Button {
                 onResolve(.allow(
-                    scope: ApprovalScope(
-                        toolName: approval.toolCall.toolName,
-                        singleUse: true
-                    ),
+                    scope: approvalScope,
                     expiresAt: nil
                 ))
             } label: {
@@ -130,6 +127,26 @@ struct ApprovalCardView: View {
             .tint(approval.isSideEffecting ? FloeTheme.destructive : FloeTheme.primary)
             .frame(minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel("action.approve")
+        }
+    }
+
+    private var approvalScope: ApprovalScope {
+        switch approval.toolCall.scope {
+        case .local:
+            return ApprovalScope(toolName: approval.toolCall.toolName, singleUse: true)
+        case .host(let hostID):
+            return ApprovalScope(
+                toolName: approval.toolCall.toolName,
+                hostID: hostID,
+                singleUse: true
+            )
+        case .hostPath(let hostID, let path):
+            return ApprovalScope(
+                toolName: approval.toolCall.toolName,
+                hostID: hostID,
+                paths: [path],
+                singleUse: true
+            )
         }
     }
 

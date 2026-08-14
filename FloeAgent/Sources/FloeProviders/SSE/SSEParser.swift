@@ -19,6 +19,13 @@ public enum SSEParserError: Error, Sendable, Hashable {
 /// truncation errors.
 public struct SSEParser: Sendable {
 
+    /// Provider streams should contain small JSON events. These ceilings
+    /// prevent a hostile endpoint from growing one line/event without bound.
+    // Allow a full 1 MiB data payload plus its SSE field prefix while still
+    // bounding pathological single lines.
+    private static let maximumLineBytes = 1 * 1_024 * 1_024 + 64
+    private static let maximumEventBytes = 4 * 1_024 * 1_024
+
     // MARK: Internal state machine
 
     private enum State: Sendable, Hashable {
@@ -37,6 +44,7 @@ public struct SSEParser: Sendable {
     /// Bytes of the current line not yet dispatched (may hold a partial
     /// multi-byte UTF-8 sequence at the tail).
     private var lineBuffer: [UInt8] = []
+    private var lineOverflowed = false
 
     // Per-event field accumulation. All mutations happen via methods taking
     // `inout SSEParser` — never through closure captures of computed
@@ -47,6 +55,8 @@ public struct SSEParser: Sendable {
     private var pendingRetry: Int?
     /// True once any data line arrived for the event under construction.
     private var pendingHasData = false
+    private var pendingDataBytes = 0
+    private var pendingEventOverflowed = false
 
     public init() {}
 
@@ -156,7 +166,11 @@ public struct SSEParser: Sendable {
                 dispatchLine(into: &events)
                 state = .afterCR
             default:
-                lineBuffer.append(byte)
+                if lineBuffer.count < Self.maximumLineBytes {
+                    lineBuffer.append(byte)
+                } else {
+                    lineOverflowed = true
+                }
             }
         case .afterCR:
             switch byte {
@@ -167,7 +181,11 @@ public struct SSEParser: Sendable {
                 state = .afterCR
             default:
                 state = .inLine
-                lineBuffer.append(byte)
+                if lineBuffer.count < Self.maximumLineBytes {
+                    lineBuffer.append(byte)
+                } else {
+                    lineOverflowed = true
+                }
             }
         default:
             // Only reachable when misused from `.streamStart`/`.bomPending`.
@@ -181,8 +199,15 @@ public struct SSEParser: Sendable {
     /// Mid-stream invalid UTF-8 is replaced with U+FFFD (not fatal); only
     /// a truncated final codepoint at `finish()` raises.
     private mutating func dispatchLine(into events: inout [SSEEvent]) {
-        defer { lineBuffer.removeAll(keepingCapacity: true) }
+        defer {
+            lineBuffer.removeAll(keepingCapacity: true)
+            lineOverflowed = false
+        }
         if state != .afterCR { state = .inLine }
+        if lineOverflowed {
+            pendingEventOverflowed = true
+            return
+        }
         guard !lineBuffer.isEmpty else {
             // Blank line: dispatch pending event.
             if let event = flushEvent() {
@@ -237,8 +262,14 @@ public struct SSEParser: Sendable {
 
         switch field {
         case "data":
-            pendingData.append(String(value))
-            pendingHasData = true
+            let valueBytes = value.utf8.count
+            if valueBytes <= Self.maximumEventBytes - pendingDataBytes {
+                pendingData.append(String(value))
+                pendingDataBytes += valueBytes
+                pendingHasData = true
+            } else {
+                pendingEventOverflowed = true
+            }
         case "event":
             pendingEvent = String(value)
         case "id":
@@ -263,10 +294,18 @@ public struct SSEParser: Sendable {
             pendingEvent = ""
             pendingRetry = nil
             pendingHasData = false
+            pendingDataBytes = 0
+            pendingEventOverflowed = false
             // The event id buffer persists across events per the SSE spec,
             // but provider streams always resend the ids we consume; reset
             // to avoid leaking across logical events.
             pendingID = nil
+        }
+        if pendingEventOverflowed {
+            return SSEEvent(
+                event: "__floe_sse_error__",
+                data: "Provider SSE event exceeded the 4 MiB limit"
+            )
         }
         guard pendingHasData else { return nil }
         return SSEEvent(

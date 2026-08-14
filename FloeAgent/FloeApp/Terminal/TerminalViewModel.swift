@@ -13,8 +13,8 @@ import Foundation
 @MainActor
 final class TerminalViewModel: ObservableObject {
 
-    /// The terminal output, decoded for display.
-    @Published private(set) var outputText: String = ""
+    /// Raw PTY output interpreted by SwiftTerm.
+    @Published private(set) var outputData = Data()
 
     let sessionID: UUID
     let center: RemoteSessionCenter
@@ -34,14 +34,12 @@ final class TerminalViewModel: ObservableObject {
 
     /// Pulls the latest output from the center's owner.
     func refresh() {
-        let data = center.terminalOutput(for: sessionID)
-        outputText = String(decoding: data, as: UTF8.self)
+        outputData = center.terminalOutput(for: sessionID)
     }
 
-    func send(_ text: String) async {
-        guard let data = text.data(using: .utf8) else { return }
+    func send(_ data: Data) async {
         try? await center.send(data, to: sessionID)
-        await refresh()
+        refresh()
     }
 
     func resize(columns: Int, rows: Int) async {

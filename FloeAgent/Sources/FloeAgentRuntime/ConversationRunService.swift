@@ -27,13 +27,24 @@ public actor ConversationRunService {
         public var stateName: String
         public var streamedText: String
         public var isTerminal: Bool
+        /// The exact runtime payload awaiting approval. UI code must display
+        /// this value rather than reconstructing authority from an event.
+        public var pendingApproval: AgentState.WaitingApproval?
 
-        public init(runID: UUID, conversationID: UUID, stateName: String, streamedText: String, isTerminal: Bool) {
+        public init(
+            runID: UUID,
+            conversationID: UUID,
+            stateName: String,
+            streamedText: String,
+            isTerminal: Bool,
+            pendingApproval: AgentState.WaitingApproval? = nil
+        ) {
             self.runID = runID
             self.conversationID = conversationID
             self.stateName = stateName
             self.streamedText = streamedText
             self.isTerminal = isTerminal
+            self.pendingApproval = pendingApproval
         }
     }
 
@@ -46,6 +57,8 @@ public actor ConversationRunService {
     private let runtime: FloeAgentRuntime
     private let conversationStore: any ConversationStore
     private let runStore: any RunStore
+    private let secretForRedaction: String?
+    private let streamedTextLimitBytes: Int
     private var streamedText = ""
     private var latestState: AgentState = .idle
 
@@ -66,6 +79,11 @@ public actor ConversationRunService {
         self.conversationID = configuration.conversationID
         self.conversationStore = conversationStore
         self.runStore = runStore
+        self.secretForRedaction = credentials.apiKey
+        self.streamedTextLimitBytes = max(
+            65_536,
+            min(8 * 1_024 * 1_024, configuration.model.limits.maxOutputTokens * 16)
+        )
         // The sink forwards into the service via closures so callbacks reach
         // the actor without an access-level or retain-cycle problem.
         let forwarder = SinkForwarder()
@@ -91,12 +109,19 @@ public actor ConversationRunService {
 
     /// Current live snapshot for the UI.
     public func snapshot() -> Snapshot {
-        Snapshot(
+        let pendingApproval: AgentState.WaitingApproval?
+        if case .waitingApproval(let waiting) = latestState {
+            pendingApproval = waiting
+        } else {
+            pendingApproval = nil
+        }
+        return Snapshot(
             runID: runID,
             conversationID: conversationID,
             stateName: latestState.name,
             streamedText: streamedText,
-            isTerminal: isTerminal(latestState)
+            isTerminal: isTerminal(latestState),
+            pendingApproval: pendingApproval
         )
     }
 
@@ -141,7 +166,7 @@ public actor ConversationRunService {
         let endedAt: Date? = isTerminal(state) ? Date() : nil
         try? await runStore.updateRunState(id: runID, state: state.name, endedAt: endedAt)
         if case .waitingApproval(let waiting) = state {
-            let payload = Self.approvalPayload(toolName: waiting.toolCall.toolName, reason: waiting.reason)
+            let payload = Self.approvalPayload(waiting)
             _ = try? await runStore.appendEvent(runID: runID, kind: .approval, payloadJSON: payload)
         }
         if isTerminal(state) {
@@ -155,11 +180,10 @@ public actor ConversationRunService {
     private func handleEvent(_ event: AgentEvent) async {
         switch event {
         case .textDelta(let delta):
-            streamedText += delta.text
-            _ = try? await runStore.appendEvent(
-                runID: runID, kind: .assistantText,
-                payloadJSON: Self.jsonPayload(["text": delta.text])
-            )
+            let remaining = max(0, streamedTextLimitBytes - streamedText.utf8.count)
+            if remaining > 0 {
+                streamedText += Self.utf8Prefix(delta.text, maxBytes: remaining)
+            }
         case .reasoningSummary(let summary):
             _ = try? await runStore.appendEvent(
                 runID: runID, kind: .reasoning,
@@ -186,7 +210,7 @@ public actor ConversationRunService {
             try? await runStore.recordError(RunErrorRecord(
                 runID: runID,
                 kind: error.kind.rawValue,
-                message: SecretRedactor.redact(error.providerMessage),
+                message: SecretRedactor.redact(error.providerMessage, secret: secretForRedaction),
                 httpStatus: error.httpStatus,
                 recoverable: Self.isRecoverable(error.kind)
             ))
@@ -238,8 +262,39 @@ public actor ConversationRunService {
         return string
     }
 
-    private static func approvalPayload(toolName: String, reason: String) -> String {
-        jsonPayload(["tool": toolName, "reason": reason])
+    private static func utf8Prefix(_ value: String, maxBytes: Int) -> String {
+        guard maxBytes > 0 else { return "" }
+        if value.utf8.count <= maxBytes { return value }
+        var result = ""
+        result.reserveCapacity(min(value.count, maxBytes))
+        var used = 0
+        for character in value {
+            let width = String(character).utf8.count
+            guard used + width <= maxBytes else { break }
+            result.append(character)
+            used += width
+        }
+        return result
+    }
+
+    private static func approvalPayload(_ waiting: AgentState.WaitingApproval) -> String {
+        jsonPayload([
+            "tool": waiting.toolCall.toolName,
+            "callID": waiting.toolCall.id,
+            "scope": scopeDescription(waiting.toolCall.scope),
+            "reason": waiting.reason
+        ])
+    }
+
+    private static func scopeDescription(_ scope: ToolScope) -> String {
+        switch scope {
+        case .local:
+            return "local"
+        case .host(let hostID):
+            return "host:\(hostID.uuidString)"
+        case .hostPath(let hostID, let path):
+            return "host:\(hostID.uuidString):path:\(path)"
+        }
     }
 }
 

@@ -53,6 +53,19 @@ public struct CatastrophicActionGate: Sendable {
         return try CatastrophicActionGate(patterns: corpus.patterns)
     }
 
+    /// Production fallback when the corpus cannot be loaded. Matching every
+    /// command is intentionally restrictive: a packaging failure must never
+    /// silently remove the independent destructive-action control.
+    public static func failClosed(reason: String) -> CatastrophicActionGate {
+        // The constant pattern is known-valid. Keeping the failure local
+        // avoids making every production dependency optional.
+        try! CatastrophicActionGate(patterns: [Pattern(
+            id: "gate-unavailable",
+            regex: #"[\s\S]*"#,
+            reason: reason
+        )])
+    }
+
     /// Evaluates a shell command string. Returns `.stopped` verdict on any
     /// high-confidence destructive match.
     public func evaluate(command: String) -> Verdict {

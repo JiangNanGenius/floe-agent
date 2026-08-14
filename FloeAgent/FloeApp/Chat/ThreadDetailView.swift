@@ -17,6 +17,7 @@ import FloeSecurity
 /// The canonical thread: messages + run events for one conversation.
 struct ThreadDetailView: View {
     @StateObject private var viewModel: ThreadDetailViewModel
+    @EnvironmentObject private var router: AppRouter
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(conversationID: UUID, center: ConversationCenter) {
@@ -41,7 +42,10 @@ struct ThreadDetailView: View {
         .navigationTitle("thread.title")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { stateToolbar }
-        .task { await viewModel.load() }
+        .task {
+            viewModel.selectedRunID = router.selectedRunID
+            await viewModel.load()
+        }
         .onDisappear { viewModel.stopPolling() }
     }
 

@@ -15,7 +15,8 @@ public struct KeychainSecretStore: Sendable {
 
     public enum Scope: Sendable, Hashable {
         case provider(UUID)
-        case host(UUID)
+        case hostSSH(UUID)
+        case hostVNC(UUID)
         case approvalModel
     }
 
@@ -69,6 +70,15 @@ public struct KeychainSecretStore: Sendable {
             // Remove any previously synced copy.
             try? store.delete(account: account)
             return
+        }
+        switch scope {
+        case .hostSSH, .hostVNC:
+            let localStore = KeychainStore(service: store.service, synchronizable: false)
+            try localStore.store(account: account, secret: secret)
+            try? store.delete(account: account)
+            return
+        case .provider, .approvalModel:
+            break
         }
         try store.store(account: account, secret: secret)
         let localStore = KeychainStore(service: store.service, synchronizable: false)
@@ -126,7 +136,8 @@ public struct KeychainSecretStore: Sendable {
     private func accountName(for scope: Scope) -> String {
         switch scope {
         case .provider(let id): return "provider.\(id.uuidString)"
-        case .host(let id): return "host.\(id.uuidString)"
+        case .hostSSH(let id): return "host.ssh.\(id.uuidString)"
+        case .hostVNC(let id): return "host.vnc.\(id.uuidString)"
         case .approvalModel: return "approval-model"
         }
     }

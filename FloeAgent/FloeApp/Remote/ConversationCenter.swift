@@ -282,43 +282,21 @@ final class ConversationCenter: ObservableObject {
             startedAt: existing?.startedAt ?? Date(),
             endedAt: snapshot.isTerminal ? (existing?.endedAt ?? Date()) : nil
         )
-        if snapshot.stateName == "waitingApproval" {
-            Task { await refreshApproval(for: snapshot.runID) }
+        if let waiting = snapshot.pendingApproval {
+            let descriptor = ToolCatalog.descriptor(named: waiting.toolCall.toolName)
+            let pending = PendingApproval(
+                runID: snapshot.runID,
+                conversationID: snapshot.conversationID,
+                toolCall: waiting.toolCall,
+                reason: waiting.reason,
+                riskLabels: Set(descriptor?.riskLabels.map(\.rawValue) ?? []),
+                isSideEffecting: descriptor?.isSideEffecting ?? true,
+                requestedAt: waiting.requestedAt
+            )
+            pendingApprovals.removeAll { $0.runID == snapshot.runID }
+            pendingApprovals.append(pending)
         } else {
             pendingApprovals.removeAll { $0.runID == snapshot.runID }
-        }
-    }
-
-    /// Rebuilds the pending approval for a run from its service's runtime
-    /// state. Only called while the run reports `waitingApproval`.
-    private func refreshApproval(for runID: UUID) async {
-        guard let service = runServices[runID] else { return }
-        // The snapshot carries only the state name; the waiting payload
-        // (tool call, reason) is persisted as the latest approval event.
-        let events = (try? await environment.runStore.events(runID: runID)) ?? []
-        guard let approvalEvent = events.last(where: { $0.kind == .approval }) else { return }
-        let payload = Self.decodePayload(approvalEvent.payloadJSON)
-        let toolName = payload["tool"] ?? "tool"
-        let reason = payload["reason"] ?? ""
-        let descriptor = ToolCatalog.descriptor(named: toolName)
-        let call = (try? ToolCall(
-            id: approvalEvent.id.uuidString,
-            toolName: toolName,
-            argumentsJSON: Data("{}".utf8),
-            scope: .local
-        )) ?? nil
-        guard let call else { return }
-        let pending = PendingApproval(
-            runID: runID,
-            conversationID: service.conversationID,
-            toolCall: call,
-            reason: reason,
-            riskLabels: Set(descriptor?.riskLabels.map(\.rawValue) ?? []),
-            isSideEffecting: descriptor?.isSideEffecting ?? true,
-            requestedAt: approvalEvent.createdAt
-        )
-        if !pendingApprovals.contains(where: { $0.id == pending.id }) {
-            pendingApprovals.append(pending)
         }
     }
 

@@ -136,6 +136,9 @@ public actor FloeAgentRuntime {
     private var totalInputTokens = 0
     private var totalOutputTokens = 0
     private var streamText = ""
+    private var streamTextByteCount = 0
+    private var providerEventCount = 0
+    private var providerPayloadBytes = 0
 
     private var streamTask: Task<Void, Never>?
     private var cancellationToken = CancellationToken()
@@ -315,6 +318,7 @@ public actor FloeAgentRuntime {
         let streamInfo = AgentState.StreamingInfo(modelRemoteID: configuration.model.remoteModelID)
         await transition(to: .streamingModel(streamInfo))
         streamText = ""
+        streamTextByteCount = 0
 
         let request = ProviderStreamRequest(
             provider: configuration.provider,
@@ -369,10 +373,34 @@ public actor FloeAgentRuntime {
         // Never mutate after leaving streamingModel (cancel race safety).
         guard case .streamingModel(var info) = state else { return }
 
+        providerEventCount += 1
+        providerPayloadBytes += Self.payloadSize(of: event)
+        guard providerEventCount <= 20_000,
+              providerPayloadBytes <= 16 * 1_024 * 1_024 else {
+            await failRun(
+                message: "Provider stream exceeded the per-run event limit",
+                recoverable: false
+            )
+            return
+        }
+
         await emit(event)
         switch event {
         case .textDelta(let delta):
+            let nextBytes = delta.text.utf8.count
+            let limit = max(
+                65_536,
+                min(8 * 1_024 * 1_024, configuration.model.limits.maxOutputTokens * 16)
+            )
+            guard nextBytes <= limit - streamTextByteCount else {
+                await failRun(
+                    message: "Provider output exceeded the configured response limit",
+                    recoverable: false
+                )
+                return
+            }
             streamText += delta.text
+            streamTextByteCount += nextBytes
             info.textSoFar = streamText
             state = .streamingModel(info)
 
@@ -469,7 +497,7 @@ public actor FloeAgentRuntime {
         let decision: ApprovalDecision
         if !descriptor.isSideEffecting {
             decision = .allow(
-                scope: ApprovalScope(toolName: call.toolName, singleUse: true),
+                scope: Self.approvalScope(for: call),
                 expiresAt: nil
             )
         } else {
@@ -543,6 +571,18 @@ public actor FloeAgentRuntime {
     /// executingTool → streamingModel. Executes one approved call, audits
     /// the result before it flows back, then starts the next model turn.
     private func executeApproved(call: ToolCall, grant: ApprovalGrant) async {
+        guard !grant.isExpired(), Self.scopePermits(grant.scope, call: call) else {
+            let result = ToolResult(
+                callID: call.id,
+                status: .denied,
+                outputSummary: "Approval scope does not permit this tool call",
+                outputDigest: ""
+            )
+            await audit(toolCall: call, result: result, decision: "deny:scope-mismatch-or-expired")
+            await resumeStream(with: result)
+            return
+        }
+
         // Idempotency: never re-execute a key already executed in this run.
         if !call.idempotencyKey.isEmpty, executedIdempotencyKeys.contains(call.idempotencyKey) {
             await resumeStream(with: ToolResult(
@@ -694,5 +734,52 @@ public actor FloeAgentRuntime {
             if let value = object[key] as? String { return value }
         }
         return nil
+    }
+
+    private static func approvalScope(for call: ToolCall) -> ApprovalScope {
+        switch call.scope {
+        case .local:
+            return ApprovalScope(toolName: call.toolName, singleUse: true)
+        case .host(let hostID):
+            return ApprovalScope(toolName: call.toolName, hostID: hostID, singleUse: true)
+        case .hostPath(let hostID, let path):
+            return ApprovalScope(
+                toolName: call.toolName,
+                hostID: hostID,
+                paths: [path],
+                singleUse: true
+            )
+        }
+    }
+
+    private static func scopePermits(_ scope: ApprovalScope, call: ToolCall) -> Bool {
+        guard scope.toolName == call.toolName else { return false }
+        switch call.scope {
+        case .local:
+            return scope.hostID == nil && scope.paths.isEmpty
+        case .host(let hostID):
+            return scope.hostID == hostID && scope.paths.isEmpty
+        case .hostPath(let hostID, let path):
+            return scope.hostID == hostID && scope.paths.contains(path)
+        }
+    }
+
+    private static func payloadSize(of event: AgentEvent) -> Int {
+        switch event {
+        case .textDelta(let delta):
+            return delta.text.utf8.count
+        case .reasoningSummary(let summary):
+            return summary.text.utf8.count
+        case .toolRequest(let call):
+            return call.argumentsJSON.count + call.toolName.utf8.count
+        case .toolResult(let result):
+            return result.outputSummary.utf8.count
+        case .usage:
+            return 64
+        case .error(let error):
+            return error.providerMessage.utf8.count
+        case .completed:
+            return 64
+        }
     }
 }

@@ -11,6 +11,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
 import UIKit
+import UniformTypeIdentifiers
 import FloeCore
 import FloeDocuments
 import FloeImages
@@ -68,9 +69,10 @@ final class FilesCenter: ObservableObject {
             relativeTo: nil
         )
         let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
+        let contentType = values?.contentType
         let attachment = AttachmentRef(
             id: UUID(),
-            kind: .document,
+            kind: Self.attachmentKind(for: contentType),
             displayName: displayName.isEmpty ? url.lastPathComponent : displayName,
             uti: values?.contentType?.identifier ?? "",
             byteCount: values?.fileSize ?? 0,
@@ -79,6 +81,16 @@ final class FilesCenter: ObservableObject {
         )
         recentFiles.insert(attachment, at: 0)
         return attachment
+    }
+
+    private static func attachmentKind(for contentType: UTType?) -> AttachmentRef.Kind {
+        guard let contentType else { return .other }
+        if contentType.conforms(to: .image) { return .image }
+        if contentType.conforms(to: .audio) { return .audio }
+        if contentType.conforms(to: .content) || contentType.conforms(to: .data) {
+            return .document
+        }
+        return .other
     }
 
     /// Resolves a stored security-scoped bookmark back to a URL.

@@ -68,6 +68,24 @@ struct ProviderProfileTests {
         }
     }
 
+    @Test("Endpoint URL user info is rejected")
+    func endpointUserInfoRejected() {
+        #expect(throws: FloeError.self) {
+            try profile(url: "https://user:password@example.com").validate()
+        }
+    }
+
+    @Test("Secret-shaped non-secret headers are rejected case-insensitively")
+    func secretHeadersRejected() {
+        for name in ["Authorization", "x-api-key", "Cookie", "Proxy-Authorization"] {
+            var candidate = profile(url: "https://example.com")
+            candidate.nonSecretHeaders = [name: "must-not-enter-synced-metadata"]
+            #expect(throws: FloeError.self) {
+                try candidate.validate()
+            }
+        }
+    }
+
     @Test("ModelProtocol Codable round-trip for all cases")
     func modelProtocolRoundTrip() throws {
         for value in ModelProtocol.allCases {

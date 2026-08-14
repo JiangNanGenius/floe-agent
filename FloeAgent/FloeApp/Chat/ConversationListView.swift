@@ -75,12 +75,15 @@ struct ConversationListView: View {
     private var conversationList: some View {
         List {
             ForEach(viewModel.conversations) { conversation in
-                NavigationLink(value: conversation.id) {
+                Button {
+                    router.openConversation(conversation.id)
+                } label: {
                     ConversationRow(
                         conversation: conversation,
                         fallbackTitle: String(localized: "chat.untitled")
                     )
                 }
+                .buttonStyle(.plain)
                 .accessibilityHint("chat.open.hint")
             }
             .onDelete { offsets in
@@ -107,7 +110,7 @@ struct ConversationListView: View {
     private func createAndOpen() {
         Task {
             if let conversation = try? await viewModel.createConversation() {
-                router.selectedConversationID = conversation.id
+                router.openConversation(conversation.id)
             }
         }
     }

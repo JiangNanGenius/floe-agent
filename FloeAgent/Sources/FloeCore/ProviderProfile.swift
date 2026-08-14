@@ -80,6 +80,22 @@ public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
     /// Validates invariants enforced by the security model.
     /// - Throws: `FloeError.invalidConfiguration` on violation.
     public func validate() throws {
+        guard baseURL.user == nil, baseURL.password == nil else {
+            throw FloeError.invalidConfiguration(
+                "Endpoint credentials belong in Keychain, not in the URL"
+            )
+        }
+        let forbiddenHeaders: Set<String> = [
+            "authorization", "proxy-authorization", "x-api-key", "api-key",
+            "x-auth-token", "x-amz-security-token", "cookie", "set-cookie"
+        ]
+        if let forbidden = nonSecretHeaders.keys.first(where: {
+            forbiddenHeaders.contains($0.lowercased())
+        }) {
+            throw FloeError.invalidConfiguration(
+                "\(forbidden) may contain a secret and cannot be stored as a non-secret header"
+            )
+        }
         let scheme = baseURL.scheme?.lowercased() ?? ""
         if scheme == "http" {
             guard allowsPlainHTTP else {
@@ -100,9 +116,11 @@ public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
 
 extension URL {
     /// True for localhost, loopback, and RFC 1918 / link-local addresses.
-    var isLocalOrPrivateNetwork: Bool {
+    public var isLocalOrPrivateNetwork: Bool {
         guard let host = self.host?.lowercased() else { return false }
-        if host == "localhost" || host == "::1" || host.hasSuffix(".local") { return true }
+        if host == "localhost" || host == "::1" || host == "0.0.0.0"
+            || host.hasSuffix(".local") { return true }
+        if host.hasPrefix("fc") || host.hasPrefix("fd") || host.hasPrefix("fe80:") { return true }
         if host.hasPrefix("127.") { return true }
         if host.hasPrefix("10.") { return true }
         if host.hasPrefix("192.168.") { return true }

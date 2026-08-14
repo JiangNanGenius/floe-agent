@@ -95,7 +95,8 @@ final class RemoteSessionCenter: ObservableObject {
 
     func deleteHost(id: UUID) async throws {
         try await hostStore.deleteHost(id: id)
-        try? await secretStore.deleteSecret(scope: .host(id))
+        try? await secretStore.deleteSecret(scope: .hostSSH(id))
+        try? await secretStore.deleteSecret(scope: .hostVNC(id))
         await loadHosts()
     }
 

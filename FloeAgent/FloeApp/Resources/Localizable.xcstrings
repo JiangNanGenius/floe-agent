@@ -3026,6 +3026,153 @@
           }
         }
       }
+    },
+    "home.capability.approvals": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scoped approvals" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "范围化授权" } }
+      }
+    },
+    "home.capability.remote": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Remote sessions" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "远程会话" } }
+      }
+    },
+    "home.capability.threads": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Durable threads" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "持久任务线程" } }
+      }
+    },
+    "home.composer.ready": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Ready" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已就绪" } }
+      }
+    },
+    "home.composer.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Start a task" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开始一个任务" } }
+      }
+    },
+    "home.detail.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Start in the workbench, then inspect every decision and result in its thread." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "从左侧工作台开始，再到任务线程中查看每个决定和结果。" } }
+      }
+    },
+    "home.detail.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Your agent workspace" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "你的智能体工作空间" } }
+      }
+    },
+    "home.no_active.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "New work will appear here while it is running." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "新任务运行时会显示在这里。" } }
+      }
+    },
+    "home.no_pending.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Actions that need your decision will wait here." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "需要你决定的操作会在这里等待。" } }
+      }
+    },
+    "home.no_sessions.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "SSH and VNC connections will show their real state here." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "SSH 与 VNC 连接会在这里显示真实状态。" } }
+      }
+    },
+    "home.workspace.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Create a task, review approvals, and return to live sessions." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "创建任务、审核授权，并随时返回活动会话。" } }
+      }
+    },
+    "home.workspace.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Operations desk" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "任务工作台" } }
+      }
+    },
+    "onboarding.point.approvals.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Consequential actions show their exact scope before they run." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "重要操作执行前会显示完整、准确的授权范围。" } }
+      }
+    },
+    "onboarding.point.approvals.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "You stay in control" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "控制权始终在你手中" } }
+      }
+    },
+    "onboarding.point.no_account.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Floe works without a Floe account or analytics profile." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无需 Floe 账户，也不会建立分析画像。" } }
+      }
+    },
+    "onboarding.point.no_account.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No account required" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无需注册账户" } }
+      }
+    },
+    "onboarding.point.your_keys.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Add an API provider you trust; credentials remain in Keychain." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "添加你信任的 API 服务商；凭据保存在系统钥匙串中。" } }
+      }
+    },
+    "onboarding.point.your_keys.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Bring your own models" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连接你自己的模型" } }
+      }
+    },
+    "providers.delete_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Unable to delete provider" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法删除服务商" } }
+      }
+    },
+    "storage.preparing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Preparing Floe Agent…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在准备 Floe Agent…" } }
+      }
+    },
+    "storage.unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Storage unavailable" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "存储不可用" } }
+      }
     }
   },
   "version": "1.0"

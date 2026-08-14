@@ -107,6 +107,7 @@ final class ThreadDetailViewModel: ObservableObject {
             return
         }
         events = try await center.environment.runStore.events(runID: runID)
+            .filter { $0.kind != .assistantText }
     }
 
     // MARK: - Actions
@@ -163,6 +164,8 @@ final class ThreadDetailViewModel: ObservableObject {
                     self.isRunning = !snapshot.isTerminal
                     if snapshot.isTerminal {
                         try? await self.loadEvents()
+                        self.messages = (try? await center.environment.conversationStore
+                            .messages(conversationID: self.conversationID)) ?? self.messages
                         break
                     }
                 } else {

@@ -47,6 +47,17 @@ struct ProviderListView: View {
         }
         .task { await viewModel.load() }
         .refreshable { await viewModel.load() }
+        .alert(
+            "providers.delete_failed",
+            isPresented: Binding(
+                get: { viewModel.errorMessage != nil },
+                set: { if !$0 { viewModel.errorMessage = nil } }
+            )
+        ) {
+            Button("action.done") { viewModel.errorMessage = nil }
+        } message: {
+            Text(viewModel.errorMessage ?? "")
+        }
     }
 
     private var providerList: some View {

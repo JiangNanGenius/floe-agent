@@ -70,6 +70,7 @@ public struct RemoteImageResult: Sendable, Hashable {
 public enum RemoteImageError: Error, Sendable, Hashable {
     case unsupportedOperation(RemoteImageOperation, provider: String)
     case requestFailed(String)
+    case invalidResponse(String)
 }
 
 /// A provider-specific remote image adapter. Implementations declare the

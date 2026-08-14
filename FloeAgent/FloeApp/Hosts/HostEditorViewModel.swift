@@ -89,6 +89,9 @@ final class HostEditorViewModel: ObservableObject {
         do {
             let auth = try await persistAuth()
             let vncEndpoint = try await buildVNCEndpoint()
+            if !hasVNC, existing?.vncEndpoint != nil {
+                try? await secretStore.deleteSecret(scope: .hostVNC(hostID))
+            }
             let policy: HostKeyPolicy = usePinnedPolicy
                 ? .pinned(fingerprintSHA256: pinnedFingerprint)
                 : .trustOnFirstUse
@@ -126,10 +129,10 @@ final class HostEditorViewModel: ObservableObject {
         guard !entered.isEmpty, let data = entered.data(using: .utf8) else {
             throw FloeError.validationFailed("A password or key is required")
         }
-        try await secretStore.storeSecret(data, scope: .host(hostID))
+        try await secretStore.storeSecret(data, scope: .hostSSH(hostID))
         let reference = SecretReference(
-            keychainAccount: "host.\(hostID.uuidString)",
-            synchronizable: true
+            keychainAccount: "host.ssh.\(hostID.uuidString)",
+            synchronizable: false
         )
         switch authKind {
         case .password:
@@ -146,10 +149,10 @@ final class HostEditorViewModel: ObservableObject {
         var passwordRef: SecretReference?
         let password = vncPassword.trimmingCharacters(in: .whitespacesAndNewlines)
         if !password.isEmpty, let data = password.data(using: .utf8) {
-            try await secretStore.storeSecret(data, scope: .host(hostID))
+            try await secretStore.storeSecret(data, scope: .hostVNC(hostID))
             passwordRef = SecretReference(
-                keychainAccount: "host.\(hostID.uuidString)",
-                synchronizable: true
+                keychainAccount: "host.vnc.\(hostID.uuidString)",
+                synchronizable: false
             )
         } else if let existing, let endpoint = existing.vncEndpoint {
             passwordRef = endpoint.passwordRef
