@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B341E170D4C64A8CB60CF842 /* DiagnosticsAboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61C9421A535F483C93CC4968 /* DiagnosticsAboutView.swift */; };
+		73027456863244A7942D6DF6 /* DiagnosticsExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DD05C1134F64AB995C397BC /* DiagnosticsExporter.swift */; };
+
 		72303DA3BA2A42D5B16C5259 /* AgentPermissionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 622C69D74AA640728CD82666 /* AgentPermissionsView.swift */; };
 		AEA42CDA55C84216872F4326 /* ExecutionEnvironmentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0EAC8FA7F34326AA878B7B /* ExecutionEnvironmentView.swift */; };
 		2FA8BACE58B64DAA87DD1EA4 /* FilesSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AACCE26B930485DA9DF6230 /* FilesSettingsView.swift */; };
@@ -121,6 +124,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		61C9421A535F483C93CC4968 /* DiagnosticsAboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsAboutView.swift; sourceTree = "<group>"; };
+		9DD05C1134F64AB995C397BC /* DiagnosticsExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsExporter.swift; sourceTree = "<group>"; };
+
 		622C69D74AA640728CD82666 /* AgentPermissionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentPermissionsView.swift; sourceTree = "<group>"; };
 		FF0EAC8FA7F34326AA878B7B /* ExecutionEnvironmentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionEnvironmentView.swift; sourceTree = "<group>"; };
 		4AACCE26B930485DA9DF6230 /* FilesSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesSettingsView.swift; sourceTree = "<group>"; };
@@ -464,6 +470,8 @@
 				4AACCE26B930485DA9DF6230 /* FilesSettingsView.swift */,
 				505E531E489343AF89B7C750 /* RemoteSettingsView.swift */,
 				95534886801048DAA98A479A /* PrivacySecurityView.swift */,
+				61C9421A535F483C93CC4968 /* DiagnosticsAboutView.swift */,
+				9DD05C1134F64AB995C397BC /* DiagnosticsExporter.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -722,6 +730,8 @@
 				2FA8BACE58B64DAA87DD1EA4 /* FilesSettingsView.swift in Sources */,
 				E5772BCB93BB405D98E6FD21 /* RemoteSettingsView.swift in Sources */,
 				ED1326FC2717456EAF2E2367 /* PrivacySecurityView.swift in Sources */,
+				B341E170D4C64A8CB60CF842 /* DiagnosticsAboutView.swift in Sources */,
+				73027456863244A7942D6DF6 /* DiagnosticsExporter.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

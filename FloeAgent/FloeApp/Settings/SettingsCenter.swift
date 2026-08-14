@@ -312,7 +312,9 @@ final class SettingsCenter: ObservableObject {
     func setDefaultWorkspace(id: UUID?) async {
         defaultWorkspaceID = id
         if let id {
-            await persist(id.uuidString, forKey: AppSettingsKey.defaultWorkspace)
+            // Encode explicitly: `setValue(_ json: String)` is the raw
+            // overload and would store the bare UUID without JSON quoting.
+            await persist(id, forKey: AppSettingsKey.defaultWorkspace)
         } else {
             try? await settingsStore.removeValue(forKey: AppSettingsKey.defaultWorkspace)
         }

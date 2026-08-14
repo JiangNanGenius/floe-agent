@@ -5,9 +5,7 @@
 // See docs/ARCHITECTURE_SETTINGS.md §5. iPad uses a NavigationSplitView
 // (category list left, detail right — never an empty detail column; the
 // first category is selected by default). iPhone uses the standard
-// NavigationStack push flow. T08 landed General/Providers/Auxiliary; T09
-// lands Permissions/Execution/Files/Remote/Privacy; Diagnostics lands in
-// T10.
+// NavigationStack push flow. All nine categories are routed.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -15,7 +13,7 @@ import FloeCore
 
 /// One settings category in the settings center.
 enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case general, providers, auxiliary, permissions, execution, files, remote, privacy
+    case general, providers, auxiliary, permissions, execution, files, remote, privacy, diagnostics
 
     var id: String { rawValue }
 
@@ -29,6 +27,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .files: "settings.section.files"
         case .remote: "settings.section.remote"
         case .privacy: "settings.section.privacy"
+        case .diagnostics: "settings.section.diagnostics"
         }
     }
 
@@ -42,6 +41,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .files: "folder"
         case .remote: "server.rack"
         case .privacy: "hand.raised"
+        case .diagnostics: "stethoscope"
         }
     }
 }
@@ -100,6 +100,8 @@ struct SettingsRootView: View {
             RemoteSettingsView(center: environment.settingsCenter)
         case .privacy:
             PrivacySecurityView(center: environment.settingsCenter)
+        case .diagnostics:
+            DiagnosticsAboutView(center: environment.settingsCenter)
         }
     }
 }
