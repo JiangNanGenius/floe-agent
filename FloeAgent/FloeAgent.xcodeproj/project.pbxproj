@@ -16,10 +16,16 @@
 		405D2CF50F65452FBB99CE0D /* FloeImages in Frameworks */ = {isa = PBXBuildFile; productRef = EBF97B079841247A01DFCE52 /* FloeImages */; };
 		4707D8E92893B0ED9C62F8F9 /* FloeCore in Frameworks */ = {isa = PBXBuildFile; productRef = 8C092D204147366710DA8E8D /* FloeCore */; };
 		557E5740D65A080E412BDBA3 /* FloeSync in Frameworks */ = {isa = PBXBuildFile; productRef = CB9AC1549FA61B1132625EA1 /* FloeSync */; };
+		5C200D5807BA7B433E39BBB9 /* FilesCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A3792AECF660ADFEA7D4B8 /* FilesCenter.swift */; };
 		6B0D3A07EB93CDB1FF10B326 /* FloeSyncCore in Frameworks */ = {isa = PBXBuildFile; productRef = 42F46C3ACBB2BE695D007080 /* FloeSyncCore */; };
 		75B75F5F8C25D5B60B5E4541 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 37BB930D0175C1FF7EE714EE /* Assets.xcassets */; };
 		79513D3F13F2694F56459286 /* FloeModels in Frameworks */ = {isa = PBXBuildFile; productRef = 6D3CC5A66BC37258D46FDF3D /* FloeModels */; };
+		7B44A496EC3A28601170695B /* AppRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0E86FB249DA97D2FA57FBA7 /* AppRouter.swift */; };
+		8F40177268113AACE1405851 /* AppDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF5F8AFB4D253F079EA5CF84 /* AppDestination.swift */; };
+		A07E797D244A170430DEF61B /* ConversationCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50D3F739AE81623062A9C5C9 /* ConversationCenter.swift */; };
+		A08697D5A61FF31F4367FE7D /* RemoteSessionCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4CD5173D18CDDB6549BBD7D /* RemoteSessionCenter.swift */; };
 		A1730325CB40AA74E22D3C28 /* FloeVNC in Frameworks */ = {isa = PBXBuildFile; productRef = 8D67ACB7499F21D8B8B49FE4 /* FloeVNC */; };
+		A5042A844696F85C4BE4D80D /* FloeTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */; };
 		ABAF2700584FE5E93C50DA1B /* FloeSSH in Frameworks */ = {isa = PBXBuildFile; productRef = DEFB59A49152ED0F642C4865 /* FloeSSH */; };
 		B2196F0D1CCA995A3F4F8C0D /* FloeTools in Frameworks */ = {isa = PBXBuildFile; productRef = 8E8F4CD97A741A8F515EC80E /* FloeTools */; };
 		BAFCFD696F2EA6A8D174FBBD /* M0DiagnosticsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 397DA23AB1A49D66682CE2D2 /* M0DiagnosticsModel.swift */; };
@@ -32,17 +38,23 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		18A3792AECF660ADFEA7D4B8 /* FilesCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesCenter.swift; sourceTree = "<group>"; };
 		37BB930D0175C1FF7EE714EE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		397DA23AB1A49D66682CE2D2 /* M0DiagnosticsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M0DiagnosticsModel.swift; sourceTree = "<group>"; };
 		4B364052541A17BBD46A6C70 /* FloeAgent */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeAgent; path = .; sourceTree = SOURCE_ROOT; };
+		50D3F739AE81623062A9C5C9 /* ConversationCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationCenter.swift; sourceTree = "<group>"; };
 		699FBAE02E34D628B5FC48B7 /* iPhoneBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPhoneBackgroundPolicy.swift; sourceTree = "<group>"; };
 		6E4B5351714B8B79EF8E8055 /* Floe.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Floe.entitlements; sourceTree = "<group>"; };
+		75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeTheme.swift; sourceTree = "<group>"; };
 		84E9CA8571729543928880E3 /* M0DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M0DiagnosticsView.swift; sourceTree = "<group>"; };
 		916ACA33CDE6532714E49272 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeAgentApp.swift; sourceTree = "<group>"; };
 		A6797B7DAA890D6378153058 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		A6AFF9D3E17B2962EAE99225 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
+		C4CD5173D18CDDB6549BBD7D /* RemoteSessionCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionCenter.swift; sourceTree = "<group>"; };
 		C748393AFE6A38ADCB6FC166 /* FloeAgent.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = FloeAgent.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		CF5F8AFB4D253F079EA5CF84 /* AppDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDestination.swift; sourceTree = "<group>"; };
+		E0E86FB249DA97D2FA57FBA7 /* AppRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRouter.swift; sourceTree = "<group>"; };
 		E3EF97C2442DD744CEB320A0 /* PlatformBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformBackgroundPolicy.swift; sourceTree = "<group>"; };
 		EB400574B41454793B7461C2 /* iPadBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPadBackgroundPolicy.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -81,6 +93,14 @@
 			path = Platform;
 			sourceTree = "<group>";
 		};
+		162B2C46C4114FAACE5567CC /* Files */ = {
+			isa = PBXGroup;
+			children = (
+				18A3792AECF660ADFEA7D4B8 /* FilesCenter.swift */,
+			);
+			path = Files;
+			sourceTree = "<group>";
+		};
 		5A4895F660C5D22041A0F155 /* App */ = {
 			isa = PBXGroup;
 			children = (
@@ -99,6 +119,15 @@
 				D38FE95FA512115C4664ECFE /* Packages */,
 				D2F4766B4780E506300D05AC /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		B9597FEFCA5E942ADD7B6E13 /* Remote */ = {
+			isa = PBXGroup;
+			children = (
+				50D3F739AE81623062A9C5C9 /* ConversationCenter.swift */,
+				C4CD5173D18CDDB6549BBD7D /* RemoteSessionCenter.swift */,
+			);
+			path = Remote;
 			sourceTree = "<group>";
 		};
 		D2F4766B4780E506300D05AC /* Products */ = {
@@ -121,9 +150,13 @@
 			isa = PBXGroup;
 			children = (
 				5A4895F660C5D22041A0F155 /* App */,
+				E231240F5BD781568EEABB6C /* Design */,
 				F9736247E976C4B2AE821D94 /* Entitlements */,
+				162B2C46C4114FAACE5567CC /* Files */,
 				039830B0F46D9F3BB31E08A6 /* Platform */,
+				B9597FEFCA5E942ADD7B6E13 /* Remote */,
 				D945ACAB4A3BFCBED5DF65AE /* Resources */,
+				FA9D4E4056CFB7FFCDB218F4 /* Shell */,
 			);
 			path = FloeApp;
 			sourceTree = "<group>";
@@ -138,12 +171,29 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
+		E231240F5BD781568EEABB6C /* Design */ = {
+			isa = PBXGroup;
+			children = (
+				75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */,
+			);
+			path = Design;
+			sourceTree = "<group>";
+		};
 		F9736247E976C4B2AE821D94 /* Entitlements */ = {
 			isa = PBXGroup;
 			children = (
 				6E4B5351714B8B79EF8E8055 /* Floe.entitlements */,
 			);
 			path = Entitlements;
+			sourceTree = "<group>";
+		};
+		FA9D4E4056CFB7FFCDB218F4 /* Shell */ = {
+			isa = PBXGroup;
+			children = (
+				CF5F8AFB4D253F079EA5CF84 /* AppDestination.swift */,
+				E0E86FB249DA97D2FA57FBA7 /* AppRouter.swift */,
+			);
+			path = Shell;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -235,11 +285,17 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8F40177268113AACE1405851 /* AppDestination.swift in Sources */,
 				C5EDFDCD3E6C6D784D9F4ECC /* AppEnvironment.swift in Sources */,
+				7B44A496EC3A28601170695B /* AppRouter.swift in Sources */,
+				A07E797D244A170430DEF61B /* ConversationCenter.swift in Sources */,
+				5C200D5807BA7B433E39BBB9 /* FilesCenter.swift in Sources */,
 				C5EF7D89863A823AEC36B81F /* FloeAgentApp.swift in Sources */,
+				A5042A844696F85C4BE4D80D /* FloeTheme.swift in Sources */,
 				BAFCFD696F2EA6A8D174FBBD /* M0DiagnosticsModel.swift in Sources */,
 				0DB52308023E1468A623C1C7 /* M0DiagnosticsView.swift in Sources */,
 				265F22EEB8BC48C7AF62FDCD /* PlatformBackgroundPolicy.swift in Sources */,
+				A08697D5A61FF31F4367FE7D /* RemoteSessionCenter.swift in Sources */,
 				2D1426A11BF0547700CA8D5D /* iPadBackgroundPolicy.swift in Sources */,
 				3324AFAEF977E427D066CD85 /* iPhoneBackgroundPolicy.swift in Sources */,
 			);
