@@ -21,6 +21,7 @@ packages:
 targets:
   FloeAgent:
     type: application
+    productName: Floe Agent
     platform: iOS
     deploymentTarget: "26.0"
     sources:
