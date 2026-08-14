@@ -13,6 +13,7 @@ import FloeModels
 import FloePersistence
 import FloeSecurity
 import FloeSync
+import FloeWorkspace
 import CloudKit
 
 /// Owns the app's long-lived services and stores. Created once at launch and
@@ -78,6 +79,12 @@ final class AppEnvironment: ObservableObject {
         self.keychain = keychain
         self.catastrophicGate = catastrophicGate
         self.isEphemeral = isEphemeral
+
+        // T04: register the nine workspace file tools (catalog descriptors +
+        // runtime runners). The root provider stays nil until T05 wires in
+        // WorkspaceCenter; with no workspace open the tools fail with a
+        // structured "no workspace" result instead of crashing.
+        registerWorkspaceTools(rootProvider: { nil })
     }
 
     /// Builds the production environment against the on-disk database,
