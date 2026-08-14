@@ -11,6 +11,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeModels
+import FloePersistence
 import FloeSecurity
 
 /// The canonical thread: messages + run events for one conversation.

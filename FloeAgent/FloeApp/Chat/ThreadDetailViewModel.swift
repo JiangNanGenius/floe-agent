@@ -12,6 +12,7 @@ import Foundation
 import FloeCore
 import FloeModels
 import FloePersistence
+import FloeSecurity
 
 /// View model for the canonical foldable thread of one conversation.
 @MainActor
