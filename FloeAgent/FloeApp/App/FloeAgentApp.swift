@@ -33,6 +33,7 @@ struct FloeAgentApp: App {
 /// the router, which owns the background policy.
 struct RootView: View {
     @EnvironmentObject private var router: AppRouter
+    @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -54,7 +55,7 @@ struct RootView: View {
         TabView(selection: $router.selection) {
             ForEach(AppDestination.allCases) { destination in
                 Tab(value: destination) {
-                    NavigationStack { PrimaryDestinationView(destination) }
+                    NavigationStack { PrimaryDestinationView(destination, environment: environment) }
                 } label: {
                     Label(destination.title, systemImage: destination.systemImage)
                 }
@@ -95,7 +96,7 @@ struct RootView: View {
     private var contentColumn: some View {
         switch router.sidebarSelection ?? .primary(router.selection) {
         case .primary(let destination):
-            PrimaryDestinationView(destination)
+            PrimaryDestinationView(destination, environment: environment)
         case .more(let sub):
             MoreListView(selection: sub)
         }
@@ -119,9 +120,11 @@ struct RootView: View {
 /// of a future milestone.
 private struct PrimaryDestinationView: View {
     let destination: AppDestination
+    let environment: AppEnvironment
 
-    init(_ destination: AppDestination) {
+    init(_ destination: AppDestination, environment: AppEnvironment) {
         self.destination = destination
+        self.environment = environment
     }
 
     var body: some View {
@@ -133,11 +136,7 @@ private struct PrimaryDestinationView: View {
                 messageKey: "empty.home"
             )
         case .chat:
-            ShellPlaceholderView(
-                title: destination.title,
-                systemImage: destination.systemImage,
-                messageKey: "empty.conversations"
-            )
+            ConversationListView(center: environment.conversationCenter)
         case .files:
             ShellPlaceholderView(
                 title: destination.title,
