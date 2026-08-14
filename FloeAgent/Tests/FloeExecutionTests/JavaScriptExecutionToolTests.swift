@@ -93,6 +93,25 @@ struct JavaScriptExecutionToolTests {
         #expect(!result.outputDigest.isEmpty)
     }
 
+    @Test("console.error lands in the stderr section, separate from stdout")
+    func stderrSectionThroughExecutor() async throws {
+        registerExecutionTools()
+        let executor = CatalogToolExecutor()
+        let call = try makeCall(
+            #"{"script":"console.log('hello-out'); console.error('boom-err');"}"#
+        )
+        let result = try await executor.execute(call, context: makeContext())
+        #expect(result.status == .ok)
+        #expect(result.outputSummary.contains("--- stdout ---"))
+        #expect(result.outputSummary.contains("hello-out"))
+        #expect(result.outputSummary.contains("--- stderr ---"))
+        #expect(result.outputSummary.contains("boom-err"))
+        // stdout section must not contain the stderr line.
+        let stdoutSection = result.outputSummary
+            .components(separatedBy: "--- stderr ---").first ?? ""
+        #expect(!stdoutSection.contains("boom-err"))
+    }
+
     @Test("A JS exception returns an ok result carrying the error status")
     func jsExceptionMapping() async throws {
         registerExecutionTools()

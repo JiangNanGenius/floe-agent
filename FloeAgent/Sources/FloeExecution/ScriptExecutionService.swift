@@ -36,7 +36,16 @@ public struct ScriptExecutionRequest: Sendable {
 public enum ScriptExecutionOutcome: Sendable, Equatable {
     /// Script finished. `resultJSON` is set when the script called
     /// `printJSON(value)`; `truncated` marks capped console output.
-    case ok(resultJSON: String?, stdout: String, truncated: Bool, durationMs: Int)
+    /// `stderr` carries warn/error output, captured separately from
+    /// `stdout` (PRD JS-01); `stderrTruncated` marks its own cap.
+    case ok(
+        resultJSON: String?,
+        stdout: String,
+        stderr: String,
+        truncated: Bool,
+        stderrTruncated: Bool,
+        durationMs: Int
+    )
     /// The script raised; `stdout` carries output captured before the throw.
     case jsException(message: String, stdout: String)
     /// Timeout expired; `partialStdout` is what the console captured.

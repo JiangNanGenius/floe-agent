@@ -23,7 +23,7 @@ struct JavaScriptEngineTests {
             ScriptExecutionRequest(script: "console.log(1 + 1);"),
             cancellation: nil
         )
-        guard case .ok(_, let stdout, let truncated, _) = outcome else {
+        guard case .ok(_, let stdout, _, let truncated, _, _) = outcome else {
             Issue.record("expected ok, got \(outcome)")
             return
         }
@@ -31,18 +31,25 @@ struct JavaScriptEngineTests {
         #expect(!truncated)
     }
 
-    @Test("Multi-line console output concatenates in order")
-    func consoleMultiLine() async {
+    @Test("console.log/info go to stdout; console.warn/error go to stderr")
+    func consoleStderrSeparation() async {
         let outcome = await service.run(
-            ScriptExecutionRequest(script: "console.log('a'); console.warn('b'); console.error('c');"),
+            ScriptExecutionRequest(
+                script: "console.log('out1'); console.info('out2'); console.warn('err1'); console.error('err2');"
+            ),
             cancellation: nil
         )
-        guard case .ok(_, let stdout, _, _) = outcome else {
+        guard case .ok(_, let stdout, let stderr, _, _, _) = outcome else {
             Issue.record("expected ok, got \(outcome)")
             return
         }
-        let lines = stdout.components(separatedBy: "\n").filter { !$0.isEmpty }
-        #expect(lines == ["a", "b", "c"])
+        let outLines = stdout.components(separatedBy: "\n").filter { !$0.isEmpty }
+        let errLines = stderr.components(separatedBy: "\n").filter { !$0.isEmpty }
+        #expect(outLines == ["out1", "out2"])
+        #expect(errLines == ["err1", "err2"])
+        // No cross-contamination.
+        #expect(!stdout.contains("err1"))
+        #expect(!stderr.contains("out1"))
     }
 
     // MARK: Exceptions
@@ -130,7 +137,7 @@ struct JavaScriptEngineTests {
             ScriptExecutionRequest(script: script, maxOutputBytes: 1024),
             cancellation: nil
         )
-        guard case .ok(_, let stdout, let truncated, _) = outcome else {
+        guard case .ok(_, let stdout, _, let truncated, _, _) = outcome else {
             Issue.record("expected ok, got \(outcome)")
             return
         }
@@ -149,7 +156,7 @@ struct JavaScriptEngineTests {
             ),
             cancellation: nil
         )
-        guard case .ok(_, let stdout, _, _) = outcome else {
+        guard case .ok(_, let stdout, _, _, _, _) = outcome else {
             Issue.record("expected ok, got \(outcome)")
             return
         }
@@ -172,7 +179,7 @@ struct JavaScriptEngineTests {
             ScriptExecutionRequest(script: "console.log(typeof leaked);"),
             cancellation: nil
         )
-        guard case .ok(_, let stdout, _, _) = second else {
+        guard case .ok(_, let stdout, _, _, _, _) = second else {
             Issue.record("expected ok, got \(second)")
             return
         }
@@ -189,7 +196,7 @@ struct JavaScriptEngineTests {
             ScriptExecutionRequest(script: "printJSON({ a: 1, b: 'two' });"),
             cancellation: nil
         )
-        guard case .ok(let resultJSON, _, _, _) = outcome else {
+        guard case .ok(let resultJSON, _, _, _, _, _) = outcome else {
             Issue.record("expected ok, got \(outcome)")
             return
         }
@@ -205,7 +212,7 @@ struct JavaScriptEngineTests {
             ScriptExecutionRequest(script: "console.log('no result');"),
             cancellation: nil
         )
-        guard case .ok(let resultJSON, _, _, _) = outcome else {
+        guard case .ok(let resultJSON, _, _, _, _, _) = outcome else {
             Issue.record("expected ok, got \(outcome)")
             return
         }

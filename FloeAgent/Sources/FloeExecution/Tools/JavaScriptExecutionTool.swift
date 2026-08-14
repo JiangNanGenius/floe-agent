@@ -98,12 +98,17 @@ public struct JavaScriptExecutionTool: AgentTool {
         let outcome = await service.run(request, cancellation: context.cancellation)
 
         switch outcome {
-        case .ok(let resultJSON, let stdout, let truncated, let durationMs):
-            var summary = "status=ok durationMs=\(durationMs) truncated=\(truncated)"
+        case .ok(let resultJSON, let stdout, let stderr, let truncated, let stderrTruncated, let durationMs):
+            var summary = "status=ok durationMs=\(durationMs) truncated=\(truncated) stderrTruncated=\(stderrTruncated)"
             if let resultJSON {
                 summary += "\nresult=\(resultJSON)"
             }
-            summary += "\n" + stdout
+            // Present stdout and stderr as distinct sections so the model
+            // can tell normal output from warnings/errors (PRD JS-01).
+            summary += "\n--- stdout ---\n" + stdout
+            if !stderr.isEmpty {
+                summary += "\n--- stderr ---\n" + stderr
+            }
             return ToolExecutionOutput(summary: summary, fullOutputSHA256: Self.sha256Hex(of: summary))
 
         case .jsException(let message, let stdout):

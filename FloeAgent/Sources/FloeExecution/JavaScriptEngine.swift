@@ -83,6 +83,7 @@ public struct JavaScriptExecutionService: ScriptExecutionService {
         }
 
         let console = BoundedConsole(maxBytes: request.maxOutputBytes)
+        let errConsole = BoundedConsole(maxBytes: request.maxOutputBytes)
         let resultBox = LockedBox<EvaluationResult?>(nil)
         let done = LockedBox(false)
 
@@ -90,7 +91,7 @@ public struct JavaScriptExecutionService: ScriptExecutionService {
         // per run guarantees isolation between executions.
         let queue = makeQueue()
         queue.async {
-            let result = Self.evaluate(script: request.script, inputJSON: request.inputJSON, console: console)
+            let result = Self.evaluate(script: request.script, inputJSON: request.inputJSON, console: console, errConsole: errConsole)
             resultBox.withLock { $0 = result }
             done.withLock { $0 = true }
         }
@@ -111,7 +112,9 @@ public struct JavaScriptExecutionService: ScriptExecutionService {
                 return .ok(
                     resultJSON: evaluation?.resultJSON,
                     stdout: console.text,
+                    stderr: errConsole.text,
                     truncated: console.isTruncated,
+                    stderrTruncated: errConsole.isTruncated,
                     durationMs: durationMs
                 )
             }
@@ -133,7 +136,8 @@ public struct JavaScriptExecutionService: ScriptExecutionService {
     private static func evaluate(
         script: String,
         inputJSON: String?,
-        console: BoundedConsole
+        console: BoundedConsole,
+        errConsole: BoundedConsole
     ) -> EvaluationResult {
         guard let context = JSContext() else {
             return EvaluationResult(exceptionMessage: "JSContext could not be created", resultJSON: nil)
@@ -149,18 +153,23 @@ public struct JavaScriptExecutionService: ScriptExecutionService {
             resultLock.unlock()
         }
 
-        // console.log/info/warn/error → bounded buffer. Arguments are
-        // serialized with String(...); never exposed as objects.
+        // console.log/info → stdout buffer; console.warn/error → the
+        // separate stderr buffer (PRD JS-01: capture stdout·stderr apart).
+        // Arguments are serialized with String(...); never exposed as objects.
         let logBlock: @convention(block) (JSValue) -> Void = { value in
             console.append(value.toString())
         }
+        let errBlock: @convention(block) (JSValue) -> Void = { value in
+            errConsole.append(value.toString())
+        }
         context.setObject(logBlock, forKeyedSubscript: "__floeLog" as NSString)
+        context.setObject(errBlock, forKeyedSubscript: "__floeErr" as NSString)
         context.evaluateScript("""
             var console = {
                 log: function() { __floeLog(Array.prototype.map.call(arguments, String).join(' ')); },
                 info: function() { __floeLog(Array.prototype.map.call(arguments, String).join(' ')); },
-                warn: function() { __floeLog(Array.prototype.map.call(arguments, String).join(' ')); },
-                error: function() { __floeLog(Array.prototype.map.call(arguments, String).join(' ')); }
+                warn: function() { __floeErr(Array.prototype.map.call(arguments, String).join(' ')); },
+                error: function() { __floeErr(Array.prototype.map.call(arguments, String).join(' ')); }
             };
             """)
 

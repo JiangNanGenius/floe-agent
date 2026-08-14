@@ -165,7 +165,9 @@ public struct RemotePythonService: Sendable {
         return .ok(
             resultJSON: nil,
             stdout: result.stdout,
+            stderr: result.stderr,
             truncated: result.truncated,
+            stderrTruncated: false,
             durationMs: durationMs
         )
     }

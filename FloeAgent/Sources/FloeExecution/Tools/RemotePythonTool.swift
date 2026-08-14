@@ -101,7 +101,7 @@ public struct RemotePythonTool: AgentTool {
                 cancellation: context.cancellation
             )
             switch outcome {
-            case .ok(_, let stdout, let truncated, let durationMs):
+            case .ok(_, let stdout, _, let truncated, _, let durationMs):
                 let summary = "status=ok durationMs=\(durationMs) truncated=\(truncated)\n" + stdout
                 return ToolExecutionOutput(summary: summary, fullOutputSHA256: Self.sha256Hex(of: summary))
             case .jsException(let message, let stdout):
