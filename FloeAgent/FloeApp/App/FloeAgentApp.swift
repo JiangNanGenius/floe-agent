@@ -1,7 +1,13 @@
 // FloeApp — SwiftUI app entry point (iOS/iPadOS only).
-// iPhone uses a compact TabView; iPad uses NavigationSplitView with
-// multi-scene support. Concrete views land in M2; M1 ships the navigation
-// skeleton and background-policy wiring only.
+//
+// SPDX-License-Identifier: MPL-2.0
+//
+// iPhone shows exactly five locked tabs (Home, Chat, Files, Hosts, More) in
+// a TabView; iPad shows a three-column NavigationSplitView with a functional
+// sidebar, a content column, and a detail column. Both idioms are driven by
+// one AppRouter so navigation state and scene-phase background-policy
+// wiring are shared. Feature screens land in T02–T05; the tab roots below
+// are honest structural placeholders with localized empty states.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -9,63 +15,25 @@ import UIKit
 
 @main
 struct FloeAgentApp: App {
-    @StateObject private var appModel = AppModel()
+    @StateObject private var environment = AppEnvironment.live()
+    @StateObject private var router = AppRouter()
 
     var body: some Scene {
         WindowGroup {
             RootView()
-                .environmentObject(appModel)
+                .environmentObject(environment)
+                .environmentObject(router)
+                .task { await environment.bootstrap() }
         }
     }
 }
 
-/// Destinations shared by both idioms: Home, Chat, Files, Hosts, Runs,
-/// Settings.
-enum AppDestination: String, Hashable, CaseIterable, Identifiable {
-    case home, chat, files, hosts, runs, settings
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .home: "Home"
-        case .chat: "Chat"
-        case .files: "Files"
-        case .hosts: "Hosts"
-        case .runs: "Runs"
-        case .settings: "Settings"
-        }
-    }
-}
-
-/// App-wide observable model; M1 holds only the selected destination and
-/// the background policy handle.
-@MainActor
-final class AppModel: ObservableObject {
-    @Published var selection: AppDestination = .home
-#if DEBUG
-    let diagnostics = M0DiagnosticsModel()
-#endif
-
-    /// Runtime-selected background policy (see Platform/).
-    let backgroundPolicy: any PlatformBackgroundPolicy
-
-    init() {
-        if UIDevice.current.userInterfaceIdiom == .pad {
-            backgroundPolicy = iPadBackgroundPolicy()
-        } else {
-            backgroundPolicy = iPhoneBackgroundPolicy()
-        }
-        BackgroundPolicyRegistry.shared.install(backgroundPolicy)
-        backgroundPolicy.registerTasks()
-    }
-}
-
-/// Idiom-adaptive root: TabView on iPhone, NavigationSplitView on iPad.
+/// Idiom-adaptive root: five-tab TabView on iPhone, three-column
+/// NavigationSplitView on iPad. Scene-phase transitions are forwarded to
+/// the router, which owns the background policy.
 struct RootView: View {
-    @EnvironmentObject private var appModel: AppModel
+    @EnvironmentObject private var router: AppRouter
     @Environment(\.scenePhase) private var scenePhase
-    @State private var sceneID = UUID().uuidString
 
     var body: some View {
         Group {
@@ -76,94 +44,211 @@ struct RootView: View {
             }
         }
         .onChange(of: scenePhase, initial: true) { _, newPhase in
-            appModel.backgroundPolicy.handleScenePhase(
-                policyPhase(for: newPhase),
-                sceneID: sceneID
-            )
+            router.handleScenePhase(newPhase)
         }
     }
+
+    // MARK: - iPhone: five locked tabs
 
     private var iPhoneRoot: some View {
-        TabView(selection: $appModel.selection) {
+        TabView(selection: $router.selection) {
             ForEach(AppDestination.allCases) { destination in
-                NavigationStack { destinationView(destination) }
-                    .tabItem { Label(destination.title, systemImage: icon(for: destination)) }
-                    .tag(destination)
-            }
-        }
-    }
-
-    private var iPadRoot: some View {
-        NavigationSplitView {
-            List {
-                ForEach(AppDestination.allCases) { destination in
-                    Button {
-                        appModel.selection = destination
-                    } label: {
-                        Label(destination.title, systemImage: icon(for: destination))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.plain)
-                    .listRowBackground(
-                        appModel.selection == destination
-                            ? Color.accentColor.opacity(0.14)
-                            : Color.clear
-                    )
-                    .accessibilityAddTraits(
-                        appModel.selection == destination ? .isSelected : []
-                    )
+                Tab(value: destination) {
+                    NavigationStack { PrimaryDestinationView(destination) }
+                } label: {
+                    Label(destination.title, systemImage: destination.systemImage)
                 }
             }
-            .navigationTitle("Floe Agent")
+        }
+    }
+
+    // MARK: - iPad: three-column split view
+
+    private var iPadRoot: some View {
+        NavigationSplitView(columnVisibility: $router.columnVisibility) {
+            List(selection: $router.sidebarSelection) {
+                Section {
+                    ForEach(AppDestination.allCases) { destination in
+                        Label(destination.title, systemImage: destination.systemImage)
+                            .tag(SidebarSelection.primary(destination))
+                    }
+                }
+                Section("sidebar.section.more") {
+                    ForEach(MoreDestination.visibleCases) { sub in
+                        Label(sub.title, systemImage: sub.systemImage)
+                            .tag(SidebarSelection.more(sub))
+                    }
+                }
+            }
+            .navigationTitle("app.name")
+        } content: {
+            contentColumn
         } detail: {
-            destinationView(appModel.selection)
+            detailColumn
         }
     }
 
+    /// Column 2: the list for the sidebar selection. Tab roots that are
+    /// themselves lists render here directly; everything else lists its
+    /// More sub-destinations.
     @ViewBuilder
-    private func destinationView(_ destination: AppDestination) -> some View {
-#if DEBUG
-        if destination == .settings {
-            SettingsView(diagnostics: appModel.diagnostics)
-        } else {
-            PlaceholderView(title: destination.title)
+    private var contentColumn: some View {
+        switch router.sidebarSelection ?? .primary(router.selection) {
+        case .primary(let destination):
+            PrimaryDestinationView(destination)
+        case .more(let sub):
+            MoreListView(selection: sub)
         }
-#else
-        PlaceholderView(title: destination.title)
-#endif
     }
 
-    private func icon(for destination: AppDestination) -> String {
+    /// Column 3: the selected thread / terminal / document. T02–T05 push
+    /// real content here; for now it is an honest empty state.
+    private var detailColumn: some View {
+        ShellPlaceholderView(
+            title: LocalizedStringKey("app.name"),
+            systemImage: "sidebar.right",
+            messageKey: "empty.detail"
+        )
+    }
+}
+
+// MARK: - Placeholder screens (replaced by T02–T05)
+
+/// Routes a primary destination to its root screen. Every root is a real
+/// navigation-titled screen with a localized empty state — never a promise
+/// of a future milestone.
+private struct PrimaryDestinationView: View {
+    let destination: AppDestination
+
+    init(_ destination: AppDestination) {
+        self.destination = destination
+    }
+
+    var body: some View {
         switch destination {
-        case .home: return "house"
-        case .chat: return "bubble.left.and.bubble.right"
-        case .files: return "folder"
-        case .hosts: return "server.rack"
-        case .runs: return "play.rectangle"
-        case .settings: return "gearshape"
-        }
-    }
-
-    private func policyPhase(for phase: ScenePhase) -> PolicyScenePhase {
-        switch phase {
-        case .active: .active
-        case .inactive: .inactive
-        case .background: .background
-        @unknown default: .inactive
+        case .home:
+            ShellPlaceholderView(
+                title: destination.title,
+                systemImage: destination.systemImage,
+                messageKey: "empty.home"
+            )
+        case .chat:
+            ShellPlaceholderView(
+                title: destination.title,
+                systemImage: destination.systemImage,
+                messageKey: "empty.conversations"
+            )
+        case .files:
+            ShellPlaceholderView(
+                title: destination.title,
+                systemImage: destination.systemImage,
+                messageKey: "empty.files"
+            )
+        case .hosts:
+            ShellPlaceholderView(
+                title: destination.title,
+                systemImage: destination.systemImage,
+                messageKey: "empty.hosts"
+            )
+        case .more:
+            MoreListView(selection: nil)
         }
     }
 }
 
-/// M1 placeholder; real screens arrive in M2.
-struct PlaceholderView: View {
-    let title: String
+/// The More list: Runs, Providers, Settings, Privacy, and (DEBUG only)
+/// Diagnostics. As the iPhone More tab root it pushes sub-screens; as the
+/// iPad content column it renders the sidebar-selected section directly.
+private struct MoreListView: View {
+    /// When set (iPad content column), that section's screen is embedded
+    /// here; when nil (iPhone More tab), the full list pushes sub-screens.
+    let selection: MoreDestination?
 
     var body: some View {
-        ContentUnavailableView(
-            title,
-            systemImage: "hammer",
-            description: Text("This screen is implemented in M2.")
-        )
+        if let selection {
+            MoreDestinationView(selection)
+        } else {
+            List {
+                ForEach(MoreDestination.visibleCases) { sub in
+                    NavigationLink(value: sub) {
+                        Label(sub.title, systemImage: sub.systemImage)
+                    }
+                }
+            }
+            .navigationTitle("tab.more")
+            .navigationDestination(for: MoreDestination.self) { sub in
+                MoreDestinationView(sub)
+            }
+        }
+    }
+}
+
+/// Routes a More sub-destination to its screen. Providers and Diagnostics
+/// are real screens today (provider management lands in T03; diagnostics is
+/// the committed M0 validation UI); the rest are honest empty states.
+private struct MoreDestinationView: View {
+    let sub: MoreDestination
+
+    @EnvironmentObject private var router: AppRouter
+
+    init(_ sub: MoreDestination) {
+        self.sub = sub
+    }
+
+    var body: some View {
+        switch sub {
+        case .runs:
+            ShellPlaceholderView(
+                title: sub.title,
+                systemImage: sub.systemImage,
+                messageKey: "empty.runs"
+            )
+        case .providers:
+            ShellPlaceholderView(
+                title: sub.title,
+                systemImage: sub.systemImage,
+                messageKey: "empty.providers"
+            )
+        case .settings:
+            ShellPlaceholderView(
+                title: sub.title,
+                systemImage: sub.systemImage,
+                messageKey: "empty.settings"
+            )
+        case .privacy:
+            ShellPlaceholderView(
+                title: sub.title,
+                systemImage: sub.systemImage,
+                messageKey: "empty.privacy"
+            )
+        case .diagnostics:
+#if DEBUG
+            M0DiagnosticsView(model: router.diagnostics)
+#else
+            ShellPlaceholderView(
+                title: sub.title,
+                systemImage: sub.systemImage,
+                messageKey: "empty.diagnostics"
+            )
+#endif
+        }
+    }
+}
+
+/// A structural placeholder: a real screen with a navigation title, an SF
+/// Symbol and a localized empty state on an opaque reading surface.
+private struct ShellPlaceholderView: View {
+    let title: LocalizedStringKey
+    let systemImage: String
+    let messageKey: LocalizedStringKey
+
+    var body: some View {
+        ContentUnavailableView {
+            Label(title, systemImage: systemImage)
+        } description: {
+            Text(messageKey)
+        }
+        .background(FloeTheme.readingSurface)
         .navigationTitle(title)
     }
 }

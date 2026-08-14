@@ -32,6 +32,19 @@ final class AppEnvironment: ObservableObject {
     let keychain: KeychainStore
     let catastrophicGate: CatastrophicActionGate?
 
+    // MARK: Coordinators
+
+    /// App-level coordinators, created lazily on first access. Views bind
+    /// only to these centers, never to stores or runtimes directly.
+    /// T01 vends minimal shells; T02/T04/T05 fill them in.
+    private lazy var _conversationCenter = ConversationCenter(environment: self)
+    private lazy var _remoteSessionCenter = RemoteSessionCenter(environment: self)
+    private lazy var _filesCenter = FilesCenter(environment: self)
+
+    var conversationCenter: ConversationCenter { _conversationCenter }
+    var remoteSessionCenter: RemoteSessionCenter { _remoteSessionCenter }
+    var filesCenter: FilesCenter { _filesCenter }
+
     // MARK: State
 
     /// Whether the local database finished migrating. The UI gates the
