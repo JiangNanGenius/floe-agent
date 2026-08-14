@@ -85,7 +85,7 @@ struct M0DiagnosticsView: View {
         .navigationTitle("M0 Validation")
         .task { await model.bootstrap() }
         .sheet(item: $model.trustPrompt) { challenge in
-            HostKeyTrustSheet(challenge: challenge, model: model)
+            M0HostKeyTrustSheet(challenge: challenge, model: model)
         }
         .fileImporter(
             isPresented: $importsDocument,
@@ -100,7 +100,7 @@ struct M0DiagnosticsView: View {
     }
 }
 
-private struct HostKeyTrustSheet: View {
+private struct M0HostKeyTrustSheet: View {
     let challenge: HostKeyChallenge
     @ObservedObject var model: M0DiagnosticsModel
     @Environment(\.dismiss) private var dismiss
