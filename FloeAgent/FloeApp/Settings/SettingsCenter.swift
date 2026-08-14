@@ -132,7 +132,9 @@ final class SettingsCenter: ObservableObject {
         async let memory = approvalGrants.allGrants
         async let js = JavaScriptCoreProbe().probe()
         async let localPython = LocalPythonProbe().probe()
-        async let remotePython = RemotePythonProbe().probe()
+        // Real remote-Python probe from FloeExecution (wired in
+        // AppEnvironment); replaces the always-unavailable placeholder.
+        async let remotePython = environment.remotePythonProbe.probe()
         async let iCloud = ICloudStatusProbe().probe()
         async let keychain = KeychainProbe(keychain: environment.keychain).probe()
         async let version = (try? environment.database.userVersion()) ?? 0

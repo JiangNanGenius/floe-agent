@@ -60,9 +60,15 @@ private struct EvaluationResult: Sendable {
 /// output, guaranteed-timely return.
 public struct JavaScriptExecutionService: ScriptExecutionService {
 
-    /// Dedicated serial queue. A runaway script occupies only this queue's
-    /// thread; the global pool is untouched.
-    private let queue = DispatchQueue(label: "floe.jsexec", qos: .userInitiated)
+    /// A fresh serial queue per `run` call. A runaway script (while(true){})
+    /// occupies only that run's queue thread; because the queue is created
+    /// per execution rather than shared, a timed-out/abandoned run can
+    /// never starve a later run on the same service — the next execution
+    /// gets its own queue. Not the global concurrent pool, so a leak stays
+    /// bounded to one thread per abandoned run.
+    private func makeQueue() -> DispatchQueue {
+        DispatchQueue(label: "floe.jsexec", qos: .userInitiated)
+    }
 
     public init() {}
 
@@ -80,8 +86,9 @@ public struct JavaScriptExecutionService: ScriptExecutionService {
         let resultBox = LockedBox<EvaluationResult?>(nil)
         let done = LockedBox(false)
 
-        // Submit the evaluation on the dedicated serial queue. A fresh
-        // JSContext per run guarantees isolation between executions.
+        // Submit the evaluation on a fresh serial queue. A fresh JSContext
+        // per run guarantees isolation between executions.
+        let queue = makeQueue()
         queue.async {
             let result = Self.evaluate(script: request.script, inputJSON: request.inputJSON, console: console)
             resultBox.withLock { $0 = result }
