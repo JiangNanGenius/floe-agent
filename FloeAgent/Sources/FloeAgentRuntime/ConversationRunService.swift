@@ -75,6 +75,37 @@ public actor ConversationRunService {
     private var unflushedReasoningText = ""
     private var hasProviderActivity = false
     private var latestState: AgentState = .idle
+    /// Execution start times keyed by tool call ID, captured from the
+    /// `executingTool` transition (`ExecutingInfo.startedAt`) so the
+    /// mirrored toolResult event can carry a `durationMs` payload without
+    /// modifying the frozen `ToolResult` model.
+    private var toolStartDates: [String: Date] = [:]
+    /// Optional run context (workspace / selected file / execution target)
+    /// injected as a system message before the run starts. Nil fields are
+    /// omitted; the message is never persisted.
+    private let runContext: RunContext?
+
+    /// Non-secret run context surfaced to the model as a system message.
+    /// Constructed per run; never persisted (see ARCHITECTURE_EXECUTION.md
+    /// §3.3 / §7.4).
+    public struct RunContext: Sendable, Hashable {
+        /// Display name of the current workspace, if any.
+        public var workspaceName: String?
+        /// Selected file path relative to the workspace root, if any.
+        public var selectedRelativePath: String?
+        /// Execution target label ("local" or a host identifier).
+        public var executionTarget: String?
+
+        public init(
+            workspaceName: String? = nil,
+            selectedRelativePath: String? = nil,
+            executionTarget: String? = nil
+        ) {
+            self.workspaceName = workspaceName
+            self.selectedRelativePath = selectedRelativePath
+            self.executionTarget = executionTarget
+        }
+    }
 
     public init(
         configuration: FloeAgentRuntime.Configuration,
@@ -87,12 +118,14 @@ public actor ConversationRunService {
         checkpointStore: (any CheckpointStore)? = nil,
         conversationStore: any ConversationStore,
         runStore: any RunStore,
-        runID: UUID = UUID()
+        runID: UUID = UUID(),
+        runContext: RunContext? = nil
     ) {
         self.runID = runID
         self.conversationID = configuration.conversationID
         self.conversationStore = conversationStore
         self.runStore = runStore
+        self.runContext = runContext
         self.secretForRedaction = credentials.apiKey
         self.streamedTextLimitBytes = max(
             65_536,
@@ -161,6 +194,11 @@ public actor ConversationRunService {
             parts: [MessagePart(messageID: userMessageID, partIndex: 0, kind: .text, text: goal)]
         ))
         _ = try? await runStore.appendEvent(runID: runID, kind: .status, payloadJSON: #"{"state":"preparing"}"#)
+        // Inject the run context as the first in-memory system message so
+        // every model turn sees the workspace, selection, execution target
+        // and the available tool names. Not persisted: it is runtime
+        // context, not conversation history.
+        await runtime.injectSystemContext(Self.buildContextMessage(runContext))
         try await runtime.start(goal: goal)
     }
 
@@ -179,6 +217,9 @@ public actor ConversationRunService {
 
     private func handleTransition(_ state: AgentState) async {
         latestState = state
+        if case .executingTool(let info) = state {
+            toolStartDates[info.toolCall.id] = info.startedAt
+        }
         if isTerminal(state) {
             await flushReasoning()
         }
@@ -223,9 +264,14 @@ public actor ConversationRunService {
                 payloadJSON: Self.jsonPayload(["tool": call.toolName, "id": call.id])
             )
         case .toolResult(let result):
+            let durationMs = Self.milliseconds(since: toolStartDates.removeValue(forKey: result.callID))
             _ = try? await runStore.appendEvent(
                 runID: runID, kind: .toolResult,
-                payloadJSON: Self.jsonPayload(["status": result.status.rawValue, "summary": result.outputSummary])
+                payloadJSON: Self.jsonPayload([
+                    "status": result.status.rawValue,
+                    "summary": result.outputSummary,
+                    "durationMs": String(durationMs)
+                ])
             )
         case .usage(let report):
             try? await runStore.recordUsage(RunUsageRecord(
@@ -299,6 +345,39 @@ public actor ConversationRunService {
             return "{}"
         }
         return string
+    }
+
+    /// Builds the injected system message: workspace name, selected file,
+    /// execution target, and the available tool names from the catalog.
+    /// The tool list always reflects the compile-time catalog so the model
+    /// sees exactly what the executor can run.
+    static func buildContextMessage(_ context: RunContext?) -> String {
+        var lines: [String] = ["# Run context"]
+        if let workspace = context?.workspaceName, !workspace.isEmpty {
+            lines.append("Workspace: \(workspace)")
+        }
+        if let selected = context?.selectedRelativePath, !selected.isEmpty {
+            lines.append("Selected file (workspace-relative): \(selected)")
+        }
+        if let target = context?.executionTarget, !target.isEmpty {
+            lines.append("Execution target: \(target)")
+        }
+        let toolNames = ToolCatalog.allDescriptors.map(\.name).sorted()
+        lines.append(
+            toolNames.isEmpty
+                ? "Available tools: none registered"
+                : "Available tools: \(toolNames.joined(separator: ", "))"
+        )
+        return lines.joined(separator: "\n")
+    }
+
+    /// Whole milliseconds between `start` and now, clamped at zero. A
+    /// missing start (tool result without an observed executingTool
+    /// transition — e.g. a resumed run) yields 0 rather than an absent key,
+    /// keeping the payload shape stable.
+    static func milliseconds(since start: Date?) -> Int {
+        guard let start else { return 0 }
+        return max(0, Int(Date().timeIntervalSince(start) * 1000))
     }
 
     private static func utf8Prefix(_ value: String, maxBytes: Int) -> String {

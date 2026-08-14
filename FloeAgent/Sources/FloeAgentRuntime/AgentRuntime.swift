@@ -130,17 +130,23 @@ public actor FloeAgentRuntime {
         public var model: ModelProfile
         /// Pause timeout before automatic checkpoint.
         public var pauseTimeout: TimeInterval
+        /// Maximum tool executions per run. The only reliable defense
+        /// against an infinite tool-request loop; exceeding it fails the
+        /// run as recoverable (see ARCHITECTURE_EXECUTION.md §3.3).
+        public var maxToolSteps: Int
 
         public init(
             conversationID: UUID = UUID(),
             provider: ProviderProfile,
             model: ModelProfile,
-            pauseTimeout: TimeInterval = 300
+            pauseTimeout: TimeInterval = 300,
+            maxToolSteps: Int = 32
         ) {
             self.conversationID = conversationID
             self.provider = provider
             self.model = model
             self.pauseTimeout = pauseTimeout
+            self.maxToolSteps = maxToolSteps
         }
     }
 
@@ -170,6 +176,9 @@ public actor FloeAgentRuntime {
     private var streamTextByteCount = 0
     private var providerEventCount = 0
     private var providerPayloadBytes = 0
+    /// Tool executions so far in this run (bounded by
+    /// `Configuration.maxToolSteps`).
+    private var toolStepCount = 0
 
     private var streamTask: Task<Void, Never>?
     private var cancellationToken = CancellationToken()
@@ -214,6 +223,15 @@ public actor FloeAgentRuntime {
     }
 
     // MARK: Public API
+
+    /// Prepends a system message to the conversation context. Called by
+    /// ConversationRunService before `start` with the run context
+    /// (workspace / selected file / execution target / available tools).
+    /// Legal only while idle so the injection stays ahead of the user goal.
+    public func injectSystemContext(_ content: String) async {
+        guard case .idle = state, !content.isEmpty else { return }
+        messages.insert(ConversationMessage(role: "system", content: content), at: 0)
+    }
 
     /// idle → preparing → streamingModel …
     public func start(goal: String) async throws {
@@ -477,6 +495,19 @@ public actor FloeAgentRuntime {
 
     /// streamingModel → executingTool | waitingApproval → streamingModel.
     private func handleToolRequest(_ call: ToolCall) async {
+        // Anti-loop guard: count every tool request, including rejected or
+        // failed ones — a model that keeps re-requesting after failures
+        // must still hit the ceiling. Exceeding it fails the run as
+        // recoverable instead of re-entering the model stream.
+        toolStepCount += 1
+        guard toolStepCount <= configuration.maxToolSteps else {
+            await failRun(
+                message: "Exceeded max tool steps (\(configuration.maxToolSteps))",
+                recoverable: true
+            )
+            return
+        }
+
         guard let descriptor = executor.descriptor(named: call.toolName) else {
             let result = ToolResult(
                 callID: call.id,

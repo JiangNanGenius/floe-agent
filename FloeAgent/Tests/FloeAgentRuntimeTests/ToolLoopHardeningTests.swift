@@ -1,0 +1,325 @@
+// FloeAgentRuntimeTests — Tool-loop hardening (T12).
+// See docs/ARCHITECTURE_EXECUTION.md §3.3/§6.3: maxToolSteps anti-loop
+// ceiling, per-step durationMs in mirrored toolResult payloads, and the
+// injected run-context system message.
+
+import Foundation
+import Testing
+@testable import FloeAgentRuntime
+@testable import FloeProviders
+@testable import FloeModels
+@testable import FloeSecurity
+@testable import FloeTools
+@testable import FloeCore
+@testable import FloePersistence
+import FloeTestSupport
+
+/// Adapter that requests a fresh non-side-effecting tool call on every
+/// turn, forever — the infinite-loop driver. Each turn uses a distinct
+/// call id so the idempotency dedup (same key → skipped) does not mask the
+/// loop; the ceiling must come from maxToolSteps alone.
+private final class LoopingAdapter: ProviderAdapter, @unchecked Sendable {
+    let protocolKind: ModelProtocol = .openAIResponses
+    private let storage = AsyncLock<[ProviderStreamRequest]>([])
+
+    var requests: [ProviderStreamRequest] {
+        storage.withLock { $0 }
+    }
+
+    func stream(
+        request: ProviderStreamRequest,
+        credentials: ProviderCredentials
+    ) -> AsyncThrowingStream<AgentEvent, Error> {
+        storage.withLock { $0.append(request) }
+        // Unique id per turn → unique idempotency key per turn.
+        let call = try! ToolCall( // literals only; cannot fail
+            id: "loop_\(UUID().uuidString)",
+            toolName: "test.echo",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        return AsyncThrowingStream { continuation in
+            continuation.yield(.toolRequest(call))
+            continuation.finish()
+        }
+    }
+
+    func listModels(
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws -> [ModelProfile] { [] }
+}
+
+@Suite("FloeAgentRuntime.ToolLoopHardening")
+struct ToolLoopHardeningTests {
+
+    private func makeStores() async throws -> (SQLiteConversationStore, SQLiteRunStore) {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        return (SQLiteConversationStore(database: database), SQLiteRunStore(database: database))
+    }
+
+    private func registerEcho(in executor: MockExecutor, sideEffecting: Bool = false) {
+        executor.descriptors["test.echo"] = ToolCatalog.Descriptor(
+            name: "test.echo",
+            riskLabels: [],
+            isSideEffecting: sideEffecting
+        )
+    }
+
+    // MARK: 1. Bounded multi-step loop completes
+
+    @Test("N < maxToolSteps: every step executes and the run completes")
+    func boundedLoopCompletes() async throws {
+        let steps = 3
+        var script: [[AgentEvent]] = (1...steps).map { index in
+            [.toolRequest(try! TestFixtures.toolCall(id: "call_\(index)"))] // fixture cannot fail
+        }
+        script.append([.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))])
+
+        let adapter = MockAdapter()
+        adapter.script = script
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let sink = MockSink()
+        let runtime = FloeAgentRuntime(
+            configuration: FloeAgentRuntime.Configuration(
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID()),
+                maxToolSteps: 5
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            sink: sink
+        )
+
+        try await runtime.start(goal: "loop three times")
+
+        let state = await runtime.state
+        guard case .completed = state else {
+            Issue.record("expected completed, got \(state.name)")
+            return
+        }
+        #expect(executor.executedCalls.count == steps)
+        #expect(sink.events.filter {
+            if case .toolResult = $0 { return true }
+            return false
+        }.count == steps)
+    }
+
+    // MARK: 2. Infinite loop trips the ceiling
+
+    @Test("Infinite tool requests fail at maxToolSteps+1 as recoverable")
+    func infiniteLoopTripsCeiling() async throws {
+        let maxSteps = 4
+        let adapter = LoopingAdapter()
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let runtime = FloeAgentRuntime(
+            configuration: FloeAgentRuntime.Configuration(
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID()),
+                maxToolSteps: maxSteps
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "loop forever")
+
+        let state = await runtime.state
+        guard case .failed(let failure) = state else {
+            Issue.record("expected failed, got \(state.name)")
+            return
+        }
+        #expect(failure.message.contains("max tool steps"))
+        #expect(failure.isRecoverable)
+        // Exactly maxToolSteps executions happened; the (max+1)-th request
+        // was refused before reaching the executor.
+        #expect(executor.executedCalls.count == maxSteps)
+        // The adapter saw maxToolSteps+1 turns (the turn that tripped the
+        // ceiling never loops back into the model).
+        #expect(adapter.requests.count == maxSteps + 1)
+    }
+
+    // MARK: 3. Audit records survive the ceiling trip
+
+    @Test("Audit records every executed step; the refused request is not audited as executed")
+    func auditCompleteOnCeiling() async throws {
+        let maxSteps = 3
+        let adapter = LoopingAdapter()
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let audit = MockAuditSink()
+        let runtime = FloeAgentRuntime(
+            configuration: FloeAgentRuntime.Configuration(
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID()),
+                maxToolSteps: maxSteps
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            auditSink: audit
+        )
+
+        try await runtime.start(goal: "audit me")
+
+        let state = await runtime.state
+        #expect(state.name == "failed")
+        // One audit entry per executed step, all "allow" decisions.
+        #expect(audit.entries.count == maxSteps)
+        #expect(audit.entries.allSatisfy { $0.toolName == "test.echo" })
+        #expect(audit.entries.allSatisfy { $0.decision.hasPrefix("allow:") })
+    }
+
+    // MARK: 4. durationMs in mirrored toolResult payloads
+
+    @Test("toolResult events carry durationMs >= 0")
+    func toolResultDurationRecorded() async throws {
+        let (conversationStore, runStore) = try await makeStores()
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "", createdAt: Date(), updatedAt: Date()
+        ))
+
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(try TestFixtures.toolCall(id: "timed_call"))],
+            [.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+
+        let service = ConversationRunService(
+            configuration: FloeAgentRuntime.Configuration(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID())
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        try await service.start(goal: "time this tool")
+
+        let events = try await runStore.events(runID: service.runID)
+        let toolResults = events.filter { $0.kind == .toolResult }
+        #expect(toolResults.count == 1)
+        let payload = toolResults[0].payloadJSON
+        #expect(payload.contains("\"durationMs\""))
+        let decoded = try JSONDecoder().decode([String: String].self, from: Data(payload.utf8))
+        let duration = try #require(decoded["durationMs"].flatMap(Int.init))
+        #expect(duration >= 0)
+    }
+
+    // MARK: 5. Run-context system message injection
+
+    @Test("The first model message is the injected system context with tool names")
+    func systemContextInjected() async throws {
+        let (conversationStore, runStore) = try await makeStores()
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "", createdAt: Date(), updatedAt: Date()
+        ))
+
+        // Register a catalog tool so the injected list is non-empty.
+        ToolCatalog.register(WorkspaceProbeTool.self)
+
+        let adapter = MockAdapter()
+        adapter.script = [[.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+
+        let service = ConversationRunService(
+            configuration: FloeAgentRuntime.Configuration(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID())
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            conversationStore: conversationStore,
+            runStore: runStore,
+            runContext: ConversationRunService.RunContext(
+                workspaceName: "Demo Project",
+                selectedRelativePath: "src/main.swift",
+                executionTarget: "local"
+            )
+        )
+
+        try await service.start(goal: "context please")
+
+        let request = try #require(adapter.requests.first)
+        let first = try #require(request.messages.first)
+        #expect(first.role == "system")
+        #expect(first.content.contains("Workspace: Demo Project"))
+        #expect(first.content.contains("src/main.swift"))
+        #expect(first.content.contains("Execution target: local"))
+        #expect(first.content.contains("Available tools:"))
+        #expect(first.content.contains("test.contextProbe"))
+        // The user goal follows the system message.
+        #expect(request.messages.count == 2)
+        #expect(request.messages[1].role == "user")
+        #expect(request.messages[1].content == "context please")
+
+        // The system context is runtime-only: it must not persist as a
+        // conversation message.
+        let messages = try await conversationStore.messages(conversationID: conversationID)
+        #expect(!messages.contains { $0.role == "system" })
+    }
+
+    @Test("Nil run context still injects the tool list")
+    func systemContextWithoutWorkspace() async throws {
+        let (conversationStore, runStore) = try await makeStores()
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "", createdAt: Date(), updatedAt: Date()
+        ))
+
+        let adapter = MockAdapter()
+        adapter.script = [[.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]]
+
+        let service = ConversationRunService(
+            configuration: FloeAgentRuntime.Configuration(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID())
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        try await service.start(goal: "bare run")
+
+        let request = try #require(adapter.requests.first)
+        let first = try #require(request.messages.first)
+        #expect(first.role == "system")
+        #expect(first.content.contains("Available tools:"))
+        #expect(!first.content.contains("Workspace:"))
+    }
+}
+
+/// Catalog-registered probe tool used to prove the injected system message
+/// lists live catalog names. Never executed.
+private struct WorkspaceProbeTool: AgentTool {
+    struct Arguments: Decodable, Sendable {}
+
+    static let name = "test.contextProbe"
+    static let riskLabels: Set<RiskLabel> = []
+    static let isSideEffecting = false
+
+    func validate(_ args: Arguments) throws {}
+
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        ToolExecutionOutput(summary: "unreachable", fullOutputSHA256: "")
+    }
+}
