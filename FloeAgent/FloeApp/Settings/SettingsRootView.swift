@@ -5,9 +5,9 @@
 // See docs/ARCHITECTURE_SETTINGS.md §5. iPad uses a NavigationSplitView
 // (category list left, detail right — never an empty detail column; the
 // first category is selected by default). iPhone uses the standard
-// NavigationStack push flow. T08 lands the first three categories
-// (General / Providers / Auxiliary); the remaining six land in T09/T10
-// and are listed honestly as unavailable until then.
+// NavigationStack push flow. T08 landed General/Providers/Auxiliary; T09
+// lands Permissions/Execution/Files/Remote/Privacy; Diagnostics lands in
+// T10.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -15,7 +15,7 @@ import FloeCore
 
 /// One settings category in the settings center.
 enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case general, providers, auxiliary
+    case general, providers, auxiliary, permissions, execution, files, remote, privacy
 
     var id: String { rawValue }
 
@@ -24,6 +24,11 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .general: "settings.section.general"
         case .providers: "settings.section.providers"
         case .auxiliary: "settings.section.auxiliary"
+        case .permissions: "settings.section.permissions"
+        case .execution: "settings.section.execution"
+        case .files: "settings.section.files"
+        case .remote: "settings.section.remote"
+        case .privacy: "settings.section.privacy"
         }
     }
 
@@ -32,6 +37,11 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .general: "gearshape"
         case .providers: "antenna.radiowaves.left.and.right"
         case .auxiliary: "photo.badge.plus"
+        case .permissions: "checkmark.shield"
+        case .execution: "terminal"
+        case .files: "folder"
+        case .remote: "server.rack"
+        case .privacy: "hand.raised"
         }
     }
 }
@@ -80,6 +90,16 @@ struct SettingsRootView: View {
             ProvidersSettingsView(center: environment.conversationCenter)
         case .auxiliary:
             AuxiliarySettingsView(center: environment.conversationCenter)
+        case .permissions:
+            AgentPermissionsView(center: environment.settingsCenter)
+        case .execution:
+            ExecutionEnvironmentView(center: environment.settingsCenter)
+        case .files:
+            FilesSettingsView(center: environment.settingsCenter)
+        case .remote:
+            RemoteSettingsView(center: environment.settingsCenter)
+        case .privacy:
+            PrivacySecurityView(center: environment.settingsCenter)
         }
     }
 }

@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		72303DA3BA2A42D5B16C5259 /* AgentPermissionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 622C69D74AA640728CD82666 /* AgentPermissionsView.swift */; };
+		AEA42CDA55C84216872F4326 /* ExecutionEnvironmentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0EAC8FA7F34326AA878B7B /* ExecutionEnvironmentView.swift */; };
+		2FA8BACE58B64DAA87DD1EA4 /* FilesSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AACCE26B930485DA9DF6230 /* FilesSettingsView.swift */; };
+		E5772BCB93BB405D98E6FD21 /* RemoteSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 505E531E489343AF89B7C750 /* RemoteSettingsView.swift */; };
+		ED1326FC2717456EAF2E2367 /* PrivacySecurityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95534886801048DAA98A479A /* PrivacySecurityView.swift */; };
+
 		CEEA9B0D0AC24EAE89E8E7C4 /* SettingsCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 554A747FAC764CBBBABAAE83 /* SettingsCenter.swift */; };
 		D59C244B71614790AF02DE38 /* SettingsActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A087BA16DA9440AAAFB7390 /* SettingsActions.swift */; };
 		4E7DDB638C0743A1AF94C8A1 /* SettingsRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48C92789EE094CFD8BBA809C /* SettingsRootView.swift */; };
@@ -115,6 +121,12 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		622C69D74AA640728CD82666 /* AgentPermissionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentPermissionsView.swift; sourceTree = "<group>"; };
+		FF0EAC8FA7F34326AA878B7B /* ExecutionEnvironmentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionEnvironmentView.swift; sourceTree = "<group>"; };
+		4AACCE26B930485DA9DF6230 /* FilesSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesSettingsView.swift; sourceTree = "<group>"; };
+		505E531E489343AF89B7C750 /* RemoteSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSettingsView.swift; sourceTree = "<group>"; };
+		95534886801048DAA98A479A /* PrivacySecurityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacySecurityView.swift; sourceTree = "<group>"; };
+
 		554A747FAC764CBBBABAAE83 /* SettingsCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsCenter.swift; sourceTree = "<group>"; };
 		1A087BA16DA9440AAAFB7390 /* SettingsActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsActions.swift; sourceTree = "<group>"; };
 		48C92789EE094CFD8BBA809C /* SettingsRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsRootView.swift; sourceTree = "<group>"; };
@@ -447,6 +459,11 @@
 				97080FEBFB9F474E85698ECE /* GeneralSettingsView.swift */,
 				BC50BCD7C55544EE9BC4F9D9 /* ProvidersSettingsView.swift */,
 				F4F0C1ABF43647348BAB7D02 /* AuxiliarySettingsView.swift */,
+				622C69D74AA640728CD82666 /* AgentPermissionsView.swift */,
+				FF0EAC8FA7F34326AA878B7B /* ExecutionEnvironmentView.swift */,
+				4AACCE26B930485DA9DF6230 /* FilesSettingsView.swift */,
+				505E531E489343AF89B7C750 /* RemoteSettingsView.swift */,
+				95534886801048DAA98A479A /* PrivacySecurityView.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -700,6 +717,11 @@
 				4B4AA7F01CAC4121A2C9EADA /* GeneralSettingsView.swift in Sources */,
 				9DD7C835804444BC92CAB2E8 /* ProvidersSettingsView.swift in Sources */,
 				4D84F38D0DF84A9AB013642B /* AuxiliarySettingsView.swift in Sources */,
+				72303DA3BA2A42D5B16C5259 /* AgentPermissionsView.swift in Sources */,
+				AEA42CDA55C84216872F4326 /* ExecutionEnvironmentView.swift in Sources */,
+				2FA8BACE58B64DAA87DD1EA4 /* FilesSettingsView.swift in Sources */,
+				E5772BCB93BB405D98E6FD21 /* RemoteSettingsView.swift in Sources */,
+				ED1326FC2717456EAF2E2367 /* PrivacySecurityView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
