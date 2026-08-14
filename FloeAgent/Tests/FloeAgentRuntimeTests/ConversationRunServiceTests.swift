@@ -32,6 +32,8 @@ struct ConversationRunServiceTests {
 
         let adapter = MockAdapter()
         adapter.script = [[
+            .reasoningSummary(AgentEvent.ReasoningSummary(text: "Check ")),
+            .reasoningSummary(AgentEvent.ReasoningSummary(text: "the answer.")),
             .textDelta(AgentEvent.TextDelta(text: "Hello ")),
             .textDelta(AgentEvent.TextDelta(text: "world")),
             .usage(AgentEvent.UsageReport(inputTokens: 10, outputTokens: 4)),
@@ -63,6 +65,9 @@ struct ConversationRunServiceTests {
         // Stream chunks stay live-only; the canonical completed assistant
         // message is persisted once to avoid per-token write amplification.
         #expect(!events.contains { $0.kind == .assistantText })
+        let reasoningEvents = events.filter { $0.kind == .reasoning }
+        #expect(reasoningEvents.count == 1)
+        #expect(reasoningEvents[0].payloadJSON.contains("Check the answer."))
         #expect(events.contains { $0.kind == .status })
         #expect(events.map(\.sequence) == events.map(\.sequence).sorted())
 

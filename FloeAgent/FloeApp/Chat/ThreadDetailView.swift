@@ -101,11 +101,30 @@ struct ThreadDetailView: View {
                     }
 
                     // Live streaming tail, only while the run is active.
+                    if viewModel.isRunning && !viewModel.liveReasoningText.isEmpty {
+                        LiveReasoningDisclosure(text: viewModel.liveReasoningText)
+                            .id("live-reasoning")
+                    }
+
                     if viewModel.isRunning && !viewModel.liveStreamedText.isEmpty {
                         Text(viewModel.liveStreamedText)
                             .font(FloeTheme.Typography.body)
                             .textSelection(.enabled)
                             .id("live-tail")
+                    }
+
+                    if viewModel.isRunning
+                        && viewModel.liveStreamedText.isEmpty
+                        && viewModel.liveReasoningText.isEmpty {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text(LocalizedStringKey(viewModel.hasProviderActivity
+                                ? "thread.model_thinking"
+                                : "thread.contacting_provider"))
+                                .font(FloeTheme.Typography.metadata)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
                     }
 
                     // Pending approvals for this run.
@@ -160,11 +179,25 @@ struct ThreadDetailView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             if let state = viewModel.liveStateName {
-                Text(state)
+                Text(localizedState(state))
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
                     .accessibilityLabel(String(localized: "thread.state") + " " + state)
             }
+        }
+    }
+
+    private func localizedState(_ state: String) -> LocalizedStringKey {
+        switch state {
+        case "preparing": "thread.state.preparing"
+        case "streamingModel": "thread.state.streaming"
+        case "executingTool": "thread.state.executing_tool"
+        case "waitingApproval": "thread.state.waiting_approval"
+        case "completed": "thread.state.completed"
+        case "failed": "thread.state.failed"
+        case "checkpointed": "thread.state.checkpointed"
+        case "cancelling": "thread.state.cancelling"
+        default: LocalizedStringKey(state)
         }
     }
 
@@ -256,6 +289,47 @@ struct ThreadDetailView: View {
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(FloeTheme.pending.opacity(0.08))
+    }
+}
+
+/// A live reasoning block follows the familiar agent-app pattern: compact by
+/// default, clearly separate from the answer, and expandable without changing
+/// the canonical assistant message.
+private struct LiveReasoningDisclosure: View {
+    let text: String
+    @State private var isExpanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            Text(text)
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .padding(.top, 6)
+        } label: {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("thread.model_thinking")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+                if !isExpanded {
+                    Text(preview)
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(10)
+        .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var preview: String {
+        text.split(whereSeparator: { $0.isNewline })
+            .last
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 }
 

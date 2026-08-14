@@ -47,6 +47,10 @@ struct ProviderEditorView: View {
             ? LocalizedStringKey("providers.add")
             : LocalizedStringKey("providers.edit"))
         .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("action.cancel") { dismiss() }
+                    .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            }
             ToolbarItem(placement: .confirmationAction) {
                 Button("action.save") { save() }
                     .disabled(viewModel.isSaving)
@@ -67,8 +71,8 @@ struct ProviderEditorView: View {
     }
 
     private var protocolSection: some View {
-        Section("Protocol") {
-            Picker("Protocol", selection: $viewModel.selectedProtocol) {
+        Section("providers.protocol") {
+            Picker("providers.protocol", selection: $viewModel.selectedProtocol) {
                 ForEach(viewModel.availableProtocols, id: \.self) { protocolKind in
                     Text(protocolKind.displayName).tag(protocolKind)
                 }
@@ -218,7 +222,7 @@ struct ProviderEditorView: View {
             }
             Spacer()
                 if viewModel.defaultModelID == model.id {
-                    Text("Default")
+                    Text("model.default")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(FloeTheme.primary)
                 }
@@ -229,7 +233,7 @@ struct ProviderEditorView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button("Set as Default") { viewModel.setDefaultModel(model.id) }
+            Button("model.set_default") { viewModel.setDefaultModel(model.id) }
         }
     }
 

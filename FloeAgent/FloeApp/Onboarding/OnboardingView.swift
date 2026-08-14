@@ -74,8 +74,8 @@ struct OnboardingView: View {
             .tint(FloeTheme.primary)
             .padding(.horizontal, 24)
             .padding(.vertical, 12)
-            .accessibilityLabel("Setup progress")
-            .accessibilityValue("Step \(step.rawValue + 1) of \(Step.allCases.count)")
+            .accessibilityLabel("setup.progress")
+            .accessibilityValue("\(step.rawValue + 1)/\(Step.allCases.count)")
     }
 
     @ViewBuilder
@@ -165,27 +165,27 @@ struct OnboardingView: View {
 
     private var connectionStep: some View {
         Form {
-            Section("Protocol") {
-                Picker("Protocol", selection: $editor.selectedProtocol) {
+            Section("providers.protocol") {
+                Picker("providers.protocol", selection: $editor.selectedProtocol) {
                     ForEach(editor.availableProtocols, id: \.self) {
                         Text(protocolName($0)).tag($0)
                     }
                 }
                 .disabled(editor.availableProtocols.count == 1)
             }
-            Section("Endpoint") {
-                TextField("Base URL", text: $editor.baseURLString)
+            Section("providers.endpoint") {
+                TextField("providers.base_url", text: $editor.baseURLString)
                     .textInputAutocapitalization(.never).keyboardType(.URL)
-                TextField("Additional non-secret headers", text: $editor.nonSecretHeadersText, axis: .vertical)
+                TextField("providers.headers_placeholder", text: $editor.nonSecretHeadersText, axis: .vertical)
                     .lineLimit(2...4).textInputAutocapitalization(.never)
                 if URL(string: editor.baseURLString)?.scheme == "http" {
-                    Toggle("Allow private-network HTTP", isOn: $editor.allowsPlainHTTP)
+                    Toggle("providers.allow_plain_http", isOn: $editor.allowsPlainHTTP)
                 }
             }
-            Section("Credentials") {
-                SecureField("API key", text: $editor.apiKey)
+            Section("providers.credentials") {
+                SecureField("providers.api_key", text: $editor.apiKey)
                     .textInputAutocapitalization(.never)
-                Toggle("Sync API key with iCloud Keychain", isOn: $editor.syncEnabled)
+                Toggle("providers.sync_keychain", isOn: $editor.syncEnabled)
             }
             if case .failed(let message) = editor.testState {
                 Section { Text(message).foregroundStyle(FloeTheme.destructive) }
@@ -198,12 +198,12 @@ struct OnboardingView: View {
         List {
             if editor.candidateModels.isEmpty {
                 ContentUnavailableView(
-                    "No models discovered",
+                    "setup.models.none",
                     systemImage: "magnifyingglass",
-                    description: Text("Add a model ID manually below.")
+                    description: Text("setup.models.none.hint")
                 )
             } else {
-                Section("Available models") {
+                Section("setup.models.available") {
                     ForEach(editor.candidateModels) { model in
                         Button { editor.toggleSelection(model.id) } label: {
                             HStack {
@@ -222,10 +222,10 @@ struct OnboardingView: View {
                     }
                 }
             }
-            Section("Add manually") {
-                TextField("Model ID", text: $manualRemoteID).textInputAutocapitalization(.never)
-                TextField("Display name (optional)", text: $manualDisplayName)
-                Button("Add model") {
+            Section("setup.models.manual") {
+                TextField("model.remote_id", text: $manualRemoteID).textInputAutocapitalization(.never)
+                TextField("setup.models.display_name_optional", text: $manualDisplayName)
+                Button("providers.add_model") {
                     editor.addManualModel(remoteID: manualRemoteID, displayName: manualDisplayName)
                     manualRemoteID = ""
                     manualDisplayName = ""
@@ -238,10 +238,10 @@ struct OnboardingView: View {
     private var capabilitiesStep: some View {
         List {
             Section {
-                Text("Each model keeps its own vision, tool, approval and token-limit settings.")
+                Text("setup.capabilities.hint")
                     .font(FloeTheme.Typography.metadata).foregroundStyle(.secondary)
             }
-            Section("Selected models") {
+            Section("setup.models.selected") {
                 ForEach(editor.selectedModels) { model in
                     HStack {
                         Button { editingModel = model } label: {
@@ -259,7 +259,7 @@ struct OnboardingView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(editor.defaultModelID == model.id
-                                            ? "Default model" : "Set as default")
+                                            ? "model.default" : "model.set_default")
                     }
                 }
             }
@@ -271,14 +271,28 @@ struct OnboardingView: View {
             VStack(spacing: 20) {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 64)).foregroundStyle(FloeTheme.success)
-                Text("Your configuration is ready").font(.title.bold())
+                Text("setup.summary.ready").font(.title.bold())
                 VStack(alignment: .leading, spacing: 12) {
                     Label(editor.selectedPreset.displayName, systemImage: "network")
                     Label(protocolName(editor.selectedProtocol), systemImage: "point.3.connected.trianglepath.dotted")
-                    Label("\(editor.selectedModels.count) models selected", systemImage: "cpu")
+                    Label {
+                        HStack(spacing: 4) {
+                            Text(editor.selectedModels.count.formatted())
+                            Text("setup.summary.models_selected")
+                        }
+                    } icon: {
+                        Image(systemName: "cpu")
+                    }
                     if let id = editor.defaultModelID,
                        let model = editor.selectedModels.first(where: { $0.id == id }) {
-                        Label("Default: \(model.displayName)", systemImage: "checkmark.circle")
+                        Label {
+                            HStack(spacing: 4) {
+                                Text("model.default")
+                                Text("· \(model.displayName)")
+                            }
+                        } icon: {
+                            Image(systemName: "checkmark.circle")
+                        }
                     }
                 }
                 .padding(20)

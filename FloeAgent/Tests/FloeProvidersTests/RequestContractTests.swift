@@ -38,6 +38,16 @@ struct RequestContractTests {
         #expect(anthropicJSON[0]["input_schema"] is [String: Any])
     }
 
+    @Test("Chat tools are omitted when tool calling is disabled")
+    func chatOmitsUnusedTools() throws {
+        let body = ChatRequest(
+            model: "model",
+            messages: [.init(role: "user", content: "hello")]
+        )
+        let object = try jsonObject(body)
+        #expect(object["tools"] == nil)
+    }
+
     @Test("Anthropic system messages use the top-level system field")
     func anthropicSystemPlacement() {
         let providerID = UUID()

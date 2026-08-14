@@ -16,27 +16,27 @@ struct AuxiliaryModelsView: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Use one model for generation and editing", isOn: Binding(
+                Toggle("auxiliary.shared.toggle", isOn: Binding(
                     get: { viewModel.mode == .shared },
                     set: { viewModel.setSharedMode($0) }
                 ))
             } footer: {
-                Text("Image models reuse the selected provider's Keychain credential and stay separate from chat model selection.")
+                Text("auxiliary.keychain.hint")
             }
 
             if viewModel.mode == .shared {
-                Section("Shared image model") {
+                Section("auxiliary.shared.model") {
                     modelPicker(selection: $viewModel.sharedModelID, models: viewModel.sharedCandidates)
                     if viewModel.sharedCandidates.isEmpty {
-                        Label("Add a model that supports both image generation and editing.", systemImage: "info.circle")
+                        Label("auxiliary.shared.empty", systemImage: "info.circle")
                             .foregroundStyle(.secondary)
                     }
                 }
             } else {
-                Section("Image generation") {
+                Section("auxiliary.generation") {
                     modelPicker(selection: $viewModel.generationModelID, models: viewModel.generationCandidates)
                 }
-                Section("Image editing") {
+                Section("auxiliary.editing") {
                     modelPicker(selection: $viewModel.editingModelID, models: viewModel.editingCandidates)
                 }
             }
@@ -45,12 +45,12 @@ struct AuxiliaryModelsView: View {
                 Button {
                     showingAdd = true
                 } label: {
-                    Label("Add image model", systemImage: "plus")
+                    Label("auxiliary.add_model", systemImage: "plus")
                 }
                 .disabled(viewModel.center.providers.isEmpty)
             } footer: {
                 if viewModel.center.providers.isEmpty {
-                    Text("Add a provider before creating an image model.")
+                    Text("auxiliary.provider_required")
                 }
             }
 
@@ -61,7 +61,7 @@ struct AuxiliaryModelsView: View {
         .navigationTitle("more.auxiliary_models")
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save") { Task { await viewModel.save() } }
+                Button("action.save") { Task { await viewModel.save() } }
                     .disabled(viewModel.isSaving)
             }
         }
@@ -77,8 +77,8 @@ struct AuxiliaryModelsView: View {
         selection: Binding<UUID?>,
         models: [ModelProfile]
     ) -> some View {
-        Picker("Model", selection: selection) {
-            Text("Not configured").tag(Optional<UUID>.none)
+        Picker("model.section.identity", selection: selection) {
+            Text("auxiliary.not_configured").tag(Optional<UUID>.none)
             ForEach(models) { model in
                 Text(viewModel.label(for: model)).tag(Optional(model.id))
             }
@@ -175,7 +175,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
 
     func label(for model: ModelProfile) -> String {
         let provider = center.providers.first(where: { $0.id == model.providerID })
-        return "\(model.displayName) · \(provider.map { providerName($0.kind) } ?? "Provider")"
+        return "\(model.displayName) · \(provider.map { providerName($0.kind) } ?? String(localized: "auxiliary.provider"))"
     }
 
     private func supports(_ operation: RemoteImageOperation, model: ModelProfile) -> Bool {
@@ -220,27 +220,27 @@ private struct AuxiliaryModelEditorView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Provider") {
-                    Picker("Provider", selection: $providerID) {
+                Section("auxiliary.provider") {
+                    Picker("auxiliary.provider", selection: $providerID) {
                         ForEach(compatibleProviders) { provider in
                             Text(ProviderPreset.preset(for: provider.kind).displayName)
                                 .tag(Optional(provider.id))
                         }
                     }
                     if compatibleProviders.isEmpty {
-                        Label("No configured provider currently has an implemented image adapter.", systemImage: "exclamationmark.triangle")
+                        Label("auxiliary.adapter.none", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.secondary)
                     }
                 }
-                Section("Image model") {
-                    TextField("Model ID", text: $remoteModelID).textInputAutocapitalization(.never)
-                    TextField("Display name", text: $displayName)
-                    Toggle("Image generation", isOn: $supportsGeneration)
+                Section("auxiliary.image_model") {
+                    TextField("model.remote_id", text: $remoteModelID).textInputAutocapitalization(.never)
+                    TextField("model.display_name", text: $displayName)
+                    Toggle("auxiliary.generation", isOn: $supportsGeneration)
                         .disabled(!supportedOperations.contains(.generate))
-                    Toggle("Image editing", isOn: $supportsEditing)
+                    Toggle("auxiliary.editing", isOn: $supportsEditing)
                         .disabled(!supportedOperations.contains(.edit))
                     if !supportedOperations.contains(.edit) {
-                        Text("Image editing is unavailable for this provider in the current build.")
+                        Text("auxiliary.editing.unavailable")
                             .font(FloeTheme.Typography.metadata)
                             .foregroundStyle(.secondary)
                     }
@@ -249,14 +249,14 @@ private struct AuxiliaryModelEditorView: View {
                     Section { Text(errorMessage).foregroundStyle(FloeTheme.destructive) }
                 }
             }
-            .navigationTitle("Add Image Model")
+            .navigationTitle("auxiliary.add_model")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("action.cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
+                    Button("action.save") { save() }
                         .disabled(!isValid || isSaving)
                 }
             }

@@ -10,14 +10,15 @@ import Foundation
 public struct ChatRequest: Sendable, Codable, Hashable {
     public var model: String
     public var messages: [Message]
-    public var tools: [ToolDefinition]
+    /// Omitted entirely when the selected model has tool calling disabled.
+    public var tools: [ToolDefinition]?
     public var maxTokens: Int?
     public var stream: Bool
 
     public init(
         model: String,
         messages: [Message],
-        tools: [ToolDefinition] = [],
+        tools: [ToolDefinition]? = nil,
         maxTokens: Int? = nil,
         stream: Bool = true
     ) {

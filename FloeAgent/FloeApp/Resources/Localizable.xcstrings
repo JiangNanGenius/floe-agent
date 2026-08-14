@@ -3293,6 +3293,263 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "测试并继续" } }
       }
     },
+    "auxiliary.adapter.none": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "No configured provider currently supports image requests." } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前已配置的服务商均不支持图片请求。" } } }
+    },
+    "auxiliary.add_model": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Add Image Model" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "添加图片模型" } } }
+    },
+    "auxiliary.editing": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Image Editing" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "图片编辑" } } }
+    },
+    "auxiliary.editing.unavailable": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Image editing is unavailable for this provider in the current build." } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前版本暂不支持此服务商的图片编辑接口。" } } }
+    },
+    "auxiliary.generation": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Image Generation" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "图片生成" } } }
+    },
+    "auxiliary.image_model": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Image Model" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "图片模型" } } }
+    },
+    "auxiliary.keychain.hint": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Image models reuse the provider's Keychain credential and stay separate from chat models." } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "图片模型复用服务商的钥匙串凭据，并与对话模型分开管理。" } } }
+    },
+    "auxiliary.not_configured": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Not Configured" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "未配置" } } }
+    },
+    "auxiliary.provider": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Provider" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "服务商" } } }
+    },
+    "auxiliary.provider_required": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Add a provider before creating an image model." } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "请先添加服务商，再创建图片模型。" } } }
+    },
+    "auxiliary.shared.empty": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Add a model that supports both image generation and editing." } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "请添加同时支持图片生成和编辑的模型。" } } }
+    },
+    "auxiliary.shared.model": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Shared Image Model" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "共用图片模型" } } }
+    },
+    "auxiliary.shared.toggle": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Use One Model for Generation and Editing" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "生成与编辑共用一个模型" } } }
+    },
+    "setup.capabilities.hint": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Each model keeps independent vision, tool, approval and token-limit settings." } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "每个模型分别保存视觉、工具、审批和 Token 限制。" } } }
+    },
+    "setup.models.available": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Available Models" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "可用模型" } } }
+    },
+    "setup.models.display_name_optional": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Display name (optional)" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "显示名称（可选）" } } }
+    },
+    "setup.models.manual": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Add Manually" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "手动添加" } } }
+    },
+    "setup.models.none": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "No Models Discovered" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "未发现模型" } } }
+    },
+    "setup.models.none.hint": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Add a model ID manually below." } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "可在下方手动填写模型 ID。" } } }
+    },
+    "setup.models.selected": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Selected Models" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "已选模型" } } }
+    },
+    "setup.progress": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Setup Progress" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "设置进度" } } }
+    },
+    "setup.summary.models_selected": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "models selected" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "个模型已选择" } } }
+    },
+    "setup.summary.ready": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Your Configuration Is Ready" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "配置已准备就绪" } } }
+    },
+    "model.capability.approval": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Approval support" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "操作审批" } }
+      }
+    },
+    "model.capability.text": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Text" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "文本对话" } }
+      }
+    },
+    "model.capability.tools": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tool calling" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "工具调用" } }
+      }
+    },
+    "model.capability.vision": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Vision input" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "视觉输入" } }
+      }
+    },
+    "model.context_tokens": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Context window" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "上下文长度" } }
+      }
+    },
+    "model.default": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Default" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "默认模型" } }
+      }
+    },
+    "model.display_name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Display name" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "显示名称" } }
+      }
+    },
+    "model.enabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Enabled" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "启用模型" } }
+      }
+    },
+    "model.limits.hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Choose a common size or enter the exact limit. Maximum output cannot exceed context." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "可快速选择常见规格，也可填写精确 Token 数；最大输出不能超过上下文长度。" } }
+      }
+    },
+    "model.max_output_tokens": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Maximum output" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "最大输出长度" } }
+      }
+    },
+    "model.remote_id": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Model ID" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "模型 ID" } }
+      }
+    },
+    "model.section.capabilities": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Capabilities" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "模型能力" } }
+      }
+    },
+    "model.section.identity": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Model" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "模型信息" } }
+      }
+    },
+    "model.section.limits": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Token limits" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Token 限制" } }
+      }
+    },
+    "model.set_default": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Set as Default" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "设为默认模型" } }
+      }
+    },
+    "model.settings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Model Settings" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "模型设置" } }
+      }
+    },
+    "providers.protocol": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Protocol" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "接口协议" } }
+      }
+    },
+    "thread.contacting_provider": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Contacting the provider…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在连接模型服务…" } }
+      }
+    },
+    "thread.model_thinking": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The model is thinking…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "模型正在思考…" } }
+      }
+    },
+    "thread.state.cancelling": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Stopping" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在停止" } } }
+    },
+    "thread.state.checkpointed": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Stopped" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "已停止" } } }
+    },
+    "thread.state.completed": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Completed" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "已完成" } } }
+    },
+    "thread.state.executing_tool": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Running a tool" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在执行工具" } } }
+    },
+    "thread.state.failed": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Failed" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "运行失败" } } }
+    },
+    "thread.state.preparing": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Preparing" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在准备" } } }
+    },
+    "thread.state.streaming": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Generating" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在生成" } } }
+    },
+    "thread.state.waiting_approval": {
+      "extractionState": "manual",
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Waiting for approval" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "等待授权" } } }
+    },
     "storage.unavailable": {
       "extractionState": "manual",
       "localizations": {

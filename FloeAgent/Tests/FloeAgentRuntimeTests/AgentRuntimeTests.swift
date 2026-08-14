@@ -36,18 +36,26 @@ final class AsyncLock<State>: @unchecked Sendable {
 /// Scripted adapter: emits a fixed event sequence per stream call.
 final class MockAdapter: ProviderAdapter, @unchecked Sendable {
     let protocolKind: ModelProtocol = .openAIResponses
-    private let storage = AsyncLock<(script: [[AgentEvent]], callCount: Int)>(([], 0))
+    private struct Storage {
+        var script: [[AgentEvent]] = []
+        var callCount = 0
+        var requests: [ProviderStreamRequest] = []
+    }
+    private let storage = AsyncLock(Storage())
 
     var script: [[AgentEvent]] {
         get { storage.withLock { $0.script } }
         set { storage.withLock { $0.script = newValue } }
     }
 
+    var requests: [ProviderStreamRequest] { storage.withLock { $0.requests } }
+
     func stream(
         request: ProviderStreamRequest,
         credentials: ProviderCredentials
     ) -> AsyncThrowingStream<AgentEvent, Error> {
         let events = storage.withLock { state -> [AgentEvent] in
+            state.requests.append(request)
             let events = state.callCount < state.script.count ? state.script[state.callCount] : []
             state.callCount += 1
             return events
@@ -145,6 +153,7 @@ struct AgentRuntimeTests {
 
     private func makeRuntime(
         adapter: MockAdapter,
+        model: ModelProfile? = nil,
         executor: MockExecutor = MockExecutor(),
         policy: any ApprovalPolicy = HumanApprovalPolicy(),
         audit: MockAuditSink = MockAuditSink(),
@@ -155,7 +164,7 @@ struct AgentRuntimeTests {
         return FloeAgentRuntime(
             configuration: FloeAgentRuntime.Configuration(
                 provider: provider,
-                model: TestFixtures.testModel(providerID: provider.id),
+                model: model ?? TestFixtures.testModel(providerID: provider.id),
                 pauseTimeout: 0.1
             ),
             adapter: adapter,
@@ -194,6 +203,22 @@ struct AgentRuntimeTests {
         }
         #expect(info.stopReason == .endTurn)
         #expect(sink.transitions == ["preparing", "streamingModel", "completed"])
+    }
+
+    @Test("A text-only model is never offered tool schemas")
+    func textOnlyModelOmitsTools() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [[.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]]
+        let provider = TestFixtures.localhostProvider()
+        var model = TestFixtures.testModel(providerID: provider.id)
+        model.capabilities = [.text]
+        let runtime = makeRuntime(adapter: adapter, model: model)
+
+        try await runtime.start(goal: "hello")
+
+        #expect(adapter.requests.count == 1)
+        #expect(adapter.requests[0].toolSchemas.isEmpty)
+        #expect(adapter.requests[0].pendingToolCalls.isEmpty)
     }
 
     @Test("Non-side-effecting tool: streaming → executing → streaming → completed")

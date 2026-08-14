@@ -320,6 +320,7 @@ public actor FloeAgentRuntime {
         streamText = ""
         streamTextByteCount = 0
 
+        let supportsTools = configuration.model.capabilities.contains(.tools)
         let request = ProviderStreamRequest(
             provider: configuration.provider,
             model: configuration.model,
@@ -327,14 +328,14 @@ public actor FloeAgentRuntime {
             toolResults: pendingToolResults.map {
                 (callID: $0.callID, output: $0.outputSummary)
             },
-            pendingToolCalls: pendingToolCalls,
-            toolSchemas: ToolCatalog.allDescriptors.map {
+            pendingToolCalls: supportsTools ? pendingToolCalls : [],
+            toolSchemas: supportsTools ? ToolCatalog.allDescriptors.map {
                 ToolSchemaDescriptor(
                     name: $0.name,
                     description: $0.toolDescription,
                     parametersJSON: $0.parametersJSON
                 )
-            }
+            } : []
         )
         pendingToolResults.removeAll(keepingCapacity: true)
         pendingToolCalls.removeAll(keepingCapacity: true)
@@ -363,7 +364,12 @@ public actor FloeAgentRuntime {
             } catch is CancellationError {
                 // cancel() owns the terminal transition.
             } catch {
-                await self.failRun(message: error.localizedDescription, recoverable: false)
+                let normalized = AgentEvent.NormalizedError(
+                    kind: .network,
+                    providerMessage: error.localizedDescription
+                )
+                await self.emit(.error(normalized))
+                await self.failRun(message: error.localizedDescription, recoverable: true)
             }
         }
         await streamTask?.value

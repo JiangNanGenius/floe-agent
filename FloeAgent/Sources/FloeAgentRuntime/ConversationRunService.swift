@@ -26,6 +26,13 @@ public actor ConversationRunService {
         public var conversationID: UUID
         public var stateName: String
         public var streamedText: String
+        /// Provider-supplied reasoning text/summary accumulated for this run.
+        /// It is separate from the canonical assistant answer so clients can
+        /// present it behind an explicit disclosure control.
+        public var reasoningText: String
+        /// True after the provider has delivered any valid stream event,
+        /// including reasoning-only chunks before visible answer text.
+        public var hasProviderActivity: Bool
         public var isTerminal: Bool
         /// The exact runtime payload awaiting approval. UI code must display
         /// this value rather than reconstructing authority from an event.
@@ -36,6 +43,8 @@ public actor ConversationRunService {
             conversationID: UUID,
             stateName: String,
             streamedText: String,
+            reasoningText: String = "",
+            hasProviderActivity: Bool = false,
             isTerminal: Bool,
             pendingApproval: AgentState.WaitingApproval? = nil
         ) {
@@ -43,6 +52,8 @@ public actor ConversationRunService {
             self.conversationID = conversationID
             self.stateName = stateName
             self.streamedText = streamedText
+            self.reasoningText = reasoningText
+            self.hasProviderActivity = hasProviderActivity
             self.isTerminal = isTerminal
             self.pendingApproval = pendingApproval
         }
@@ -60,6 +71,9 @@ public actor ConversationRunService {
     private let secretForRedaction: String?
     private let streamedTextLimitBytes: Int
     private var streamedText = ""
+    private var reasoningText = ""
+    private var unflushedReasoningText = ""
+    private var hasProviderActivity = false
     private var latestState: AgentState = .idle
 
     public init(
@@ -120,6 +134,8 @@ public actor ConversationRunService {
             conversationID: conversationID,
             stateName: latestState.name,
             streamedText: streamedText,
+            reasoningText: reasoningText,
+            hasProviderActivity: hasProviderActivity,
             isTerminal: isTerminal(latestState),
             pendingApproval: pendingApproval
         )
@@ -163,6 +179,9 @@ public actor ConversationRunService {
 
     private func handleTransition(_ state: AgentState) async {
         latestState = state
+        if isTerminal(state) {
+            await flushReasoning()
+        }
         let endedAt: Date? = isTerminal(state) ? Date() : nil
         try? await runStore.updateRunState(id: runID, state: state.name, endedAt: endedAt)
         if case .waitingApproval(let waiting) = state {
@@ -178,6 +197,13 @@ public actor ConversationRunService {
     }
 
     private func handleEvent(_ event: AgentEvent) async {
+        hasProviderActivity = true
+        if case .reasoningSummary = event {
+            // Keep adjacent streaming deltas in one durable record. Writing a
+            // database row per token makes long reasoning runs impractical.
+        } else {
+            await flushReasoning()
+        }
         switch event {
         case .textDelta(let delta):
             let remaining = max(0, streamedTextLimitBytes - streamedText.utf8.count)
@@ -185,10 +211,12 @@ public actor ConversationRunService {
                 streamedText += Self.utf8Prefix(delta.text, maxBytes: remaining)
             }
         case .reasoningSummary(let summary):
-            _ = try? await runStore.appendEvent(
-                runID: runID, kind: .reasoning,
-                payloadJSON: Self.jsonPayload(["text": summary.text])
-            )
+            let remaining = max(0, streamedTextLimitBytes - reasoningText.utf8.count)
+            if remaining > 0 {
+                let delta = Self.utf8Prefix(summary.text, maxBytes: remaining)
+                reasoningText += delta
+                unflushedReasoningText += delta
+            }
         case .toolRequest(let call):
             _ = try? await runStore.appendEvent(
                 runID: runID, kind: .toolRequest,
@@ -235,6 +263,17 @@ public actor ConversationRunService {
     }
 
     // MARK: - Helpers
+
+    private func flushReasoning() async {
+        guard !unflushedReasoningText.isEmpty else { return }
+        let text = unflushedReasoningText
+        unflushedReasoningText = ""
+        _ = try? await runStore.appendEvent(
+            runID: runID,
+            kind: .reasoning,
+            payloadJSON: Self.jsonPayload(["text": text])
+        )
+    }
 
     private func isTerminal(_ state: AgentState) -> Bool {
         switch state {

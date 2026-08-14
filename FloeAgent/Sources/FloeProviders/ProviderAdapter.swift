@@ -305,6 +305,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
     ) throws -> URLRequest {
         let url = request.provider.baseURL.appendingPathComponent("responses")
         var urlRequest = URLRequest(url: url)
+        urlRequest.timeoutInterval = 45
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
@@ -403,6 +404,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
     ) throws -> URLRequest {
         let url = request.provider.baseURL.appendingPathComponent("chat/completions")
         var urlRequest = URLRequest(url: url)
+        urlRequest.timeoutInterval = 45
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
@@ -451,7 +453,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
         return ChatRequest(
             model: request.model.remoteModelID,
             messages: messages,
-            tools: tools,
+            tools: tools.isEmpty ? nil : tools,
             maxTokens: request.model.limits.maxOutputTokens,
             stream: true
         )
@@ -522,6 +524,7 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
     ) throws -> URLRequest {
         let url = request.provider.baseURL.appendingPathComponent("v1/messages")
         var urlRequest = URLRequest(url: url)
+        urlRequest.timeoutInterval = 45
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")

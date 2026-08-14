@@ -29,6 +29,8 @@ final class ThreadDetailViewModel: ObservableObject {
     /// Live snapshot of the selected run, when the center owns it.
     @Published private(set) var liveStateName: String?
     @Published private(set) var liveStreamedText: String = ""
+    @Published private(set) var liveReasoningText: String = ""
+    @Published private(set) var hasProviderActivity = false
     /// Persisted messages of the conversation (user goals, final answers).
     @Published private(set) var messages: [PersistedMessage] = []
     /// Composer draft text.
@@ -117,6 +119,10 @@ final class ThreadDetailViewModel: ObservableObject {
         }
         events = try await center.environment.runStore.events(runID: runID)
             .filter { $0.kind != .assistantText }
+        let errors = try await center.environment.runStore.errors(runID: runID)
+        if selectedRun?.state == "failed", let latest = errors.last {
+            actionError = latest.message
+        }
     }
 
     // MARK: - Actions
@@ -128,7 +134,25 @@ final class ThreadDetailViewModel: ObservableObject {
         draft = ""
         actionError = nil
         do {
-            try await center.send(goal: goal, in: conversationID, provider: provider, model: model)
+            let existingRunIDs = Set(runs.map(\.id))
+            let sendTask = Task {
+                try await center.send(goal: goal, in: conversationID, provider: provider, model: model)
+            }
+            // The provider stream is long-lived. Surface the persisted run
+            // immediately so Stop, state and live activity are usable while
+            // the request is still in flight.
+            for _ in 0..<30 where !Task.isCancelled {
+                try await Task.sleep(for: .milliseconds(100))
+                let refreshed = try await center.environment.runStore.runs(conversationID: conversationID)
+                if let newest = refreshed.first, !existingRunIDs.contains(newest.id) {
+                    runs = refreshed
+                    selectedRunID = newest.id
+                    try await loadEvents()
+                    startPolling()
+                    break
+                }
+            }
+            try await sendTask.value
             await load()
         } catch {
             actionError = error.localizedDescription
@@ -170,6 +194,8 @@ final class ThreadDetailViewModel: ObservableObject {
                     let snapshot = await service.snapshot()
                     self.liveStateName = snapshot.stateName
                     self.liveStreamedText = snapshot.streamedText
+                    self.liveReasoningText = snapshot.reasoningText
+                    self.hasProviderActivity = snapshot.hasProviderActivity
                     self.isRunning = !snapshot.isTerminal
                     if snapshot.isTerminal {
                         try? await self.loadEvents()

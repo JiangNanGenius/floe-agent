@@ -68,13 +68,27 @@ struct ThreadEventView: View {
     @ViewBuilder
     private var content: some View {
         switch event.kind {
-        case .assistantText, .reasoning:
+        case .assistantText:
             Text(payload["text"] ?? "")
-                .font(event.kind == .reasoning
-                      ? FloeTheme.Typography.metadata
-                      : FloeTheme.Typography.body)
-                .foregroundStyle(event.kind == .reasoning ? .secondary : .primary)
+                .font(FloeTheme.Typography.body)
+                .foregroundStyle(.primary)
                 .textSelection(.enabled)
+
+        case .reasoning:
+            if isExpanded {
+                Text(payload["text"] ?? "")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 8))
+            } else {
+                Text(reasoningPreview)
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
 
         case .toolRequest:
             foldableBody(
@@ -129,6 +143,12 @@ struct ThreadEventView: View {
         .accessibilityElement(children: .combine)
     }
 
+    private var reasoningPreview: String {
+        (payload["text"] ?? "")
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+    }
+
     /// A one-line summary that unfolds to monospaced evidence.
     private func foldableBody(
         summary: String,
@@ -156,9 +176,9 @@ struct ThreadEventView: View {
 
     private var isFoldable: Bool {
         switch event.kind {
-        case .assistantText, .reasoning, .approval, .error, .usage:
+        case .assistantText, .approval, .error, .usage:
             return false
-        case .toolRequest, .toolResult, .terminal, .file, .checkpoint, .status:
+        case .reasoning, .toolRequest, .toolResult, .terminal, .file, .checkpoint, .status:
             return true
         }
     }

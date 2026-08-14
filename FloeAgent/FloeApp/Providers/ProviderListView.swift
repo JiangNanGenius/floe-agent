@@ -15,6 +15,7 @@ import FloeSyncCore
 /// The Providers screen (under More, and surfaced in onboarding).
 struct ProviderListView: View {
     @StateObject private var viewModel: ProviderListViewModel
+    @State private var presentedEditor: ProviderEditorRoute?
 
     init(center: ConversationCenter) {
         _viewModel = StateObject(wrappedValue: ProviderListViewModel(center: center))
@@ -36,8 +37,8 @@ struct ProviderListView: View {
         .navigationTitle("more.providers")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                NavigationLink {
-                    ProviderEditorView(center: viewModel.center, existing: nil)
+                Button {
+                    presentedEditor = .new
                 } label: {
                     Image(systemName: "plus")
                 }
@@ -47,6 +48,14 @@ struct ProviderListView: View {
         }
         .task { await viewModel.load() }
         .refreshable { await viewModel.load() }
+        .sheet(item: $presentedEditor, onDismiss: {
+            Task { await viewModel.load() }
+        }) { route in
+            NavigationStack {
+                ProviderEditorView(center: viewModel.center, existing: route.provider)
+            }
+            .presentationSizing(.page)
+        }
         .alert(
             "providers.delete_failed",
             isPresented: Binding(
@@ -63,8 +72,8 @@ struct ProviderListView: View {
     private var providerList: some View {
         List {
             ForEach(viewModel.providers) { provider in
-                NavigationLink {
-                    ProviderEditorView(center: viewModel.center, existing: provider)
+                Button {
+                    presentedEditor = .existing(provider)
                 } label: {
                     ProviderRow(
                         provider: provider,
@@ -72,6 +81,7 @@ struct ProviderListView: View {
                         status: viewModel.status(for: provider.id)
                     )
                 }
+                .buttonStyle(.plain)
             }
             .onDelete { offsets in
                 let targets = offsets.map { viewModel.providers[$0] }
@@ -81,6 +91,23 @@ struct ProviderListView: View {
             }
         }
         .listStyle(.insetGrouped)
+    }
+}
+
+private enum ProviderEditorRoute: Identifiable {
+    case new
+    case existing(ProviderProfile)
+
+    var id: String {
+        switch self {
+        case .new: "new"
+        case .existing(let provider): provider.id.uuidString
+        }
+    }
+
+    var provider: ProviderProfile? {
+        if case .existing(let provider) = self { return provider }
+        return nil
     }
 }
 
