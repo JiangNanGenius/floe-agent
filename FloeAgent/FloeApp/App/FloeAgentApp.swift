@@ -35,6 +35,7 @@ struct RootView: View {
     @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.scenePhase) private var scenePhase
+    @State private var showOnboarding = false
 
     var body: some View {
         Group {
@@ -46,6 +47,19 @@ struct RootView: View {
         }
         .onChange(of: scenePhase, initial: true) { _, newPhase in
             router.handleScenePhase(newPhase)
+        }
+        .task { await presentOnboardingIfNeeded() }
+        .sheet(isPresented: $showOnboarding) {
+            OnboardingView(center: environment.conversationCenter)
+                .interactiveDismissDisabled()
+        }
+    }
+
+    /// Presents first-run onboarding until a provider+model is configured.
+    private func presentOnboardingIfNeeded() async {
+        await environment.conversationCenter.reload()
+        if !environment.conversationCenter.hasConfiguredProvider {
+            showOnboarding = true
         }
     }
 
@@ -130,11 +144,7 @@ private struct PrimaryDestinationView: View {
     var body: some View {
         switch destination {
         case .home:
-            ShellPlaceholderView(
-                title: destination.title,
-                systemImage: destination.systemImage,
-                messageKey: "empty.home"
-            )
+            HomeWorkbenchView(center: environment.conversationCenter)
         case .chat:
             ConversationListView(center: environment.conversationCenter)
         case .files:
@@ -150,7 +160,7 @@ private struct PrimaryDestinationView: View {
                 messageKey: "empty.hosts"
             )
         case .more:
-            MoreListView(selection: nil)
+            MoreView(center: environment.conversationCenter)
         }
     }
 }
@@ -189,6 +199,7 @@ private struct MoreDestinationView: View {
     let sub: MoreDestination
 
     @EnvironmentObject private var router: AppRouter
+    @EnvironmentObject private var environment: AppEnvironment
 
     init(_ sub: MoreDestination) {
         self.sub = sub
@@ -203,11 +214,7 @@ private struct MoreDestinationView: View {
                 messageKey: "empty.runs"
             )
         case .providers:
-            ShellPlaceholderView(
-                title: sub.title,
-                systemImage: sub.systemImage,
-                messageKey: "empty.providers"
-            )
+            ProviderListView(center: environment.conversationCenter)
         case .settings:
             ShellPlaceholderView(
                 title: sub.title,

@@ -218,6 +218,30 @@ final class ConversationCenter: ObservableObject {
         providers.contains { modelsByProvider[$0.id]?.isEmpty == false }
     }
 
+    /// Persists a new or updated provider and refreshes the cached lists.
+    func saveProvider(_ provider: ProviderProfile) async throws {
+        try await environment.configurationStore.saveProvider(provider)
+        await reload()
+    }
+
+    /// Persists a model and refreshes the cached lists.
+    func saveModel(_ model: ModelProfile) async throws {
+        try await environment.configurationStore.saveModel(model)
+        await reload()
+    }
+
+    /// Deletes a provider (cascades to its models) and refreshes.
+    func deleteProvider(id: UUID) async throws {
+        try await environment.configurationStore.deleteProvider(id: id)
+        await reload()
+    }
+
+    /// Deletes a model and refreshes.
+    func deleteModel(id: UUID) async throws {
+        try await environment.configurationStore.deleteModel(id: id)
+        await reload()
+    }
+
     /// The default provider+model pair for a new run (first enabled).
     func defaultProviderAndModel() -> (ProviderProfile, ModelProfile)? {
         for provider in providers {
@@ -300,11 +324,11 @@ final class ConversationCenter: ObservableObject {
 
     // MARK: - Helpers
 
-    private func resolveCredentials(for provider: ProviderProfile) -> ProviderCredentials {
+    /// Resolves a provider's API key from Keychain at the call site only.
+    /// Exposed for the provider editor's Test connection; the key is never
+    /// stored on self or in any @Published state.
+    func resolveCredentials(for provider: ProviderProfile) -> ProviderCredentials {
         guard let secretRef = provider.secretRef else { return ProviderCredentials() }
-        // The API key is read at the call site and never stored on self.
-        // KeychainStore.read is synchronous; the sync-aware KeychainSecretStore
-        // remains the editor-facing API (T03).
         let store = KeychainStore(
             service: "org.floeagent.ios.secrets",
             synchronizable: secretRef.synchronizable

@@ -1,0 +1,221 @@
+// FloeApp — Provider editor.
+//
+// SPDX-License-Identifier: MPL-2.0
+//
+// Add/edit a provider: preset picker, base URL, API key (Keychain-only),
+// non-secret headers, plain-HTTP acknowledgement, iCloud Keychain sync
+// toggle, Test connection with model discovery, and a manual-model
+// fallback editor. Shows `.waitingForSecret` honestly when configuration
+// synced but the secret hasn't.
+
+#if canImport(SwiftUI) && canImport(UIKit)
+import SwiftUI
+import FloeCore
+import FloeProviders
+
+/// The provider editor form.
+struct ProviderEditorView: View {
+    @StateObject private var viewModel: ProviderEditorViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var showModelPicker = false
+
+    init(center: ConversationCenter, existing: ProviderProfile?) {
+        _viewModel = StateObject(
+            wrappedValue: ProviderEditorViewModel(center: center, existing: existing)
+        )
+    }
+
+    var body: some View {
+        Form {
+            presetSection
+            endpointSection
+            credentialsSection
+            syncSection
+            testSection
+            modelsSection
+            if let error = viewModel.errorMessage {
+                Section {
+                    Text(error)
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.destructive)
+                }
+            }
+        }
+        .navigationTitle(viewModel.existing == nil
+            ? LocalizedStringKey("providers.add")
+            : LocalizedStringKey("providers.edit"))
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("action.save") { save() }
+                    .disabled(viewModel.isSaving)
+                    .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            }
+        }
+        .task { await viewModel.load() }
+        .sheet(isPresented: $showModelPicker) {
+            ModelPickerView(
+                models: viewModel.discoveredModels,
+                onAddManual: { remoteID, name in
+                    viewModel.addManualModel(remoteID: remoteID, displayName: name)
+                }
+            )
+        }
+    }
+
+    // MARK: - Preset
+
+    private var presetSection: some View {
+        Section("providers.preset") {
+            Picker("providers.preset", selection: Binding(
+                get: { viewModel.selectedPreset },
+                set: { viewModel.applyPreset($0) }
+            )) {
+                ForEach(ProviderPreset.all) { preset in
+                    Text(preset.displayName).tag(preset)
+                }
+            }
+            .accessibilityLabel("providers.preset")
+        }
+    }
+
+    // MARK: - Endpoint
+
+    private var endpointSection: some View {
+        Section {
+            TextField("providers.base_url", text: $viewModel.baseURLString)
+                .textInputAutocapitalization(.never)
+                .keyboardType(.URL)
+                .font(FloeTheme.Typography.evidence)
+            TextField("providers.headers_placeholder", text: $viewModel.nonSecretHeadersText, axis: .vertical)
+                .lineLimit(2...5)
+                .textInputAutocapitalization(.never)
+                .font(FloeTheme.Typography.evidence)
+            if viewModel.selectedPreset.defaultBaseURL.scheme == "http" {
+                Toggle("providers.allow_plain_http", isOn: $viewModel.allowsPlainHTTP)
+            }
+        } header: {
+            Text("providers.endpoint")
+        } footer: {
+            Text("providers.headers_hint")
+        }
+    }
+
+    // MARK: - Credentials (Keychain only)
+
+    private var credentialsSection: some View {
+        Section {
+            SecureField("providers.api_key", text: $viewModel.apiKey)
+                .textInputAutocapitalization(.never)
+            if viewModel.secretStatus == .waitingForSecret {
+                Label("providers.waiting_secret.hint", systemImage: "key.fill")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(FloeTheme.pending)
+            }
+        } header: {
+            Text("providers.credentials")
+        } footer: {
+            Text("providers.api_key.hint")
+        }
+    }
+
+    // MARK: - iCloud Keychain sync
+
+    private var syncSection: some View {
+        Section {
+            Toggle("providers.sync_keychain", isOn: $viewModel.syncEnabled)
+        } footer: {
+            Text("providers.sync_keychain.hint")
+        }
+    }
+
+    // MARK: - Test connection
+
+    private var testSection: some View {
+        Section {
+            Button {
+                Task { await viewModel.testConnection() }
+            } label: {
+                HStack {
+                    Text("providers.test_connection")
+                    Spacer()
+                    switch viewModel.testState {
+                    case .idle:
+                        EmptyView()
+                    case .testing:
+                        ProgressView()
+                    case .succeeded(let count):
+                        Label(
+                            String(localized: "providers.test_ok") + " (\(count))",
+                            systemImage: "checkmark.circle.fill"
+                        )
+                        .foregroundStyle(FloeTheme.success)
+                    case .failed:
+                        Label("providers.test_failed", systemImage: "xmark.octagon.fill")
+                            .foregroundStyle(FloeTheme.destructive)
+                    }
+                }
+                .frame(minHeight: FloeTheme.minimumTarget)
+            }
+            .disabled(viewModel.testState == .testing)
+            if case .failed(let message) = viewModel.testState {
+                Text(message)
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(FloeTheme.destructive)
+            }
+        }
+    }
+
+    // MARK: - Models (discovered + manual fallback)
+
+    private var modelsSection: some View {
+        Section {
+            if viewModel.discoveredModels.isEmpty && viewModel.manualModels.isEmpty {
+                Text("providers.no_models")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(viewModel.discoveredModels) { model in
+                    modelRow(model, source: "providers.source_discovery")
+                }
+                ForEach(viewModel.manualModels) { model in
+                    modelRow(model, source: "providers.source_manual")
+                }
+            }
+            Button("providers.manage_models") { showModelPicker = true }
+                .frame(minHeight: FloeTheme.minimumTarget)
+        } header: {
+            Text("providers.models_section")
+        } footer: {
+            if !viewModel.supportsDiscovery {
+                Text("providers.manual_fallback.hint")
+            }
+        }
+    }
+
+    private func modelRow(_ model: ModelProfile, source: LocalizedStringKey) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.displayName)
+                    .font(FloeTheme.Typography.body)
+                Text(model.remoteModelID)
+                    .font(FloeTheme.Typography.evidence)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(source)
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Save
+
+    private func save() {
+        Task {
+            if await viewModel.save() {
+                dismiss()
+            }
+        }
+    }
+}
+#endif
