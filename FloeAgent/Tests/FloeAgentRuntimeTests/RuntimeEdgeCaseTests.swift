@@ -26,7 +26,7 @@ private struct QAHangingAdapter: ProviderAdapter {
         AsyncThrowingStream { _ in /* never yields, never finishes */ }
     }
 
-    func listModels(credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
+    func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
 }
 
 @Suite("QA.AgentRuntimeEdges")

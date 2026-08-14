@@ -58,7 +58,7 @@ final class MockAdapter: ProviderAdapter, @unchecked Sendable {
         }
     }
 
-    func listModels(credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
+    func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
 }
 
 /// Scripted executor: returns queued results, or a default ok.
@@ -459,5 +459,5 @@ private struct HangingAdapter: ProviderAdapter {
         }
     }
 
-    func listModels(credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
+    func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
 }

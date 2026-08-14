@@ -82,8 +82,31 @@ public protocol ProviderAdapter: Sendable {
     ) -> AsyncThrowingStream<AgentEvent, Error>
 
     /// Lists models available at the endpoint. `listModels` failures
-    /// surface as thrown errors, not stream events.
-    func listModels(credentials: ProviderCredentials) async throws -> [ModelProfile]
+    /// surface as thrown errors, not stream events, so callers can fall back
+    /// to manual model entry. `provider` supplies the base URL and
+    /// non-secret headers; `credentials` supplies the API key.
+    func listModels(
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws -> [ModelProfile]
+
+    /// Performs a lightweight connectivity/auth check against the endpoint.
+    /// Throws on failure.
+    func testConnection(
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws
+}
+
+public extension ProviderAdapter {
+    /// Default connection probe: attempt model discovery. Adapters may
+    /// override with a cheaper request.
+    func testConnection(
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws {
+        _ = try await listModels(provider: provider, credentials: credentials)
+    }
 }
 
 // MARK: - Shared SSE plumbing
@@ -230,9 +253,11 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
         }
     }
 
-    public func listModels(credentials: ProviderCredentials) async throws -> [ModelProfile] {
-        // M1 skeleton: model listing arrives with the settings UI in M2.
-        []
+    public func listModels(
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws -> [ModelProfile] {
+        try await ModelDiscovery.fetchOpenAICompatibleModels(provider: provider, credentials: credentials)
     }
 
     func buildURLRequest(
@@ -326,9 +351,11 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
         }
     }
 
-    public func listModels(credentials: ProviderCredentials) async throws -> [ModelProfile] {
-        // M1 skeleton.
-        []
+    public func listModels(
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws -> [ModelProfile] {
+        try await ModelDiscovery.fetchOpenAICompatibleModels(provider: provider, credentials: credentials)
     }
 
     func buildURLRequest(
@@ -443,9 +470,11 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
         }
     }
 
-    public func listModels(credentials: ProviderCredentials) async throws -> [ModelProfile] {
-        // M1 skeleton.
-        []
+    public func listModels(
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws -> [ModelProfile] {
+        try await ModelDiscovery.fetchAnthropicModels(provider: provider, credentials: credentials)
     }
 
     func buildURLRequest(
