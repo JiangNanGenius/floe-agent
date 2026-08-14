@@ -48,6 +48,15 @@ public struct InspectorState: Sendable, Codable, Hashable {
         self.isExpanded = isExpanded
         self.selectedRelativePath = selectedRelativePath
     }
+
+    /// Lenient decoding: the v5 schema default is `'{}'`, and synthesized
+    /// Codable ignores property defaults, so missing keys must fall back
+    /// explicitly rather than failing the whole workspace row.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.isExpanded = try container.decodeIfPresent(Bool.self, forKey: .isExpanded) ?? false
+        self.selectedRelativePath = try container.decodeIfPresent(String.self, forKey: .selectedRelativePath)
+    }
 }
 
 /// A persisted workspace (project). `rootBookmark` is a security-scoped

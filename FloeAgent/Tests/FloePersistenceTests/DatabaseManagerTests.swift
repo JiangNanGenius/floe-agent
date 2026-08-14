@@ -29,7 +29,7 @@ struct DatabaseManagerTests {
                 """)
         }
         #expect(tables == [
-            "approval_grants", "approvals", "attachments", "audit_entries", "checkpoints",
+            "app_settings", "approval_grants", "approvals", "attachments", "audit_entries", "checkpoints",
             "config_sync_metadata", "conversations", "documents", "hosts", "images", "known_hosts",
             "message_parts", "messages", "model_preferences", "models", "providers",
             "remote_sessions", "run_errors", "run_events", "run_usage", "runs",
@@ -55,6 +55,7 @@ struct DatabaseManagerTests {
         #expect(applied.contains("v3"))
         #expect(applied.contains("v4"))
         #expect(applied.contains("v5"))
+        #expect(applied.contains("v6"))
     }
 
     @Test("Migration is idempotent (second migrate is a no-op)")

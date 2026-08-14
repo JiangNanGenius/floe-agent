@@ -85,6 +85,11 @@ public protocol WorkspaceStore: Sendable {
 
     func saveGrant(_ grant: StoredGrant) async throws
     func activeGrants(toolName: String, workspaceID: UUID?, hostID: UUID?) async throws -> [StoredGrant]
+    /// Every stored grant regardless of scope or expiry (settings UI
+    /// aggregates and renders them; expiry is a display concern there).
+    func allGrants() async throws -> [StoredGrant]
+    /// Removes one grant by id; deleting an absent id is a no-op.
+    func deleteGrant(id: UUID) async throws
 }
 
 /// SQLite/GRDB implementation of `WorkspaceStore`.
@@ -333,6 +338,24 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
                     guard let expiresAt = grant.expiresAt else { return true }
                     return expiresAt > now
                 }
+        }
+    }
+
+    public func allGrants() async throws -> [StoredGrant] {
+        try await database.reader { db in
+            try Row.fetchAll(
+                db,
+                sql: "SELECT * FROM approval_grants ORDER BY decided_at DESC, id"
+            ).map(Self.grant(from:))
+        }
+    }
+
+    public func deleteGrant(id: UUID) async throws {
+        try await database.writer { db in
+            try db.execute(
+                sql: "DELETE FROM approval_grants WHERE id = ?",
+                arguments: [id.uuidString]
+            )
         }
     }
 

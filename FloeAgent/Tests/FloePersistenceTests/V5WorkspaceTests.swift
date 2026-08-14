@@ -51,8 +51,8 @@ struct V5WorkspaceTests {
     @Test("Migration v1…v5 applies cleanly and sets user_version = 5")
     func migratesToV5() async throws {
         let database = try await makeDatabase()
-        #expect(try await database.userVersion() == 5)
-        #expect(DatabaseManager.currentSchemaVersion == 5)
+        #expect(try await database.userVersion() == DatabaseManager.currentSchemaVersion)
+        #expect(try await database.userVersion() >= 5)
         let applied = try await database.appliedMigrations()
         for identifier in ["v1", "v2", "v3", "v4", "v5"] {
             #expect(applied.contains(identifier), "missing migration \(identifier)")
@@ -132,10 +132,11 @@ struct V5WorkspaceTests {
             }
         }
 
-        // Re-open through DatabaseManager: v5 must apply on top.
+        // Re-open through DatabaseManager: v5 (and any later migrations)
+        // must apply on top.
         let database = try DatabaseManager(path: fileURL)
         try await database.migrate()
-        #expect(try await database.userVersion() == 5)
+        #expect(try await database.userVersion() == DatabaseManager.currentSchemaVersion)
 
         let conversationStore = SQLiteConversationStore(database: database)
         let conversation = try await conversationStore.conversation(id: conversationID)
@@ -245,7 +246,7 @@ struct V5WorkspaceTests {
     func migrationIdempotent() async throws {
         let database = try await makeDatabase()
         try await database.migrate()
-        #expect(try await database.userVersion() == 5)
+        #expect(try await database.userVersion() == DatabaseManager.currentSchemaVersion)
         let applied = try await database.appliedMigrations()
         #expect(applied.filter { $0 == "v5" }.count == 1)
     }
