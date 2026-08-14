@@ -20,6 +20,7 @@ import Foundation
 import FloeCore
 import FloeModels
 import FloePersistence
+import FloeSecurity
 import FloeSSH
 import FloeSync
 import FloeVNC
@@ -320,7 +321,7 @@ final class RemoteSessionCenter: ObservableObject {
 
     private func resolveOptionalSecret(_ reference: SecretReference?) async throws -> Data? {
         guard let reference else { return nil }
-        return try? resolveSecret(reference)
+        return try? await resolveSecret(reference)
     }
 }
 
