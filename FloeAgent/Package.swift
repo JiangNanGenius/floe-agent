@@ -116,6 +116,7 @@ let package = Package(
             name: "FloePersistence",
             dependencies: [
                 "FloeCore",
+                "FloeModels",
                 "FloeSecurity",
                 .product(name: "GRDB", package: "GRDB.swift")
             ],

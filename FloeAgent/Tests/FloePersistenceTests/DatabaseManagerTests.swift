@@ -29,9 +29,10 @@ struct DatabaseManagerTests {
                 """)
         }
         #expect(tables == [
-            "approvals", "audit_entries", "config_sync_metadata", "conversations", "documents", "hosts",
-            "images", "known_hosts", "messages", "models", "providers",
-            "runs", "sync_engine_state", "tool_calls", "vnc_sessions"
+            "approvals", "attachments", "audit_entries", "checkpoints", "config_sync_metadata",
+            "conversations", "documents", "hosts", "images", "known_hosts", "message_parts",
+            "messages", "models", "providers", "remote_sessions", "run_errors", "run_events",
+            "run_usage", "runs", "sync_engine_state", "tool_calls", "vnc_sessions"
         ])
         let fts = try await manager.reader { db in
             try String.fetchAll(db, sql: """
@@ -45,10 +46,11 @@ struct DatabaseManagerTests {
     func userVersionAligned() async throws {
         let manager = try await makeManager()
         let version = try await manager.userVersion()
-        #expect(version == 2)
+        #expect(version == DatabaseManager.currentSchemaVersion)
         let applied = try await manager.appliedMigrations()
         #expect(applied.contains("v1"))
         #expect(applied.contains("v2"))
+        #expect(applied.contains("v3"))
     }
 
     @Test("Migration is idempotent (second migrate is a no-op)")
@@ -56,7 +58,7 @@ struct DatabaseManagerTests {
         let manager = try await makeManager()
         try await manager.migrate()
         let version = try await manager.userVersion()
-        #expect(version == 2)
+        #expect(version == DatabaseManager.currentSchemaVersion)
     }
 
     @Test("Foreign key cascade: deleting a conversation removes messages")

@@ -22,20 +22,26 @@ public actor DatabaseManager {
     private var migrator = DatabaseMigrator()
 
     /// Schema version tracked in `user_version`-aligned migrations.
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
 
     public init(path: URL) throws {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())
         self.queue = nil
-        V1Initial.register(into: &migrator)
-        V2ConfigSync.register(into: &migrator)
+        Self.registerMigrations(into: &migrator)
     }
 
     private init(inMemory: Void) throws {
         self.pool = nil
         self.queue = try DatabaseQueue(configuration: Self.configuration())
+        Self.registerMigrations(into: &migrator)
+    }
+
+    /// Registers every published migration in order. Migrations are never
+    /// modified after release; new schema versions append new identifiers.
+    private static func registerMigrations(into migrator: inout DatabaseMigrator) {
         V1Initial.register(into: &migrator)
         V2ConfigSync.register(into: &migrator)
+        V3AgentDaily.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {
