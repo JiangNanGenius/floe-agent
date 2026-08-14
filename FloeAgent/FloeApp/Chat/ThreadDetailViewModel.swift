@@ -36,6 +36,16 @@ final class ThreadDetailViewModel: ObservableObject {
     /// Composer draft text.
     @Published var draft: String = ""
     @Published var selectedModelID: UUID?
+    /// Workspace project selection (placeholder until T05).
+    @Published var selectedProjectID: UUID?
+    /// Where the next run executes (local only until host tools land).
+    @Published var executionTarget: AgentExecutionTarget = .local
+    /// How the next run behaves (agent vs chat-only).
+    @Published var agentMode: AgentExecutionMode = .agent
+    /// Attachments staged in the composer.
+    @Published var attachments: [AttachmentRef] = []
+    /// Placeholder project list — empty until T05 wires WorkspaceCenter.
+    var availableProjects: [ComposerProject] { [] }
     /// Whether a run is currently non-terminal (drives Stop vs Send).
     @Published private(set) var isRunning = false
     /// Honest error surface for the last failed action.

@@ -165,10 +165,23 @@ struct ThreadDetailView: View {
         }
     }
 
-    // MARK: - State toolbar (status + Stop/Retry)
+    // MARK: - State toolbar (status + Stop/Retry + inspector)
 
     @ToolbarContentBuilder
     private var stateToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                if router.inspectorVisible {
+                    router.hideInspector()
+                } else {
+                    router.showInspector(.workspaceFiles)
+                }
+            } label: {
+                Label("inspector.files", systemImage: "sidebar.right")
+            }
+            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            .accessibilityLabel("inspector.files")
+        }
         ToolbarItem(placement: .topBarTrailing) {
             if viewModel.isRunning {
                 Button(role: .destructive) {
@@ -224,54 +237,23 @@ struct ThreadDetailView: View {
         VStack(spacing: 0) {
             if viewModel.needsProvider {
                 addProviderBar
-            } else if let modelName = viewModel.selectedModelName {
-                HStack {
-                    Menu {
-                        ForEach(viewModel.availableModels) { model in
-                            Button {
-                                viewModel.selectedModelID = model.id
-                            } label: {
-                                if viewModel.selectedModelID == model.id {
-                                    Label(model.displayName, systemImage: "checkmark")
-                                } else {
-                                    Text(model.displayName)
-                                }
-                            }
-                        }
-                    } label: {
-                        Label(modelName, systemImage: "chevron.down")
-                            .font(FloeTheme.Typography.metadata)
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
-                .background(FloeTheme.chromeMaterial)
             }
-            HStack(alignment: .bottom, spacing: 8) {
-                TextField(text: $viewModel.draft, axis: .vertical) {
-                    Text("home.new_task.placeholder")
-                }
-                .lineLimit(1...5)
-                .textFieldStyle(.plain)
-                .disabled(viewModel.needsProvider)
-                .accessibilityLabel("home.new_task.placeholder")
-
-                Button {
-                    Task { await viewModel.send() }
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(FloeTheme.primary)
-                }
-                .buttonStyle(.plain)
-                .disabled(!viewModel.canSend)
-                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("thread.send")
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(FloeTheme.chromeMaterial)
+            ThreadComposerView(
+                draft: $viewModel.draft,
+                selectedModelID: $viewModel.selectedModelID,
+                models: viewModel.availableModels,
+                modelName: viewModel.selectedModelName,
+                providerConfigured: !viewModel.needsProvider,
+                isRunning: viewModel.isRunning,
+                canSend: viewModel.canSend || viewModel.isRunning,
+                projects: viewModel.availableProjects,
+                selectedProjectID: $viewModel.selectedProjectID,
+                executionTarget: $viewModel.executionTarget,
+                agentMode: $viewModel.agentMode,
+                attachments: $viewModel.attachments,
+                onSend: { Task { await viewModel.send() } },
+                onStop: { Task { await viewModel.cancel() } }
+            )
         }
     }
 

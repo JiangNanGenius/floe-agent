@@ -72,7 +72,6 @@
 		EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = A6797B7DAA890D6378153058 /* Localizable.xcstrings */; };
 		ED9E967E7858D92A307B24F6 /* AuxiliaryModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE522C8BF30B54FAD939C53C /* AuxiliaryModelsView.swift */; };
 		EF38B4329039226E8A757EE4 /* HostListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104F2ACE88D931C8C54A6787 /* HostListViewModel.swift */; };
-		F22B4EE67CDC42EEA5597B06 /* NewTaskComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBBA6F08FFABF96074F1F1E3 /* NewTaskComposerView.swift */; };
 		F2FA4F2EDA410E215E8DA440 /* TerminalViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 531772E03835546E29F3B7DF /* TerminalViewModel.swift */; };
 		F5A0E862B93245565549ABC8 /* HomeWorkbenchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F85A53B63A4418682D1679E1 /* HomeWorkbenchView.swift */; };
 		FBF28B8E8847F0265F9E7C47 /* SetupGuideLauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83D0EBB0361B5F388903EE7F /* SetupGuideLauncherView.swift */; };
@@ -85,6 +84,8 @@
 		3A10F02C2B4C4E23A0010007 /* ErrorEventView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A10F02C2B4C4E23A0010017 /* ErrorEventView.swift */; };
 		3A10F02C2B4C4E23A0010008 /* RunStateLocalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A10F02C2B4C4E23A0010018 /* RunStateLocalizer.swift */; };
 		3A10F02C2B4C4E23A0010009 /* FloeMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 3A10F02C2B4C4E23A0010019 /* FloeMarkdown */; };
+		3A20F03D2B4C4E23A0020001 /* ChatHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A20F03D2B4C4E23A0020011 /* ChatHomeView.swift */; };
+		3A20F03D2B4C4E23A0020002 /* ThreadComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A20F03D2B4C4E23A0020012 /* ThreadComposerView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -157,7 +158,6 @@
 		E3EF97C2442DD744CEB320A0 /* PlatformBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformBackgroundPolicy.swift; sourceTree = "<group>"; };
 		EA10AC479B03C7D998AC448B /* ThreadDetailViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadDetailViewModel.swift; sourceTree = "<group>"; };
 		EB400574B41454793B7461C2 /* iPadBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPadBackgroundPolicy.swift; sourceTree = "<group>"; };
-		EBBA6F08FFABF96074F1F1E3 /* NewTaskComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewTaskComposerView.swift; sourceTree = "<group>"; };
 		F85A53B63A4418682D1679E1 /* HomeWorkbenchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeWorkbenchView.swift; sourceTree = "<group>"; };
 		3A10F02C2B4C4E23A0010011 /* MarkdownRendererView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownRendererView.swift; sourceTree = "<group>"; };
 		3A10F02C2B4C4E23A0010012 /* CodeBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeBlockView.swift; sourceTree = "<group>"; };
@@ -167,6 +167,8 @@
 		3A10F02C2B4C4E23A0010016 /* ToolCallCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolCallCardView.swift; sourceTree = "<group>"; };
 		3A10F02C2B4C4E23A0010017 /* ErrorEventView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorEventView.swift; sourceTree = "<group>"; };
 		3A10F02C2B4C4E23A0010018 /* RunStateLocalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunStateLocalizer.swift; sourceTree = "<group>"; };
+		3A20F03D2B4C4E23A0020011 /* ChatHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHomeView.swift; sourceTree = "<group>"; };
+		3A20F03D2B4C4E23A0020012 /* ThreadComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadComposerView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -271,9 +273,9 @@
 		6981ED2BB91A3718E09C6710 /* Home */ = {
 			isa = PBXGroup;
 			children = (
+				3A20F03D2B4C4E23A0020011 /* ChatHomeView.swift */,
 				F85A53B63A4418682D1679E1 /* HomeWorkbenchView.swift */,
 				0B4A2F7498F2D376D4A042AA /* HomeWorkbenchViewModel.swift */,
-				EBBA6F08FFABF96074F1F1E3 /* NewTaskComposerView.swift */,
 			);
 			path = Home;
 			sourceTree = "<group>";
@@ -310,6 +312,7 @@
 				66624FE4F8480041F7602716 /* ConversationListViewModel.swift */,
 				17F136474D0FB91E6F810317 /* ThreadDetailView.swift */,
 				EA10AC479B03C7D998AC448B /* ThreadDetailViewModel.swift */,
+				3A20F03D2B4C4E23A0020012 /* ThreadComposerView.swift */,
 				BACF0650EC6E172999FEB4EC /* ThreadEventView.swift */,
 				3A10F02C2B4C4E23A0010020 /* Render */,
 				3A10F02C2B4C4E23A0010013 /* UserMessageBubble.swift */,
@@ -587,7 +590,6 @@
 				89B023C074580181D49D192A /* ModelPickerView.swift in Sources */,
 				30F0B2510C03DF07A93756F1 /* MoreView.swift in Sources */,
 				42924454C7187541E75FE29D /* MoreViewModel.swift in Sources */,
-				F22B4EE67CDC42EEA5597B06 /* NewTaskComposerView.swift in Sources */,
 				9F178F696416A4E7191F56FB /* OnboardingView.swift in Sources */,
 				5D9232A405C85062BDDB69D8 /* OnboardingViewModel.swift in Sources */,
 				265F22EEB8BC48C7AF62FDCD /* PlatformBackgroundPolicy.swift in Sources */,
@@ -604,6 +606,8 @@
 				49D4CE5A1CDB89F7EC6BBFEE /* TerminalView.swift in Sources */,
 				F2FA4F2EDA410E215E8DA440 /* TerminalViewModel.swift in Sources */,
 				144C0751E522D91EB3EAD196 /* ThreadDetailView.swift in Sources */,
+				3A20F03D2B4C4E23A0020001 /* ChatHomeView.swift in Sources */,
+				3A20F03D2B4C4E23A0020002 /* ThreadComposerView.swift in Sources */,
 				3A10F02C2B4C4E23A0010001 /* MarkdownRendererView.swift in Sources */,
 				3A10F02C2B4C4E23A0010002 /* CodeBlockView.swift in Sources */,
 				3A10F02C2B4C4E23A0010003 /* UserMessageBubble.swift in Sources */,

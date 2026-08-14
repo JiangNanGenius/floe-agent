@@ -49,6 +49,37 @@ final class AppRouter: ObservableObject {
     /// A single app-wide setup sheet shared by iPhone and iPad routes.
     @Published var presentedSetup: SetupPresentation?
 
+    // MARK: - Inspector (iPad third column / iPhone sheet)
+
+    /// What the inspector column/sheet should display. T05 fills in the
+    /// real workspace inspector; T03 only owns the routing surface so
+    /// views never invent their own presentation.
+    enum InspectorContent: String, Identifiable, Hashable, Sendable {
+        /// The workspace file inspector (content provided by T05).
+        case workspaceFiles
+        var id: String { rawValue }
+    }
+
+    /// Requested inspector content. Non-nil means "show the inspector":
+    /// iPad reveals the third column on demand, iPhone presents a sheet.
+    @Published var inspectorContent: InspectorContent?
+
+    /// Convenience flag derived from inspectorContent (views bind to
+    /// this; T05's FileInspectorView reads the content).
+    var inspectorVisible: Bool { inspectorContent != nil }
+
+    /// Opens the inspector with the given content (iPad: third column;
+    /// iPhone: sheet — presentation chosen by the shell).
+    func showInspector(_ content: InspectorContent) {
+        inspectorContent = content
+    }
+
+    /// Dismisses the inspector; the iPad third column collapses instead
+    /// of leaving an empty placeholder behind.
+    func hideInspector() {
+        inspectorContent = nil
+    }
+
     /// Stable per-scene identifier used for iPad multi-scene background
     /// accounting. Each scene creates its own router, so a per-router UUID
     /// is a per-scene identifier.

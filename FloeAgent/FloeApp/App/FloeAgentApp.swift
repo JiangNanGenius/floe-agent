@@ -121,6 +121,25 @@ struct RootView: View {
                 }
             }
         }
+        // iPhone presents the inspector as a sheet; iPad reveals the
+        // third column instead (see detailColumn).
+        .sheet(item: inspectorSheetBinding) { content in
+            NavigationStack {
+                InspectorColumnView(content: content)
+            }
+            .presentationSizing(.page)
+        }
+    }
+
+    /// On iPhone the inspector shows as a sheet; on iPad the third
+    /// column handles it, so the binding stays nil there.
+    private var inspectorSheetBinding: Binding<AppRouter.InspectorContent?> {
+        Binding(
+            get: { router.inspectorContent },
+            set: { newValue in
+                if newValue == nil { router.hideInspector() }
+            }
+        )
     }
 
     // MARK: - iPad: three-column split view
@@ -163,33 +182,72 @@ struct RootView: View {
     }
 
     /// Column 3 projects the current selection into a stable work surface.
+    /// When the inspector is requested (T03 router surface), it replaces
+    /// the detail content on demand — the column never idles as an empty
+    /// placeholder once content exists.
     @ViewBuilder
     private var detailColumn: some View {
-        switch router.sidebarSelection ?? .primary(router.selection) {
-        case .primary(.home):
-            HomeOverviewDetailView()
-        case .primary(.chat):
-            if let conversationID = router.selectedConversationID {
-                NavigationStack {
-                    ThreadDetailView(
-                        conversationID: conversationID,
-                        center: environment.conversationCenter
+        if let inspectorContent = router.inspectorContent {
+            InspectorColumnView(content: inspectorContent)
+        } else {
+            switch router.sidebarSelection ?? .primary(router.selection) {
+            case .primary(.home):
+                HomeOverviewDetailView()
+            case .primary(.chat):
+                if let conversationID = router.selectedConversationID {
+                    NavigationStack {
+                        ThreadDetailView(
+                            conversationID: conversationID,
+                            center: environment.conversationCenter
+                        )
+                    }
+                    .id(conversationID)
+                } else {
+                    ShellPlaceholderView(
+                        title: LocalizedStringKey("tab.chat"),
+                        systemImage: "bubble.left.and.bubble.right",
+                        messageKey: "empty.detail"
                     )
                 }
-                .id(conversationID)
-            } else {
+            default:
                 ShellPlaceholderView(
-                    title: LocalizedStringKey("tab.chat"),
-                    systemImage: "bubble.left.and.bubble.right",
+                    title: LocalizedStringKey("app.name"),
+                    systemImage: "sidebar.right",
                     messageKey: "empty.detail"
                 )
             }
-        default:
-            ShellPlaceholderView(
-                title: LocalizedStringKey("app.name"),
-                systemImage: "sidebar.right",
-                messageKey: "empty.detail"
-            )
+        }
+    }
+}
+
+/// The on-demand inspector column (iPad third column / iPhone sheet).
+/// T05 provides the real workspace file inspector; until then the column
+/// states honestly that no workspace is open instead of inventing files.
+private struct InspectorColumnView: View {
+    let content: AppRouter.InspectorContent
+    @EnvironmentObject private var router: AppRouter
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("inspector.files", systemImage: "folder.badge.questionmark")
+        } description: {
+            Text("inspector.empty")
+        } actions: {
+            Button("inspector.close") { router.hideInspector() }
+                .buttonStyle(.bordered)
+        }
+        .background(FloeTheme.readingSurface)
+        .navigationTitle("inspector.files")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    router.hideInspector()
+                } label: {
+                    Label("inspector.close", systemImage: "xmark")
+                }
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .accessibilityLabel("inspector.close")
+            }
         }
     }
 }
@@ -211,7 +269,7 @@ private struct PrimaryDestinationView: View {
     var body: some View {
         switch destination {
         case .home:
-            HomeWorkbenchView(center: environment.conversationCenter)
+            ChatHomeView(center: environment.conversationCenter)
         case .chat:
             ConversationListView(center: environment.conversationCenter)
         case .files:
