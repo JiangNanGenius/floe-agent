@@ -11,6 +11,10 @@ import FloeCore
 import Security
 #endif
 
+/// Conformance for the settings-center probe. Same-module extension keeps
+/// the conformance canonical; the protocol itself is declared in FloeCore.
+extension KeychainStore: KeychainProbeStore {}
+
 /// Errors specific to secret storage.
 public enum KeychainStoreError: Error, Sendable, Hashable {
     case itemNotFound

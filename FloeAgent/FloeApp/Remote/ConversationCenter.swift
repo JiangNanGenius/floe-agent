@@ -133,13 +133,30 @@ final class ConversationCenter: ObservableObject {
         return ConversationRunService(
             configuration: configuration,
             adapter: adapterFactory.adapter(for: provider),
-            policy: HumanApprovalPolicy(),
+            policy: approvalPolicy(),
             executor: CatalogToolExecutor(),
             credentials: credentials,
             gate: environment.catastrophicGate,
             conversationStore: environment.conversationStore,
             runStore: environment.runStore
         )
+    }
+
+    /// Constructs the approval policy from the persisted `agent.defaultMode`
+    /// setting, published by SettingsCenter. Defaults to human approval when
+    /// the settings center has not loaded yet. `approvalModel` has no
+    /// configured backend in P2 and `fullControl` is only meaningful as a
+    /// per-host grant minted by the UI layer after Face ID / passcode plus
+    /// risk acknowledgement — both fail closed to human approval here.
+    private func approvalPolicy() -> any ApprovalPolicy {
+        let mode = environment.settingsCenter?.defaultAgentMode ?? .human
+        switch mode {
+        case .human, .approvalModel, .fullControl:
+            // P2: only the human policy has a real decision channel.
+            // approvalModel lacks a backend; fullControl requires a per-host
+            // grant the conversation flow does not hold. Neither is faked.
+            return HumanApprovalPolicy()
+        }
     }
 
     /// Starts a new run for `goal` in a conversation and tracks it.
