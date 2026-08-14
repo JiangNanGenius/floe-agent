@@ -51,10 +51,9 @@ final class AppEnvironment: ObservableObject {
     var remoteSessionCenter: RemoteSessionCenter { _remoteSessionCenter }
     var filesCenter: FilesCenter { _filesCenter }
     var workspaceCenter: WorkspaceCenter { _workspaceCenter }
-    /// Optional so ConversationCenter can read `defaultAgentMode` without a
-    /// hard dependency cycle at construction time; lazily created on first
-    /// access from the settings UI.
-    var settingsCenter: SettingsCenter? { _settingsCenter }
+    /// Lazily created on first access; ConversationCenter reads
+    /// `defaultAgentMode` through it without a construction cycle.
+    var settingsCenter: SettingsCenter { _settingsCenter }
 
     // MARK: State
 

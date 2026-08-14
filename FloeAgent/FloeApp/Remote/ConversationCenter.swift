@@ -149,7 +149,7 @@ final class ConversationCenter: ObservableObject {
     /// per-host grant minted by the UI layer after Face ID / passcode plus
     /// risk acknowledgement — both fail closed to human approval here.
     private func approvalPolicy() -> any ApprovalPolicy {
-        let mode = environment.settingsCenter?.defaultAgentMode ?? .human
+        let mode = environment.settingsCenter.defaultAgentMode
         switch mode {
         case .human, .approvalModel, .fullControl:
             // P2: only the human policy has a real decision channel.

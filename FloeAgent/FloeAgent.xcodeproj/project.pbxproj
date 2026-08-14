@@ -7,6 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CEEA9B0D0AC24EAE89E8E7C4 /* SettingsCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 554A747FAC764CBBBABAAE83 /* SettingsCenter.swift */; };
+		D59C244B71614790AF02DE38 /* SettingsActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A087BA16DA9440AAAFB7390 /* SettingsActions.swift */; };
+		4E7DDB638C0743A1AF94C8A1 /* SettingsRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48C92789EE094CFD8BBA809C /* SettingsRootView.swift */; };
+		4B4AA7F01CAC4121A2C9EADA /* GeneralSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97080FEBFB9F474E85698ECE /* GeneralSettingsView.swift */; };
+		9DD7C835804444BC92CAB2E8 /* ProvidersSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC50BCD7C55544EE9BC4F9D9 /* ProvidersSettingsView.swift */; };
+		4D84F38D0DF84A9AB013642B /* AuxiliarySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4F0C1ABF43647348BAB7D02 /* AuxiliarySettingsView.swift */; };
+
 		089D513D837438C091ED08A0 /* FloePersistence in Frameworks */ = {isa = PBXBuildFile; productRef = B1B02F2500B5B465399C11B7 /* FloePersistence */; };
 		08CF2008E624ABD269C22C9F /* ImageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69C64CCB64B5B7C45F45C253 /* ImageEditorView.swift */; };
 		0DB52308023E1468A623C1C7 /* M0DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84E9CA8571729543928880E3 /* M0DiagnosticsView.swift */; };
@@ -108,6 +115,13 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		554A747FAC764CBBBABAAE83 /* SettingsCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsCenter.swift; sourceTree = "<group>"; };
+		1A087BA16DA9440AAAFB7390 /* SettingsActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsActions.swift; sourceTree = "<group>"; };
+		48C92789EE094CFD8BBA809C /* SettingsRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsRootView.swift; sourceTree = "<group>"; };
+		97080FEBFB9F474E85698ECE /* GeneralSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsView.swift; sourceTree = "<group>"; };
+		BC50BCD7C55544EE9BC4F9D9 /* ProvidersSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProvidersSettingsView.swift; sourceTree = "<group>"; };
+		F4F0C1ABF43647348BAB7D02 /* AuxiliarySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxiliarySettingsView.swift; sourceTree = "<group>"; };
+
 		00969624B0A954308417634B /* FilesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesViewModel.swift; sourceTree = "<group>"; };
 		085605503DC285FC91B0449B /* HostEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorView.swift; sourceTree = "<group>"; };
 		0B4A2F7498F2D376D4A042AA /* HomeWorkbenchViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeWorkbenchViewModel.swift; sourceTree = "<group>"; };
@@ -410,6 +424,7 @@
 				767A8A677CD42C54269BAEC2 /* Terminal */,
 				3A30F05D2B5C4E23A0050000 /* Workspace */,
 				B6AD6399851AAAD8A47979D5 /* VNC */,
+				657C13A0EAA54C24AE654B94 /* Settings */,
 			);
 			path = FloeApp;
 			sourceTree = "<group>";
@@ -421,6 +436,19 @@
 				6B429A0789887E0740567D60 /* MoreViewModel.swift */,
 			);
 			path = More;
+			sourceTree = "<group>";
+		};
+		657C13A0EAA54C24AE654B94 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				554A747FAC764CBBBABAAE83 /* SettingsCenter.swift */,
+				1A087BA16DA9440AAAFB7390 /* SettingsActions.swift */,
+				48C92789EE094CFD8BBA809C /* SettingsRootView.swift */,
+				97080FEBFB9F474E85698ECE /* GeneralSettingsView.swift */,
+				BC50BCD7C55544EE9BC4F9D9 /* ProvidersSettingsView.swift */,
+				F4F0C1ABF43647348BAB7D02 /* AuxiliarySettingsView.swift */,
+			);
+			path = Settings;
 			sourceTree = "<group>";
 		};
 		D945ACAB4A3BFCBED5DF65AE /* Resources */ = {
@@ -666,6 +694,12 @@
 				AB3605779C6F0C4864D85CE2 /* VNCViewModel.swift in Sources */,
 				2D1426A11BF0547700CA8D5D /* iPadBackgroundPolicy.swift in Sources */,
 				3324AFAEF977E427D066CD85 /* iPhoneBackgroundPolicy.swift in Sources */,
+				CEEA9B0D0AC24EAE89E8E7C4 /* SettingsCenter.swift in Sources */,
+				D59C244B71614790AF02DE38 /* SettingsActions.swift in Sources */,
+				4E7DDB638C0743A1AF94C8A1 /* SettingsRootView.swift in Sources */,
+				4B4AA7F01CAC4121A2C9EADA /* GeneralSettingsView.swift in Sources */,
+				9DD7C835804444BC92CAB2E8 /* ProvidersSettingsView.swift in Sources */,
+				4D84F38D0DF84A9AB013642B /* AuxiliarySettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

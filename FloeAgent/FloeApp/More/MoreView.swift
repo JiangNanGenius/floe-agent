@@ -52,7 +52,7 @@ private struct MoreDestinationRouter: View {
         case .auxiliaryModels:
             AuxiliaryModelsView(center: viewModel.center)
         case .settings:
-            SettingsPlaceholder()
+            SettingsRootView()
         case .privacy:
             PrivacyView()
         case .diagnostics:
@@ -98,18 +98,6 @@ private struct RunsHistoryView: View {
         .navigationTitle("more.runs")
         .task { await viewModel.loadRuns() }
         .refreshable { await viewModel.loadRuns() }
-    }
-}
-
-/// Settings placeholder (real settings land later; honest empty state).
-private struct SettingsPlaceholder: View {
-    var body: some View {
-        ContentUnavailableView {
-            Label("more.settings", systemImage: "gearshape")
-        } description: {
-            Text("empty.settings")
-        }
-        .navigationTitle("more.settings")
     }
 }
 
