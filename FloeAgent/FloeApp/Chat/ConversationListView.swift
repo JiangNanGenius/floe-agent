@@ -50,9 +50,8 @@ struct ConversationListView: View {
             } description: {
                 Text("chat.add_provider.hint")
             } actions: {
-                Button("chat.add_provider") {
-                    router.navigate(to: .more)
-                    router.sidebarSelection = .more(.providers)
+                Button("setup.launcher.open") {
+                    router.presentedSetup = .manual
                 }
                 .buttonStyle(.borderedProminent)
                 .frame(minHeight: FloeTheme.minimumTarget)

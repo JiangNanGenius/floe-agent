@@ -31,7 +31,7 @@ struct DatabaseManagerTests {
         #expect(tables == [
             "approvals", "attachments", "audit_entries", "checkpoints", "config_sync_metadata",
             "conversations", "documents", "hosts", "images", "known_hosts", "message_parts",
-            "messages", "models", "providers", "remote_sessions", "run_errors", "run_events",
+            "messages", "model_preferences", "models", "providers", "remote_sessions", "run_errors", "run_events",
             "run_usage", "runs", "sync_engine_state", "tool_calls", "vnc_sessions"
         ])
         let fts = try await manager.reader { db in
@@ -51,6 +51,7 @@ struct DatabaseManagerTests {
         #expect(applied.contains("v1"))
         #expect(applied.contains("v2"))
         #expect(applied.contains("v3"))
+        #expect(applied.contains("v4"))
     }
 
     @Test("Migration is idempotent (second migrate is a no-op)")

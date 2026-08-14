@@ -18,14 +18,15 @@ struct V3AgentDailyTests {
 
     // MARK: Migration
 
-    @Test("Migration reaches schema v3 and registers all migrations")
+    @Test("Migration preserves v3 and reaches the current schema")
     func migratesToV3() async throws {
         let database = try await makeDatabase()
-        #expect(try await database.userVersion() == 3)
+        #expect(try await database.userVersion() == DatabaseManager.currentSchemaVersion)
         let applied = try await database.appliedMigrations()
         #expect(applied.contains("v1"))
         #expect(applied.contains("v2"))
         #expect(applied.contains("v3"))
+        #expect(applied.contains("v4"))
     }
 
     @Test("v3 creates the new thread/session tables")

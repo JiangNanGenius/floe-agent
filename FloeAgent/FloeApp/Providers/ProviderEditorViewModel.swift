@@ -5,8 +5,9 @@
 // Drives the provider editor: preset pre-fill, wire protocol/base URL/API
 // key, non-secret headers, capability flags, Test connection (committed
 // testConnection + ModelDiscovery), manual-model fallback and the iCloud
-// Keychain sync toggle. The API key goes straight to Keychain via
-// KeychainSecretStore; only a SecretReference is persisted.
+// Keychain sync toggle. The API key stays in memory while testing and is
+// written to Keychain only when the user saves; only a SecretReference is
+// persisted in SQLite/CloudKit.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
@@ -29,15 +30,17 @@ final class ProviderEditorViewModel: ObservableObject {
     // MARK: - Editable fields
 
     @Published var selectedPreset: ProviderPreset
+    @Published var selectedProtocol: ModelProtocol
     @Published var baseURLString: String
     @Published var apiKey: String = ""
     @Published var nonSecretHeadersText: String = ""
     @Published var allowsPlainHTTP = false
     @Published var syncEnabled = true
-    /// Manually-added models (fallback when discovery is unsupported).
-    @Published var manualModels: [ModelProfile] = []
-    /// Models discovered via Test connection (not yet saved).
-    @Published var discoveredModels: [ModelProfile] = []
+    /// Discovered, existing and manually added candidates. Only IDs in
+    /// selectedModelIDs are persisted by this editing session.
+    @Published var candidateModels: [ModelProfile] = []
+    @Published var selectedModelIDs: Set<UUID> = []
+    @Published var defaultModelID: UUID?
 
     // MARK: - Status
 
@@ -61,12 +64,14 @@ final class ProviderEditorViewModel: ObservableObject {
         if let existing {
             self.providerID = existing.id
             self.selectedPreset = ProviderPreset.preset(for: existing.kind)
+            self.selectedProtocol = existing.wireProtocol
             self.baseURLString = existing.baseURL.absoluteString
             self.allowsPlainHTTP = existing.allowsPlainHTTP
             self.nonSecretHeadersText = Self.headersText(from: existing.nonSecretHeaders)
         } else {
             self.providerID = UUID()
             self.selectedPreset = ProviderPreset.all[0]
+            self.selectedProtocol = ProviderPreset.all[0].defaultProtocol
             self.baseURLString = ProviderPreset.all[0].defaultBaseURL.absoluteString
         }
     }
@@ -75,7 +80,10 @@ final class ProviderEditorViewModel: ObservableObject {
     func applyPreset(_ preset: ProviderPreset) {
         selectedPreset = preset
         baseURLString = preset.defaultBaseURL.absoluteString
+        selectedProtocol = preset.defaultProtocol
     }
+
+    var availableProtocols: [ModelProtocol] { selectedPreset.supportedProtocols }
 
     var supportsDiscovery: Bool {
         selectedPreset.supportsModelDiscovery
@@ -83,9 +91,16 @@ final class ProviderEditorViewModel: ObservableObject {
 
     /// Loads the current secret-sync state for an existing provider.
     func load() async {
-        guard existing != nil else { return }
+        guard existing != nil else {
+            defaultModelID = center.modelPreferences.defaultAgentModelID
+            return
+        }
         secretStatus = await secretStore.status(for: providerID, hasConfiguration: true)
         syncEnabled = await secretStore.isSyncEnabled(for: providerID)
+        let existingModels = center.modelsByProvider[providerID] ?? []
+        candidateModels = existingModels.filter { $0.capabilities.contains(.text) }
+        selectedModelIDs = Set(candidateModels.map(\.id))
+        defaultModelID = center.modelPreferences.defaultAgentModelID
     }
 
     // MARK: - Build profile
@@ -106,7 +121,7 @@ final class ProviderEditorViewModel: ObservableObject {
         let profile = ProviderProfile(
             id: providerID,
             kind: selectedPreset.kind,
-            wireProtocol: selectedPreset.wireProtocol,
+            wireProtocol: selectedProtocol,
             baseURL: url,
             secretRef: secretRef,
             nonSecretHeaders: Self.parseHeaders(nonSecretHeadersText),
@@ -141,7 +156,7 @@ final class ProviderEditorViewModel: ObservableObject {
                     provider: profile,
                     credentials: credentials
                 )
-                discoveredModels = models
+                mergeDiscovered(models)
                 testState = .succeeded(modelCount: models.count)
             } else {
                 testState = .succeeded(modelCount: 0)
@@ -153,6 +168,48 @@ final class ProviderEditorViewModel: ObservableObject {
 
     // MARK: - Models
 
+    var selectedModels: [ModelProfile] {
+        candidateModels.filter { selectedModelIDs.contains($0.id) }
+    }
+
+    func toggleSelection(_ id: UUID) {
+        if selectedModelIDs.contains(id) {
+            selectedModelIDs.remove(id)
+            if defaultModelID == id { defaultModelID = nil }
+        } else {
+            selectedModelIDs.insert(id)
+        }
+    }
+
+    func updateModel(_ model: ModelProfile) {
+        guard let index = candidateModels.firstIndex(where: { $0.id == model.id }) else { return }
+        var normalized = model
+        normalized.capabilities.insert(.text)
+        candidateModels[index] = normalized
+    }
+
+    func setDefaultModel(_ id: UUID) {
+        guard selectedModelIDs.contains(id) else { return }
+        defaultModelID = id
+    }
+
+    private func mergeDiscovered(_ discovered: [ModelProfile]) {
+        var existingByRemoteID: [String: ModelProfile] = [:]
+        for model in candidateModels {
+            // Corrupt or legacy stores may contain duplicates. Prefer the last
+            // locally loaded entry, matching the v4 migration's merge rule.
+            existingByRemoteID[model.remoteModelID] = model
+        }
+        for model in discovered where existingByRemoteID[model.remoteModelID] == nil {
+            var conservative = model
+            conservative.capabilities = [.text]
+            existingByRemoteID[model.remoteModelID] = conservative
+        }
+        candidateModels = existingByRemoteID.values.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+    }
+
     /// Adds a manual model entry (fallback when discovery is unsupported).
     func addManualModel(remoteID: String, displayName: String) {
         let trimmed = remoteID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -162,13 +219,16 @@ final class ProviderEditorViewModel: ObservableObject {
             remoteModelID: trimmed,
             displayName: displayName.isEmpty ? trimmed : displayName,
             limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 8_192),
-            capabilities: [.text, .tools]
+            capabilities: [.text]
         )
-        manualModels.append(model)
+        candidateModels.append(model)
+        selectedModelIDs.insert(model.id)
     }
 
     func removeManualModel(id: UUID) {
-        manualModels.removeAll { $0.id == id }
+        candidateModels.removeAll { $0.id == id }
+        selectedModelIDs.remove(id)
+        if defaultModelID == id { defaultModelID = nil }
     }
 
     // MARK: - Save
@@ -184,10 +244,23 @@ final class ProviderEditorViewModel: ObservableObject {
             try await secretStore.setSyncEnabled(syncEnabled, for: providerID)
             try await persistSecretIfNeeded()
             let profile = try buildProfile()
-            try await center.saveProvider(profile)
-            for model in discoveredModels + manualModels {
-                try await center.saveModel(model)
+            let saved = try await center.saveProviderBundle(
+                provider: profile,
+                models: selectedModels
+            )
+            var preferences = center.modelPreferences
+            if let chosen = defaultModelID,
+               let staged = selectedModels.first(where: { $0.id == chosen }),
+               let canonical = saved.first(where: { $0.remoteModelID == staged.remoteModelID }) {
+                preferences.defaultAgentModelID = canonical.id
+            } else if preferences.defaultAgentModelID == nil,
+                      let first = saved.first(where: { $0.capabilities.contains(.text) }) {
+                preferences.defaultAgentModelID = first.id
             }
+            if preferences.defaultAgentModelID != nil {
+                preferences.onboardingStatus = .completed
+            }
+            try await center.saveModelPreferences(preferences)
             return true
         } catch {
             errorMessage = SecretRedactor.redact(error.localizedDescription)

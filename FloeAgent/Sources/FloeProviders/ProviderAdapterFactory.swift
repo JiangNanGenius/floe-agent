@@ -37,11 +37,20 @@ public struct ProviderAdapterFactory: Sendable {
 /// A named provider preset: default endpoint, wire protocol and auth shape.
 /// Used by the provider editor to pre-fill a new provider; the user may edit
 /// every field before saving. Presets carry no credentials.
+public enum ProviderTemplateID: String, Sendable, Codable, CaseIterable, Hashable {
+    case openAI
+    case anthropic
+    case volcengineArk
+    case alibabaStudio
+    case custom
+}
+
 public struct ProviderPreset: Sendable, Hashable, Identifiable {
-    public var id: String { kind.rawValue }
+    public var id: ProviderTemplateID
     public var kind: ProviderKind
     public var displayName: String
-    public var wireProtocol: ModelProtocol
+    public var defaultProtocol: ModelProtocol
+    public var supportedProtocols: [ModelProtocol]
     public var defaultBaseURL: URL
     /// Whether the endpoint is expected to expose a `/models` listing.
     public var supportsModelDiscovery: Bool
@@ -58,74 +67,83 @@ public struct ProviderPreset: Sendable, Hashable, Identifiable {
     }
 
     public init(
+        id: ProviderTemplateID,
         kind: ProviderKind,
         displayName: String,
-        wireProtocol: ModelProtocol,
+        defaultProtocol: ModelProtocol,
+        supportedProtocols: [ModelProtocol],
         defaultBaseURL: URL,
         supportsModelDiscovery: Bool,
         authStyle: AuthStyle
     ) {
+        self.id = id
         self.kind = kind
         self.displayName = displayName
-        self.wireProtocol = wireProtocol
+        self.defaultProtocol = defaultProtocol
+        self.supportedProtocols = supportedProtocols
         self.defaultBaseURL = defaultBaseURL
         self.supportsModelDiscovery = supportsModelDiscovery
         self.authStyle = authStyle
     }
+
+    /// Backward-compatible shorthand for call sites that want the preset's
+    /// default protocol rather than the user's provider-level selection.
+    public var wireProtocol: ModelProtocol { defaultProtocol }
 }
 
 public extension ProviderPreset {
     /// Canonical launch presets. Base URLs are the providers' public API
     /// roots; compatible gateways use the OpenAI Chat Completions wire format.
     static let openAIResponses = ProviderPreset(
+        id: .openAI,
         kind: .openAI,
-        displayName: "OpenAI (Responses)",
-        wireProtocol: .openAIResponses,
-        defaultBaseURL: URL(string: "https://api.openai.com/v1")!,
-        supportsModelDiscovery: true,
-        authStyle: .bearer
-    )
-
-    static let openAIChatCompletions = ProviderPreset(
-        kind: .openAI,
-        displayName: "OpenAI (Chat Completions)",
-        wireProtocol: .openAIChatCompletions,
+        displayName: "OpenAI",
+        defaultProtocol: .openAIResponses,
+        supportedProtocols: [.openAIResponses, .openAIChatCompletions],
         defaultBaseURL: URL(string: "https://api.openai.com/v1")!,
         supportsModelDiscovery: true,
         authStyle: .bearer
     )
 
     static let anthropic = ProviderPreset(
+        id: .anthropic,
         kind: .anthropic,
         displayName: "Anthropic",
-        wireProtocol: .anthropicMessages,
+        defaultProtocol: .anthropicMessages,
+        supportedProtocols: [.anthropicMessages],
         defaultBaseURL: URL(string: "https://api.anthropic.com")!,
         supportsModelDiscovery: true,
         authStyle: .apiKeyHeader
     )
 
     static let volcengineArk = ProviderPreset(
+        id: .volcengineArk,
         kind: .volcengineArk,
-        displayName: "Volcengine Ark (compatible)",
-        wireProtocol: .openAIChatCompletions,
+        displayName: "Volcengine Ark",
+        defaultProtocol: .openAIChatCompletions,
+        supportedProtocols: [.openAIChatCompletions],
         defaultBaseURL: URL(string: "https://ark.cn-beijing.volces.com/api/v3")!,
         supportsModelDiscovery: true,
         authStyle: .bearer
     )
 
     static let alibabaStudio = ProviderPreset(
+        id: .alibabaStudio,
         kind: .alibabaStudio,
-        displayName: "Alibaba Model Studio (compatible)",
-        wireProtocol: .openAIChatCompletions,
+        displayName: "Alibaba Model Studio",
+        defaultProtocol: .openAIChatCompletions,
+        supportedProtocols: [.openAIChatCompletions],
         defaultBaseURL: URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")!,
         supportsModelDiscovery: true,
         authStyle: .bearer
     )
 
     static let custom = ProviderPreset(
+        id: .custom,
         kind: .custom,
         displayName: "Custom compatible endpoint",
-        wireProtocol: .openAIChatCompletions,
+        defaultProtocol: .openAIChatCompletions,
+        supportedProtocols: [.openAIResponses, .openAIChatCompletions, .anthropicMessages],
         defaultBaseURL: URL(string: "https://example.com/v1")!,
         supportsModelDiscovery: false,
         authStyle: .bearer
@@ -134,7 +152,6 @@ public extension ProviderPreset {
     /// All launch presets in display order.
     static let all: [ProviderPreset] = [
         .openAIResponses,
-        .openAIChatCompletions,
         .anthropic,
         .volcengineArk,
         .alibabaStudio,

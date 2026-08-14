@@ -3167,6 +3167,132 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在准备 Floe Agent…" } }
       }
     },
+    "action.back": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Back" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "返回" } }
+      }
+    },
+    "more.auxiliary_models": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Auxiliary Models" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "辅助模型" } }
+      }
+    },
+    "more.setup_guide": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Setup Guide" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "设置向导" } }
+      }
+    },
+    "setup.continue": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Continue" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "继续" } }
+      }
+    },
+    "setup.finish": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Finish" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "完成" } }
+      }
+    },
+    "setup.launcher.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Connect a provider, choose models and review their capabilities at any time." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "随时连接服务商、选择模型并检查各模型能力。" } }
+      }
+    },
+    "setup.launcher.open": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Open Setup Guide" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "打开设置向导" } }
+      }
+    },
+    "setup.point.explore": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "You can explore the app without a model" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无需配置模型也可浏览全部功能" } }
+      }
+    },
+    "setup.point.keychain": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "API keys stay in Keychain" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "API Key 仅保存在系统钥匙串" } }
+      }
+    },
+    "setup.point.no_account": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No Floe account" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无需 Floe 账户" } }
+      }
+    },
+    "setup.skip": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Skip for Now" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "暂时跳过" } }
+      }
+    },
+    "setup.step.capabilities": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Review Capabilities" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "检查模型能力" } }
+      }
+    },
+    "setup.step.connection": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Connect Securely" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "安全连接" } }
+      }
+    },
+    "setup.step.models": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Choose Models" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选择模型" } }
+      }
+    },
+    "setup.step.provider": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Choose a Provider" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选择服务商" } }
+      }
+    },
+    "setup.step.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Ready to Use Floe" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Floe 已准备就绪" } }
+      }
+    },
+    "setup.step.welcome": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Welcome" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "欢迎" } }
+      }
+    },
+    "setup.test_continue": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Test and Continue" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "测试并继续" } }
+      }
+    },
     "storage.unavailable": {
       "extractionState": "manual",
       "localizations": {

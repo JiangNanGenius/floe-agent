@@ -120,4 +120,117 @@ struct ModelConfigurationStoreTests {
             try await store.saveModel(invalidModel)
         }
     }
+
+    @Test("Models merge by provider and remote identifier")
+    func modelIdentityMerge() async throws {
+        let store = try await makeStore()
+        let provider = ProviderProfile(
+            kind: .openAI,
+            wireProtocol: .openAIResponses,
+            baseURL: try #require(URL(string: "https://api.openai.com/v1"))
+        )
+        try await store.saveProvider(provider)
+        let first = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "gpt-test",
+            displayName: "First",
+            limits: ModelLimits(contextTokens: 10, maxOutputTokens: 2)
+        )
+        var rediscovered = first
+        rediscovered.id = UUID()
+        rediscovered.displayName = "User Name"
+        rediscovered.capabilities = [.text, .vision]
+
+        try await store.saveModel(first)
+        try await store.saveModel(rediscovered)
+        let models = try await store.models(providerID: provider.id)
+
+        #expect(models.count == 1)
+        #expect(models[0].id == first.id)
+        #expect(models[0].displayName == "User Name")
+        #expect(models[0].capabilities.contains(.vision))
+    }
+
+    @Test("Provider bundle removes deselected chat models and preserves image models")
+    func providerBundleSelection() async throws {
+        let store = try await makeStore()
+        let provider = ProviderProfile(
+            kind: .openAI,
+            wireProtocol: .openAIResponses,
+            baseURL: try #require(URL(string: "https://api.openai.com/v1"))
+        )
+        let kept = ModelProfile(
+            providerID: provider.id, remoteModelID: "kept", displayName: "Kept",
+            limits: ModelLimits(contextTokens: 10, maxOutputTokens: 2), capabilities: [.text]
+        )
+        let removed = ModelProfile(
+            providerID: provider.id, remoteModelID: "removed", displayName: "Removed",
+            limits: ModelLimits(contextTokens: 10, maxOutputTokens: 2), capabilities: [.text]
+        )
+        let image = ModelProfile(
+            providerID: provider.id, remoteModelID: "image", displayName: "Image",
+            limits: ModelLimits(contextTokens: 1, maxOutputTokens: 1),
+            capabilities: [.imageGeneration]
+        )
+        try await store.saveProvider(provider)
+        try await store.saveModel(kept)
+        try await store.saveModel(removed)
+        try await store.saveModel(image)
+
+        _ = try await store.saveProviderBundle(provider: provider, models: [kept])
+        let models = try await store.models(providerID: provider.id)
+        #expect(Set(models.map(\.remoteModelID)) == ["kept", "image"])
+    }
+
+    @Test("Preferences enforce role capabilities and clear deleted references")
+    func modelPreferences() async throws {
+        let store = try await makeStore()
+        let provider = ProviderProfile(
+            kind: .openAI,
+            wireProtocol: .openAIResponses,
+            baseURL: try #require(URL(string: "https://api.openai.com/v1"))
+        )
+        try await store.saveProvider(provider)
+        let agent = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "agent",
+            displayName: "Agent",
+            limits: ModelLimits(contextTokens: 10, maxOutputTokens: 2),
+            capabilities: [.text, .tools]
+        )
+        let image = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "image",
+            displayName: "Image",
+            limits: ModelLimits(contextTokens: 1, maxOutputTokens: 1),
+            capabilities: [.imageGeneration, .imageEditing]
+        )
+        try await store.saveModel(agent)
+        try await store.saveModel(image)
+        let preferences = ModelSelectionPreferences(
+            onboardingStatus: .completed,
+            defaultAgentModelID: agent.id,
+            auxiliaryImageMode: .shared,
+            sharedImageModelID: image.id
+        )
+        try await store.savePreferences(preferences)
+        #expect(try await store.preferences().defaultAgentModelID == agent.id)
+        #expect(try await store.preferences().sharedImageModelID == image.id)
+
+        try await store.deleteModel(id: image.id)
+        #expect(try await store.preferences().sharedImageModelID == nil)
+    }
+
+    @Test("Onboarding status persists independently from unfinished configuration")
+    func onboardingStatusPersistence() async throws {
+        let store = try await makeStore()
+        #expect(try await store.preferences().onboardingStatus == .unseen)
+
+        var preferences = try await store.preferences()
+        preferences.onboardingStatus = .skipped
+        try await store.savePreferences(preferences)
+        #expect(try await store.preferences().onboardingStatus == .skipped)
+        #expect(try await store.providers().isEmpty)
+        #expect(try await store.models().isEmpty)
+    }
 }

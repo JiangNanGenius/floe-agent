@@ -42,6 +42,7 @@
 		7B44A496EC3A28601170695B /* AppRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0E86FB249DA97D2FA57FBA7 /* AppRouter.swift */; };
 		89B023C074580181D49D192A /* ModelPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADE9E409B66EBC3967853B86 /* ModelPickerView.swift */; };
 		8F40177268113AACE1405851 /* AppDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF5F8AFB4D253F079EA5CF84 /* AppDestination.swift */; };
+		912A144E85A4C312537582FC /* SetupGuideUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */; };
 		9D88F7400A99BF770F8A8DB4 /* ProviderEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB97B6031201DC2B9654F686 /* ProviderEditorView.swift */; };
 		9F178F696416A4E7191F56FB /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C1C39FA1A8D05FF5A1E63EE /* OnboardingView.swift */; };
 		A07E797D244A170430DEF61B /* ConversationCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50D3F739AE81623062A9C5C9 /* ConversationCenter.swift */; };
@@ -54,6 +55,7 @@
 		B2196F0D1CCA995A3F4F8C0D /* FloeTools in Frameworks */ = {isa = PBXBuildFile; productRef = 8E8F4CD97A741A8F515EC80E /* FloeTools */; };
 		B30C1248DF0B9FE004549E3F /* ConversationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA165A2C7BD607DB6F26AD7B /* ConversationListView.swift */; };
 		BAFCFD696F2EA6A8D174FBBD /* M0DiagnosticsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 397DA23AB1A49D66682CE2D2 /* M0DiagnosticsModel.swift */; };
+		BBDDB8AF6699F17D99D910BA /* ModelEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9ED88DC18A9D3D6ABA16DE7E /* ModelEditorView.swift */; };
 		BD180E6F18D1B24DA6B15D12 /* QuickLookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B378CF37C409045418D9D24 /* QuickLookView.swift */; };
 		C0644D9C266B374CE223488D /* VNCSessionOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DF58B5C692BB56DB9A379F4 /* VNCSessionOwner.swift */; };
 		C289286498042D0530D1590B /* FloeProviders in Frameworks */ = {isa = PBXBuildFile; productRef = B6555425212C5867CBB75D36 /* FloeProviders */; };
@@ -68,11 +70,23 @@
 		E40E39F14DBED467D850E91A /* FloeAgentRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = EF4C9E5ED2F18E4E1CB8A527 /* FloeAgentRuntime */; };
 		EA75F07AFCF7BF5BF8A40F9E /* ThreadDetailViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA10AC479B03C7D998AC448B /* ThreadDetailViewModel.swift */; };
 		EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = A6797B7DAA890D6378153058 /* Localizable.xcstrings */; };
+		ED9E967E7858D92A307B24F6 /* AuxiliaryModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE522C8BF30B54FAD939C53C /* AuxiliaryModelsView.swift */; };
 		EF38B4329039226E8A757EE4 /* HostListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104F2ACE88D931C8C54A6787 /* HostListViewModel.swift */; };
 		F22B4EE67CDC42EEA5597B06 /* NewTaskComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBBA6F08FFABF96074F1F1E3 /* NewTaskComposerView.swift */; };
 		F2FA4F2EDA410E215E8DA440 /* TerminalViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 531772E03835546E29F3B7DF /* TerminalViewModel.swift */; };
 		F5A0E862B93245565549ABC8 /* HomeWorkbenchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F85A53B63A4418682D1679E1 /* HomeWorkbenchView.swift */; };
+		FBF28B8E8847F0265F9E7C47 /* SetupGuideLauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83D0EBB0361B5F388903EE7F /* SetupGuideLauncherView.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		02EEB3AECC6C7D84AE6D7510 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 34A505482FC52A1ABA7CBF4B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 3AFAF3B3CB6F0777A7C6B07F;
+			remoteInfo = FloeAgent;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		00969624B0A954308417634B /* FilesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesViewModel.swift; sourceTree = "<group>"; };
@@ -97,21 +111,25 @@
 		6B429A0789887E0740567D60 /* MoreViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreViewModel.swift; sourceTree = "<group>"; };
 		6C1C39FA1A8D05FF5A1E63EE /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		6E4B5351714B8B79EF8E8055 /* Floe.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Floe.entitlements; sourceTree = "<group>"; };
+		725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupGuideUITests.swift; sourceTree = "<group>"; };
 		75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeTheme.swift; sourceTree = "<group>"; };
 		7A23E7E08860487A8333BE4F /* HostListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListView.swift; sourceTree = "<group>"; };
 		7DF58B5C692BB56DB9A379F4 /* VNCSessionOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VNCSessionOwner.swift; sourceTree = "<group>"; };
+		83D0EBB0361B5F388903EE7F /* SetupGuideLauncherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupGuideLauncherView.swift; sourceTree = "<group>"; };
 		84E9CA8571729543928880E3 /* M0DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M0DiagnosticsView.swift; sourceTree = "<group>"; };
 		857283D5BF6E741DD727418D /* ProviderEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderEditorViewModel.swift; sourceTree = "<group>"; };
 		87F23BEA3A5A6B017F698D28 /* RemoteSessionSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionSnapshot.swift; sourceTree = "<group>"; };
 		8B2CC51635FB2F20F5C41CA1 /* ApprovalCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalCardView.swift; sourceTree = "<group>"; };
 		8B378CF37C409045418D9D24 /* QuickLookView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickLookView.swift; sourceTree = "<group>"; };
 		8B7FE946AC097054C1CB5A16 /* VNCView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VNCView.swift; sourceTree = "<group>"; };
+		8F6676BA85A2C0059B610493 /* FloeAgentUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FloeAgentUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8FBC9F374C911EA91D944FB0 /* MoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreView.swift; sourceTree = "<group>"; };
 		916ACA33CDE6532714E49272 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		940DE18872CD21D45A855A30 /* FilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesView.swift; sourceTree = "<group>"; };
 		96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeAgentApp.swift; sourceTree = "<group>"; };
 		9B8826D4AB351DBF9CFF40AD /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
 		9D3F41AA3EFDF6F065F64FBB /* ImageEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageEditorViewModel.swift; sourceTree = "<group>"; };
+		9ED88DC18A9D3D6ABA16DE7E /* ModelEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelEditorView.swift; sourceTree = "<group>"; };
 		A4A0E75544F5FA28387CB77B /* ProviderListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderListView.swift; sourceTree = "<group>"; };
 		A6361867E119C80F4DB74A23 /* DocumentPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentPickerView.swift; sourceTree = "<group>"; };
 		A6797B7DAA890D6378153058 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
@@ -119,6 +137,7 @@
 		ADE9E409B66EBC3967853B86 /* ModelPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPickerView.swift; sourceTree = "<group>"; };
 		B536F4DA6282AE9A983C8498 /* RemoteImageUnavailableView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageUnavailableView.swift; sourceTree = "<group>"; };
 		BACF0650EC6E172999FEB4EC /* ThreadEventView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadEventView.swift; sourceTree = "<group>"; };
+		BE522C8BF30B54FAD939C53C /* AuxiliaryModelsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxiliaryModelsView.swift; sourceTree = "<group>"; };
 		C43555513E313C954D2E39B3 /* ProviderListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderListViewModel.swift; sourceTree = "<group>"; };
 		C4CD5173D18CDDB6549BBD7D /* RemoteSessionCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionCenter.swift; sourceTree = "<group>"; };
 		C748393AFE6A38ADCB6FC166 /* FloeAgent.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = FloeAgent.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -167,6 +186,14 @@
 			path = Platform;
 			sourceTree = "<group>";
 		};
+		148A98B4C66AA93AB345AB92 /* FloeAgentUITests */ = {
+			isa = PBXGroup;
+			children = (
+				725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */,
+			);
+			path = FloeAgentUITests;
+			sourceTree = "<group>";
+		};
 		162B2C46C4114FAACE5567CC /* Files */ = {
 			isa = PBXGroup;
 			children = (
@@ -187,6 +214,7 @@
 			children = (
 				6C1C39FA1A8D05FF5A1E63EE /* OnboardingView.swift */,
 				2CB28627E88075511A391819 /* OnboardingViewModel.swift */,
+				83D0EBB0361B5F388903EE7F /* SetupGuideLauncherView.swift */,
 			);
 			path = Onboarding;
 			sourceTree = "<group>";
@@ -214,6 +242,14 @@
 			path = App;
 			sourceTree = "<group>";
 		};
+		662EB09365DAD3DF8603C700 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				148A98B4C66AA93AB345AB92 /* FloeAgentUITests */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
 		6981ED2BB91A3718E09C6710 /* Home */ = {
 			isa = PBXGroup;
 			children = (
@@ -227,6 +263,8 @@
 		7496B22C8D4B5D5368CCE94A /* Providers */ = {
 			isa = PBXGroup;
 			children = (
+				BE522C8BF30B54FAD939C53C /* AuxiliaryModelsView.swift */,
+				9ED88DC18A9D3D6ABA16DE7E /* ModelEditorView.swift */,
 				ADE9E409B66EBC3967853B86 /* ModelPickerView.swift */,
 				DB97B6031201DC2B9654F686 /* ProviderEditorView.swift */,
 				857283D5BF6E741DD727418D /* ProviderEditorViewModel.swift */,
@@ -264,6 +302,7 @@
 			children = (
 				D503CE8C555DE955FC1B0FEE /* FloeApp */,
 				D38FE95FA512115C4664ECFE /* Packages */,
+				662EB09365DAD3DF8603C700 /* Tests */,
 				D2F4766B4780E506300D05AC /* Products */,
 			);
 			sourceTree = "<group>";
@@ -292,6 +331,7 @@
 			isa = PBXGroup;
 			children = (
 				C748393AFE6A38ADCB6FC166 /* FloeAgent.app */,
+				8F6676BA85A2C0059B610493 /* FloeAgentUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -406,6 +446,24 @@
 			productReference = C748393AFE6A38ADCB6FC166 /* FloeAgent.app */;
 			productType = "com.apple.product-type.application";
 		};
+		3ED33BFEA83AA76546E45B16 /* FloeAgentUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1AA8381BF42E3454786DEE17 /* Build configuration list for PBXNativeTarget "FloeAgentUITests" */;
+			buildPhases = (
+				65C93652756E9F10C414DC34 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B967FFAFED545E32348011BA /* PBXTargetDependency */,
+			);
+			name = FloeAgentUITests;
+			packageProductDependencies = (
+			);
+			productName = FloeAgentUITests;
+			productReference = 8F6676BA85A2C0059B610493 /* FloeAgentUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -417,6 +475,10 @@
 				TargetAttributes = {
 					3AFAF3B3CB6F0777A7C6B07F = {
 						DevelopmentTeam = QYL72C43K6;
+					};
+					3ED33BFEA83AA76546E45B16 = {
+						DevelopmentTeam = QYL72C43K6;
+						TestTargetID = 3AFAF3B3CB6F0777A7C6B07F;
 					};
 				};
 			};
@@ -439,6 +501,7 @@
 			projectRoot = "";
 			targets = (
 				3AFAF3B3CB6F0777A7C6B07F /* FloeAgent */,
+				3ED33BFEA83AA76546E45B16 /* FloeAgentUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -464,6 +527,7 @@
 				C5EDFDCD3E6C6D784D9F4ECC /* AppEnvironment.swift in Sources */,
 				7B44A496EC3A28601170695B /* AppRouter.swift in Sources */,
 				1025E15EE1084740B1DB0D0A /* ApprovalCardView.swift in Sources */,
+				ED9E967E7858D92A307B24F6 /* AuxiliaryModelsView.swift in Sources */,
 				A07E797D244A170430DEF61B /* ConversationCenter.swift in Sources */,
 				B30C1248DF0B9FE004549E3F /* ConversationListView.swift in Sources */,
 				51FC0B9E3FDE98C725F6BA0E /* ConversationListViewModel.swift in Sources */,
@@ -484,6 +548,7 @@
 				4144F3019B808B95513380EF /* ImageEditorViewModel.swift in Sources */,
 				BAFCFD696F2EA6A8D174FBBD /* M0DiagnosticsModel.swift in Sources */,
 				0DB52308023E1468A623C1C7 /* M0DiagnosticsView.swift in Sources */,
+				BBDDB8AF6699F17D99D910BA /* ModelEditorView.swift in Sources */,
 				89B023C074580181D49D192A /* ModelPickerView.swift in Sources */,
 				30F0B2510C03DF07A93756F1 /* MoreView.swift in Sources */,
 				42924454C7187541E75FE29D /* MoreViewModel.swift in Sources */,
@@ -500,6 +565,7 @@
 				A08697D5A61FF31F4367FE7D /* RemoteSessionCenter.swift in Sources */,
 				CEDE8D8AD83D823BBC4E1662 /* RemoteSessionSnapshot.swift in Sources */,
 				4ADD4F72F382289B6D7101CB /* SSHSessionOwner.swift in Sources */,
+				FBF28B8E8847F0265F9E7C47 /* SetupGuideLauncherView.swift in Sources */,
 				49D4CE5A1CDB89F7EC6BBFEE /* TerminalView.swift in Sources */,
 				F2FA4F2EDA410E215E8DA440 /* TerminalViewModel.swift in Sources */,
 				144C0751E522D91EB3EAD196 /* ThreadDetailView.swift in Sources */,
@@ -513,7 +579,23 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		65C93652756E9F10C414DC34 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				912A144E85A4C312537582FC /* SetupGuideUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B967FFAFED545E32348011BA /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 3AFAF3B3CB6F0777A7C6B07F /* FloeAgent */;
+			targetProxy = 02EEB3AECC6C7D84AE6D7510 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		06D6A3B826D9F96AE81F4773 /* Release */ = {
@@ -523,7 +605,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -600,6 +682,25 @@
 			};
 			name = Release;
 		};
+		6D64DF1CFFCBB85CE274044C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = QYL72C43K6;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.uitests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = FloeAgent;
+			};
+			name = Debug;
+		};
 		85FD2445DECE581FB7300C8B /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -663,6 +764,25 @@
 			};
 			name = Debug;
 		};
+		A48A6F5D4844A2FCBD876EB0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = QYL72C43K6;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.uitests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = FloeAgent;
+			};
+			name = Release;
+		};
 		B42180383A323CEE990BB7DA /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -670,7 +790,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -694,6 +814,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		1AA8381BF42E3454786DEE17 /* Build configuration list for PBXNativeTarget "FloeAgentUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6D64DF1CFFCBB85CE274044C /* Debug */,
+				A48A6F5D4844A2FCBD876EB0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		A666E10011811E9C82F7FDFB /* Build configuration list for PBXProject "FloeAgent" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

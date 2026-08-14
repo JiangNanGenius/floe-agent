@@ -27,6 +27,8 @@ final class HomeWorkbenchViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     /// Composer draft text.
     @Published var draft: String = ""
+    /// Per-composer override; nil resolves to the global default.
+    @Published var selectedModelID: UUID?
 
     let center: ConversationCenter
     let environment: AppEnvironment
@@ -48,12 +50,14 @@ final class HomeWorkbenchViewModel: ObservableObject {
 
     /// The provider/model the composer will use for a new task.
     var activeModelName: String? {
-        center.defaultProviderAndModel()?.1.displayName
+        center.providerAndModel(modelID: selectedModelID)?.1.displayName
     }
+
+    var availableModels: [ModelProfile] { center.availableAgentModels }
 
     /// Whether the composer may send.
     var canSend: Bool {
-        hasConfiguredProvider
+        center.providerAndModel(modelID: selectedModelID) != nil
             && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -67,6 +71,7 @@ final class HomeWorkbenchViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         await center.reload()
+        if selectedModelID == nil { selectedModelID = center.modelPreferences.defaultAgentModelID }
         await loadActiveTasks()
         await loadRecentSessions()
     }
@@ -94,7 +99,7 @@ final class HomeWorkbenchViewModel: ObservableObject {
     /// Returns the new conversation ID so the view can navigate to Chat.
     @discardableResult
     func sendNewTask() async -> UUID? {
-        guard canSend, let (provider, model) = center.defaultProviderAndModel() else { return nil }
+        guard canSend, let (provider, model) = center.providerAndModel(modelID: selectedModelID) else { return nil }
         let goal = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         draft = ""
         do {

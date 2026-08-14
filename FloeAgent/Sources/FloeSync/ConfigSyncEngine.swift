@@ -118,6 +118,22 @@ public actor ConfigSyncEngine {
         )
     }
 
+    public func savePreferences(
+        _ preferences: ModelSelectionPreferences,
+        changedFields: Set<String>? = nil
+    ) async throws {
+        guard let configurationStore else {
+            throw FloeError.invalidConfiguration("ConfigSyncEngine requires a configuration store")
+        }
+        try await configurationStore.savePreferences(preferences)
+        try await enqueueSave(
+            type: .preference,
+            id: "default",
+            value: preferences,
+            changedFields: changedFields
+        )
+    }
+
     public func deleteProvider(id: UUID) async throws {
         try await configurationStore?.deleteProvider(id: id)
         try await enqueueDelete(type: .providerProfile, id: id.uuidString)
@@ -150,7 +166,8 @@ public actor ConfigSyncEngine {
         changedFields: Set<String>?
     ) async throws {
         guard let metadataStore, let syncEngine, let zoneID else {
-            throw FloeError.invalidConfiguration("CloudKit sync is not configured")
+            status = .paused
+            return
         }
         let payload = try Self.encode(value)
         let fields: Set<String>
@@ -175,7 +192,8 @@ public actor ConfigSyncEngine {
 
     private func enqueueDelete(type: ConfigSyncRecordType, id: String) async throws {
         guard let metadataStore, let syncEngine, let zoneID else {
-            throw FloeError.invalidConfiguration("CloudKit sync is not configured")
+            status = .paused
+            return
         }
         var metadata = try await metadataStore.metadata(recordType: type.rawValue, recordID: id)
             ?? ConfigSyncMetadata(recordType: type.rawValue, recordID: id)
@@ -264,28 +282,50 @@ public actor ConfigSyncEngine {
     }
 
     private func recordType(for id: String) async -> ConfigSyncRecordType? {
-        guard let configurationStore, let uuid = UUID(uuidString: id) else { return nil }
-        if (try? await configurationStore.provider(id: uuid)) != nil { return .providerProfile }
-        if (try? await configurationStore.model(id: uuid)) != nil { return .modelProfile }
+        if id == "default" { return .preference }
+        if let configurationStore, let uuid = UUID(uuidString: id) {
+            if (try? await configurationStore.provider(id: uuid)) != nil { return .providerProfile }
+            if (try? await configurationStore.model(id: uuid)) != nil { return .modelProfile }
+        }
+        // A locally deleted object can no longer reveal its type through the
+        // configuration store. Its tombstone metadata remains authoritative.
+        if let metadataStore {
+            for type in ConfigSyncRecordType.allCases {
+                if (try? await metadataStore.metadata(recordType: type.rawValue, recordID: id)) != nil {
+                    return type
+                }
+            }
+        }
         return nil
     }
 
     private func payload(type: ConfigSyncRecordType, id: String) async throws -> Data {
-        guard let configurationStore, let uuid = UUID(uuidString: id) else {
-            throw FloeError.storageCorrupted("Invalid sync record identifier")
+        guard let configurationStore else {
+            throw FloeError.invalidConfiguration("ConfigSyncEngine requires a configuration store")
         }
         switch type {
+        case .preference:
+            guard id == "default" else {
+                throw FloeError.storageCorrupted("Invalid preference record identifier")
+            }
+            return try Self.encode(try await configurationStore.preferences())
         case .providerProfile:
+            guard let uuid = UUID(uuidString: id) else {
+                throw FloeError.storageCorrupted("Invalid provider record identifier")
+            }
             guard let provider = try await configurationStore.provider(id: uuid) else {
                 throw FloeError.storageCorrupted("Missing provider for pending CloudKit save")
             }
             return try Self.encode(provider)
         case .modelProfile:
+            guard let uuid = UUID(uuidString: id) else {
+                throw FloeError.storageCorrupted("Invalid model record identifier")
+            }
             guard let model = try await configurationStore.model(id: uuid) else {
                 throw FloeError.storageCorrupted("Missing model for pending CloudKit save")
             }
             return try Self.encode(model)
-        case .approvalModelSelection, .preference:
+        case .approvalModelSelection:
             throw FloeError.invalidConfiguration("Record type is not implemented yet")
         }
     }
@@ -314,8 +354,11 @@ public actor ConfigSyncEngine {
             try await configurationStore.saveProvider(try JSONDecoder.floe.decode(ProviderProfile.self, from: mergedPayload))
         case .modelProfile:
             try await configurationStore.saveModel(try JSONDecoder.floe.decode(ModelProfile.self, from: mergedPayload))
-        case .approvalModelSelection, .preference:
-            return
+        case .preference:
+            try await configurationStore.savePreferences(
+                try JSONDecoder.floe.decode(ModelSelectionPreferences.self, from: mergedPayload)
+            )
+        case .approvalModelSelection: return
         }
 
         var mergedTimestamps = localTimestamps
@@ -342,14 +385,21 @@ public actor ConfigSyncEngine {
 
     private func applyRemoteDeletion(recordID: CKRecord.ID, recordType: String) async throws {
         guard let type = ConfigSyncRecordType(rawValue: recordType),
-              let uuid = UUID(uuidString: recordID.recordName),
               let configurationStore,
               let metadataStore
         else { return }
         switch type {
-        case .providerProfile: try await configurationStore.deleteProvider(id: uuid)
-        case .modelProfile: try await configurationStore.deleteModel(id: uuid)
-        case .approvalModelSelection, .preference: break
+        case .providerProfile:
+            if let uuid = UUID(uuidString: recordID.recordName) {
+                try await configurationStore.deleteProvider(id: uuid)
+            }
+        case .modelProfile:
+            if let uuid = UUID(uuidString: recordID.recordName) {
+                try await configurationStore.deleteModel(id: uuid)
+            }
+        case .preference:
+            try await configurationStore.savePreferences(ModelSelectionPreferences())
+        case .approvalModelSelection: break
         }
         let now = Date()
         try await metadataStore.save(ConfigSyncMetadata(

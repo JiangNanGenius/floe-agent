@@ -9,12 +9,15 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import FloeCore
 
 /// The compact composer. `onSend` returns the new conversation ID so the
 /// caller can navigate to the Chat thread.
 struct NewTaskComposerView: View {
     @Binding var draft: String
+    @Binding var selectedModelID: UUID?
     let modelName: String?
+    let models: [ModelProfile]
     let canSend: Bool
     let providerConfigured: Bool
     let onSend: () -> Void
@@ -26,10 +29,24 @@ struct NewTaskComposerView: View {
                     .font(.headline)
                 Spacer()
                 if let modelName {
-                    Text(modelName)
-                        .font(FloeTheme.Typography.metadata)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    Menu {
+                        ForEach(models) { model in
+                            Button {
+                                selectedModelID = model.id
+                            } label: {
+                                if selectedModelID == model.id {
+                                    Label(model.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(model.displayName)
+                                }
+                            }
+                        }
+                    } label: {
+                        Label(modelName, systemImage: "chevron.down")
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
             }
 

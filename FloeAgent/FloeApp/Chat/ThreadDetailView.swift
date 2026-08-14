@@ -191,6 +191,29 @@ struct ThreadDetailView: View {
         VStack(spacing: 0) {
             if viewModel.needsProvider {
                 addProviderBar
+            } else if let modelName = viewModel.selectedModelName {
+                HStack {
+                    Menu {
+                        ForEach(viewModel.availableModels) { model in
+                            Button {
+                                viewModel.selectedModelID = model.id
+                            } label: {
+                                if viewModel.selectedModelID == model.id {
+                                    Label(model.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(model.displayName)
+                                }
+                            }
+                        }
+                    } label: {
+                        Label(modelName, systemImage: "chevron.down")
+                            .font(FloeTheme.Typography.metadata)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .background(FloeTheme.chromeMaterial)
             }
             HStack(alignment: .bottom, spacing: 8) {
                 TextField(text: $viewModel.draft, axis: .vertical) {
@@ -227,6 +250,8 @@ struct ThreadDetailView: View {
             Text("chat.add_provider.hint")
                 .font(FloeTheme.Typography.metadata)
             Spacer()
+            Button("setup.launcher.open") { router.presentedSetup = .manual }
+                .buttonStyle(.bordered)
         }
         .padding(.horizontal)
         .padding(.vertical, 8)

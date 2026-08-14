@@ -12,26 +12,46 @@ import FloeCore
 
 /// A sheet listing discovered models plus a manual-entry fallback.
 struct ModelPickerView: View {
-    let models: [ModelProfile]
-    let onAddManual: (String, String) -> Void
+    @ObservedObject var viewModel: ProviderEditorViewModel
 
     @Environment(\.dismiss) private var dismiss
     @State private var manualRemoteID = ""
     @State private var manualDisplayName = ""
+    @State private var searchText = ""
+
+    private var filteredModels: [ModelProfile] {
+        guard !searchText.isEmpty else { return viewModel.candidateModels }
+        return viewModel.candidateModels.filter {
+            $0.displayName.localizedCaseInsensitiveContains(searchText)
+                || $0.remoteModelID.localizedCaseInsensitiveContains(searchText)
+        }
+    }
 
     var body: some View {
         NavigationStack {
             List {
-                if !models.isEmpty {
+                if !filteredModels.isEmpty {
                     Section("providers.discovered") {
-                        ForEach(models) { model in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(model.displayName)
-                                    .font(FloeTheme.Typography.body)
-                                Text(model.remoteModelID)
-                                    .font(FloeTheme.Typography.evidence)
-                                    .foregroundStyle(.secondary)
+                        ForEach(filteredModels) { model in
+                            Button {
+                                viewModel.toggleSelection(model.id)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(model.displayName)
+                                            .font(FloeTheme.Typography.body)
+                                        Text(model.remoteModelID)
+                                            .font(FloeTheme.Typography.evidence)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: viewModel.selectedModelIDs.contains(model.id)
+                                          ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(viewModel.selectedModelIDs.contains(model.id)
+                                                         ? FloeTheme.primary : .secondary)
+                                }
                             }
+                            .buttonStyle(.plain)
                             .frame(minHeight: FloeTheme.minimumTarget)
                         }
                     }
@@ -43,7 +63,7 @@ struct ModelPickerView: View {
                     TextField("providers.model_name", text: $manualDisplayName)
                         .textInputAutocapitalization(.never)
                     Button("providers.add_model") {
-                        onAddManual(manualRemoteID, manualDisplayName)
+                        viewModel.addManualModel(remoteID: manualRemoteID, displayName: manualDisplayName)
                         manualRemoteID = ""
                         manualDisplayName = ""
                     }
@@ -55,6 +75,7 @@ struct ModelPickerView: View {
                     Text("providers.manual_fallback.hint")
                 }
             }
+            .searchable(text: $searchText, prompt: "Search models")
             .navigationTitle("providers.models_section")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

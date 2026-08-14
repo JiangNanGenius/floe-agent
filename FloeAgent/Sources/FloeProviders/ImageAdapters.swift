@@ -123,7 +123,9 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
     public init() {}
 
     public func supportedOperations(for provider: ProviderProfile) -> Set<RemoteImageOperation> {
-        [.generate, .edit, .variation, .inpaint]
+        // Generation is wired today. Multipart edit-family requests remain
+        // unavailable until their real transport is implemented.
+        [.generate]
     }
 
     public func perform(
@@ -194,7 +196,7 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
     public init() {}
 
     public func supportedOperations(for provider: ProviderProfile) -> Set<RemoteImageOperation> {
-        [.generate, .edit]
+        []
     }
 
     public func perform(
@@ -220,7 +222,7 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
     public init() {}
 
     public func supportedOperations(for provider: ProviderProfile) -> Set<RemoteImageOperation> {
-        [.generate]
+        []
     }
 
     public func perform(

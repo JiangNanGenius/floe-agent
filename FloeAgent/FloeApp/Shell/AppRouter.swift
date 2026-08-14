@@ -13,6 +13,12 @@ import SwiftUI
 import UIKit
 import Foundation
 
+enum SetupPresentation: String, Identifiable, Hashable, Sendable {
+    case firstLaunch
+    case manual
+    var id: String { rawValue }
+}
+
 /// Navigation state and background-policy wiring for the whole app.
 /// Views bind to this; they never hold policy or selection state of their own.
 @MainActor
@@ -40,6 +46,8 @@ final class AppRouter: ObservableObject {
     @Published var selectedRunID: UUID?
     /// Host currently inspected (host detail / terminal / VNC), if any.
     @Published var selectedHostID: UUID?
+    /// A single app-wide setup sheet shared by iPhone and iPad routes.
+    @Published var presentedSetup: SetupPresentation?
 
     /// Stable per-scene identifier used for iPad multi-scene background
     /// accounting. Each scene creates its own router, so a per-router UUID

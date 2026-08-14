@@ -18,6 +18,7 @@ struct ProviderEditorView: View {
     @StateObject private var viewModel: ProviderEditorViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var showModelPicker = false
+    @State private var editingModel: ModelProfile?
 
     init(center: ConversationCenter, existing: ProviderProfile?) {
         _viewModel = StateObject(
@@ -28,6 +29,7 @@ struct ProviderEditorView: View {
     var body: some View {
         Form {
             presetSection
+            protocolSection
             endpointSection
             credentialsSection
             syncSection
@@ -53,12 +55,25 @@ struct ProviderEditorView: View {
         }
         .task { await viewModel.load() }
         .sheet(isPresented: $showModelPicker) {
-            ModelPickerView(
-                models: viewModel.discoveredModels,
-                onAddManual: { remoteID, name in
-                    viewModel.addManualModel(remoteID: remoteID, displayName: name)
+            ModelPickerView(viewModel: viewModel)
+        }
+        .sheet(item: $editingModel) { model in
+            ModelEditorView(
+                model: model,
+                isDefault: viewModel.defaultModelID == model.id,
+                onMakeDefault: { viewModel.setDefaultModel(model.id) }
+            ) { updated in viewModel.updateModel(updated) }
+        }
+    }
+
+    private var protocolSection: some View {
+        Section("Protocol") {
+            Picker("Protocol", selection: $viewModel.selectedProtocol) {
+                ForEach(viewModel.availableProtocols, id: \.self) { protocolKind in
+                    Text(protocolKind.displayName).tag(protocolKind)
                 }
-            )
+            }
+            .disabled(viewModel.availableProtocols.count == 1)
         }
     }
 
@@ -169,16 +184,13 @@ struct ProviderEditorView: View {
 
     private var modelsSection: some View {
         Section {
-            if viewModel.discoveredModels.isEmpty && viewModel.manualModels.isEmpty {
+            if viewModel.selectedModels.isEmpty {
                 Text("providers.no_models")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(viewModel.discoveredModels) { model in
-                    modelRow(model, source: "providers.source_discovery")
-                }
-                ForEach(viewModel.manualModels) { model in
-                    modelRow(model, source: "providers.source_manual")
+                ForEach(viewModel.selectedModels) { model in
+                    modelRow(model)
                 }
             }
             Button("providers.manage_models") { showModelPicker = true }
@@ -192,8 +204,11 @@ struct ProviderEditorView: View {
         }
     }
 
-    private func modelRow(_ model: ModelProfile, source: LocalizedStringKey) -> some View {
-        HStack {
+    private func modelRow(_ model: ModelProfile) -> some View {
+        Button {
+            editingModel = model
+        } label: {
+            HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.displayName)
                     .font(FloeTheme.Typography.body)
@@ -202,9 +217,19 @@ struct ProviderEditorView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Text(source)
-                .font(FloeTheme.Typography.metadata)
-                .foregroundStyle(.secondary)
+                if viewModel.defaultModelID == model.id {
+                    Text("Default")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.primary)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Set as Default") { viewModel.setDefaultModel(model.id) }
         }
     }
 
@@ -215,6 +240,16 @@ struct ProviderEditorView: View {
             if await viewModel.save() {
                 dismiss()
             }
+        }
+    }
+}
+
+private extension ModelProtocol {
+    var displayName: String {
+        switch self {
+        case .openAIResponses: "OpenAI Responses"
+        case .openAIChatCompletions: "OpenAI Chat Completions"
+        case .anthropicMessages: "Anthropic Messages"
         }
     }
 }

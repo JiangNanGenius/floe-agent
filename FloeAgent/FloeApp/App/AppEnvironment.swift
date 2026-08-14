@@ -12,6 +12,8 @@ import FloeCore
 import FloeModels
 import FloePersistence
 import FloeSecurity
+import FloeSync
+import CloudKit
 
 /// Owns the app's long-lived services and stores. Created once at launch and
 /// injected through the SwiftUI environment. All stores are protocol-typed so
@@ -25,6 +27,7 @@ final class AppEnvironment: ObservableObject {
     let conversationStore: any ConversationStore
     let runStore: any RunStore
     let configurationStore: ModelConfigurationStore
+    let configurationSync: ConfigSyncEngine
     let remoteSessionRegistry: any RemoteSessionRegistry
 
     // MARK: Security
@@ -60,6 +63,7 @@ final class AppEnvironment: ObservableObject {
         conversationStore: any ConversationStore,
         runStore: any RunStore,
         configurationStore: ModelConfigurationStore,
+        configurationSync: ConfigSyncEngine,
         remoteSessionRegistry: any RemoteSessionRegistry,
         keychain: KeychainStore,
         catastrophicGate: CatastrophicActionGate,
@@ -69,6 +73,7 @@ final class AppEnvironment: ObservableObject {
         self.conversationStore = conversationStore
         self.runStore = runStore
         self.configurationStore = configurationStore
+        self.configurationSync = configurationSync
         self.remoteSessionRegistry = remoteSessionRegistry
         self.keychain = keychain
         self.catastrophicGate = catastrophicGate
@@ -90,12 +95,18 @@ final class AppEnvironment: ObservableObject {
             let directory = support.appendingPathComponent("FloeAgent", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let database = try DatabaseManager(path: directory.appendingPathComponent("floe.sqlite"))
+            let configurationStore = ModelConfigurationStore(database: database)
+            let configurationSync = ConfigSyncEngine(
+                configurationStore: configurationStore,
+                metadataStore: ConfigSyncMetadataStore(database: database)
+            )
 
             environment = AppEnvironment(
                 database: database,
                 conversationStore: SQLiteConversationStore(database: database),
                 runStore: SQLiteRunStore(database: database),
-                configurationStore: ModelConfigurationStore(database: database),
+                configurationStore: configurationStore,
+                configurationSync: configurationSync,
                 remoteSessionRegistry: SQLiteRemoteSessionRegistry(database: database),
                 keychain: KeychainStore(service: "org.floeagent.ios.providers"),
                 catastrophicGate: (try? CatastrophicActionGate.withBundledPatterns())
@@ -105,11 +116,16 @@ final class AppEnvironment: ObservableObject {
             // Fall back to an in-memory database so the app still launches and
             // can surface an honest recovery state instead of crashing.
             let database = try! DatabaseManager.inMemory() // in-memory open cannot fail here
+            let configurationStore = ModelConfigurationStore(database: database)
             environment = AppEnvironment(
                 database: database,
                 conversationStore: SQLiteConversationStore(database: database),
                 runStore: SQLiteRunStore(database: database),
-                configurationStore: ModelConfigurationStore(database: database),
+                configurationStore: configurationStore,
+                configurationSync: ConfigSyncEngine(
+                    configurationStore: configurationStore,
+                    metadataStore: ConfigSyncMetadataStore(database: database)
+                ),
                 remoteSessionRegistry: SQLiteRemoteSessionRegistry(database: database),
                 keychain: KeychainStore(service: "org.floeagent.ios.providers"),
                 catastrophicGate: (try? CatastrophicActionGate.withBundledPatterns())
@@ -127,6 +143,25 @@ final class AppEnvironment: ObservableObject {
     func bootstrap() async {
         do {
             try await database.migrate()
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--ui-test-reset-onboarding") {
+                for provider in try await configurationStore.providers() {
+                    try await configurationStore.deleteProvider(id: provider.id)
+                }
+                try await configurationStore.savePreferences(ModelSelectionPreferences())
+            }
+            #endif
+            #if !targetEnvironment(simulator)
+            do {
+                try await configurationSync.configure(container: CKContainer.default())
+                // Never hold the launch UI behind CloudKit. The root view
+                // performs a short, bounded second check before presenting
+                // first-run setup, while this pull continues independently.
+                Task { try? await configurationSync.synchronize() }
+            } catch {
+                // Local setup remains fully usable when iCloud is unavailable.
+            }
+            #endif
             if isEphemeral {
                 persistenceReady = false
                 if bootstrapError == nil {
@@ -145,11 +180,16 @@ final class AppEnvironment: ObservableObject {
     /// In-memory environment for tests and SwiftUI previews.
     static func preview() -> AppEnvironment {
         let database = try! DatabaseManager.inMemory()
+        let configurationStore = ModelConfigurationStore(database: database)
         return AppEnvironment(
             database: database,
             conversationStore: SQLiteConversationStore(database: database),
             runStore: SQLiteRunStore(database: database),
-            configurationStore: ModelConfigurationStore(database: database),
+            configurationStore: configurationStore,
+            configurationSync: ConfigSyncEngine(
+                configurationStore: configurationStore,
+                metadataStore: ConfigSyncMetadataStore(database: database)
+            ),
             remoteSessionRegistry: SQLiteRemoteSessionRegistry(database: database),
             keychain: KeychainStore(service: "org.floeagent.ios.providers"),
             catastrophicGate: (try? CatastrophicActionGate.withBundledPatterns())

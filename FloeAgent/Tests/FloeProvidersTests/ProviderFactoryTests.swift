@@ -39,6 +39,16 @@ struct ProviderFactoryTests {
         }
     }
 
+    @Test("Provider templates have stable unique IDs and exactly three wire protocols")
+    func presetIdentityAndProtocols() {
+        #expect(Set(ProviderPreset.all.map(\.id)).count == ProviderPreset.all.count)
+        #expect(ProviderPreset.openAIResponses.supportedProtocols == [
+            .openAIResponses, .openAIChatCompletions
+        ])
+        #expect(ProviderPreset.anthropic.supportedProtocols == [.anthropicMessages])
+        #expect(Set(ProviderPreset.custom.supportedProtocols) == Set(ModelProtocol.allCases))
+    }
+
     @Test("Factory returns a working adapter for a full provider profile")
     func factoryForProfile() {
         let profile = TestFixtures.localhostProvider(wireProtocol: .openAIResponses)

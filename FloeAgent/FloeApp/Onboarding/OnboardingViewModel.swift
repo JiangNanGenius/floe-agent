@@ -27,5 +27,11 @@ final class OnboardingViewModel: ObservableObject {
     func load() async {
         await center.reload()
     }
+
+    func markSkipped() async {
+        var preferences = center.modelPreferences
+        preferences.onboardingStatus = .skipped
+        try? await center.saveModelPreferences(preferences)
+    }
 }
 #endif

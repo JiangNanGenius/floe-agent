@@ -64,6 +64,8 @@ final class ConversationCenter: ObservableObject {
     @Published private(set) var providers: [ProviderProfile] = []
     /// Enabled models keyed by provider ID.
     @Published private(set) var modelsByProvider: [UUID: [ModelProfile]] = [:]
+    /// Secret-free onboarding and model-routing choices.
+    @Published private(set) var modelPreferences = ModelSelectionPreferences()
 
     let environment: AppEnvironment
 
@@ -85,12 +87,14 @@ final class ConversationCenter: ObservableObject {
         async let loadedConversations = environment.conversationStore.conversations()
         async let loadedProviders = environment.configurationStore.providers()
         async let loadedModels = environment.configurationStore.models()
+        async let loadedPreferences = environment.configurationStore.preferences()
         do {
             conversations = try await loadedConversations
                 .sorted { $0.updatedAt > $1.updatedAt }
             providers = try await loadedProviders.filter(\.isEnabled)
-            let models = try await loadedModels.filter(\.isEnabled)
+            let models = try await loadedModels
             modelsByProvider = Dictionary(grouping: models, by: \.providerID)
+            modelPreferences = try await loadedPreferences
         } catch {
             // Honest degradation: keep prior state; the list surfaces empty.
         }
@@ -214,42 +218,116 @@ final class ConversationCenter: ObservableObject {
 
     /// Whether any provider+model pair is configured. When false the UI
     /// must show the actionable add-a-provider state, never fake messages.
-    var hasConfiguredProvider: Bool {
-        providers.contains { modelsByProvider[$0.id]?.isEmpty == false }
+    var hasConfiguredProvider: Bool { defaultProviderAndModel() != nil }
+
+    var availableAgentModels: [ModelProfile] {
+        let enabledProviderIDs = Set(providers.map(\.id))
+        return modelsByProvider.values.flatMap { $0 }
+            .filter {
+                $0.isEnabled && $0.capabilities.contains(.text)
+                    && enabledProviderIDs.contains($0.providerID)
+            }
+            .sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+            }
+    }
+
+    var imageModels: [ModelProfile] {
+        let enabledProviderIDs = Set(providers.map(\.id))
+        return modelsByProvider.values.flatMap { $0 }
+            .filter {
+                $0.isEnabled && ($0.capabilities.contains(.imageGeneration)
+                    || $0.capabilities.contains(.imageEditing))
+                    && enabledProviderIDs.contains($0.providerID)
+            }
+            .sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+            }
     }
 
     /// Persists a new or updated provider and refreshes the cached lists.
     func saveProvider(_ provider: ProviderProfile) async throws {
-        try await environment.configurationStore.saveProvider(provider)
+        try await environment.configurationSync.saveProvider(provider)
         await reload()
     }
 
     /// Persists a model and refreshes the cached lists.
     func saveModel(_ model: ModelProfile) async throws {
-        try await environment.configurationStore.saveModel(model)
+        try await environment.configurationSync.saveModel(model)
         await reload()
+    }
+
+    @discardableResult
+    func saveProviderBundle(
+        provider: ProviderProfile,
+        models: [ModelProfile]
+    ) async throws -> [ModelProfile] {
+        let previousChatIDs = Set((modelsByProvider[provider.id] ?? [])
+            .filter { $0.capabilities.contains(.text) }
+            .map(\.id))
+        let saved = try await environment.configurationStore.saveProviderBundle(
+            provider: provider,
+            models: models
+        )
+        try await environment.configurationSync.saveProvider(provider)
+        for model in saved {
+            try await environment.configurationSync.saveModel(model)
+        }
+        let savedIDs = Set(saved.map(\.id))
+        for removedID in previousChatIDs.subtracting(savedIDs) {
+            try await environment.configurationSync.deleteModel(id: removedID)
+        }
+        await reload()
+        return saved
+    }
+
+    func saveModelPreferences(_ preferences: ModelSelectionPreferences) async throws {
+        var updated = preferences
+        updated.updatedAt = Date()
+        updated.syncRevision += 1
+        try await environment.configurationSync.savePreferences(updated)
+        await reload()
+    }
+
+    /// On the first launch only, an already-synced text model completes the
+    /// wizard automatically. A skipped wizard is never shown again.
+    func reconcileOnboardingForLaunch() async {
+        await reload()
+        guard modelPreferences.onboardingStatus == .unseen,
+              let first = availableAgentModels.first else { return }
+        var preferences = modelPreferences
+        preferences.defaultAgentModelID = first.id
+        preferences.onboardingStatus = .completed
+        try? await saveModelPreferences(preferences)
     }
 
     /// Deletes a provider (cascades to its models) and refreshes.
     func deleteProvider(id: UUID) async throws {
-        try await environment.configurationStore.deleteProvider(id: id)
+        try await environment.configurationSync.deleteProvider(id: id)
         await reload()
     }
 
     /// Deletes a model and refreshes.
     func deleteModel(id: UUID) async throws {
-        try await environment.configurationStore.deleteModel(id: id)
+        try await environment.configurationSync.deleteModel(id: id)
         await reload()
     }
 
-    /// The default provider+model pair for a new run (first enabled).
+    /// The explicitly selected default provider+model pair for a new run.
     func defaultProviderAndModel() -> (ProviderProfile, ModelProfile)? {
-        for provider in providers {
-            if let model = modelsByProvider[provider.id]?.first {
-                return (provider, model)
-            }
-        }
-        return nil
+        guard let modelID = modelPreferences.defaultAgentModelID,
+              let model = availableAgentModels.first(where: { $0.id == modelID }),
+              let provider = providers.first(where: { $0.id == model.providerID })
+        else { return nil }
+        return (provider, model)
+    }
+
+    func providerAndModel(modelID: UUID?) -> (ProviderProfile, ModelProfile)? {
+        guard let modelID else { return defaultProviderAndModel() }
+        guard let model = availableAgentModels.first(where: { $0.id == modelID }),
+              let provider = providers.first(where: { $0.id == model.providerID })
+        else { return nil }
+        return (provider, model)
     }
 
     // MARK: - Snapshot tracking

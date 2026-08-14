@@ -33,6 +33,7 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var messages: [PersistedMessage] = []
     /// Composer draft text.
     @Published var draft: String = ""
+    @Published var selectedModelID: UUID?
     /// Whether a run is currently non-terminal (drives Stop vs Send).
     @Published private(set) var isRunning = false
     /// Honest error surface for the last failed action.
@@ -64,13 +65,19 @@ final class ThreadDetailViewModel: ObservableObject {
 
     /// Whether the composer may send (provider configured + non-empty draft).
     var canSend: Bool {
-        center.hasConfiguredProvider
+        center.providerAndModel(modelID: selectedModelID) != nil
             && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !isRunning
     }
 
     var needsProvider: Bool {
-        !center.hasConfiguredProvider
+        center.providerAndModel(modelID: selectedModelID) == nil
+    }
+
+    var availableModels: [ModelProfile] { center.availableAgentModels }
+
+    var selectedModelName: String? {
+        center.providerAndModel(modelID: selectedModelID)?.1.displayName
     }
 
     // MARK: - Loading
@@ -79,6 +86,8 @@ final class ThreadDetailViewModel: ObservableObject {
     /// polling the live snapshot while the selected run is non-terminal.
     func load() async {
         do {
+            await center.reload()
+            if selectedModelID == nil { selectedModelID = center.modelPreferences.defaultAgentModelID }
             runs = try await center.environment.runStore.runs(conversationID: conversationID)
             messages = try await center.environment.conversationStore
                 .messages(conversationID: conversationID)
@@ -114,7 +123,7 @@ final class ThreadDetailViewModel: ObservableObject {
 
     /// Sends the composer draft as a new run in this conversation.
     func send() async {
-        guard canSend, let (provider, model) = center.defaultProviderAndModel() else { return }
+        guard canSend, let (provider, model) = center.providerAndModel(modelID: selectedModelID) else { return }
         let goal = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         draft = ""
         actionError = nil

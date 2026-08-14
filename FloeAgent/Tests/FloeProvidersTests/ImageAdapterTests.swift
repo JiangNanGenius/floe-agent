@@ -37,10 +37,10 @@ struct ImageAdapterTests {
         #expect(!openai.supportedOperations(for: provider(kind: .openAI)).contains(.upscale))
 
         let ark = VolcengineImageAdapter()
-        #expect(ark.supportedOperations(for: provider(kind: .volcengineArk)) == [.generate, .edit])
+        #expect(ark.supportedOperations(for: provider(kind: .volcengineArk)).isEmpty)
 
         let alibaba = AlibabaImageAdapter()
-        #expect(alibaba.supportedOperations(for: provider(kind: .alibabaStudio)) == [.generate])
+        #expect(alibaba.supportedOperations(for: provider(kind: .alibabaStudio)).isEmpty)
     }
 
     @Test("Unsupported operations throw unsupportedOperation, never fabricate")
@@ -57,7 +57,7 @@ struct ImageAdapterTests {
     func supportsConsistency() {
         let adapter = AlibabaImageAdapter()
         let alibabaProvider = provider(kind: .alibabaStudio)
-        #expect(adapter.supports(.generate, for: alibabaProvider))
+        #expect(!adapter.supports(.generate, for: alibabaProvider))
         #expect(!adapter.supports(.edit, for: alibabaProvider))
         #expect(!adapter.supports(.removeBackground, for: alibabaProvider))
     }

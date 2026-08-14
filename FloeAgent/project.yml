@@ -28,6 +28,8 @@ targets:
     info:
       path: FloeApp/Resources/Info.plist
       properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         BGTaskSchedulerPermittedIdentifiers:
           - org.floeagent.ios.refresh
           - org.floeagent.ios.processing
@@ -94,7 +96,7 @@ targets:
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
         MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        CURRENT_PROJECT_VERSION: "4"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
         ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -105,11 +107,30 @@ targets:
         Release:
           SWIFT_COMPILATION_MODE: wholemodule
 
+  FloeAgentUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Tests/FloeAgentUITests
+    dependencies:
+      - target: FloeAgent
+    settings:
+      base:
+        DEVELOPMENT_TEAM: QYL72C43K6
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios.uitests
+        SWIFT_VERSION: "6.0"
+        TEST_TARGET_NAME: FloeAgent
+
 schemes:
   FloeAgent:
     build:
       targets:
         FloeAgent: all
+        FloeAgentUITests: [test]
+    test:
+      targets:
+        - FloeAgentUITests
     run:
       config: Debug
     archive:

@@ -45,8 +45,12 @@ private struct MoreDestinationRouter: View {
         switch sub {
         case .runs:
             RunsHistoryView(viewModel: viewModel)
+        case .setupGuide:
+            SetupGuideLauncherView()
         case .providers:
             ProviderListView(center: viewModel.center)
+        case .auxiliaryModels:
+            AuxiliaryModelsView(center: viewModel.center)
         case .settings:
             SettingsPlaceholder()
         case .privacy:

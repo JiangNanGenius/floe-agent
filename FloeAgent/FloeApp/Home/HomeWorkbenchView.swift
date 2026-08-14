@@ -27,7 +27,9 @@ struct HomeWorkbenchView: View {
                 workbenchHeader
                 NewTaskComposerView(
                     draft: $viewModel.draft,
+                    selectedModelID: $viewModel.selectedModelID,
                     modelName: viewModel.activeModelName,
+                    models: viewModel.availableModels,
                     canSend: viewModel.canSend,
                     providerConfigured: viewModel.hasConfiguredProvider,
                     onSend: sendTask
@@ -195,10 +197,10 @@ struct HomeWorkbenchView: View {
                 Text("chat.add_provider.hint")
                     .font(FloeTheme.Typography.body)
                 Spacer()
-                Button("chat.add_provider") {
-                    router.navigate(to: .more)
-                    router.sidebarSelection = .more(.providers)
+                Button("setup.launcher.open") {
+                    router.presentedSetup = .manual
                 }
+                .accessibilityIdentifier("setup.open")
                 .buttonStyle(.borderedProminent)
                 .frame(minHeight: FloeTheme.minimumTarget)
             }

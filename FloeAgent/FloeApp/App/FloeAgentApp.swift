@@ -36,7 +36,6 @@ struct RootView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @State private var showOnboarding = false
 
     var body: some View {
         Group {
@@ -56,10 +55,9 @@ struct RootView: View {
             router.reconcileOnLaunch(environment: environment)
             await presentOnboardingIfNeeded()
         }
-        .sheet(isPresented: $showOnboarding) {
+        .sheet(item: $router.presentedSetup, onDismiss: markDismissedSetupSkipped) { _ in
             OnboardingView(center: environment.conversationCenter)
-                .interactiveDismissDisabled()
-                .presentationSizing(.form)
+                .presentationSizing(.page)
         }
     }
 
@@ -81,9 +79,25 @@ struct RootView: View {
 
     /// Presents first-run onboarding until a provider+model is configured.
     private func presentOnboardingIfNeeded() async {
-        await environment.conversationCenter.reload()
-        if !environment.conversationCenter.hasConfiguredProvider {
-            showOnboarding = true
+        await environment.conversationCenter.reconcileOnboardingForLaunch()
+        if environment.conversationCenter.modelPreferences.onboardingStatus == .unseen {
+            // Give an existing private-CloudKit configuration a brief chance
+            // to arrive, without making launch dependent on network health.
+            try? await Task.sleep(for: .seconds(2))
+            await environment.conversationCenter.reconcileOnboardingForLaunch()
+        }
+        if environment.conversationCenter.modelPreferences.onboardingStatus == .unseen {
+            router.presentedSetup = .firstLaunch
+        }
+    }
+
+    private func markDismissedSetupSkipped() {
+        let center = environment.conversationCenter
+        guard center.modelPreferences.onboardingStatus == .unseen else { return }
+        Task {
+            var preferences = center.modelPreferences
+            preferences.onboardingStatus = .skipped
+            try? await center.saveModelPreferences(preferences)
         }
     }
 
@@ -258,8 +272,12 @@ private struct MoreDestinationView: View {
                 systemImage: sub.systemImage,
                 messageKey: "empty.runs"
             )
+        case .setupGuide:
+            SetupGuideLauncherView()
         case .providers:
             ProviderListView(center: environment.conversationCenter)
+        case .auxiliaryModels:
+            AuxiliaryModelsView(center: environment.conversationCenter)
         case .settings:
             ShellPlaceholderView(
                 title: sub.title,
