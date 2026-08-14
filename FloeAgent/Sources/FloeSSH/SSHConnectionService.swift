@@ -344,18 +344,20 @@ private final class PersistentHostKeyValidator: NIOSSHClientServerAuthentication
 
 public final class SSHSessionHandle: @unchecked Sendable {
     private let clients: [SSHClient]
-    private var target: SSHClient { clients[clients.count - 1] }
+    /// The target (last-hop) client, exposed for exec-channel operations
+    /// (e.g. `executeWithStdin` in SSHExecService).
+    var targetClient: SSHClient { clients[clients.count - 1] }
 
     init(clients: [SSHClient]) {
         precondition(!clients.isEmpty)
         self.clients = clients
     }
 
-    public var isConnected: Bool { target.isConnected }
+    public var isConnected: Bool { targetClient.isConnected }
 
     public func openPTY(term: String = "xterm-256color", columns: Int = 80, rows: Int = 24) async throws -> PTYSessionHandle {
         let (stream, continuation) = AsyncThrowingStream<Data, Error>.makeStream()
-        let control = PTYControl(client: target)
+        let control = PTYControl(client: targetClient)
         let request = SSHChannelRequestEvent.PseudoTerminalRequest(
             wantReply: true,
             term: term,
@@ -367,7 +369,7 @@ public final class SSHSessionHandle: @unchecked Sendable {
         )
         let task = Task {
             do {
-                try await target.withPTY(request) { inbound, writer in
+                try await targetClient.withPTY(request) { inbound, writer in
                     await control.install(TTYWriterBox(writer))
                     for try await output in inbound {
                         switch output {
@@ -390,7 +392,7 @@ public final class SSHSessionHandle: @unchecked Sendable {
         let (stream, continuation) = AsyncThrowingStream<Data, Error>.makeStream()
         let handler = ByteChannelHandler(continuation: continuation)
         let origin = try SocketAddress(ipAddress: "127.0.0.1", port: 0)
-        let channel = try await target.createDirectTCPIPChannel(
+        let channel = try await targetClient.createDirectTCPIPChannel(
             using: .init(targetHost: host, targetPort: port, originatorAddress: origin)
         ) { channel in
             channel.pipeline.addHandler(handler)

@@ -117,7 +117,7 @@ let package = Package(
 
         .target(
             name: "FloeExecution",
-            dependencies: ["FloeCore", "FloeTools"],
+            dependencies: ["FloeCore", "FloeTools", "FloeSSH"],
             path: "Sources/FloeExecution",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -217,6 +217,7 @@ let package = Package(
                 "FloeCore",
                 "FloeSecurity",
                 "FloePersistence",
+                "FloeTools",
                 .product(name: "Citadel", package: "Citadel"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
                 .product(name: "NIOCore", package: "swift-nio"),
@@ -415,7 +416,7 @@ let package = Package(
             name: "FloeExecutionTests",
             dependencies: [
                 "FloeExecution", "FloeCore", "FloeTools", "FloeModels",
-                "FloeAgentRuntime", "FloeTestSupport"
+                "FloeAgentRuntime", "FloeSSH", "FloePersistence", "FloeTestSupport"
             ],
             path: "Tests/FloeExecutionTests",
             swiftSettings: [

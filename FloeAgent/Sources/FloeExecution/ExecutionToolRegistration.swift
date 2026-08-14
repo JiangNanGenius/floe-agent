@@ -7,22 +7,32 @@
 import Foundation
 import FloeTools
 
-/// Registers the execution tools (currently `exec.javascript`; T14 adds
-/// `exec.remotePython` here).
+/// Registers the execution tools: `exec.javascript` always, plus
+/// `exec.remotePython` when a `RemotePythonService` is supplied (the App
+/// wires it once hosts/credentials are available; tests pass a fake).
 ///
 /// - Parameters:
 ///   - registry: Runner registry to register into (defaults to the shared
 ///     process-wide registry used by `CatalogToolExecutor`).
 ///   - service: The JS execution backend (defaults to the real
 ///     JavaScriptCore service; tests inject fakes).
+///   - pythonService: The remote Python backend. Nil leaves
+///     `exec.remotePython` unregistered (honest absence: no runner).
 @discardableResult
 public func registerExecutionTools(
     registry: ToolRunnerRegistry = .shared,
-    service: any ScriptExecutionService = JavaScriptExecutionService()
+    service: any ScriptExecutionService = JavaScriptExecutionService(),
+    pythonService: RemotePythonService? = nil
 ) -> any ScriptExecutionService {
-    // Compile-time catalog descriptor.
+    // Compile-time catalog descriptors.
     ToolCatalog.register(JavaScriptExecutionTool.self)
-    // Runtime runner.
+    if pythonService != nil {
+        ToolCatalog.register(RemotePythonTool.self)
+    }
+    // Runtime runners.
     registry.register(JavaScriptExecutionTool(service: service))
+    if let pythonService {
+        registry.register(RemotePythonTool(service: pythonService))
+    }
     return service
 }
