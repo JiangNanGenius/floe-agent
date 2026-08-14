@@ -109,7 +109,7 @@ enum ModelDiscovery {
     private static func ensureSuccess(_ response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
-            let body = String(decoding: data.prefix(512), as: UTF8.self)
+            let body = SecretRedactor.redact(String(decoding: data.prefix(512), as: UTF8.self))
             throw FloeError.internalError("Model discovery failed (HTTP \(http.statusCode)): \(body)")
         }
     }

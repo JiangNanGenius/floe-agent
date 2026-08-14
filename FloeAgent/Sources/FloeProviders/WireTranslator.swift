@@ -268,7 +268,7 @@ public enum WireTranslator {
         default:
             kind = status >= 500 ? .server : .malformed
         }
-        let message = String(body.prefix(512))
+        let message = SecretRedactor.redact(String(body.prefix(512)))
         return .error(AgentEvent.NormalizedError(
             kind: kind,
             providerMessage: message.isEmpty ? "HTTP \(status)" : message,
