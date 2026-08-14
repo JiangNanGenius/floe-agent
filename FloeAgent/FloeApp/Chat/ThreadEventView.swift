@@ -2,18 +2,28 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// Renders one RunEventRecord by kind with fold/collapse and monospaced
-// evidence. Colors come from FloeTheme (amber pending, red destructive,
-// green confirmed, brand accent for progress). No hard-coded strings.
+// Dispatches a RunEventRecord to the typed component per kind (T02):
+// assistantText → AssistantMessageView (real Markdown rendering, no raw
+// `###` text), reasoning → ReasoningBlockView, toolRequest/toolResult →
+// ToolCallCardView, error → ErrorEventView. Approval/usage/terminal/
+// file/checkpoint/status keep their honest foldable rendering. State
+// copy and colors resolve exclusively through RunStateLocalizer (§6.2).
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeModels
 
-/// Renders a single persisted run event. Long payloads fold behind a
-/// disclosure; evidence (raw payload) uses the monospaced typography role.
+/// Renders a single persisted run event by kind.
 struct ThreadEventView: View {
     let event: RunEventRecord
+    /// True while the owning run is non-terminal (assistant text streams
+    /// incrementally; errors are suppressed in favor of the live tail).
+    var isLive: Bool = false
+    /// True once any error event exists in this run — pins the loading
+    /// state to "ended" per §6.2 (views never re-interpret this).
+    var hasError: Bool = false
+    /// Retry entry point forwarded to ErrorEventView.
+    var onRetry: (() -> Void)? = nil
 
     @State private var isExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -24,7 +34,9 @@ struct ThreadEventView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            header
+            if showsHeader {
+                header
+            }
             content
         }
         .padding(.vertical, 4)
@@ -32,6 +44,12 @@ struct ThreadEventView: View {
     }
 
     // MARK: - Header: kind chip + timestamp + fold control
+
+    /// The assistant answer is the visual subject — it carries no
+    /// chrome header. Everything else keeps the metadata header.
+    private var showsHeader: Bool {
+        event.kind != .assistantText
+    }
 
     private var header: some View {
         HStack(spacing: 8) {
@@ -69,38 +87,31 @@ struct ThreadEventView: View {
     private var content: some View {
         switch event.kind {
         case .assistantText:
-            Text(payload["text"] ?? "")
-                .font(FloeTheme.Typography.body)
-                .foregroundStyle(.primary)
-                .textSelection(.enabled)
+            AssistantMessageView(
+                text: payload["text"] ?? "",
+                isStreaming: isLive
+            )
 
         case .reasoning:
-            if isExpanded {
-                Text(payload["text"] ?? "")
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 8))
-            } else {
-                Text(reasoningPreview)
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            }
+            ReasoningBlockView(text: payload["text"] ?? "", isStreaming: false)
 
         case .toolRequest:
-            foldableBody(
-                summary: payload["tool"] ?? "",
-                evidence: event.payloadJSON
+            ToolCallCardView(
+                name: payload["tool"] ?? event.kind.rawValue,
+                status: "pending",
+                inputSummary: payload["input"] ?? payload["summary"]
             )
 
         case .toolResult:
-            foldableBody(
-                summary: payload["summary"] ?? "",
-                evidence: event.payloadJSON,
-                tint: (payload["status"] == "ok") ? FloeTheme.success : FloeTheme.destructive
+            let status = payload["status"] ?? "ok"
+            ToolCallCardView(
+                name: payload["tool"]
+                    ?? String(localized: "tool.result"),
+                status: status,
+                inputSummary: payload["input"],
+                resultSummary: payload["summary"],
+                duration: payload["durationMs"].flatMap(Double.init)
+                    .map { $0 / 1000 }
             )
 
         case .approval:
@@ -112,17 +123,20 @@ struct ThreadEventView: View {
             }
 
         case .error:
-            Text(payload["message"] ?? event.payloadJSON)
-                .font(FloeTheme.Typography.body)
-                .foregroundStyle(FloeTheme.destructive)
+            ErrorEventView(
+                message: payload["message"] ?? event.payloadJSON,
+                onRetry: onRetry
+            )
 
         case .usage:
             usageBody
 
-        case .terminal, .file, .checkpoint, .status:
+        case .status:
+            statusBody
+
+        case .terminal, .file, .checkpoint:
             foldableBody(
-                summary: payload["state"]
-                    ?? payload["stopReason"]
+                summary: payload["stopReason"]
                     ?? payload["summary"]
                     ?? event.kind.rawValue,
                 evidence: event.payloadJSON
@@ -143,10 +157,19 @@ struct ThreadEventView: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var reasoningPreview: String {
-        (payload["text"] ?? "")
-            .split(whereSeparator: { $0.isWhitespace })
-            .joined(separator: " ")
+    /// State transitions resolve through RunStateLocalizer — the view
+    /// never interprets machine names itself (§6.2).
+    private var statusBody: some View {
+        let state = payload["state"] ?? ""
+        return HStack(spacing: 8) {
+            if RunStateLocalizer.isLoading(stateName: state, hasError: hasError) {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            Text(RunStateLocalizer.title(for: state))
+                .font(FloeTheme.Typography.body)
+                .foregroundStyle(RunStateLocalizer.color(for: state))
+        }
     }
 
     /// A one-line summary that unfolds to monospaced evidence.
@@ -176,9 +199,12 @@ struct ThreadEventView: View {
 
     private var isFoldable: Bool {
         switch event.kind {
-        case .assistantText, .approval, .error, .usage:
+        case .assistantText, .approval, .error, .usage, .reasoning,
+             .toolRequest, .toolResult, .status:
+            // These kinds carry their own folding affordance
+            // (DisclosureGroup / card chevron); no outer fold.
             return false
-        case .reasoning, .toolRequest, .toolResult, .terminal, .file, .checkpoint, .status:
+        case .terminal, .file, .checkpoint:
             return true
         }
     }

@@ -96,21 +96,32 @@ struct ThreadDetailView: View {
 
                     // The canonical event thread of the selected run.
                     ForEach(viewModel.events) { event in
-                        ThreadEventView(event: event)
+                        ThreadEventView(
+                            event: event,
+                            isLive: viewModel.isRunning,
+                            hasError: viewModel.events.contains { $0.kind == .error },
+                            onRetry: viewModel.selectedRun?.state == "failed"
+                                ? { Task { await viewModel.retry() } }
+                                : nil
+                        )
                             .id(event.id)
                     }
 
                     // Live streaming tail, only while the run is active.
                     if viewModel.isRunning && !viewModel.liveReasoningText.isEmpty {
-                        LiveReasoningDisclosure(text: viewModel.liveReasoningText)
-                            .id("live-reasoning")
+                        ReasoningBlockView(
+                            text: viewModel.liveReasoningText,
+                            isStreaming: true
+                        )
+                        .id("live-reasoning")
                     }
 
                     if viewModel.isRunning && !viewModel.liveStreamedText.isEmpty {
-                        Text(viewModel.liveStreamedText)
-                            .font(FloeTheme.Typography.body)
-                            .textSelection(.enabled)
-                            .id("live-tail")
+                        AssistantMessageView(
+                            text: viewModel.liveStreamedText,
+                            isStreaming: true
+                        )
+                        .id("live-tail")
                     }
 
                     if viewModel.isRunning
@@ -179,25 +190,14 @@ struct ThreadDetailView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             if let state = viewModel.liveStateName {
-                Text(localizedState(state))
+                Text(RunStateLocalizer.title(for: state))
                     .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel(String(localized: "thread.state") + " " + state)
+                    .foregroundStyle(RunStateLocalizer.color(for: state))
+                    .accessibilityLabel(
+                        String(localized: "thread.state") + " "
+                            + String(localized: RunStateLocalizer.title(for: state))
+                    )
             }
-        }
-    }
-
-    private func localizedState(_ state: String) -> LocalizedStringKey {
-        switch state {
-        case "preparing": "thread.state.preparing"
-        case "streamingModel": "thread.state.streaming"
-        case "executingTool": "thread.state.executing_tool"
-        case "waitingApproval": "thread.state.waiting_approval"
-        case "completed": "thread.state.completed"
-        case "failed": "thread.state.failed"
-        case "checkpointed": "thread.state.checkpointed"
-        case "cancelling": "thread.state.cancelling"
-        default: LocalizedStringKey(state)
         }
     }
 
@@ -292,66 +292,24 @@ struct ThreadDetailView: View {
     }
 }
 
-/// A live reasoning block follows the familiar agent-app pattern: compact by
-/// default, clearly separate from the answer, and expandable without changing
-/// the canonical assistant message.
-private struct LiveReasoningDisclosure: View {
-    let text: String
-    @State private var isExpanded = false
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            Text(text)
-                .font(FloeTheme.Typography.metadata)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-                .padding(.top, 6)
-        } label: {
-            HStack(spacing: 8) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("thread.model_thinking")
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-                if !isExpanded {
-                    Text(preview)
-                        .font(FloeTheme.Typography.metadata)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-            }
-        }
-        .padding(10)
-        .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    private var preview: String {
-        text.split(whereSeparator: { $0.isNewline })
-            .last
-            .map(String.init)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    }
-}
-
-/// A persisted user/assistant message bubble.
+/// A persisted message: user goals render as right-aligned bubbles with
+/// attachment chips; other roles (final assistant answers) render as
+/// Markdown in the left-aligned reading column.
 private struct MessageBubble: View {
     let message: PersistedMessage
 
+    private var attachmentNames: [String] {
+        message.parts
+            .filter { $0.kind == .file || $0.kind == .image }
+            .map { $0.metadata["name"] ?? $0.text ?? "" }
+            .filter { !$0.isEmpty }
+    }
+
     var body: some View {
-        HStack {
-            if message.role == "user" { Spacer(minLength: 24) }
-            Text(message.content)
-                .font(FloeTheme.Typography.body)
-                .textSelection(.enabled)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    message.role == "user"
-                        ? FloeTheme.primary.opacity(0.14)
-                        : FloeTheme.groupedSurface,
-                    in: RoundedRectangle(cornerRadius: 12)
-                )
-            if message.role != "user" { Spacer(minLength: 24) }
+        if message.role == "user" {
+            UserMessageBubble(text: message.content, attachments: attachmentNames)
+        } else {
+            AssistantMessageView(text: message.content, isStreaming: false)
         }
     }
 }

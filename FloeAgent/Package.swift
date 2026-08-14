@@ -369,9 +369,29 @@ let package = Package(
         ),
 
         .testTarget(
+            name: "FloeMarkdownTests",
+            dependencies: ["FloeMarkdown"],
+            path: "Tests/FloeMarkdownTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+
+        .testTarget(
             name: "FloeImagesTests",
             dependencies: ["FloeImages"],
             path: "Tests/FloeImagesTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+
+        .testTarget(
+            name: "FloeWorkspaceTests",
+            dependencies: ["FloeWorkspace", "FloeTools", "FloeModels", "FloeTestSupport"],
+            path: "Tests/FloeWorkspaceTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency")
