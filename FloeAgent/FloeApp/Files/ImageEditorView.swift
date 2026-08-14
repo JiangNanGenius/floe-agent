@@ -77,22 +77,22 @@ struct ImageEditorView: View {
     private var controls: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 16) {
-                controlButton("crop", icon: "crop") {
+                controlButton("editor.crop", icon: "crop") {
                     await viewModel.apply(.crop(rect: .init(x: 0.1, y: 0.1, width: 0.8, height: 0.8)))
                 }
-                controlButton("rotate", icon: "rotate.right") {
+                controlButton("editor.rotate", icon: "rotate.right") {
                     await viewModel.apply(.rotate(degrees: 90))
                 }
-                controlButton("resize", icon: "arrow.up.left.and.arrow.down.right") {
+                controlButton("editor.resize", icon: "arrow.up.left.and.arrow.down.right") {
                     await viewModel.apply(.resize(width: 1024, height: 1024, preserveAspect: true))
                 }
-                controlButton("adjust", icon: "slider.horizontal.3") {
+                controlButton("editor.adjust", icon: "slider.horizontal.3") {
                     await viewModel.apply(.adjustColor(saturation: 1.1, contrast: 1.05, brightness: 0.02))
                 }
-                controlButton("strip", icon: "eye.slash") {
+                controlButton("editor.strip", icon: "eye.slash") {
                     await viewModel.apply(.removeMetadata)
                 }
-                controlButton("undo", icon: "arrow.uturn.backward", disabled: !viewModel.canUndo) {
+                controlButton("editor.undo", icon: "arrow.uturn.backward", disabled: !viewModel.canUndo) {
                     await viewModel.undo()
                 }
             }

@@ -205,23 +205,6 @@
         }
       }
     },
-    "adjust": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Adjust"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "调整"
-          }
-        }
-      }
-    },
     "app.name": {
       "extractionState": "manual",
       "localizations": {
@@ -868,7 +851,24 @@
         }
       }
     },
-    "crop": {
+    "editor.adjust": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adjust"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "调整"
+          }
+        }
+      }
+    },
+    "editor.crop": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -881,6 +881,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "裁剪"
+          }
+        }
+      }
+    },
+    "editor.resize": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resize"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "调整大小"
+          }
+        }
+      }
+    },
+    "editor.rotate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rotate"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "旋转"
+          }
+        }
+      }
+    },
+    "editor.strip": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Strip"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除元数据"
+          }
+        }
+      }
+    },
+    "editor.undo": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Undo"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "撤销"
           }
         }
       }
@@ -3656,23 +3724,6 @@
         }
       }
     },
-    "resize": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Resize"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "调整大小"
-          }
-        }
-      }
-    },
     "risk.accesses_credentials": {
       "extractionState": "manual",
       "localizations": {
@@ -3822,23 +3873,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "写入文件"
-          }
-        }
-      }
-    },
-    "rotate": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Rotate"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "旋转"
           }
         }
       }
@@ -6750,23 +6784,6 @@
         }
       }
     },
-    "strip": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Strip"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "移除元数据"
-          }
-        }
-      }
-    },
     "tab.chat": {
       "extractionState": "manual",
       "localizations": {
@@ -7698,23 +7715,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "信任前请通过带外方式核对此指纹。"
-          }
-        }
-      }
-    },
-    "undo": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Undo"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "撤销"
           }
         }
       }
