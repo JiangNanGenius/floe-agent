@@ -151,11 +151,7 @@ private struct PrimaryDestinationView: View {
         case .chat:
             ConversationListView(center: environment.conversationCenter)
         case .files:
-            ShellPlaceholderView(
-                title: destination.title,
-                systemImage: destination.systemImage,
-                messageKey: "empty.files"
-            )
+            FilesView(center: environment.filesCenter)
         case .hosts:
             HostListView(center: environment.remoteSessionCenter)
         case .more:
