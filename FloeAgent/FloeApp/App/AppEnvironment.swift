@@ -44,10 +44,12 @@ final class AppEnvironment: ObservableObject {
     private lazy var _conversationCenter = ConversationCenter(environment: self)
     private lazy var _remoteSessionCenter = RemoteSessionCenter(environment: self)
     private lazy var _filesCenter = FilesCenter(environment: self)
+    private lazy var _workspaceCenter = WorkspaceCenter(environment: self)
 
     var conversationCenter: ConversationCenter { _conversationCenter }
     var remoteSessionCenter: RemoteSessionCenter { _remoteSessionCenter }
     var filesCenter: FilesCenter { _filesCenter }
+    var workspaceCenter: WorkspaceCenter { _workspaceCenter }
 
     // MARK: State
 
@@ -80,11 +82,12 @@ final class AppEnvironment: ObservableObject {
         self.catastrophicGate = catastrophicGate
         self.isEphemeral = isEphemeral
 
-        // T04: register the nine workspace file tools (catalog descriptors +
-        // runtime runners). The root provider stays nil until T05 wires in
-        // WorkspaceCenter; with no workspace open the tools fail with a
-        // structured "no workspace" result instead of crashing.
-        registerWorkspaceTools(rootProvider: { nil })
+        // T04/T05: register the nine workspace file tools (catalog
+        // descriptors + runtime runners). The root provider reads the
+        // currently opened workspace root maintained by WorkspaceCenter;
+        // with no workspace open the tools fail with a structured "no
+        // workspace" result instead of crashing.
+        registerWorkspaceTools(rootProvider: WorkspaceCenter.toolRootProvider)
     }
 
     /// Builds the production environment against the on-disk database,

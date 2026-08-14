@@ -86,6 +86,15 @@
 		3A10F02C2B4C4E23A0010009 /* FloeMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 3A10F02C2B4C4E23A0010019 /* FloeMarkdown */; };
 		3A20F03D2B4C4E23A0020001 /* ChatHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A20F03D2B4C4E23A0020011 /* ChatHomeView.swift */; };
 		3A20F03D2B4C4E23A0020002 /* ThreadComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A20F03D2B4C4E23A0020012 /* ThreadComposerView.swift */; };
+		3A30F05D2B5C4E23A005101 /* WorkspaceCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A30F05D2B5C4E23A0050001 /* WorkspaceCenter.swift */; };
+		3A30F05D2B5C4E23A005102 /* FileInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A30F05D2B5C4E23A0050002 /* FileInspectorView.swift */; };
+		3A30F05D2B5C4E23A005103 /* FileTreeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A30F05D2B5C4E23A0050003 /* FileTreeViewModel.swift */; };
+		3A30F05D2B5C4E23A005104 /* FileTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A30F05D2B5C4E23A0050004 /* FileTreeView.swift */; };
+		3A30F05D2B5C4E23A005105 /* FilePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A30F05D2B5C4E23A0050005 /* FilePreviewView.swift */; };
+		3A30F05D2B5C4E23A005106 /* TextFileEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A30F05D2B5C4E23A0050006 /* TextFileEditorView.swift */; };
+		3A30F05D2B5C4E23A005107 /* DiffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A30F05D2B5C4E23A0050007 /* DiffView.swift */; };
+		3A30F05D2B5C4E23A005108 /* WorkspacePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A30F05D2B5C4E23A0050008 /* WorkspacePickerView.swift */; };
+		3A30F05D2B5C4E23A0050009 /* FloeWorkspace in Frameworks */ = {isa = PBXBuildFile; productRef = 3A30F05D2B5C4E23A0050019 /* FloeWorkspace */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -169,6 +178,14 @@
 		3A10F02C2B4C4E23A0010018 /* RunStateLocalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunStateLocalizer.swift; sourceTree = "<group>"; };
 		3A20F03D2B4C4E23A0020011 /* ChatHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHomeView.swift; sourceTree = "<group>"; };
 		3A20F03D2B4C4E23A0020012 /* ThreadComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadComposerView.swift; sourceTree = "<group>"; };
+		3A30F05D2B5C4E23A0050001 /* WorkspaceCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceCenter.swift; sourceTree = "<group>"; };
+		3A30F05D2B5C4E23A0050002 /* FileInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileInspectorView.swift; sourceTree = "<group>"; };
+		3A30F05D2B5C4E23A0050003 /* FileTreeViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTreeViewModel.swift; sourceTree = "<group>"; };
+		3A30F05D2B5C4E23A0050004 /* FileTreeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTreeView.swift; sourceTree = "<group>"; };
+		3A30F05D2B5C4E23A0050005 /* FilePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewView.swift; sourceTree = "<group>"; };
+		3A30F05D2B5C4E23A0050006 /* TextFileEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextFileEditorView.swift; sourceTree = "<group>"; };
+		3A30F05D2B5C4E23A0050007 /* DiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffView.swift; sourceTree = "<group>"; };
+		3A30F05D2B5C4E23A0050008 /* WorkspacePickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspacePickerView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -183,6 +200,7 @@
 				B2196F0D1CCA995A3F4F8C0D /* FloeTools in Frameworks */,
 				089D513D837438C091ED08A0 /* FloePersistence in Frameworks */,
 				3A10F02C2B4C4E23A0010009 /* FloeMarkdown in Frameworks */,
+				3A30F05D2B5C4E23A0050009 /* FloeWorkspace in Frameworks */,
 				33744B55369D187E0173FB77 /* FloeSecurity in Frameworks */,
 				557E5740D65A080E412BDBA3 /* FloeSync in Frameworks */,
 				6B0D3A07EB93CDB1FF10B326 /* FloeSyncCore in Frameworks */,
@@ -390,6 +408,7 @@
 				D945ACAB4A3BFCBED5DF65AE /* Resources */,
 				FA9D4E4056CFB7FFCDB218F4 /* Shell */,
 				767A8A677CD42C54269BAEC2 /* Terminal */,
+				3A30F05D2B5C4E23A0050000 /* Workspace */,
 				B6AD6399851AAAD8A47979D5 /* VNC */,
 			);
 			path = FloeApp;
@@ -448,6 +467,21 @@
 			path = Render;
 			sourceTree = "<group>";
 		};
+		3A30F05D2B5C4E23A0050000 /* Workspace */ = {
+			isa = PBXGroup;
+			children = (
+				3A30F05D2B5C4E23A0050001 /* WorkspaceCenter.swift */,
+				3A30F05D2B5C4E23A0050002 /* FileInspectorView.swift */,
+				3A30F05D2B5C4E23A0050003 /* FileTreeViewModel.swift */,
+				3A30F05D2B5C4E23A0050004 /* FileTreeView.swift */,
+				3A30F05D2B5C4E23A0050005 /* FilePreviewView.swift */,
+				3A30F05D2B5C4E23A0050006 /* TextFileEditorView.swift */,
+				3A30F05D2B5C4E23A0050007 /* DiffView.swift */,
+				3A30F05D2B5C4E23A0050008 /* WorkspacePickerView.swift */,
+			);
+			path = Workspace;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -472,6 +506,7 @@
 				8E8F4CD97A741A8F515EC80E /* FloeTools */,
 				B1B02F2500B5B465399C11B7 /* FloePersistence */,
 				3A10F02C2B4C4E23A0010019 /* FloeMarkdown */,
+				3A30F05D2B5C4E23A0050019 /* FloeWorkspace */,
 				87B8E278FC454AFE6AF6C9E9 /* FloeSecurity */,
 				CB9AC1549FA61B1132625EA1 /* FloeSync */,
 				42F46C3ACBB2BE695D007080 /* FloeSyncCore */,
@@ -616,6 +651,14 @@
 				3A10F02C2B4C4E23A0010006 /* ToolCallCardView.swift in Sources */,
 				3A10F02C2B4C4E23A0010007 /* ErrorEventView.swift in Sources */,
 				3A10F02C2B4C4E23A0010008 /* RunStateLocalizer.swift in Sources */,
+				3A30F05D2B5C4E23A005101 /* WorkspaceCenter.swift in Sources */,
+				3A30F05D2B5C4E23A005102 /* FileInspectorView.swift in Sources */,
+				3A30F05D2B5C4E23A005103 /* FileTreeViewModel.swift in Sources */,
+				3A30F05D2B5C4E23A005104 /* FileTreeView.swift in Sources */,
+				3A30F05D2B5C4E23A005105 /* FilePreviewView.swift in Sources */,
+				3A30F05D2B5C4E23A005106 /* TextFileEditorView.swift in Sources */,
+				3A30F05D2B5C4E23A005107 /* DiffView.swift in Sources */,
+				3A30F05D2B5C4E23A005108 /* WorkspacePickerView.swift in Sources */,
 				EA75F07AFCF7BF5BF8A40F9E /* ThreadDetailViewModel.swift in Sources */,
 				671CC44587B45BA2A401FD33 /* ThreadEventView.swift in Sources */,
 				C0644D9C266B374CE223488D /* VNCSessionOwner.swift in Sources */,
@@ -953,6 +996,10 @@
 		3A10F02C2B4C4E23A0010019 /* FloeMarkdown */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = FloeMarkdown;
+		};
+		3A30F05D2B5C4E23A0050019 /* FloeWorkspace */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeWorkspace;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

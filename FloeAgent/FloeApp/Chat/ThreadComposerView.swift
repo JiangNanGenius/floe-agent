@@ -61,12 +61,23 @@ enum AgentExecutionTarget: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// A workspace project selectable in the composer. Placeholder until
-/// T05's WorkspaceCenter provides the real list; kept as a value type so
-/// the swap is data-source-only.
+/// A workspace project selectable in the composer. T05 maps these from
+/// WorkspaceCenter.workspaces (see the extension below).
 struct ComposerProject: Identifiable, Hashable, Sendable {
     let id: UUID
     let name: String
+
+    init(id: UUID, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
+extension ComposerProject {
+    /// Maps a persisted workspace record to a composer project entry.
+    init(record: WorkspaceRecord) {
+        self.init(id: record.id, name: record.name)
+    }
 }
 
 /// Bottom-pinned composer: input row + context row (model / project /
@@ -99,6 +110,7 @@ struct ThreadComposerView: View {
     @State private var isPickerPresented = false
     @State private var attachmentError: String?
     @EnvironmentObject private var environment: AppEnvironment
+    @EnvironmentObject private var router: AppRouter
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -228,6 +240,7 @@ struct ThreadComposerView: View {
             ForEach(projects) { project in
                 Button {
                     selectedProjectID = project.id
+                    Task { await openProject(project.id) }
                 } label: {
                     if selectedProjectID == project.id {
                         Label(project.name, systemImage: "checkmark")
@@ -236,12 +249,35 @@ struct ThreadComposerView: View {
                     }
                 }
             }
+            Divider()
+            Button {
+                router.showInspector(.workspaceFiles)
+            } label: {
+                Label("composer.project.manage", systemImage: "folder.badge.gearshape")
+            }
         } label: {
             composerChip(
                 title: selectedProjectName
                     ?? String(localized: "composer.project.none"),
                 systemImage: "folder"
             )
+        }
+        .onChange(of: selectedProjectID, initial: false) { _, newValue in
+            guard let newValue else { return }
+            Task { await openProject(newValue) }
+        }
+    }
+
+    /// Opens the selected workspace as the current one (resolving its
+    /// security-scoped bookmark) so the agent file tools and the inspector
+    /// share the same root. Failures surface through the composer's error
+    /// banner instead of being dropped.
+    private func openProject(_ id: UUID) async {
+        do {
+            try await environment.workspaceCenter.openWorkspace(id: id)
+            attachmentError = nil
+        } catch {
+            attachmentError = error.localizedDescription
         }
     }
 

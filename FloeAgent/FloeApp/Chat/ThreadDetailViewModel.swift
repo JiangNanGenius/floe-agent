@@ -44,8 +44,10 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published var agentMode: AgentExecutionMode = .agent
     /// Attachments staged in the composer.
     @Published var attachments: [AttachmentRef] = []
-    /// Placeholder project list — empty until T05 wires WorkspaceCenter.
-    var availableProjects: [ComposerProject] { [] }
+    /// Real workspace list from WorkspaceCenter (T05).
+    var availableProjects: [ComposerProject] {
+        center.environment.workspaceCenter.workspaces.map(ComposerProject.init(record:))
+    }
     /// Whether a run is currently non-terminal (drives Stop vs Send).
     @Published private(set) var isRunning = false
     /// Honest error surface for the last failed action.
@@ -99,6 +101,7 @@ final class ThreadDetailViewModel: ObservableObject {
     func load() async {
         do {
             await center.reload()
+            await center.environment.workspaceCenter.reload()
             if selectedModelID == nil { selectedModelID = center.modelPreferences.defaultAgentModelID }
             runs = try await center.environment.runStore.runs(conversationID: conversationID)
             messages = try await center.environment.conversationStore

@@ -72,9 +72,11 @@ final class ChatHomeViewModel: ObservableObject {
 
     var availableModels: [ModelProfile] { center.availableAgentModels }
 
-    /// Placeholder project list — empty until T05's WorkspaceCenter
-    /// provides real workspaces; the picker renders "无项目" honestly.
-    var availableProjects: [ComposerProject] { [] }
+    /// Real workspace list from WorkspaceCenter (T05); the picker renders
+    /// "无项目" honestly when no workspace exists yet.
+    var availableProjects: [ComposerProject] {
+        environment.workspaceCenter.workspaces.map(ComposerProject.init(record:))
+    }
 
     /// Whether the composer may send.
     var canSend: Bool {
@@ -90,6 +92,7 @@ final class ChatHomeViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         await center.reload()
+        await environment.workspaceCenter.reload()
         if selectedModelID == nil { selectedModelID = center.modelPreferences.defaultAgentModelID }
         recentConversations = center.conversations
         var states: [UUID: String] = [:]

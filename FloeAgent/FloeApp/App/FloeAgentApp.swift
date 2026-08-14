@@ -221,33 +221,17 @@ struct RootView: View {
 }
 
 /// The on-demand inspector column (iPad third column / iPhone sheet).
-/// T05 provides the real workspace file inspector; until then the column
-/// states honestly that no workspace is open instead of inventing files.
+/// T05: renders the real workspace file inspector through WorkspaceCenter.
 private struct InspectorColumnView: View {
     let content: AppRouter.InspectorContent
     @EnvironmentObject private var router: AppRouter
+    @EnvironmentObject private var environment: AppEnvironment
 
     var body: some View {
-        ContentUnavailableView {
-            Label("inspector.files", systemImage: "folder.badge.questionmark")
-        } description: {
-            Text("inspector.empty")
-        } actions: {
-            Button("inspector.close") { router.hideInspector() }
-                .buttonStyle(.bordered)
-        }
-        .background(FloeTheme.readingSurface)
-        .navigationTitle("inspector.files")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    router.hideInspector()
-                } label: {
-                    Label("inspector.close", systemImage: "xmark")
-                }
-                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("inspector.close")
-            }
+        switch content {
+        case .workspaceFiles:
+            FileInspectorView(center: environment.workspaceCenter)
+                .background(FloeTheme.readingSurface)
         }
     }
 }
