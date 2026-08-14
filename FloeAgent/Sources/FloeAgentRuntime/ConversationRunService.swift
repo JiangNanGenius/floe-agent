@@ -37,8 +37,11 @@ public actor ConversationRunService {
         }
     }
 
-    public let runID: UUID
-    public let conversationID: UUID
+    /// Run identity. Immutable, so exposed non-isolated for synchronous reads
+    /// from `@MainActor` coordinators (no actor hop required for identity).
+    public nonisolated let runID: UUID
+    /// Conversation identity. Immutable; non-isolated for the same reason.
+    public nonisolated let conversationID: UUID
 
     private let runtime: FloeAgentRuntime
     private let conversationStore: any ConversationStore
