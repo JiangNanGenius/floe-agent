@@ -46,9 +46,12 @@ struct RootView: View {
             }
         }
         .onChange(of: scenePhase, initial: true) { _, newPhase in
-            router.handleScenePhase(newPhase)
+            router.handleScenePhase(newPhase, environment: environment)
         }
-        .task { await presentOnboardingIfNeeded() }
+        .task {
+            router.reconcileOnLaunch(environment: environment)
+            await presentOnboardingIfNeeded()
+        }
         .sheet(isPresented: $showOnboarding) {
             OnboardingView(center: environment.conversationCenter)
                 .interactiveDismissDisabled()
@@ -154,11 +157,7 @@ private struct PrimaryDestinationView: View {
                 messageKey: "empty.files"
             )
         case .hosts:
-            ShellPlaceholderView(
-                title: destination.title,
-                systemImage: destination.systemImage,
-                messageKey: "empty.hosts"
-            )
+            HostListView(center: environment.remoteSessionCenter)
         case .more:
             MoreView(center: environment.conversationCenter)
         }

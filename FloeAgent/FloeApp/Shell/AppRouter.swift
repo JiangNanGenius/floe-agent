@@ -64,9 +64,32 @@ final class AppRouter: ObservableObject {
         backgroundPolicy.registerTasks()
     }
 
-    /// Feeds a SwiftUI scene-phase transition into the background policy.
-    func handleScenePhase(_ phase: ScenePhase) {
+    /// Feeds a SwiftUI scene-phase transition into the background policy
+    /// and reconciles remote sessions (suspend on background, reconcile on
+    /// active). The center owns the honest session lifecycle.
+    func handleScenePhase(_ phase: ScenePhase, environment: AppEnvironment) {
         backgroundPolicy.handleScenePhase(policyPhase(for: phase), sceneID: sceneID)
+        let center = environment.remoteSessionCenter
+        Task { @MainActor in
+            switch phase {
+            case .background:
+                await center.handleScenePhase(.background)
+            case .active:
+                await center.handleScenePhase(.active)
+            case .inactive:
+                await center.handleScenePhase(.inactive)
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    /// Reconciles remote session state after a cold launch: any session
+    /// not explicitly disconnected is honestly unknown (never paused).
+    func reconcileOnLaunch(environment: AppEnvironment) {
+        Task { @MainActor in
+            await environment.remoteSessionCenter.reconcileOnLaunch()
+        }
     }
 
     /// Navigates to a primary destination. On iPhone this switches tabs;

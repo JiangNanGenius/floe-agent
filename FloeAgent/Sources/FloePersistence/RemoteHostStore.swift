@@ -129,6 +129,88 @@ public actor RemoteHostStore {
         }
     }
 
+    // MARK: - Host profile reads (for the Hosts UI)
+
+    /// A persisted host row, decoded into the profile field set the UI
+    /// needs. Auth/jump/VNC JSON are returned raw for the caller (FloeSSH)
+    /// to decode, avoiding a FloePersistence → FloeSSH dependency.
+    public struct StoredHost: Sendable, Hashable, Identifiable {
+        public var id: UUID
+        public var displayName: String
+        public var address: String
+        public var port: Int
+        public var user: String
+        public var authJSON: String
+        public var jumpChainJSON: String
+        public var hostKeyPolicy: String
+        public var allowsLegacyAlgorithms: Bool
+        public var vncEndpointJSON: String?
+
+        public init(
+            id: UUID, displayName: String, address: String, port: Int, user: String,
+            authJSON: String, jumpChainJSON: String, hostKeyPolicy: String,
+            allowsLegacyAlgorithms: Bool, vncEndpointJSON: String?
+        ) {
+            self.id = id
+            self.displayName = displayName
+            self.address = address
+            self.port = port
+            self.user = user
+            self.authJSON = authJSON
+            self.jumpChainJSON = jumpChainJSON
+            self.hostKeyPolicy = hostKeyPolicy
+            self.allowsLegacyAlgorithms = allowsLegacyAlgorithms
+            self.vncEndpointJSON = vncEndpointJSON
+        }
+    }
+
+    /// All hosts in deterministic order (display name, then id).
+    public func hosts() async throws -> [StoredHost] {
+        try await database.reader { db in
+            try Row.fetchAll(
+                db,
+                sql: "SELECT * FROM hosts ORDER BY display_name, id"
+            ).map(Self.storedHost(from:))
+        }
+    }
+
+    /// One host by id.
+    public func host(id: UUID) async throws -> StoredHost? {
+        try await database.reader { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM hosts WHERE id = ?",
+                arguments: [id.uuidString]
+            ) else { return nil }
+            return try Self.storedHost(from: row)
+        }
+    }
+
+    /// Deletes a host; known_hosts and sessions cascade per schema.
+    public func deleteHost(id: UUID) async throws {
+        try await database.writer { db in
+            try db.execute(sql: "DELETE FROM hosts WHERE id = ?", arguments: [id.uuidString])
+        }
+    }
+
+    private static func storedHost(from row: Row) throws -> StoredHost {
+        guard let id = UUID(uuidString: row["id"]) else {
+            throw FloeError.storageCorrupted("Invalid host identifier")
+        }
+        return StoredHost(
+            id: id,
+            displayName: row["display_name"],
+            address: row["address"],
+            port: row["port"],
+            user: row["user"],
+            authJSON: row["auth_json"],
+            jumpChainJSON: row["jump_chain_json"],
+            hostKeyPolicy: row["host_key_policy"],
+            allowsLegacyAlgorithms: row["allows_legacy_algorithms"],
+            vncEndpointJSON: row["vnc_endpoint_json"]
+        )
+    }
+
     private static func encode(_ date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
     }

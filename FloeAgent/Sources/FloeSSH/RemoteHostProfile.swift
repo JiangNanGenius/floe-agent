@@ -6,6 +6,7 @@
 
 import Foundation
 import FloeCore
+import FloePersistence
 
 /// Configuration for one SSH host.
 public struct RemoteHostProfile: Sendable, Codable, Identifiable, Hashable {
@@ -181,4 +182,35 @@ public enum RemoteRunLifecycle: String, Sendable, Codable, Hashable {
     case exited
     case failed
     case cancelled
+}
+
+public extension RemoteHostProfile {
+    /// Reconstructs a profile from a persisted host row. The auth, jump
+    /// chain and VNC endpoint JSON are decoded; secrets remain references.
+    init(stored: RemoteHostStore.StoredHost) throws {
+        let decoder = JSONDecoder()
+        let auth = try decoder.decode(SSHAuthMethod.self, from: Data(stored.authJSON.utf8))
+        let jumpChain = try decoder.decode([JumpHop].self, from: Data(stored.jumpChainJSON.utf8))
+        let vncEndpoint = try stored.vncEndpointJSON.flatMap {
+            try decoder.decode(VNCEndpoint.self, from: Data($0.utf8))
+        }
+        let policy: HostKeyPolicy
+        if stored.hostKeyPolicy.hasPrefix("pinned:") {
+            policy = .pinned(fingerprintSHA256: String(stored.hostKeyPolicy.dropFirst("pinned:".count)))
+        } else {
+            policy = .trustOnFirstUse
+        }
+        self.init(
+            id: stored.id,
+            displayName: stored.displayName,
+            address: stored.address,
+            port: stored.port,
+            user: stored.user,
+            auth: auth,
+            jumpChain: jumpChain,
+            hostKeyPolicy: policy,
+            allowsLegacyAlgorithms: stored.allowsLegacyAlgorithms,
+            vncEndpoint: vncEndpoint
+        )
+    }
 }
