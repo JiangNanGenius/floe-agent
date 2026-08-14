@@ -278,7 +278,7 @@ let package = Package(
 
         .testTarget(
             name: "FloeAgentRuntimeTests",
-            dependencies: ["FloeAgentRuntime", "FloeTestSupport"],
+            dependencies: ["FloeAgentRuntime", "FloePersistence", "FloeTestSupport"],
             path: "Tests/FloeAgentRuntimeTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
