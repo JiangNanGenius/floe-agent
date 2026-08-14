@@ -413,7 +413,10 @@ let package = Package(
 
         .testTarget(
             name: "FloeExecutionTests",
-            dependencies: ["FloeExecution", "FloeCore", "FloeTools", "FloeTestSupport"],
+            dependencies: [
+                "FloeExecution", "FloeCore", "FloeTools", "FloeModels",
+                "FloeAgentRuntime", "FloeTestSupport"
+            ],
             path: "Tests/FloeExecutionTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
