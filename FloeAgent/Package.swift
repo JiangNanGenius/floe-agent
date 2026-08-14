@@ -21,7 +21,9 @@ let package = Package(
         .library(name: "FloeDocuments", targets: ["FloeDocuments"]),
         .library(name: "FloeImages", targets: ["FloeImages"]),
         .library(name: "FloeSSH", targets: ["FloeSSH"]),
-        .library(name: "FloeVNC", targets: ["FloeVNC"])
+        .library(name: "FloeVNC", targets: ["FloeVNC"]),
+        .library(name: "FloeMarkdown", targets: ["FloeMarkdown"]),
+        .library(name: "FloeWorkspace", targets: ["FloeWorkspace"])
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.8.0"),
@@ -233,6 +235,35 @@ let package = Package(
             ]
         ),
 
+        .target(
+            name: "FloeMarkdown",
+            dependencies: ["FloeCore"],
+            path: "Sources/FloeMarkdown",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency"),
+                .enableUpcomingFeature("InferSendableFromCaptures"),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault")
+            ]
+        ),
+
+        .target(
+            name: "FloeWorkspace",
+            dependencies: [
+                "FloeCore",
+                "FloeModels",
+                "FloeTools",
+                .product(name: "Crypto", package: "swift-crypto")
+            ],
+            path: "Sources/FloeWorkspace",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency"),
+                .enableUpcomingFeature("InferSendableFromCaptures"),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault")
+            ]
+        ),
+
         // MARK: - Test targets
 
         .target(
@@ -288,7 +319,7 @@ let package = Package(
 
         .testTarget(
             name: "FloeToolsTests",
-            dependencies: ["FloeTools", "FloeTestSupport"],
+            dependencies: ["FloeTools", "FloeAgentRuntime", "FloeTestSupport"],
             path: "Tests/FloeToolsTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

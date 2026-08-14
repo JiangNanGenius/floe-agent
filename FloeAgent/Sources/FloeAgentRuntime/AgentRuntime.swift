@@ -36,23 +36,54 @@ public protocol ToolExecutor: Sendable {
     func descriptor(named name: String) -> ToolCatalog.Descriptor?
 }
 
-/// Default executor bridging the compile-time catalog. Concrete runners
-/// register in M2+; until then execution returns a structured failure so
-/// the runtime keeps flowing.
+/// Default executor bridging the compile-time catalog and the runtime
+/// `ToolRunnerRegistry`. Tools whose descriptor exists but have no runner
+/// registered still fail with a structured "No runner registered" result
+/// so the runtime keeps flowing.
 public struct CatalogToolExecutor: ToolExecutor {
-    public init() {}
+    private let runners: ToolRunnerRegistry
+
+    public init(runners: ToolRunnerRegistry = .shared) {
+        self.runners = runners
+    }
 
     public func descriptor(named name: String) -> ToolCatalog.Descriptor? {
         ToolCatalog.descriptor(named: name)
     }
 
     public func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
-        ToolResult(
-            callID: call.id,
-            status: .failed,
-            outputSummary: "No runner registered for tool '\(call.toolName)'",
-            outputDigest: ""
-        )
+        guard let runner = runners.runner(named: call.toolName) else {
+            return ToolResult(
+                callID: call.id,
+                status: .failed,
+                outputSummary: "No runner registered for tool '\(call.toolName)'",
+                outputDigest: ""
+            )
+        }
+        do {
+            let output = try await runner.execute(
+                argumentsJSON: call.argumentsJSON,
+                context: context
+            )
+            return ToolResult(
+                callID: call.id,
+                status: .ok,
+                outputSummary: output.summary,
+                outputDigest: output.fullOutputSHA256,
+                exitStatus: output.exitStatus
+            )
+        } catch let error as FloeError where error == .cancelled {
+            return ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
+        } catch is CancellationError {
+            return ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
+        } catch {
+            return ToolResult(
+                callID: call.id,
+                status: .failed,
+                outputSummary: "Execution error: \(error.localizedDescription)",
+                outputDigest: ""
+            )
+        }
     }
 }
 
