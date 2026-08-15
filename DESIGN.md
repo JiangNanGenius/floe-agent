@@ -23,6 +23,7 @@ This direction was selected from seven grounded alternatives because it best ser
 - Prefer whitespace, dividers and grouping over nested card stacks.
 - Use SF Symbols in the production UI. The generated reference images are composition and atmosphere references, not pixel specifications.
 - Support light/dark appearance, Dynamic Type, VoiceOver, Increased Contrast and Reduce Motion from the first implementation.
+- Never communicate status by color alone; interactive targets are at least 44 × 44 points.
 
 ## Interaction principles
 
