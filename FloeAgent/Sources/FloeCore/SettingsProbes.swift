@@ -67,10 +67,14 @@ public struct ICloudStatusProbe: CapabilityProbe {
     public init() {}
 
     public func probe() async -> CapabilityState {
+        #if os(iOS) || os(macOS) || os(tvOS) || os(visionOS)
         if FileManager.default.ubiquityIdentityToken != nil {
             return .available(version: "signed in")
         }
         return .unavailable(reason: "No iCloud account is signed in on this device")
+        #else
+        return .unavailable(reason: "iCloud Drive is not available on this platform")
+        #endif
     }
 }
 
