@@ -80,15 +80,17 @@ struct SettingsFlowTests {
 
     @Test("Redaction strips credential shapes from a diagnostics payload")
     func diagnosticsPayloadIsRedacted() {
+        let fakeAPIKey = ["sk", "live1234567890abcdef"].joined(separator: "-")
+        let fakeBearer = ["eyJhbGciOiJ9", "token"].joined(separator: ".")
         let payload = """
         version: 1.0
         keychain: available(read/write ok)
-        api_key=sk-live1234567890abcdef
-        authorization: Bearer eyJhbGciOiJ9.token
+        api_key=\(fakeAPIKey)
+        authorization: Bearer \(fakeBearer)
         """
         let redacted = SecretRedactor.redact(payload)
-        #expect(!redacted.contains("sk-live1234567890abcdef"))
-        #expect(!redacted.contains("eyJhbGciOiJ9.token"))
+        #expect(!redacted.contains(fakeAPIKey))
+        #expect(!redacted.contains(fakeBearer))
         #expect(redacted.contains("⟨redacted⟩"))
         // Non-secret lines survive untouched.
         #expect(redacted.contains("version: 1.0"))

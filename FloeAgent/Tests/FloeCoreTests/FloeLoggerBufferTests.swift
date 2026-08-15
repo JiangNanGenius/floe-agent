@@ -29,14 +29,15 @@ struct FloeLoggerBufferTests {
     func loggerAppendsRedacted() {
         // Use a dedicated buffer to isolate from the shared one.
         let buffer = FloeLogger.RingBuffer(capacity: 10)
+        let fakeToken = ["sk", "abc123def456gh"].joined(separator: "-")
         let entry = FloeLogger.Entry(
             timestamp: Date(), category: "security", level: "warning",
-            message: SecretRedactor.redact("token=sk-abc123def456gh")
+            message: SecretRedactor.redact("token=\(fakeToken)")
         )
         buffer.append(entry)
         let rendered = buffer.renderedText()
         #expect(rendered.contains("⟨redacted⟩"))
-        #expect(!rendered.contains("sk-abc123def456gh"))
+        #expect(!rendered.contains(fakeToken))
         #expect(rendered.contains("[security] [warning]"))
     }
 
