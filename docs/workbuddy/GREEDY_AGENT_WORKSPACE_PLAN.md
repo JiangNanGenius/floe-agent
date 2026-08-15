@@ -391,3 +391,16 @@ fact and continue with the next implementable slice.
   on-device/simulator cold-start, iCloud reconnect, live SSH host,
   VoiceOver, full XCUITest coverage. QA confirmed it did NOT trigger any
   cloud build/TestFlight. Awaiting the two fixes, then QA round-2.
+- 2026-08-15 — **QA round-2 PASS** (严过关): both bug fixes independently
+  verified (Bug-1 iPad routing consistent both idioms; Bug-2 JS stderr
+  separated, all 8 `.ok(` call sites synced), 368 tests green, no
+  regression, no new issues. **Implementation verification complete.**
+- 2026-08-15 — **DELIVERED.** Docs committed (`2b59e27`), implementation
+  report written (`docs/workbuddy/AGENT_WORKSPACE_IMPLEMENTATION_REPORT.md`,
+  committed `0d1cbb1`), branch pushed `afb0bc7..0d1cbb1` (20 commits: 18
+  implementation + docs + report). Final state: 368 SPM tests green, 0
+  fail, worktree clean. No Xcode Cloud / TestFlight / App Store Connect
+  triggered by the team; push may run the repo's own GitHub Actions CI on
+  the draft PR (repository CI, not cloud distribution). Codex independent
+  audit is the next gate — top item: run the iOS Debug/Release build on a
+  machine where xcodebuild is not sandbox-blocked.
