@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a reproducible problem in Floe Agent or its documentation.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve Floe Agent. Remove all credentials, private host details, and personal data before submitting.
+  - type: input
+    id: revision
+    attributes:
+      label: Branch or commit
+      description: Which branch, tag, or commit did you test?
+      placeholder: agent/alpha-daily at abc1234
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include macOS, Xcode, target OS, and device or simulator versions.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized logs or screenshots
+      description: Do not include keys, tokens, passwords, private hostnames, personal files, or device identifiers.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed secrets and private data from this report.
+          required: true
+        - label: This is not a security vulnerability requiring private disclosure.
+          required: true
