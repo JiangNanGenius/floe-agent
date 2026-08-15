@@ -233,14 +233,25 @@ final class AppEnvironment: ObservableObject {
                 }
                 try await configurationStore.savePreferences(ModelSelectionPreferences())
             }
+            if ProcessInfo.processInfo.arguments.contains("--ui-test-reset-sync") {
+                UserDefaults.standard.removeObject(forKey: SyncControlPreferences.overallKey)
+                UserDefaults.standard.removeObject(forKey: SyncControlPreferences.configurationKey)
+                await configurationSync.setSynchronizationEnabled(true)
+            }
             #endif
             #if !targetEnvironment(simulator)
             do {
+                let syncPreferences = SyncControlPreferences.load()
+                await configurationSync.setSynchronizationEnabled(
+                    syncPreferences.overallEnabled && syncPreferences.configurationEnabled
+                )
                 try await configurationSync.configure(container: CKContainer.default())
                 // Never hold the launch UI behind CloudKit. The root view
                 // performs a short, bounded second check before presenting
                 // first-run setup, while this pull continues independently.
-                Task { try? await configurationSync.synchronize() }
+                if syncPreferences.overallEnabled && syncPreferences.configurationEnabled {
+                    Task { try? await configurationSync.synchronize() }
+                }
             } catch {
                 // Local setup remains fully usable when iCloud is unavailable.
             }

@@ -11,6 +11,12 @@ import BackgroundTasks
 @MainActor
 public final class iPadBackgroundPolicy: PlatformBackgroundPolicy, @unchecked Sendable {
 
+    /// `BGTaskScheduler` permits each identifier to be registered only once
+    /// per process. SwiftUI previews, hosted unit tests, and scene recovery can
+    /// legitimately construct more than one router/policy instance, so keep
+    /// registration process-wide and idempotent.
+    private static var didRegisterTasks = false
+
     /// sceneID → latest known phase.
     private var scenePhases: [String: PolicyScenePhase] = [:]
     private var expirationHandlers: [String: UIBackgroundTaskIdentifier] = [:]
@@ -19,6 +25,8 @@ public final class iPadBackgroundPolicy: PlatformBackgroundPolicy, @unchecked Se
     public init() {}
 
     public func registerTasks() {
+        guard !Self.didRegisterTasks else { return }
+        Self.didRegisterTasks = true
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: BackgroundTaskKind.refresh.rawValue,
             using: nil

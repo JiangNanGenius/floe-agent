@@ -67,5 +67,22 @@ enum RunStateLocalizer {
     static func isTerminal(_ stateName: String) -> Bool {
         stateName == "completed" || stateName == "failed"
     }
+
+    /// Localized, user-comprehensible title for a terminal stop reason.
+    /// Internal wire names (endTurn, maxTokens, …) never reach the UI.
+    static func terminalTitle(stopReason: String) -> LocalizedStringKey {
+        switch stopReason {
+        case "endTurn", "completed", "stop":
+            "state.completed"
+        case "cancelled":
+            "state.stopped"
+        case "maxTokens", "length":
+            "state.truncated"
+        case "toolUse":
+            "state.completed"
+        default:
+            "state.completed"
+        }
+    }
 }
 #endif

@@ -42,6 +42,17 @@ final class AppRouter: ObservableObject {
     /// iPhone Chat navigation path. iPad uses selectedConversationID to
     /// project the same thread into the split-view detail column.
     @Published var chatPath: [UUID] = []
+    /// iPhone Home navigation path. Home and Chat own separate stacks so
+    /// starting a task from Home never pollutes the Chat list's back
+    /// behavior, and returning in Chat never disturbs Home.
+    @Published var homePath: [UUID] = []
+    /// iPhone More navigation path. It also gives Home quick actions a
+    /// single cross-idiom way to open a concrete settings surface.
+    @Published var morePath: [MoreDestination] = []
+    /// Conversation shown in Home's iPad detail column (a task started
+    /// from Home). Separate from `selectedConversationID`, which belongs
+    /// to Chat, so the two pages never share selection state.
+    @Published var homeDetailConversationID: UUID?
     /// Run currently inspected (thread detail / runs history), if any.
     @Published var selectedRunID: UUID?
     /// Host currently inspected (host detail / terminal / VNC), if any.
@@ -141,6 +152,14 @@ final class AppRouter: ObservableObject {
         sidebarSelection = .primary(destination)
     }
 
+    /// Opens a concrete More destination on both idioms: a pushed screen
+    /// on iPhone and the promoted sidebar section on iPad.
+    func openMore(_ destination: MoreDestination) {
+        selection = .more
+        sidebarSelection = .more(destination)
+        morePath = [destination]
+    }
+
     /// Opens one conversation through the idiom-appropriate presentation.
     /// Keeping this operation here prevents Home and Chat from drifting into
     /// separate navigation behavior.
@@ -149,6 +168,17 @@ final class AppRouter: ObservableObject {
         selectedRunID = runID
         navigate(to: .chat)
         chatPath = [conversationID]
+    }
+
+    /// Opens a freshly started task thread WITHOUT leaving Home. The new
+    /// conversation is pushed onto Home's own navigation stack (iPhone) or
+    /// projected into Home's detail column (iPad); the Chat list and its
+    /// selection stay untouched until the user visits Chat themselves.
+    func openThreadFromHome(_ conversationID: UUID, runID: UUID? = nil) {
+        homeDetailConversationID = conversationID
+        selectedRunID = runID
+        navigate(to: .home)
+        homePath = [conversationID]
     }
 
     private func policyPhase(for phase: ScenePhase) -> PolicyScenePhase {

@@ -37,11 +37,26 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
+    /// UITest runs pin a deterministic layout: `-ui-testing` forces the
+    /// compact (iPhone-style) tab layout; `-ui-testing-ipad` additionally
+    /// forces the regular split layout for the iPad suite, regardless of
+    /// the size class the test host reports.
+    private var forceCompactForUITest: Bool {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard arguments.contains("-ui-testing") else { return false }
+        return !arguments.contains("-ui-testing-ipad")
+    }
+
+    private var forceRegularForUITest: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ui-testing-ipad")
+    }
+
     var body: some View {
         Group {
             if !environment.persistenceReady {
                 persistenceState
-            } else if horizontalSizeClass == .regular {
+            } else if forceRegularForUITest
+                        || (horizontalSizeClass == .regular && !forceCompactForUITest) {
                 iPadRoot
             } else {
                 iPhoneRoot
@@ -79,6 +94,12 @@ struct RootView: View {
 
     /// Presents first-run onboarding until a provider+model is configured.
     private func presentOnboardingIfNeeded() async {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-test-force-onboarding") {
+            router.presentedSetup = .firstLaunch
+            return
+        }
+        #endif
         await environment.conversationCenter.reconcileOnboardingForLaunch()
         if environment.conversationCenter.modelPreferences.onboardingStatus == .unseen,
            UserDefaults.standard.bool(forKey: ConversationCenter.onboardingSkippedDefaultsKey) {
@@ -118,8 +139,25 @@ struct RootView: View {
         TabView(selection: $router.selection) {
             ForEach(AppDestination.allCases) { destination in
                 Tab(value: destination) {
+                    // Home and Chat own separate navigation stacks so
+                    // starting a task never pollutes the Chat list's back
+                    // behavior and vice versa.
                     if destination == .chat {
                         NavigationStack(path: $router.chatPath) {
+                            PrimaryDestinationView(destination, environment: environment)
+                        }
+                    } else if destination == .home {
+                        NavigationStack(path: $router.homePath) {
+                            PrimaryDestinationView(destination, environment: environment)
+                                .navigationDestination(for: UUID.self) { conversationID in
+                                    ThreadDetailView(
+                                        conversationID: conversationID,
+                                        center: environment.conversationCenter
+                                    )
+                                }
+                        }
+                    } else if destination == .more {
+                        NavigationStack(path: $router.morePath) {
                             PrimaryDestinationView(destination, environment: environment)
                         }
                     } else {
@@ -181,15 +219,16 @@ struct RootView: View {
         }
     }
 
-    /// Column 2: the list for the sidebar selection. Tab roots that are
-    /// themselves lists render here directly; everything else lists its
-    /// More sub-destinations.
+    /// Column 2: the list for the sidebar selection. Home owns a task
+    /// overview (never the conversation-history list); Chat owns the
+    /// conversation list with its own selection; everything else renders
+    /// its root screen or the More sub-destination.
     @ViewBuilder
     private var contentColumn: some View {
         switch router.sidebarSelection ?? .primary(router.selection) {
         case .primary(let destination):
             if destination == .home {
-                ConversationListView(center: environment.conversationCenter)
+                HomeOverviewView(center: environment.conversationCenter)
             } else {
                 PrimaryDestinationView(destination, environment: environment)
             }
@@ -202,6 +241,11 @@ struct RootView: View {
     /// When the inspector is requested (T03 router surface), it replaces
     /// the detail content on demand — the column never idles as an empty
     /// placeholder once content exists.
+    ///
+    /// Home and Chat project from SEPARATE selection state: Home shows the
+    /// thread it started (or the launchpad), Chat shows the conversation
+    /// selected in its own list (or a quiet empty state). Neither renders
+    /// the other's root.
     @ViewBuilder
     private var detailColumn: some View {
         if let inspectorContent = router.inspectorContent {
@@ -209,7 +253,7 @@ struct RootView: View {
         } else {
             switch router.sidebarSelection ?? .primary(router.selection) {
             case .primary(.home):
-                if let conversationID = router.selectedConversationID {
+                if let conversationID = router.homeDetailConversationID {
                     NavigationStack {
                         ThreadDetailView(
                             conversationID: conversationID,
@@ -219,10 +263,7 @@ struct RootView: View {
                     .id(conversationID)
                 } else {
                     NavigationStack {
-                        ChatHomeView(
-                            center: environment.conversationCenter,
-                            showsRecentConversations: false
-                        )
+                        HomeLaunchpadView(center: environment.conversationCenter)
                     }
                 }
             case .primary(.chat):
@@ -235,11 +276,9 @@ struct RootView: View {
                     }
                     .id(conversationID)
                 } else {
-                    ShellPlaceholderView(
-                        title: LocalizedStringKey("tab.chat"),
-                        systemImage: "bubble.left.and.bubble.right",
-                        messageKey: "empty.detail"
-                    )
+                    // A quiet empty state plus a real new-conversation
+                    // entry — never the Home launchpad.
+                    ChatDetailEmptyView()
                 }
             default:
                 ShellPlaceholderView(
@@ -285,7 +324,7 @@ private struct PrimaryDestinationView: View {
     var body: some View {
         switch destination {
         case .home:
-            ChatHomeView(center: environment.conversationCenter)
+            HomeLaunchpadView(center: environment.conversationCenter)
         case .chat:
             ConversationListView(center: environment.conversationCenter)
         case .files:
@@ -295,6 +334,35 @@ private struct PrimaryDestinationView: View {
         case .more:
             MoreView(center: environment.conversationCenter)
         }
+    }
+}
+
+/// iPad Chat detail with nothing selected: quiet empty state plus a real
+/// "new conversation" entry. Never the Home launchpad.
+private struct ChatDetailEmptyView: View {
+    @EnvironmentObject private var environment: AppEnvironment
+    @EnvironmentObject private var router: AppRouter
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("tab.chat", systemImage: "bubble.left.and.bubble.right")
+        } description: {
+            Text("chat.select_or_new")
+        } actions: {
+            Button("chat.new") {
+                Task {
+                    if let conversation = try? await environment.conversationCenter
+                        .createConversation(title: nil) {
+                        router.openConversation(conversation.id)
+                    }
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .frame(minHeight: FloeTheme.minimumTarget)
+            .accessibilityIdentifier("chat.detail.new")
+        }
+        .background(FloeTheme.readingSurface)
+        .navigationTitle("tab.chat")
     }
 }
 

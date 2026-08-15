@@ -62,9 +62,18 @@ struct ConversationRunServiceTests {
 
         // The event thread persisted in order.
         let events = try await runStore.events(runID: service.runID)
-        // Stream chunks stay live-only; the canonical completed assistant
-        // message is persisted once to avoid per-token write amplification.
-        #expect(!events.contains { $0.kind == .assistantText })
+        // The final reply persists exactly once as an assistantText event,
+        // ordered strictly BEFORE the terminal marker so the unified
+        // timeline can never render "Completed" above the answer.
+        let assistantTextEvents = events.filter { $0.kind == .assistantText }
+        #expect(assistantTextEvents.count == 1)
+        #expect(assistantTextEvents[0].payloadJSON.contains("Hello world"))
+        if let terminal = events.last(where: { $0.kind == .terminal }) {
+            #expect(assistantTextEvents[0].sequence < terminal.sequence)
+            #expect(events.last?.id == terminal.id)
+        } else {
+            Issue.record("Expected a terminal event")
+        }
         let reasoningEvents = events.filter { $0.kind == .reasoning }
         #expect(reasoningEvents.count == 1)
         #expect(reasoningEvents[0].payloadJSON.contains("Check the answer."))
@@ -123,6 +132,54 @@ struct ConversationRunServiceTests {
         #expect(!events.contains {
             $0.kind == .status && !$0.payloadJSON.contains("state")
         })
+        // After a tool turn the run must still persist the final reply as
+        // an assistantText event ahead of terminal.
+        let assistantTextEvents = events.filter { $0.kind == .assistantText }
+        #expect(assistantTextEvents.count == 1)
+        #expect(assistantTextEvents[0].payloadJSON.contains("文件已写入。"))
+        let terminal = try #require(events.last(where: { $0.kind == .terminal }))
+        #expect(assistantTextEvents[0].sequence < terminal.sequence)
+        #expect(events.last?.id == terminal.id)
+    }
+
+    @Test("A completion without final text persists an explicit error event")
+    func completionWithoutFinalText() async throws {
+        let (conversationStore, runStore) = try await makeStores()
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "", createdAt: Date(), updatedAt: Date()
+        ))
+        let adapter = MockAdapter()
+        adapter.script = [[
+            .completed(AgentEvent.CompletionInfo(stopReason: .endTurn))
+        ]]
+        let service = ConversationRunService(
+            configuration: FloeAgentRuntime.Configuration(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID())
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        try await service.start(goal: "Say nothing")
+
+        // No assistant message, no assistantText event — but an explicit
+        // error row so the timeline renders "no final reply" instead of a
+        // silent success.
+        let messages = try await conversationStore.messages(conversationID: conversationID)
+        #expect(!messages.contains { $0.role == "assistant" })
+        let events = try await runStore.events(runID: service.runID)
+        #expect(!events.contains { $0.kind == .assistantText })
+        let errorEvents = events.filter { $0.kind == .error }
+        #expect(errorEvents.contains { $0.payloadJSON.contains("noFinalText") })
+        let terminal = try #require(events.last(where: { $0.kind == .terminal }))
+        #expect(errorEvents.allSatisfy { $0.sequence < terminal.sequence })
+        #expect(events.last?.id == terminal.id)
     }
 
     @Test("A provider error persists a structured, redacted error record")

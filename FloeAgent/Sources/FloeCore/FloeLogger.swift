@@ -17,7 +17,7 @@ public struct FloeLogger: Sendable {
     }
 
     /// One buffered log entry for the diagnostics view / export.
-    public struct Entry: Sendable, Hashable {
+    public struct Entry: Sendable, Hashable, Codable {
         public var timestamp: Date
         public var category: String
         public var level: String
@@ -31,17 +31,26 @@ public struct FloeLogger: Sendable {
         }
     }
 
-    /// Fixed-capacity in-memory ring buffer of the most recent entries.
-    /// Diagnostics reads and exports from here; nothing is written to disk.
-    /// Messages are expected to be pre-redacted by callers and are scrubbed
-    /// again by `SecretRedactor` on the way in as defense-in-depth.
+    /// Fixed-capacity ring buffer of the most recent entries. A redacted
+    /// snapshot is also written to the app's caches directory so a crash does
+    /// not erase the evidence needed for the next-launch diagnostics export.
+    /// No transcript, API key, document body, or audio is accepted here.
     public final class RingBuffer: @unchecked Sendable {
         private var entries: [Entry] = []
         private let capacity: Int
         private let lock = NSLock()
+        private let persistenceQueue = DispatchQueue(label: "org.floeagent.log-persistence", qos: .utility)
+        private var pendingWrite: DispatchWorkItem?
+        private let persistedURL: URL?
 
-        public init(capacity: Int = 500) {
+        public init(capacity: Int = 500, persists: Bool = false) {
             self.capacity = max(1, capacity)
+            self.persistedURL = persists ? Self.makePersistedURL() : nil
+            if let persistedURL,
+               let data = try? Data(contentsOf: persistedURL),
+               let restored = try? JSONDecoder().decode([Entry].self, from: data) {
+                self.entries = Array(restored.suffix(self.capacity))
+            }
         }
 
         func append(_ entry: Entry) {
@@ -50,7 +59,9 @@ public struct FloeLogger: Sendable {
             if entries.count > capacity {
                 entries.removeFirst(entries.count - capacity)
             }
+            let snapshot = entries
             lock.unlock()
+            schedulePersistence(snapshot)
         }
 
         /// Most recent entries, oldest first.
@@ -70,10 +81,46 @@ public struct FloeLogger: Sendable {
                 }
                 .joined(separator: "\n")
         }
+
+        private func schedulePersistence(_ snapshot: [Entry]) {
+            guard let persistedURL else { return }
+            persistenceQueue.async { [weak self] in
+                guard let self else { return }
+                self.pendingWrite?.cancel()
+                let item = DispatchWorkItem {
+                    do {
+                        try FileManager.default.createDirectory(
+                            at: persistedURL.deletingLastPathComponent(),
+                            withIntermediateDirectories: true
+                        )
+                        let encoder = JSONEncoder()
+                        encoder.dateEncodingStrategy = .iso8601
+                        try encoder.encode(snapshot).write(to: persistedURL, options: .atomic)
+                    } catch {
+                        // Logging must never crash or recursively log a
+                        // persistence failure. The in-memory copy remains.
+                    }
+                }
+                self.pendingWrite = item
+                self.persistenceQueue.asyncAfter(deadline: .now() + 0.75, execute: item)
+            }
+        }
+
+        private static func makePersistedURL() -> URL? {
+            guard let caches = try? FileManager.default.url(
+                for: .cachesDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            ) else { return nil }
+            return caches
+                .appendingPathComponent("FloeAgent", isDirectory: true)
+                .appendingPathComponent("diagnostics-log.json")
+        }
     }
 
     /// Process-wide buffer shared by every logger instance.
-    public static let buffer = RingBuffer()
+    public static let buffer = RingBuffer(persists: true)
 
     private let category: Category
 
@@ -90,45 +137,49 @@ public struct FloeLogger: Sendable {
 
     public func debug(_ message: @autoclosure () -> String) {
         let resolved = message()
+        let redacted = SecretRedactor.redact(resolved)
         Self.buffer.append(Entry(
             timestamp: Date(), category: category.rawValue, level: "debug",
-            message: SecretRedactor.redact(resolved)
+            message: redacted
         ))
         #if canImport(os)
-        underlying.debug("\(resolved, privacy: .public)")
+        underlying.debug("\(redacted, privacy: .public)")
         #endif
     }
 
     public func info(_ message: @autoclosure () -> String) {
         let resolved = message()
+        let redacted = SecretRedactor.redact(resolved)
         Self.buffer.append(Entry(
             timestamp: Date(), category: category.rawValue, level: "info",
-            message: SecretRedactor.redact(resolved)
+            message: redacted
         ))
         #if canImport(os)
-        underlying.info("\(resolved, privacy: .public)")
+        underlying.info("\(redacted, privacy: .public)")
         #endif
     }
 
     public func warning(_ message: @autoclosure () -> String) {
         let resolved = message()
+        let redacted = SecretRedactor.redact(resolved)
         Self.buffer.append(Entry(
             timestamp: Date(), category: category.rawValue, level: "warning",
-            message: SecretRedactor.redact(resolved)
+            message: redacted
         ))
         #if canImport(os)
-        underlying.warning("\(resolved, privacy: .public)")
+        underlying.warning("\(redacted, privacy: .public)")
         #endif
     }
 
     public func error(_ message: @autoclosure () -> String) {
         let resolved = message()
+        let redacted = SecretRedactor.redact(resolved)
         Self.buffer.append(Entry(
             timestamp: Date(), category: category.rawValue, level: "error",
-            message: SecretRedactor.redact(resolved)
+            message: redacted
         ))
         #if canImport(os)
-        underlying.error("\(resolved, privacy: .public)")
+        underlying.error("\(redacted, privacy: .public)")
         #endif
     }
 }

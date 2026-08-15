@@ -28,8 +28,10 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var events: [RunEventRecord] = []
     /// Live snapshot of the selected run, when the center owns it.
     @Published private(set) var liveStateName: String?
-    @Published private(set) var liveStreamedText: String = ""
     @Published private(set) var liveReasoningText: String = ""
+    /// Published mirror of StreamingTextAnimator.displayedText. SwiftUI
+    /// observes this value, so every grapheme tick is actually rendered.
+    @Published private(set) var liveStreamedText: String = ""
     @Published private(set) var hasProviderActivity = false
     /// Persisted messages of the conversation (user goals, final answers).
     @Published private(set) var messages: [PersistedMessage] = []
@@ -56,11 +58,30 @@ final class ThreadDetailViewModel: ObservableObject {
     let conversationID: UUID
     let center: ConversationCenter
 
+    /// Grapheme-ordered display coordinator for the live assistant tail.
+    /// The network snapshot is the target; the view renders only
+    /// `animator.displayedText`, so a terminal snapshot can never make a
+    /// whole paragraph pop in at once.
+    let animator: StreamingTextAnimator
+
+    /// True while the animator is draining the remainder of a finished
+    /// network stream. The run is logically terminal but the live tail
+    /// must stay visible until the display catches up — no flicker, no
+    /// gap before the persisted message takes over.
+    @Published private(set) var isDraining = false
+
     private var pollTask: Task<Void, Never>?
+    private let diagnostics: ThreadStreamingDiagnostics
 
     init(conversationID: UUID, center: ConversationCenter) {
         self.conversationID = conversationID
         self.center = center
+        let diagnostics = ThreadStreamingDiagnostics()
+        self.animator = StreamingTextAnimator(diagnostics: diagnostics)
+        self.diagnostics = diagnostics
+        self.animator.onDisplayedTextChange = { [weak self] text in
+            self?.liveStreamedText = text
+        }
     }
 
     /// The currently selected run record, if any.
@@ -130,12 +151,33 @@ final class ThreadDetailViewModel: ObservableObject {
             events = []
             return
         }
+        // assistantText events stay in the timeline: they carry the final
+        // reply in stored sequence order (before terminal).
         events = try await center.environment.runStore.events(runID: runID)
-            .filter { $0.kind != .assistantText }
         let errors = try await center.environment.runStore.errors(runID: runID)
         if selectedRun?.state == "failed", let latest = errors.last {
             actionError = latest.message
         }
+    }
+
+    /// The unified, sequence-ordered timeline for the selected run.
+    var timeline: [ThreadTimelineItem] {
+        ThreadTimelineBuilder.build(
+            messages: messages,
+            events: events,
+            run: selectedRun,
+            isRunning: showsLiveTail,
+            liveStreamedText: liveStreamedText,
+            liveReasoningText: liveReasoningText,
+            pendingApprovals: pendingApprovals
+        )
+    }
+
+    /// The live tail stays mounted while the run is active OR while the
+    /// animator drains a terminal remainder — the final bubble never
+    /// flickers or disappears before the persisted reply takes over.
+    var showsLiveTail: Bool {
+        isRunning || isDraining
     }
 
     // MARK: - Actions
@@ -201,24 +243,32 @@ final class ThreadDetailViewModel: ObservableObject {
         pollTask?.cancel()
         guard let run = selectedRun else { return }
         liveStateName = run.state
-        liveStreamedText = ""
         liveReasoningText = ""
         hasProviderActivity = false
+        isDraining = false
+        animator.reset()
         pollTask = Task { [weak self, center] in
             guard let self else { return }
             while !Task.isCancelled {
                 if let service = center.service(for: run.id) {
                     let snapshot = await service.snapshot()
                     guard self.selectedRunID == run.id else { break }
-                    self.liveStateName = snapshot.stateName
-                    self.revealStreamText(
-                        toward: snapshot.streamedText,
-                        immediately: snapshot.isTerminal
-                    )
+                    // Feed the animator only; the view reads displayedText.
+                    // A terminal snapshot advances the target but does NOT
+                    // dump the remainder on screen.
+                    self.animator.update(target: snapshot.streamedText)
                     self.liveReasoningText = snapshot.reasoningText
                     self.hasProviderActivity = snapshot.hasProviderActivity
-                    self.isRunning = !snapshot.isTerminal
                     if snapshot.isTerminal {
+                        // Network finished ≠ display finished. Drain the
+                        // animator first so the last characters still
+                        // appear in order, then promote to persisted state.
+                        self.isRunning = false
+                        self.isDraining = true
+                        await self.animator.drain()
+                        self.liveStateName = snapshot.stateName
+                        self.isDraining = false
+                        guard !Task.isCancelled, self.selectedRunID == run.id else { break }
                         try? await self.loadEvents()
                         self.messages = (try? await center.environment.conversationStore
                             .messages(conversationID: self.conversationID)) ?? self.messages
@@ -226,10 +276,15 @@ final class ThreadDetailViewModel: ObservableObject {
                             .runs(conversationID: self.conversationID)) ?? self.runs
                         break
                     }
+                    self.liveStateName = snapshot.stateName
+                    self.isRunning = true
                 } else {
                     // No live service: render the persisted record honestly.
+                    // A reopened historical thread never keeps streaming or
+                    // timing — terminal state is read from the store.
                     self.liveStateName = run.state
                     self.isRunning = false
+                    self.isDraining = false
                     break
                 }
                 // Provider SSE chunks are often much smaller than 300 ms.
@@ -240,27 +295,37 @@ final class ThreadDetailViewModel: ObservableObject {
         }
     }
 
-    /// Advances the visible answer toward the provider snapshot in small,
-    /// adaptive batches. A large network chunk no longer appears as one
-    /// abrupt paragraph, while long answers still catch up promptly.
-    private func revealStreamText(toward target: String, immediately: Bool) {
-        guard !immediately else {
-            liveStreamedText = target
-            return
-        }
-        guard target.hasPrefix(liveStreamedText) else {
-            liveStreamedText = target
-            return
-        }
-        let remaining = target.dropFirst(liveStreamedText.count)
-        guard !remaining.isEmpty else { return }
-        let batchSize = min(32, max(1, (remaining.count + 5) / 6))
-        liveStreamedText.append(contentsOf: remaining.prefix(batchSize))
-    }
-
     func stopPolling() {
         pollTask?.cancel()
         pollTask = nil
+        // Leaving the thread stops the animation immediately; the partial
+        // display is discarded with the live tail, persisted rows reload
+        // from the store on the next open.
+        animator.cancel()
+        isDraining = false
+        isRunning = false
+    }
+}
+
+/// Forwards animator diagnostics into FloeLogger with the structured event
+/// names. Only counts and flags — never transcript content.
+private struct ThreadStreamingDiagnostics: StreamingTextAnimatorDiagnostics {
+    private let logger = FloeLogger(category: .app)
+
+    func streamTargetAdvanced(pendingCharacters: Int) {
+        logger.debug("streamTargetAdvanced pending=\(pendingCharacters)")
+    }
+
+    func streamNonPrefixDetected() {
+        logger.warning("streamNonPrefixDetected")
+    }
+
+    func streamDrainStarted(pendingCharacters: Int) {
+        logger.info("streamDrainStarted pending=\(pendingCharacters)")
+    }
+
+    func streamDrainCompleted() {
+        logger.info("streamDrainCompleted")
     }
 }
 #endif

@@ -198,10 +198,10 @@ final class M0DiagnosticsModel: ObservableObject {
                 do {
                     for try await data in pty.output {
                         guard let text = String(data: data, encoding: .utf8) else { continue }
-                        await self?.appendTerminal(text)
+                        self?.appendTerminal(text)
                     }
                 } catch {
-                    await self?.setRemoteError(error)
+                    self?.setRemoteError(error)
                 }
             }
         } catch {
@@ -312,6 +312,7 @@ final class M0DiagnosticsModel: ObservableObject {
 
     private static func describe(_ status: SyncStatus) -> String {
         switch status {
+        case .syncing: "Syncing"
         case .synced: "Synced"
         case .paused: "Paused"
         case .waitingForSecret: "Waiting for iCloud Keychain"

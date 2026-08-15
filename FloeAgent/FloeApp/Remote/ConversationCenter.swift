@@ -51,6 +51,15 @@ struct PendingApproval: Identifiable, Hashable, Sendable {
     }
 }
 
+/// A run that has been launched without forcing the caller to await the
+/// complete provider/tool loop. Home uses the run ID to navigate as soon
+/// as the durable run row exists; existing callers can still await the
+/// result for synchronous semantics.
+struct StartedConversationRun: Sendable {
+    let runID: UUID
+    let result: Task<Result<Void, Error>, Never>
+}
+
 /// Coordinates conversations and agent runs for the UI layer.
 @MainActor
 final class ConversationCenter: ObservableObject {
@@ -176,13 +185,15 @@ final class ConversationCenter: ObservableObject {
         }
     }
 
-    /// Starts a new run for `goal` in a conversation and tracks it.
-    func send(
+    /// Launches a new run and returns immediately. The task result covers
+    /// the complete run; the run itself is persisted at the beginning of
+    /// `ConversationRunService.start`, before provider I/O starts.
+    func startRun(
         goal: String,
         in conversationID: UUID,
         provider: ProviderProfile,
         model: ModelProfile
-    ) async throws {
+    ) throws -> StartedConversationRun {
         let trimmed = goal.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw FloeError.validationFailed("Goal must not be empty")
@@ -190,7 +201,38 @@ final class ConversationCenter: ObservableObject {
         let service = try runService(for: conversationID, provider: provider, model: model)
         runServices[service.runID] = service
         track(service)
-        try await service.start(goal: trimmed)
+        let result = Task<Result<Void, Error>, Never> {
+            do {
+                try await service.start(goal: trimmed)
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        }
+        return StartedConversationRun(runID: service.runID, result: result)
+    }
+
+    /// Starts a new run for `goal` and awaits the complete agent loop.
+    /// Kept for thread follow-ups and tests that require synchronous
+    /// completion; Home uses `startRun` so navigation is immediate.
+    func send(
+        goal: String,
+        in conversationID: UUID,
+        provider: ProviderProfile,
+        model: ModelProfile
+    ) async throws {
+        let started = try startRun(
+            goal: goal,
+            in: conversationID,
+            provider: provider,
+            model: model
+        )
+        switch await started.result.value {
+        case .success:
+            return
+        case .failure(let error):
+            throw error
+        }
     }
 
     /// Cancels a live run. The runtime owns the terminal transition.

@@ -16,6 +16,8 @@ final class ConversationListViewModel: ObservableObject {
 
     /// Whether a load is in flight (drives the honest loading state).
     @Published private(set) var isLoading = false
+    /// The Chat list search query.
+    @Published var searchText = ""
 
     let center: ConversationCenter
 
@@ -26,6 +28,16 @@ final class ConversationListViewModel: ObservableObject {
     /// Conversations in recency order, straight from the center.
     var conversations: [ConversationRecord] {
         center.conversations
+    }
+
+    /// Conversations filtered by the search query (title substring,
+    /// case-insensitive). An empty query returns the full list.
+    var filteredConversations: [ConversationRecord] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return conversations }
+        return conversations.filter {
+            $0.title.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+        }
     }
 
     /// True when no provider+model is configured — the list must show the
@@ -49,7 +61,10 @@ final class ConversationListViewModel: ObservableObject {
 
     /// Deletes conversations at the given offsets.
     func delete(at offsets: IndexSet) async {
-        let targets = offsets.map { center.conversations[$0] }
+        // Offsets belong to the currently rendered (possibly searched)
+        // list, not the center's unfiltered backing array.
+        let visible = filteredConversations
+        let targets = offsets.compactMap { visible.indices.contains($0) ? visible[$0] : nil }
         for conversation in targets {
             try? await center.environment.conversationStore
                 .deleteConversation(id: conversation.id)

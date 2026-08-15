@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		089D513D837438C091ED08A0 /* FloePersistence in Frameworks */ = {isa = PBXBuildFile; productRef = B1B02F2500B5B465399C11B7 /* FloePersistence */; };
 		08CF2008E624ABD269C22C9F /* ImageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69C64CCB64B5B7C45F45C253 /* ImageEditorView.swift */; };
+		08F47781D4B996B2696C8989 /* HomeLaunchpadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2633E84AC1785E404DEC82A /* HomeLaunchpadView.swift */; };
 		0DB52308023E1468A623C1C7 /* M0DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84E9CA8571729543928880E3 /* M0DiagnosticsView.swift */; };
 		0F1C7B7F861DC76B9B119C05 /* AuxiliarySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6856FC02F7D3AA8406FFAE9D /* AuxiliarySettingsView.swift */; };
 		0FC797D1A81F3651D0D3BFBF /* DocumentPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6361867E119C80F4DB74A23 /* DocumentPickerView.swift */; };
@@ -19,6 +20,7 @@
 		17C3C71EDCDEDB585CA63FF8 /* SettingsActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B115F54C03CD39CDBDCABC /* SettingsActions.swift */; };
 		1A6FCCA07D564C59EC82DBBF /* HostEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34D4C7AAC317C256EEB4AFAD /* HostEditorViewModel.swift */; };
 		2204AB734CAA9BD927FB3F95 /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A23E7E08860487A8333BE4F /* HostListView.swift */; };
+		24D360EC17E29EC2F3B4E2AA /* ThreadTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF07847A2353D846B363915C /* ThreadTimelineTests.swift */; };
 		265F22EEB8BC48C7AF62FDCD /* PlatformBackgroundPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EF97C2442DD744CEB320A0 /* PlatformBackgroundPolicy.swift */; };
 		2A13232B1933B91BD7195B9D /* ProviderListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43555513E313C954D2E39B3 /* ProviderListViewModel.swift */; };
 		2B4684696D47D57E69A5ABAF /* FilesSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 425DF63623F387B29E54E3DE /* FilesSettingsView.swift */; };
@@ -29,26 +31,29 @@
 		330DA84EDC7F8F28C0127FE1 /* ToolCallCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3135923FB83C439E60E432C /* ToolCallCardView.swift */; };
 		3324AFAEF977E427D066CD85 /* iPhoneBackgroundPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 699FBAE02E34D628B5FC48B7 /* iPhoneBackgroundPolicy.swift */; };
 		33744B55369D187E0173FB77 /* FloeSecurity in Frameworks */ = {isa = PBXBuildFile; productRef = 87B8E278FC454AFE6AF6C9E9 /* FloeSecurity */; };
+		338C444A5850EEA55FE92B63 /* HomeOverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC36D60C36B96A6BDBE81A41 /* HomeOverviewView.swift */; };
 		3579C243C8D17340786C7E1D /* WorkspacePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5E373AD5E7E721591E5441B /* WorkspacePickerView.swift */; };
 		39115D1FF0C2180535C94DCC /* FilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 940DE18872CD21D45A855A30 /* FilesView.swift */; };
 		3B9C61151DBDF65A67B112C4 /* FileInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B411EDF873B55072F23B97F0 /* FileInspectorView.swift */; };
 		405D2CF50F65452FBB99CE0D /* FloeImages in Frameworks */ = {isa = PBXBuildFile; productRef = EBF97B079841247A01DFCE52 /* FloeImages */; };
 		409300A554DB5115C9C6AB45 /* ProvidersSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7CA2C01CEE850FC7B6F1D6A /* ProvidersSettingsView.swift */; };
 		4144F3019B808B95513380EF /* ImageEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D3F41AA3EFDF6F065F64FBB /* ImageEditorViewModel.swift */; };
-		41A5062D3452FF003314BE53 /* ChatHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B878579FE2805221EAD4B409 /* ChatHomeView.swift */; };
 		42924454C7187541E75FE29D /* MoreViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B429A0789887E0740567D60 /* MoreViewModel.swift */; };
+		448125A55DDC627D8D972046 /* HomeChatSeparationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D9BCACE744F05C27341A43 /* HomeChatSeparationTests.swift */; };
 		4707D8E92893B0ED9C62F8F9 /* FloeCore in Frameworks */ = {isa = PBXBuildFile; productRef = 8C092D204147366710DA8E8D /* FloeCore */; };
 		485FA2BD9ACADB87C7D16913 /* ProviderEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 857283D5BF6E741DD727418D /* ProviderEditorViewModel.swift */; };
 		49D4CE5A1CDB89F7EC6BBFEE /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B8826D4AB351DBF9CFF40AD /* TerminalView.swift */; };
 		4ADD4F72F382289B6D7101CB /* SSHSessionOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 605587D767C978B8023F0DE2 /* SSHSessionOwner.swift */; };
 		51FC0B9E3FDE98C725F6BA0E /* ConversationListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66624FE4F8480041F7602716 /* ConversationListViewModel.swift */; };
-		526B7292FE6DB016053B88B7 /* HomeWorkbenchViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B4A2F7498F2D376D4A042AA /* HomeWorkbenchViewModel.swift */; };
 		53B0B28D58E300B08FE02EF0 /* GeneralSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E788D879DCEB044587CF121 /* GeneralSettingsView.swift */; };
 		557E5740D65A080E412BDBA3 /* FloeSync in Frameworks */ = {isa = PBXBuildFile; productRef = CB9AC1549FA61B1132625EA1 /* FloeSync */; };
 		59878DE003DC7D51B58A1669 /* ProviderListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4A0E75544F5FA28387CB77B /* ProviderListView.swift */; };
 		5B7645F8BEC4BA09E98FA7CA /* FloeExecution in Frameworks */ = {isa = PBXBuildFile; productRef = 59DBBD5C35D97EBB383798F6 /* FloeExecution */; };
 		5C200D5807BA7B433E39BBB9 /* FilesCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A3792AECF660ADFEA7D4B8 /* FilesCenter.swift */; };
 		5D9232A405C85062BDDB69D8 /* OnboardingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CB28627E88075511A391819 /* OnboardingViewModel.swift */; };
+		5E947BB83381A4621C72C7F6 /* HomeChatVoiceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E280242F651031E86A80A21 /* HomeChatVoiceUITests.swift */; };
+		6045112F9A180B4BE2084A67 /* SyncSettingsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E47EC0D4490B49AD44060DE /* SyncSettingsUITests.swift */; };
+		60E0C3F854C4FA5869FA041D /* SyncSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38EF13B22EE01FC77116294D /* SyncSettingsView.swift */; };
 		6351CFE8FFBB071B71F5A3D2 /* FloeWorkspace in Frameworks */ = {isa = PBXBuildFile; productRef = 88998EEAC884C7033D8C41A8 /* FloeWorkspace */; };
 		671CC44587B45BA2A401FD33 /* ThreadEventView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BACF0650EC6E172999FEB4EC /* ThreadEventView.swift */; };
 		6B0D3A07EB93CDB1FF10B326 /* FloeSyncCore in Frameworks */ = {isa = PBXBuildFile; productRef = 42F46C3ACBB2BE695D007080 /* FloeSyncCore */; };
@@ -76,9 +81,11 @@
 		B122E4C91387683F2EDBC728 /* FileTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42E25ED52EAD56B5234BCA43 /* FileTreeView.swift */; };
 		B2196F0D1CCA995A3F4F8C0D /* FloeTools in Frameworks */ = {isa = PBXBuildFile; productRef = 8E8F4CD97A741A8F515EC80E /* FloeTools */; };
 		B30C1248DF0B9FE004549E3F /* ConversationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA165A2C7BD607DB6F26AD7B /* ConversationListView.swift */; };
+		B8558423FFAEBC3CBA0916FA /* VoiceInputControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18C94A3850D88CA96343408E /* VoiceInputControllerTests.swift */; };
 		BAFCFD696F2EA6A8D174FBBD /* M0DiagnosticsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 397DA23AB1A49D66682CE2D2 /* M0DiagnosticsModel.swift */; };
 		BBDDB8AF6699F17D99D910BA /* ModelEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9ED88DC18A9D3D6ABA16DE7E /* ModelEditorView.swift */; };
 		BD180E6F18D1B24DA6B15D12 /* QuickLookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B378CF37C409045418D9D24 /* QuickLookView.swift */; };
+		BE534C8C1F5C827155E0256E /* HomeLaunchpadViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3B3B3E433B5BD9B6C5B1835 /* HomeLaunchpadViewModel.swift */; };
 		C0644D9C266B374CE223488D /* VNCSessionOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DF58B5C692BB56DB9A379F4 /* VNCSessionOwner.swift */; };
 		C289286498042D0530D1590B /* FloeProviders in Frameworks */ = {isa = PBXBuildFile; productRef = B6555425212C5867CBB75D36 /* FloeProviders */; };
 		C2A979185D804135CE278ADA /* FloeDocuments in Frameworks */ = {isa = PBXBuildFile; productRef = 42091B03632EF4B82CED17C8 /* FloeDocuments */; };
@@ -87,6 +94,7 @@
 		C5EF7D89863A823AEC36B81F /* FloeAgentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */; };
 		C7B7EEE61A3D6CEC98A41E7B /* AssistantMessageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31D98DFED3D114A699F77361 /* AssistantMessageView.swift */; };
 		C87A716B9A54B29B695F1F66 /* HostKeyTrustSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52EAF0302B89FA6FFFD6A697 /* HostKeyTrustSheet.swift */; };
+		C8EB11021CF07BD709D09AA5 /* VoiceInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DCEDA85D7E0A5B195344E38 /* VoiceInput.swift */; };
 		CEDE8D8AD83D823BBC4E1662 /* RemoteSessionSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F23BEA3A5A6B017F698D28 /* RemoteSessionSnapshot.swift */; };
 		D22B0A2A27F38C4AA93FC7E5 /* FloeMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 94B845AC13D8F637547A4AB0 /* FloeMarkdown */; };
 		D27117ADEB48A630EEF5C7E2 /* DiagnosticsAboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67421D0E0C3D4BF46F4ACE46 /* DiagnosticsAboutView.swift */; };
@@ -95,6 +103,7 @@
 		DF328431A01C3722680442AB /* VNCView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B7FE946AC097054C1CB5A16 /* VNCView.swift */; };
 		DFA28E00B18DDBC56D222CC1 /* SettingsCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0766D5622BEA31E66BE2CBE /* SettingsCenter.swift */; };
 		E2667D676B12957E2787BD59 /* FilesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00969624B0A954308417634B /* FilesViewModel.swift */; };
+		E2D2BDB4FA66151CCC91F7D0 /* ThreadTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8B270D611B66EBCE12B3968 /* ThreadTimeline.swift */; };
 		E40E39F14DBED467D850E91A /* FloeAgentRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = EF4C9E5ED2F18E4E1CB8A527 /* FloeAgentRuntime */; };
 		E617FB6AC1EB2366C4F9A4CE /* ReasoningBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F88E75D475229D4424D2FC1 /* ReasoningBlockView.swift */; };
 		E835F7180E59CE5B63D9A4A8 /* CodeBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42CD1B5E050E9A7C4092CBB5 /* CodeBlockView.swift */; };
@@ -102,18 +111,26 @@
 		E9E31F6E33B8B0EA398D33A9 /* DiagnosticsExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB4807D41A6BD7259F8D0356 /* DiagnosticsExporter.swift */; };
 		EA75F07AFCF7BF5BF8A40F9E /* ThreadDetailViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA10AC479B03C7D998AC448B /* ThreadDetailViewModel.swift */; };
 		EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = A6797B7DAA890D6378153058 /* Localizable.xcstrings */; };
+		EC895B8CCE64F446C1797162 /* VoiceInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6980E6E2001E2C4508A503A /* VoiceInputController.swift */; };
 		ED9E967E7858D92A307B24F6 /* AuxiliaryModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE522C8BF30B54FAD939C53C /* AuxiliaryModelsView.swift */; };
 		EF38B4329039226E8A757EE4 /* HostListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104F2ACE88D931C8C54A6787 /* HostListViewModel.swift */; };
 		EFB8B154A44004A6D4A9366C /* RunStateLocalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E112A159AE387A7219A69172 /* RunStateLocalizer.swift */; };
 		F2FA4F2EDA410E215E8DA440 /* TerminalViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 531772E03835546E29F3B7DF /* TerminalViewModel.swift */; };
-		F5A0E862B93245565549ABC8 /* HomeWorkbenchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F85A53B63A4418682D1679E1 /* HomeWorkbenchView.swift */; };
 		F97E858A6A5915882FA5E428 /* RemoteSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F4320C0FA1D4880122D9B3B /* RemoteSettingsView.swift */; };
 		F9AE89670E3EE68F7DB18F74 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 2E443E03594FBC95E4EB48E2 /* InfoPlist.xcstrings */; };
+		FB6996DA07A08B986A011ED7 /* VoiceInputLive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58FD2460881B6EAAD9966732 /* VoiceInputLive.swift */; };
 		FBF28B8E8847F0265F9E7C47 /* SetupGuideLauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83D0EBB0361B5F388903EE7F /* SetupGuideLauncherView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
 		02EEB3AECC6C7D84AE6D7510 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 34A505482FC52A1ABA7CBF4B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 3AFAF3B3CB6F0777A7C6B07F;
+			remoteInfo = FloeAgent;
+		};
+		8CA7EF475329D23BA8AE4822 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 34A505482FC52A1ABA7CBF4B /* Project object */;
 			proxyType = 1;
@@ -126,19 +143,23 @@
 		00969624B0A954308417634B /* FilesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesViewModel.swift; sourceTree = "<group>"; };
 		05CD3FCDF6CC1F08B06B9119 /* DiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffView.swift; sourceTree = "<group>"; };
 		085605503DC285FC91B0449B /* HostEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorView.swift; sourceTree = "<group>"; };
-		0B4A2F7498F2D376D4A042AA /* HomeWorkbenchViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeWorkbenchViewModel.swift; sourceTree = "<group>"; };
 		104F2ACE88D931C8C54A6787 /* HostListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListViewModel.swift; sourceTree = "<group>"; };
 		105C43DC4C517D5A6A445B8B /* AgentPermissionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentPermissionsView.swift; sourceTree = "<group>"; };
 		14B115F54C03CD39CDBDCABC /* SettingsActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsActions.swift; sourceTree = "<group>"; };
 		17F136474D0FB91E6F810317 /* ThreadDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadDetailView.swift; sourceTree = "<group>"; };
 		18A3792AECF660ADFEA7D4B8 /* FilesCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesCenter.swift; sourceTree = "<group>"; };
+		18C94A3850D88CA96343408E /* VoiceInputControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputControllerTests.swift; sourceTree = "<group>"; };
 		1C801E16B941B45C62C279A9 /* ExecutionEnvironmentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionEnvironmentView.swift; sourceTree = "<group>"; };
+		1DCEDA85D7E0A5B195344E38 /* VoiceInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInput.swift; sourceTree = "<group>"; };
+		20554886B0FDA45513A6ECF9 /* FloeAppTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FloeAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		2CB28627E88075511A391819 /* OnboardingViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViewModel.swift; sourceTree = "<group>"; };
 		2E443E03594FBC95E4EB48E2 /* InfoPlist.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = InfoPlist.xcstrings; sourceTree = "<group>"; };
+		2E47EC0D4490B49AD44060DE /* SyncSettingsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSettingsUITests.swift; sourceTree = "<group>"; };
 		30E546884B42CDF2BB96931B /* UserMessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMessageBubble.swift; sourceTree = "<group>"; };
 		31D98DFED3D114A699F77361 /* AssistantMessageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantMessageView.swift; sourceTree = "<group>"; };
 		34D4C7AAC317C256EEB4AFAD /* HostEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorViewModel.swift; sourceTree = "<group>"; };
 		37BB930D0175C1FF7EE714EE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		38EF13B22EE01FC77116294D /* SyncSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSettingsView.swift; sourceTree = "<group>"; };
 		397DA23AB1A49D66682CE2D2 /* M0DiagnosticsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M0DiagnosticsModel.swift; sourceTree = "<group>"; };
 		425DF63623F387B29E54E3DE /* FilesSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesSettingsView.swift; sourceTree = "<group>"; };
 		42CD1B5E050E9A7C4092CBB5 /* CodeBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeBlockView.swift; sourceTree = "<group>"; };
@@ -146,8 +167,10 @@
 		4B364052541A17BBD46A6C70 /* FloeAgent */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeAgent; path = .; sourceTree = SOURCE_ROOT; };
 		50BA473C0A70CA3815EF338B /* SettingsRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsRootView.swift; sourceTree = "<group>"; };
 		50D3F739AE81623062A9C5C9 /* ConversationCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationCenter.swift; sourceTree = "<group>"; };
+		52D9BCACE744F05C27341A43 /* HomeChatSeparationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeChatSeparationTests.swift; sourceTree = "<group>"; };
 		52EAF0302B89FA6FFFD6A697 /* HostKeyTrustSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyTrustSheet.swift; sourceTree = "<group>"; };
 		531772E03835546E29F3B7DF /* TerminalViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalViewModel.swift; sourceTree = "<group>"; };
+		58FD2460881B6EAAD9966732 /* VoiceInputLive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputLive.swift; sourceTree = "<group>"; };
 		5BA323DAAD3913411F1D5340 /* VNCViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VNCViewModel.swift; sourceTree = "<group>"; };
 		605587D767C978B8023F0DE2 /* SSHSessionOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHSessionOwner.swift; sourceTree = "<group>"; };
 		66624FE4F8480041F7602716 /* ConversationListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationListViewModel.swift; sourceTree = "<group>"; };
@@ -158,6 +181,7 @@
 		69C64CCB64B5B7C45F45C253 /* ImageEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageEditorView.swift; sourceTree = "<group>"; };
 		6B429A0789887E0740567D60 /* MoreViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreViewModel.swift; sourceTree = "<group>"; };
 		6C1C39FA1A8D05FF5A1E63EE /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		6E280242F651031E86A80A21 /* HomeChatVoiceUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeChatVoiceUITests.swift; sourceTree = "<group>"; };
 		6E4B5351714B8B79EF8E8055 /* Floe.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Floe.entitlements; sourceTree = "<group>"; };
 		6E788D879DCEB044587CF121 /* GeneralSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsView.swift; sourceTree = "<group>"; };
 		725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupGuideUITests.swift; sourceTree = "<group>"; };
@@ -184,12 +208,14 @@
 		9ED88DC18A9D3D6ABA16DE7E /* ModelEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelEditorView.swift; sourceTree = "<group>"; };
 		9F88E75D475229D4424D2FC1 /* ReasoningBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReasoningBlockView.swift; sourceTree = "<group>"; };
 		A18EF17B949C9C5817F9DCE9 /* PrivacySecurityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacySecurityView.swift; sourceTree = "<group>"; };
+		A2633E84AC1785E404DEC82A /* HomeLaunchpadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeLaunchpadView.swift; sourceTree = "<group>"; };
 		A421102C6F73CB0DCC678535 /* FilePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewView.swift; sourceTree = "<group>"; };
 		A4A0E75544F5FA28387CB77B /* ProviderListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderListView.swift; sourceTree = "<group>"; };
 		A6361867E119C80F4DB74A23 /* DocumentPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentPickerView.swift; sourceTree = "<group>"; };
 		A6797B7DAA890D6378153058 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		A6AFF9D3E17B2962EAE99225 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
 		A9882EA32564305D017F2566 /* TextFileEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextFileEditorView.swift; sourceTree = "<group>"; };
+		AC36D60C36B96A6BDBE81A41 /* HomeOverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeOverviewView.swift; sourceTree = "<group>"; };
 		ADE9E409B66EBC3967853B86 /* ModelPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPickerView.swift; sourceTree = "<group>"; };
 		B0766D5622BEA31E66BE2CBE /* SettingsCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsCenter.swift; sourceTree = "<group>"; };
 		B3135923FB83C439E60E432C /* ToolCallCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolCallCardView.swift; sourceTree = "<group>"; };
@@ -197,13 +223,14 @@
 		B536F4DA6282AE9A983C8498 /* RemoteImageUnavailableView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageUnavailableView.swift; sourceTree = "<group>"; };
 		B5E373AD5E7E721591E5441B /* WorkspacePickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspacePickerView.swift; sourceTree = "<group>"; };
 		B7CA2C01CEE850FC7B6F1D6A /* ProvidersSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProvidersSettingsView.swift; sourceTree = "<group>"; };
-		B878579FE2805221EAD4B409 /* ChatHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHomeView.swift; sourceTree = "<group>"; };
 		BACF0650EC6E172999FEB4EC /* ThreadEventView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadEventView.swift; sourceTree = "<group>"; };
 		BE522C8BF30B54FAD939C53C /* AuxiliaryModelsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxiliaryModelsView.swift; sourceTree = "<group>"; };
+		C3B3B3E433B5BD9B6C5B1835 /* HomeLaunchpadViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeLaunchpadViewModel.swift; sourceTree = "<group>"; };
 		C43555513E313C954D2E39B3 /* ProviderListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderListViewModel.swift; sourceTree = "<group>"; };
 		C4CD5173D18CDDB6549BBD7D /* RemoteSessionCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionCenter.swift; sourceTree = "<group>"; };
 		CB4807D41A6BD7259F8D0356 /* DiagnosticsExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsExporter.swift; sourceTree = "<group>"; };
 		CF5F8AFB4D253F079EA5CF84 /* AppDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDestination.swift; sourceTree = "<group>"; };
+		D6980E6E2001E2C4508A503A /* VoiceInputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputController.swift; sourceTree = "<group>"; };
 		DA165A2C7BD607DB6F26AD7B /* ConversationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationListView.swift; sourceTree = "<group>"; };
 		DAE9694DEA1FE25E7468F008 /* WorkspaceCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceCenter.swift; sourceTree = "<group>"; };
 		DB97B6031201DC2B9654F686 /* ProviderEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderEditorView.swift; sourceTree = "<group>"; };
@@ -214,7 +241,8 @@
 		EB400574B41454793B7461C2 /* iPadBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPadBackgroundPolicy.swift; sourceTree = "<group>"; };
 		EBF4EA91353CD8A801DCA98A /* ErrorEventView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorEventView.swift; sourceTree = "<group>"; };
 		F0878619F1F1230D0EC1AF2D /* ThreadComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadComposerView.swift; sourceTree = "<group>"; };
-		F85A53B63A4418682D1679E1 /* HomeWorkbenchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeWorkbenchView.swift; sourceTree = "<group>"; };
+		F8B270D611B66EBCE12B3968 /* ThreadTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadTimeline.swift; sourceTree = "<group>"; };
+		FF07847A2353D846B363915C /* ThreadTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadTimelineTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -257,7 +285,12 @@
 		148A98B4C66AA93AB345AB92 /* FloeAgentUITests */ = {
 			isa = PBXGroup;
 			children = (
+				52D9BCACE744F05C27341A43 /* HomeChatSeparationTests.swift */,
+				6E280242F651031E86A80A21 /* HomeChatVoiceUITests.swift */,
 				725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */,
+				2E47EC0D4490B49AD44060DE /* SyncSettingsUITests.swift */,
+				FF07847A2353D846B363915C /* ThreadTimelineTests.swift */,
+				18C94A3850D88CA96343408E /* VoiceInputControllerTests.swift */,
 			);
 			path = FloeAgentUITests;
 			sourceTree = "<group>";
@@ -341,6 +374,7 @@
 				14B115F54C03CD39CDBDCABC /* SettingsActions.swift */,
 				B0766D5622BEA31E66BE2CBE /* SettingsCenter.swift */,
 				50BA473C0A70CA3815EF338B /* SettingsRootView.swift */,
+				38EF13B22EE01FC77116294D /* SyncSettingsView.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -356,9 +390,9 @@
 		6981ED2BB91A3718E09C6710 /* Home */ = {
 			isa = PBXGroup;
 			children = (
-				B878579FE2805221EAD4B409 /* ChatHomeView.swift */,
-				F85A53B63A4418682D1679E1 /* HomeWorkbenchView.swift */,
-				0B4A2F7498F2D376D4A042AA /* HomeWorkbenchViewModel.swift */,
+				A2633E84AC1785E404DEC82A /* HomeLaunchpadView.swift */,
+				C3B3B3E433B5BD9B6C5B1835 /* HomeLaunchpadViewModel.swift */,
+				AC36D60C36B96A6BDBE81A41 /* HomeOverviewView.swift */,
 			);
 			path = Home;
 			sourceTree = "<group>";
@@ -401,6 +435,7 @@
 				17F136474D0FB91E6F810317 /* ThreadDetailView.swift */,
 				EA10AC479B03C7D998AC448B /* ThreadDetailViewModel.swift */,
 				BACF0650EC6E172999FEB4EC /* ThreadEventView.swift */,
+				F8B270D611B66EBCE12B3968 /* ThreadTimeline.swift */,
 				B3135923FB83C439E60E432C /* ToolCallCardView.swift */,
 				30E546884B42CDF2BB96931B /* UserMessageBubble.swift */,
 				B71E88E3B400ADA7F3C8FA26 /* Render */,
@@ -447,11 +482,22 @@
 			path = Remote;
 			sourceTree = "<group>";
 		};
+		D06A0D2A834810C09C15E49C /* Voice */ = {
+			isa = PBXGroup;
+			children = (
+				1DCEDA85D7E0A5B195344E38 /* VoiceInput.swift */,
+				D6980E6E2001E2C4508A503A /* VoiceInputController.swift */,
+				58FD2460881B6EAAD9966732 /* VoiceInputLive.swift */,
+			);
+			path = Voice;
+			sourceTree = "<group>";
+		};
 		D2F4766B4780E506300D05AC /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				8D4157CD2630B494873F61E6 /* Floe Agent.app */,
 				8F6676BA85A2C0059B610493 /* FloeAgentUITests.xctest */,
+				20554886B0FDA45513A6ECF9 /* FloeAppTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -484,6 +530,7 @@
 				FA9D4E4056CFB7FFCDB218F4 /* Shell */,
 				767A8A677CD42C54269BAEC2 /* Terminal */,
 				B6AD6399851AAAD8A47979D5 /* VNC */,
+				D06A0D2A834810C09C15E49C /* Voice */,
 				19EE8B16BC5E1462CE6B18DF /* Workspace */,
 			);
 			path = FloeApp;
@@ -590,6 +637,24 @@
 			productReference = 8F6676BA85A2C0059B610493 /* FloeAgentUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		458E437A8986E52E30A7C124 /* FloeAppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F14E9C1E4DEA6B7A7BE01668 /* Build configuration list for PBXNativeTarget "FloeAppTests" */;
+			buildPhases = (
+				81016BCB0766F95B3EBA2E3B /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				503757F53794AEE76A6B89F9 /* PBXTargetDependency */,
+			);
+			name = FloeAppTests;
+			packageProductDependencies = (
+			);
+			productName = FloeAppTests;
+			productReference = 20554886B0FDA45513A6ECF9 /* FloeAppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -605,6 +670,9 @@
 					3ED33BFEA83AA76546E45B16 = {
 						DevelopmentTeam = QYL72C43K6;
 						TestTargetID = 3AFAF3B3CB6F0777A7C6B07F;
+					};
+					458E437A8986E52E30A7C124 = {
+						DevelopmentTeam = QYL72C43K6;
 					};
 				};
 			};
@@ -628,6 +696,7 @@
 			targets = (
 				3AFAF3B3CB6F0777A7C6B07F /* FloeAgent */,
 				3ED33BFEA83AA76546E45B16 /* FloeAgentUITests */,
+				458E437A8986E52E30A7C124 /* FloeAppTests */,
 			);
 		};
 /* End PBXProject section */
@@ -658,7 +727,6 @@
 				C7B7EEE61A3D6CEC98A41E7B /* AssistantMessageView.swift in Sources */,
 				ED9E967E7858D92A307B24F6 /* AuxiliaryModelsView.swift in Sources */,
 				0F1C7B7F861DC76B9B119C05 /* AuxiliarySettingsView.swift in Sources */,
-				41A5062D3452FF003314BE53 /* ChatHomeView.swift in Sources */,
 				E835F7180E59CE5B63D9A4A8 /* CodeBlockView.swift in Sources */,
 				A07E797D244A170430DEF61B /* ConversationCenter.swift in Sources */,
 				B30C1248DF0B9FE004549E3F /* ConversationListView.swift in Sources */,
@@ -680,8 +748,9 @@
 				C5EF7D89863A823AEC36B81F /* FloeAgentApp.swift in Sources */,
 				A5042A844696F85C4BE4D80D /* FloeTheme.swift in Sources */,
 				53B0B28D58E300B08FE02EF0 /* GeneralSettingsView.swift in Sources */,
-				F5A0E862B93245565549ABC8 /* HomeWorkbenchView.swift in Sources */,
-				526B7292FE6DB016053B88B7 /* HomeWorkbenchViewModel.swift in Sources */,
+				08F47781D4B996B2696C8989 /* HomeLaunchpadView.swift in Sources */,
+				BE534C8C1F5C827155E0256E /* HomeLaunchpadViewModel.swift in Sources */,
+				338C444A5850EEA55FE92B63 /* HomeOverviewView.swift in Sources */,
 				B030CB108442D9B3CEA7F61B /* HostEditorView.swift in Sources */,
 				1A6FCCA07D564C59EC82DBBF /* HostEditorViewModel.swift in Sources */,
 				C87A716B9A54B29B695F1F66 /* HostKeyTrustSheet.swift in Sources */,
@@ -717,6 +786,7 @@
 				DFA28E00B18DDBC56D222CC1 /* SettingsCenter.swift in Sources */,
 				DDC35030D6BFC2C296FFB4D2 /* SettingsRootView.swift in Sources */,
 				FBF28B8E8847F0265F9E7C47 /* SetupGuideLauncherView.swift in Sources */,
+				60E0C3F854C4FA5869FA041D /* SyncSettingsView.swift in Sources */,
 				49D4CE5A1CDB89F7EC6BBFEE /* TerminalView.swift in Sources */,
 				F2FA4F2EDA410E215E8DA440 /* TerminalViewModel.swift in Sources */,
 				7BB5CA51824E786287F252A8 /* TextFileEditorView.swift in Sources */,
@@ -724,11 +794,15 @@
 				144C0751E522D91EB3EAD196 /* ThreadDetailView.swift in Sources */,
 				EA75F07AFCF7BF5BF8A40F9E /* ThreadDetailViewModel.swift in Sources */,
 				671CC44587B45BA2A401FD33 /* ThreadEventView.swift in Sources */,
+				E2D2BDB4FA66151CCC91F7D0 /* ThreadTimeline.swift in Sources */,
 				330DA84EDC7F8F28C0127FE1 /* ToolCallCardView.swift in Sources */,
 				99C54A5F72057E2F5DE439BD /* UserMessageBubble.swift in Sources */,
 				C0644D9C266B374CE223488D /* VNCSessionOwner.swift in Sources */,
 				DF328431A01C3722680442AB /* VNCView.swift in Sources */,
 				AB3605779C6F0C4864D85CE2 /* VNCViewModel.swift in Sources */,
+				C8EB11021CF07BD709D09AA5 /* VoiceInput.swift in Sources */,
+				EC895B8CCE64F446C1797162 /* VoiceInputController.swift in Sources */,
+				FB6996DA07A08B986A011ED7 /* VoiceInputLive.swift in Sources */,
 				31A880D7E77E4D90E1CA89EF /* WorkspaceCenter.swift in Sources */,
 				3579C243C8D17340786C7E1D /* WorkspacePickerView.swift in Sources */,
 				2D1426A11BF0547700CA8D5D /* iPadBackgroundPolicy.swift in Sources */,
@@ -740,13 +814,30 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5E947BB83381A4621C72C7F6 /* HomeChatVoiceUITests.swift in Sources */,
 				912A144E85A4C312537582FC /* SetupGuideUITests.swift in Sources */,
+				6045112F9A180B4BE2084A67 /* SyncSettingsUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		81016BCB0766F95B3EBA2E3B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				448125A55DDC627D8D972046 /* HomeChatSeparationTests.swift in Sources */,
+				24D360EC17E29EC2F3B4E2AA /* ThreadTimelineTests.swift in Sources */,
+				B8558423FFAEBC3CBA0916FA /* VoiceInputControllerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		503757F53794AEE76A6B89F9 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 3AFAF3B3CB6F0777A7C6B07F /* FloeAgent */;
+			targetProxy = 8CA7EF475329D23BA8AE4822 /* PBXContainerItemProxy */;
+		};
 		B967FFAFED545E32348011BA /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 3AFAF3B3CB6F0777A7C6B07F /* FloeAgent */;
@@ -755,6 +846,26 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		04E74A41FD0A3FEA7868AC50 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = QYL72C43K6;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.tests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Floe Agent.app/Floe Agent";
+			};
+			name = Debug;
+		};
 		06D6A3B826D9F96AE81F4773 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -762,7 +873,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -774,6 +885,7 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios;
+				PRODUCT_MODULE_NAME = FloeApp;
 				PRODUCT_NAME = "Floe Agent";
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -844,6 +956,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				DEVELOPMENT_TEAM = QYL72C43K6;
+				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -926,6 +1039,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				DEVELOPMENT_TEAM = QYL72C43K6;
+				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -947,7 +1061,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -959,6 +1073,7 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios;
+				PRODUCT_MODULE_NAME = FloeApp;
 				PRODUCT_NAME = "Floe Agent";
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
@@ -967,6 +1082,26 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
+		};
+		DC0944EBE7F318209C43C803 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = QYL72C43K6;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.tests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Floe Agent.app/Floe Agent";
+			};
+			name = Release;
 		};
 /* End XCBuildConfiguration section */
 
@@ -994,6 +1129,15 @@
 			buildConfigurations = (
 				B42180383A323CEE990BB7DA /* Debug */,
 				06D6A3B826D9F96AE81F4773 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F14E9C1E4DEA6B7A7BE01668 /* Build configuration list for PBXNativeTarget "FloeAppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				04E74A41FD0A3FEA7868AC50 /* Debug */,
+				DC0944EBE7F318209C43C803 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

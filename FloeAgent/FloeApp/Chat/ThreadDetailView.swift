@@ -88,62 +88,12 @@ struct ThreadDetailView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    // The user's goal, from the persisted messages.
-                    ForEach(viewModel.messages) { message in
-                        MessageBubble(message: message)
-                            .id(message.id)
-                    }
-
-                    // The canonical event thread of the selected run.
-                    ForEach(viewModel.events) { event in
-                        ThreadEventView(
-                            event: event,
-                            isLive: viewModel.isRunning,
-                            hasError: viewModel.events.contains { $0.kind == .error },
-                            onRetry: viewModel.selectedRun?.state == "failed"
-                                ? { Task { await viewModel.retry() } }
-                                : nil
-                        )
-                            .id(event.id)
-                    }
-
-                    // Live streaming tail, only while the run is active.
-                    if viewModel.isRunning && !viewModel.liveReasoningText.isEmpty {
-                        ReasoningBlockView(
-                            text: viewModel.liveReasoningText,
-                            isStreaming: true
-                        )
-                        .id("live-reasoning")
-                    }
-
-                    if viewModel.isRunning && !viewModel.liveStreamedText.isEmpty {
-                        AssistantMessageView(
-                            text: viewModel.liveStreamedText,
-                            isStreaming: true
-                        )
-                        .id("live-tail")
-                    }
-
-                    if viewModel.isRunning
-                        && viewModel.liveStreamedText.isEmpty
-                        && viewModel.liveReasoningText.isEmpty {
-                        HStack(spacing: 10) {
-                            ProgressView()
-                            Text(LocalizedStringKey(viewModel.hasProviderActivity
-                                ? "thread.model_thinking"
-                                : "thread.contacting_provider"))
-                                .font(FloeTheme.Typography.metadata)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 4)
-                    }
-
-                    // Pending approvals for this run.
-                    ForEach(viewModel.pendingApprovals) { approval in
-                        ApprovalCardView(approval: approval) { decision in
-                            Task { await viewModel.resolve(approval, decision: decision) }
-                        }
-                        .id(approval.id)
+                    // The unified timeline: user goal → run events in stored
+                    // sequence → live tail → approvals → terminal last.
+                    // "Completed" can never float above the final reply.
+                    ForEach(viewModel.timeline) { item in
+                        timelineRow(item)
+                            .id(item.id)
                     }
 
                     if viewModel.events.isEmpty && viewModel.messages.isEmpty {
@@ -156,15 +106,75 @@ struct ThreadDetailView: View {
                 }
                 .padding()
             }
-            .onChange(of: viewModel.events.count) { _, _ in
-                guard let last = viewModel.events.last else { return }
+            .onChange(of: viewModel.timeline.count) { _, _ in
+                guard let last = viewModel.timeline.last else { return }
                 withAnimation(FloeTheme.motionAnimation(reduceMotion: reduceMotion)) {
                     proxy.scrollTo(last.id, anchor: .bottom)
                 }
             }
             .onChange(of: viewModel.liveStreamedText.count) { _, _ in
-                guard viewModel.isRunning, !viewModel.liveStreamedText.isEmpty else { return }
-                proxy.scrollTo("live-tail", anchor: .bottom)
+                // Follow the streaming tail smoothly without yanking the
+                // scroll position on every cluster — only while the tail
+                // is the live bottom of the thread.
+                guard viewModel.showsLiveTail,
+                      !viewModel.liveStreamedText.isEmpty else { return }
+                proxy.scrollTo(ThreadTimelineItem.liveAssistantTail.id, anchor: .bottom)
+            }
+        }
+    }
+
+    /// Renders one unified timeline row.
+    @ViewBuilder
+    private func timelineRow(_ item: ThreadTimelineItem) -> some View {
+        switch item {
+        case .userMessage(let message):
+            MessageBubble(message: message)
+
+        case .assistantMessage(let text, _):
+            AssistantMessageView(text: text, isStreaming: false)
+
+        case .event(let event):
+            ThreadEventView(
+                event: event,
+                isLive: viewModel.isRunning,
+                hasError: viewModel.events.contains { $0.kind == .error },
+                onRetry: viewModel.selectedRun?.state == "failed"
+                    ? { Task { await viewModel.retry() } }
+                    : nil
+            )
+
+        case .terminal(let event):
+            TerminalEventRow(event: event)
+
+        case .missingFinalMessage:
+            MissingFinalMessageRow()
+
+        case .liveReasoning:
+            ReasoningBlockView(
+                text: viewModel.liveReasoningText,
+                isStreaming: true
+            )
+
+        case .liveAssistantTail:
+            AssistantMessageView(
+                text: viewModel.liveStreamedText,
+                isStreaming: true
+            )
+
+        case .liveThinking:
+            HStack(spacing: 10) {
+                ProgressView()
+                Text(LocalizedStringKey(viewModel.hasProviderActivity
+                    ? "thread.model_thinking"
+                    : "thread.contacting_provider"))
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 4)
+
+        case .approval(let approval):
+            ApprovalCardView(approval: approval) { decision in
+                Task { await viewModel.resolve(approval, decision: decision) }
             }
         }
     }
@@ -206,7 +216,12 @@ struct ThreadDetailView: View {
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
-            if let state = viewModel.liveStateName {
+            if viewModel.isDraining {
+                Text("thread.finishing")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(FloeTheme.primary)
+                    .accessibilityIdentifier("thread.run_state.finishing")
+            } else if let state = viewModel.liveStateName {
                 Text(RunStateLocalizer.title(for: state))
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(RunStateLocalizer.color(for: state))
@@ -273,6 +288,54 @@ struct ThreadDetailView: View {
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(FloeTheme.pending.opacity(0.08))
+    }
+}
+
+/// The terminal marker row: a single quiet status line, always rendered
+/// after the final assistant reply. No big card, no raw machine names —
+/// the stop reason resolves through RunStateLocalizer.
+private struct TerminalEventRow: View {
+    let event: RunEventRecord
+
+    private var state: String {
+        ConversationCenter.decodePayload(event.payloadJSON)["stopReason"] ?? "completed"
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: state == "completed" || state == "endTurn"
+                ? "checkmark.circle" : "stop.circle")
+                .foregroundStyle(RunStateLocalizer.color(for: "completed"))
+                .accessibilityHidden(true)
+            Text(RunStateLocalizer.terminalTitle(stopReason: state))
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(event.createdAt, style: .time)
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("thread.terminal")
+    }
+}
+
+/// A completed run that produced no final assistant text is an explicit,
+/// honest failure surface — never silent.
+private struct MissingFinalMessageRow: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.bubble")
+                .foregroundStyle(FloeTheme.pending)
+                .accessibilityHidden(true)
+            Text("thread.no_final_reply")
+                .font(FloeTheme.Typography.body)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("thread.no_final_reply")
     }
 }
 

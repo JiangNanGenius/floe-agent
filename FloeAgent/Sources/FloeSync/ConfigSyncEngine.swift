@@ -21,6 +21,7 @@ public actor ConfigSyncEngine {
 
     public private(set) var status: SyncStatus = .paused
     public private(set) var lastSyncAt: Date?
+    public private(set) var synchronizationEnabled = true
 
     private let configurationStore: ModelConfigurationStore?
     private let metadataStore: ConfigSyncMetadataStore?
@@ -54,10 +55,25 @@ public actor ConfigSyncEngine {
         status = .waitingForSecret
     }
 
+    /// Pauses or resumes CloudKit traffic without discarding locally queued
+    /// metadata. Changes made while paused are uploaded after re-enabling.
+    public func setSynchronizationEnabled(_ enabled: Bool) {
+        synchronizationEnabled = enabled
+        if !enabled {
+            status = .paused
+            #if canImport(CloudKit)
+            scheduledSync?.cancel()
+            scheduledSync = nil
+            #endif
+        }
+    }
+
     #if canImport(CloudKit)
     private var syncEngine: CKSyncEngine?
     private var delegate: EngineDelegate?
     private var zoneID: CKRecordZone.ID?
+    private var scheduledSync: Task<Void, Never>?
+    private var isSynchronizing = false
 
     public func configure(container: CKContainer) async throws {
         guard let metadataStore else {
@@ -89,7 +105,22 @@ public actor ConfigSyncEngine {
         self.syncEngine = engine
         self.zoneID = zoneID
         engine.state.add(pendingDatabaseChanges: [.saveZone(CKRecordZone(zoneID: zoneID))])
-        status = .synced
+        // Writes made while signed out/offline are durable in SQLite. Restore
+        // them into CKSyncEngine whenever an account becomes available.
+        for metadata in try await metadataStore.pending(limit: 10_000) {
+            let recordID = CKRecord.ID(recordName: metadata.recordID, zoneID: zoneID)
+            switch metadata.pendingAction {
+            case .save:
+                engine.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+            case .delete:
+                engine.state.add(pendingRecordZoneChanges: [.deleteRecord(recordID)])
+            case nil:
+                break
+            }
+        }
+        // Configuration is not a completed sync. Keep the UI honest until
+        // CloudKit has accepted the zone and the first fetch/send cycle.
+        status = synchronizationEnabled ? .syncing : .paused
     }
 
     public func saveProvider(_ provider: ProviderProfile, changedFields: Set<String>? = nil) async throws {
@@ -135,7 +166,19 @@ public actor ConfigSyncEngine {
     }
 
     public func deleteProvider(id: UUID) async throws {
+        // CloudKit has no relational cascade. Capture child IDs before the
+        // local SQLite foreign-key cascade and tombstone every model record,
+        // otherwise a fresh device can later download orphaned models.
+        let modelIDs: [UUID]
+        if let configurationStore {
+            modelIDs = try await configurationStore.models(providerID: id).map(\.id)
+        } else {
+            modelIDs = []
+        }
         try await configurationStore?.deleteProvider(id: id)
+        for modelID in modelIDs {
+            try await enqueueDelete(type: .modelProfile, id: modelID.uuidString)
+        }
         try await enqueueDelete(type: .providerProfile, id: id.uuidString)
     }
 
@@ -145,11 +188,29 @@ public actor ConfigSyncEngine {
     }
 
     public func synchronize() async throws {
+        guard synchronizationEnabled else {
+            status = .paused
+            return
+        }
         guard let syncEngine else {
             throw FloeError.invalidConfiguration("CloudKit sync is not configured")
         }
+        guard !isSynchronizing else { return }
+        isSynchronizing = true
+        defer { isSynchronizing = false }
+        scheduledSync = nil
+        status = .syncing
         do {
+            // A brand-new account has no custom zone yet. Sending database
+            // changes first creates it; fetching first can fail with
+            // CKError.zoneNotFound and previously prevented every later send.
+            try await syncEngine.sendChanges()
             try await syncEngine.fetchChanges()
+            // Upgrade installs may contain real local configuration created
+            // before CloudKit was wired. Stage only records that were not
+            // fetched from the cloud and preserve their original timestamps.
+            try await stageUntrackedLocalConfiguration()
+            // Remote merges may enqueue a conflict-resolving save.
             try await syncEngine.sendChanges()
             lastSyncAt = Date()
             status = .synced
@@ -165,9 +226,8 @@ public actor ConfigSyncEngine {
         value: T,
         changedFields: Set<String>?
     ) async throws {
-        guard let metadataStore, let syncEngine, let zoneID else {
-            status = .paused
-            return
+        guard let metadataStore else {
+            throw FloeError.invalidConfiguration("ConfigSyncEngine requires a metadata store")
         }
         let payload = try Self.encode(value)
         let fields: Set<String>
@@ -185,15 +245,19 @@ public actor ConfigSyncEngine {
         metadata.updatedAt = now
         try await metadataStore.save(metadata)
 
+        guard synchronizationEnabled, let syncEngine, let zoneID else {
+            status = .paused
+            return
+        }
         let recordID = CKRecord.ID(recordName: id, zoneID: zoneID)
         syncEngine.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
-        status = .synced
+        status = .syncing
+        scheduleSynchronization()
     }
 
     private func enqueueDelete(type: ConfigSyncRecordType, id: String) async throws {
-        guard let metadataStore, let syncEngine, let zoneID else {
-            status = .paused
-            return
+        guard let metadataStore else {
+            throw FloeError.invalidConfiguration("ConfigSyncEngine requires a metadata store")
         }
         var metadata = try await metadataStore.metadata(recordType: type.rawValue, recordID: id)
             ?? ConfigSyncMetadata(recordType: type.rawValue, recordID: id)
@@ -202,8 +266,98 @@ public actor ConfigSyncEngine {
         metadata.deletedAt = now
         metadata.updatedAt = now
         try await metadataStore.save(metadata)
+
+        guard synchronizationEnabled, let syncEngine, let zoneID else {
+            status = .paused
+            return
+        }
         let recordID = CKRecord.ID(recordName: id, zoneID: zoneID)
         syncEngine.state.add(pendingRecordZoneChanges: [.deleteRecord(recordID)])
+        status = .syncing
+        scheduleSynchronization()
+    }
+
+    /// Coalesces a provider bundle's provider/models/preferences writes into
+    /// one real CloudKit round trip. The task is actor-owned so it survives
+    /// the editor view disappearing after Save.
+    private func scheduleSynchronization() {
+        guard synchronizationEnabled else { return }
+        scheduledSync?.cancel()
+        scheduledSync = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            try? await self?.synchronize()
+        }
+    }
+
+    private func stageUntrackedLocalConfiguration() async throws {
+        guard let configurationStore, let metadataStore, let syncEngine, let zoneID else { return }
+
+        let providers = try await configurationStore.providers()
+        let providerTimestamps = Dictionary(uniqueKeysWithValues: providers.map { ($0.id, $0.updatedAt) })
+        for provider in providers {
+            try await stageIfUntracked(
+                type: .providerProfile,
+                id: provider.id.uuidString,
+                value: provider,
+                timestamp: provider.updatedAt,
+                metadataStore: metadataStore,
+                syncEngine: syncEngine,
+                zoneID: zoneID
+            )
+        }
+        for model in try await configurationStore.models() {
+            try await stageIfUntracked(
+                type: .modelProfile,
+                id: model.id.uuidString,
+                value: model,
+                // ModelProfile predates per-model timestamps. The owning
+                // provider's update time is the closest durable legacy clock.
+                timestamp: providerTimestamps[model.providerID] ?? Date(timeIntervalSince1970: 0),
+                metadataStore: metadataStore,
+                syncEngine: syncEngine,
+                zoneID: zoneID
+            )
+        }
+        let preferences = try await configurationStore.preferences()
+        if preferences.updatedAt > Date(timeIntervalSince1970: 1) {
+            try await stageIfUntracked(
+                type: .preference,
+                id: "default",
+                value: preferences,
+                timestamp: preferences.updatedAt,
+                metadataStore: metadataStore,
+                syncEngine: syncEngine,
+                zoneID: zoneID
+            )
+        }
+    }
+
+    private func stageIfUntracked<T: Encodable>(
+        type: ConfigSyncRecordType,
+        id: String,
+        value: T,
+        timestamp: Date,
+        metadataStore: ConfigSyncMetadataStore,
+        syncEngine: CKSyncEngine,
+        zoneID: CKRecordZone.ID
+    ) async throws {
+        guard try await metadataStore.metadata(recordType: type.rawValue, recordID: id) == nil else {
+            return
+        }
+        let payload = try Self.encode(value)
+        let fields = Dictionary(
+            uniqueKeysWithValues: try Self.jsonObject(payload).keys.map { ($0, timestamp) }
+        )
+        try await metadataStore.save(ConfigSyncMetadata(
+            recordType: type.rawValue,
+            recordID: id,
+            fieldTimestamps: fields,
+            pendingAction: .save,
+            updatedAt: timestamp
+        ))
+        let recordID = CKRecord.ID(recordName: id, zoneID: zoneID)
+        syncEngine.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
     }
 
     fileprivate func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
@@ -218,7 +372,14 @@ public actor ConfigSyncEngine {
                 status = .paused
 
             case .fetchedRecordZoneChanges(let changes):
-                for modification in changes.modifications {
+                // CloudKit does not promise dependency order. Providers must
+                // exist before their models, and models before preferences
+                // whose foreign keys select them.
+                let modifications = changes.modifications.sorted {
+                    Self.applyPriority(for: $0.record.recordType)
+                        < Self.applyPriority(for: $1.record.recordType)
+                }
+                for modification in modifications {
                     try await applyRemote(modification.record)
                 }
                 for deletion in changes.deletions {
@@ -441,6 +602,16 @@ public actor ConfigSyncEngine {
 
     private static func encode<T: Encodable>(_ value: T) throws -> Data {
         try JSONEncoder.floe.encode(value)
+    }
+
+    private static func applyPriority(for recordType: String) -> Int {
+        switch ConfigSyncRecordType(rawValue: recordType) {
+        case .providerProfile: 0
+        case .modelProfile: 1
+        case .preference: 2
+        case .approvalModelSelection: 3
+        case nil: 4
+        }
     }
 
     private static func jsonObject(_ data: Data) throws -> [String: Any] {

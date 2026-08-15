@@ -14,128 +14,8 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import AVFoundation
-import Speech
 import FloeCore
 import FloeModels
-
-/// System speech-to-text controller used by every composer. Audio never
-/// enters Floe persistence; the recognized text is copied into the draft and
-/// the audio session is released as soon as dictation stops.
-@MainActor
-final class SpeechInputController: ObservableObject {
-    enum State: Equatable {
-        case idle
-        case requestingPermission
-        case listening
-        case unavailable(String)
-    }
-
-    @Published private(set) var state: State = .idle
-    @Published private(set) var transcript = ""
-
-    private let audioEngine = AVAudioEngine()
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
-    private var tapInstalled = false
-    private var sessionActivated = false
-
-    var isListening: Bool { state == .listening }
-
-    func toggle() async {
-        if isListening {
-            stop()
-        } else {
-            await start()
-        }
-    }
-
-    func start() async {
-        stop(resetState: false)
-        state = .requestingPermission
-        guard await requestPermissions() else {
-            state = .unavailable(String(localized: "voice.permission_required"))
-            return
-        }
-        guard let recognizer = SFSpeechRecognizer(locale: .current), recognizer.isAvailable else {
-            state = .unavailable(String(localized: "voice.unavailable"))
-            return
-        }
-
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
-            sessionActivated = true
-
-            transcript = ""
-            let request = SFSpeechAudioBufferRecognitionRequest()
-            request.shouldReportPartialResults = true
-            request.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
-            recognitionRequest = request
-
-            let input = audioEngine.inputNode
-            let format = input.outputFormat(forBus: 0)
-            if tapInstalled { input.removeTap(onBus: 0) }
-            input.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, _ in
-                request.append(buffer)
-            }
-            tapInstalled = true
-            audioEngine.prepare()
-            try audioEngine.start()
-            state = .listening
-
-            recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    if let result {
-                        self.transcript = result.bestTranscription.formattedString
-                        if result.isFinal { self.stop() }
-                    } else if error != nil {
-                        self.stop(resetState: false)
-                        self.state = .unavailable(String(localized: "voice.failed"))
-                    }
-                }
-            }
-        } catch {
-            stop(resetState: false)
-            state = .unavailable(String(localized: "voice.failed"))
-        }
-    }
-
-    func stop(resetState: Bool = true) {
-        if audioEngine.isRunning { audioEngine.stop() }
-        if tapInstalled {
-            audioEngine.inputNode.removeTap(onBus: 0)
-            tapInstalled = false
-        }
-        recognitionRequest?.endAudio()
-        recognitionTask?.cancel()
-        recognitionTask = nil
-        recognitionRequest = nil
-        if sessionActivated {
-            try? AVAudioSession.sharedInstance().setActive(
-                false,
-                options: .notifyOthersOnDeactivation
-            )
-            sessionActivated = false
-        }
-        if resetState { state = .idle }
-    }
-
-    private func requestPermissions() async -> Bool {
-        let speech = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { status in
-                continuation.resume(returning: status == .authorized)
-            }
-        }
-        guard speech else { return false }
-        return await withCheckedContinuation { continuation in
-            AVAudioApplication.requestRecordPermission { granted in
-                continuation.resume(returning: granted)
-            }
-        }
-    }
-}
 
 /// How the next run should execute. Forward-looking selection surface;
 /// the runtime mapping lands with the workspace tasks (T04/T05).
@@ -244,18 +124,19 @@ struct ThreadComposerView: View {
     @State private var isPickerPresented = false
     @State private var attachmentError: String?
     @State private var dictationPrefix = ""
-    @StateObject private var speechInput = SpeechInputController()
+    @StateObject private var voiceInput = VoiceInputController.live()
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         VStack(spacing: 0) {
             if let attachmentError {
                 errorBanner(attachmentError)
             }
-            if case .unavailable(let message) = speechInput.state {
-                errorBanner(message)
+            if let voiceNotice = voiceNotice {
+                voiceBanner(voiceNotice)
             }
             if !attachments.isEmpty {
                 attachmentChips
@@ -276,12 +157,70 @@ struct ThreadComposerView: View {
                 Task { await registerPicked(url) }
             }
         }
-        .onChange(of: speechInput.transcript) { _, transcript in
-            guard speechInput.isListening || !transcript.isEmpty else { return }
+        .onChange(of: voiceInput.transcript) { _, transcript in
+            guard voiceInput.isListening || !transcript.isEmpty else { return }
             let separator = dictationPrefix.isEmpty || dictationPrefix.last?.isWhitespace == true ? "" : " "
             draft = dictationPrefix + separator + transcript
         }
-        .onDisappear { speechInput.stop() }
+        .onDisappear { voiceInput.stop() }
+        .onChange(of: scenePhase) { _, phase in
+            // Backgrounding ends the capture session safely; the staged
+            // transcript stays in the draft for the user to keep or edit.
+            if phase != .active {
+                voiceInput.handleInterruption(reason: .interrupted)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in
+            voiceInput.handleInterruption(reason: .interrupted)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { _ in
+            voiceInput.handleInterruption(reason: .interrupted, routeChange: true)
+        }
+    }
+
+    /// User-comprehensible voice notice for the current state, if any.
+    /// Permission failures carry a Settings jump entry; the draft remains
+    /// fully editable in every failure mode.
+    private var voiceNotice: (message: LocalizedStringKey, isPermission: Bool)? {
+        switch voiceInput.state {
+        case .unavailable:
+            return ("voice.unavailable", false)
+        case .failed(let reason):
+            switch reason {
+            case .microphonePermissionDenied, .speechPermissionDenied:
+                return ("voice.permission_required", true)
+            case .localeUnsupported, .modelNotReady:
+                return ("voice.unavailable", false)
+            case .noAudioInput:
+                return ("voice.no_input", false)
+            case .recognizerFailed, .interrupted:
+                return ("voice.failed", false)
+            }
+        case .idle, .requestingPermission, .preparing, .listening, .stopping:
+            return nil
+        }
+    }
+
+    private func voiceBanner(_ notice: (message: LocalizedStringKey, isPermission: Bool)) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "microphone.slash")
+                .foregroundStyle(FloeTheme.pending)
+                .accessibilityHidden(true)
+            Text(notice.message)
+                .font(FloeTheme.Typography.metadata)
+            Spacer()
+            if notice.isPermission, let settingsURL = URL(string: UIApplication.openSettingsURLString) {
+                Button("voice.open_settings") {
+                    UIApplication.shared.open(settingsURL)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .frame(minHeight: FloeTheme.minimumTarget)
+                .accessibilityIdentifier("voice.open_settings")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
     }
 
     // MARK: - Input row
@@ -308,18 +247,29 @@ struct ThreadComposerView: View {
             .accessibilityIdentifier("composer.input")
 
             Button {
-                if !speechInput.isListening { dictationPrefix = draft }
-                Task { await speechInput.toggle() }
+                if voiceInput.state.hasSession {
+                    // Stop synchronously so a second rapid tap cannot observe
+                    // the stale listening state and queue overlapping teardown.
+                    voiceInput.stop()
+                } else {
+                    // Preserve whatever the user already typed; dictation
+                    // appends after this prefix and never replaces it.
+                    dictationPrefix = draft
+                    voiceInput.requestStart()
+                }
             } label: {
-                Image(systemName: speechInput.isListening ? "waveform.circle.fill" : "microphone.circle")
+                Image(systemName: voiceInput.isListening ? "waveform.circle.fill" : "microphone.circle")
                     .font(.title2)
-                    .symbolEffect(.pulse, isActive: speechInput.isListening && !reduceMotion)
-                    .foregroundStyle(speechInput.isListening ? FloeTheme.destructive : FloeTheme.primary)
+                    .symbolEffect(.pulse, isActive: voiceInput.isListening && !reduceMotion)
+                    .foregroundStyle(voiceInput.isListening ? FloeTheme.destructive : FloeTheme.primary)
             }
             .buttonStyle(.plain)
-            .disabled(speechInput.state == .requestingPermission)
+            .disabled(voiceInput.state == .requestingPermission
+                      || voiceInput.state == .preparing
+                      || voiceInput.state == .stopping)
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-            .accessibilityLabel(speechInput.isListening ? "voice.stop" : "voice.start")
+            .accessibilityLabel(voiceInput.isListening ? "voice.stop" : "voice.start")
+            .accessibilityValue(voiceAccessibilityValue)
             .accessibilityHint("voice.hint")
             .accessibilityIdentifier("composer.voice")
 
@@ -565,6 +515,19 @@ struct ThreadComposerView: View {
             attachmentError = nil
         } catch {
             attachmentError = error.localizedDescription
+        }
+    }
+
+    /// VoiceOver-readable microphone state (never color alone).
+    private var voiceAccessibilityValue: String {
+        switch voiceInput.state {
+        case .idle: String(localized: "voice.state.idle")
+        case .requestingPermission: String(localized: "voice.state.requesting")
+        case .preparing: String(localized: "voice.state.preparing")
+        case .listening: String(localized: "voice.state.listening")
+        case .stopping: String(localized: "voice.state.stopping")
+        case .unavailable: String(localized: "voice.unavailable")
+        case .failed: String(localized: "voice.failed")
         }
     }
 

@@ -12,6 +12,7 @@ import Foundation
 import FloeCore
 import FloePersistence
 import FloeSecurity
+import FloeSync
 
 /// Executes settings actions that delete data or revoke access. Each method
 /// returns a `ClearReport` so the caller can display exactly what changed.
@@ -79,18 +80,18 @@ final class SettingsActions {
         var report = ClearReport()
 
         let providers = try await environment.configurationStore.providers()
+        let secretStore = KeychainSecretStore()
 
         for provider in providers {
-            try await environment.configurationStore.deleteProvider(id: provider.id)
-            // Remove the Keychain secret the provider referenced. The
-            // reference is deleted with the row; the secret is deleted here.
-            if let ref = provider.secretRef {
-                let store = KeychainStore(
-                    service: "org.floeagent.ios.secrets",
-                    synchronizable: ref.synchronizable
-                )
+            // Enqueue provider/model tombstones so a later CloudKit fetch
+            // cannot resurrect configuration the user explicitly cleared.
+            try await environment.configurationSync.deleteProvider(id: provider.id)
+            // Delete both synchronized and local Keychain namespaces. The
+            // global sync switch may have migrated the secret without
+            // changing the provider's historical SecretReference metadata.
+            if provider.secretRef != nil {
                 do {
-                    try store.delete(account: ref.keychainAccount)
+                    try await secretStore.deleteSecret(scope: .provider(provider.id))
                     report.deletedKeychainItems += 1
                 } catch {
                     // Item already absent — still counts as removed state.

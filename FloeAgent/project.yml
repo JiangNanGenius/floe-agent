@@ -102,11 +102,12 @@ targets:
         DEVELOPMENT_TEAM: QYL72C43K6
         PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios
         PRODUCT_NAME: Floe Agent
+        PRODUCT_MODULE_NAME: FloeApp
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
         MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "7"
+        CURRENT_PROJECT_VERSION: "8"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
         ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -123,23 +124,49 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: Tests/FloeAgentUITests
+        excludes:
+          - HomeChatSeparationTests.swift
+          - ThreadTimelineTests.swift
+          - VoiceInputControllerTests.swift
     dependencies:
       - target: FloeAgent
     settings:
       base:
         DEVELOPMENT_TEAM: QYL72C43K6
         PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "6.0"
         TEST_TARGET_NAME: FloeAgent
+
+  FloeAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Tests/FloeAgentUITests/HomeChatSeparationTests.swift
+      - path: Tests/FloeAgentUITests/ThreadTimelineTests.swift
+      - path: Tests/FloeAgentUITests/VoiceInputControllerTests.swift
+    dependencies:
+      - target: FloeAgent
+    settings:
+      base:
+        DEVELOPMENT_TEAM: QYL72C43K6
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios.tests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "6.0"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Floe Agent.app/Floe Agent"
+        BUNDLE_LOADER: "$(TEST_HOST)"
 
 schemes:
   FloeAgent:
     build:
       targets:
         FloeAgent: all
+        FloeAppTests: [test]
         FloeAgentUITests: [test]
     test:
       targets:
+        - FloeAppTests
         - FloeAgentUITests
     run:
       config: Debug

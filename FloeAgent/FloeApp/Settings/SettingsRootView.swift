@@ -5,7 +5,7 @@
 // See docs/ARCHITECTURE_SETTINGS.md §5. iPad uses a NavigationSplitView
 // (category list left, detail right — never an empty detail column; the
 // first category is selected by default). iPhone uses the standard
-// NavigationStack push flow. All nine categories are routed.
+// NavigationStack push flow. Every category is routed.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -13,7 +13,7 @@ import FloeCore
 
 /// One settings category in the settings center.
 enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case general, providers, auxiliary, permissions, execution, files, remote, privacy, diagnostics
+    case general, providers, auxiliary, permissions, execution, files, sync, remote, privacy, diagnostics
 
     var id: String { rawValue }
 
@@ -25,6 +25,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .permissions: "settings.section.permissions"
         case .execution: "settings.section.execution"
         case .files: "settings.section.files"
+        case .sync: "settings.section.sync"
         case .remote: "settings.section.remote"
         case .privacy: "settings.section.privacy"
         case .diagnostics: "settings.section.diagnostics"
@@ -39,6 +40,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .permissions: "checkmark.shield"
         case .execution: "terminal"
         case .files: "folder"
+        case .sync: "icloud"
         case .remote: "server.rack"
         case .privacy: "hand.raised"
         case .diagnostics: "stethoscope"
@@ -60,6 +62,7 @@ struct SettingsRootView: View {
                 List(SettingsSection.allCases, selection: $selection) { section in
                     Label(section.title, systemImage: section.systemImage)
                         .tag(section)
+                        .accessibilityIdentifier("settings.section.\(section.rawValue)")
                 }
                 .navigationTitle("settings.title")
             } detail: {
@@ -72,6 +75,7 @@ struct SettingsRootView: View {
                 NavigationLink(value: section) {
                     Label(section.title, systemImage: section.systemImage)
                 }
+                .accessibilityIdentifier("settings.section.\(section.rawValue)")
                 .frame(minHeight: FloeTheme.minimumTarget)
             }
             .navigationTitle("settings.title")
@@ -96,6 +100,8 @@ struct SettingsRootView: View {
             ExecutionEnvironmentView(center: environment.settingsCenter)
         case .files:
             FilesSettingsView(center: environment.settingsCenter)
+        case .sync:
+            SyncSettingsView(center: environment.settingsCenter)
         case .remote:
             RemoteSettingsView(center: environment.settingsCenter)
         case .privacy:

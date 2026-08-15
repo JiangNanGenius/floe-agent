@@ -3,8 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // See docs/ARCHITECTURE_SETTINGS.md §5 row 6: workspace list + default
-// project (WorkspaceStore / app_settings), iCloud Drive and config-sync
-// status (probed live, never stored), and a real cache/temp cleanup with
+// project (WorkspaceStore / app_settings), and a real cache/temp cleanup with
 // a count echo.
 
 #if canImport(SwiftUI) && canImport(UIKit)
@@ -53,25 +52,6 @@ struct FilesSettingsView: View {
                 }
             }
 
-            Section("settings.files.sync") {
-                LabeledContent("settings.files.icloud") {
-                    capabilityText(center.iCloudDrive)
-                }
-                .frame(minHeight: FloeTheme.minimumTarget)
-
-                LabeledContent("settings.files.config_sync") {
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(syncStatusText)
-                        if let lastSync = center.configSyncLastSyncAt {
-                            Text(lastSync, style: .relative)
-                                .font(FloeTheme.Typography.metadata)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .frame(minHeight: FloeTheme.minimumTarget)
-            }
-
             Section {
                 Button(role: .destructive) {
                     Task { await clearTemporaryFiles() }
@@ -99,31 +79,6 @@ struct FilesSettingsView: View {
     }
 
     // MARK: - Helpers
-
-    private var syncStatusText: String {
-        switch center.configSyncStatus {
-        case .synced:
-            return String(localized: "settings.files.config_sync.synced")
-        case .paused:
-            return String(localized: "settings.files.config_sync.paused")
-        case .waitingForSecret:
-            return String(localized: "settings.files.config_sync.waiting_secret")
-        case .error(let reason):
-            return String(localized: "settings.files.config_sync.error") + " " + reason
-        }
-    }
-
-    @ViewBuilder
-    private func capabilityText(_ state: CapabilityState) -> some View {
-        switch state {
-        case .available(let version):
-            Text(version).foregroundStyle(FloeTheme.success)
-        case .unavailable(let reason):
-            Text(reason).foregroundStyle(.secondary)
-        case .unknown:
-            Text("settings.capability.unknown").foregroundStyle(FloeTheme.unknown)
-        }
-    }
 
     /// Deletes everything in the app temporary directory and echoes the
     /// reclaimed byte count. Real deletion, no silent success.

@@ -73,6 +73,10 @@ final class SettingsCenter: ObservableObject {
     @Published private(set) var iCloudDrive: CapabilityState = .unknown
     @Published private(set) var configSyncStatus: SyncStatus = .paused
     @Published private(set) var configSyncLastSyncAt: Date?
+    @Published private(set) var overallSyncEnabled = true
+    @Published private(set) var configurationSyncEnabled = true
+    @Published private(set) var syncControlBusy = false
+    @Published private(set) var syncControlError: String?
 
     // MARK: - 隐私与安全
 
@@ -173,6 +177,19 @@ final class SettingsCenter: ObservableObject {
         credentialStatus = await credentialProjection(for: providerList)
     }
 
+    /// Performs an explicit CloudKit send/fetch/send cycle and immediately
+    /// refreshes the displayed status. Errors remain visible instead of being
+    /// turned into a false "Synced" result.
+    func synchronizeConfiguration() async {
+        do {
+            try await environment.configurationSync.synchronize()
+        } catch {
+            // ConfigSyncEngine owns the redacted, user-presentable error state.
+        }
+        configSyncStatus = await environment.configurationSync.status
+        configSyncLastSyncAt = await environment.configurationSync.lastSyncAt
+    }
+
     // MARK: - Stored-value mapping
 
     private func applyStoredValues(_ values: [String: String]) {
@@ -215,6 +232,9 @@ final class SettingsCenter: ObservableObject {
     }
 
     private func loadUserDefaults() {
+        let syncPreferences = SyncControlPreferences.load(from: defaults)
+        overallSyncEnabled = syncPreferences.overallEnabled
+        configurationSyncEnabled = syncPreferences.configurationEnabled
         if let raw = defaults.string(forKey: UDKey.appearance),
            let value = AppearancePreference(rawValue: raw) {
             appearance = value
@@ -266,6 +286,82 @@ final class SettingsCenter: ObservableObject {
     func setDateTimeStyle(_ value: DateTimeDisplayStyle) {
         dateTimeStyle = value
         defaults.set(value.rawValue, forKey: UDKey.dateTimeStyle)
+    }
+
+    // MARK: - Sync controls (device-local UserDefaults layer)
+
+    func setOverallSyncEnabled(_ enabled: Bool) {
+        FloeLogger(category: .sync).info(
+            "Overall sync preference requested: \(enabled); current=\(overallSyncEnabled); busy=\(syncControlBusy)"
+        )
+        guard overallSyncEnabled != enabled, !syncControlBusy else { return }
+        let previous = overallSyncEnabled
+        overallSyncEnabled = enabled
+        syncControlBusy = true
+        syncControlError = nil
+        if !enabled { configSyncStatus = .paused }
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let providers = try await environment.configurationStore.providers()
+                try await KeychainSecretStore().setGlobalSyncEnabled(
+                    enabled,
+                    providerIDs: providers.map(\.id)
+                )
+                // Keychain migration commits the production device-wide
+                // preference only after every secret was verified at its
+                // destination. Mirror that committed value into an injected
+                // defaults suite used by tests/previews.
+                var preferences = SyncControlPreferences.load(from: defaults)
+                preferences.overallEnabled = enabled
+                preferences.save(to: defaults)
+                await environment.configurationSync.setSynchronizationEnabled(
+                    enabled && configurationSyncEnabled
+                )
+                if enabled && configurationSyncEnabled {
+                    await synchronizeConfiguration()
+                }
+            } catch {
+                overallSyncEnabled = previous
+                var rollback = SyncControlPreferences.load(from: defaults)
+                rollback.overallEnabled = previous
+                rollback.save(to: defaults)
+                await environment.configurationSync.setSynchronizationEnabled(
+                    previous && configurationSyncEnabled
+                )
+                syncControlError = SecretRedactor.redact(error.localizedDescription)
+                FloeLogger(category: .sync).error("Overall sync preference failed and was rolled back")
+            }
+            syncControlBusy = false
+            FloeLogger(category: .sync).info("Overall sync preference operation finished")
+        }
+    }
+
+    func setConfigurationSyncEnabled(_ enabled: Bool) {
+        FloeLogger(category: .sync).info(
+            "Configuration sync preference requested: \(enabled); current=\(configurationSyncEnabled); busy=\(syncControlBusy)"
+        )
+        guard configurationSyncEnabled != enabled, !syncControlBusy else { return }
+        configurationSyncEnabled = enabled
+        syncControlBusy = true
+        syncControlError = nil
+        var preferences = SyncControlPreferences.load(from: defaults)
+        preferences.configurationEnabled = enabled
+        preferences.save(to: defaults)
+        if !enabled { configSyncStatus = .paused }
+
+        Task { [weak self] in
+            guard let self else { return }
+            await environment.configurationSync.setSynchronizationEnabled(
+                overallSyncEnabled && enabled
+            )
+            if overallSyncEnabled && enabled {
+                await synchronizeConfiguration()
+            }
+            syncControlBusy = false
+            FloeLogger(category: .sync).info("Configuration sync preference operation finished")
+        }
     }
 
     // MARK: - Setters (DB app_settings layer)

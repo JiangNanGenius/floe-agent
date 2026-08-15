@@ -33,8 +33,15 @@ public struct KeychainSecretStore: Sendable {
     /// Keychain items before committing the preference. A failed copy leaves
     /// the source item and preference untouched, so the operation is retryable.
     public func setSyncEnabled(_ enabled: Bool, for providerID: UUID) async throws {
-        let currentlyEnabled = await isSyncEnabled(for: providerID)
+        let currentlyEnabled = await syncOptOut.isOptedOut(providerID: providerID) == false
         guard currentlyEnabled != enabled else { return }
+
+        // Preserve the provider's preference while the device-wide switch is
+        // off. The value remains local until the master switch is enabled.
+        guard SyncControlPreferences.load().overallEnabled else {
+            await syncOptOut.set(providerID: providerID, optedOut: !enabled)
+            return
+        }
 
         let account = accountName(for: .provider(providerID))
         let synchronizedStore = store
@@ -57,7 +64,38 @@ public struct KeychainSecretStore: Sendable {
     }
 
     public func isSyncEnabled(for providerID: UUID) async -> Bool {
-        await !syncOptOut.isOptedOut(providerID: providerID)
+        guard SyncControlPreferences.load().overallEnabled else { return false }
+        let optedOut = await syncOptOut.isOptedOut(providerID: providerID)
+        return !optedOut
+    }
+
+    /// Migrates configured provider secrets between synchronized and local
+    /// Keychain namespaces, then commits the device-wide preference. Host
+    /// credentials remain device-local regardless of this setting.
+    public func setGlobalSyncEnabled(_ enabled: Bool, providerIDs: [UUID]) async throws {
+        var preferences = SyncControlPreferences.load()
+
+        let synchronizedStore = store
+        let localStore = KeychainStore(service: store.service, synchronizable: false)
+        for providerID in providerIDs {
+            let optedOut = await syncOptOut.isOptedOut(providerID: providerID)
+            guard !optedOut else { continue }
+            let account = accountName(for: .provider(providerID))
+            let source = enabled ? localStore : synchronizedStore
+            let destination = enabled ? synchronizedStore : localStore
+            do {
+                let secret = try source.read(account: account)
+                try destination.store(account: account, secret: secret)
+                guard try destination.read(account: account) == secret else {
+                    throw KeychainStoreError.unexpectedStatus("migration verification failed")
+                }
+                try source.delete(account: account)
+            } catch KeychainStoreError.itemNotFound {
+                // A provider without a configured secret needs no migration.
+            }
+        }
+        preferences.overallEnabled = enabled
+        preferences.save()
     }
 
     /// Stores a secret. When sync is disabled for the provider the item is
@@ -77,7 +115,14 @@ public struct KeychainSecretStore: Sendable {
             try localStore.store(account: account, secret: secret)
             try? store.delete(account: account)
             return
-        case .provider, .approvalModel:
+        case .provider:
+            break
+        case .approvalModel where !SyncControlPreferences.load().overallEnabled:
+            let localStore = KeychainStore(service: store.service, synchronizable: false)
+            try localStore.store(account: account, secret: secret)
+            try? store.delete(account: account)
+            return
+        case .approvalModel:
             break
         }
         try store.store(account: account, secret: secret)
@@ -88,6 +133,10 @@ public struct KeychainSecretStore: Sendable {
     public func readSecret(scope: Scope) async throws -> Data {
         let account = accountName(for: scope)
         if case .provider(let id) = scope, await !isSyncEnabled(for: id) {
+            let localStore = KeychainStore(service: store.service, synchronizable: false)
+            return try localStore.read(account: account)
+        }
+        if case .approvalModel = scope, !SyncControlPreferences.load().overallEnabled {
             let localStore = KeychainStore(service: store.service, synchronizable: false)
             return try localStore.read(account: account)
         }

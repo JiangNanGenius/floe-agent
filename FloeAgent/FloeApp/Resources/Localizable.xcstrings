@@ -3472,43 +3472,103 @@
     "voice.failed": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Voice input stopped unexpectedly. Try again." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "语音输入意外停止，请重试。" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Voice input stopped unexpectedly. Try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语音输入意外停止，请重试。"
+          }
+        }
       }
     },
     "voice.hint": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Dictates text into the message field" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "将语音转写到消息输入框" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dictates text into the message field"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将语音转写到消息输入框"
+          }
+        }
       }
     },
     "voice.permission_required": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Allow Microphone and Speech Recognition in Settings to use voice input." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请在系统设置中允许麦克风和语音识别，以使用语音输入。" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow Microphone and Speech Recognition in Settings to use voice input."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在系统设置中允许麦克风和语音识别，以使用语音输入。"
+          }
+        }
       }
     },
     "voice.start": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Start voice input" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开始语音输入" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start voice input"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开始语音输入"
+          }
+        }
       }
     },
     "voice.stop": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Stop voice input" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "停止语音输入" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop voice input"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止语音输入"
+          }
+        }
       }
     },
     "voice.unavailable": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Speech recognition is currently unavailable." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "语音识别当前不可用。" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Speech recognition is currently unavailable."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语音识别当前不可用。"
+          }
+        }
       }
     },
     "providers.manual_entry": {
@@ -4667,6 +4727,23 @@
         }
       }
     },
+    "settings.files.config_sync.now": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sync Now"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "立即同步"
+          }
+        }
+      }
+    },
     "settings.files.config_sync.paused": {
       "extractionState": "manual",
       "localizations": {
@@ -4697,6 +4774,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "已同步"
+          }
+        }
+      }
+    },
+    "settings.files.config_sync.syncing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Syncing…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在同步…"
           }
         }
       }
@@ -6118,13 +6212,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Files & iCloud"
+            "value": "Files"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "文件与 iCloud"
+            "value": "文件"
           }
         }
       }
@@ -6212,6 +6306,149 @@
             "value": "主机与远程会话"
           }
         }
+      }
+    },
+    "settings.section.sync": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sync"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同步"
+          }
+        }
+      }
+    },
+    "settings.sync.configuration.enabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Configuration Data" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "配置数据同步" } }
+      }
+    },
+    "settings.sync.configuration.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Syncs providers, model settings, defaults, and onboarding preferences through your private CloudKit database. Changes made while paused stay on this device and are queued for later." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "通过你的私有 CloudKit 数据库同步供应商、模型设置、默认选择和向导偏好。暂停期间的更改保留在本机，并会排队等待以后同步。" } }
+      }
+    },
+    "settings.sync.configuration.header": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Configuration" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "配置数据" } }
+      }
+    },
+    "settings.sync.configuration.status": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Status" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "同步状态" } }
+      }
+    },
+    "settings.sync.enabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Sync with iCloud" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用 iCloud 同步" } }
+      }
+    },
+    "settings.sync.icloud.available": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Available" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "可用" } }
+      }
+    },
+    "settings.sync.icloud.unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Not signed in" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未登录 iCloud" } }
+      }
+    },
+    "settings.sync.icloud_status": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "iCloud" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "iCloud" } }
+      }
+    },
+    "settings.sync.master.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The master switch controls all cross-device sync. Turning it off moves configured provider keys to this device's local Keychain and pauses CloudKit traffic." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "总开关控制全部跨设备同步。关闭后，已配置的供应商密钥会迁移到本机钥匙串，同时暂停 CloudKit 网络同步。" } }
+      }
+    },
+    "settings.sync.master.header": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "iCloud Sync" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "iCloud 同步" } }
+      }
+    },
+    "settings.sync.now": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Sync Now" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "立即同步" } }
+      }
+    },
+    "settings.sync.secrets.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "API keys use iCloud Keychain only when the master switch and that provider's own Keychain switch are both enabled. SSH and VNC credentials always stay on this device." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "只有总开关和对应供应商的钥匙串开关都开启时，API Key 才会使用 iCloud 钥匙串。SSH 与 VNC 凭据始终只保存在本机。" } }
+      }
+    },
+    "settings.sync.secrets.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "API Key Sync" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "API Key 同步" } }
+      }
+    },
+    "settings.sync.status.error": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Sync failed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "同步失败" } }
+      }
+    },
+    "settings.sync.status.paused": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Paused" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已暂停" } }
+      }
+    },
+    "settings.sync.status.synced": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Up to Date" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已是最新" } }
+      }
+    },
+    "settings.sync.status.syncing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Syncing…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在同步…" } }
+      }
+    },
+    "settings.sync.status.waiting_secret": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Waiting for API key" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "等待 API Key" } }
       }
     },
     "settings.title": {
@@ -7302,6 +7539,23 @@
         }
       }
     },
+    "thread.finishing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finishing…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在完成…"
+          }
+        }
+      }
+    },
     "thread.model_thinking": {
       "extractionState": "manual",
       "localizations": {
@@ -7961,6 +8215,380 @@
           "stringUnit": {
             "state": "translated",
             "value": "工作区"
+          }
+        }
+      }
+    },
+    "home.welcome": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What should Floe get done today?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "今天想让 Floe 完成什么？"
+          }
+        }
+      }
+    },
+    "home.quick_entries": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quick actions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "快捷入口"
+          }
+        }
+      }
+    },
+    "home.entry.workspace": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Workspace files"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作区文件"
+          }
+        }
+      }
+    },
+    "home.entry.hosts": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remote hosts"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程主机"
+          }
+        }
+      }
+    },
+    "home.entry.providers": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model providers"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模型提供商"
+          }
+        }
+      }
+    },
+    "home.entry.images": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image tools"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "图片处理"
+          }
+        }
+      }
+    },
+    "home.entry.available.hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opens the related feature."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开对应功能。"
+          }
+        }
+      }
+    },
+    "home.entry.unavailable.hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not available yet."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该功能尚未提供。"
+          }
+        }
+      }
+    },
+    "home.overview.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start a task from the Home screen and it will appear here."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从首页开始一个任务后，它会显示在这里。"
+          }
+        }
+      }
+    },
+    "chat.select_or_new": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a conversation, or start a new one."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择一个对话，或新建对话。"
+          }
+        }
+      }
+    },
+    "chat.search.prompt": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search conversations"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索对话"
+          }
+        }
+      }
+    },
+    "chat.search.no_results": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Results"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无结果"
+          }
+        }
+      }
+    },
+    "thread.no_final_reply": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The model did not return a final reply."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模型未返回最终回复。"
+          }
+        }
+      }
+    },
+    "voice.no_input": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No microphone input is available."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有可用的麦克风输入。"
+          }
+        }
+      }
+    },
+    "voice.open_settings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Settings"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开设置"
+          }
+        }
+      }
+    },
+    "voice.state.idle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Microphone ready"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "麦克风就绪"
+          }
+        }
+      }
+    },
+    "voice.state.requesting": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Requesting microphone permission"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在请求麦克风权限"
+          }
+        }
+      }
+    },
+    "voice.state.preparing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing speech recognition"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在准备语音识别"
+          }
+        }
+      }
+    },
+    "voice.state.listening": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listening"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在聆听"
+          }
+        }
+      }
+    },
+    "voice.state.stopping": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopping"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在停止"
+          }
+        }
+      }
+    },
+    "state.stopped": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopped"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已停止"
+          }
+        }
+      }
+    },
+    "state.truncated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Output limit reached"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已达到输出上限"
           }
         }
       }

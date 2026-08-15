@@ -22,6 +22,9 @@ struct FileInspectorView: View {
     @StateObject private var treeModel: FileTreeViewModel
     @State private var previewPath: String?
     @State private var showWorkspacePicker = false
+    /// Prevents the tree's restoration task from reopening the file during
+    /// the short async window in which the cleared selection is persisted.
+    @State private var isClosingPreview = false
 
     init(center: WorkspaceCenter) {
         self.center = center
@@ -78,6 +81,7 @@ struct FileInspectorView: View {
                 workspaceHeader(workspace)
                 Divider()
                 FileTreeView(viewModel: treeModel) { path in
+                    isClosingPreview = false
                     self.previewPath = path
                     Task { await persistSelection(path) }
                 }
@@ -96,7 +100,8 @@ struct FileInspectorView: View {
             }
             .task {
                 await treeModel.loadRoot()
-                if let selected = workspace.inspectorState.selectedRelativePath {
+                if !isClosingPreview,
+                   let selected = workspace.inspectorState.selectedRelativePath {
                     previewPath = selected
                 }
             }
@@ -141,6 +146,10 @@ struct FileInspectorView: View {
     /// clearing the persisted path, the tree's `.task` immediately restores
     /// the same preview and makes the Back button appear unresponsive.
     private func closePreview() {
+        // Set the guard before changing branches. Without this synchronous
+        // latch, the file-tree `.task` can read the old persisted path and
+        // immediately reopen the same file, making Back look broken.
+        isClosingPreview = true
         previewPath = nil
         Task {
             var state = center.currentWorkspace?.inspectorState ?? InspectorState()
@@ -148,6 +157,7 @@ struct FileInspectorView: View {
             state.isExpanded = true
             await center.updateInspectorState(state)
             await treeModel.loadRoot()
+            isClosingPreview = false
         }
     }
 

@@ -350,6 +350,16 @@ let package = Package(
                 .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
+        .testTarget(
+            name: "FloeSyncTests",
+            dependencies: ["FloeSync"],
+            path: "Tests/FloeSyncTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency"),
+                .enableUpcomingFeature("InferSendableFromCaptures")
+            ]
+        ),
 
         .testTarget(
             name: "FloeSecurityTests",

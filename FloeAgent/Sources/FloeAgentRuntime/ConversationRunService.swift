@@ -217,6 +217,7 @@ public actor ConversationRunService {
     private func handleTransition(_ state: AgentState) async {
         latestState = state
         logger.debug("Run \(runID.uuidString) transitioned to \(state.name)")
+        logger.info("runStateChanged run=\(runID.uuidString) state=\(state.name)")
         if case .executingTool(let info) = state {
             toolStartDates[info.toolCall.id] = info.startedAt
         }
@@ -229,7 +230,12 @@ public actor ConversationRunService {
             let payload = Self.approvalPayload(waiting)
             _ = try? await runStore.appendEvent(runID: runID, kind: .approval, payloadJSON: payload)
         }
-        if isTerminal(state) {
+        // Successful completion already persisted its final assistant text
+        // followed by the terminal event in handleEvent(.completed). Do not
+        // append a later status row that would make the durable sequence lie
+        // about what was last. Failed/checkpointed runs still need a terminal
+        // status because they have no provider completion event.
+        if isTerminal(state), !Self.isCompleted(state) {
             _ = try? await runStore.appendEvent(
                 runID: runID, kind: .status,
                 payloadJSON: #"{"state":"\#(state.name)"}"#
@@ -290,7 +296,12 @@ public actor ConversationRunService {
                 recoverable: Self.isRecoverable(error.kind)
             ))
         case .completed(let completion):
-            // Persist the final assistant message on completion.
+            // Ordering rule: the final assistant reply must be durable
+            // BEFORE the terminal marker. The unified thread timeline reads
+            // the `.assistantText` event for ordering and the conversation
+            // message for model context; the terminal event must always be
+            // the last event of a successful run so "Completed" can never
+            // render above the final answer.
             if !streamedText.isEmpty {
                 let messageID = UUID()
                 try? await conversationStore.appendMessage(PersistedMessage(
@@ -301,12 +312,26 @@ public actor ConversationRunService {
                     createdAt: Date(),
                     parts: [MessagePart(messageID: messageID, partIndex: 0, kind: .text, text: streamedText)]
                 ))
+                _ = try? await runStore.appendEvent(
+                    runID: runID, kind: .assistantText,
+                    payloadJSON: Self.jsonPayload(["text": streamedText])
+                )
+                logger.info("finalMessagePersisted run=\(runID.uuidString) messageID=\(messageID.uuidString)")
+            } else {
+                // The provider reported a stop reason without any final
+                // text. That is an honest failure surface, not a silent
+                // success: the timeline renders it as "no final reply".
+                logger.warning("finalMessageMissing run=\(runID.uuidString) stopReason=\(completion.stopReason.rawValue)")
+                _ = try? await runStore.appendEvent(
+                    runID: runID, kind: .error,
+                    payloadJSON: Self.jsonPayload(["message": "noFinalText"])
+                )
             }
             _ = try? await runStore.appendEvent(
                 runID: runID, kind: .terminal,
                 payloadJSON: Self.jsonPayload(["stopReason": completion.stopReason.rawValue])
             )
-            logger.info("Run \(runID.uuidString) completed: \(completion.stopReason.rawValue)")
+            logger.info("terminalPersisted run=\(runID.uuidString) stopReason=\(completion.stopReason.rawValue)")
         }
     }
 
@@ -330,6 +355,11 @@ public actor ConversationRunService {
         default:
             return false
         }
+    }
+
+    private static func isCompleted(_ state: AgentState) -> Bool {
+        if case .completed = state { return true }
+        return false
     }
 
     private static func isRecoverable(_ kind: AgentEvent.NormalizedError.Kind) -> Bool {

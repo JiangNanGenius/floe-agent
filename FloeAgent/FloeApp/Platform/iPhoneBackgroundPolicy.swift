@@ -11,12 +11,19 @@ import BackgroundTasks
 @MainActor
 public final class iPhoneBackgroundPolicy: PlatformBackgroundPolicy, @unchecked Sendable {
 
+    /// `BGTaskScheduler` rejects duplicate registrations with an Objective-C
+    /// exception. More than one router may exist in previews or hosted tests,
+    /// therefore registration must be process-wide rather than per instance.
+    private static var didRegisterTasks = false
+
     private var expirationHandlers: [String: UIBackgroundTaskIdentifier] = [:]
     private let lock = NSLock()
 
     public init() {}
 
     public func registerTasks() {
+        guard !Self.didRegisterTasks else { return }
+        Self.didRegisterTasks = true
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: BackgroundTaskKind.refresh.rawValue,
             using: nil

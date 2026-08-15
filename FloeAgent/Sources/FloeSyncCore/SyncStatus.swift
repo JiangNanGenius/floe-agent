@@ -5,6 +5,10 @@ import Foundation
 
 /// Lifecycle of the configuration sync engine.
 public enum SyncStatus: Sendable, Hashable {
+    /// A real CloudKit operation is in flight, or local changes are queued
+    /// for the next coalesced send. Configuring CKSyncEngine alone is not
+    /// proof that data has synchronized.
+    case syncing
     /// All pending changes flushed; engine idle.
     case synced
     /// User or system paused syncing (e.g. iCloud account unavailable
@@ -17,7 +21,9 @@ public enum SyncStatus: Sendable, Hashable {
     case error(String)
 
     public var isOperational: Bool {
-        if case .synced = self { return true }
-        return false
+        switch self {
+        case .syncing, .synced: true
+        case .paused, .waitingForSecret, .error: false
+        }
     }
 }
