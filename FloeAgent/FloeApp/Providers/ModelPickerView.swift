@@ -33,9 +33,10 @@ struct ModelPickerView: View {
                 if !filteredModels.isEmpty {
                     Section("providers.discovered") {
                         ForEach(filteredModels) { model in
-                            Button {
-                                viewModel.toggleSelection(model.id)
-                            } label: {
+                            Toggle(isOn: Binding(
+                                get: { viewModel.selectedModelIDs.contains(model.id) },
+                                set: { viewModel.setSelection(model.id, isSelected: $0) }
+                            )) {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(model.displayName)
@@ -45,14 +46,15 @@ struct ModelPickerView: View {
                                             .foregroundStyle(.secondary)
                                     }
                                     Spacer()
-                                    Image(systemName: viewModel.selectedModelIDs.contains(model.id)
-                                          ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(viewModel.selectedModelIDs.contains(model.id)
-                                                         ? FloeTheme.primary : .secondary)
                                 }
                             }
-                            .buttonStyle(.plain)
+                            .tint(FloeTheme.primary)
                             .frame(minHeight: FloeTheme.minimumTarget)
+                            .accessibilityIdentifier("providers.model.\(model.remoteModelID)")
+                            .accessibilityValue(
+                                viewModel.selectedModelIDs.contains(model.id)
+                                    ? "selected" : "not selected"
+                            )
                         }
                     }
                 }
@@ -75,12 +77,43 @@ struct ModelPickerView: View {
                     Text("providers.manual_fallback.hint")
                 }
             }
-            .searchable(text: $searchText, prompt: "Search models")
+            .searchable(text: $searchText, prompt: Text("providers.search_models"))
+            .refreshable {
+                guard viewModel.supportsDiscovery else { return }
+                await viewModel.refreshModels()
+            }
             .navigationTitle("providers.models_section")
             .toolbar {
+                if viewModel.supportsDiscovery {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            Task { await viewModel.refreshModels() }
+                        } label: {
+                            if viewModel.testState == .testing {
+                                ProgressView()
+                            } else {
+                                Label("providers.refresh_models", systemImage: "arrow.clockwise")
+                            }
+                        }
+                        .disabled(viewModel.testState == .testing)
+                        .accessibilityIdentifier("providers.refresh_models")
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("action.done") { dismiss() }
                         .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                        .accessibilityIdentifier("action.done")
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if case .failed(let message) = viewModel.testState {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.destructive)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.bar)
                 }
             }
         }

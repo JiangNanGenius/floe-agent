@@ -57,7 +57,7 @@ struct ApprovalCardView: View {
             if !approval.riskLabels.isEmpty {
                 riskLabels
             }
-            if isWriteClass {
+            if requiresExactEvidence {
                 evidenceDisclosure
             }
             scopePicker
@@ -161,6 +161,12 @@ struct ApprovalCardView: View {
         approval.isSideEffecting
             && (approval.riskLabels.contains("writesFiles")
                 || approval.riskLabels.contains("deletesFiles"))
+    }
+
+    /// Remote command approval must expose the exact executable body as well
+    /// as file diffs. A generic tool name is not informed authorization.
+    private var requiresExactEvidence: Bool {
+        isWriteClass || approval.riskLabels.contains("executesRemoteCommand")
     }
 
     private var evidenceDisclosure: some View {

@@ -24,12 +24,25 @@ import Foundation
 /// Pure-function, line-oriented block-level Markdown parser.
 public enum MarkdownBlockParser {
 
+    /// Keeps hostile provider output from creating an unbounded Swift stack.
+    public static let maximumQuoteDepth = 24
+
+    /// Streaming output is reparsed whenever a provider delivers another
+    /// delta. Bound that work so a very long response cannot make every new
+    /// token progressively more expensive. The completed response is still
+    /// rendered in full once streaming ends.
+    public static let maximumStreamingCharacters = 131_072
+
     // MARK: - Public entry points
 
     /// Parses a full Markdown document into a block tree. Always
     /// succeeds; unparseable fragments degrade to paragraphs.
     public static func parse(_ markdown: String) -> [MarkdownBlock] {
-        var parser = Parser(lines: Self.splitLines(markdown))
+        parse(markdown, quoteDepth: 0)
+    }
+
+    private static func parse(_ markdown: String, quoteDepth: Int) -> [MarkdownBlock] {
+        var parser = Parser(lines: Self.splitLines(markdown), quoteDepth: quoteDepth)
         return parser.parseBlocks(indent: 0, isTopLevel: true)
     }
 
@@ -41,11 +54,12 @@ public enum MarkdownBlockParser {
     public static func parseStreaming(
         _ markdown: String
     ) -> (completed: [MarkdownBlock], tail: [MarkdownBlock]) {
-        guard let lastNewline = markdown.lastIndex(of: "\n") else {
-            return ([], parse(markdown))
+        let visibleWindow = markdown.suffix(maximumStreamingCharacters)
+        guard let lastNewline = visibleWindow.lastIndex(of: "\n") else {
+            return ([], parse(String(visibleWindow)))
         }
-        let completedSource = String(markdown[...lastNewline])
-        let tailSource = String(markdown[markdown.index(after: lastNewline)...])
+        let completedSource = String(visibleWindow[...lastNewline])
+        let tailSource = String(visibleWindow[visibleWindow.index(after: lastNewline)...])
         return (parse(completedSource), parse(tailSource))
     }
 
@@ -106,6 +120,7 @@ public enum MarkdownBlockParser {
 
     private struct Parser {
         let lines: [Line]
+        let quoteDepth: Int
         var index: Int = 0
 
         // MARK: Core loop
@@ -117,7 +132,6 @@ public enum MarkdownBlockParser {
         mutating func parseBlocks(indent: Int, isTopLevel: Bool) -> [MarkdownBlock] {
             var blocks: [MarkdownBlock] = []
             var paragraphParts: [Substring] = []
-            var previousWasBlank = false
 
             func flushParagraph() -> MarkdownBlock? {
                 guard !paragraphParts.isEmpty else { return nil }
@@ -131,7 +145,6 @@ public enum MarkdownBlockParser {
 
                 if line.isBlank {
                     if let paragraph = flushParagraph() { blocks.append(paragraph) }
-                    previousWasBlank = true
                     index += 1
                     continue
                 }
@@ -170,7 +183,6 @@ public enum MarkdownBlockParser {
                     paragraphParts.append(line.trimmed)
                     index += 1
                 }
-                previousWasBlank = false
             }
 
             if let paragraph = flushParagraph() { blocks.append(paragraph) }
@@ -402,7 +414,11 @@ public enum MarkdownBlockParser {
                     index += 1
                 }
             }
-            let inner = MarkdownBlockParser.parse(innerLines.joined(separator: "\n"))
+            let source = innerLines.joined(separator: "\n")
+            guard quoteDepth < MarkdownBlockParser.maximumQuoteDepth else {
+                return .paragraph(InlineRenderer.render(source))
+            }
+            let inner = MarkdownBlockParser.parse(source, quoteDepth: quoteDepth + 1)
             return .quote(inner)
         }
 

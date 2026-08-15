@@ -39,7 +39,9 @@ struct GeneralSettingsView: View {
 
                 Picker("settings.general.start_page", selection: Binding(
                     get: { center.defaultStartPage },
-                    set: { Task { await center.setDefaultStartPage($0) } }
+                    set: { newValue in
+                        Task { await center.setDefaultStartPage(newValue) }
+                    }
                 )) {
                     ForEach(StartPage.allCases, id: \.self) { page in
                         Text(title(for: page)).tag(page)
@@ -79,7 +81,9 @@ struct GeneralSettingsView: View {
             Section {
                 Picker("settings.general.agent_mode", selection: Binding(
                     get: { center.defaultAgentMode },
-                    set: { Task { await center.setDefaultAgentMode($0) } }
+                    set: { newValue in
+                        Task { await center.setDefaultAgentMode(newValue) }
+                    }
                 )) {
                     ForEach(AgentMode.allCases, id: \.self) { mode in
                         Text(title(for: mode)).tag(mode)

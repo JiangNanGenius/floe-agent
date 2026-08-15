@@ -44,7 +44,7 @@ final class AppEnvironment: ObservableObject {
     let remoteHostStore: RemoteHostStore
     /// Real remote-Python capability probe (FloeExecution), surfaced to
     /// SettingsCenter so the UI reads live state instead of a placeholder.
-    let remotePythonProbe: RemotePythonProbe
+    let remotePythonProbe: FloeExecution.RemotePythonProbe
 
     // MARK: Coordinators
 
@@ -103,16 +103,15 @@ final class AppEnvironment: ObservableObject {
         // workspace" result instead of crashing.
         registerWorkspaceTools(rootProvider: WorkspaceCenter.toolRootProvider)
 
-        // T13/T14: register the execution tools. exec.javascript runs
-        // locally (JavaScriptCore); exec.remotePython is wired to the SSH
-        // host store and resolves credentials through the Keychain at the
-        // call site only. With no configured host the tool returns a
-        // structured noHostConfigured result instead of crashing.
+        // T13/T14: register remote Python only. Model-generated code is never
+        // executed on-device; JavaScriptCore is intentionally absent from the
+        // production model tool catalog. Remote credentials resolve from the
+        // Keychain at the call site only.
         let hostStore = RemoteHostStore(database: database)
         self.remoteHostStore = hostStore
         let pythonService = Self.makeRemotePythonService(hostStore: hostStore)
         registerExecutionTools(pythonService: pythonService)
-        self.remotePythonProbe = RemotePythonProbe(service: pythonService)
+        self.remotePythonProbe = FloeExecution.RemotePythonProbe(service: pythonService)
     }
 
     /// Builds the remote-Python service against the shared host store.
@@ -228,6 +227,7 @@ final class AppEnvironment: ObservableObject {
             try await database.migrate()
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ui-test-reset-onboarding") {
+                ConversationCenter.persistOnboardingSkippedMarker(false)
                 for provider in try await configurationStore.providers() {
                     try await configurationStore.deleteProvider(id: provider.id)
                 }

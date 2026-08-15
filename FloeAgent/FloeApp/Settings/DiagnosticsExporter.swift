@@ -13,6 +13,7 @@
 import Foundation
 import FloeCore
 
+@MainActor
 enum DiagnosticsExporter {
 
     /// Renders and writes a redacted diagnostics bundle, returning the

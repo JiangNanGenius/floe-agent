@@ -2,6 +2,7 @@
 
 import Foundation
 import FloeCore
+import FloeModels
 
 /// Per-execution context handed to every tool.
 public struct ToolContext: Sendable {
@@ -9,11 +10,20 @@ public struct ToolContext: Sendable {
     /// Approval grant under which this execution proceeds. `nil` only for
     /// non-side-effecting tools.
     public var approvalGrantID: UUID?
+    /// Canonical scope from the approved `ToolCall`. Tools must authorize
+    /// against this value instead of re-inferring authority from JSON.
+    public var scope: ToolScope
     public var cancellation: CancellationToken
 
-    public init(runID: UUID, approvalGrantID: UUID? = nil, cancellation: CancellationToken) {
+    public init(
+        runID: UUID,
+        approvalGrantID: UUID? = nil,
+        scope: ToolScope = .local,
+        cancellation: CancellationToken
+    ) {
         self.runID = runID
         self.approvalGrantID = approvalGrantID
+        self.scope = scope
         self.cancellation = cancellation
     }
 }

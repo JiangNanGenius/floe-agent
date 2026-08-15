@@ -80,6 +80,13 @@ struct RootView: View {
     /// Presents first-run onboarding until a provider+model is configured.
     private func presentOnboardingIfNeeded() async {
         await environment.conversationCenter.reconcileOnboardingForLaunch()
+        if environment.conversationCenter.modelPreferences.onboardingStatus == .unseen,
+           UserDefaults.standard.bool(forKey: ConversationCenter.onboardingSkippedDefaultsKey) {
+            var preferences = environment.conversationCenter.modelPreferences
+            preferences.onboardingStatus = .skipped
+            try? await environment.conversationCenter.saveModelPreferences(preferences)
+            return
+        }
         if environment.conversationCenter.modelPreferences.onboardingStatus == .unseen {
             // Give an existing private-CloudKit configuration a brief chance
             // to arrive, without making launch dependent on network health.
@@ -94,6 +101,10 @@ struct RootView: View {
     private func markDismissedSetupSkipped() {
         let center = environment.conversationCenter
         guard center.modelPreferences.onboardingStatus == .unseen else { return }
+        // Interactive sheet dismissal is synchronous. Persist this tiny local
+        // marker immediately so a force-quit cannot resurrect onboarding while
+        // the durable DB/CloudKit preference save is still being scheduled.
+        ConversationCenter.persistOnboardingSkippedMarker(true)
         Task {
             var preferences = center.modelPreferences
             preferences.onboardingStatus = .skipped
@@ -151,12 +162,14 @@ struct RootView: View {
                     ForEach(AppDestination.allCases) { destination in
                         Label(destination.title, systemImage: destination.systemImage)
                             .tag(SidebarSelection.primary(destination))
+                            .accessibilityIdentifier("sidebar.primary.\(destination.rawValue)")
                     }
                 }
                 Section("sidebar.section.more") {
                     ForEach(MoreDestination.visibleCases) { sub in
                         Label(sub.title, systemImage: sub.systemImage)
                             .tag(SidebarSelection.more(sub))
+                            .accessibilityIdentifier("sidebar.more.\(sub.rawValue)")
                     }
                 }
             }
@@ -175,7 +188,11 @@ struct RootView: View {
     private var contentColumn: some View {
         switch router.sidebarSelection ?? .primary(router.selection) {
         case .primary(let destination):
-            PrimaryDestinationView(destination, environment: environment)
+            if destination == .home {
+                ConversationListView(center: environment.conversationCenter)
+            } else {
+                PrimaryDestinationView(destination, environment: environment)
+            }
         case .more(let sub):
             MoreListView(selection: sub)
         }
@@ -192,7 +209,22 @@ struct RootView: View {
         } else {
             switch router.sidebarSelection ?? .primary(router.selection) {
             case .primary(.home):
-                HomeOverviewDetailView()
+                if let conversationID = router.selectedConversationID {
+                    NavigationStack {
+                        ThreadDetailView(
+                            conversationID: conversationID,
+                            center: environment.conversationCenter
+                        )
+                    }
+                    .id(conversationID)
+                } else {
+                    NavigationStack {
+                        ChatHomeView(
+                            center: environment.conversationCenter,
+                            showsRecentConversations: false
+                        )
+                    }
+                }
             case .primary(.chat):
                 if let conversationID = router.selectedConversationID {
                     NavigationStack {

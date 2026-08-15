@@ -664,7 +664,12 @@ public actor FloeAgentRuntime {
 
         await transition(to: .executingTool(AgentState.ExecutingInfo(toolCall: call)))
 
-        let context = ToolContext(runID: runID, approvalGrantID: grant.id, cancellation: cancellationToken)
+        let context = ToolContext(
+            runID: runID,
+            approvalGrantID: grant.id,
+            scope: call.scope,
+            cancellation: cancellationToken
+        )
         let result: ToolResult
         do {
             result = try await executor.execute(call, context: context)

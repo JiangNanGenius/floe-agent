@@ -86,9 +86,9 @@ struct DiffView: View {
     private func accessibilityText(for line: DiffLine) -> Text {
         switch line.kind {
         case .addition:
-            Text("inspector.diff.added") + Text(" ") + Text(line.text.dropFirst())
+            Text(verbatim: String(localized: "inspector.diff.added") + " " + String(line.text.dropFirst()))
         case .removal:
-            Text("inspector.diff.removed") + Text(" ") + Text(line.text.dropFirst())
+            Text(verbatim: String(localized: "inspector.diff.removed") + " " + String(line.text.dropFirst()))
         default:
             Text(line.text)
         }

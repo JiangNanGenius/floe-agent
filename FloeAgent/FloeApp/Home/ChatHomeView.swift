@@ -18,11 +18,18 @@ import FloePersistence
 
 /// The Chat-first home: recent threads + bottom composer.
 struct ChatHomeView: View {
+    /// The center owns provider/model configuration. Observing it directly
+    /// keeps the composer live when a provider is saved in the settings
+    /// sheet that sits above this already-mounted Home view.
+    @ObservedObject private var center: ConversationCenter
     @StateObject private var viewModel: ChatHomeViewModel
     @EnvironmentObject private var router: AppRouter
+    private let showsRecentConversations: Bool
 
-    init(center: ConversationCenter) {
+    init(center: ConversationCenter, showsRecentConversations: Bool = true) {
+        self.center = center
         _viewModel = StateObject(wrappedValue: ChatHomeViewModel(center: center))
+        self.showsRecentConversations = showsRecentConversations
     }
 
     var body: some View {
@@ -47,7 +54,7 @@ struct ChatHomeView: View {
     private var threadList: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
-                if viewModel.recentConversations.isEmpty && !viewModel.isLoading {
+                if !showsRecentConversations || (viewModel.recentConversations.isEmpty && !viewModel.isLoading) {
                     emptyState
                 } else {
                     ForEach(viewModel.recentConversations) { conversation in
@@ -55,14 +62,14 @@ struct ChatHomeView: View {
                     }
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, showsRecentConversations ? 16 : 28)
             .padding(.vertical, 16)
         }
     }
 
     private var emptyState: some View {
         VStack(spacing: 14) {
-            Spacer(minLength: 60)
+            Spacer(minLength: showsRecentConversations ? 60 : 140)
             Image(systemName: "bubble.left.and.text.bubble.right")
                 .font(.system(size: 44, weight: .light))
                 .foregroundStyle(FloeTheme.primary)
@@ -73,7 +80,7 @@ struct ChatHomeView: View {
                 .font(FloeTheme.Typography.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Spacer(minLength: 60)
+            Spacer(minLength: showsRecentConversations ? 60 : 140)
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
@@ -104,9 +111,9 @@ struct ChatHomeView: View {
                     .foregroundStyle(.tertiary)
                     .accessibilityHidden(true)
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 4)
             .frame(minHeight: 58)
-            .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(alignment: .bottom) { Divider() }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(conversation.title.isEmpty
@@ -204,6 +211,7 @@ struct ChatHomeView: View {
             Button("setup.launcher.open") { router.presentedSetup = .manual }
                 .buttonStyle(.bordered)
                 .frame(minHeight: FloeTheme.minimumTarget)
+                .accessibilityIdentifier("setup.open")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)

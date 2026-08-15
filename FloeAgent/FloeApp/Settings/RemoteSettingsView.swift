@@ -51,7 +51,9 @@ struct RemoteSettingsView: View {
                     "settings.remote.idle_disconnect \(center.idleDisconnectMinutes)",
                     value: Binding(
                         get: { center.idleDisconnectMinutes },
-                        set: { Task { await center.setIdleDisconnectMinutes($0) } }
+                        set: { newValue in
+                            Task { await center.setIdleDisconnectMinutes(newValue) }
+                        }
                     ),
                     in: 1...240
                 )

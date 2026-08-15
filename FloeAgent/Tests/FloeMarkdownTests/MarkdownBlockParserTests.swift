@@ -382,6 +382,20 @@ struct MarkdownBlockParserTests {
         #expect(result.tail.count == 1)
     }
 
+    @Test("streaming parsing bounds the reparsed prefix")
+    func streamingParsingIsBounded() {
+        let oldPrefix = String(
+            repeating: "old content that should be outside the streaming window\n",
+            count: 10_000
+        )
+        let marker = "visible-tail-marker"
+        let parts = MarkdownBlockParser.parseStreaming(oldPrefix + marker)
+        let rendered = (parts.completed + parts.tail).description
+
+        #expect(rendered.contains(marker))
+        #expect(rendered.count < oldPrefix.count)
+    }
+
     // MARK: - Robustness
 
     @Test("empty and whitespace-only input yields no blocks")
@@ -409,6 +423,21 @@ struct MarkdownBlockParserTests {
             let blocks = MarkdownBlockParser.parse(sample)
             #expect(!blocks.isEmpty, "must produce blocks for: \(sample)")
         }
+    }
+
+    @Test("Quote nesting is bounded for hostile provider output")
+    func quoteDepthIsBounded() {
+        let source = String(repeating: "> ", count: 10_000) + "safe"
+        let blocks = MarkdownBlockParser.parse(source)
+        #expect(!blocks.isEmpty)
+
+        var depth = 0
+        var current = blocks
+        while current.count == 1, case .quote(let inner) = current[0] {
+            depth += 1
+            current = inner
+        }
+        #expect(depth <= MarkdownBlockParser.maximumQuoteDepth)
     }
 
     @Test("lone pipe delimiter row without header is not a table")

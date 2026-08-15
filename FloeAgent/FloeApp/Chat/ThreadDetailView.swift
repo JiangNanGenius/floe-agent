@@ -206,10 +206,8 @@ struct ThreadDetailView: View {
                 Text(RunStateLocalizer.title(for: state))
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(RunStateLocalizer.color(for: state))
-                    .accessibilityLabel(
-                        String(localized: "thread.state") + " "
-                            + String(localized: RunStateLocalizer.title(for: state))
-                    )
+                    .accessibilityLabel(Text(RunStateLocalizer.title(for: state)))
+                    .accessibilityIdentifier("thread.run_state.\(state)")
             }
         }
     }

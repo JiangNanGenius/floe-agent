@@ -7,9 +7,8 @@
 import Foundation
 import FloeTools
 
-/// Registers the execution tools: `exec.javascript` always, plus
-/// `exec.remotePython` when a `RemotePythonService` is supplied (the App
-/// wires it once hosts/credentials are available; tests pass a fake).
+/// Registers remote execution tools. Local JavaScript is opt-in for isolated
+/// tests only: production must never execute model-generated code on iOS.
 ///
 /// - Parameters:
 ///   - registry: Runner registry to register into (defaults to the shared
@@ -22,15 +21,20 @@ import FloeTools
 public func registerExecutionTools(
     registry: ToolRunnerRegistry = .shared,
     service: any ScriptExecutionService = JavaScriptExecutionService(),
-    pythonService: RemotePythonService? = nil
+    pythonService: RemotePythonService? = nil,
+    includeOnDeviceJavaScript: Bool = false
 ) -> any ScriptExecutionService {
     // Compile-time catalog descriptors.
-    ToolCatalog.register(JavaScriptExecutionTool.self)
+    if includeOnDeviceJavaScript {
+        ToolCatalog.register(JavaScriptExecutionTool.self)
+    }
     if pythonService != nil {
         ToolCatalog.register(RemotePythonTool.self)
     }
     // Runtime runners.
-    registry.register(JavaScriptExecutionTool(service: service))
+    if includeOnDeviceJavaScript {
+        registry.register(JavaScriptExecutionTool(service: service))
+    }
     if let pythonService {
         registry.register(RemotePythonTool(service: pythonService))
     }

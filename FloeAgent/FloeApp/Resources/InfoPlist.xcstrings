@@ -1,0 +1,18 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "NSMicrophoneUsageDescription" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Floe uses the microphone only while you dictate a message." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Floe 仅在你进行语音输入时使用麦克风。" } }
+      }
+    },
+    "NSSpeechRecognitionUsageDescription" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Floe converts your speech into text for the message composer." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Floe 将你的语音转换为消息输入框中的文字。" } }
+      }
+    }
+  },
+  "version" : "1.0"
+}

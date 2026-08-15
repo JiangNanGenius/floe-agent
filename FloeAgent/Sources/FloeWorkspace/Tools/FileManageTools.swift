@@ -58,6 +58,7 @@ public struct WorkspaceMoveFileTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        try WorkspaceToolSupport.rejectHostScope(context.scope)
         if let scope = args.scope, scope != "local" {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
@@ -111,6 +112,7 @@ public struct WorkspaceDeleteFileTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        try WorkspaceToolSupport.rejectHostScope(context.scope)
         if let scope = args.scope, scope != "local" {
             throw WorkspaceToolError.unsupportedScope(scope)
         }

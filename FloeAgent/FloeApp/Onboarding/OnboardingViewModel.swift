@@ -29,6 +29,7 @@ final class OnboardingViewModel: ObservableObject {
     }
 
     func markSkipped() async {
+        ConversationCenter.persistOnboardingSkippedMarker(true)
         var preferences = center.modelPreferences
         preferences.onboardingStatus = .skipped
         try? await center.saveModelPreferences(preferences)

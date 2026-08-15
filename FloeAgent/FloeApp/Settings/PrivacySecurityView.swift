@@ -23,7 +23,7 @@ struct PrivacySecurityView: View {
 
     var body: some View {
         Form {
-            Section("settings.privacy.keychain") {
+            Section {
                 LabeledContent("settings.privacy.keychain.state") {
                     capabilityText(center.keychainState)
                 }
@@ -35,11 +35,13 @@ struct PrivacySecurityView: View {
                         .foregroundStyle(.secondary)
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
+            } header: {
+                Text("settings.privacy.keychain")
             } footer: {
                 Text("settings.privacy.keychain.footer")
             }
 
-            Section("settings.privacy.data") {
+            Section {
                 destructiveButton(
                     title: String(localized: "settings.privacy.clear_history"),
                     confirming: $confirmClearHistory
@@ -53,6 +55,8 @@ struct PrivacySecurityView: View {
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(.secondary)
                 }
+            } header: {
+                Text("settings.privacy.data")
             } footer: {
                 Text("settings.privacy.clear.footer")
             }
@@ -154,7 +158,7 @@ struct PrivacySecurityView: View {
         defer { isWorking = false }
         errorMessage = nil
         do {
-            exportURL = IdentifiableURL(url: try center.exportDiagnostics())
+            exportURL = IdentifiableURL(url: try await center.exportDiagnostics())
         } catch {
             errorMessage = error.localizedDescription
         }

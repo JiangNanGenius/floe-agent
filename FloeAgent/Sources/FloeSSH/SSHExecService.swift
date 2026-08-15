@@ -28,7 +28,7 @@ public struct SSHExecResult: Sendable, Equatable {
     public var stdout: String
     public var stderr: String
     public var exitCode: Int32
-    /// True when stdout exceeded `maxOutputBytes` (further output dropped).
+    /// True when the combined stdout/stderr budget was exceeded.
     public var truncated: Bool
 
     public init(stdout: String, stderr: String, exitCode: Int32, truncated: Bool) {
@@ -61,19 +61,25 @@ public extension SSHSessionHandle {
             var stdout = ""
             var stderr = ""
             var truncated = false
+            var collectedBytes = 0
             var exitCode: Int32 = 0
             do {
                 for try await chunk in stream {
                     switch chunk {
                     case .stdout(let buffer):
-                        let text = String(decoding: buffer.readableBytesView, as: UTF8.self)
-                        if stdout.utf8.count + text.utf8.count <= maxOutputBytes {
-                            stdout += text
-                        } else {
-                            truncated = true
-                        }
+                        let bytes = Data(buffer.readableBytesView)
+                        let remaining = max(0, maxOutputBytes - collectedBytes)
+                        let accepted = bytes.prefix(remaining)
+                        stdout += String(decoding: accepted, as: UTF8.self)
+                        collectedBytes += accepted.count
+                        if accepted.count < bytes.count { truncated = true }
                     case .stderr(let buffer):
-                        stderr += String(decoding: buffer.readableBytesView, as: UTF8.self)
+                        let bytes = Data(buffer.readableBytesView)
+                        let remaining = max(0, maxOutputBytes - collectedBytes)
+                        let accepted = bytes.prefix(remaining)
+                        stderr += String(decoding: accepted, as: UTF8.self)
+                        collectedBytes += accepted.count
+                        if accepted.count < bytes.count { truncated = true }
                     }
                 }
             } catch let error as SSHClient.CommandFailed {
@@ -82,15 +88,19 @@ public extension SSHSessionHandle {
             return SSHExecResult(stdout: stdout, stderr: stderr, exitCode: exitCode, truncated: truncated)
         }
 
-        let watchdog = Task { () -> SSHExecError in
+        let watchdog = Task { () -> SSHExecError? in
             try? await Task.sleep(for: .seconds(limit))
+            guard !Task.isCancelled else { return nil }
             return .timedOut
         }
-        let cancelWatch = Task { () -> SSHExecError in
-            while cancellation?.isCancelled == false {
-                try? await Task.sleep(for: .milliseconds(25))
+        let cancelWatch: Task<SSHExecError?, Never>? = cancellation.map { token in
+            Task {
+                while !Task.isCancelled, !token.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(25))
+                }
+                guard !Task.isCancelled else { return nil }
+                return .cancelled
             }
-            return .cancelled
         }
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -103,19 +113,25 @@ public extension SSHSessionHandle {
             Task {
                 do {
                     let result = try await collect.value
+                    watchdog.cancel()
+                    cancelWatch?.cancel()
                     arbiter.win(.success(result))
                 } catch {
+                    watchdog.cancel()
+                    cancelWatch?.cancel()
                     arbiter.win(.failure(error))
                 }
             }
             Task {
-                if let error = try? await watchdog.value {
+                if let error = await watchdog.value {
                     await context.abort(with: error)
                 }
             }
-            Task {
-                if let error = try? await cancelWatch.value {
-                    await context.abort(with: error)
+            if let cancelWatch {
+                Task {
+                    if let error = await cancelWatch.value {
+                        await context.abort(with: error)
+                    }
                 }
             }
         }

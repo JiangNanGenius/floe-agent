@@ -23,6 +23,7 @@ struct AssistantMessageView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .contain)
             .accessibilityLabel(String(localized: "thread.role.assistant"))
+            .accessibilityIdentifier("thread.assistant_message")
     }
 }
 #endif

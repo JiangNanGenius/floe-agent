@@ -285,7 +285,11 @@ struct RemotePythonToolTests {
     func registrationIncludesPython() {
         let registry = ToolRunnerRegistry()
         let service = makeService(session: FakePythonSession(), hosts: [hostID])
-        registerExecutionTools(registry: registry, pythonService: service)
+        registerExecutionTools(
+            registry: registry,
+            pythonService: service,
+            includeOnDeviceJavaScript: true
+        )
 
         #expect(ToolCatalog.descriptor(named: "exec.javascript") != nil)
         #expect(ToolCatalog.descriptor(named: "exec.remotePython") != nil)

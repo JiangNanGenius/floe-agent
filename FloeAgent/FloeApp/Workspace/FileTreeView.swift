@@ -83,7 +83,7 @@ struct FileTreeView: View {
                     Text(viewModel.query)
                 }
             } else {
-                List(viewModel.searchHits, id: \.self) { hit in
+                List(Array(viewModel.searchHits.enumerated()), id: \.offset) { _, hit in
                     Button {
                         onSelectFile(hit.relativePath)
                     } label: {

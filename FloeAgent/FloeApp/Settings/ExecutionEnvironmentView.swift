@@ -39,7 +39,9 @@ struct ExecutionEnvironmentView: View {
             Section("settings.exec.defaults") {
                 Picker("settings.exec.target", selection: Binding(
                     get: { center.execution.target },
-                    set: { Task { await center.setExecutionTarget($0) } }
+                    set: { newValue in
+                        Task { await center.setExecutionTarget(newValue) }
+                    }
                 )) {
                     Text("settings.exec.target.local").tag(ExecutionTargetPreference.local)
                 }
@@ -49,7 +51,9 @@ struct ExecutionEnvironmentView: View {
                     "settings.exec.timeout \(center.execution.timeoutSeconds)",
                     value: Binding(
                         get: { center.execution.timeoutSeconds },
-                        set: { Task { await center.setExecutionTimeout(seconds: $0) } }
+                        set: { newValue in
+                            Task { await center.setExecutionTimeout(seconds: newValue) }
+                        }
                     ),
                     in: 30...3600,
                     step: 30
@@ -58,7 +62,9 @@ struct ExecutionEnvironmentView: View {
 
                 Picker("settings.exec.max_output", selection: Binding(
                     get: { center.execution.maxOutputBytes },
-                    set: { Task { await center.setMaxOutputBytes($0) } }
+                    set: { newValue in
+                        Task { await center.setMaxOutputBytes(newValue) }
+                    }
                 )) {
                     Text("32 KB").tag(32 * 1024)
                     Text("64 KB").tag(64 * 1024)
@@ -69,7 +75,9 @@ struct ExecutionEnvironmentView: View {
 
                 Toggle("settings.exec.save_artifacts", isOn: Binding(
                     get: { center.execution.savesArtifacts },
-                    set: { Task { await center.setSavesArtifacts($0) } }
+                    set: { newValue in
+                        Task { await center.setSavesArtifacts(newValue) }
+                    }
                 ))
                 .frame(minHeight: FloeTheme.minimumTarget)
             }

@@ -43,6 +43,7 @@ struct ProviderListView: View {
                     Image(systemName: "plus")
                 }
                 .accessibilityLabel("providers.add")
+                .accessibilityIdentifier("providers.add")
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             }
         }

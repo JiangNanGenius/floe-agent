@@ -13,8 +13,129 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import AVFoundation
+import Speech
 import FloeCore
 import FloeModels
+
+/// System speech-to-text controller used by every composer. Audio never
+/// enters Floe persistence; the recognized text is copied into the draft and
+/// the audio session is released as soon as dictation stops.
+@MainActor
+final class SpeechInputController: ObservableObject {
+    enum State: Equatable {
+        case idle
+        case requestingPermission
+        case listening
+        case unavailable(String)
+    }
+
+    @Published private(set) var state: State = .idle
+    @Published private(set) var transcript = ""
+
+    private let audioEngine = AVAudioEngine()
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    private var tapInstalled = false
+    private var sessionActivated = false
+
+    var isListening: Bool { state == .listening }
+
+    func toggle() async {
+        if isListening {
+            stop()
+        } else {
+            await start()
+        }
+    }
+
+    func start() async {
+        stop(resetState: false)
+        state = .requestingPermission
+        guard await requestPermissions() else {
+            state = .unavailable(String(localized: "voice.permission_required"))
+            return
+        }
+        guard let recognizer = SFSpeechRecognizer(locale: .current), recognizer.isAvailable else {
+            state = .unavailable(String(localized: "voice.unavailable"))
+            return
+        }
+
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+            sessionActivated = true
+
+            transcript = ""
+            let request = SFSpeechAudioBufferRecognitionRequest()
+            request.shouldReportPartialResults = true
+            request.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
+            recognitionRequest = request
+
+            let input = audioEngine.inputNode
+            let format = input.outputFormat(forBus: 0)
+            if tapInstalled { input.removeTap(onBus: 0) }
+            input.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, _ in
+                request.append(buffer)
+            }
+            tapInstalled = true
+            audioEngine.prepare()
+            try audioEngine.start()
+            state = .listening
+
+            recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if let result {
+                        self.transcript = result.bestTranscription.formattedString
+                        if result.isFinal { self.stop() }
+                    } else if error != nil {
+                        self.stop(resetState: false)
+                        self.state = .unavailable(String(localized: "voice.failed"))
+                    }
+                }
+            }
+        } catch {
+            stop(resetState: false)
+            state = .unavailable(String(localized: "voice.failed"))
+        }
+    }
+
+    func stop(resetState: Bool = true) {
+        if audioEngine.isRunning { audioEngine.stop() }
+        if tapInstalled {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
+        recognitionRequest?.endAudio()
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        recognitionRequest = nil
+        if sessionActivated {
+            try? AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
+            sessionActivated = false
+        }
+        if resetState { state = .idle }
+    }
+
+    private func requestPermissions() async -> Bool {
+        let speech = await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { status in
+                continuation.resume(returning: status == .authorized)
+            }
+        }
+        guard speech else { return false }
+        return await withCheckedContinuation { continuation in
+            AVAudioApplication.requestRecordPermission { granted in
+                continuation.resume(returning: granted)
+            }
+        }
+    }
+}
 
 /// How the next run should execute. Forward-looking selection surface;
 /// the runtime mapping lands with the workspace tasks (T04/T05).
@@ -30,6 +151,13 @@ enum AgentExecutionMode: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .agent: "composer.mode.agent"
         case .chat: "composer.mode.chat"
+        }
+    }
+
+    var localizedTitle: String {
+        switch self {
+        case .agent: String(localized: "composer.mode.agent")
+        case .chat: String(localized: "composer.mode.chat")
         }
     }
 
@@ -51,6 +179,12 @@ enum AgentExecutionTarget: String, CaseIterable, Identifiable, Sendable {
     var title: LocalizedStringKey {
         switch self {
         case .local: "composer.target.local"
+        }
+    }
+
+    var localizedTitle: String {
+        switch self {
+        case .local: String(localized: "composer.target.local")
         }
     }
 
@@ -109,6 +243,8 @@ struct ThreadComposerView: View {
 
     @State private var isPickerPresented = false
     @State private var attachmentError: String?
+    @State private var dictationPrefix = ""
+    @StateObject private var speechInput = SpeechInputController()
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -118,18 +254,34 @@ struct ThreadComposerView: View {
             if let attachmentError {
                 errorBanner(attachmentError)
             }
+            if case .unavailable(let message) = speechInput.state {
+                errorBanner(message)
+            }
             if !attachments.isEmpty {
                 attachmentChips
             }
             inputRow
             contextRow
         }
-        .background(FloeTheme.chromeMaterial)
+        .background(FloeTheme.chromeMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .shadow(color: .black.opacity(0.08), radius: 14, y: 5)
         .sheet(isPresented: $isPickerPresented) {
             DocumentPickerView { url in
                 Task { await registerPicked(url) }
             }
         }
+        .onChange(of: speechInput.transcript) { _, transcript in
+            guard speechInput.isListening || !transcript.isEmpty else { return }
+            let separator = dictationPrefix.isEmpty || dictationPrefix.last?.isWhitespace == true ? "" : " "
+            draft = dictationPrefix + separator + transcript
+        }
+        .onDisappear { speechInput.stop() }
     }
 
     // MARK: - Input row
@@ -152,8 +304,24 @@ struct ThreadComposerView: View {
             }
             .lineLimit(1...5)
             .textFieldStyle(.plain)
-            .disabled(!providerConfigured)
             .accessibilityLabel("home.new_task.placeholder")
+            .accessibilityIdentifier("composer.input")
+
+            Button {
+                if !speechInput.isListening { dictationPrefix = draft }
+                Task { await speechInput.toggle() }
+            } label: {
+                Image(systemName: speechInput.isListening ? "waveform.circle.fill" : "microphone.circle")
+                    .font(.title2)
+                    .symbolEffect(.pulse, isActive: speechInput.isListening && !reduceMotion)
+                    .foregroundStyle(speechInput.isListening ? FloeTheme.destructive : FloeTheme.primary)
+            }
+            .buttonStyle(.plain)
+            .disabled(speechInput.state == .requestingPermission)
+            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            .accessibilityLabel(speechInput.isListening ? "voice.stop" : "voice.start")
+            .accessibilityHint("voice.hint")
+            .accessibilityIdentifier("composer.voice")
 
             if isRunning {
                 Button(role: .destructive) {
@@ -178,6 +346,7 @@ struct ThreadComposerView: View {
                 .disabled(!canSend)
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("thread.send")
+                .accessibilityIdentifier("composer.send")
             }
         }
         .padding(.horizontal, 12)
@@ -300,7 +469,7 @@ struct ThreadComposerView: View {
             }
         } label: {
             composerChip(
-                title: String(localized: executionTarget.title),
+                title: executionTarget.localizedTitle,
                 systemImage: executionTarget.systemImage
             )
         }
@@ -321,7 +490,7 @@ struct ThreadComposerView: View {
             }
         } label: {
             composerChip(
-                title: String(localized: agentMode.title),
+                title: agentMode.localizedTitle,
                 systemImage: agentMode.systemImage
             )
         }

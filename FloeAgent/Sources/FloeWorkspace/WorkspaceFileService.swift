@@ -141,6 +141,9 @@ public struct WorkspaceFileService: Sendable {
     public static let maxSearchHits = 100
     /// Maximum context characters per search hit.
     public static let maxHitContextCharacters = 200
+    /// Hard bounds for hostile or exceptionally large File Provider trees.
+    public static let maxDirectoryEntries = 5_000
+    public static let maxSearchFiles = 10_000
     /// Directories pruned during search (VCS internals, build products).
     private static let searchSkipDirectories: Set<String> = [
         ".git", ".svn", ".hg", "node_modules", ".build", "DerivedData", ".swiftpm"
@@ -176,9 +179,23 @@ public struct WorkspaceFileService: Sendable {
             throw WorkspaceToolError.invalidArguments("path is not a directory: \(path)")
         }
 
-        let names = try fileManager.contentsOfDirectory(atPath: url.path)
-            .filter { !$0.hasPrefix(".") }
-            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        guard let enumerator = fileManager.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+        ) else {
+            throw WorkspaceToolError.notFound(path)
+        }
+        var names: [String] = []
+        names.reserveCapacity(min(Self.maxDirectoryEntries, Self.pageSize * 2))
+        for case let child as URL in enumerator {
+            try cancellation?.throwIfCancelled()
+            guard names.count < Self.maxDirectoryEntries else {
+                throw WorkspaceToolError.tooLarge(limit: Self.maxDirectoryEntries)
+            }
+            names.append(child.lastPathComponent)
+        }
+        names.sort { $0.localizedStandardCompare($1) == .orderedAscending }
 
         let startIndex = Self.decodePageToken(pageToken, count: names.count)
         let endIndex = min(startIndex + Self.pageSize, names.count)
@@ -265,16 +282,13 @@ public struct WorkspaceFileService: Sendable {
         var hits: [SearchHit] = []
         let basePath = guardResolver.rootURL.path
 
-        let files: [URL]
-        if startIsDirectory.boolValue {
-            files = try enumerateTextFiles(under: startURL, cancellation: cancellation)
-        } else {
-            files = [startURL]
-        }
-
+        let files = startIsDirectory.boolValue
+            ? try enumerateTextFiles(under: startURL, cancellation: cancellation)
+            : [startURL]
         for file in files {
             try cancellation?.throwIfCancelled()
             if hits.count >= cappedResults { break }
+            guard !guardResolver.isSecretPath(file) else { continue }
             guard let size = (try? fileManager.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?
                 .intValue, size <= guardResolver.maxReadBytes else { continue }
             guard let data = try? Data(contentsOf: file) else { continue }
@@ -386,20 +400,28 @@ public struct WorkspaceFileService: Sendable {
         var lineDelta = 0
         for hunk in hunks {
             try cancellation?.throwIfCancelled()
-            let startIndex = hunk.oldStart - 1 + lineDelta
-            guard startIndex >= 0, startIndex + hunk.oldLines.count <= lines.count else {
+            let (zeroBased, startUnderflow) = hunk.oldStart.subtractingReportingOverflow(1)
+            let (startIndex, startOverflow) = zeroBased.addingReportingOverflow(lineDelta)
+            let (endIndex, endOverflow) = startIndex.addingReportingOverflow(hunk.oldLines.count)
+            guard !startUnderflow, !startOverflow, !endOverflow,
+                  startIndex >= 0, endIndex <= lines.count else {
                 throw WorkspaceToolError.invalidPatch(
                     "hunk @@ -\(hunk.oldStart),\(hunk.oldCount) +\(hunk.newStart),\(hunk.newCount) @@ is out of range"
                 )
             }
-            let window = Array(lines[startIndex..<(startIndex + hunk.oldLines.count)])
+            let window = Array(lines[startIndex..<endIndex])
             guard window == hunk.oldLines else {
                 throw WorkspaceToolError.invalidPatch(
                     "context mismatch near line \(hunk.oldStart); file contents do not match the patch"
                 )
             }
-            lines.replaceSubrange(startIndex..<(startIndex + hunk.oldLines.count), with: hunk.newLines)
-            lineDelta += hunk.newLines.count - hunk.oldLines.count
+            lines.replaceSubrange(startIndex..<endIndex, with: hunk.newLines)
+            let delta = hunk.newLines.count - hunk.oldLines.count
+            let (nextDelta, deltaOverflow) = lineDelta.addingReportingOverflow(delta)
+            guard !deltaOverflow else {
+                throw WorkspaceToolError.invalidPatch("hunk line delta overflow")
+            }
+            lineDelta = nextDelta
             applied += 1
             added += hunk.addedCount
             removed += hunk.removedCount
@@ -537,6 +559,10 @@ public struct WorkspaceFileService: Sendable {
                 continue
             }
             guard values.isRegularFile == true else { continue }
+            guard !guardResolver.isSecretPath(url) else { continue }
+            guard files.count < Self.maxSearchFiles else {
+                throw WorkspaceToolError.tooLarge(limit: Self.maxSearchFiles)
+            }
             files.append(url)
         }
         return files

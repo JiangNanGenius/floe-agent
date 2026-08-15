@@ -191,6 +191,8 @@ struct FileToolsTests {
         binary.append(contentsOf: [0, 1, 2])
         try binary.write(to: fixture.root.appendingPathComponent("bin.dat"))
         try fixture.write(".git/config", "token") // hidden + secret; never searched
+        try fixture.write("id_rsa", "token private key")
+        try fixture.write("certs/private.key", "token certificate")
         for index in 0..<120 {
             try fixture.write(String(format: "m%03d.txt", index), "token here")
         }
@@ -198,7 +200,12 @@ struct FileToolsTests {
         let service = try fixture.environment.makeService()
         let hits = try service.search(query: "token", in: "")
         #expect(hits.count == WorkspaceFileService.maxSearchHits)
-        #expect(hits.allSatisfy { !$0.relativePath.hasPrefix(".git") && $0.relativePath != "bin.dat" })
+        #expect(hits.allSatisfy {
+            !$0.relativePath.hasPrefix(".git")
+                && $0.relativePath != "bin.dat"
+                && $0.relativePath != "id_rsa"
+                && $0.relativePath != "certs/private.key"
+        })
     }
 
     // MARK: inspectFileMetadata
@@ -335,6 +342,32 @@ struct FileToolsTests {
             }
         }
         #expect(try fixture.read("file.txt") == original)
+    }
+
+    @Test("Extreme patch coordinates are rejected without trapping")
+    func applyPatchCoordinateOverflowRejected() async throws {
+        let fixture = try makeFixture()
+        try fixture.write("overflow.txt", "a\nb\n")
+        let service = try fixture.environment.makeService()
+        let patch = """
+        --- a/overflow.txt
+        +++ b/overflow.txt
+        @@ -9223372036854775807,2 +1,2 @@
+        -a
+        -b
+        +x
+        +y
+        """
+        do {
+            _ = try service.applyPatch("overflow.txt", patch: patch)
+            Issue.record("expected invalidPatch")
+        } catch let error as WorkspaceToolError {
+            guard case .invalidPatch = error else {
+                Issue.record("expected invalidPatch, got \(error)")
+                return
+            }
+        }
+        #expect(try fixture.read("overflow.txt") == "a\nb\n")
     }
 
     @Test("Multi-file patches are rejected")
@@ -486,6 +519,28 @@ struct FileToolsTests {
                     Issue.record("expected unsupportedScope, got \(error)")
                     continue
                 }
+            }
+        }
+        #expect(fixture.exists("x.txt"))
+    }
+
+    @Test("Canonical host scope is rejected even when JSON omits scope")
+    func canonicalHostScopeRejected() async throws {
+        let fixture = try makeFixture()
+        try fixture.write("x.txt", "x")
+        let context = ToolContext(
+            runID: UUID(),
+            scope: .host(UUID()),
+            cancellation: CancellationToken()
+        )
+        let tool = WorkspaceDeleteFileTool(environment: fixture.environment)
+        do {
+            _ = try await tool.execute(.init(path: "x.txt"), context: context)
+            Issue.record("expected unsupportedScope")
+        } catch let error as WorkspaceToolError {
+            guard case .unsupportedScope = error else {
+                Issue.record("expected unsupportedScope, got \(error)")
+                return
             }
         }
         #expect(fixture.exists("x.txt"))

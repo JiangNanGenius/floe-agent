@@ -3401,6 +3401,82 @@
         }
       }
     },
+    "providers.refresh_models": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refresh Model List"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刷新模型列表"
+          }
+        }
+      }
+    },
+    "providers.search_models": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search models"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索模型"
+          }
+        }
+      }
+    },
+    "voice.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Voice input stopped unexpectedly. Try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "语音输入意外停止，请重试。" } }
+      }
+    },
+    "voice.hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Dictates text into the message field" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "将语音转写到消息输入框" } }
+      }
+    },
+    "voice.permission_required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Allow Microphone and Speech Recognition in Settings to use voice input." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请在系统设置中允许麦克风和语音识别，以使用语音输入。" } }
+      }
+    },
+    "voice.start": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Start voice input" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开始语音输入" } }
+      }
+    },
+    "voice.stop": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Stop voice input" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "停止语音输入" } }
+      }
+    },
+    "voice.unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Speech recognition is currently unavailable." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "语音识别当前不可用。" } }
+      }
+    },
     "providers.manual_entry": {
       "extractionState": "manual",
       "localizations": {

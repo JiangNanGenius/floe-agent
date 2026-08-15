@@ -86,6 +86,8 @@
 		E40E39F14DBED467D850E91A /* FloeAgentRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = EF4C9E5ED2F18E4E1CB8A527 /* FloeAgentRuntime */; };
 		EA75F07AFCF7BF5BF8A40F9E /* ThreadDetailViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA10AC479B03C7D998AC448B /* ThreadDetailViewModel.swift */; };
 		EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = A6797B7DAA890D6378153058 /* Localizable.xcstrings */; };
+		4F10A0012C15000100000001 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 4F10A0012C15000100000002 /* InfoPlist.xcstrings */; };
+		4F20A0012C15000100000001 /* FloeExecution in Frameworks */ = {isa = PBXBuildFile; productRef = 4F20A0012C15000100000002 /* FloeExecution */; };
 		ED9E967E7858D92A307B24F6 /* AuxiliaryModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE522C8BF30B54FAD939C53C /* AuxiliaryModelsView.swift */; };
 		EF38B4329039226E8A757EE4 /* HostListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104F2ACE88D931C8C54A6787 /* HostListViewModel.swift */; };
 		F2FA4F2EDA410E215E8DA440 /* TerminalViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 531772E03835546E29F3B7DF /* TerminalViewModel.swift */; };
@@ -185,6 +187,7 @@
 		A4A0E75544F5FA28387CB77B /* ProviderListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderListView.swift; sourceTree = "<group>"; };
 		A6361867E119C80F4DB74A23 /* DocumentPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentPickerView.swift; sourceTree = "<group>"; };
 		A6797B7DAA890D6378153058 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
+		4F10A0012C15000100000002 /* InfoPlist.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = InfoPlist.xcstrings; sourceTree = "<group>"; };
 		A6AFF9D3E17B2962EAE99225 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
 		ADE9E409B66EBC3967853B86 /* ModelPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPickerView.swift; sourceTree = "<group>"; };
 		B536F4DA6282AE9A983C8498 /* RemoteImageUnavailableView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageUnavailableView.swift; sourceTree = "<group>"; };
@@ -240,6 +243,7 @@
 				405D2CF50F65452FBB99CE0D /* FloeImages in Frameworks */,
 				ABAF2700584FE5E93C50DA1B /* FloeSSH in Frameworks */,
 				A1730325CB40AA74E22D3C28 /* FloeVNC in Frameworks */,
+				4F20A0012C15000100000001 /* FloeExecution in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -481,6 +485,7 @@
 			children = (
 				37BB930D0175C1FF7EE714EE /* Assets.xcassets */,
 				916ACA33CDE6532714E49272 /* Info.plist */,
+				4F10A0012C15000100000002 /* InfoPlist.xcstrings */,
 				A6797B7DAA890D6378153058 /* Localizable.xcstrings */,
 			);
 			path = Resources;
@@ -567,6 +572,7 @@
 				EBF97B079841247A01DFCE52 /* FloeImages */,
 				DEFB59A49152ED0F642C4865 /* FloeSSH */,
 				8D67ACB7499F21D8B8B49FE4 /* FloeVNC */,
+				4F20A0012C15000100000002 /* FloeExecution */,
 			);
 			productName = FloeAgent;
 			productReference = 8D4157CD2630B494873F61E6 /* Floe Agent.app */;
@@ -638,6 +644,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				75B75F5F8C25D5B60B5E4541 /* Assets.xcassets in Resources */,
+				4F10A0012C15000100000001 /* InfoPlist.xcstrings in Resources */,
 				EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -761,7 +768,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -841,8 +848,8 @@
 		6D64DF1CFFCBB85CE274044C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
 				DEVELOPMENT_TEAM = QYL72C43K6;
+				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -923,8 +930,8 @@
 		A48A6F5D4844A2FCBD876EB0 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
 				DEVELOPMENT_TEAM = QYL72C43K6;
+				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -946,7 +953,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1066,6 +1073,10 @@
 		3A30F05D2B5C4E23A0050019 /* FloeWorkspace */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = FloeWorkspace;
+		};
+		4F20A0012C15000100000002 /* FloeExecution */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeExecution;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -24,6 +24,12 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Floe uses the microphone only while you dictate a message.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Floe converts your speech into text for the message composer.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>

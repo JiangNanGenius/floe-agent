@@ -50,11 +50,13 @@ struct ProviderEditorView: View {
             ToolbarItem(placement: .cancellationAction) {
                 Button("action.cancel") { dismiss() }
                     .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                    .accessibilityIdentifier("action.cancel")
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("action.save") { save() }
                     .disabled(viewModel.isSaving)
                     .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                    .accessibilityIdentifier("action.save")
             }
         }
         .task { await viewModel.load() }
@@ -94,6 +96,7 @@ struct ProviderEditorView: View {
                 }
             }
             .accessibilityLabel("providers.preset")
+            .accessibilityIdentifier("providers.preset")
         }
     }
 
@@ -125,6 +128,7 @@ struct ProviderEditorView: View {
         Section {
             SecureField("providers.api_key", text: $viewModel.apiKey)
                 .textInputAutocapitalization(.never)
+                .accessibilityIdentifier("providers.api_key")
             if viewModel.secretStatus == .waitingForSecret {
                 Label("providers.waiting_secret.hint", systemImage: "key.fill")
                     .font(FloeTheme.Typography.metadata)
@@ -176,6 +180,7 @@ struct ProviderEditorView: View {
                 .frame(minHeight: FloeTheme.minimumTarget)
             }
             .disabled(viewModel.testState == .testing)
+            .accessibilityIdentifier("providers.test_connection")
             if case .failed(let message) = viewModel.testState {
                 Text(message)
                     .font(FloeTheme.Typography.metadata)
@@ -199,6 +204,17 @@ struct ProviderEditorView: View {
             }
             Button("providers.manage_models") { showModelPicker = true }
                 .frame(minHeight: FloeTheme.minimumTarget)
+                .accessibilityIdentifier("providers.manage_models")
+            if viewModel.supportsDiscovery {
+                Button {
+                    Task { await viewModel.refreshModels() }
+                } label: {
+                    Label("providers.refresh_models", systemImage: "arrow.clockwise")
+                }
+                .disabled(viewModel.testState == .testing)
+                .frame(minHeight: FloeTheme.minimumTarget)
+                .accessibilityIdentifier("providers.refresh_models")
+            }
         } header: {
             Text("providers.models_section")
         } footer: {

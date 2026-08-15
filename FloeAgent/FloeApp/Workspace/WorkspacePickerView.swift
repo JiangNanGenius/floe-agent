@@ -10,6 +10,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import UniformTypeIdentifiers
+import FloeModels
 
 /// Workspace list with add (folder picker) / open / delete.
 struct WorkspacePickerView: View {

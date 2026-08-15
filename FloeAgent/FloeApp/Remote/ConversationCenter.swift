@@ -32,6 +32,9 @@ struct PendingApproval: Identifiable, Hashable, Sendable {
     let riskLabels: Set<String>
     let isSideEffecting: Bool
     let requestedAt: Date
+    /// Workspace identity captured when the approval first became visible.
+    /// An allowed workspace action is denied if the user switches roots.
+    let workspaceID: UUID?
 
     var id: String { toolCall.id }
 
@@ -51,6 +54,20 @@ struct PendingApproval: Identifiable, Hashable, Sendable {
 /// Coordinates conversations and agent runs for the UI layer.
 @MainActor
 final class ConversationCenter: ObservableObject {
+    static let onboardingSkippedDefaultsKey = "org.floeagent.onboarding.skipped"
+
+    /// Writes the launch-critical skip marker synchronously. Interactive
+    /// sheet dismissal can be followed immediately by process termination;
+    /// forcing the preferences flush prevents the first-run sheet from
+    /// resurrecting before the async database write completes.
+    static func persistOnboardingSkippedMarker(_ skipped: Bool) {
+        if skipped {
+            UserDefaults.standard.set(true, forKey: onboardingSkippedDefaultsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: onboardingSkippedDefaultsKey)
+        }
+        UserDefaults.standard.synchronize()
+    }
 
     // MARK: - Published state
 
@@ -218,7 +235,15 @@ final class ConversationCenter: ObservableObject {
     /// Resolves a pending human approval, then forgets it.
     func resolve(_ approval: PendingApproval, decision: ApprovalDecision) async {
         guard let service = runServices[approval.runID] else { return }
-        await service.resolveApproval(decision)
+        let resolvedDecision: ApprovalDecision
+        if decision.permitsExecution,
+           approval.toolCall.toolName.hasPrefix("workspace."),
+           approval.workspaceID != environment.workspaceCenter.currentWorkspace?.id {
+            resolvedDecision = .deny(reason: "workspace changed after approval was requested")
+        } else {
+            resolvedDecision = decision
+        }
+        await service.resolveApproval(resolvedDecision)
         pendingApprovals.removeAll { $0.id == approval.id }
     }
 
@@ -303,6 +328,12 @@ final class ConversationCenter: ObservableObject {
         updated.updatedAt = Date()
         updated.syncRevision += 1
         try await environment.configurationSync.savePreferences(updated)
+        switch updated.onboardingStatus {
+        case .skipped:
+            Self.persistOnboardingSkippedMarker(true)
+        case .completed, .unseen:
+            Self.persistOnboardingSkippedMarker(false)
+        }
         await reload()
     }
 
@@ -386,7 +417,10 @@ final class ConversationCenter: ObservableObject {
                 reason: waiting.reason,
                 riskLabels: Set(descriptor?.riskLabels.map(\.rawValue) ?? []),
                 isSideEffecting: descriptor?.isSideEffecting ?? true,
-                requestedAt: waiting.requestedAt
+                requestedAt: waiting.requestedAt,
+                workspaceID: waiting.toolCall.toolName.hasPrefix("workspace.")
+                    ? environment.workspaceCenter.currentWorkspace?.id
+                    : nil
             )
             pendingApprovals.removeAll { $0.runID == snapshot.runID }
             pendingApprovals.append(pending)

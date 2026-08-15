@@ -141,16 +141,41 @@ final class ProviderEditorViewModel: ObservableObject {
     /// model discovery when supported. On failure the manual-model
     /// fallback remains available.
     func testConnection() async {
+        await discoverModels(testConnectivity: true)
+    }
+
+    /// Re-fetches the provider's model catalog from the normal settings flow.
+    /// Existing credentials are resolved from Keychain when the key field is
+    /// intentionally left blank while editing.
+    func refreshModels() async {
+        await discoverModels(testConnectivity: true)
+    }
+
+    private func discoverModels(testConnectivity: Bool) async {
         testState = .testing
         errorMessage = nil
         do {
             let profile = try buildProfile()
             let enteredKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            let credentials = enteredKey.isEmpty
-                ? resolveCredentials(profile)
-                : ProviderCredentials(apiKey: enteredKey)
+            let credentials: ProviderCredentials
+            if !enteredKey.isEmpty {
+                credentials = ProviderCredentials(apiKey: enteredKey)
+            } else if profile.secretRef != nil {
+                // Read through the sync-aware store so refresh still works if
+                // the user has just changed the iCloud Keychain toggle. The
+                // store deliberately falls back across local/synchronized
+                // namespaces during that transition.
+                let secret = try await secretStore.readSecret(scope: .provider(providerID))
+                credentials = ProviderCredentials(
+                    apiKey: String(data: secret, encoding: .utf8)
+                )
+            } else {
+                credentials = ProviderCredentials()
+            }
             let adapter = adapterFactory.adapter(for: profile)
-            try await adapter.testConnection(provider: profile, credentials: credentials)
+            if testConnectivity {
+                try await adapter.testConnection(provider: profile, credentials: credentials)
+            }
             if supportsDiscovery {
                 let models = try await adapter.listModels(
                     provider: profile,
@@ -162,7 +187,9 @@ final class ProviderEditorViewModel: ObservableObject {
                 testState = .succeeded(modelCount: 0)
             }
         } catch {
-            testState = .failed(SecretRedactor.redact(error.localizedDescription))
+            let message = SecretRedactor.redact(error.localizedDescription)
+            testState = .failed(message)
+            errorMessage = message
         }
     }
 
@@ -178,6 +205,19 @@ final class ProviderEditorViewModel: ObservableObject {
             if defaultModelID == id { defaultModelID = nil }
         } else {
             selectedModelIDs.insert(id)
+        }
+    }
+
+    /// Sets selection idempotently. This is used by the model picker's
+    /// native Toggle rows so touch, keyboard and VoiceOver activation all
+    /// update the same source of truth without relying on a nested List
+    /// button gesture.
+    func setSelection(_ id: UUID, isSelected: Bool) {
+        if isSelected {
+            selectedModelIDs.insert(id)
+        } else {
+            selectedModelIDs.remove(id)
+            if defaultModelID == id { defaultModelID = nil }
         }
     }
 
@@ -276,10 +316,6 @@ final class ProviderEditorViewModel: ObservableObject {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty, let data = key.data(using: .utf8) else { return }
         try await secretStore.storeSecret(data, scope: .provider(providerID))
-    }
-
-    private func resolveCredentials(_ profile: ProviderProfile) -> ProviderCredentials {
-        center.resolveCredentials(for: profile)
     }
 
     // MARK: - Header parsing

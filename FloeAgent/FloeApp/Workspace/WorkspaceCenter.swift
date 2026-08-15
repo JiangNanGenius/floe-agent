@@ -115,7 +115,7 @@ final class WorkspaceCenter: ObservableObject {
         guard let record = try await store.workspace(id: id) else {
             throw FloeError.notFound("workspace \(id.uuidString)")
         }
-        let url = try resolveRoot(record)
+        let url = try await resolveRoot(record)
         guard url.startAccessingSecurityScopedResource() else {
             throw FloeError.validationFailed("Workspace folder is not accessible")
         }

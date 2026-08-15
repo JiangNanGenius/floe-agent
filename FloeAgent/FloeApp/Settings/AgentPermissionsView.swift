@@ -20,7 +20,9 @@ struct AgentPermissionsView: View {
             Section {
                 Picker("settings.permissions.default_mode", selection: Binding(
                     get: { center.defaultAgentMode },
-                    set: { Task { await center.setDefaultAgentMode($0) } }
+                    set: { newValue in
+                        Task { await center.setDefaultAgentMode(newValue) }
+                    }
                 )) {
                     Text("settings.general.agent_mode.human").tag(AgentMode.human)
                     Text("settings.general.agent_mode.approval_model").tag(AgentMode.approvalModel)

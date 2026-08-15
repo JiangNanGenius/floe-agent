@@ -65,7 +65,7 @@ struct JavaScriptExecutionToolTests {
 
     @Test("Invalid arguments JSON fails decoding through the executor")
     func invalidArgumentsJSON() async throws {
-        registerExecutionTools()
+        registerExecutionTools(includeOnDeviceJavaScript: true)
         let executor = CatalogToolExecutor()
         let call = try makeCall(#"{"other":1}"#)
         let result = try await executor.execute(call, context: makeContext())
@@ -77,7 +77,7 @@ struct JavaScriptExecutionToolTests {
 
     @Test("console.log(1+1) executes end to end; the model-readable result contains 2")
     func consoleLogThroughExecutor() async throws {
-        registerExecutionTools()
+        registerExecutionTools(includeOnDeviceJavaScript: true)
         let executor = CatalogToolExecutor()
 
         // Descriptor must be visible (compile-time registration)…
@@ -95,7 +95,7 @@ struct JavaScriptExecutionToolTests {
 
     @Test("console.error lands in the stderr section, separate from stdout")
     func stderrSectionThroughExecutor() async throws {
-        registerExecutionTools()
+        registerExecutionTools(includeOnDeviceJavaScript: true)
         let executor = CatalogToolExecutor()
         let call = try makeCall(
             #"{"script":"console.log('hello-out'); console.error('boom-err');"}"#
@@ -114,7 +114,7 @@ struct JavaScriptExecutionToolTests {
 
     @Test("A JS exception returns an ok result carrying the error status")
     func jsExceptionMapping() async throws {
-        registerExecutionTools()
+        registerExecutionTools(includeOnDeviceJavaScript: true)
         let executor = CatalogToolExecutor()
         let call = try makeCall(#"{"script":"throw new Error('kaboom');"}"#)
         let result = try await executor.execute(call, context: makeContext())
@@ -126,7 +126,7 @@ struct JavaScriptExecutionToolTests {
 
     @Test("A runaway script maps to a timedOut result within the deadline")
     func timeoutMapping() async throws {
-        registerExecutionTools()
+        registerExecutionTools(includeOnDeviceJavaScript: true)
         let executor = CatalogToolExecutor()
         let started = Date()
         let call = try makeCall(#"{"script":"while (true) {}","timeout":0.5}"#)
@@ -141,7 +141,7 @@ struct JavaScriptExecutionToolTests {
 
     @Test("Cancellation before execution propagates as a cancelled ToolResult")
     func cancellationMapping() async throws {
-        registerExecutionTools()
+        registerExecutionTools(includeOnDeviceJavaScript: true)
         let executor = CatalogToolExecutor()
         let token = CancellationToken()
         token.cancel()
@@ -155,10 +155,18 @@ struct JavaScriptExecutionToolTests {
 
     // MARK: Registration
 
+    @Test("Production registration omits the on-device JavaScript runner")
+    func productionRegistrationOmitsJavaScript() {
+        let registry = ToolRunnerRegistry()
+        registerExecutionTools(registry: registry)
+
+        #expect(registry.runner(named: "exec.javascript") == nil)
+    }
+
     @Test("registerExecutionTools wires catalog + runner on the shared registry")
     func dualRegistration() async throws {
         let registry = ToolRunnerRegistry()
-        registerExecutionTools(registry: registry)
+        registerExecutionTools(registry: registry, includeOnDeviceJavaScript: true)
 
         #expect(ToolCatalog.descriptor(named: "exec.javascript") != nil)
         let runner = registry.runner(named: "exec.javascript")
