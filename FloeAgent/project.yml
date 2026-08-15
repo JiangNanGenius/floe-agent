@@ -31,6 +31,9 @@ targets:
       properties:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        NSMicrophoneUsageDescription: Floe uses the microphone only while you dictate a message.
+        NSSpeechRecognitionUsageDescription: Floe converts your speech into text for the message composer.
         BGTaskSchedulerPermittedIdentifiers:
           - org.floeagent.ios.refresh
           - org.floeagent.ios.processing
@@ -88,6 +91,12 @@ targets:
         product: FloeSSH
       - package: FloeAgentPackages
         product: FloeVNC
+      - package: FloeAgentPackages
+        product: FloeMarkdown
+      - package: FloeAgentPackages
+        product: FloeWorkspace
+      - package: FloeAgentPackages
+        product: FloeExecution
     settings:
       base:
         DEVELOPMENT_TEAM: QYL72C43K6
@@ -97,7 +106,7 @@ targets:
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
         MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "5"
+        CURRENT_PROJECT_VERSION: "6"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
         ENABLE_USER_SCRIPT_SANDBOXING: YES
