@@ -103,4 +103,14 @@ struct ProviderProfileTests {
         #expect(caps.contains(.approval))
         #expect(!caps.contains(.vision))
     }
+
+    @Test("Unspecified output uses a bounded local safety budget")
+    func unspecifiedOutputSafetyBudget() {
+        let ordinary = ModelLimits(contextTokens: 128_000, maxOutputTokens: 0)
+        #expect(ordinary.configuredMaxOutputTokens == nil)
+        #expect(ordinary.clientOutputSafetyBytes == 2_048_000)
+
+        let extreme = ModelLimits(contextTokens: Int.max, maxOutputTokens: Int.max)
+        #expect(extreme.clientOutputSafetyBytes == 8 * 1_024 * 1_024)
+    }
 }

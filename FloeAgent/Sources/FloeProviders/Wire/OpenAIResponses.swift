@@ -31,16 +31,23 @@ public struct ResponsesRequest: Sendable, Codable, Hashable {
 
     public enum InputItem: Sendable, Hashable {
         case message(role: String, content: String)
+        case functionCall(callID: String, name: String, arguments: String)
         case functionCallOutput(callID: String, output: String)
 
         enum CodingKeys: String, CodingKey {
-            case type, role, content, callID = "call_id", output
+            case type, role, content, callID = "call_id", name, arguments, output
         }
 
         public init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             let type = try container.decodeIfPresent(String.self, forKey: .type) ?? "message"
             switch type {
+            case "function_call":
+                self = .functionCall(
+                    callID: try container.decode(String.self, forKey: .callID),
+                    name: try container.decode(String.self, forKey: .name),
+                    arguments: try container.decode(String.self, forKey: .arguments)
+                )
             case "function_call_output":
                 self = .functionCallOutput(
                     callID: try container.decode(String.self, forKey: .callID),
@@ -61,6 +68,11 @@ public struct ResponsesRequest: Sendable, Codable, Hashable {
                 try container.encode("message", forKey: .type)
                 try container.encode(role, forKey: .role)
                 try container.encode(content, forKey: .content)
+            case .functionCall(let callID, let name, let arguments):
+                try container.encode("function_call", forKey: .type)
+                try container.encode(callID, forKey: .callID)
+                try container.encode(name, forKey: .name)
+                try container.encode(arguments, forKey: .arguments)
             case .functionCallOutput(let callID, let output):
                 try container.encode("function_call_output", forKey: .type)
                 try container.encode(callID, forKey: .callID)

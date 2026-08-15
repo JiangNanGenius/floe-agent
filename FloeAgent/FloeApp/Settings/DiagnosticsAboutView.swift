@@ -9,6 +9,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import UIKit
 import FloeCore
 
 struct DiagnosticsAboutView: View {
@@ -71,6 +72,20 @@ struct DiagnosticsAboutView: View {
                         .font(FloeTheme.Typography.evidence)
                         .textSelection(.enabled)
                         .lineLimit(20)
+                }
+                HStack {
+                    Button {
+                        logText = FloeLogger.buffer.renderedText()
+                    } label: {
+                        Label("settings.diagnostics.logs", systemImage: "arrow.clockwise")
+                    }
+                    Spacer()
+                    Button {
+                        UIPasteboard.general.string = logText
+                    } label: {
+                        Label("action.copy", systemImage: "doc.on.doc")
+                    }
+                    .disabled(logText.isEmpty)
                 }
             } header: {
                 Text("settings.diagnostics.logs")

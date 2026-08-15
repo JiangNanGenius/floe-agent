@@ -81,6 +81,50 @@ struct ConversationRunServiceTests {
         #expect(run?.endedAt != nil)
     }
 
+    @Test("A tool turn persists the provider's final assistant reply")
+    func toolTurnPersistsFinalReply() async throws {
+        let (conversationStore, runStore) = try await makeStores()
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "Tool run", createdAt: Date(), updatedAt: Date()
+        ))
+        let call = try TestFixtures.toolCall(id: "call_file_write")
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(call)],
+            [
+                .textDelta(AgentEvent.TextDelta(text: "文件已写入。")),
+                .completed(AgentEvent.CompletionInfo(stopReason: .endTurn))
+            ]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors[call.toolName] = ToolCatalog.Descriptor(
+            name: call.toolName, riskLabels: [], isSideEffecting: false
+        )
+        let service = ConversationRunService(
+            configuration: FloeAgentRuntime.Configuration(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID())
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        try await service.start(goal: "写入文件")
+
+        let messages = try await conversationStore.messages(conversationID: conversationID)
+        #expect(messages.last(where: { $0.role == "assistant" })?.content == "文件已写入。")
+        let events = try await runStore.events(runID: service.runID)
+        #expect(events.contains { $0.kind == .terminal })
+        #expect(!events.contains {
+            $0.kind == .status && !$0.payloadJSON.contains("state")
+        })
+    }
+
     @Test("A provider error persists a structured, redacted error record")
     func persistedError() async throws {
         let (conversationStore, runStore) = try await makeStores()

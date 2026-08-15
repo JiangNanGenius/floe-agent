@@ -2676,13 +2676,47 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Choose a common size or enter the exact limit. Maximum output cannot exceed context."
+            "value": "Context is required. Maximum output may be left blank to use the provider default, and cannot exceed context when set."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "可快速选择常见规格，也可填写精确 Token 数；最大输出不能超过上下文长度。"
+            "value": "上下文长度必须填写；最大输出可留空并使用供应商默认值，填写时不能超过上下文长度。"
+          }
+        }
+      }
+    },
+    "model.limit.not_set": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not set"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未设置"
+          }
+        }
+      }
+    },
+    "model.limit.use_provider_default": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use provider default"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用供应商默认值"
           }
         }
       }

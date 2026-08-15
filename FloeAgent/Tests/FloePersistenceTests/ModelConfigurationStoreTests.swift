@@ -121,6 +121,32 @@ struct ModelConfigurationStoreTests {
         }
     }
 
+    @Test("Model context is required while maximum output may be unspecified")
+    func optionalMaximumOutput() async throws {
+        let store = try await makeStore()
+        let provider = ProviderProfile(
+            kind: .custom,
+            wireProtocol: .openAIResponses,
+            baseURL: try #require(URL(string: "https://public.example/v1"))
+        )
+        try await store.saveProvider(provider)
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "provider-default-output",
+            displayName: "Provider Default",
+            limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 0)
+        )
+
+        try await store.saveModel(model)
+        #expect(try await store.model(id: model.id)?.limits.maxOutputTokens == 0)
+
+        var invalid = model
+        invalid.limits.contextTokens = 0
+        await #expect(throws: FloeError.self) {
+            try await store.saveModel(invalid)
+        }
+    }
+
     @Test("Models merge by provider and remote identifier")
     func modelIdentityMerge() async throws {
         let store = try await makeStore()

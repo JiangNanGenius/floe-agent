@@ -98,7 +98,10 @@ struct ChatHomeView: View {
                         .font(FloeTheme.Typography.body.weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                    Text(conversation.updatedAt, style: .relative)
+                    Text(
+                        conversation.updatedAt,
+                        format: .dateTime.month(.abbreviated).day().hour().minute()
+                    )
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(.secondary)
                 }

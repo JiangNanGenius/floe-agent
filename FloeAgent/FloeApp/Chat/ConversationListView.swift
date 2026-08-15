@@ -126,7 +126,7 @@ private struct ConversationRow: View {
             Text(conversation.title.isEmpty ? fallbackTitle : conversation.title)
                 .font(FloeTheme.Typography.body)
                 .lineLimit(1)
-            Text(conversation.updatedAt, style: .relative)
+            Text(conversation.updatedAt, format: .dateTime.month(.abbreviated).day().hour().minute())
                 .font(FloeTheme.Typography.metadata)
                 .foregroundStyle(.secondary)
         }

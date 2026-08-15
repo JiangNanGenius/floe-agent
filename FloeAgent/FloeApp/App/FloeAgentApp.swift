@@ -325,13 +325,10 @@ private struct MoreListView: View {
     }
 }
 
-/// Routes a More sub-destination to its screen. Runs, Settings and Privacy
-/// resolve to the same real screens the iPhone More tab uses; only the
-/// non-DEBUG diagnostics fallback remains a placeholder.
+/// Routes a More sub-destination to its real screen.
 private struct MoreDestinationView: View {
     let sub: MoreDestination
 
-    @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var environment: AppEnvironment
 
     init(_ sub: MoreDestination) {
@@ -353,21 +350,12 @@ private struct MoreDestinationView: View {
         case .privacy:
             PrivacyView()
         case .diagnostics:
-#if DEBUG
-            M0DiagnosticsView(model: router.diagnostics)
-#else
-            ShellPlaceholderView(
-                title: sub.title,
-                systemImage: sub.systemImage,
-                messageKey: "empty.diagnostics"
-            )
-#endif
+            DiagnosticsAboutView(center: environment.settingsCenter)
         }
     }
 }
 
-/// A structural placeholder: a real screen with a navigation title, an SF
-/// Symbol and a localized empty state on an opaque reading surface.
+/// A structural empty state used when the split view has no selected detail.
 private struct ShellPlaceholderView: View {
     let title: LocalizedStringKey
     let systemImage: String
@@ -383,4 +371,5 @@ private struct ShellPlaceholderView: View {
         .navigationTitle(title)
     }
 }
+
 #endif

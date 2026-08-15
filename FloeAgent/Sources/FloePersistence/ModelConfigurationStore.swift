@@ -272,8 +272,14 @@ private enum ConfigurationCodec {
         guard !model.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw FloeError.invalidConfiguration("Model display name cannot be empty")
         }
-        guard model.limits.contextTokens > 0, model.limits.maxOutputTokens > 0 else {
-            throw FloeError.invalidConfiguration("Model token limits must be positive")
+        guard model.limits.contextTokens > 0, model.limits.maxOutputTokens >= 0 else {
+            throw FloeError.invalidConfiguration(
+                "Model context must be positive and maximum output cannot be negative"
+            )
+        }
+        guard model.limits.maxOutputTokens == 0
+                || model.limits.maxOutputTokens <= model.limits.contextTokens else {
+            throw FloeError.invalidConfiguration("Maximum output cannot exceed model context")
         }
     }
 

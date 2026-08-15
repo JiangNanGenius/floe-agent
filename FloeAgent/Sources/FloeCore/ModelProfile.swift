@@ -20,11 +20,29 @@ public struct ModelCapabilities: OptionSet, Sendable, Codable, Hashable {
 /// Hard limits enforced client-side before sending a request.
 public struct ModelLimits: Sendable, Codable, Hashable {
     public var contextTokens: Int
+    /// Zero means the user did not configure a provider-side output limit.
+    /// Optional protocols omit the field; required protocols choose a
+    /// conservative adapter default.
     public var maxOutputTokens: Int
 
     public init(contextTokens: Int, maxOutputTokens: Int) {
         self.contextTokens = contextTokens
         self.maxOutputTokens = maxOutputTokens
+    }
+
+    public var configuredMaxOutputTokens: Int? {
+        maxOutputTokens > 0 ? maxOutputTokens : nil
+    }
+
+    /// Local byte-budget input when the provider limit is unspecified. This
+    /// is a safety ceiling only and is never sent on the wire.
+    public var clientOutputSafetyTokens: Int {
+        configuredMaxOutputTokens ?? min(contextTokens, 131_072)
+    }
+
+    public var clientOutputSafetyBytes: Int {
+        let cappedTokens = min(clientOutputSafetyTokens, (8 * 1_024 * 1_024) / 16)
+        return max(65_536, cappedTokens * 16)
     }
 }
 

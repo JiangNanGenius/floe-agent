@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// The More tab: Runs history, Providers, Settings, Privacy, and (DEBUG)
+// The More tab: Runs history, Providers, Settings, Privacy, and redacted
 // Diagnostics. Runs history lists every run honestly; the rest route to
-// their screens. Diagnostics stays DEBUG-only.
+// their screens.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -13,7 +13,6 @@ import FloePersistence
 /// The More tab root list.
 struct MoreView: View {
     @StateObject private var viewModel: MoreViewModel
-    @EnvironmentObject private var router: AppRouter
 
     init(center: ConversationCenter) {
         _viewModel = StateObject(wrappedValue: MoreViewModel(center: center))
@@ -39,8 +38,6 @@ private struct MoreDestinationRouter: View {
     let sub: MoreDestination
     let viewModel: MoreViewModel
 
-    @EnvironmentObject private var router: AppRouter
-
     var body: some View {
         switch sub {
         case .runs:
@@ -56,11 +53,7 @@ private struct MoreDestinationRouter: View {
         case .privacy:
             PrivacyView()
         case .diagnostics:
-#if DEBUG
-            M0DiagnosticsView(model: router.diagnostics)
-#else
-            ShellPlaceholder()
-#endif
+            DiagnosticsAboutView(center: viewModel.environment.settingsCenter)
         }
     }
 }
@@ -85,7 +78,10 @@ struct RunsHistoryView: View {
                             .font(FloeTheme.Typography.body)
                             .lineLimit(1)
                         HStack {
-                            Text(run.startedAt, style: .relative)
+                            Text(
+                                run.startedAt,
+                                format: .dateTime.month(.abbreviated).day().hour().minute()
+                            )
                             Text("·")
                             Text(run.state)
                         }
@@ -119,14 +115,4 @@ struct PrivacyView: View {
     }
 }
 
-/// DEBUG-only placeholder for non-DEBUG diagnostics routing.
-private struct ShellPlaceholder: View {
-    var body: some View {
-        ContentUnavailableView {
-            Label("more.diagnostics", systemImage: "stethoscope")
-        } description: {
-            Text("empty.diagnostics")
-        }
-    }
-}
 #endif

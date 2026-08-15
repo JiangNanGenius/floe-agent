@@ -70,6 +70,7 @@ public actor ConversationRunService {
     private let runStore: any RunStore
     private let secretForRedaction: String?
     private let streamedTextLimitBytes: Int
+    private let logger = FloeLogger(category: .runtime)
     private var streamedText = ""
     private var reasoningText = ""
     private var unflushedReasoningText = ""
@@ -127,10 +128,7 @@ public actor ConversationRunService {
         self.runStore = runStore
         self.runContext = runContext
         self.secretForRedaction = credentials.apiKey
-        self.streamedTextLimitBytes = max(
-            65_536,
-            min(8 * 1_024 * 1_024, configuration.model.limits.maxOutputTokens * 16)
-        )
+        self.streamedTextLimitBytes = configuration.model.limits.clientOutputSafetyBytes
         // The sink forwards into the service via closures so callbacks reach
         // the actor without an access-level or retain-cycle problem.
         let forwarder = SinkForwarder()
@@ -177,6 +175,7 @@ public actor ConversationRunService {
     /// Records the run header and starts the agent loop. The user goal is
     /// persisted as the first message and as the run's goal.
     public func start(goal: String) async throws {
+        logger.info("Run \(runID.uuidString) starting")
         try await runStore.saveRun(RunRecord(
             id: runID,
             conversationID: conversationID,
@@ -217,6 +216,7 @@ public actor ConversationRunService {
 
     private func handleTransition(_ state: AgentState) async {
         latestState = state
+        logger.debug("Run \(runID.uuidString) transitioned to \(state.name)")
         if case .executingTool(let info) = state {
             toolStartDates[info.toolCall.id] = info.startedAt
         }
@@ -281,6 +281,7 @@ public actor ConversationRunService {
                 costEstimate: report.costEstimate.map { "\($0)" }
             ))
         case .error(let error):
+            logger.error("Run \(runID.uuidString) provider error: \(error.kind.rawValue)")
             try? await runStore.recordError(RunErrorRecord(
                 runID: runID,
                 kind: error.kind.rawValue,
@@ -302,9 +303,10 @@ public actor ConversationRunService {
                 ))
             }
             _ = try? await runStore.appendEvent(
-                runID: runID, kind: .status,
+                runID: runID, kind: .terminal,
                 payloadJSON: Self.jsonPayload(["stopReason": completion.stopReason.rawValue])
             )
+            logger.info("Run \(runID.uuidString) completed: \(completion.stopReason.rawValue)")
         }
     }
 

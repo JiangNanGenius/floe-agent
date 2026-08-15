@@ -70,13 +70,10 @@ enum MoreDestination: String, Hashable, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Whether this destination is available outside DEBUG builds.
-    /// Diagnostics is an internal screen and ships only in DEBUG.
+    /// User-facing redacted diagnostics ships in Release so TestFlight
+    /// testers can report actionable failures without attaching secrets.
     var isReleaseVisible: Bool {
-        switch self {
-        case .diagnostics: false
-        default: true
-        }
+        true
     }
 
     /// Destinations shown in the current build configuration.

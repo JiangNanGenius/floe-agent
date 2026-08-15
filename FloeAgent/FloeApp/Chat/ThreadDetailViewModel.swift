@@ -200,13 +200,21 @@ final class ThreadDetailViewModel: ObservableObject {
     private func startPolling() {
         pollTask?.cancel()
         guard let run = selectedRun else { return }
+        liveStateName = run.state
+        liveStreamedText = ""
+        liveReasoningText = ""
+        hasProviderActivity = false
         pollTask = Task { [weak self, center] in
             guard let self else { return }
             while !Task.isCancelled {
                 if let service = center.service(for: run.id) {
                     let snapshot = await service.snapshot()
+                    guard self.selectedRunID == run.id else { break }
                     self.liveStateName = snapshot.stateName
-                    self.liveStreamedText = snapshot.streamedText
+                    self.revealStreamText(
+                        toward: snapshot.streamedText,
+                        immediately: snapshot.isTerminal
+                    )
                     self.liveReasoningText = snapshot.reasoningText
                     self.hasProviderActivity = snapshot.hasProviderActivity
                     self.isRunning = !snapshot.isTerminal
@@ -214,6 +222,8 @@ final class ThreadDetailViewModel: ObservableObject {
                         try? await self.loadEvents()
                         self.messages = (try? await center.environment.conversationStore
                             .messages(conversationID: self.conversationID)) ?? self.messages
+                        self.runs = (try? await center.environment.runStore
+                            .runs(conversationID: self.conversationID)) ?? self.runs
                         break
                     }
                 } else {
@@ -222,9 +232,30 @@ final class ThreadDetailViewModel: ObservableObject {
                     self.isRunning = false
                     break
                 }
-                try? await Task.sleep(for: .milliseconds(300))
+                // Provider SSE chunks are often much smaller than 300 ms.
+                // Sampling at display cadence keeps output visibly
+                // incremental without writing one database row per token.
+                try? await Task.sleep(for: .milliseconds(50))
             }
         }
+    }
+
+    /// Advances the visible answer toward the provider snapshot in small,
+    /// adaptive batches. A large network chunk no longer appears as one
+    /// abrupt paragraph, while long answers still catch up promptly.
+    private func revealStreamText(toward target: String, immediately: Bool) {
+        guard !immediately else {
+            liveStreamedText = target
+            return
+        }
+        guard target.hasPrefix(liveStreamedText) else {
+            liveStreamedText = target
+            return
+        }
+        let remaining = target.dropFirst(liveStreamedText.count)
+        guard !remaining.isEmpty else { return }
+        let batchSize = min(32, max(1, (remaining.count + 5) / 6))
+        liveStreamedText.append(contentsOf: remaining.prefix(batchSize))
     }
 
     func stopPolling() {

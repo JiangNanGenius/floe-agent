@@ -162,6 +162,10 @@ struct ThreadDetailView: View {
                     proxy.scrollTo(last.id, anchor: .bottom)
                 }
             }
+            .onChange(of: viewModel.liveStreamedText.count) { _, _ in
+                guard viewModel.isRunning, !viewModel.liveStreamedText.isEmpty else { return }
+                proxy.scrollTo("live-tail", anchor: .bottom)
+            }
         }
     }
 

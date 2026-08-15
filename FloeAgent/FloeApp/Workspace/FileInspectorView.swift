@@ -65,8 +65,7 @@ struct FileInspectorView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        self.previewPath = nil
-                        Task { await treeModel.loadRoot() }
+                        closePreview()
                     } label: {
                         Label("inspector.back", systemImage: "chevron.left")
                     }
@@ -136,6 +135,20 @@ struct FileInspectorView: View {
         state.selectedRelativePath = path
         state.isExpanded = true
         await center.updateInspectorState(state)
+    }
+
+    /// Returns to the file tree and clears the durable selection. Without
+    /// clearing the persisted path, the tree's `.task` immediately restores
+    /// the same preview and makes the Back button appear unresponsive.
+    private func closePreview() {
+        previewPath = nil
+        Task {
+            var state = center.currentWorkspace?.inspectorState ?? InspectorState()
+            state.selectedRelativePath = nil
+            state.isExpanded = true
+            await center.updateInspectorState(state)
+            await treeModel.loadRoot()
+        }
     }
 
     /// Adds the file to the current conversation context: persists an

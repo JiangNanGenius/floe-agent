@@ -227,7 +227,10 @@ struct AgentRuntimeTests {
         let call = try TestFixtures.toolCall(id: "call_1")
         adapter.script = [
             [.toolRequest(call)],
-            [.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]
+            [
+                .textDelta(AgentEvent.TextDelta(text: "Done")),
+                .completed(AgentEvent.CompletionInfo(stopReason: .endTurn))
+            ]
         ]
         let executor = MockExecutor()
         registerEcho(in: executor)
@@ -243,6 +246,9 @@ struct AgentRuntimeTests {
             "streamingModel", "streamingModel", "completed"
         ])
         #expect(executor.executedCalls.count == 1)
+        #expect(adapter.requests.count == 2)
+        #expect(adapter.requests[1].pendingToolCalls.map(\.id) == [call.id])
+        #expect(adapter.requests[1].toolResults.map(\.callID) == [call.id])
         // Idempotency key assigned with run context.
         #expect(executor.executedCalls[0].idempotencyKey.count == 64)
     }

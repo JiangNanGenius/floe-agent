@@ -322,6 +322,13 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
         var input: [ResponsesRequest.InputItem] = request.messages.map {
             .message(role: $0.role, content: $0.content)
         }
+        for call in request.pendingToolCalls {
+            input.append(.functionCall(
+                callID: call.id,
+                name: call.toolName,
+                arguments: String(decoding: call.argumentsJSON, as: UTF8.self)
+            ))
+        }
         for result in request.toolResults {
             input.append(.functionCallOutput(callID: result.callID, output: result.output))
         }
@@ -336,7 +343,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
             model: request.model.remoteModelID,
             input: input,
             tools: tools,
-            maxOutputTokens: request.model.limits.maxOutputTokens,
+            maxOutputTokens: request.model.limits.configuredMaxOutputTokens,
             stream: true
         )
     }
@@ -454,7 +461,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             model: request.model.remoteModelID,
             messages: messages,
             tools: tools.isEmpty ? nil : tools,
-            maxTokens: request.model.limits.maxOutputTokens,
+            maxTokens: request.model.limits.configuredMaxOutputTokens,
             stream: true
         )
     }
@@ -577,7 +584,11 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
         }
         return AnthropicRequest(
             model: request.model.remoteModelID,
-            maxTokens: request.model.limits.maxOutputTokens,
+            // Anthropic requires max_tokens. A blank UI value therefore
+            // selects a conservative protocol default instead of forcing the
+            // user to research a model-specific number before saving it.
+            maxTokens: request.model.limits.configuredMaxOutputTokens
+                ?? min(8_192, request.model.limits.contextTokens),
             messages: messages,
             system: system.isEmpty ? nil : system,
             tools: tools,

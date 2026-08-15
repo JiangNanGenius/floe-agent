@@ -443,10 +443,7 @@ public actor FloeAgentRuntime {
         switch event {
         case .textDelta(let delta):
             let nextBytes = delta.text.utf8.count
-            let limit = max(
-                65_536,
-                min(8 * 1_024 * 1_024, configuration.model.limits.maxOutputTokens * 16)
-            )
+            let limit = configuration.model.limits.clientOutputSafetyBytes
             guard nextBytes <= limit - streamTextByteCount else {
                 await failRun(
                     message: "Provider output exceeded the configured response limit",
@@ -507,6 +504,12 @@ public actor FloeAgentRuntime {
             )
             return
         }
+
+        // The next provider turn must receive the assistant tool call and
+        // its result as a pair. Chat Completions and Anthropic reject or
+        // misinterpret an orphan tool-result message, which previously made
+        // runs stop after a file write without a final assistant reply.
+        pendingToolCalls.append(call)
 
         guard let descriptor = executor.descriptor(named: call.toolName) else {
             let result = ToolResult(

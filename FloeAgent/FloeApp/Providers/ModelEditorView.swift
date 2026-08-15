@@ -55,7 +55,8 @@ struct ModelEditorView: View {
                     TokenLimitPicker(
                         title: "model.max_output_tokens",
                         value: $model.limits.maxOutputTokens,
-                        presets: [4_096, 8_192, 16_384, 32_768, 65_536]
+                        presets: [4_096, 8_192, 16_384, 32_768, 65_536],
+                        allowsEmpty: true
                     )
                 } header: {
                     Text("model.section.limits")
@@ -78,8 +79,9 @@ struct ModelEditorView: View {
                     }
                     .disabled(model.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || model.remoteModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                              || model.limits.contextTokens <= 0 || model.limits.maxOutputTokens <= 0
-                              || model.limits.maxOutputTokens > model.limits.contextTokens)
+                              || model.limits.contextTokens <= 0 || model.limits.maxOutputTokens < 0
+                              || (model.limits.maxOutputTokens > 0
+                                  && model.limits.maxOutputTokens > model.limits.contextTokens))
                 }
             }
         }
@@ -100,6 +102,7 @@ private struct TokenLimitPicker: View {
     let title: LocalizedStringKey
     @Binding var value: Int
     let presets: [Int]
+    var allowsEmpty = false
 
     private let columns = [GridItem(.adaptive(minimum: 64), spacing: 8)]
 
@@ -108,7 +111,9 @@ private struct TokenLimitPicker: View {
             HStack {
                 Text(title)
                 Spacer()
-                Text(Self.shortLabel(value))
+                Text(value == 0 && allowsEmpty
+                     ? String(localized: "model.limit.not_set")
+                     : Self.shortLabel(value))
                     .font(.body.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -119,11 +124,29 @@ private struct TokenLimitPicker: View {
                         .tint(value == preset ? FloeTheme.primary : .secondary)
                 }
             }
-            TextField(title, value: $value, format: .number.grouping(.automatic))
+            TextField(title, text: numericText)
                 .keyboardType(.numberPad)
                 .textFieldStyle(.roundedBorder)
+            if allowsEmpty, value != 0 {
+                Button("model.limit.use_provider_default") { value = 0 }
+                    .font(.footnote)
+            }
         }
         .padding(.vertical, 4)
+    }
+
+    private var numericText: Binding<String> {
+        Binding(
+            get: { value == 0 ? "" : String(value) },
+            set: { input in
+                let digits = input.filter(\.isNumber)
+                if digits.isEmpty {
+                    value = 0
+                } else if let parsed = Int(digits) {
+                    value = parsed
+                }
+            }
+        )
     }
 
     static func shortLabel(_ tokens: Int) -> String {
