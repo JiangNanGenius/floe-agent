@@ -231,16 +231,26 @@ struct ModelConfigurationStoreTests {
             limits: ModelLimits(contextTokens: 1, maxOutputTokens: 1),
             capabilities: [.imageGeneration, .imageEditing]
         )
+        let vision = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "vision",
+            displayName: "Vision",
+            limits: ModelLimits(contextTokens: 10, maxOutputTokens: 2),
+            capabilities: [.text, .vision]
+        )
         try await store.saveModel(agent)
         try await store.saveModel(image)
+        try await store.saveModel(vision)
         let preferences = ModelSelectionPreferences(
             onboardingStatus: .completed,
             defaultAgentModelID: agent.id,
+            visionModelID: vision.id,
             auxiliaryImageMode: .shared,
             sharedImageModelID: image.id
         )
         try await store.savePreferences(preferences)
         #expect(try await store.preferences().defaultAgentModelID == agent.id)
+        #expect(try await store.preferences().visionModelID == vision.id)
         #expect(try await store.preferences().sharedImageModelID == image.id)
 
         try await store.deleteModel(id: image.id)

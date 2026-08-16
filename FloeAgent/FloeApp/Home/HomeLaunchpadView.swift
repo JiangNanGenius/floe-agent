@@ -52,7 +52,6 @@ struct HomeLaunchpadView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
-                quickEntries
                 composer
             }
             .padding(.horizontal, 24)
@@ -63,7 +62,8 @@ struct HomeLaunchpadView: View {
             .background(FloeTheme.readingSurface.opacity(0.98))
         }
         .background(FloeTheme.readingSurface)
-        .navigationTitle("tab.home")
+        .navigationTitle("新建任务")
+        .navigationBarTitleDisplayMode(.inline)
         .task { await viewModel.load() }
         .refreshable { await viewModel.load() }
     }
@@ -119,84 +119,6 @@ struct HomeLaunchpadView: View {
                 onStop: {}
             )
         }
-    }
-
-    // MARK: - Quick entries (real surfaces only)
-
-    private var quickEntries: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("home.quick_entries")
-                .font(FloeTheme.Typography.metadata)
-                .foregroundStyle(.secondary)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    // Workspace files: opens the real file inspector.
-                    quickEntry(
-                        title: LocalizedStringKey("home.entry.workspace"),
-                        systemImage: "folder",
-                        enabled: true,
-                        identifier: "home.entry.workspace"
-                    ) {
-                        router.showInspector(.workspaceFiles)
-                    }
-                    // Remote hosts: navigates to the real Hosts surface.
-                    quickEntry(
-                        title: LocalizedStringKey("home.entry.hosts"),
-                        systemImage: "server.rack",
-                        enabled: true,
-                        identifier: "home.entry.hosts"
-                    ) {
-                        router.navigate(to: .hosts)
-                    }
-                    // Model providers: opens the real provider list.
-                    quickEntry(
-                        title: LocalizedStringKey("home.entry.providers"),
-                        systemImage: "antenna.radiowaves.left.and.right",
-                        enabled: true,
-                        identifier: "home.entry.providers"
-                    ) {
-                        router.openMore(.providers)
-                    }
-                    // Opens the real auxiliary image-model configuration.
-                    // Editing an actual image remains file-contextual under
-                    // Files, where a source image can be selected first.
-                    quickEntry(
-                        title: LocalizedStringKey("home.entry.images"),
-                        systemImage: "photo",
-                        enabled: true,
-                        identifier: "home.entry.images"
-                    ) {
-                        router.openMore(.auxiliaryModels)
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-        }
-    }
-
-    private func quickEntry(
-        title: LocalizedStringKey,
-        systemImage: String,
-        enabled: Bool,
-        identifier: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .font(FloeTheme.Typography.metadata.weight(.medium))
-                .foregroundStyle(enabled ? FloeTheme.primary : Color.secondary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(FloeTheme.groupedSurface, in: Capsule())
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .frame(minHeight: FloeTheme.minimumTarget)
-        .opacity(enabled ? 1 : 0.6)
-        .accessibilityHint(enabled
-            ? LocalizedStringKey("home.entry.available.hint")
-            : LocalizedStringKey("home.entry.unavailable.hint"))
-        .accessibilityIdentifier(identifier)
     }
 
     // MARK: - Status strips

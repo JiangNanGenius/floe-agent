@@ -109,9 +109,19 @@ struct FileInspectorView: View {
     }
 
     private func workspaceHeader(_ workspace: WorkspaceRecord) -> some View {
-        Button {
-            showWorkspacePicker = true
-        } label: {
+        Group {
+        if router.selectedConversationID == nil {
+            Button { showWorkspacePicker = true } label: { workspaceHeaderLabel(workspace, showsSwitch: true) }
+                .buttonStyle(.plain)
+                .accessibilityLabel("workspace.switch")
+        } else {
+            workspaceHeaderLabel(workspace, showsSwitch: false)
+        }
+        }
+        .frame(minHeight: FloeTheme.minimumTarget)
+    }
+
+    private func workspaceHeaderLabel(_ workspace: WorkspaceRecord, showsSwitch: Bool) -> some View {
             HStack(spacing: 8) {
                 Image(systemName: "folder.fill")
                     .foregroundStyle(FloeTheme.primary)
@@ -121,18 +131,16 @@ struct FileInspectorView: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Spacer()
-                Text("workspace.switch")
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(FloeTheme.primary)
+                if showsSwitch {
+                    Text("workspace.switch")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.primary)
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .frame(minHeight: FloeTheme.minimumTarget)
-        .accessibilityLabel("workspace.switch")
     }
 
     private func persistSelection(_ path: String) async {

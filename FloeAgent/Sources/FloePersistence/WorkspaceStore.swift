@@ -78,6 +78,10 @@ public protocol WorkspaceStore: Sendable {
     func linkConversation(workspaceID: UUID, conversationID: UUID) async throws
     func unlinkConversation(workspaceID: UUID, conversationID: UUID) async throws
     func conversations(workspaceID: UUID) async throws -> [UUID]
+    func workspaceID(conversationID: UUID) async throws -> UUID?
+    func assignConversation(workspaceID: UUID, conversationID: UUID) async throws
+    func taskPolicy(conversationID: UUID) async throws -> TaskPolicy
+    func saveTaskPolicy(_ policy: TaskPolicy) async throws
 
     func recordRecentFile(_ file: RecentFile) async throws
     func recentFiles(workspaceID: UUID) async throws -> [RecentFile]
@@ -130,8 +134,8 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
                         id, name, root_bookmark, last_opened_at,
                         active_target_kind, active_target_host_id,
                         inspector_state_json, instructions_rel_path,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_at, updated_at, kind, internal_relative_path
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         name = excluded.name,
                         root_bookmark = excluded.root_bookmark,
@@ -140,6 +144,8 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
                         active_target_host_id = excluded.active_target_host_id,
                         inspector_state_json = excluded.inspector_state_json,
                         instructions_rel_path = excluded.instructions_rel_path,
+                        kind = excluded.kind,
+                        internal_relative_path = excluded.internal_relative_path,
                         updated_at = excluded.updated_at
                     """,
                 arguments: [
@@ -152,7 +158,9 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
                     Self.encodeInspectorState(workspace.inspectorState),
                     workspace.instructionsRelativePath,
                     PersistenceCodec.encode(workspace.createdAt),
-                    PersistenceCodec.encode(workspace.updatedAt)
+                    PersistenceCodec.encode(workspace.updatedAt),
+                    workspace.kind.rawValue,
+                    workspace.internalRelativePath
                 ]
             )
         }
@@ -160,6 +168,14 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
 
     public func deleteWorkspace(id: UUID) async throws {
         try await database.writer { db in
+            // A task must never become ownerless. Removing a project moves
+            // each surviving task into its own Floe-managed private workspace
+            // before the external project bookmark is removed.
+            try Self.moveOwnedConversationsToPrivateWorkspaces(
+                in: db,
+                workspaceID: id,
+                now: PersistenceCodec.encode(Date())
+            )
             try db.execute(
                 sql: "DELETE FROM workspaces WHERE id = ?",
                 arguments: [id.uuidString]
@@ -180,10 +196,14 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
     // MARK: Conversation links
 
     public func linkConversation(workspaceID: UUID, conversationID: UUID) async throws {
+        try await assignConversation(workspaceID: workspaceID, conversationID: conversationID)
+        // Compatibility projection only. New production paths read/write the
+        // canonical one-to-one ownership table.
         try await database.writer { db in
             try db.execute(
                 sql: """
-                    INSERT INTO workspace_conversations (workspace_id, conversation_id, created_at)
+                    INSERT INTO workspace_conversations
+                        (workspace_id, conversation_id, created_at)
                     VALUES (?, ?, ?)
                     ON CONFLICT(workspace_id, conversation_id) DO NOTHING
                     """,
@@ -198,6 +218,17 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
 
     public func unlinkConversation(workspaceID: UUID, conversationID: UUID) async throws {
         try await database.writer { db in
+            if try String.fetchOne(
+                db,
+                sql: "SELECT workspace_id FROM conversation_workspace_ownership WHERE conversation_id = ?",
+                arguments: [conversationID.uuidString]
+            ) == workspaceID.uuidString {
+                try Self.moveConversationToPrivateWorkspace(
+                    in: db,
+                    conversationID: conversationID.uuidString,
+                    now: PersistenceCodec.encode(Date())
+                )
+            }
             try db.execute(
                 sql: """
                     DELETE FROM workspace_conversations
@@ -213,11 +244,159 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
             try String.fetchAll(
                 db,
                 sql: """
-                    SELECT conversation_id FROM workspace_conversations
-                    WHERE workspace_id = ? ORDER BY created_at, conversation_id
+                    SELECT conversation_id FROM conversation_workspace_ownership
+                    WHERE workspace_id = ? ORDER BY assigned_at, conversation_id
                     """,
                 arguments: [workspaceID.uuidString]
             ).compactMap(UUID.init(uuidString:))
+        }
+    }
+
+    public func workspaceID(conversationID: UUID) async throws -> UUID? {
+        try await database.reader { db in
+            try String.fetchOne(
+                db,
+                sql: """
+                    SELECT workspace_id FROM conversation_workspace_ownership
+                    WHERE conversation_id = ?
+                    """,
+                arguments: [conversationID.uuidString]
+            ).flatMap(UUID.init(uuidString:))
+        }
+    }
+
+    public func assignConversation(workspaceID: UUID, conversationID: UUID) async throws {
+        try await database.writer { db in
+            guard try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?)",
+                arguments: [workspaceID.uuidString]
+            ) == true else { throw FloeError.notFound("workspace \(workspaceID.uuidString)") }
+            guard try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?)",
+                arguments: [conversationID.uuidString]
+            ) == true else { throw FloeError.notFound("conversation \(conversationID.uuidString)") }
+            try db.execute(
+                sql: """
+                    INSERT INTO conversation_workspace_ownership
+                        (conversation_id, workspace_id, assigned_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(conversation_id) DO UPDATE SET
+                        workspace_id = excluded.workspace_id,
+                        assigned_at = excluded.assigned_at
+                    WHERE conversation_workspace_ownership.workspace_id <> excluded.workspace_id
+                    """,
+                arguments: [
+                    conversationID.uuidString,
+                    workspaceID.uuidString,
+                    PersistenceCodec.encode(Date())
+                ]
+            )
+        }
+    }
+
+    private static func moveOwnedConversationsToPrivateWorkspaces(
+        in db: Database,
+        workspaceID: UUID,
+        now: String
+    ) throws {
+        let conversationIDs = try String.fetchAll(
+            db,
+            sql: "SELECT conversation_id FROM conversation_workspace_ownership WHERE workspace_id = ?",
+            arguments: [workspaceID.uuidString]
+        )
+        for conversationID in conversationIDs {
+            try moveConversationToPrivateWorkspace(
+                in: db,
+                conversationID: conversationID,
+                now: now
+            )
+        }
+    }
+
+    private static func moveConversationToPrivateWorkspace(
+        in db: Database,
+        conversationID: String,
+        now: String
+    ) throws {
+        let workspaceID = UUID().uuidString
+        let title = try String.fetchOne(
+            db,
+            sql: "SELECT title FROM conversations WHERE id = ?",
+            arguments: [conversationID]
+        ) ?? ""
+        let displayName = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Chat" : String(title.prefix(80))
+        try db.execute(
+            sql: """
+                INSERT INTO workspaces (
+                    id, name, root_bookmark, last_opened_at,
+                    active_target_kind, active_target_host_id,
+                    inspector_state_json, instructions_rel_path,
+                    created_at, updated_at, kind, internal_relative_path
+                ) VALUES (?, ?, ?, NULL, 'local', NULL, '{}', NULL, ?, ?,
+                          'privateTask', ?)
+                """,
+            arguments: [
+                workspaceID, displayName, Data(), now, now,
+                "PrivateTasks/\(conversationID)"
+            ]
+        )
+        try db.execute(
+            sql: """
+                UPDATE conversation_workspace_ownership
+                SET workspace_id = ?, assigned_at = ?
+                WHERE conversation_id = ?
+                """,
+            arguments: [workspaceID, now, conversationID]
+        )
+    }
+
+    public func taskPolicy(conversationID: UUID) async throws -> TaskPolicy {
+        try await database.reader { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM task_policies WHERE conversation_id = ?",
+                arguments: [conversationID.uuidString]
+            ) else { return TaskPolicy(conversationID: conversationID) }
+            return try Self.taskPolicy(from: row)
+        }
+    }
+
+    public func saveTaskPolicy(_ policy: TaskPolicy) async throws {
+        try await database.writer { db in
+            let tools = try policy.allowedToolNames.map { try Self.encodeJSON(Array($0).sorted()) }
+            try db.execute(
+                sql: """
+                    INSERT INTO task_policies (
+                        conversation_id, approval_mode, allowed_tool_names_json,
+                        file_paths_json, network_allowed, browser_control_allowed,
+                        upload_allowed, credentials_allowed, remote_execution_allowed,
+                        recovery_policy, notification_policy, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(conversation_id) DO UPDATE SET
+                        approval_mode = excluded.approval_mode,
+                        allowed_tool_names_json = excluded.allowed_tool_names_json,
+                        file_paths_json = excluded.file_paths_json,
+                        network_allowed = excluded.network_allowed,
+                        browser_control_allowed = excluded.browser_control_allowed,
+                        upload_allowed = excluded.upload_allowed,
+                        credentials_allowed = excluded.credentials_allowed,
+                        remote_execution_allowed = excluded.remote_execution_allowed,
+                        recovery_policy = excluded.recovery_policy,
+                        notification_policy = excluded.notification_policy,
+                        updated_at = excluded.updated_at
+                    """,
+                arguments: [
+                    policy.conversationID.uuidString, policy.approvalMode, tools,
+                    try Self.encodeJSON(policy.filePaths), policy.networkAllowed,
+                    policy.browserControlAllowed, policy.uploadAllowed,
+                    policy.credentialsAllowed, policy.remoteExecutionAllowed,
+                    policy.recoveryPolicy.rawValue, policy.notificationPolicy.rawValue,
+                    PersistenceCodec.encode(policy.updatedAt)
+                ]
+            )
         }
     }
 
@@ -374,6 +553,8 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
             activeTarget: WorkspaceTarget(kindName: row["active_target_kind"], hostID: hostID),
             inspectorState: try decodeInspectorState(row["inspector_state_json"]),
             instructionsRelativePath: row["instructions_rel_path"],
+            kind: WorkspaceKind(rawValue: row["kind"]) ?? .project,
+            internalRelativePath: row["internal_relative_path"],
             createdAt: try PersistenceCodec.decodeDate(row["created_at"]),
             updatedAt: try PersistenceCodec.decodeDate(row["updated_at"])
         )
@@ -427,6 +608,40 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
         } catch {
             throw FloeError.storageCorrupted("Invalid inspector state JSON in workspace row")
         }
+    }
+
+    private static func encodeJSON<T: Encodable>(_ value: T) throws -> String {
+        let data = try JSONEncoder().encode(value)
+        guard let result = String(data: data, encoding: .utf8) else {
+            throw FloeError.internalError("Could not encode task policy")
+        }
+        return result
+    }
+
+    private static func taskPolicy(from row: Row) throws -> TaskPolicy {
+        guard let conversationID = UUID(uuidString: row["conversation_id"]),
+              let recovery = TaskRecoveryPolicy(rawValue: row["recovery_policy"]),
+              let notifications = TaskNotificationPolicy(rawValue: row["notification_policy"])
+        else { throw FloeError.storageCorrupted("Invalid task policy") }
+        let toolsJSON: String? = row["allowed_tool_names_json"]
+        let tools = try toolsJSON.map {
+            Set(try JSONDecoder().decode([String].self, from: Data($0.utf8)))
+        }
+        let pathsJSON: String = row["file_paths_json"]
+        return TaskPolicy(
+            conversationID: conversationID,
+            approvalMode: row["approval_mode"],
+            allowedToolNames: tools,
+            filePaths: try JSONDecoder().decode([String].self, from: Data(pathsJSON.utf8)),
+            networkAllowed: row["network_allowed"],
+            browserControlAllowed: row["browser_control_allowed"],
+            uploadAllowed: row["upload_allowed"],
+            credentialsAllowed: row["credentials_allowed"],
+            remoteExecutionAllowed: row["remote_execution_allowed"],
+            recoveryPolicy: recovery,
+            notificationPolicy: notifications,
+            updatedAt: try PersistenceCodec.decodeDate(row["updated_at"])
+        )
     }
 
     private static func encodePaths(_ paths: [String]) -> String {

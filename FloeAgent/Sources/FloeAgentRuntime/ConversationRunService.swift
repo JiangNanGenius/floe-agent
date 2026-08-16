@@ -81,6 +81,7 @@ public actor ConversationRunService {
     private var unflushedReasoningText = ""
     private var unpublishedReasoningText = ""
     private var reasoningPushTask: Task<Void, Never>?
+    private var recoveryPointTask: Task<Void, Never>?
     private var hasProviderActivity = false
     private var latestState: AgentState = .idle
     /// Execution start times keyed by tool call ID, captured from the
@@ -88,10 +89,14 @@ public actor ConversationRunService {
     /// mirrored toolResult event can carry a `durationMs` payload without
     /// modifying the frozen `ToolResult` model.
     private var toolStartDates: [String: Date] = [:]
+    private var toolNames: [String: String] = [:]
     /// Optional run context (workspace / selected file / execution target)
     /// injected as a system message before the run starts. Nil fields are
     /// omitted; the message is never persisted.
     private let runContext: RunContext?
+    private let conversationHistory: [ConversationMessage]
+    private let currentUserImages: [ConversationImagePart]
+    private var resourceAccessCleanup: (@Sendable () -> Void)?
 
     /// Non-secret run context surfaced to the model as a system message.
     /// Constructed per run; never persisted (see ARCHITECTURE_EXECUTION.md
@@ -143,7 +148,10 @@ public actor ConversationRunService {
         conversationStore: any ConversationStore,
         runStore: any RunStore,
         runID: UUID = UUID(),
-        runContext: RunContext? = nil
+        conversationHistory: [ConversationMessage] = [],
+        currentUserImages: [ConversationImagePart] = [],
+        runContext: RunContext? = nil,
+        resourceAccessCleanup: (@Sendable () -> Void)? = nil
     ) {
         self.runID = runID
         self.conversationID = configuration.conversationID
@@ -152,6 +160,9 @@ public actor ConversationRunService {
         self.intelligenceStore = intelligenceStore
         self.conversationMode = configuration.conversationMode
         self.runContext = runContext
+        self.conversationHistory = conversationHistory
+        self.currentUserImages = currentUserImages
+        self.resourceAccessCleanup = resourceAccessCleanup
         self.secretForRedaction = credentials.apiKey
         self.streamedTextLimitBytes = configuration.model.limits.clientOutputSafetyBytes
         // The sink forwards into the service via closures so callbacks reach
@@ -166,6 +177,7 @@ public actor ConversationRunService {
             gate: gate,
             auditSink: auditSink,
             checkpointStore: checkpointStore,
+            intelligenceStore: intelligenceStore,
             contextEngine: contextEngine,
             sink: forwarder,
             runID: runID
@@ -228,7 +240,7 @@ public actor ConversationRunService {
         // and the available tool names. Not persisted: it is runtime
         // context, not conversation history.
         await runtime.injectSystemContext(Self.buildContextMessage(runContext))
-        try await runtime.start(goal: goal)
+        try await runtime.start(goal: goal, images: currentUserImages)
     }
 
     /// Starts provider/tool execution for a launch that has already been
@@ -240,14 +252,19 @@ public actor ConversationRunService {
         if conversationMode == .goal {
             await ensureDurableGoal(objective: goal)
         }
+        await runtime.seedConversationHistory(conversationHistory)
         await runtime.injectSystemContext(Self.buildContextMessage(runContext))
-        try await runtime.start(goal: goal)
+        try await runtime.start(goal: goal, images: currentUserImages)
     }
 
     /// Cancels the run. The runtime owns the terminal transition; persistence
     /// of the checkpoint happens via the runtime's checkpoint store.
     public func cancel() async {
         await runtime.cancel()
+    }
+
+    public func persistRecoveryPoint() async {
+        try? await runtime.persistRecoveryPoint()
     }
 
     /// Resolves a pending human approval.
@@ -268,6 +285,8 @@ public actor ConversationRunService {
         }
         if isTerminal(state) {
             await flushReasoning()
+            resourceAccessCleanup?()
+            resourceAccessCleanup = nil
         }
         let endedAt: Date? = isTerminal(state) ? Date() : nil
         try? await runStore.updateRunState(id: runID, state: state.name, endedAt: endedAt)
@@ -321,6 +340,7 @@ public actor ConversationRunService {
             if remaining > 0 {
                 streamedText += Self.utf8Prefix(delta.text, maxBytes: remaining)
             }
+            scheduleRecoveryPoint()
         case .reasoningSummary(let summary):
             let remaining = max(0, streamedTextLimitBytes - reasoningText.utf8.count)
             if remaining > 0 {
@@ -329,9 +349,11 @@ public actor ConversationRunService {
                 unflushedReasoningText += delta
                 unpublishedReasoningText += delta
                 scheduleReasoningPush()
+                scheduleRecoveryPoint()
             }
         case .toolRequest(let call):
             eventChannel.yield(.toolLifecycle(.requested(call)))
+            toolNames[call.id] = call.toolName
             _ = try? await runStore.appendEvent(
                 runID: runID, kind: .toolRequest,
                 payloadJSON: Self.jsonPayload(["tool": call.toolName, "id": call.id])
@@ -339,13 +361,23 @@ public actor ConversationRunService {
         case .toolResult(let result):
             eventChannel.yield(.toolLifecycle(.finished(result)))
             let durationMs = Self.milliseconds(since: toolStartDates.removeValue(forKey: result.callID))
+            var persisted = [
+                "tool": toolNames.removeValue(forKey: result.callID) ?? "",
+                "status": result.status.rawValue,
+                "summary": result.outputSummary,
+                "durationMs": String(durationMs)
+            ]
+            if !result.artifacts.isEmpty,
+               let data = try? JSONEncoder().encode(result.artifacts),
+               let encoded = String(data: data, encoding: .utf8) {
+                // Keep the event payload's long-standing string map shape so
+                // old clients can still decode it. The artifact list is
+                // nested JSON and must be verified by digest before use.
+                persisted["artifactRefsJSON"] = encoded
+            }
             _ = try? await runStore.appendEvent(
                 runID: runID, kind: .toolResult,
-                payloadJSON: Self.jsonPayload([
-                    "status": result.status.rawValue,
-                    "summary": result.outputSummary,
-                    "durationMs": String(durationMs)
-                ])
+                payloadJSON: Self.jsonPayload(persisted)
             )
         case .usage(let report):
             eventChannel.yield(.usageChanged(UsageSnapshot(
@@ -446,6 +478,20 @@ public actor ConversationRunService {
         let delta = unpublishedReasoningText
         unpublishedReasoningText = ""
         eventChannel.yield(.reasoningDelta(TextDelta(text: delta)))
+    }
+
+    private func scheduleRecoveryPoint() {
+        guard recoveryPointTask == nil else { return }
+        recoveryPointTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self else { return }
+            try? await self.runtime.persistRecoveryPoint()
+            await self.clearRecoveryPointTask()
+        }
+    }
+
+    private func clearRecoveryPointTask() {
+        recoveryPointTask = nil
     }
 
     private func persistPlanDraft(from text: String) async {
@@ -549,8 +595,8 @@ public actor ConversationRunService {
         }
     }
 
-    private static func jsonPayload(_ dictionary: [String: String]) -> String {
-        guard let data = try? JSONEncoder().encode(dictionary),
+    private static func jsonPayload<T: Encodable>(_ value: T) -> String {
+        guard let data = try? JSONEncoder().encode(value),
               let string = String(data: data, encoding: .utf8) else {
             return "{}"
         }

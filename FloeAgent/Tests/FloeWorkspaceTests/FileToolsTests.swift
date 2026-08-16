@@ -31,6 +31,14 @@ struct FileToolsTests {
 
         deinit {
             try? FileManager.default.removeItem(at: root)
+            if let support = try? FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: false
+            ) {
+                try? FileManager.default.removeItem(at: support
+                    .appendingPathComponent("FloeAgent/ChangeArtifacts", isDirectory: true)
+                    .appendingPathComponent(context.runID.uuidString, isDirectory: true))
+            }
         }
 
         func write(_ relative: String, _ content: String) throws {
@@ -234,6 +242,8 @@ struct FileToolsTests {
             .init(path: "new/note.txt", content: "hello"), context: fixture.context
         )
         #expect(output.summary.contains("bytes=5"))
+        #expect(output.artifacts.count == 1)
+        #expect(output.artifacts.first?.mimeType == "text/x-diff")
         #expect(try fixture.read("new/note.txt") == "hello")
 
         do {
@@ -269,6 +279,7 @@ struct FileToolsTests {
             context: fixture.context
         )
         #expect(ok.summary.contains("written=doc.txt"))
+        #expect(ok.artifacts.count == 1)
         #expect(try fixture.read("doc.txt") == "v2")
 
         // Stale sha → conflict, file untouched.
@@ -312,6 +323,8 @@ struct FileToolsTests {
         #expect(output.summary.contains("hunks=1"))
         #expect(output.summary.contains("added=1"))
         #expect(output.summary.contains("removed=1"))
+        #expect(output.artifacts.count == 1)
+        #expect(output.artifacts.first?.relativePath.hasPrefix("ChangeArtifacts/") == true)
         #expect(try fixture.read("code.swift") == "one\ntwo\nTHREE\nfour\nfive\n")
     }
 
@@ -544,6 +557,35 @@ struct FileToolsTests {
             }
         }
         #expect(fixture.exists("x.txt"))
+    }
+
+    @Test("Task file ceiling rejects siblings and dot-dot scope bypass")
+    func taskFileCeiling() async throws {
+        let fixture = try makeFixture()
+        try fixture.write("allowed/readme.txt", "allowed")
+        try fixture.write("secret.txt", "secret")
+        let context = ToolContext(
+            runID: UUID(),
+            workspaceRootURL: fixture.root,
+            allowedWorkspacePaths: ["allowed"],
+            cancellation: CancellationToken()
+        )
+        let tool = WorkspaceReadFileTool(environment: fixture.environment)
+
+        let allowed = try await tool.execute(.init(path: "allowed/readme.txt"), context: context)
+        #expect(allowed.summary.contains("allowed"))
+
+        for path in ["secret.txt", "allowed/../secret.txt", "allowed/sub/../../secret.txt"] {
+            do {
+                _ = try await tool.execute(.init(path: path), context: context)
+                Issue.record("expected task file scope rejection for \(path)")
+            } catch let error as FloeError {
+                guard case .validationFailed = error else {
+                    Issue.record("expected validationFailed, got \(error)")
+                    continue
+                }
+            }
+        }
     }
 
     // MARK: Cancellation

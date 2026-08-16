@@ -123,9 +123,7 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
     public init() {}
 
     public func supportedOperations(for provider: ProviderProfile) -> Set<RemoteImageOperation> {
-        // Generation is wired today. Multipart edit-family requests remain
-        // unavailable until their real transport is implemented.
-        [.generate]
+        [.generate, .edit, .variation, .inpaint]
     }
 
     public func perform(
@@ -144,7 +142,7 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
         case .generate:
             return try await generate(request, provider: provider, credentials: credentials)
         case .edit, .variation, .inpaint:
-            throw RemoteImageError.unsupportedOperation(request.operation, provider: "OpenAI (edit requires multipart upload — not yet wired)")
+            return try await edit(request, provider: provider, credentials: credentials)
         case .upscale, .removeBackground:
             throw RemoteImageError.unsupportedOperation(request.operation, provider: "OpenAI")
         }
@@ -164,7 +162,7 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
     ) async throws -> RemoteImageResult {
         let url = provider.baseURL.appendingPathComponent("images/generations")
         let body = GenerationBody(
-            model: "gpt-image-1",
+            model: request.modelRemoteID ?? "gpt-image-1",
             prompt: request.prompt,
             n: max(1, min(request.count, 4)),
             size: request.sizeHint ?? "1024x1024"
@@ -186,6 +184,51 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
         let images = try await RemoteImageDecoder.images(from: data, b64Key: "b64_json", urlKey: "url")
         return RemoteImageResult(images: images)
     }
+
+    private func edit(
+        _ request: RemoteImageRequest,
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws -> RemoteImageResult {
+        guard let source = request.sourceImages.first else {
+            throw RemoteImageError.requestFailed("OpenAI image editing requires a source image")
+        }
+        let boundary = "FloeImage-\(UUID().uuidString)"
+        var body = Data()
+        func field(_ name: String, _ value: String) {
+            body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))
+        }
+        func file(_ name: String, _ filename: String, _ data: Data) {
+            body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\nContent-Type: image/png\r\n\r\n".utf8))
+            body.append(data)
+            body.append(Data("\r\n".utf8))
+        }
+        field("model", request.modelRemoteID ?? "gpt-image-1")
+        field("prompt", request.prompt)
+        field("n", String(max(1, min(request.count, 4))))
+        field("size", request.sizeHint ?? "1024x1024")
+        file("image", "source.png", source)
+        if let mask = request.mask { file("mask", "mask.png", mask) }
+        body.append(Data("--\(boundary)--\r\n".utf8))
+
+        var urlRequest = URLRequest(url: provider.baseURL.appendingPathComponent("images/edits"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let key = credentials.apiKey {
+            urlRequest.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+        for (name, value) in provider.nonSecretHeaders { urlRequest.setValue(value, forHTTPHeaderField: name) }
+        urlRequest.httpBody = body
+        let (data, response) = try await BoundedHTTP.data(
+            for: urlRequest,
+            maxBytes: 32 * 1_024 * 1_024
+        )
+        try RemoteImageHTTP.validate(response, data: data, provider: "OpenAI", apiKey: credentials.apiKey)
+        return RemoteImageResult(images: try await RemoteImageDecoder.images(
+            from: data, b64Key: "b64_json", urlKey: "url"
+        ))
+    }
 }
 
 // MARK: - Volcengine Ark
@@ -196,7 +239,7 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
     public init() {}
 
     public func supportedOperations(for provider: ProviderProfile) -> Set<RemoteImageOperation> {
-        []
+        [.generate, .edit, .variation, .inpaint]
     }
 
     public func perform(
@@ -207,10 +250,59 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
         guard supports(request.operation, for: provider) else {
             throw RemoteImageError.unsupportedOperation(request.operation, provider: "Volcengine Ark")
         }
-        // Foundation: capability declaration is in place; the Seedream wire
-        // call lands with the image workflows in Phase 6. Until then the
-        // operation reports unsupported rather than fabricating output.
-        throw RemoteImageError.unsupportedOperation(request.operation, provider: "Volcengine Ark (wire call pending Phase 6)")
+        guard let model = request.modelRemoteID, !model.isEmpty else {
+            throw RemoteImageError.requestFailed("Volcengine image model ID is required")
+        }
+        if request.operation != .generate, request.sourceImages.isEmpty {
+            throw RemoteImageError.requestFailed("Volcengine image editing requires a source image")
+        }
+        struct Body: Encodable {
+            var model: String
+            var prompt: String
+            var image: [String]?
+            var size: String
+            var sequential_image_generation: String
+            var sequential_image_generation_options: [String: Int]?
+            var response_format: String
+            var watermark: Bool
+        }
+        let images = request.sourceImages.isEmpty ? nil : request.sourceImages.map {
+            "data:\(Self.mimeType(for: $0));base64,\($0.base64EncodedString())"
+        }
+        let count = max(1, min(request.count, 4))
+        let body = Body(
+            model: model,
+            prompt: request.prompt,
+            image: images,
+            size: request.sizeHint ?? "2K",
+            sequential_image_generation: count > 1 ? "auto" : "disabled",
+            sequential_image_generation_options: count > 1 ? ["max_images": count] : nil,
+            response_format: "b64_json",
+            watermark: false
+        )
+        let urlRequest = try RemoteImageHTTP.post(
+            url: provider.baseURL.appendingPathComponent("images/generations"),
+            apiKey: credentials.apiKey,
+            authHeader: "Authorization",
+            extraHeaders: provider.nonSecretHeaders,
+            body: body
+        )
+        let (data, response) = try await BoundedHTTP.data(
+            for: urlRequest,
+            maxBytes: 48 * 1_024 * 1_024
+        )
+        try RemoteImageHTTP.validate(
+            response, data: data, provider: "Volcengine Ark", apiKey: credentials.apiKey
+        )
+        let output = try await RemoteImageDecoder.images(from: data, b64Key: "b64_json", urlKey: "url")
+        guard !output.isEmpty else {
+            throw RemoteImageError.invalidResponse("Volcengine returned no images")
+        }
+        return RemoteImageResult(images: output, metadata: ["model": model])
+    }
+
+    private static func mimeType(for data: Data) -> String {
+        data.starts(with: [0x89, 0x50, 0x4E, 0x47]) ? "image/png" : "image/jpeg"
     }
 }
 

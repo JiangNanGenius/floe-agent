@@ -9,7 +9,7 @@ struct V7WorkbenchIntelligenceTests {
     func schema() async throws {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
-        #expect(try await database.userVersion() == 7)
+        #expect(try await database.userVersion() == DatabaseManager.currentSchemaVersion)
 
         let required = Set([
             "plan_drafts", "conversation_goals", "goal_criteria", "goal_steps",

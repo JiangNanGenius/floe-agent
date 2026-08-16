@@ -34,10 +34,12 @@ struct ImageAdapterTests {
     func capabilitySets() {
         let openai = OpenAIImageAdapter()
         #expect(openai.supportedOperations(for: provider(kind: .openAI)).contains(.generate))
+        #expect(openai.supportedOperations(for: provider(kind: .openAI)).contains(.edit))
         #expect(!openai.supportedOperations(for: provider(kind: .openAI)).contains(.upscale))
 
         let ark = VolcengineImageAdapter()
-        #expect(ark.supportedOperations(for: provider(kind: .volcengineArk)).isEmpty)
+        #expect(ark.supportedOperations(for: provider(kind: .volcengineArk)).contains(.generate))
+        #expect(ark.supportedOperations(for: provider(kind: .volcengineArk)).contains(.edit))
 
         let alibaba = AlibabaImageAdapter()
         #expect(alibaba.supportedOperations(for: provider(kind: .alibabaStudio)).isEmpty)

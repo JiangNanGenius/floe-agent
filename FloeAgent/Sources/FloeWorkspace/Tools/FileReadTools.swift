@@ -31,8 +31,8 @@ public struct WorkspaceToolEnvironment: Sendable {
     }
 
     /// Builds a file service for the current workspace root.
-    public func makeService() throws -> WorkspaceFileService {
-        guard let root = rootProvider() else {
+    public func makeService(context: ToolContext) throws -> WorkspaceFileService {
+        guard let root = context.workspaceRootURL ?? rootProvider() else {
             throw WorkspaceToolError.notFound("workspace (no workspace is currently open)")
         }
         let guardResolver = WorkspacePathGuard(
@@ -41,6 +41,19 @@ public struct WorkspaceToolEnvironment: Sendable {
             maxWriteBytes: maxWriteBytes
         )
         return WorkspaceFileService(guard: guardResolver)
+    }
+
+    /// Direct UI/test access retains the legacy environment-root behavior.
+    /// Agent executions use the context-bearing overload above.
+    public func makeService() throws -> WorkspaceFileService {
+        guard let root = rootProvider() else {
+            throw WorkspaceToolError.notFound("workspace (no workspace is currently open)")
+        }
+        return WorkspaceFileService(guard: WorkspacePathGuard(
+            rootURL: root,
+            maxReadBytes: maxReadBytes,
+            maxWriteBytes: maxWriteBytes
+        ))
     }
 }
 
@@ -57,10 +70,50 @@ enum WorkspaceToolSupport {
         }
     }
 
-    static func output(_ summary: String) -> ToolExecutionOutput {
+    static func output(
+        _ summary: String,
+        artifacts: [ToolArtifactReference] = []
+    ) -> ToolExecutionOutput {
         ToolExecutionOutput(
             summary: summary,
-            fullOutputSHA256: WorkspaceFileService.sha256Hex(of: Data(summary.utf8))
+            fullOutputSHA256: WorkspaceFileService.sha256Hex(of: Data(summary.utf8)),
+            artifacts: artifacts
+        )
+    }
+
+    /// Persists a bounded, digest-addressed unified diff in Floe's own
+    /// Application Support directory. The workspace itself is never used as
+    /// an evidence store, so reviewing a change cannot modify user files.
+    static func changeArtifact(diff: String, runID: UUID) throws -> ToolArtifactReference? {
+        guard !diff.isEmpty else { return nil }
+        let data = Data(diff.utf8)
+        guard data.count <= 512 * 1024 else { return nil }
+        let digest = WorkspaceFileService.sha256Hex(of: data)
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let relativeDirectory = "ChangeArtifacts/\(runID.uuidString)"
+        let directory = support
+            .appendingPathComponent("FloeAgent", isDirectory: true)
+            .appendingPathComponent(relativeDirectory, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let name = "\(digest).diff"
+        let url = directory.appendingPathComponent(name, isDirectory: false)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try data.write(to: url, options: [.atomic])
+        }
+        return ToolArtifactReference(
+            id: UUID(),
+            relativePath: "\(relativeDirectory)/\(name)",
+            mimeType: "text/x-diff",
+            byteCount: data.count,
+            sha256: digest
         )
     }
 }
@@ -117,7 +170,8 @@ public struct WorkspaceListDirectoryTool: AgentTool {
         if let scope = args.scope, scope != "local" {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
-        let service = try environment.makeService()
+        try context.authorizeWorkspacePath(args.path)
+        let service = try environment.makeService(context: context)
         let page = try service.listDirectory(args.path, pageToken: args.pageToken, cancellation: context.cancellation)
         var lines = page.entries.map { entry in
             let kind = entry.isDirectory ? "dir" : "file"
@@ -193,7 +247,8 @@ public struct WorkspaceReadFileTool: AgentTool {
         if let scope = args.scope, scope != "local" {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
-        let service = try environment.makeService()
+        try context.authorizeWorkspacePath(args.path)
+        let service = try environment.makeService(context: context)
         let content = try service.readFile(
             args.path,
             byteOffset: args.offset ?? 0,
@@ -273,7 +328,8 @@ public struct WorkspaceSearchFilesTool: AgentTool {
         if let scope = args.scope, scope != "local" {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
-        let service = try environment.makeService()
+        try context.authorizeWorkspacePath(args.path ?? ".")
+        let service = try environment.makeService(context: context)
         let hits = try service.search(
             query: args.query,
             in: args.path ?? "",
@@ -336,7 +392,8 @@ public struct WorkspaceInspectMetadataTool: AgentTool {
         if let scope = args.scope, scope != "local" {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
-        let service = try environment.makeService()
+        try context.authorizeWorkspacePath(args.path)
+        let service = try environment.makeService(context: context)
         let metadata = try service.metadata(args.path)
         let summary = """
         path=\(metadata.relativePath)

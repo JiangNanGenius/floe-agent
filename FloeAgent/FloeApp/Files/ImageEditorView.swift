@@ -18,6 +18,8 @@ struct ImageEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showExport = false
     @State private var exportedURL: IdentifiableURL?
+    @State private var remotePrompt = ""
+    @State private var isRemoteEditing = false
 
     init(attachment: AttachmentRef, center: FilesCenter) {
         _viewModel = StateObject(
@@ -75,8 +77,23 @@ struct ImageEditorView: View {
     }
 
     private var controls: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 16) {
+        VStack(spacing: 8) {
+            HStack {
+                TextField("描述希望如何修改图片", text: $remotePrompt)
+                    .textFieldStyle(.roundedBorder)
+                Button("AI 编辑") {
+                    Task {
+                        isRemoteEditing = true
+                        await viewModel.remoteEdit(prompt: remotePrompt)
+                        isRemoteEditing = false
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(remotePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isRemoteEditing)
+            }
+            .padding(.horizontal)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 16) {
                 controlButton("editor.crop", icon: "crop") {
                     await viewModel.apply(.crop(rect: .init(x: 0.1, y: 0.1, width: 0.8, height: 0.8)))
                 }
@@ -96,7 +113,8 @@ struct ImageEditorView: View {
                     await viewModel.undo()
                 }
             }
-            .padding()
+                .padding()
+            }
         }
         .background(FloeTheme.chromeMaterial)
     }

@@ -117,8 +117,8 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 )
                 try db.execute(
                     sql: """
-                        INSERT INTO conversations (id, title, created_at, updated_at, mode)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO conversations (id, title, created_at, updated_at, mode, title_origin)
+                        VALUES (?, ?, ?, ?, ?, 'autoPending')
                         """,
                     arguments: [
                         conversation.id.uuidString,
@@ -144,6 +144,70 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 ) == true else {
                     throw FloeError.notFound("workspace \(workspaceID.uuidString)")
                 }
+            }
+
+            let owningWorkspaceID: UUID
+            if createdConversation {
+                if let requested = request.workspaceID {
+                    owningWorkspaceID = requested
+                } else {
+                    owningWorkspaceID = UUID()
+                    let privateName = request.conversationTitle
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    try db.execute(
+                        sql: """
+                            INSERT INTO workspaces (
+                                id, name, root_bookmark, last_opened_at,
+                                active_target_kind, active_target_host_id,
+                                inspector_state_json, instructions_rel_path,
+                                created_at, updated_at, kind, internal_relative_path
+                            ) VALUES (?, ?, ?, NULL, 'local', NULL, '{}', NULL,
+                                      ?, ?, 'privateTask', ?)
+                            """,
+                        arguments: [
+                            owningWorkspaceID.uuidString,
+                            privateName.isEmpty ? "Chat" : String(privateName.prefix(80)),
+                            Data(), PersistenceCodec.encode(now), PersistenceCodec.encode(now),
+                            "PrivateTasks/\(conversation.id.uuidString)"
+                        ]
+                    )
+                }
+                try db.execute(
+                    sql: """
+                        INSERT INTO conversation_workspace_ownership
+                            (conversation_id, workspace_id, assigned_at)
+                        VALUES (?, ?, ?)
+                        """,
+                    arguments: [
+                        conversation.id.uuidString,
+                        owningWorkspaceID.uuidString,
+                        PersistenceCodec.encode(now)
+                    ]
+                )
+                try db.execute(
+                    sql: """
+                        INSERT INTO task_policies (conversation_id, updated_at)
+                        VALUES (?, ?)
+                        """,
+                    arguments: [conversation.id.uuidString, PersistenceCodec.encode(now)]
+                )
+            } else {
+                guard let rawOwner = try String.fetchOne(
+                    db,
+                    sql: """
+                        SELECT workspace_id FROM conversation_workspace_ownership
+                        WHERE conversation_id = ?
+                        """,
+                    arguments: [conversation.id.uuidString]
+                ), let owner = UUID(uuidString: rawOwner) else {
+                    throw FloeError.storageCorrupted("Conversation has no canonical workspace")
+                }
+                if let requested = request.workspaceID, requested != owner {
+                    throw FloeError.validationFailed(
+                        "A task workspace is fixed after its first message; use Move Task instead"
+                    )
+                }
+                owningWorkspaceID = owner
             }
 
             let run = RunRecord(
@@ -219,20 +283,7 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 try Self.insertPart(part, db: db)
             }
 
-            if let workspaceID = request.workspaceID {
-                try db.execute(
-                    sql: """
-                        INSERT INTO workspace_conversations (workspace_id, conversation_id, created_at)
-                        VALUES (?, ?, ?)
-                        ON CONFLICT(workspace_id, conversation_id) DO NOTHING
-                        """,
-                    arguments: [
-                        workspaceID.uuidString,
-                        conversation.id.uuidString,
-                        PersistenceCodec.encode(now)
-                    ]
-                )
-            }
+            _ = owningWorkspaceID
 
             try db.execute(
                 sql: "UPDATE conversations SET updated_at = ? WHERE id = ?",
@@ -317,7 +368,9 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
             id: id,
             title: row["title"],
             createdAt: try PersistenceCodec.decodeDate(row["created_at"]),
-            updatedAt: try PersistenceCodec.decodeDate(row["updated_at"])
+            updatedAt: try PersistenceCodec.decodeDate(row["updated_at"]),
+            titleOrigin: ConversationTitleOrigin(rawValue: row["title_origin"] as String? ?? "autoPending")
+                ?? .autoPending
         )
     }
 }

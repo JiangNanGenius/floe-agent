@@ -55,7 +55,7 @@ public protocol ConversationGoalStore: Sendable {
 public protocol DurableMemoryStore: Sendable {
     func saveMemory(_ entry: MemoryEntry, evidence: [MemoryEvidenceReference]) async throws
     func memories(scope: MemoryScope, status: MemoryEntryStatus?) async throws -> [MemoryEntry]
-    func recall(query: String, workspaceID: UUID?, limit: Int) async throws -> [MemoryRecallItem]
+    func recall(query: String, workspaceID: UUID?, conversationID: UUID?, limit: Int) async throws -> [MemoryRecallItem]
     func deleteMemory(id: UUID, syncRevision: Int64) async throws
 }
 
@@ -67,6 +67,33 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
 
     public init(database: DatabaseManager) {
         self.database = database
+    }
+
+    public func saveCompaction(
+        runID: UUID,
+        record: ContextCompactionRecord,
+        summary: String
+    ) async throws {
+        try await database.writer { db in
+            try db.execute(sql: """
+                INSERT INTO context_compactions (
+                    id, run_id, source_message_ids_json, boundary_start_id,
+                    boundary_end_id, summary, source_digest, input_tokens,
+                    output_tokens, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                    record.id.uuidString,
+                    runID.uuidString,
+                    try Self.json(record.sourceMessageIDs),
+                    record.sourceMessageIDs.first?.uuidString,
+                    record.sourceMessageIDs.last?.uuidString,
+                    String(summary.prefix(24_000)),
+                    record.sourceDigest,
+                    record.beforeEstimatedTokens,
+                    record.afterEstimatedTokens,
+                    Self.date(record.createdAt)
+                ])
+        }
     }
 
     public func savePlanRevision(_ plan: PlanDraft) async throws {
@@ -175,7 +202,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     }
 
     public func saveMemory(_ entry: MemoryEntry, evidence: [MemoryEvidenceReference]) async throws {
-        let (scope, workspaceID) = Self.scope(entry.scope)
+        let (scope, workspaceID, conversationID) = Self.scope(entry.scope)
         let normalized = entry.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !normalized.isEmpty else { throw FloeError.validationFailed("Memory must not be empty") }
         guard !Self.looksLikeSecret(normalized) else {
@@ -184,15 +211,16 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         try await database.writer { db in
             try db.execute(sql: """
                 INSERT INTO memory_entries (
-                    id, scope, workspace_id, status, content, normalized_content,
+                    id, scope, workspace_id, conversation_id, status, content, normalized_content,
                     confidence, importance, is_pinned, source_kind, expires_at,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET status=excluded.status, content=excluded.content,
                     normalized_content=excluded.normalized_content, confidence=excluded.confidence,
                     importance=excluded.importance, is_pinned=excluded.is_pinned,
                     expires_at=excluded.expires_at, updated_at=excluded.updated_at
                 """, arguments: [entry.id.uuidString, scope, workspaceID?.uuidString,
+                    conversationID?.uuidString,
                     entry.status.rawValue, entry.content, normalized, entry.confidence,
                     entry.importance, entry.isPinned, entry.sourceKind.rawValue,
                     entry.expiresAt.map(Self.date), Self.date(entry.createdAt), Self.date(entry.updatedAt)])
@@ -208,17 +236,22 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     }
 
     public func memories(scope: MemoryScope, status: MemoryEntryStatus? = nil) async throws -> [MemoryEntry] {
-        let (scopeName, workspaceID) = Self.scope(scope)
+        let (scopeName, workspaceID, conversationID) = Self.scope(scope)
         return try await database.reader { db in
-            var sql = "SELECT * FROM memory_entries WHERE scope = ? AND workspace_id IS ?"
-            var arguments: StatementArguments = [scopeName, workspaceID?.uuidString]
+            var sql = "SELECT * FROM memory_entries WHERE scope = ? AND workspace_id IS ? AND conversation_id IS ?"
+            var arguments: StatementArguments = [scopeName, workspaceID?.uuidString, conversationID?.uuidString]
             if let status { sql += " AND status = ?"; arguments += [status.rawValue] }
             sql += " ORDER BY is_pinned DESC, importance DESC, updated_at DESC"
             return try Row.fetchAll(db, sql: sql, arguments: arguments).map(Self.memory)
         }
     }
 
-    public func recall(query: String, workspaceID: UUID?, limit: Int = 6) async throws -> [MemoryRecallItem] {
+    public func recall(
+        query: String,
+        workspaceID: UUID?,
+        conversationID: UUID? = nil,
+        limit: Int = 6
+    ) async throws -> [MemoryRecallItem] {
         let match = Self.ftsQuery(query)
         guard !match.isEmpty else { return [] }
         return try await database.reader { db in
@@ -227,9 +260,13 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                 FROM memory_fts JOIN memory_entries m ON m.rowid = memory_fts.rowid
                 WHERE memory_fts MATCH ? AND m.status = 'active'
                   AND (m.workspace_id IS NULL OR m.workspace_id = ?)
+                  AND (m.conversation_id IS NULL OR m.conversation_id = ?)
                   AND (m.expires_at IS NULL OR m.expires_at > ?)
                 ORDER BY m.is_pinned DESC, rank, m.importance DESC LIMIT ?
-                """, arguments: [match, workspaceID?.uuidString, Self.date(Date()), min(20, max(1, limit))])
+                """, arguments: [
+                    match, workspaceID?.uuidString, conversationID?.uuidString,
+                    Self.date(Date()), min(20, max(1, limit))
+                ])
                 .compactMap { row in
                     guard let id = UUID(uuidString: row["id"]) else { return nil }
                     let rank: Double = row["rank"]
@@ -268,7 +305,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                 FROM message_fts
                 JOIN messages m ON m.rowid = message_fts.rowid
                 JOIN conversations c ON c.id = m.conversation_id
-                LEFT JOIN workspace_conversations wc ON wc.conversation_id = c.id
+                LEFT JOIN conversation_workspace_ownership wc ON wc.conversation_id = c.id
                 WHERE \(filters.joined(separator: " AND "))
                 GROUP BY m.id ORDER BY bm25(message_fts), m.created_at DESC LIMIT ?
                 """, arguments: arguments)
@@ -346,9 +383,12 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
               let source = MemoryCandidateOrigin(rawValue: row["source_kind"]) else { throw FloeError.storageCorrupted("Invalid memory row") }
         let scopeName: String = row["scope"]
         let workspace: String? = row["workspace_id"]
+        let conversation: String? = row["conversation_id"]
         let scope: MemoryScope
         if scopeName == "workspace", let workspace, let id = UUID(uuidString: workspace) {
             scope = .workspace(id)
+        } else if scopeName == "task", let conversation, let id = UUID(uuidString: conversation) {
+            scope = .task(id)
         } else {
             scope = scopeName == "user" ? .userProfile : .agentGlobal
         }
@@ -358,8 +398,13 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             expiresAt: expires.map(Self.parseDate), createdAt: Self.parseDate(row["created_at"]), updatedAt: Self.parseDate(row["updated_at"]))
     }
 
-    private static func scope(_ scope: MemoryScope) -> (String, UUID?) {
-        switch scope { case .userProfile: ("user", nil); case .agentGlobal: ("agent", nil); case .workspace(let id): ("workspace", id) }
+    private static func scope(_ scope: MemoryScope) -> (String, UUID?, UUID?) {
+        switch scope {
+        case .userProfile: ("user", nil, nil)
+        case .agentGlobal: ("agent", nil, nil)
+        case .workspace(let id): ("workspace", id, nil)
+        case .task(let id): ("task", nil, id)
+        }
     }
 
     private static func searchHit(_ row: Row) -> ConversationSearchHit? {

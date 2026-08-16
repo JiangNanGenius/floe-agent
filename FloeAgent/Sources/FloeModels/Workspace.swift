@@ -6,6 +6,11 @@
 
 import Foundation
 
+public enum WorkspaceKind: String, Sendable, Codable, CaseIterable, Hashable {
+    case project
+    case privateTask
+}
+
 /// Where a workspace executes: locally on-device or on a paired host.
 public enum WorkspaceTarget: Sendable, Codable, Hashable {
     case local
@@ -71,6 +76,8 @@ public struct WorkspaceRecord: Sendable, Codable, Hashable, Identifiable {
     public var activeTarget: WorkspaceTarget
     public var inspectorState: InspectorState
     public var instructionsRelativePath: String?
+    public var kind: WorkspaceKind
+    public var internalRelativePath: String?
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -82,6 +89,8 @@ public struct WorkspaceRecord: Sendable, Codable, Hashable, Identifiable {
         activeTarget: WorkspaceTarget = .local,
         inspectorState: InspectorState = InspectorState(),
         instructionsRelativePath: String? = nil,
+        kind: WorkspaceKind = .project,
+        internalRelativePath: String? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -92,6 +101,8 @@ public struct WorkspaceRecord: Sendable, Codable, Hashable, Identifiable {
         self.activeTarget = activeTarget
         self.inspectorState = inspectorState
         self.instructionsRelativePath = instructionsRelativePath
+        self.kind = kind
+        self.internalRelativePath = internalRelativePath
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }

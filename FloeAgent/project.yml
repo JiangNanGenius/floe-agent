@@ -37,7 +37,7 @@ targets:
         BGTaskSchedulerPermittedIdentifiers:
           - org.floeagent.ios.refresh
           - org.floeagent.ios.processing
-          - org.floeagent.ios.continued
+          - org.floeagent.ios.continued.*
         UIBackgroundModes:
           - fetch
           - processing
@@ -108,8 +108,8 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.1.1"
-        CURRENT_PROJECT_VERSION: "10"
+        MARKETING_VERSION: "1.2.0"
+        CURRENT_PROJECT_VERSION: "11"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
         ENABLE_USER_SCRIPT_SANDBOXING: YES

@@ -138,6 +138,10 @@ public actor FloeAgentRuntime {
         /// Tool ceiling after skill declarations, device compatibility and
         /// user grants are intersected. `nil` preserves legacy no-skill runs.
         public var allowedToolNames: Set<String>?
+        /// Canonical task workspace, independent of the currently visible UI.
+        public var workspaceRootURL: URL?
+        /// Persisted task-relative file scope; empty means the full root.
+        public var allowedWorkspacePaths: [String]
         /// Chat-only runs can disable the compiled catalog entirely.
         public var toolsEnabled: Bool
         /// Pause timeout before automatic checkpoint.
@@ -154,6 +158,8 @@ public actor FloeAgentRuntime {
             conversationMode: ConversationMode = .chat,
             activeSkillIDs: Set<String> = [],
             allowedToolNames: Set<String>? = nil,
+            workspaceRootURL: URL? = nil,
+            allowedWorkspacePaths: [String] = [],
             toolsEnabled: Bool = true,
             pauseTimeout: TimeInterval = 300,
             maxToolSteps: Int = 32
@@ -164,6 +170,8 @@ public actor FloeAgentRuntime {
             self.conversationMode = conversationMode
             self.activeSkillIDs = activeSkillIDs
             self.allowedToolNames = allowedToolNames
+            self.workspaceRootURL = workspaceRootURL
+            self.allowedWorkspacePaths = allowedWorkspacePaths
             self.toolsEnabled = toolsEnabled
             self.pauseTimeout = pauseTimeout
             self.maxToolSteps = maxToolSteps
@@ -183,6 +191,7 @@ public actor FloeAgentRuntime {
     private let credentials: ProviderCredentials
     private let auditSink: (any AuditSink)?
     private let checkpointStore: (any CheckpointStore)?
+    private let intelligenceStore: SQLiteIntelligenceStore?
     private let sink: (any AgentEventSink)?
     private let contextEngine: (any ContextEngine)?
 
@@ -218,6 +227,7 @@ public actor FloeAgentRuntime {
         gate: CatastrophicActionGate? = nil,
         auditSink: (any AuditSink)? = nil,
         checkpointStore: (any CheckpointStore)? = nil,
+        intelligenceStore: SQLiteIntelligenceStore? = nil,
         contextEngine: (any ContextEngine)? = nil,
         sink: (any AgentEventSink)? = nil,
         runID: UUID = UUID()
@@ -230,6 +240,7 @@ public actor FloeAgentRuntime {
         self.gate = gate
         self.auditSink = auditSink
         self.checkpointStore = checkpointStore
+        self.intelligenceStore = intelligenceStore
         self.contextEngine = contextEngine
         self.sink = sink
         self.runID = runID
@@ -257,12 +268,20 @@ public actor FloeAgentRuntime {
         messages.insert(ConversationMessage(role: "system", content: content), at: 0)
     }
 
+    /// Seeds prior messages from the same durable task. This is deliberately
+    /// separate from cross-conversation reference injection: these messages
+    /// are the actual preceding turns of the current conversation.
+    public func seedConversationHistory(_ history: [ConversationMessage]) async {
+        guard case .idle = state else { return }
+        messages.append(contentsOf: history.filter { $0.role != "system" })
+    }
+
     /// idle → preparing → streamingModel …
-    public func start(goal: String) async throws {
+    public func start(goal: String, images: [ConversationImagePart] = []) async throws {
         guard case .idle = state else {
             throw FloeError.invalidConfiguration("start(goal:) requires idle state, currently \(state.name)")
         }
-        messages.append(ConversationMessage(role: "user", content: goal))
+        messages.append(ConversationMessage(role: "user", content: goal, images: images))
         await transition(to: .preparing(AgentState.PreparingInfo(goal: goal)))
         await runModelTurn()
     }
@@ -357,6 +376,12 @@ public actor FloeAgentRuntime {
         await transition(to: .checkpointed(AgentState.CheckpointRef()))
     }
 
+    /// Writes a recovery point without changing the live state. Used by the
+    /// app-level run coordinator while a stream remains active.
+    public func persistRecoveryPoint() async throws {
+        try await writeCheckpoint()
+    }
+
     /// checkpointed → preparing. Replays messages; dedups tool calls via
     /// idempotency keys.
     public func resume(from checkpoint: AgentCheckpoint) async throws {
@@ -404,8 +429,16 @@ public actor FloeAgentRuntime {
                 protection: protection
             )
             if let prepared = try? await contextEngine.prepareContext(for: request),
-               prepared.compaction != nil {
+               let compaction = prepared.compaction {
                 messages = prepared.messages
+                let summary = prepared.messages.first(where: {
+                    $0.role == "system" && $0.content.contains("Historical summary:")
+                })?.content ?? ""
+                try? await intelligenceStore?.saveCompaction(
+                    runID: runID,
+                    record: compaction,
+                    summary: summary
+                )
             }
         }
         let streamInfo = AgentState.StreamingInfo(modelRemoteID: configuration.model.remoteModelID)
@@ -427,7 +460,15 @@ public actor FloeAgentRuntime {
         if let effectiveAllowedNames {
             catalogDescriptors.removeAll { !effectiveAllowedNames.contains($0.name) }
         }
-        var contentMessages = messages.map { ProviderMessage(role: $0.role, text: $0.content) }
+        var contentMessages = messages.map { message in
+            var parts: [ProviderContentPart] = [.text(message.content)]
+            if configuration.model.capabilities.contains(.vision) {
+                parts += message.images.map {
+                    .imageData(mimeType: $0.mimeType, base64: $0.base64)
+                }
+            }
+            return ProviderMessage(role: message.role, content: parts)
+        }
         if configuration.model.capabilities.contains(.vision) {
             let evidence = pendingToolResults.flatMap(\.artifacts)
                 .compactMap(Self.providerImageEvidence)
@@ -797,6 +838,8 @@ public actor FloeAgentRuntime {
             scope: call.scope,
             activeSkillIDs: configuration.activeSkillIDs,
             allowedToolNames: configuration.allowedToolNames,
+            workspaceRootURL: configuration.workspaceRootURL,
+            allowedWorkspacePaths: configuration.allowedWorkspacePaths,
             cancellation: cancellationToken
         )
         let result: ToolResult
@@ -907,11 +950,18 @@ public actor FloeAgentRuntime {
         default:
             persistedState = state
         }
+        var checkpointMessages = messages
+        if !streamText.isEmpty {
+            checkpointMessages.append(ConversationMessage(
+                role: "assistant",
+                content: streamText
+            ))
+        }
         let checkpoint = AgentCheckpoint(
             runID: runID,
             conversationID: configuration.conversationID,
             state: persistedState,
-            messages: messages,
+            messages: checkpointMessages,
             pendingToolCalls: pendingToolCalls,
             pendingToolResults: pendingToolResults,
             approvals: grants,

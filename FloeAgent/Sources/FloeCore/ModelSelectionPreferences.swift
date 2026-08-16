@@ -18,6 +18,7 @@ public enum AuxiliaryImageMode: String, Sendable, Codable, CaseIterable, Hashabl
 public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
     public var onboardingStatus: OnboardingStatus
     public var defaultAgentModelID: UUID?
+    public var visionModelID: UUID?
     public var auxiliaryImageMode: AuxiliaryImageMode
     public var sharedImageModelID: UUID?
     public var imageGenerationModelID: UUID?
@@ -28,6 +29,7 @@ public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
     public init(
         onboardingStatus: OnboardingStatus = .unseen,
         defaultAgentModelID: UUID? = nil,
+        visionModelID: UUID? = nil,
         auxiliaryImageMode: AuxiliaryImageMode = .shared,
         sharedImageModelID: UUID? = nil,
         imageGenerationModelID: UUID? = nil,
@@ -37,6 +39,7 @@ public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
     ) {
         self.onboardingStatus = onboardingStatus
         self.defaultAgentModelID = defaultAgentModelID
+        self.visionModelID = visionModelID
         self.auxiliaryImageMode = auxiliaryImageMode
         self.sharedImageModelID = sharedImageModelID
         self.imageGenerationModelID = imageGenerationModelID

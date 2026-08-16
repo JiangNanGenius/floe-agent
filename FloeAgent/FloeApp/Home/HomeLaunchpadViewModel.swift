@@ -82,7 +82,7 @@ final class HomeLaunchpadViewModel: ObservableObject {
     }
 
     var availableProjects: [ComposerProject] {
-        environment.workspaceCenter.workspaces.map(ComposerProject.init(record:))
+        environment.workspaceCenter.projectWorkspaces.map(ComposerProject.init(record:))
     }
 
     var canSend: Bool {
@@ -101,9 +101,8 @@ final class HomeLaunchpadViewModel: ObservableObject {
         await center.reload()
         await environment.workspaceCenter.reload()
         if selectedModelID == nil { selectedModelID = center.modelPreferences.defaultAgentModelID }
-        if selectedProjectID == nil {
-            selectedProjectID = environment.workspaceCenter.currentWorkspace?.id
-        }
+        // Nil is a deliberate private-chat scope. Never inherit whatever
+        // project happens to be open in another task or inspector.
 
         var states: [UUID: String] = [:]
         var active: [ConversationRecord] = []

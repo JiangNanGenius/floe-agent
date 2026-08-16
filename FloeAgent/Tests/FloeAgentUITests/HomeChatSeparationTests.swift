@@ -8,6 +8,16 @@ import Testing
 @Suite("FloeApp.WorkbenchNavigation")
 struct HomeChatSeparationTests {
 
+    @Test("A new scene starts on a clean task draft with inspector collapsed")
+    @MainActor
+    func coldLaunchStartsNewTask() {
+        let router = AppRouter()
+        #expect(router.selection == .home)
+        #expect(router.workbenchSelection == .newTask(workspaceID: nil))
+        #expect(router.workbenchPath.isEmpty)
+        #expect(!router.inspectorVisible)
+    }
+
     @Test("Home and history entry points share one conversation selection")
     @MainActor
     func separateNavigationState() {
@@ -29,7 +39,7 @@ struct HomeChatSeparationTests {
         #expect(router.homeDetailConversationID == chatThread)
     }
 
-    @Test("Popping either compact projection returns the workbench to overview")
+    @Test("Popping a task returns the workbench to a fresh private draft")
     @MainActor
     func chatBackDoesNotTouchHome() {
         let router = AppRouter()
@@ -38,7 +48,7 @@ struct HomeChatSeparationTests {
 
         router.openConversation(UUID())
         router.chatPath = []
-        #expect(router.workbenchSelection == .overview)
+        #expect(router.workbenchSelection == .newTask(workspaceID: nil))
         #expect(router.homeDetailConversationID == nil)
         #expect(router.homePath.isEmpty)
     }
@@ -54,7 +64,7 @@ struct HomeChatSeparationTests {
         #expect(router.morePath == [.providers])
     }
 
-    @Test("Deleted conversation selection reconciles to overview")
+    @Test("Deleted conversation selection reconciles to a fresh draft")
     @MainActor
     func deletionReconcilesSelection() {
         let router = AppRouter()
@@ -64,7 +74,7 @@ struct HomeChatSeparationTests {
 
         router.reconcileConversations([kept])
 
-        #expect(router.workbenchSelection == .overview)
+        #expect(router.workbenchSelection == .newTask(workspaceID: nil))
         #expect(router.workbenchPath.isEmpty)
         #expect(!router.inspectorVisible)
     }

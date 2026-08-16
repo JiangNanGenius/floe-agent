@@ -1,4 +1,4 @@
-// FloeAgentUITests — Home/Chat separation, timeline ordering and voice
+// FloeAgentUITests — unified task workbench, timeline ordering and voice
 // lifecycle UI coverage for iPad Air 13-inch and iPhone.
 //
 // SPDX-License-Identifier: MPL-2.0
@@ -21,6 +21,7 @@ import XCTest
 /// layout even if the test runner misreports the size class; without it
 /// the default `-ui-testing` run pins the compact layout for the iPhone
 /// suite below.
+@MainActor
 final class HomeChatVoiceIPadUITests: XCTestCase {
 
     private var app: XCUIApplication!
@@ -37,33 +38,21 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
         app = nil
     }
 
-    /// The sidebar, Home overview column and launchpad must all exist and
-    /// be distinct from Chat's conversation list.
-    func testHomeAndChatStructuresDiffer() throws {
-        // Home sidebar entry is visible and selected by default.
-        let homeSidebar = app.staticTexts["sidebar.primary.home"]
-        guard homeSidebar.waitForExistence(timeout: 5) else {
+    /// Cold launch opens a fresh draft and the sidebar exposes only the
+    /// task-first top-level entries.
+    func testColdLaunchAndTaskSidebar() throws {
+        let newTask = app.staticTexts["sidebar.workbench.new_task"]
+        guard newTask.waitForExistence(timeout: 5) else {
             throw XCTSkip("Requires iPad split layout (regular width)")
         }
-
-        // Home shows the launchpad welcome, NOT a conversation-history
-        // list. The welcome key is the structural difference.
         XCTAssertTrue(
             app.staticTexts["home.welcome"].waitForExistence(timeout: 5)
                 || app.textFields["composer.input"].waitForExistence(timeout: 5)
         )
-
-        // Switch to Chat: the list surface appears with its own identity.
-        let chatSidebar = app.staticTexts["sidebar.primary.chat"]
-        XCTAssertTrue(chatSidebar.waitForExistence(timeout: 5))
-        chatSidebar.tap()
-
-        // Chat's detail shows the quiet empty state with a real new entry,
-        // never the Home launchpad.
-        XCTAssertTrue(
-            app.buttons["chat.detail.new"].waitForExistence(timeout: 5)
-                || app.buttons["chat.new"].waitForExistence(timeout: 5)
-        )
+        XCTAssertTrue(app.staticTexts["sidebar.task_center"].exists)
+        XCTAssertTrue(app.staticTexts["sidebar.skills"].exists)
+        XCTAssertFalse(app.staticTexts["sidebar.primary.files"].exists)
+        XCTAssertFalse(app.staticTexts["sidebar.more.providers"].exists)
     }
 
     /// The Home composer is directly usable as a task-start surface.
@@ -115,19 +104,17 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
             throw XCTSkip("Composer not reachable")
         }
         mic.tap()
-        // Navigate away via the sidebar.
-        let filesSidebar = app.staticTexts["sidebar.primary.files"]
-        if filesSidebar.waitForExistence(timeout: 3) {
-            filesSidebar.tap()
-        }
-        let homeSidebar = app.staticTexts["sidebar.primary.home"]
-        homeSidebar.tap()
+        let taskCenter = app.staticTexts["sidebar.task_center"]
+        if taskCenter.waitForExistence(timeout: 3) { taskCenter.tap() }
+        let newTask = app.staticTexts["sidebar.workbench.new_task"]
+        newTask.tap()
         // The microphone is back to a non-destructive affordance.
         XCTAssertTrue(app.buttons["composer.voice"].waitForExistence(timeout: 5))
     }
 }
 
 /// iPhone navigation and layout coverage.
+@MainActor
 final class HomeChatVoiceIPhoneUITests: XCTestCase {
 
     private var app: XCUIApplication!
@@ -143,45 +130,26 @@ final class HomeChatVoiceIPhoneUITests: XCTestCase {
         app = nil
     }
 
-    /// Home and Chat are independent tabs: switching tabs never shares
-    /// selection state.
-    func testHomeAndChatTabsAreIndependent() throws {
-        let homeTab = app.tabBars.buttons["首页"].exists
-            ? app.tabBars.buttons["首页"]
-            : app.tabBars.buttons["Home"]
-        let chatTab = app.tabBars.buttons["对话"].exists
-            ? app.tabBars.buttons["对话"]
-            : app.tabBars.buttons["Chat"]
-        XCTAssertTrue(homeTab.waitForExistence(timeout: 5))
-        XCTAssertTrue(chatTab.waitForExistence(timeout: 5))
-
-        chatTab.tap()
-        // Chat root shows the list or its empty state — not the launchpad.
-        XCTAssertFalse(app.staticTexts["home.welcome"].exists)
-
-        homeTab.tap()
-        // Home root is the launchpad again, unaffected by Chat navigation.
+    /// Compact layout starts directly on the new-task detail, with no
+    /// duplicate global tab bar.
+    func testColdLaunchUsesOneTaskSurface() throws {
         XCTAssertTrue(
             app.staticTexts["home.welcome"].waitForExistence(timeout: 5)
                 || app.textFields["composer.input"].waitForExistence(timeout: 5)
         )
+        XCTAssertEqual(app.tabBars.count, 0)
     }
 
-    /// Chat list → thread → back returns to the list with selection
-    /// cleared; Home is untouched.
-    func testChatListPushAndBack() throws {
-        let chatTab = app.tabBars.buttons["对话"].exists
-            ? app.tabBars.buttons["对话"]
-            : app.tabBars.buttons["Chat"]
-        chatTab.tap()
-
-        // Without a fixture thread there is nothing to push; assert the
-        // list root and new-conversation entry exist instead.
-        let newButton = app.buttons["chat.new"]
-        XCTAssertTrue(
-            newButton.waitForExistence(timeout: 5)
-                || app.navigationBars.firstMatch.waitForExistence(timeout: 5)
-        )
+    func testCompactSidebarIsReachable() throws {
+        XCTAssertTrue(app.navigationBars.firstMatch.waitForExistence(timeout: 5))
+        let sidebarButton = app.buttons.matching(NSPredicate(
+            format: "label CONTAINS[c] %@ OR label CONTAINS[c] %@",
+            "sidebar", "侧边栏"
+        )).firstMatch
+        if sidebarButton.waitForExistence(timeout: 3) {
+            sidebarButton.tap()
+            XCTAssertTrue(app.staticTexts["sidebar.workbench.new_task"].waitForExistence(timeout: 3))
+        }
     }
 
     /// The composer stays usable with the keyboard up: input, voice, and

@@ -115,11 +115,51 @@ public struct ConversationMessage: Sendable, Codable, Hashable, Identifiable {
     public var role: String
     public var content: String
     public var createdAt: Date
+    /// Bounded inline visual evidence belonging to this message. It is only
+    /// sent when the selected model actually declares vision support.
+    public var images: [ConversationImagePart]
 
-    public init(id: UUID = UUID(), role: String, content: String, createdAt: Date = Date()) {
+    public init(
+        id: UUID = UUID(),
+        role: String,
+        content: String,
+        createdAt: Date = Date(),
+        images: [ConversationImagePart] = []
+    ) {
         self.id = id
         self.role = role
         self.content = content
         self.createdAt = createdAt
+        self.images = images
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, role, content, createdAt, images }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        role = try values.decode(String.self, forKey: .role)
+        content = try values.decode(String.self, forKey: .content)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        images = try values.decodeIfPresent([ConversationImagePart].self, forKey: .images) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(role, forKey: .role)
+        try values.encode(content, forKey: .content)
+        try values.encode(createdAt, forKey: .createdAt)
+        if !images.isEmpty { try values.encode(images, forKey: .images) }
+    }
+}
+
+public struct ConversationImagePart: Sendable, Codable, Hashable {
+    public var mimeType: String
+    public var base64: String
+
+    public init(mimeType: String, base64: String) {
+        self.mimeType = mimeType
+        self.base64 = base64
     }
 }

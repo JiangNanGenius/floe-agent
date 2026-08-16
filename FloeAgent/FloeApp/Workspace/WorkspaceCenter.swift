@@ -23,8 +23,16 @@ import FloeWorkspace
 @MainActor
 final class WorkspaceCenter: ObservableObject {
 
+    struct TaskRootLease: Sendable {
+        let url: URL
+        let release: @Sendable () -> Void
+    }
+
     /// All persisted workspaces in deterministic name order.
     @Published private(set) var workspaces: [WorkspaceRecord] = []
+    /// Canonical v8 ownership, used by the sidebar tree. One conversation
+    /// appears under exactly one project or under Chats.
+    @Published private(set) var conversationWorkspaceIDs: [UUID: UUID] = [:]
     /// The currently opened workspace, if any.
     @Published private(set) var currentWorkspace: WorkspaceRecord?
     /// Recent files of the current workspace (most recent first).
@@ -53,6 +61,7 @@ final class WorkspaceCenter: ObservableObject {
     /// Resolved root URL of the current workspace (security-scoped access
     /// stays started while the workspace is open).
     private(set) var currentRootURL: URL?
+    private var currentRootUsesSecurityScope = false
 
     /// Maximum size of the agent instruction file body (16 KiB).
     static let instructionsMaxBytes = 16 * 1024
@@ -70,9 +79,24 @@ final class WorkspaceCenter: ObservableObject {
     func reload() async {
         do {
             workspaces = try await store.workspaces()
+            var ownership: [UUID: UUID] = [:]
+            for workspace in workspaces {
+                for conversationID in try await store.conversations(workspaceID: workspace.id) {
+                    ownership[conversationID] = workspace.id
+                }
+            }
+            conversationWorkspaceIDs = ownership
         } catch {
             actionError = error.localizedDescription
         }
+    }
+
+    var projectWorkspaces: [WorkspaceRecord] {
+        workspaces.filter { $0.kind == .project }
+    }
+
+    func workspaceID(for conversationID: UUID) -> UUID? {
+        conversationWorkspaceIDs[conversationID]
     }
 
     /// Creates a workspace from a picked directory URL (security-scoped).
@@ -124,6 +148,7 @@ final class WorkspaceCenter: ObservableObject {
         closeCurrentWorkspace()
 
         currentRootURL = url
+        currentRootUsesSecurityScope = true
         fileService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: url))
         var opened = record
         opened.lastOpenedAt = Date()
@@ -137,9 +162,10 @@ final class WorkspaceCenter: ObservableObject {
 
     /// Closes the current workspace and releases its security scope.
     func closeCurrentWorkspace() {
-        if let url = currentRootURL {
+        if currentRootUsesSecurityScope, let url = currentRootURL {
             url.stopAccessingSecurityScopedResource()
         }
+        currentRootUsesSecurityScope = false
         currentRootURL = nil
         fileService = nil
         currentWorkspace = nil
@@ -173,6 +199,57 @@ final class WorkspaceCenter: ObservableObject {
             }
         }
         return url
+    }
+
+    /// Acquires the root belonging to a specific task. Private chats receive
+    /// an app-owned directory; projects receive their security-scoped root.
+    /// The caller must release the lease when the run becomes terminal.
+    func acquireTaskRoot(_ record: WorkspaceRecord, conversationID: UUID) async throws -> TaskRootLease {
+        if record.kind == .privateTask {
+            let support = try FileManager.default.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            let relative = record.internalRelativePath ?? "PrivateTasks/\(conversationID.uuidString)"
+            let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
+                .appendingPathComponent(relative, isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            return TaskRootLease(url: root, release: {})
+        }
+
+        let root = try await resolveRoot(record)
+        guard root.startAccessingSecurityScopedResource() else {
+            throw FloeError.validationFailed("Workspace folder is not accessible")
+        }
+        return TaskRootLease(url: root, release: { root.stopAccessingSecurityScopedResource() })
+    }
+
+    /// Rebinds the visible file inspector to the selected task's immutable
+    /// owner. It closes the previous tree immediately so switching tasks can
+    /// never flash or operate on stale files.
+    func openTaskWorkspace(conversationID: UUID) async throws {
+        closeCurrentWorkspace()
+        if workspaces.isEmpty || conversationWorkspaceIDs[conversationID] == nil {
+            await reload()
+        }
+        guard let workspaceID = conversationWorkspaceIDs[conversationID],
+              let record = workspaces.first(where: { $0.id == workspaceID }) else {
+            throw FloeError.notFound("workspace for task \(conversationID.uuidString)")
+        }
+        if record.kind == .project {
+            try await openWorkspace(id: record.id)
+            return
+        }
+        let lease = try await acquireTaskRoot(record, conversationID: conversationID)
+        currentRootURL = lease.url
+        currentRootUsesSecurityScope = false
+        fileService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: lease.url))
+        currentWorkspace = record
+        Self.sharedRootOverride = lease.url
+        await reloadRecentFiles()
+        await loadInstructions()
     }
 
     // MARK: - Inspector state
@@ -311,10 +388,9 @@ final class WorkspaceCenter: ObservableObject {
                 createdAt: Date()
             )
             try await environment.conversationStore.appendMessage(message)
-            try await store.linkConversation(
-                workspaceID: workspace.id,
-                conversationID: conversationID
-            )
+            guard workspaceID(for: conversationID) == workspace.id else {
+                throw FloeError.validationFailed("File is outside this task's fixed workspace")
+            }
             actionError = nil
         } catch {
             actionError = error.localizedDescription

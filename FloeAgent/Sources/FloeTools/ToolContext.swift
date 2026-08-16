@@ -17,6 +17,12 @@ public struct ToolContext: Sendable {
     public var activeSkillIDs: Set<String>
     /// Executor-side capability ceiling derived before the provider request.
     public var allowedToolNames: Set<String>?
+    /// Root assigned to this task. Workspace tools must prefer this over any
+    /// UI-global workspace so concurrent tasks cannot leak into one another.
+    public var workspaceRootURL: URL?
+    /// Optional workspace-relative file ceiling. An empty collection means
+    /// the whole task workspace; entries authorize the path and descendants.
+    public var allowedWorkspacePaths: [String]
     public var cancellation: CancellationToken
 
     public init(
@@ -25,6 +31,8 @@ public struct ToolContext: Sendable {
         scope: ToolScope = .local,
         activeSkillIDs: Set<String> = [],
         allowedToolNames: Set<String>? = nil,
+        workspaceRootURL: URL? = nil,
+        allowedWorkspacePaths: [String] = [],
         cancellation: CancellationToken
     ) {
         self.runID = runID
@@ -32,7 +40,40 @@ public struct ToolContext: Sendable {
         self.scope = scope
         self.activeSkillIDs = activeSkillIDs
         self.allowedToolNames = allowedToolNames
+        self.workspaceRootURL = workspaceRootURL
+        self.allowedWorkspacePaths = allowedWorkspacePaths
         self.cancellation = cancellation
+    }
+
+    /// Enforces the task's persisted file scope before the workspace path
+    /// guard resolves the path against the root. This is intentionally a
+    /// second boundary: the path guard still prevents traversal/symlinks.
+    public func authorizeWorkspacePath(_ path: String) throws {
+        guard !allowedWorkspacePaths.isEmpty else { return }
+        let candidate = Self.normalizedRelativePath(path)
+        let allowed = allowedWorkspacePaths.contains { declared in
+            let ceiling = Self.normalizedRelativePath(declared)
+            return ceiling == "." || candidate == ceiling || candidate.hasPrefix(ceiling + "/")
+        }
+        guard allowed else {
+            throw FloeError.validationFailed("Task file scope does not permit \(path)")
+        }
+    }
+
+    private static func normalizedRelativePath(_ path: String) -> String {
+        var pieces: [Substring] = []
+        for component in path.replacingOccurrences(of: "\\", with: "/")
+            .split(separator: "/", omittingEmptySubsequences: true) {
+            switch component {
+            case ".":
+                continue
+            case "..":
+                if !pieces.isEmpty { pieces.removeLast() }
+            default:
+                pieces.append(component)
+            }
+        }
+        return pieces.isEmpty ? "." : pieces.joined(separator: "/")
     }
 }
 

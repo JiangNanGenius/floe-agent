@@ -33,6 +33,7 @@ final class AppEnvironment: ObservableObject {
     /// Atomic preparation of conversation + run + first message before any
     /// provider work begins.
     let runLaunchStore: any RunLaunchStore
+    let checkpointStore: any CheckpointStore
     let intelligenceStore: SQLiteIntelligenceStore
     let skillStore: SQLiteSkillStore
     let configurationStore: ModelConfigurationStore
@@ -53,6 +54,9 @@ final class AppEnvironment: ObservableObject {
     let remotePythonProbe: FloeExecution.RemotePythonProbe
     /// Long-lived visible WebKit session shared by UI and browser tools.
     let browserCenter: BrowserSessionCenter
+    /// The single microphone/SpeechAnalyzer session for the whole app. A
+    /// composer never constructs its own AVAudioEngine.
+    let voiceInput: VoiceInputController
 
     // MARK: Coordinators
 
@@ -66,6 +70,7 @@ final class AppEnvironment: ObservableObject {
     private lazy var _settingsCenter = SettingsCenter(environment: self)
     private lazy var _skillsCenter = SkillsCenter(environment: self)
     private lazy var _memoryCenter = MemoryCenter(environment: self)
+    private lazy var _backgroundRunCoordinator = BackgroundRunCoordinator(environment: self)
 
     var conversationCenter: ConversationCenter { _conversationCenter }
     var remoteSessionCenter: RemoteSessionCenter { _remoteSessionCenter }
@@ -76,6 +81,7 @@ final class AppEnvironment: ObservableObject {
     var settingsCenter: SettingsCenter { _settingsCenter }
     var skillsCenter: SkillsCenter { _skillsCenter }
     var memoryCenter: MemoryCenter { _memoryCenter }
+    var backgroundRunCoordinator: BackgroundRunCoordinator { _backgroundRunCoordinator }
 
     // MARK: State
 
@@ -102,6 +108,12 @@ final class AppEnvironment: ObservableObject {
         self.conversationStore = conversationStore
         self.runStore = runStore
         self.runLaunchStore = SQLiteRunLaunchStore(database: database)
+        let checkpointRoot = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first?.appendingPathComponent("FloeAgent/Checkpoints", isDirectory: true)
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("FloeAgent-Checkpoints")
+        self.checkpointStore = FileCheckpointStore(directory: checkpointRoot)
         self.intelligenceStore = SQLiteIntelligenceStore(database: database)
         self.skillStore = SQLiteSkillStore(database: database)
         self.configurationStore = configurationStore
@@ -111,6 +123,7 @@ final class AppEnvironment: ObservableObject {
         self.catastrophicGate = catastrophicGate
         self.isEphemeral = isEphemeral
         self.browserCenter = BrowserSessionCenter()
+        self.voiceInput = VoiceInputController.live()
 
         // T04/T05: register the nine workspace file tools (catalog
         // descriptors + runtime runners). The root provider reads the

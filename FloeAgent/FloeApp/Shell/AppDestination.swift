@@ -2,10 +2,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// iPhone shows exactly five tabs (workbench, files, browser, hosts, more);
-// iPad surfaces the same destinations in the sidebar plus the More
-// sub-destinations as first-class sections. Titles resolve through the
-// string catalog — views never hard-code user-facing text.
+// Compatibility destinations for deep links and operational screens. The
+// visible shell is task-first on every device: files/browser/hosts belong to
+// the current task inspector rather than duplicate global tabs.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -48,7 +47,7 @@ enum AppDestination: String, Hashable, CaseIterable, Identifiable, Sendable {
 /// Sub-destinations reachable from the More tab on iPhone, and promoted to
 /// sidebar sections on iPad. Order is the locked display order.
 enum MoreDestination: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case runs, setupGuide, providers, auxiliaryModels, skills, memory, settings, privacy, diagnostics
+    case runs, setupGuide, providers, auxiliaryModels, skills, memory, settings, diagnostics
 
     var id: String { rawValue }
 
@@ -61,7 +60,6 @@ enum MoreDestination: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .skills: "skills.title"
         case .memory: "memory.title"
         case .settings: "more.settings"
-        case .privacy: "more.privacy"
         case .diagnostics: "more.diagnostics"
         }
     }
@@ -75,7 +73,6 @@ enum MoreDestination: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .skills: "puzzlepiece.extension"
         case .memory: "brain"
         case .settings: "gearshape"
-        case .privacy: "hand.raised"
         case .diagnostics: "stethoscope"
         }
     }

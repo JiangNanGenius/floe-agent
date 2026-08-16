@@ -1,4 +1,4 @@
-name: Unsigned IPA Release
+name: TestFlight and Unsigned IPA Release
 
 on:
   push:
@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: unsigned-ipa-${{ github.ref }}
+  group: floe-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -36,6 +36,10 @@ jobs:
     defaults:
       run:
         working-directory: FloeAgent
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      build: ${{ steps.release.outputs.build }}
 
     steps:
       - name: Check out tagged source
@@ -140,38 +144,141 @@ jobs:
           path: FloeAgent/release-assets/
           if-no-files-found: error
 
-      - name: Create draft prerelease and upload assets
-        if: github.event_name == 'push' || inputs.publish
-        env:
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-          VERSION: ${{ steps.release.outputs.version }}
-          BUILD: ${{ steps.release.outputs.build }}
+  testflight:
+    name: Archive and upload the same commit to TestFlight
+    needs: build-verify-release
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    defaults:
+      run:
+        working-directory: FloeAgent
+    steps:
+      - name: Check out the exact release tag
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.build-verify-release.outputs.tag }}
+
+      - name: Generate and validate the identical release project
         run: |
-          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          brew install xcodegen
+          scripts/gen_project.sh
+          scripts/release_preflight.sh "${{ needs.build-verify-release.outputs.tag }}"
+
+      - name: Install distribution identity and profile
+        env:
+          DISTRIBUTION_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          test -n "$DISTRIBUTION_CERTIFICATE"
+          test -n "$PROVISIONING_PROFILE"
+          KEYCHAIN="$RUNNER_TEMP/floe-release.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)$(uuidgen)"
+          echo "$DISTRIBUTION_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/distribution.p12"
+          echo "$PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/Floe.mobileprovision"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/distribution.p12" -P "$DISTRIBUTION_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          PROFILE_UUID="$(security cms -D -i "$RUNNER_TEMP/Floe.mobileprovision" | plutil -extract UUID raw -)"
+          cp "$RUNNER_TEMP/Floe.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+
+      - name: Install App Store Connect API key
+        env:
+          ASC_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        run: |
+          test -n "$ASC_API_PRIVATE_KEY_BASE64"
+          test -n "$ASC_KEY_ID"
+          echo "$ASC_API_PRIVATE_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+
+      - name: Archive signed build
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          xcodebuild \
+            -project FloeAgent.xcodeproj \
+            -scheme FloeAgent \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/FloeAgent.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            archive
+
+      - name: Export and upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/TestFlightExport"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/FloeAgent.xcarchive" \
+            -exportPath "$RUNNER_TEMP/TestFlightExport" \
+            -exportOptionsPlist Config/ExportOptions-TestFlight.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          {
+            echo "tag=${{ needs.build-verify-release.outputs.tag }}"
+            echo "version=${{ needs.build-verify-release.outputs.version }}"
+            echo "build=${{ needs.build-verify-release.outputs.build }}"
+            echo "commit=$GITHUB_SHA"
+            echo "testflight_upload=accepted_by_transport"
+          } > "$RUNNER_TEMP/TestFlightExport/TESTFLIGHT-SUMMARY.txt"
+
+      - name: Upload TestFlight evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: testflight-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
+          path: ${{ runner.temp }}/TestFlightExport/
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub assets only after TestFlight succeeds
+    if: github.event_name == 'push' || inputs.publish
+    needs: [build-verify-release, testflight]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.build-verify-release.outputs.tag }}
+      VERSION: ${{ needs.build-verify-release.outputs.version }}
+      BUILD: ${{ needs.build-verify-release.outputs.build }}
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: unsigned-ipa-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
+          path: release-assets
+      - name: Publish the complete paired release
+        run: |
+          cat > release-notes.md <<EOF
           ## Floe Agent $VERSION (build $BUILD)
 
+          This commit passed the shared Swift and simulator release gates, was uploaded to TestFlight, and produced the accompanying unsigned IPA.
+
           > [!WARNING]
-          > This is an **unsigned, pre-release IPA**. iOS will not install it directly. You must inspect, verify, and sign it with your own certificate using a compatible sideloading workflow. It is not an App Store package.
+          > The GitHub IPA is unsigned and cannot be installed directly. Inspect it, verify its SHA-256, then sign it with your own certificate. It is not the App Store package.
 
-          Verify the download with the accompanying SHA-256 file. This release also includes an SPDX SBOM, third-party license inventory, secret-scan report, test summary, and GitHub build-provenance attestation.
-
-          Known platform limits: iOS may suspend local agent, browser, and model-stream work in the background; remote jobs resume only when they expose a reconnectable job identifier.
+          The release includes an SPDX SBOM, third-party licenses, secret-scan reports, a test summary, and GitHub build provenance.
           EOF
-          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft >/dev/null 2>&1; then
-            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = "true"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
-            gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --prerelease
+            gh release edit "$RELEASE_TAG" --notes-file release-notes.md --draft=false --prerelease
           else
             gh release create "$RELEASE_TAG" release-assets/* \
-              --verify-tag \
-              --draft \
-              --prerelease \
+              --verify-tag --prerelease \
               --title "Floe Agent $VERSION (build $BUILD)" \
-              --notes-file "$RUNNER_TEMP/release-notes.md"
+              --notes-file release-notes.md
           fi
-
-      - name: Publish validated prerelease
-        if: github.event_name == 'push' || inputs.publish
-        env:
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-        run: gh release edit "$RELEASE_TAG" --draft=false --prerelease

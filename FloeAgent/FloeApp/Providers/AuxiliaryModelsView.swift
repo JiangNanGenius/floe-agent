@@ -15,6 +15,14 @@ struct AuxiliaryModelsView: View {
 
     var body: some View {
         Form {
+            Section("model.capability.vision") {
+                modelPicker(selection: $viewModel.visionModelID, models: viewModel.visionCandidates)
+                if viewModel.visionCandidates.isEmpty {
+                    Label("auxiliary.shared.empty", systemImage: "eye.slash")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section {
                 Toggle("auxiliary.shared.toggle", isOn: Binding(
                     get: { viewModel.mode == .shared },
@@ -89,6 +97,7 @@ struct AuxiliaryModelsView: View {
 @MainActor
 final class AuxiliaryModelsViewModel: ObservableObject {
     @Published var mode: AuxiliaryImageMode = .shared
+    @Published var visionModelID: UUID?
     @Published var sharedModelID: UUID?
     @Published var generationModelID: UUID?
     @Published var editingModelID: UUID?
@@ -99,6 +108,8 @@ final class AuxiliaryModelsViewModel: ObservableObject {
     private let adapterFactory = ImageProviderAdapterFactory()
 
     init(center: ConversationCenter) { self.center = center }
+
+    var visionCandidates: [ModelProfile] { center.visionModels }
 
     var generationCandidates: [ModelProfile] {
         center.imageModels.filter {
@@ -121,6 +132,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
         await center.reload()
         let preferences = center.modelPreferences
         mode = preferences.auxiliaryImageMode
+        visionModelID = preferences.visionModelID
         sharedModelID = preferences.sharedImageModelID
         generationModelID = preferences.imageGenerationModelID
         editingModelID = preferences.imageEditingModelID
@@ -128,6 +140,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
 
     func setSharedMode(_ shared: Bool) {
         var preferences = ModelSelectionPreferences(
+            visionModelID: visionModelID,
             auxiliaryImageMode: mode,
             sharedImageModelID: sharedModelID,
             imageGenerationModelID: generationModelID,
@@ -148,6 +161,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
         errorMessage = nil
         do {
             var preferences = center.modelPreferences
+            preferences.visionModelID = visionModelID
             preferences.auxiliaryImageMode = mode
             preferences.sharedImageModelID = mode == .shared ? sharedModelID : nil
             preferences.imageGenerationModelID = mode == .separate ? generationModelID : nil
@@ -160,9 +174,11 @@ final class AuxiliaryModelsViewModel: ObservableObject {
 
     func modelAdded(_ staged: ModelProfile) async {
         await center.reload()
-        guard let canonical = center.imageModels.first(where: {
+        let candidates = center.imageModels + center.visionModels
+        guard let canonical = candidates.first(where: {
             $0.providerID == staged.providerID && $0.remoteModelID == staged.remoteModelID
         }) else { return }
+        if canonical.capabilities.contains(.vision) { visionModelID = canonical.id }
         if mode == .shared,
            canonical.capabilities.contains(.imageGeneration),
            canonical.capabilities.contains(.imageEditing) {
@@ -199,16 +215,12 @@ private struct AuxiliaryModelEditorView: View {
     @State private var displayName = ""
     @State private var supportsGeneration = true
     @State private var supportsEditing = true
+    @State private var supportsVision = false
     @State private var isSaving = false
     @State private var errorMessage: String?
     private let adapterFactory = ImageProviderAdapterFactory()
 
-    private var compatibleProviders: [ProviderProfile] {
-        center.providers.filter { provider in
-            guard let adapter = adapterFactory.adapter(for: provider) else { return false }
-            return !adapter.supportedOperations(for: provider).isEmpty
-        }
-    }
+    private var compatibleProviders: [ProviderProfile] { center.providers }
 
     private var supportedOperations: Set<RemoteImageOperation> {
         guard let providerID,
@@ -239,6 +251,7 @@ private struct AuxiliaryModelEditorView: View {
                         .disabled(!supportedOperations.contains(.generate))
                     Toggle("auxiliary.editing", isOn: $supportsEditing)
                         .disabled(!supportedOperations.contains(.edit))
+                    Toggle("model.capability.vision", isOn: $supportsVision)
                     if !supportedOperations.contains(.edit) {
                         Text("auxiliary.editing.unavailable")
                             .font(FloeTheme.Typography.metadata)
@@ -271,7 +284,7 @@ private struct AuxiliaryModelEditorView: View {
     private var isValid: Bool {
         providerID != nil
             && !remoteModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && (supportsGeneration || supportsEditing)
+            && (supportsGeneration || supportsEditing || supportsVision)
     }
 
     private func save() {
@@ -282,6 +295,7 @@ private struct AuxiliaryModelEditorView: View {
             var capabilities: ModelCapabilities = []
             if supportsGeneration { capabilities.insert(.imageGeneration) }
             if supportsEditing { capabilities.insert(.imageEditing) }
+            if supportsVision { capabilities.insert(.vision) }
             let remoteID = remoteModelID.trimmingCharacters(in: .whitespacesAndNewlines)
             let model = ModelProfile(
                 providerID: providerID,
@@ -304,6 +318,7 @@ private struct AuxiliaryModelEditorView: View {
     private func applySupportedOperations() {
         supportsGeneration = supportedOperations.contains(.generate)
         supportsEditing = supportedOperations.contains(.edit)
+        if supportedOperations.isEmpty { supportsVision = true }
     }
 }
 #endif

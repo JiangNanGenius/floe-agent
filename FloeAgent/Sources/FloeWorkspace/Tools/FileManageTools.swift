@@ -62,7 +62,9 @@ public struct WorkspaceMoveFileTool: AgentTool {
         if let scope = args.scope, scope != "local" {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
-        let service = try environment.makeService()
+        try context.authorizeWorkspacePath(args.from)
+        try context.authorizeWorkspacePath(args.to)
+        let service = try environment.makeService(context: context)
         try service.move(args.from, to: args.to, cancellation: context.cancellation)
         return WorkspaceToolSupport.output("moved=\(args.from) -> \(args.to)")
     }
@@ -116,7 +118,8 @@ public struct WorkspaceDeleteFileTool: AgentTool {
         if let scope = args.scope, scope != "local" {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
-        let service = try environment.makeService()
+        try context.authorizeWorkspacePath(args.path)
+        let service = try environment.makeService(context: context)
         try service.delete(args.path, cancellation: context.cancellation)
         return WorkspaceToolSupport.output("deleted=\(args.path)")
     }

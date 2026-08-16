@@ -2,9 +2,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// One router instance drives both idioms: the five-tab iPhone TabView and
-// the three-column iPad NavigationSplitView. It owns the selected
-// destination, the iPad column visibility, the currently selected
+// One router instance drives the adaptive sidebar workbench on both idioms.
+// It owns compatibility destinations, column visibility, the currently selected
 // conversation/run/host identifiers, and the scene-phase →
 // PlatformBackgroundPolicy forwarding (moved out of the view layer).
 
@@ -36,19 +35,19 @@ final class AppRouter: ObservableObject {
 
     // MARK: - Selection
 
-    /// The active primary destination (the selected tab on iPhone).
+    /// Compatibility destination for deep links and legacy callers.
     @Published var selection: AppDestination = .home
 
     /// The active iPad sidebar selection, including promoted More sections.
-    @Published var sidebarSelection: SidebarSelection? = .workbench(.overview)
+    @Published var sidebarSelection: SidebarSelection? = .workbench(.newTask(workspaceID: nil))
 
     /// iPad split-view column visibility.
-    @Published var columnVisibility: NavigationSplitViewVisibility = .all
+    @Published var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
 
     // MARK: - Cross-screen selection
 
     /// Canonical workbench selection shared by every idiom and entry point.
-    @Published var workbenchSelection: WorkbenchSelection = .overview
+    @Published var workbenchSelection: WorkbenchSelection = .newTask(workspaceID: nil)
     /// The single compact-navigation projection of `workbenchSelection`.
     /// A user-driven NavigationStack pop writes this binding directly, so
     /// reconcile the canonical selection here as well as in router methods.
@@ -59,10 +58,10 @@ final class AppRouter: ObservableObject {
                     workbenchSelection = .conversation(id)
                 }
             } else if case .conversation = workbenchSelection {
-                workbenchSelection = .overview
+                workbenchSelection = .newTask(workspaceID: nil)
                 selectedRunID = nil
                 if case .workbench = sidebarSelection {
-                    sidebarSelection = .workbench(.overview)
+                    sidebarSelection = .workbench(.newTask(workspaceID: nil))
                 }
             }
         }
@@ -89,7 +88,7 @@ final class AppRouter: ObservableObject {
                 workbenchSelection = .conversation(newValue)
                 workbenchPath = [newValue]
             } else if case .conversation = workbenchSelection {
-                workbenchSelection = .overview
+                workbenchSelection = .newTask(workspaceID: nil)
                 workbenchPath = []
             }
         }
@@ -114,8 +113,13 @@ final class AppRouter: ObservableObject {
 
     /// What the inspector column/sheet should display.
     enum InspectorContent: String, Identifiable, Hashable, Sendable {
-        /// The workspace file inspector.
+        case changes
         case workspaceFiles
+        case browser
+        case terminal
+        case progress
+        case childAgents
+        case permissions
         var id: String { rawValue }
     }
 
@@ -131,12 +135,14 @@ final class AppRouter: ObservableObject {
     /// iPhone: sheet — presentation chosen by the shell).
     func showInspector(_ content: InspectorContent) {
         inspectorContent = content
+        columnVisibility = .all
     }
 
     /// Dismisses the inspector; the iPad third column collapses instead
     /// of leaving an empty placeholder behind.
     func hideInspector() {
         inspectorContent = nil
+        columnVisibility = .doubleColumn
     }
 
     /// Stable per-scene identifier used for iPad multi-scene background
@@ -162,6 +168,12 @@ final class AppRouter: ObservableObject {
             backgroundPolicy = iPhoneBackgroundPolicy()
         }
         BackgroundPolicyRegistry.shared.install(backgroundPolicy)
+    }
+
+    /// Called exactly once by the App lifecycle entry point. Keeping BGTask
+    /// registration out of router construction avoids duplicate identifier
+    /// registration when SwiftUI rebuilds scenes.
+    func registerBackgroundTasksAtAppLaunch() {
         backgroundPolicy.registerTasks()
     }
 
@@ -170,6 +182,7 @@ final class AppRouter: ObservableObject {
     /// active). The center owns the honest session lifecycle.
     func handleScenePhase(_ phase: ScenePhase, environment: AppEnvironment) {
         backgroundPolicy.handleScenePhase(policyPhase(for: phase), sceneID: sceneID)
+        environment.backgroundRunCoordinator.handleScenePhase(phase)
         let center = environment.remoteSessionCenter
         Task { @MainActor in
             switch phase {
@@ -262,7 +275,7 @@ final class AppRouter: ObservableObject {
     func reconcileConversations(_ availableIDs: Set<UUID>) {
         guard case .conversation(let id) = workbenchSelection,
               !availableIDs.contains(id) else { return }
-        showOverview()
+        startNewTask()
         hideInspector()
     }
 
@@ -271,7 +284,7 @@ final class AppRouter: ObservableObject {
         if let id = path.last {
             workbenchSelection = .conversation(id)
         } else if case .conversation = workbenchSelection {
-            workbenchSelection = .overview
+            workbenchSelection = .newTask(workspaceID: nil)
             selectedRunID = nil
         }
     }

@@ -2,9 +2,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// The More tab: Runs history, Providers, Settings, Privacy, and redacted
-// Diagnostics. Runs history lists every run honestly; the rest route to
-// their screens.
+// The More tab: operational surfaces only. Pure informational privacy pages
+// are intentionally absent; actionable data controls live in Settings.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -54,8 +53,6 @@ private struct MoreDestinationRouter: View {
             MemoryView(center: viewModel.environment.memoryCenter)
         case .settings:
             SettingsRootView()
-        case .privacy:
-            PrivacyView()
         case .diagnostics:
             DiagnosticsAboutView(center: viewModel.environment.settingsCenter)
         }
@@ -99,23 +96,6 @@ struct RunsHistoryView: View {
         .navigationTitle("more.runs")
         .task { await viewModel.loadRuns() }
         .refreshable { await viewModel.loadRuns() }
-    }
-}
-
-/// Privacy: honest statement of the data model (secrets in Keychain,
-/// no analytics/ads, no Floe backend). Internal so the iPad router in
-/// FloeAgentApp reaches the same screen the iPhone More tab uses.
-struct PrivacyView: View {
-    var body: some View {
-        List {
-            Section {
-                Label("privacy.point.secrets", systemImage: "key.fill")
-                Label("privacy.point.local", systemImage: "internaldrive")
-                Label("privacy.point.no_backend", systemImage: "icloud.slash")
-                Label("privacy.point.no_tracking", systemImage: "eye.slash")
-            }
-        }
-        .navigationTitle("more.privacy")
     }
 }
 

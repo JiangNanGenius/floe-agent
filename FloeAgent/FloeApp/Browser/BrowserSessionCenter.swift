@@ -23,6 +23,16 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     @Published private(set) var isUserControlling = false
     @Published var addressText = ""
 
+    private struct TaskSession {
+        var sessionID: UUID
+        var tabs: [Tab]
+        var activeTabID: UUID?
+        var isUserControlling: Bool
+        var addressText: String
+    }
+    private var taskSessions: [UUID: TaskSession] = [:]
+    private(set) var conversationID: UUID?
+
     private let maxTabs = 6
     private let maxEventsPerTab = 256
     private let protocolVersion = "FloeBrowser/1.0"
@@ -42,6 +52,45 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         super.init()
         cleanupArtifacts()
         _ = createTab()
+    }
+
+    /// Binds the visible WebKit surface to one durable task. Tabs and page
+    /// state are kept independently in memory, so switching tasks never
+    /// leaks one task's browser into another.
+    func bind(to newConversationID: UUID?) {
+        guard newConversationID != conversationID else { return }
+        if let conversationID {
+            taskSessions[conversationID] = TaskSession(
+                sessionID: sessionID,
+                tabs: tabs,
+                activeTabID: activeTabID,
+                isUserControlling: isUserControlling,
+                addressText: addressText
+            )
+        }
+        conversationID = newConversationID
+        if let newConversationID, let saved = taskSessions[newConversationID] {
+            sessionID = saved.sessionID
+            tabs = saved.tabs
+            activeTabID = saved.activeTabID
+            isUserControlling = saved.isUserControlling
+            addressText = saved.addressText
+        } else {
+            sessionID = UUID()
+            tabs.forEach { $0.webView.stopLoading() }
+            tabs = []
+            activeTabID = nil
+            isUserControlling = false
+            addressText = ""
+            _ = createTab()
+        }
+    }
+
+    func discard(conversationID: UUID) {
+        if self.conversationID == conversationID { bind(to: nil) }
+        taskSessions.removeValue(forKey: conversationID)?.tabs.forEach {
+            $0.webView.stopLoading()
+        }
     }
 
     var activeWebView: WKWebView? {

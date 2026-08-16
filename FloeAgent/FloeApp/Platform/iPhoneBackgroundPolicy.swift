@@ -28,7 +28,11 @@ public final class iPhoneBackgroundPolicy: PlatformBackgroundPolicy, @unchecked 
             forTaskWithIdentifier: BackgroundTaskKind.refresh.rawValue,
             using: nil
         ) { task in
-            task.setTaskCompleted(success: true)
+            guard let task = task as? BGAppRefreshTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            Task { @MainActor in BackgroundPolicyRegistry.shared.handleRefreshTask(task) }
         }
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: BackgroundTaskKind.processing.rawValue,
@@ -41,11 +45,13 @@ public final class iPhoneBackgroundPolicy: PlatformBackgroundPolicy, @unchecked 
                 forTaskWithIdentifier: BackgroundTaskKind.continued.rawValue,
                 using: nil
             ) { task in
-                guard task is BGContinuedProcessingTask else {
+                guard let task = task as? BGContinuedProcessingTask else {
                     task.setTaskCompleted(success: false)
                     return
                 }
-                task.setTaskCompleted(success: true)
+                Task { @MainActor in
+                    BackgroundPolicyRegistry.shared.handleContinuedTask(task)
+                }
             }
         }
     }
@@ -59,7 +65,7 @@ public final class iPhoneBackgroundPolicy: PlatformBackgroundPolicy, @unchecked 
     public func requestContinuedProcessing(_ kind: BackgroundTaskKind) {
         if #available(iOS 26.0, *), kind == .continued {
             let request = BGContinuedProcessingTaskRequest(
-                identifier: kind.rawValue,
+                identifier: kind.submissionIdentifier,
                 title: "Floe Agent task",
                 subtitle: "Continuing in the background"
             )

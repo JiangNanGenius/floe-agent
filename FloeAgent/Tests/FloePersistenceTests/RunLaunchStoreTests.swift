@@ -96,4 +96,36 @@ struct RunLaunchStoreTests {
         }
         #expect(counts == [0, 0, 0])
     }
+
+    @Test("Unscoped task receives exactly one private workspace and policy")
+    func createsPrivateTaskWorkspace() async throws {
+        let database = try await database()
+        let prepared = try await SQLiteRunLaunchStore(database: database).prepare(
+            RunLaunchRequest(conversationTitle: "Private chat", goal: "hello")
+        )
+        let values: (String?, String?, Int, Int) = try await database.reader { db in
+            let row = try Row.fetchOne(db, sql: """
+                SELECT w.kind, w.internal_relative_path,
+                       (SELECT COUNT(*) FROM conversation_workspace_ownership
+                        WHERE conversation_id = ?) AS owner_count,
+                       (SELECT COUNT(*) FROM task_policies
+                        WHERE conversation_id = ?) AS policy_count
+                FROM conversation_workspace_ownership o
+                JOIN workspaces w ON w.id = o.workspace_id
+                WHERE o.conversation_id = ?
+                """, arguments: [
+                    prepared.conversation.id.uuidString,
+                    prepared.conversation.id.uuidString,
+                    prepared.conversation.id.uuidString
+                ])
+            return (
+                row?["kind"], row?["internal_relative_path"],
+                row?["owner_count"] ?? 0, row?["policy_count"] ?? 0
+            )
+        }
+        #expect(values.0 == "privateTask")
+        #expect(values.1?.contains(prepared.conversation.id.uuidString) == true)
+        #expect(values.2 == 1)
+        #expect(values.3 == 1)
+    }
 }

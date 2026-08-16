@@ -13,12 +13,20 @@ public struct ConversationRecord: Sendable, Hashable, Identifiable {
     public var title: String
     public var createdAt: Date
     public var updatedAt: Date
+    public var titleOrigin: ConversationTitleOrigin
 
-    public init(id: UUID, title: String, createdAt: Date, updatedAt: Date) {
+    public init(
+        id: UUID,
+        title: String,
+        createdAt: Date,
+        updatedAt: Date,
+        titleOrigin: ConversationTitleOrigin = .autoPending
+    ) {
         self.id = id
         self.title = title
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.titleOrigin = titleOrigin
     }
 }
 
@@ -56,6 +64,8 @@ public protocol ConversationStore: Sendable {
     func conversations() async throws -> [ConversationRecord]
     func conversation(id: UUID) async throws -> ConversationRecord?
     func renameConversation(id: UUID, title: String) async throws
+    @discardableResult
+    func setAutomaticTitle(id: UUID, title: String) async throws -> Bool
     func deleteConversation(id: UUID) async throws
 
     func appendMessage(_ message: PersistedMessage) async throws
@@ -118,9 +128,24 @@ public actor SQLiteConversationStore: ConversationStore {
     public func renameConversation(id: UUID, title: String) async throws {
         try await database.writer { db in
             try db.execute(
-                sql: "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
+                sql: "UPDATE conversations SET title = ?, title_origin = 'manual', updated_at = ? WHERE id = ?",
                 arguments: [title, PersistenceCodec.encode(Date()), id.uuidString]
             )
+        }
+    }
+
+    @discardableResult
+    public func setAutomaticTitle(id: UUID, title: String) async throws -> Bool {
+        try await database.writer { db in
+            try db.execute(
+                sql: """
+                    UPDATE conversations
+                    SET title = ?, title_origin = 'automatic', updated_at = ?
+                    WHERE id = ? AND title_origin = 'autoPending'
+                    """,
+                arguments: [title, PersistenceCodec.encode(Date()), id.uuidString]
+            )
+            return db.changesCount > 0
         }
     }
 
@@ -252,7 +277,9 @@ public actor SQLiteConversationStore: ConversationStore {
             id: id,
             title: row["title"],
             createdAt: try PersistenceCodec.decodeDate(row["created_at"]),
-            updatedAt: try PersistenceCodec.decodeDate(row["updated_at"])
+            updatedAt: try PersistenceCodec.decodeDate(row["updated_at"]),
+            titleOrigin: ConversationTitleOrigin(rawValue: row["title_origin"] as String? ?? "autoPending")
+                ?? .autoPending
         )
     }
 

@@ -33,6 +33,9 @@ public struct RemoteImageRequest: Sendable {
     public var sizeHint: String?
     /// Maximum number of images to return.
     public var count: Int
+    /// The exact configured provider model/endpoint ID. Adapters must not
+    /// silently replace a user-selected auxiliary model.
+    public var modelRemoteID: String?
 
     public init(
         operation: RemoteImageOperation,
@@ -40,7 +43,8 @@ public struct RemoteImageRequest: Sendable {
         sourceImages: [Data] = [],
         mask: Data? = nil,
         sizeHint: String? = nil,
-        count: Int = 1
+        count: Int = 1,
+        modelRemoteID: String? = nil
     ) {
         self.operation = operation
         self.prompt = prompt
@@ -48,6 +52,7 @@ public struct RemoteImageRequest: Sendable {
         self.mask = mask
         self.sizeHint = sizeHint
         self.count = count
+        self.modelRemoteID = modelRemoteID
     }
 }
 

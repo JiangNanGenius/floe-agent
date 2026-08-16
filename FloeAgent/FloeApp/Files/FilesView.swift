@@ -14,6 +14,7 @@ import FloeModels
 struct FilesView: View {
     @StateObject private var viewModel: FilesViewModel
     @StateObject private var center: FilesCenter
+    @State private var showingImageCreation = false
 
     init(center: FilesCenter) {
         self._center = StateObject(wrappedValue: center)
@@ -28,9 +29,11 @@ struct FilesView: View {
                 } description: {
                     Text("empty.files")
                 } actions: {
-                    Button("files.open") { viewModel.showingPicker = true }
-                        .buttonStyle(.borderedProminent)
-                        .frame(minHeight: FloeTheme.minimumTarget)
+                    HStack {
+                        Button("files.open") { viewModel.showingPicker = true }
+                        Button("生成图片") { showingImageCreation = true }
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
             } else {
                 recentList
@@ -40,10 +43,15 @@ struct FilesView: View {
         .navigationTitle("tab.files")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    viewModel.showingPicker = true
+                Menu {
+                    Button("files.open", systemImage: "doc.badge.plus") {
+                        viewModel.showingPicker = true
+                    }
+                    Button("生成图片", systemImage: "wand.and.stars") {
+                        showingImageCreation = true
+                    }
                 } label: {
-                    Image(systemName: "plus")
+                    Image(systemName: "plus.circle")
                 }
                 .accessibilityLabel("files.open")
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
@@ -55,6 +63,9 @@ struct FilesView: View {
                 Task { await viewModel.didPickDocument(url: url) }
             }
             .ignoresSafeArea()
+        }
+        .sheet(isPresented: $showingImageCreation) {
+            RemoteImageCreationView(center: center)
         }
         .sheet(item: $viewModel.quickLookAttachment) { attachment in
             quickLookSheet(for: attachment)

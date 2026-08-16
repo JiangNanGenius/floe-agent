@@ -43,7 +43,7 @@ struct ThreadDetailView: View {
             composer
         }
         .background(FloeTheme.readingSurface)
-        .navigationTitle("thread.title")
+        .navigationTitle(viewModel.taskTitle.isEmpty ? String(localized: "thread.title") : viewModel.taskTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { stateToolbar }
         .task {
@@ -229,11 +229,17 @@ struct ThreadDetailView: View {
     @ToolbarContentBuilder
     private var stateToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            Button {
+            Menu {
+                inspectorButton("变更", icon: "arrow.triangle.2.circlepath", content: .changes)
+                inspectorButton("文件", icon: "folder", content: .workspaceFiles)
+                inspectorButton("浏览器", icon: "safari", content: .browser)
+                inspectorButton("终端/主机", icon: "terminal", content: .terminal)
+                inspectorButton("进度", icon: "chart.bar", content: .progress)
+                inspectorButton("子 Agent", icon: "person.2", content: .childAgents)
+                inspectorButton("权限", icon: "lock.shield", content: .permissions)
                 if router.inspectorVisible {
-                    router.hideInspector()
-                } else {
-                    router.showInspector(.workspaceFiles)
+                    Divider()
+                    Button("收起检查器", systemImage: "sidebar.right") { router.hideInspector() }
                 }
             } label: {
                 Label("inspector.files", systemImage: "sidebar.right")
@@ -275,6 +281,14 @@ struct ThreadDetailView: View {
                     .accessibilityIdentifier("thread.run_state.\(state)")
             }
         }
+    }
+
+    private func inspectorButton(
+        _ title: String,
+        icon: String,
+        content: AppRouter.InspectorContent
+    ) -> some View {
+        Button(title, systemImage: icon) { router.showInspector(content) }
     }
 
     // MARK: - Error banner (honest failure surface)
@@ -323,6 +337,7 @@ struct ThreadDetailView: View {
                     isRunning: viewModel.isRunning,
                     canSend: viewModel.canSend || viewModel.isRunning,
                     projects: viewModel.availableProjects,
+                    projectSelectionLocked: true,
                     selectedProjectID: $viewModel.selectedProjectID,
                     executionTarget: $viewModel.executionTarget,
                     agentMode: $viewModel.agentMode,

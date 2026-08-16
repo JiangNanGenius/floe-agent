@@ -12,10 +12,12 @@
 import Foundation
 import UIKit
 import UniformTypeIdentifiers
+import CryptoKit
 import FloeCore
 import FloeDocuments
 import FloeImages
 import FloeModels
+import FloeProviders
 
 /// Coordinates document and image workflows for the UI layer.
 @MainActor
@@ -33,6 +35,7 @@ final class FilesCenter: ObservableObject {
     let environment: AppEnvironment
     private let workspace: SecurityScopedDocumentWorkspace
     private let pipeline = ImagePipeline()
+    private let generatedImageDirectory: URL
     private var documentSessions: [UUID: DocumentSession] = [:]
 
     /// A writeback conflict: the working copy differs but the original
@@ -45,6 +48,11 @@ final class FilesCenter: ObservableObject {
 
     init(environment: AppEnvironment) {
         self.environment = environment
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        generatedImageDirectory = support
+            .appendingPathComponent("FloeAgent", isDirectory: true)
+            .appendingPathComponent("GeneratedImages", isDirectory: true)
         // The workspace root lives in a temp/work area; throws only if the
         // directory cannot be created, which cannot happen for temp.
         self.workspace = (try? SecurityScopedDocumentWorkspace())
@@ -95,6 +103,13 @@ final class FilesCenter: ObservableObject {
 
     /// Resolves a stored security-scoped bookmark back to a URL.
     func resolveURL(for attachment: AttachmentRef) throws -> URL {
+        if attachment.storage == .applicationSupport, let relativePath = attachment.relativePath {
+            let url = generatedImageDirectory.appendingPathComponent(relativePath)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                throw FloeError.notFound("generated image \(relativePath)")
+            }
+            return url
+        }
         guard let bookmark = attachment.urlBookmark else {
             throw FloeError.notFound("bookmark for \(attachment.displayName)")
         }
@@ -118,6 +133,75 @@ final class FilesCenter: ObservableObject {
             }
         }
         return url
+    }
+
+    // MARK: - Provider image generation/editing
+
+    @discardableResult
+    func performRemoteImage(
+        operation: RemoteImageOperation,
+        prompt: String,
+        source: AttachmentRef? = nil,
+        count: Int = 1,
+        size: String? = nil
+    ) async throws -> [AttachmentRef] {
+        let center = environment.conversationCenter
+        guard let (provider, model) = center.auxiliaryProviderAndModel(for: operation),
+              let adapter = ImageProviderAdapterFactory().adapter(for: provider),
+              adapter.supports(operation, for: provider) else {
+            throw FloeError.invalidConfiguration("No compatible image model is configured for this operation")
+        }
+        var sources: [Data] = []
+        if let source {
+            let url = try resolveURL(for: source)
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            let data = try Data(contentsOf: url)
+            guard data.count <= 12 * 1_024 * 1_024 else {
+                throw FloeError.validationFailed("Source image exceeds 12 MiB")
+            }
+            sources = [data]
+        }
+        let result = try await adapter.perform(
+            RemoteImageRequest(
+                operation: operation,
+                prompt: prompt,
+                sourceImages: sources,
+                sizeHint: size,
+                count: count,
+                modelRemoteID: model.remoteModelID
+            ),
+            provider: provider,
+            credentials: center.resolveCredentials(for: provider)
+        )
+        try FileManager.default.createDirectory(
+            at: generatedImageDirectory,
+            withIntermediateDirectories: true
+        )
+        let attachments = try result.images.enumerated().map { index, data in
+            guard data.count <= 12 * 1_024 * 1_024 else {
+                throw FloeError.validationFailed("Generated image exceeds 12 MiB")
+            }
+            let id = UUID()
+            let isPNG = data.starts(with: [0x89, 0x50, 0x4E, 0x47])
+            let ext = isPNG ? "png" : "jpg"
+            let relative = "\(id.uuidString).\(ext)"
+            try data.write(to: generatedImageDirectory.appendingPathComponent(relative), options: .atomic)
+            return AttachmentRef(
+                id: id,
+                kind: .image,
+                displayName: operation == .generate
+                    ? "Generated \(index + 1).\(ext)"
+                    : "Edited \(index + 1).\(ext)",
+                uti: isPNG ? UTType.png.identifier : UTType.jpeg.identifier,
+                byteCount: data.count,
+                sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+                storage: .applicationSupport,
+                relativePath: relative
+            )
+        }
+        recentFiles.insert(contentsOf: attachments, at: 0)
+        return attachments
     }
 
     // MARK: - Document working copies

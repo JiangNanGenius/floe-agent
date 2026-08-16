@@ -132,6 +132,9 @@ struct ThreadComposerView: View {
     let canSend: Bool
     /// Workspaces available to this conversation.
     var projects: [ComposerProject] = []
+    /// Existing tasks have immutable workspace scope. Moving them is an
+    /// explicit top-bar action with a confirmation, not a per-message menu.
+    var projectSelectionLocked: Bool = false
     @Binding var selectedProjectID: UUID?
     @Binding var executionTarget: AgentExecutionTarget
     @Binding var agentMode: AgentExecutionMode
@@ -144,7 +147,7 @@ struct ThreadComposerView: View {
     @State private var isPickerPresented = false
     @State private var attachmentError: String?
     @State private var dictationPrefix = ""
-    @StateObject private var voiceInput = VoiceInputController.live()
+    @EnvironmentObject private var voiceInput: VoiceInputController
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -332,6 +335,19 @@ struct ThreadComposerView: View {
                 projectPicker
                 targetPicker
                 modePicker
+                Button {
+                    if router.selectedConversationID == nil {
+                        router.openMore(.settings)
+                    } else {
+                        router.showInspector(.permissions)
+                    }
+                } label: {
+                    composerChip(
+                        title: router.selectedConversationID == nil ? "默认权限" : "任务权限",
+                        systemImage: "lock.shield"
+                    )
+                }
+                .buttonStyle(.plain)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12)
@@ -405,6 +421,7 @@ struct ThreadComposerView: View {
             guard let newValue else { return }
             Task { await openProject(newValue) }
         }
+        .disabled(projectSelectionLocked)
     }
 
     /// Opens the selected workspace as the current one (resolving its

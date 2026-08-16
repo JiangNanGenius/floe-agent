@@ -49,7 +49,7 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published var attachments: [AttachmentRef] = []
     /// Real workspace list from WorkspaceCenter.
     var availableProjects: [ComposerProject] {
-        center.environment.workspaceCenter.workspaces.map(ComposerProject.init(record:))
+        center.environment.workspaceCenter.projectWorkspaces.map(ComposerProject.init(record:))
     }
     /// Whether a run is currently non-terminal (drives Stop vs Send).
     @Published private(set) var isRunning = false
@@ -60,6 +60,7 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var isConversationMissing = false
     @Published private(set) var latestPlan: PlanDraft?
     @Published private(set) var activeGoal: ConversationGoal?
+    @Published private(set) var taskTitle: String = ""
 
     let conversationID: UUID
     let center: ConversationCenter
@@ -69,6 +70,9 @@ final class ThreadDetailViewModel: ObservableObject {
     /// `animator.displayedText`, so a terminal snapshot can never make a
     /// whole paragraph pop in at once.
     let animator: StreamingTextAnimator
+    /// Reasoning uses the same grapheme-cluster presentation buffer as the
+    /// final answer. Provider chunks therefore never replace a whole line.
+    let reasoningAnimator: StreamingTextAnimator
 
     /// True while the animator is draining the remainder of a finished
     /// network stream. The run is logically terminal but the live tail
@@ -84,9 +88,13 @@ final class ThreadDetailViewModel: ObservableObject {
         self.center = center
         let diagnostics = ThreadStreamingDiagnostics()
         self.animator = StreamingTextAnimator(diagnostics: diagnostics)
+        self.reasoningAnimator = StreamingTextAnimator(diagnostics: diagnostics)
         self.diagnostics = diagnostics
         self.animator.onDisplayedTextChange = { [weak self] text in
             self?.liveStreamedText = text
+        }
+        self.reasoningAnimator.onDisplayedTextChange = { [weak self] text in
+            self?.liveReasoningText = text
         }
     }
 
@@ -130,8 +138,8 @@ final class ThreadDetailViewModel: ObservableObject {
         do {
             await center.reload()
             await center.environment.workspaceCenter.reload()
-            guard try await center.environment.conversationStore
-                .conversation(id: conversationID) != nil else {
+            guard let conversation = try await center.environment.conversationStore
+                .conversation(id: conversationID) else {
                 isConversationMissing = true
                 runs = []
                 messages = []
@@ -140,6 +148,9 @@ final class ThreadDetailViewModel: ObservableObject {
                 return
             }
             isConversationMissing = false
+            taskTitle = conversation.title
+            center.environment.browserCenter.bind(to: conversationID)
+            selectedProjectID = center.environment.workspaceCenter.workspaceID(for: conversationID)
             if selectedModelID == nil { selectedModelID = center.modelPreferences.defaultAgentModelID }
             runs = try await center.environment.runStore.runs(conversationID: conversationID)
             messages = try await center.environment.conversationStore
@@ -314,6 +325,7 @@ final class ThreadDetailViewModel: ObservableObject {
         hasProviderActivity = false
         isDraining = false
         animator.reset()
+        reasoningAnimator.reset()
         liveEventTask = Task { [weak self, center] in
             guard let self else { return }
             guard let service = center.service(for: run.id) else {
@@ -331,7 +343,8 @@ final class ThreadDetailViewModel: ObservableObject {
             guard self.selectedRunID == run.id else { return }
             var answerTarget = snapshot.streamedText
             self.animator.update(target: answerTarget)
-            self.liveReasoningText = snapshot.reasoningText
+            var reasoningTarget = snapshot.reasoningText
+            self.reasoningAnimator.update(target: reasoningTarget)
             self.hasProviderActivity = snapshot.hasProviderActivity
             self.liveStateName = snapshot.stateName
             self.isRunning = !snapshot.isTerminal
@@ -348,7 +361,8 @@ final class ThreadDetailViewModel: ObservableObject {
                     self.animator.update(target: answerTarget)
                     self.hasProviderActivity = true
                 case .reasoningDelta(let delta):
-                    self.liveReasoningText += delta.text
+                    reasoningTarget += delta.text
+                    self.reasoningAnimator.update(target: reasoningTarget)
                     self.hasProviderActivity = true
                 case .stateChanged(let state):
                     self.liveStateName = state.rawValue
@@ -367,6 +381,7 @@ final class ThreadDetailViewModel: ObservableObject {
         isRunning = false
         isDraining = true
         await animator.drain()
+        await reasoningAnimator.drain()
         isDraining = false
         guard !Task.isCancelled, selectedRunID == runID else { return }
         try? await loadEvents()
@@ -384,6 +399,7 @@ final class ThreadDetailViewModel: ObservableObject {
         // display is discarded with the live tail, persisted rows reload
         // from the store on the next open.
         animator.cancel()
+        reasoningAnimator.cancel()
         isDraining = false
         isRunning = false
     }

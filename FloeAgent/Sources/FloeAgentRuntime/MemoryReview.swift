@@ -4,6 +4,7 @@ public enum MemoryScope: Sendable, Codable, Hashable {
     case userProfile
     case agentGlobal
     case workspace(UUID)
+    case task(UUID)
 }
 
 public enum MemorySensitivity: String, Sendable, Codable, Hashable, CaseIterable {
@@ -282,15 +283,18 @@ public struct MemoryCapacityPolicy: Sendable, Codable, Hashable {
     public var userProfileCharacters: Int
     public var agentGlobalCharacters: Int
     public var workspaceCharacters: Int
+    public var taskCharacters: Int
 
     public init(
         userProfileCharacters: Int = 2_000,
         agentGlobalCharacters: Int = 3_000,
-        workspaceCharacters: Int = 5_000
+        workspaceCharacters: Int = 5_000,
+        taskCharacters: Int = 4_000
     ) {
         self.userProfileCharacters = max(1, userProfileCharacters)
         self.agentGlobalCharacters = max(1, agentGlobalCharacters)
         self.workspaceCharacters = max(1, workspaceCharacters)
+        self.taskCharacters = max(1, taskCharacters)
     }
 
     public func activeCharacterLimit(for scope: MemoryScope) -> Int {
@@ -298,6 +302,7 @@ public struct MemoryCapacityPolicy: Sendable, Codable, Hashable {
         case .userProfile: userProfileCharacters
         case .agentGlobal: agentGlobalCharacters
         case .workspace: workspaceCharacters
+        case .task: taskCharacters
         }
     }
 

@@ -15,7 +15,14 @@ public enum BackgroundTaskKind: String, Sendable, CaseIterable {
     case processing = "org.floeagent.ios.processing"
     /// BGContinuedProcessingTask (iOS 26+) — foreground-initiated exports,
     /// image batches, remote bulk commands, with Live Activity progress.
-    case continued = "org.floeagent.ios.continued"
+    case continued = "org.floeagent.ios.continued.*"
+
+    /// Continued-processing registrations use a wildcard, while every
+    /// foreground submission must carry a concrete unique suffix.
+    var submissionIdentifier: String {
+        guard self == .continued else { return rawValue }
+        return rawValue.replacingOccurrences(of: "*", with: UUID().uuidString)
+    }
 }
 
 /// Time-boxed permission to finish work before suspension.
@@ -102,6 +109,8 @@ public final class BackgroundPolicyRegistry {
     public static let shared = BackgroundPolicyRegistry()
 
     private var policy: (any PlatformBackgroundPolicy)?
+    private var continuedTaskHandler: ((BGContinuedProcessingTask) -> Void)?
+    private var refreshTaskHandler: ((BGAppRefreshTask) -> Void)?
 
     private init() {}
 
@@ -111,6 +120,44 @@ public final class BackgroundPolicyRegistry {
 
     public func handleScenePhase(_ phase: PolicyScenePhase, sceneID: String) {
         policy?.handleScenePhase(phase, sceneID: sceneID)
+    }
+
+    public func requestContinuedProcessing() {
+        policy?.requestContinuedProcessing(.continued)
+    }
+
+    public func scheduleRefresh(earliest: Date) {
+        policy?.scheduleRefresh(earliest: earliest)
+    }
+
+    public func installRefreshTaskHandler(_ handler: @escaping (BGAppRefreshTask) -> Void) {
+        refreshTaskHandler = handler
+    }
+
+    public func handleRefreshTask(_ task: BGAppRefreshTask) {
+        guard let refreshTaskHandler else {
+            task.setTaskCompleted(success: false)
+            return
+        }
+        refreshTaskHandler(task)
+    }
+
+    public func installContinuedTaskHandler(
+        _ handler: @escaping (BGContinuedProcessingTask) -> Void
+    ) {
+        continuedTaskHandler = handler
+    }
+
+    public func handleContinuedTask(_ task: BGContinuedProcessingTask) {
+        guard let continuedTaskHandler else {
+            task.setTaskCompleted(success: false)
+            return
+        }
+        continuedTaskHandler(task)
+    }
+
+    public func beginShortCompletion(name: String) -> BackgroundExecutionLease? {
+        policy?.beginShortCompletion(name: name)
     }
 }
 #endif

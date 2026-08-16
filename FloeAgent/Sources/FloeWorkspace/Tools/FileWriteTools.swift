@@ -60,10 +60,14 @@ public struct WorkspaceCreateFileTool: AgentTool {
         if let scope = args.scope, scope != "local" {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
-        let service = try environment.makeService()
+        try context.authorizeWorkspacePath(args.path)
+        let service = try environment.makeService(context: context)
         let outcome = try service.createFile(args.path, content: args.content, cancellation: context.cancellation)
+        let diff = service.diff(original: "", modified: args.content, label: args.path)
+        let artifact = try WorkspaceToolSupport.changeArtifact(diff: diff, runID: context.runID)
         return WorkspaceToolSupport.output(
-            "created=\(args.path) bytes=\(outcome.bytesWritten) sha256=\(outcome.sha256) mtime=\(outcome.mtime)"
+            "created=\(args.path) bytes=\(outcome.bytesWritten) sha256=\(outcome.sha256) mtime=\(outcome.mtime)",
+            artifacts: artifact.map { [$0] } ?? []
         )
     }
 }
@@ -136,7 +140,9 @@ public struct WorkspaceWriteFileTool: AgentTool {
         if let scope = args.scope, scope != "local" {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
-        let service = try environment.makeService()
+        try context.authorizeWorkspacePath(args.path)
+        let service = try environment.makeService(context: context)
+        let prior = try? service.readFile(args.path, cancellation: context.cancellation)
         let outcome = try service.writeFile(
             args.path,
             content: args.content,
@@ -144,8 +150,16 @@ public struct WorkspaceWriteFileTool: AgentTool {
             expectedSHA256: args.expectedSHA256,
             cancellation: context.cancellation
         )
+        let diff: String
+        if let prior, !prior.truncated {
+            diff = service.diff(original: prior.text, modified: args.content, label: args.path)
+        } else {
+            diff = ""
+        }
+        let artifact = try WorkspaceToolSupport.changeArtifact(diff: diff, runID: context.runID)
         return WorkspaceToolSupport.output(
-            "written=\(args.path) bytes=\(outcome.bytesWritten) sha256=\(outcome.sha256) mtime=\(outcome.mtime)"
+            "written=\(args.path) bytes=\(outcome.bytesWritten) sha256=\(outcome.sha256) mtime=\(outcome.mtime)",
+            artifacts: artifact.map { [$0] } ?? []
         )
     }
 }
@@ -205,10 +219,13 @@ public struct WorkspaceApplyPatchTool: AgentTool {
         if let scope = args.scope, scope != "local" {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
-        let service = try environment.makeService()
+        try context.authorizeWorkspacePath(args.path)
+        let service = try environment.makeService(context: context)
         let outcome = try service.applyPatch(args.path, patch: args.patch, cancellation: context.cancellation)
+        let artifact = try WorkspaceToolSupport.changeArtifact(diff: args.patch, runID: context.runID)
         return WorkspaceToolSupport.output(
-            "patched=\(args.path) hunks=\(outcome.hunksApplied) added=\(outcome.linesAdded) removed=\(outcome.linesRemoved) sha256=\(outcome.sha256)"
+            "patched=\(args.path) hunks=\(outcome.hunksApplied) added=\(outcome.linesAdded) removed=\(outcome.linesRemoved) sha256=\(outcome.sha256)",
+            artifacts: artifact.map { [$0] } ?? []
         )
     }
 }

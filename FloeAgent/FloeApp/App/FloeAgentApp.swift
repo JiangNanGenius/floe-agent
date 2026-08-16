@@ -11,30 +11,44 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import UIKit
+import FloeModels
+import FloePersistence
 
 @main
 struct FloeAgentApp: App {
-    @StateObject private var environment = AppEnvironment.live()
-    @StateObject private var router = AppRouter()
+    @StateObject private var environment: AppEnvironment
+    @StateObject private var router: AppRouter
+
+    init() {
+        let environment = AppEnvironment.live()
+        let router = AppRouter()
+        _environment = StateObject(wrappedValue: environment)
+        _router = StateObject(wrappedValue: router)
+        router.registerBackgroundTasksAtAppLaunch()
+    }
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(environment)
                 .environmentObject(router)
+                .environmentObject(environment.voiceInput)
                 .task { await environment.bootstrap() }
         }
     }
 }
 
-/// Idiom-adaptive root: five-tab TabView on iPhone, three-column
-/// NavigationSplitView on iPad. Scene-phase transitions are forwarded to
+/// Idiom-adaptive root: a task-first sidebar workbench on both iPhone and
+/// iPad. Scene-phase transitions are forwarded to
 /// the router, which owns the background policy.
 struct RootView: View {
     @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var expandedWorkspaceIDs: Set<UUID> = []
+    @State private var renamingConversation: ConversationRecord?
+    @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
 
     /// UITest runs pin a deterministic layout: `-ui-testing` forces the
     /// compact (iPhone-style) tab layout; `-ui-testing-ipad` additionally
@@ -69,15 +83,30 @@ struct RootView: View {
             router.reconcileOnLaunch(environment: environment)
             await environment.conversationCenter.reload()
             await environment.conversationCenter.reconcileInterruptedRunsOnLaunch()
+            await environment.conversationCenter.resumeSafeRunsAfterForeground()
             await environment.workspaceCenter.reload()
+            await environment.backgroundRunCoordinator.reconcileSchedulesAfterLaunch()
             await presentOnboardingIfNeeded()
         }
         .onReceive(environment.conversationCenter.$conversations) { conversations in
             router.reconcileConversations(Set(conversations.map(\.id)))
         }
+        .onReceive(NotificationCenter.default.publisher(for: .floeOpenConversation)) { notification in
+            if let id = notification.userInfo?["conversationID"] as? UUID {
+                router.openConversation(id)
+            }
+        }
         .sheet(item: $router.presentedSetup, onDismiss: markDismissedSetupSkipped) { _ in
             OnboardingView(center: environment.conversationCenter)
                 .presentationSizing(.page)
+        }
+        .sheet(item: $renamingConversation) { conversation in
+            TaskRenameSheet(conversation: conversation) { title in
+                try await environment.conversationCenter.renameConversation(
+                    id: conversation.id,
+                    title: title
+                )
+            }
         }
     }
 
@@ -138,45 +167,17 @@ struct RootView: View {
         }
     }
 
-    // MARK: - iPhone: five locked tabs
+    // MARK: - iPhone: task workbench with a native sidebar drawer
 
     private var iPhoneRoot: some View {
-        TabView(selection: $router.selection) {
-            ForEach(AppDestination.allCases) { destination in
-                Tab(value: destination) {
-                    // Home and Chat are two projections of one workbench
-                    // selection/path; switching entry points cannot expose a
-                    // stale or deleted conversation.
-                    if destination == .chat {
-                        NavigationStack(path: $router.workbenchPath) {
-                            PrimaryDestinationView(destination, environment: environment)
-                        }
-                    } else if destination == .home {
-                        NavigationStack(path: $router.workbenchPath) {
-                            PrimaryDestinationView(destination, environment: environment)
-                                .navigationDestination(for: UUID.self) { conversationID in
-                                    ThreadDetailView(
-                                        conversationID: conversationID,
-                                        center: environment.conversationCenter
-                                    )
-                                }
-                        }
-                    } else if destination == .more {
-                        NavigationStack(path: $router.morePath) {
-                            PrimaryDestinationView(destination, environment: environment)
-                        }
-                    } else {
-                        NavigationStack {
-                            PrimaryDestinationView(destination, environment: environment)
-                        }
-                    }
-                } label: {
-                    Label(destination.title, systemImage: destination.systemImage)
-                }
-            }
+        NavigationSplitView(
+            columnVisibility: $router.columnVisibility,
+            preferredCompactColumn: $preferredCompactColumn
+        ) {
+            sidebarColumn
+        } detail: {
+            contentColumn
         }
-        // iPhone presents the inspector as a sheet; iPad reveals the
-        // third column instead (see detailColumn).
         .sheet(item: inspectorSheetBinding) { content in
             NavigationStack {
                 InspectorColumnView(content: content)
@@ -196,83 +197,155 @@ struct RootView: View {
         )
     }
 
-    // MARK: - iPad: three-column split view
+    // MARK: - iPad: task surface with an on-demand inspector
 
+    @ViewBuilder
     private var iPadRoot: some View {
-        NavigationSplitView(columnVisibility: $router.columnVisibility) {
+        if let inspectorContent = router.inspectorContent {
+            NavigationSplitView(columnVisibility: $router.columnVisibility) {
+                sidebarColumn
+            } content: {
+                contentColumn
+            } detail: {
+                InspectorColumnView(content: inspectorContent)
+            }
+        } else {
+            NavigationSplitView(columnVisibility: $router.columnVisibility) {
+                sidebarColumn
+            } detail: {
+                contentColumn
+            }
+        }
+    }
+
+    /// Shared information architecture. NavigationSplitView projects this
+    /// as a first column on iPad and a native drawer on iPhone.
+    private var sidebarColumn: some View {
+        VStack(spacing: 0) {
             List(selection: $router.sidebarSelection) {
                 Section {
-                    Label("tab.home", systemImage: "rectangle.grid.2x2")
-                        .tag(SidebarSelection.workbench(.overview))
-                        .accessibilityIdentifier("sidebar.workbench.overview")
-                    Label("chat.new", systemImage: "square.and.pencil")
-                        .tag(SidebarSelection.workbench(.newTask(
-                            workspaceID: environment.workspaceCenter.currentWorkspace?.id
-                        )))
+                    Label("新建任务", systemImage: "square.and.pencil")
+                        .tag(SidebarSelection.workbench(.newTask(workspaceID: nil)))
                         .accessibilityIdentifier("sidebar.workbench.new_task")
+                    Label("任务中心", systemImage: "checklist")
+                        .tag(SidebarSelection.workbench(.overview))
+                        .accessibilityIdentifier("sidebar.task_center")
+                    Label("skills.title", systemImage: "puzzlepiece.extension")
+                        .tag(SidebarSelection.more(.skills))
+                        .accessibilityIdentifier("sidebar.skills")
                 }
-                if !environment.workspaceCenter.workspaces.isEmpty {
+                if !environment.workspaceCenter.projectWorkspaces.isEmpty {
                     Section("workspace.title") {
-                        ForEach(environment.workspaceCenter.workspaces) { workspace in
-                            Label(workspace.name, systemImage: "folder")
-                                .tag(SidebarSelection.workbench(.workspace(workspace.id)))
-                                .accessibilityIdentifier("sidebar.workspace.\(workspace.id.uuidString)")
-                        }
-                    }
-                }
-                if !environment.conversationCenter.conversations.isEmpty {
-                    Section("home.recent") {
-                        ForEach(environment.conversationCenter.conversations) { conversation in
-                            Label(
-                                conversation.title.isEmpty
-                                    ? String(localized: "chat.untitled")
-                                    : conversation.title,
-                                systemImage: "bubble.left"
-                            )
-                            .lineLimit(1)
-                            .tag(SidebarSelection.workbench(.conversation(conversation.id)))
-                            .accessibilityIdentifier("sidebar.conversation.\(conversation.id.uuidString)")
-                        }
-                        .onDelete { offsets in
-                            let conversations = environment.conversationCenter.conversations
-                            let targets = offsets.compactMap {
-                                conversations.indices.contains($0) ? conversations[$0].id : nil
-                            }
-                            Task {
-                                for id in targets {
-                                    try? await environment.conversationCenter.deleteConversation(id: id)
+                        ForEach(environment.workspaceCenter.projectWorkspaces) { workspace in
+                            DisclosureGroup(
+                                isExpanded: Binding(
+                                    get: { expandedWorkspaceIDs.contains(workspace.id) },
+                                    set: { expanded in
+                                        if expanded { expandedWorkspaceIDs.insert(workspace.id) }
+                                        else { expandedWorkspaceIDs.remove(workspace.id) }
+                                    }
+                                )
+                            ) {
+                                ForEach(conversations(in: workspace.id)) { conversation in
+                                    conversationSidebarRow(conversation)
                                 }
+                            } label: {
+                                Button {
+                                    router.startNewTask(workspaceID: workspace.id)
+                                } label: {
+                                    Label(workspace.name, systemImage: "folder")
+                                }
+                                .buttonStyle(.plain)
                             }
+                            .accessibilityIdentifier("sidebar.workspace.\(workspace.id.uuidString)")
                         }
                     }
                 }
-                Section {
-                    ForEach([AppDestination.files, .browser, .hosts, .more]) { destination in
-                        Label(destination.title, systemImage: destination.systemImage)
-                            .tag(SidebarSelection.primary(destination))
-                            .accessibilityIdentifier("sidebar.primary.\(destination.rawValue)")
-                    }
-                }
-                Section("sidebar.section.more") {
-                    ForEach(MoreDestination.visibleCases) { sub in
-                        Label(sub.title, systemImage: sub.systemImage)
-                            .tag(SidebarSelection.more(sub))
-                            .accessibilityIdentifier("sidebar.more.\(sub.rawValue)")
+                if !chatConversations.isEmpty {
+                    Section("聊天") {
+                        ForEach(chatConversations) { conversation in
+                            conversationSidebarRow(conversation)
+                        }
                     }
                 }
             }
-            .navigationTitle("app.name")
-            .task {
-                await environment.conversationCenter.reload()
-                await environment.workspaceCenter.reload()
+            Divider()
+            HStack(spacing: 8) {
+                Label("账户", systemImage: "person.crop.circle")
+                Spacer()
+                Button {
+                    router.openMore(.settings)
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(.plain)
+                .frame(minWidth: 44, minHeight: 44)
+                .accessibilityLabel("more.settings")
             }
-            .onChange(of: router.sidebarSelection) { _, selection in
-                applySidebarSelection(selection)
+            .padding(.horizontal, 16)
+        }
+        .navigationTitle("app.name")
+        .task {
+            await environment.conversationCenter.reload()
+            await environment.workspaceCenter.reload()
+        }
+        .onChange(of: router.sidebarSelection) { _, selection in
+            applySidebarSelection(selection)
+            preferredCompactColumn = .detail
+        }
+    }
+
+    private func conversations(in workspaceID: UUID) -> [ConversationRecord] {
+        environment.conversationCenter.conversations.filter {
+            environment.workspaceCenter.workspaceID(for: $0.id) == workspaceID
+        }
+    }
+
+    private var chatConversations: [ConversationRecord] {
+        let privateIDs = Set(environment.workspaceCenter.workspaces
+            .filter { $0.kind == .privateTask }.map(\.id))
+        return environment.conversationCenter.conversations.filter {
+            environment.workspaceCenter.workspaceID(for: $0.id).map(privateIDs.contains) == true
+        }
+    }
+
+    private func conversationSidebarRow(_ conversation: ConversationRecord) -> some View {
+        Label(
+            conversation.title.isEmpty ? String(localized: "chat.untitled") : conversation.title,
+            systemImage: "bubble.left"
+        )
+        .lineLimit(1)
+        .tag(SidebarSelection.workbench(.conversation(conversation.id)))
+        .accessibilityIdentifier("sidebar.conversation.\(conversation.id.uuidString)")
+        .contextMenu {
+            Button {
+                renamingConversation = conversation
+            } label: {
+                Label("重命名", systemImage: "pencil")
             }
-        } content: {
-            contentColumn
-        } detail: {
-            detailColumn
+            Button {
+                router.openConversation(conversation.id)
+                router.showInspector(.permissions)
+            } label: {
+                Label("任务权限", systemImage: "lock.shield")
+            }
+            Menu("移动到项目") {
+                ForEach(environment.workspaceCenter.projectWorkspaces) { workspace in
+                    Button(workspace.name) {
+                        Task {
+                            try? await environment.conversationCenter.moveConversation(
+                                id: conversation.id,
+                                to: workspace.id
+                            )
+                        }
+                    }
+                }
+            }
+            Button(role: .destructive) {
+                Task { try? await environment.conversationCenter.deleteConversation(id: conversation.id) }
+            } label: {
+                Label("删除任务", systemImage: "trash")
+            }
         }
     }
 
@@ -319,37 +392,6 @@ struct RootView: View {
         }
     }
 
-    /// Column 3 projects the current selection into a stable work surface.
-    /// When the inspector is requested, it replaces
-    /// the detail content on demand — the column never idles as an empty
-    /// placeholder once content exists.
-    @ViewBuilder
-    private var detailColumn: some View {
-        if let inspectorContent = router.inspectorContent {
-            InspectorColumnView(content: inspectorContent)
-        } else {
-            switch router.sidebarSelection ?? .workbench(router.workbenchSelection) {
-            case .workbench(let selection):
-                switch selection {
-                case .overview:
-                    NavigationStack {
-                        HomeLaunchpadView(center: environment.conversationCenter)
-                    }
-                case .newTask(_), .workspace(_), .conversation(_):
-                    HomeOverviewView(center: environment.conversationCenter)
-                }
-            case .primary(.home), .primary(.chat):
-                HomeOverviewView(center: environment.conversationCenter)
-            default:
-                ShellPlaceholderView(
-                    title: LocalizedStringKey("app.name"),
-                    systemImage: "sidebar.right",
-                    messageKey: "empty.detail"
-                )
-            }
-        }
-    }
-
     private func applySidebarSelection(_ selection: SidebarSelection?) {
         guard let selection else { return }
         switch selection {
@@ -380,10 +422,37 @@ private struct InspectorColumnView: View {
     @EnvironmentObject private var environment: AppEnvironment
 
     var body: some View {
+        Group {
         switch content {
+        case .changes:
+            TaskChangesInspectorView(conversationID: router.selectedConversationID)
         case .workspaceFiles:
             FileInspectorView(center: environment.workspaceCenter)
                 .background(FloeTheme.readingSurface)
+        case .browser:
+            BrowserView(center: environment.browserCenter)
+        case .terminal:
+            HostListView(center: environment.remoteSessionCenter)
+        case .progress:
+            TaskProgressInspectorView(conversationID: router.selectedConversationID)
+        case .childAgents:
+            ChildAgentsInspectorView(conversationID: router.selectedConversationID)
+        case .permissions:
+            TaskPermissionsInspectorView(conversationID: router.selectedConversationID)
+        }
+        }
+        .task(id: "\(content.rawValue)-\(router.selectedConversationID?.uuidString ?? "none")") {
+            guard let conversationID = router.selectedConversationID else { return }
+            switch content {
+            case .changes, .workspaceFiles:
+                try? await environment.workspaceCenter.openTaskWorkspace(
+                    conversationID: conversationID
+                )
+            case .browser:
+                environment.browserCenter.bind(to: conversationID)
+            case .terminal, .progress, .childAgents, .permissions:
+                break
+            }
         }
     }
 }
@@ -500,8 +569,6 @@ private struct MoreDestinationView: View {
             MemoryView(center: environment.memoryCenter)
         case .settings:
             SettingsRootView()
-        case .privacy:
-            PrivacyView()
         case .diagnostics:
             DiagnosticsAboutView(center: environment.settingsCenter)
         }
@@ -522,6 +589,50 @@ private struct ShellPlaceholderView: View {
         }
         .background(FloeTheme.readingSurface)
         .navigationTitle(title)
+    }
+}
+
+private struct TaskRenameSheet: View {
+    let conversation: ConversationRecord
+    let save: (String) async throws -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var title: String
+    @State private var errorMessage: String?
+    @State private var isSaving = false
+
+    init(conversation: ConversationRecord, save: @escaping (String) async throws -> Void) {
+        self.conversation = conversation
+        self.save = save
+        _title = State(initialValue: conversation.title)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("任务名称", text: $title)
+                if let errorMessage {
+                    Text(errorMessage).foregroundStyle(FloeTheme.destructive)
+                }
+            }
+            .navigationTitle("重命名任务")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("action.cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("action.save") {
+                        Task {
+                            isSaving = true
+                            defer { isSaving = false }
+                            do { try await save(title); dismiss() }
+                            catch { errorMessage = error.localizedDescription }
+                        }
+                    }
+                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }
 

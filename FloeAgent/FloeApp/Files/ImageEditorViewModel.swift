@@ -64,6 +64,22 @@ final class ImageEditorViewModel: ObservableObject {
         }
     }
 
+    func remoteEdit(prompt: String) async {
+        let normalized = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        do {
+            guard let edited = try await center.performRemoteImage(
+                operation: .edit,
+                prompt: normalized,
+                source: attachment
+            ).first else { return }
+            let id = try await center.openImage(edited)
+            sessionID = id
+            await rerender()
+            errorMessage = nil
+        } catch { errorMessage = error.localizedDescription }
+    }
+
     /// Exports the current image in the given format. Returns the file URL.
     func export(format: ImageOperation.ImageFormat) async -> URL? {
         guard let sessionID else { return nil }
