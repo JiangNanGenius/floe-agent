@@ -34,6 +34,7 @@ struct VoiceInputControllerTests {
         private let continuation: AsyncStream<String>.Continuation
         let transcripts: AsyncStream<String>
         private(set) var finishCount = 0
+        var finalTextOnFinish: String?
 
         init() {
             var c: AsyncStream<String>.Continuation!
@@ -43,7 +44,11 @@ struct VoiceInputControllerTests {
 
         func feed(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime?) {}
 
-        func finishAudio() async { finishCount += 1 }
+        func finishAudio() async {
+            finishCount += 1
+            if let finalTextOnFinish { continuation.yield(finalTextOnFinish) }
+            continuation.finish()
+        }
 
         func emit(_ text: String) { continuation.yield(text) }
         func end() { continuation.finish() }
@@ -113,6 +118,13 @@ struct VoiceInputControllerTests {
 
     // MARK: - Tests
 
+    @MainActor
+    private func waitForIdle(_ controller: VoiceInputController) async {
+        for _ in 0..<100 where controller.state != .idle {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     @Test("start and stop are idempotent")
     @MainActor
     func startStopIdempotent() async {
@@ -120,6 +132,7 @@ struct VoiceInputControllerTests {
         await harness.controller.start()
         #expect(harness.controller.state == .listening)
         harness.controller.stop()
+        await waitForIdle(harness.controller)
         #expect(harness.controller.state == .idle)
         harness.controller.stop()
         harness.controller.stop()
@@ -203,6 +216,7 @@ struct VoiceInputControllerTests {
         await harness.controller.start()
         #expect(harness.controller.state == .listening)
         harness.controller.handleInterruption(reason: .interrupted)
+        await waitForIdle(harness.controller)
         #expect(harness.controller.state == .idle)
         #expect(harness.diagnostics.events.contains("interruption.interrupted"))
         #expect(harness.diagnostics.events.contains("listeningStopped"))
@@ -214,6 +228,7 @@ struct VoiceInputControllerTests {
         let harness = Harness()
         await harness.controller.start()
         harness.controller.handleInterruption(reason: .interrupted, routeChange: true)
+        await waitForIdle(harness.controller)
         #expect(harness.controller.state == .idle)
         #expect(harness.diagnostics.events.contains("routeChanged"))
     }
@@ -240,6 +255,7 @@ struct VoiceInputControllerTests {
                     NSNumber(value: AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue)
             ]
         ))
+        await waitForIdle(harness.controller)
         #expect(harness.controller.state == .idle)
         #expect(harness.diagnostics.events.contains("routeChanged"))
     }
@@ -265,6 +281,7 @@ struct VoiceInputControllerTests {
                     NSNumber(value: AVAudioSession.InterruptionType.began.rawValue)
             ]
         ))
+        await waitForIdle(harness.controller)
         #expect(harness.controller.state == .idle)
     }
 
@@ -280,6 +297,18 @@ struct VoiceInputControllerTests {
         try? await Task.sleep(nanoseconds: 10_000_000)
         #expect(harness.controller.transcript == "你好世界")
         harness.controller.stop()
+    }
+
+    @Test("Stopping drains and preserves the recognizer's final phrase")
+    @MainActor
+    func stopPreservesFinalPhrase() async {
+        let harness = Harness()
+        harness.transcriber.finalTextOnFinish = "停止前最后一句"
+        await harness.controller.start()
+        harness.controller.stop()
+        await waitForIdle(harness.controller)
+        #expect(harness.controller.transcript == "停止前最后一句")
+        #expect(harness.transcriber.finishCount == 1)
     }
 
     @Test("A stop issued mid-preparation wins over the pending start")

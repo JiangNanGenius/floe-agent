@@ -6,7 +6,7 @@
 import Foundation
 import FloeCore
 
-struct FeedbackSubmission: Sendable, Equatable {
+struct FeedbackSubmission: Sendable, Equatable, Codable {
     let id: UUID
     let problem: String
     let diagnostics: String?
@@ -16,6 +16,10 @@ struct FeedbackSubmission: Sendable, Equatable {
         self.problem = problem.trimmingCharacters(in: .whitespacesAndNewlines)
         self.diagnostics = diagnostics
     }
+}
+
+struct FeedbackUploadReceipt: Sendable, Equatable {
+    let reportID: String
 }
 
 enum FeedbackUploadError: LocalizedError, Equatable {
@@ -50,15 +54,19 @@ enum FeedbackUploadService {
     static func upload(
         _ submission: FeedbackSubmission,
         session: URLSession = .shared
-    ) async throws {
+    ) async throws -> FeedbackUploadReceipt {
         let request = try makeRequest(submission)
-        let (_, response) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw FeedbackUploadError.invalidResponse
         }
         guard (200...299).contains(http.statusCode) else {
             throw FeedbackUploadError.rejected(statusCode: http.statusCode)
         }
+        guard let reportID = reportID(from: data), !reportID.isEmpty else {
+            throw FeedbackUploadError.invalidResponse
+        }
+        return FeedbackUploadReceipt(reportID: reportID)
     }
 
     static func makeRequest(
@@ -168,6 +176,54 @@ enum FeedbackUploadService {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.string(from: Date())
+    }
+
+    static func reportID(from data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        if let direct = object["report_id"] as? String ?? object["reportId"] as? String
+            ?? object["id"] as? String {
+            return direct
+        }
+        if let report = object["report"] as? [String: Any] {
+            return report["id"] as? String
+        }
+        return nil
+    }
+}
+
+/// Failed uploads remain recoverable and shareable. The stored package is
+/// already redacted and contains no credentials or raw audio.
+enum PendingFeedbackReportStore {
+    static func save(_ submission: FeedbackSubmission) throws -> URL {
+        let root = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ).appendingPathComponent("FloeAgent/PendingFeedback", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let safe = FeedbackSubmission(
+            id: submission.id,
+            problem: SecretRedactor.redact(submission.problem),
+            diagnostics: submission.diagnostics.map { SecretRedactor.redact($0) }
+        )
+        let url = root.appendingPathComponent("report-\(submission.id.uuidString).json")
+        try JSONEncoder().encode(safe).write(to: url, options: [.atomic, .completeFileProtection])
+        return url
+    }
+
+    static func remove(id: UUID) {
+        guard let root = try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: false
+        ) else { return }
+        try? FileManager.default.removeItem(
+            at: root.appendingPathComponent("FloeAgent/PendingFeedback/report-\(id.uuidString).json")
+        )
     }
 }
 

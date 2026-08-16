@@ -39,6 +39,7 @@ final class VoiceInputController: ObservableObject {
     private var transcriber: (any SpeechTranscribing)?
     private var transcriptTask: Task<Void, Never>?
     private var preparationTask: Task<Void, Never>?
+    private var stopTask: Task<Void, Never>?
     /// Monotonic token: a superseded start must never activate a session.
     private var startToken: UInt64 = 0
     /// True after the user explicitly stops; suppresses failure overwrite
@@ -161,14 +162,34 @@ final class VoiceInputController: ObservableObject {
         }
         let wasListening = state == .listening
         stoppingIntentionally = true
-        startToken &+= 1
         preparationTask?.cancel()
         preparationTask = nil
         state = .stopping
-        teardown()
-        state = .idle
-        if wasListening {
-            diagnostics?.voiceListeningStopped()
+        let token = startToken
+        let activeCapturer = capturer
+        capturer = nil
+        let activeTranscriber = transcriber
+        let observation = transcriptTask
+        activeCapturer?.stop()
+        stopTask?.cancel()
+        stopTask = Task { [weak self] in
+            if let activeTranscriber { await activeTranscriber.finishAudio() }
+            if let observation {
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask { await observation.value }
+                    group.addTask { try? await Task.sleep(for: .milliseconds(900)) }
+                    _ = await group.next()
+                    group.cancelAll()
+                }
+            }
+            guard let self, self.isCurrent(token) else { return }
+            self.transcriptTask?.cancel()
+            self.transcriptTask = nil
+            self.transcriber = nil
+            self.startToken &+= 1
+            self.state = .idle
+            self.stopTask = nil
+            if wasListening { self.diagnostics?.voiceListeningStopped() }
         }
     }
 
@@ -256,6 +277,8 @@ final class VoiceInputController: ObservableObject {
     /// Tears down capture and observation. Idempotent: whatever exists is
     /// released exactly once; nothing traps on double-stop.
     private func teardown() {
+        stopTask?.cancel()
+        stopTask = nil
         transcriptTask?.cancel()
         transcriptTask = nil
         capturer?.stop()

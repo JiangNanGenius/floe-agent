@@ -29,9 +29,6 @@ struct ThreadDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if !viewModel.runs.isEmpty {
-                runPicker
-            }
             if viewModel.latestPlan != nil || viewModel.activeGoal != nil {
                 intelligenceStatus
             }
@@ -90,39 +87,6 @@ struct ThreadDetailView: View {
         .padding(12)
         .background(FloeTheme.groupedSurface)
         .accessibilityElement(children: .contain)
-    }
-
-    // MARK: - Run picker (multiple runs per conversation)
-
-    private var runPicker: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(viewModel.runs) { run in
-                    Button {
-                        Task { await viewModel.selectRun(run.id) }
-                    } label: {
-                        Text(run.startedAt, style: .time)
-                            .font(FloeTheme.Typography.metadata)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(
-                                run.id == viewModel.selectedRun?.id
-                                    ? FloeTheme.primary.opacity(0.16)
-                                    : FloeTheme.groupedSurface,
-                                in: Capsule()
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .frame(minHeight: FloeTheme.minimumTarget)
-                    .accessibilityLabel(
-                        String(localized: "thread.run_at") + " "
-                            + run.startedAt.formatted(date: .omitted, time: .shortened)
-                    )
-                }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 6)
-        }
     }
 
     // MARK: - Thread content
@@ -343,7 +307,8 @@ struct ThreadDetailView: View {
                     agentMode: $viewModel.agentMode,
                     attachments: $viewModel.attachments,
                     onSend: { Task { await viewModel.send() } },
-                    onStop: { Task { await viewModel.cancel() } }
+                    onStop: { Task { await viewModel.cancel() } },
+                    onPermissions: { router.showInspector(.permissions) }
                 )
             }
         }

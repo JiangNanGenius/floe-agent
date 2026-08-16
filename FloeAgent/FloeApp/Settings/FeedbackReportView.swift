@@ -13,7 +13,8 @@ struct FeedbackReportView: View {
     @State private var includesDiagnostics = true
     @State private var isSubmitting = false
     @State private var errorMessage: String?
-    @State private var submittedID: UUID?
+    @State private var submittedID: String?
+    @State private var pendingPackageURL: URL?
 
     private var trimmedProblem: String {
         problem.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -65,6 +66,11 @@ struct FeedbackReportView: View {
                 Section {
                     Label(errorMessage, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(FloeTheme.destructive)
+                    if let pendingPackageURL {
+                        ShareLink(item: pendingPackageURL) {
+                            Label("Export saved report", systemImage: "square.and.arrow.up")
+                        }
+                    }
                 }
             }
         }
@@ -100,7 +106,7 @@ struct FeedbackReportView: View {
             if let submittedID {
                 Text(String(
                     format: String(localized: "feedback.success.message"),
-                    String(submittedID.uuidString.prefix(8))
+                    String(submittedID.prefix(12))
                 ))
             }
         }
@@ -116,6 +122,7 @@ struct FeedbackReportView: View {
     private func submit() async {
         isSubmitting = true
         errorMessage = nil
+        pendingPackageURL = nil
         defer { isSubmitting = false }
 
         let diagnostics: String?
@@ -130,10 +137,12 @@ struct FeedbackReportView: View {
             diagnostics: diagnostics
         )
         do {
-            try await FeedbackUploadService.upload(submission)
-            submittedID = submission.id
+            let receipt = try await FeedbackUploadService.upload(submission)
+            PendingFeedbackReportStore.remove(id: submission.id)
+            submittedID = receipt.reportID
         } catch {
             errorMessage = error.localizedDescription
+            pendingPackageURL = try? PendingFeedbackReportStore.save(submission)
         }
     }
 }

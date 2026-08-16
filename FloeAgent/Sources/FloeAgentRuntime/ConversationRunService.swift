@@ -77,6 +77,8 @@ public actor ConversationRunService {
     private let streamedTextLimitBytes: Int
     private let logger = FloeLogger(category: .runtime)
     private var streamedText = ""
+    private var unpublishedAnswerText = ""
+    private var answerPushTask: Task<Void, Never>?
     private var reasoningText = ""
     private var unflushedReasoningText = ""
     private var unpublishedReasoningText = ""
@@ -232,7 +234,8 @@ public actor ConversationRunService {
             role: "user",
             content: goal,
             createdAt: Date(),
-            parts: [MessagePart(messageID: userMessageID, partIndex: 0, kind: .text, text: goal)]
+            parts: [MessagePart(messageID: userMessageID, partIndex: 0, kind: .text, text: goal)],
+            runID: runID
         ))
         _ = try? await runStore.appendEvent(runID: runID, kind: .status, payloadJSON: #"{"state":"preparing"}"#)
         // Inject the run context as the first in-memory system message so
@@ -284,6 +287,7 @@ public actor ConversationRunService {
             eventChannel.yield(.toolLifecycle(.started(info.toolCall)))
         }
         if isTerminal(state) {
+            flushAnswerPush()
             await flushReasoning()
             resourceAccessCleanup?()
             resourceAccessCleanup = nil
@@ -335,10 +339,12 @@ public actor ConversationRunService {
         }
         switch event {
         case .textDelta(let delta):
-            eventChannel.yield(.answerDelta(TextDelta(text: delta.text)))
             let remaining = max(0, streamedTextLimitBytes - streamedText.utf8.count)
             if remaining > 0 {
-                streamedText += Self.utf8Prefix(delta.text, maxBytes: remaining)
+                let accepted = Self.utf8Prefix(delta.text, maxBytes: remaining)
+                streamedText += accepted
+                unpublishedAnswerText += accepted
+                scheduleAnswerPush()
             }
             scheduleRecoveryPoint()
         case .reasoningSummary(let summary):
@@ -402,6 +408,7 @@ public actor ConversationRunService {
                 recoverable: Self.isRecoverable(error.kind)
             ))
         case .completed(let completion):
+            flushAnswerPush()
             // Ordering rule: the final assistant reply must be durable
             // BEFORE the terminal marker. The unified thread timeline reads
             // the `.assistantText` event for ordering and the conversation
@@ -416,7 +423,8 @@ public actor ConversationRunService {
                     role: "assistant",
                     content: streamedText,
                     createdAt: Date(),
-                    parts: [MessagePart(messageID: messageID, partIndex: 0, kind: .text, text: streamedText)]
+                    parts: [MessagePart(messageID: messageID, partIndex: 0, kind: .text, text: streamedText)],
+                    runID: runID
                 ))
                 _ = try? await runStore.appendEvent(
                     runID: runID, kind: .assistantText,
@@ -458,6 +466,25 @@ public actor ConversationRunService {
             kind: .reasoning,
             payloadJSON: Self.jsonPayload(["text": text])
         )
+    }
+
+    /// Coalesces answer deltas to one UI publication per display frame while
+    /// `streamedText` continues to preserve the exact provider stream.
+    private func scheduleAnswerPush() {
+        guard answerPushTask == nil else { return }
+        answerPushTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(33))
+            await self?.flushAnswerPush()
+        }
+    }
+
+    private func flushAnswerPush() {
+        answerPushTask?.cancel()
+        answerPushTask = nil
+        guard !unpublishedAnswerText.isEmpty else { return }
+        let delta = unpublishedAnswerText
+        unpublishedAnswerText = ""
+        eventChannel.yield(.answerDelta(TextDelta(text: delta)))
     }
 
     /// Coalesces high-frequency reasoning deltas to display cadence. This
@@ -531,19 +558,24 @@ public actor ConversationRunService {
     private func ensureDurableGoal(objective: String) async {
         guard let intelligenceStore else { return }
         if let existing = try? await intelligenceStore.goals(conversationID: conversationID),
-           existing.contains(where: { !$0.status.isTerminal }) { return }
+           let active = existing.first(where: { !$0.status.isTerminal }) {
+            try? await runStore.assignGoal(runID: runID, goalID: active.id)
+            return
+        }
         let criterion = GoalCriterion(
             text: "The objective is satisfied with inspectable evidence",
-            requiresUserConfirmation: true
+            requiresUserConfirmation: false
         )
         let goal = ConversationGoal(
             conversationID: conversationID,
             objective: objective,
             acceptanceCriteria: [criterion],
             steps: [GoalStep(title: "Work toward the objective", status: .inProgress, order: 0)],
-            status: .active
+            status: .active,
+            progress: GoalProgress(startedAt: Date())
         )
         try? await intelligenceStore.saveGoal(goal)
+        try? await runStore.assignGoal(runID: runID, goalID: goal.id)
     }
 
     private func moveGoalToVerification() async {
@@ -551,7 +583,10 @@ public actor ConversationRunService {
               var goal = try? await intelligenceStore.goals(conversationID: conversationID).first,
               !goal.status.isTerminal else { return }
         goal.status = .verifying
-        if let index = goal.steps.indices.first { goal.steps[index].status = .completed }
+        if goal.progress.startedAt == nil { goal.progress.startedAt = Date() }
+        goal.progress.cycleCount += 1
+        goal.progress.modelCallCount += 1
+        goal.progress.lastCheckpointAt = Date()
         goal.updatedAt = Date()
         try? await intelligenceStore.saveGoal(goal)
     }

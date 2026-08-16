@@ -143,6 +143,7 @@ struct ThreadComposerView: View {
 
     let onSend: () -> Void
     let onStop: () -> Void
+    var onPermissions: () -> Void = {}
 
     @State private var isPickerPresented = false
     @State private var attachmentError: String?
@@ -151,7 +152,6 @@ struct ThreadComposerView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         VStack(spacing: 0) {
@@ -186,19 +186,6 @@ struct ThreadComposerView: View {
             draft = dictationPrefix + separator + transcript
         }
         .onDisappear { voiceInput.stop() }
-        .onChange(of: scenePhase) { _, phase in
-            // Backgrounding ends the capture session safely; the staged
-            // transcript stays in the draft for the user to keep or edit.
-            if phase != .active {
-                voiceInput.handleInterruption(reason: .interrupted)
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { notification in
-            voiceInput.handleAudioInterruption(notification)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { notification in
-            voiceInput.handleAudioRouteChange(notification)
-        }
     }
 
     /// User-comprehensible voice notice for the current state, if any.
@@ -265,6 +252,8 @@ struct ThreadComposerView: View {
                 Text("home.new_task.placeholder")
             }
             .lineLimit(1...5)
+            .frame(minHeight: FloeTheme.minimumTarget, alignment: .leading)
+            .contentShape(Rectangle())
             .textFieldStyle(.plain)
             .accessibilityLabel("home.new_task.placeholder")
             .accessibilityIdentifier("composer.input")
@@ -336,11 +325,7 @@ struct ThreadComposerView: View {
                 targetPicker
                 modePicker
                 Button {
-                    if router.selectedConversationID == nil {
-                        router.openMore(.settings)
-                    } else {
-                        router.showInspector(.permissions)
-                    }
+                    onPermissions()
                 } label: {
                     composerChip(
                         title: router.selectedConversationID == nil ? "默认权限" : "任务权限",

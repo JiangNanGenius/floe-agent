@@ -22,7 +22,10 @@ public struct RunLaunchRequest: Sendable, Hashable {
     public var attachments: [AttachmentRef]
     public var startedAt: Date
     public var conversationMode: String
-    public var initialApprovalMode: TaskApprovalMode
+    public var initialPolicy: DraftTaskPolicy
+    /// `goalContinuation` is an internal cycle prompt. It is durable for
+    /// audit/recovery, but is not rendered as a user-authored chat message.
+    public var messageRole: String
 
     public init(
         conversationID: UUID? = nil,
@@ -33,7 +36,8 @@ public struct RunLaunchRequest: Sendable, Hashable {
         workspaceID: UUID? = nil,
         attachments: [AttachmentRef] = [],
         conversationMode: String = "chat",
-        initialApprovalMode: TaskApprovalMode = .ask,
+        initialPolicy: DraftTaskPolicy = DraftTaskPolicy(),
+        messageRole: String = "user",
         startedAt: Date = Date()
     ) {
         self.conversationID = conversationID
@@ -44,7 +48,8 @@ public struct RunLaunchRequest: Sendable, Hashable {
         self.workspaceID = workspaceID
         self.attachments = attachments
         self.conversationMode = conversationMode
-        self.initialApprovalMode = initialApprovalMode
+        self.initialPolicy = initialPolicy
+        self.messageRole = messageRole
         self.startedAt = startedAt
     }
 }
@@ -53,6 +58,7 @@ public struct RunLaunchRequest: Sendable, Hashable {
 /// commits. Callers may safely navigate to these records immediately.
 public struct PreparedRun: Sendable, Hashable {
     public var conversation: ConversationRecord
+    public var workspace: WorkspaceRecord
     public var run: RunRecord
     public var userMessage: PersistedMessage
     public var attachments: [AttachmentRef]
@@ -60,12 +66,14 @@ public struct PreparedRun: Sendable, Hashable {
 
     public init(
         conversation: ConversationRecord,
+        workspace: WorkspaceRecord,
         run: RunRecord,
         userMessage: PersistedMessage,
         attachments: [AttachmentRef],
         createdConversation: Bool
     ) {
         self.conversation = conversation
+        self.workspace = workspace
         self.run = run
         self.userMessage = userMessage
         self.attachments = attachments
@@ -94,6 +102,9 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
         }
         guard ["chat", "plan", "goal"].contains(request.conversationMode) else {
             throw FloeError.validationFailed("Unknown conversation mode")
+        }
+        guard ["user", "goalContinuation"].contains(request.messageRole) else {
+            throw FloeError.validationFailed("Unknown launch message role")
         }
 
         return try await database.writer { db in
@@ -189,13 +200,16 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 )
                 try db.execute(
                     sql: """
-                        INSERT INTO task_policies
-                            (conversation_id, approval_mode, updated_at)
-                        VALUES (?, ?, ?)
+                        INSERT INTO task_policies (
+                            conversation_id, approval_mode, recovery_policy,
+                            notification_policy, updated_at
+                        ) VALUES (?, ?, ?, ?, ?)
                         """,
                     arguments: [
                         conversation.id.uuidString,
-                        request.initialApprovalMode.rawValue,
+                        request.initialPolicy.approvalMode.rawValue,
+                        request.initialPolicy.recoveryPolicy.rawValue,
+                        request.initialPolicy.notificationPolicy.rawValue,
                         PersistenceCodec.encode(now)
                     ]
                 )
@@ -227,8 +241,8 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
             )
             try db.execute(
                 sql: """
-                    INSERT INTO runs (id, conversation_id, state, goal, started_at, ended_at)
-                    VALUES (?, ?, ?, ?, ?, NULL)
+                    INSERT INTO runs (id, conversation_id, state, goal, started_at, ended_at, goal_id)
+                    VALUES (?, ?, ?, ?, ?, NULL, NULL)
                     """,
                 arguments: [
                     run.id.uuidString,
@@ -242,14 +256,16 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
             let messageID = UUID()
             try db.execute(
                 sql: """
-                    INSERT INTO messages (id, conversation_id, role, content, created_at)
-                    VALUES (?, ?, 'user', ?, ?)
+                    INSERT INTO messages (id, conversation_id, role, content, created_at, run_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     messageID.uuidString,
                     conversation.id.uuidString,
+                    request.messageRole,
                     goal,
-                    PersistenceCodec.encode(now)
+                    PersistenceCodec.encode(now),
+                    run.id.uuidString
                 ]
             )
             var normalizedAttachments: [AttachmentRef] = []
@@ -282,16 +298,24 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
             let userMessage = PersistedMessage(
                 id: messageID,
                 conversationID: conversation.id,
-                role: "user",
+                role: request.messageRole,
                 content: goal,
                 createdAt: now,
-                parts: parts
+                parts: parts,
+                runID: run.id
             )
             for part in parts {
                 try Self.insertPart(part, db: db)
             }
 
-            _ = owningWorkspaceID
+            guard let workspaceRow = try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM workspaces WHERE id = ?",
+                arguments: [owningWorkspaceID.uuidString]
+            ) else {
+                throw FloeError.storageCorrupted("Canonical workspace disappeared during launch")
+            }
+            let owningWorkspace = try Self.workspace(from: workspaceRow)
 
             try db.execute(
                 sql: "UPDATE conversations SET updated_at = ? WHERE id = ?",
@@ -314,6 +338,7 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
             updatedConversation.updatedAt = now
             return PreparedRun(
                 conversation: updatedConversation,
+                workspace: owningWorkspace,
                 run: run,
                 userMessage: userMessage,
                 attachments: normalizedAttachments,
@@ -379,6 +404,31 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
             updatedAt: try PersistenceCodec.decodeDate(row["updated_at"]),
             titleOrigin: ConversationTitleOrigin(rawValue: row["title_origin"] as String? ?? "autoPending")
                 ?? .autoPending
+        )
+    }
+
+    private static func workspace(from row: Row) throws -> WorkspaceRecord {
+        guard let id = UUID(uuidString: row["id"]) else {
+            throw FloeError.storageCorrupted("Invalid workspace identifier")
+        }
+        let hostID: UUID? = (row["active_target_host_id"] as String?).flatMap(UUID.init(uuidString:))
+        let inspectorJSON: String = row["inspector_state_json"]
+        let inspector = (try? JSONDecoder().decode(InspectorState.self, from: Data(inspectorJSON.utf8)))
+            ?? InspectorState()
+        return WorkspaceRecord(
+            id: id,
+            name: row["name"],
+            rootBookmark: row["root_bookmark"],
+            lastOpenedAt: (row["last_opened_at"] as String?).flatMap {
+                try? PersistenceCodec.decodeDate($0)
+            },
+            activeTarget: WorkspaceTarget(kindName: row["active_target_kind"], hostID: hostID),
+            inspectorState: inspector,
+            instructionsRelativePath: row["instructions_rel_path"],
+            kind: WorkspaceKind(rawValue: row["kind"]) ?? .project,
+            internalRelativePath: row["internal_relative_path"],
+            createdAt: try PersistenceCodec.decodeDate(row["created_at"]),
+            updatedAt: try PersistenceCodec.decodeDate(row["updated_at"])
         )
     }
 }

@@ -15,6 +15,7 @@ public struct RunRecord: Sendable, Hashable, Identifiable {
     public var goal: String
     public var startedAt: Date
     public var endedAt: Date?
+    public var goalID: UUID?
 
     public init(
         id: UUID,
@@ -22,7 +23,8 @@ public struct RunRecord: Sendable, Hashable, Identifiable {
         state: String,
         goal: String,
         startedAt: Date,
-        endedAt: Date? = nil
+        endedAt: Date? = nil,
+        goalID: UUID? = nil
     ) {
         self.id = id
         self.conversationID = conversationID
@@ -30,6 +32,7 @@ public struct RunRecord: Sendable, Hashable, Identifiable {
         self.goal = goal
         self.startedAt = startedAt
         self.endedAt = endedAt
+        self.goalID = goalID
     }
 }
 
@@ -40,6 +43,7 @@ public protocol RunStore: Sendable {
     func run(id: UUID) async throws -> RunRecord?
     func runs(conversationID: UUID) async throws -> [RunRecord]
     func updateRunState(id: UUID, state: String, endedAt: Date?) async throws
+    func assignGoal(runID: UUID, goalID: UUID) async throws
 
     /// Appends an event using the next sequence for the run (atomic per writer).
     @discardableResult
@@ -69,8 +73,8 @@ public actor SQLiteRunStore: RunStore {
         try await database.writer { db in
             try db.execute(
                 sql: """
-                    INSERT INTO runs (id, conversation_id, state, goal, started_at, ended_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO runs (id, conversation_id, state, goal, started_at, ended_at, goal_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         state = excluded.state,
                         goal = excluded.goal,
@@ -82,7 +86,8 @@ public actor SQLiteRunStore: RunStore {
                     run.state,
                     run.goal,
                     PersistenceCodec.encode(run.startedAt),
-                    run.endedAt.map(PersistenceCodec.encode)
+                    run.endedAt.map(PersistenceCodec.encode),
+                    run.goalID?.uuidString
                 ]
             )
         }
@@ -114,6 +119,15 @@ public actor SQLiteRunStore: RunStore {
             try db.execute(
                 sql: "UPDATE runs SET state = ?, ended_at = ? WHERE id = ?",
                 arguments: [state, endedAt.map(PersistenceCodec.encode), id.uuidString]
+            )
+        }
+    }
+
+    public func assignGoal(runID: UUID, goalID: UUID) async throws {
+        try await database.writer { db in
+            try db.execute(
+                sql: "UPDATE runs SET goal_id = ? WHERE id = ?",
+                arguments: [goalID.uuidString, runID.uuidString]
             )
         }
     }
@@ -275,7 +289,8 @@ public actor SQLiteRunStore: RunStore {
             state: row["state"],
             goal: row["goal"],
             startedAt: try PersistenceCodec.decodeDate(row["started_at"]),
-            endedAt: endedAt
+            endedAt: endedAt,
+            goalID: (row["goal_id"] as String?).flatMap(UUID.init(uuidString:))
         )
     }
 

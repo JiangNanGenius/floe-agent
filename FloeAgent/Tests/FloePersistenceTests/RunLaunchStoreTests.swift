@@ -38,10 +38,12 @@ struct RunLaunchStoreTests {
         ))
 
         #expect(prepared.createdConversation)
+        #expect(prepared.workspace.id == workspace.id)
         #expect(try await conversations.conversation(id: prepared.conversation.id) != nil)
         #expect(try await runs.run(id: prepared.run.id)?.conversationID == prepared.conversation.id)
         let messages = try await conversations.messages(conversationID: prepared.conversation.id)
         #expect(messages.count == 1)
+        #expect(messages[0].runID == prepared.run.id)
         #expect(messages[0].parts.map(\.kind) == [.text, .file])
         #expect(try await conversations.attachments(conversationID: prepared.conversation.id).count == 1)
         #expect(try await workspaces.conversations(workspaceID: workspace.id) == [prepared.conversation.id])
@@ -101,9 +103,17 @@ struct RunLaunchStoreTests {
     func createsPrivateTaskWorkspace() async throws {
         let database = try await database()
         let prepared = try await SQLiteRunLaunchStore(database: database).prepare(
-            RunLaunchRequest(conversationTitle: "Private chat", goal: "hello")
+            RunLaunchRequest(
+                conversationTitle: "Private chat",
+                goal: "hello",
+                initialPolicy: DraftTaskPolicy(
+                    approvalMode: .automatic,
+                    recoveryPolicy: .alwaysRetry,
+                    notificationPolicy: .critical
+                )
+            )
         )
-        let values: (String?, String?, Int, Int) = try await database.reader { db in
+        let values: (String?, String?, Int, Int, String?, String?, String?) = try await database.reader { db in
             let row = try Row.fetchOne(db, sql: """
                 SELECT w.kind, w.internal_relative_path,
                        (SELECT COUNT(*) FROM conversation_workspace_ownership
@@ -120,12 +130,19 @@ struct RunLaunchStoreTests {
                 ])
             return (
                 row?["kind"], row?["internal_relative_path"],
-                row?["owner_count"] ?? 0, row?["policy_count"] ?? 0
+                row?["owner_count"] ?? 0, row?["policy_count"] ?? 0,
+                try String.fetchOne(db, sql: "SELECT approval_mode FROM task_policies WHERE conversation_id = ?", arguments: [prepared.conversation.id.uuidString]),
+                try String.fetchOne(db, sql: "SELECT recovery_policy FROM task_policies WHERE conversation_id = ?", arguments: [prepared.conversation.id.uuidString]),
+                try String.fetchOne(db, sql: "SELECT notification_policy FROM task_policies WHERE conversation_id = ?", arguments: [prepared.conversation.id.uuidString])
             )
         }
         #expect(values.0 == "privateTask")
+        #expect(prepared.workspace.kind == .privateTask)
         #expect(values.1?.contains(prepared.conversation.id.uuidString) == true)
         #expect(values.2 == 1)
         #expect(values.3 == 1)
+        #expect(values.4 == TaskApprovalMode.automatic.rawValue)
+        #expect(values.5 == TaskRecoveryPolicy.alwaysRetry.rawValue)
+        #expect(values.6 == TaskNotificationPolicy.critical.rawValue)
     }
 }

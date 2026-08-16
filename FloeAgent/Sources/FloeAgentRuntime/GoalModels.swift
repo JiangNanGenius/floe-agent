@@ -8,6 +8,7 @@ public enum GoalStatus: String, Sendable, Codable, Hashable, CaseIterable {
     case paused
     case interrupted
     case blocked
+    case budgetLimited
     case verifying
     case completed
     case cancelled
@@ -108,9 +109,9 @@ public struct GoalStep: Sendable, Codable, Hashable, Identifiable {
 }
 
 public struct GoalBudgets: Sendable, Codable, Hashable {
-    public var maxCycles: Int
-    public var maxModelCalls: Int
-    public var maxWallClockSeconds: TimeInterval
+    public var maxCycles: Int?
+    public var maxModelCalls: Int?
+    public var maxWallClockSeconds: TimeInterval?
     public var maxParentIterationsPerCycle: Int
     public var maxChildIterations: Int
     public var maxTotalIterationsPerActivation: Int
@@ -118,18 +119,18 @@ public struct GoalBudgets: Sendable, Codable, Hashable {
     public var costReminder: Decimal?
 
     public init(
-        maxCycles: Int = 8,
-        maxModelCalls: Int = 96,
-        maxWallClockSeconds: TimeInterval = 3_600,
+        maxCycles: Int? = nil,
+        maxModelCalls: Int? = nil,
+        maxWallClockSeconds: TimeInterval? = nil,
         maxParentIterationsPerCycle: Int = 64,
         maxChildIterations: Int = 24,
         maxTotalIterationsPerActivation: Int = 96,
         maxConcurrentChildren: Int = 3,
         costReminder: Decimal? = nil
     ) {
-        self.maxCycles = max(1, maxCycles)
-        self.maxModelCalls = max(1, maxModelCalls)
-        self.maxWallClockSeconds = max(1, maxWallClockSeconds)
+        self.maxCycles = maxCycles.map { max(1, $0) }
+        self.maxModelCalls = maxModelCalls.map { max(1, $0) }
+        self.maxWallClockSeconds = maxWallClockSeconds.map { max(1, $0) }
         self.maxParentIterationsPerCycle = max(1, maxParentIterationsPerCycle)
         self.maxChildIterations = max(1, maxChildIterations)
         self.maxTotalIterationsPerActivation = max(1, maxTotalIterationsPerActivation)

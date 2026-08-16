@@ -42,6 +42,7 @@ final class HomeLaunchpadViewModel: ObservableObject {
     @Published var executionTarget: AgentExecutionTarget = .local
     @Published var agentMode: AgentExecutionMode = .agent
     @Published var attachments: [AttachmentRef] = []
+    @Published var draftPolicy = DraftTaskPolicy()
     /// Single-flight send guard (double-tap safe).
     @Published private(set) var isSending = false
     /// Honest error surface for the last failed send.
@@ -170,7 +171,8 @@ final class HomeLaunchpadViewModel: ObservableObject {
             model: model,
             workspaceID: selectedProjectID,
             attachments: stagedAttachments,
-            executionMode: agentMode
+            executionMode: agentMode,
+            initialPolicy: draftPolicy
         )
         return started.conversationID
     }

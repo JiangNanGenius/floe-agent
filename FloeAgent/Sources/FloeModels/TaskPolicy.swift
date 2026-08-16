@@ -26,6 +26,23 @@ public enum TaskApprovalMode: String, Sendable, Codable, CaseIterable, Hashable 
     case fullAccess
 }
 
+/// Policy selected before the first message creates a durable task.
+public struct DraftTaskPolicy: Sendable, Codable, Hashable {
+    public var approvalMode: TaskApprovalMode
+    public var recoveryPolicy: TaskRecoveryPolicy
+    public var notificationPolicy: TaskNotificationPolicy
+
+    public init(
+        approvalMode: TaskApprovalMode = .ask,
+        recoveryPolicy: TaskRecoveryPolicy = .safePoint,
+        notificationPolicy: TaskNotificationPolicy = .stages
+    ) {
+        self.approvalMode = approvalMode
+        self.recoveryPolicy = recoveryPolicy
+        self.notificationPolicy = notificationPolicy
+    }
+}
+
 public struct TaskPolicy: Sendable, Codable, Hashable {
     public var conversationID: UUID
     public var approvalMode: String?

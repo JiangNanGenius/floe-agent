@@ -104,6 +104,7 @@ struct ChildAgentsInspectorView: View {
 struct TaskPermissionsInspectorView: View {
     let conversationID: UUID?
     @EnvironmentObject private var environment: AppEnvironment
+    @EnvironmentObject private var conversationCenter: ConversationCenter
     @State private var policy: TaskPolicy?
     @State private var isSaving = false
     @State private var errorMessage: String?
@@ -221,6 +222,7 @@ struct TaskPermissionsInspectorView: View {
         do {
             try await SQLiteWorkspaceStore(database: environment.database).saveTaskPolicy(policy)
             self.policy = policy
+            conversationCenter.taskPolicyDidChange(conversationID: policy.conversationID)
             errorMessage = nil
         } catch { errorMessage = error.localizedDescription }
     }

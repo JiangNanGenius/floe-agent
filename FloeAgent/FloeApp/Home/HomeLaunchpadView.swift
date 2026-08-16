@@ -24,6 +24,7 @@ struct HomeLaunchpadView: View {
     @ObservedObject private var center: ConversationCenter
     @StateObject private var viewModel: HomeLaunchpadViewModel
     @EnvironmentObject private var router: AppRouter
+    @State private var showsDraftPermissions = false
 
     init(center: ConversationCenter, workspaceID: UUID? = nil) {
         self.center = center
@@ -66,6 +67,9 @@ struct HomeLaunchpadView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await viewModel.load() }
         .refreshable { await viewModel.load() }
+        .sheet(isPresented: $showsDraftPermissions) {
+            DraftTaskPermissionsSheet(policy: $viewModel.draftPolicy)
+        }
     }
 
     // MARK: - Header: brand mark + welcome
@@ -116,7 +120,8 @@ struct HomeLaunchpadView: View {
                 agentMode: $viewModel.agentMode,
                 attachments: $viewModel.attachments,
                 onSend: sendTask,
-                onStop: {}
+                onStop: {},
+                onPermissions: { showsDraftPermissions = true }
             )
         }
     }

@@ -77,6 +77,42 @@ enum ThreadTimelineItem: Identifiable, Hashable {
 /// Builds the unified timeline from persisted state plus live flags.
 enum ThreadTimelineBuilder {
 
+    static func buildConversation(
+        messages: [PersistedMessage],
+        runs: [RunRecord],
+        eventsByRun: [UUID: [RunEventRecord]],
+        liveRunID: UUID?,
+        isRunning: Bool,
+        liveStreamedText: String,
+        liveReasoningText: String,
+        pendingApprovals: [PendingApproval]
+    ) -> [ThreadTimelineItem] {
+        let sortedRuns = runs.sorted { $0.startedAt < $1.startedAt }
+        var result: [ThreadTimelineItem] = []
+        for run in sortedRuns {
+            let isLive = run.id == liveRunID && isRunning
+            result += build(
+                messages: messages,
+                events: eventsByRun[run.id, default: []],
+                run: run,
+                isRunning: isLive,
+                liveStreamedText: isLive ? liveStreamedText : "",
+                liveReasoningText: isLive ? liveReasoningText : "",
+                pendingApprovals: isLive ? pendingApprovals : []
+            )
+        }
+        let represented = Set(sortedRuns.map(\.id))
+        let taskLevel = messages.filter {
+            $0.role != "goalContinuation" && $0.runID.map(represented.contains) != true
+        }
+        result += taskLevel.map { message in
+            message.role == "user"
+                ? .userMessage(message)
+                : .assistantMessage(text: message.content, idSuffix: message.id.uuidString)
+        }
+        return result
+    }
+
     static func build(
         messages: [PersistedMessage],
         events: [RunEventRecord],
@@ -92,9 +128,10 @@ enum ThreadTimelineBuilder {
         //    prompts are common, so choose the matching message nearest to
         //    this run's start instead of the last equal string globally.
         if let run {
-            let candidates = messages.filter {
-                $0.role == "user" && $0.content == run.goal
-            }
+            let directlyBound = messages.filter { $0.role == "user" && $0.runID == run.id }
+            let candidates = directlyBound.isEmpty ? messages.filter {
+                $0.role == "user" && $0.runID == nil && $0.content == run.goal
+            } : directlyBound
             if let goalMessage = candidates.min(by: {
                 abs($0.createdAt.timeIntervalSince(run.startedAt))
                     < abs($1.createdAt.timeIntervalSince(run.startedAt))
@@ -137,11 +174,15 @@ enum ThreadTimelineBuilder {
             // older selected run can accidentally display the newest
             // assistant message from another run in the conversation.
             let upperBound = run.endedAt ?? .distantFuture
-            let assistantMessages = messages.filter {
+            let directlyBound = messages.filter {
+                $0.role == "assistant" && $0.runID == run.id
+            }
+            let assistantMessages = directlyBound.isEmpty ? messages.filter {
                 $0.role == "assistant"
+                    && $0.runID == nil
                     && $0.createdAt >= run.startedAt
                     && $0.createdAt <= upperBound.addingTimeInterval(2)
-            }
+            } : directlyBound
             if let latest = assistantMessages.last, !latest.content.isEmpty {
                 items.append(.assistantMessage(
                     text: latest.content,

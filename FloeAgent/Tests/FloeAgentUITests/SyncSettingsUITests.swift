@@ -16,10 +16,12 @@ final class SyncSettingsUITests: XCTestCase {
         ]
         app.launch()
 
-        XCTAssertTrue(app.staticTexts["sidebar.more.settings"].waitForExistence(timeout: 8))
-        app.staticTexts["sidebar.more.settings"].tap()
+        XCTAssertTrue(app.buttons["sidebar.settings"].waitForExistence(timeout: 8))
+        app.buttons["sidebar.settings"].tap()
 
-        let syncSection = app.descendants(matching: .any)["settings.section.sync"]
+        let syncSection = app.descendants(matching: .any)
+            .matching(identifier: "settings.section.sync")
+            .firstMatch
         XCTAssertTrue(syncSection.waitForExistence(timeout: 8))
         syncSection.tap()
 
@@ -51,9 +53,11 @@ final class SyncSettingsUITests: XCTestCase {
         ]
         app.launch()
 
-        XCTAssertTrue(app.staticTexts["sidebar.more.settings"].waitForExistence(timeout: 8))
-        app.staticTexts["sidebar.more.settings"].tap()
-        let syncSection = app.descendants(matching: .any)["settings.section.sync"]
+        XCTAssertTrue(app.buttons["sidebar.settings"].waitForExistence(timeout: 8))
+        app.buttons["sidebar.settings"].tap()
+        let syncSection = app.descendants(matching: .any)
+            .matching(identifier: "settings.section.sync")
+            .firstMatch
         XCTAssertTrue(syncSection.waitForExistence(timeout: 8))
         syncSection.tap()
 

@@ -214,6 +214,10 @@ public actor FloeAgentRuntime {
     private var loopGuard = ToolLoopGuard()
     private var forcedStopReason: AgentEvent.StopReason?
     private var isFinalizingWithoutTools = false
+    /// Set by tool/compaction handling to request another provider turn.
+    /// The outer model loop consumes this flag; handlers never recursively
+    /// enter `runModelTurn`, which keeps one owner for state transitions.
+    private var modelTurnContinuationRequested = false
 
     private var streamTask: Task<Void, Never>?
     private var cancellationToken = CancellationToken()
@@ -262,8 +266,57 @@ public actor FloeAgentRuntime {
     // MARK: Transitions
 
     private func transition(to newState: AgentState) async {
+        guard state.name != newState.name else { return }
+        guard Self.isLegalTransition(from: state, to: newState) else {
+            await sink?.agentRuntime(self, didEmit: .error(.init(
+                kind: .malformed,
+                providerMessage: "Illegal runtime transition \(state.name) -> \(newState.name)"
+            )))
+            return
+        }
         state = newState
         await sink?.agentRuntime(self, didTransitionTo: newState)
+    }
+
+    private static func isLegalTransition(from old: AgentState, to new: AgentState) -> Bool {
+        switch (old.name, new.name) {
+        case ("idle", "preparing"),
+             ("preparing", "cancelling"),
+             ("preparing", "checkpointed"),
+             ("preparing", "streamingModel"),
+             ("streamingModel", "executingTool"),
+             ("streamingModel", "waitingApproval"),
+             ("streamingModel", "compacting"),
+             ("streamingModel", "paused"),
+             ("streamingModel", "cancelling"),
+             ("streamingModel", "completed"),
+             ("streamingModel", "failed"),
+             ("executingTool", "streamingModel"),
+             ("executingTool", "cancelling"),
+             ("executingTool", "completed"),
+             ("executingTool", "failed"),
+             ("waitingApproval", "executingTool"),
+             ("waitingApproval", "streamingModel"),
+             ("waitingApproval", "cancelling"),
+             ("waitingApproval", "completed"),
+             ("waitingApproval", "failed"),
+             ("compacting", "streamingModel"),
+             ("compacting", "failed"),
+             ("paused", "preparing"),
+             ("paused", "cancelling"),
+             ("paused", "checkpointed"),
+             ("paused", "failed"),
+             ("checkpointed", "preparing"),
+             ("streamingModel", "checkpointed"),
+             ("executingTool", "checkpointed"),
+             ("waitingApproval", "checkpointed"),
+             ("cancelling", "checkpointed"),
+             ("cancelling", "failed"),
+             ("preparing", "failed"):
+            true
+        default:
+            false
+        }
     }
 
     private func emit(_ event: AgentEvent) async {
@@ -286,7 +339,17 @@ public actor FloeAgentRuntime {
     /// are the actual preceding turns of the current conversation.
     public func seedConversationHistory(_ history: [ConversationMessage]) async {
         guard case .idle = state else { return }
-        messages.append(contentsOf: history.filter { $0.role != "system" })
+        messages.append(contentsOf: history.filter { message in
+            guard message.role == "system" else { return true }
+            // Only locally generated, explicitly data-only context survives.
+            // Arbitrary historical system messages remain excluded so old
+            // conversation text can never manufacture current authority.
+            return message.content.hasPrefix("Historical summary for this task only.")
+                || message.content.hasPrefix("Historical reference only;")
+                || message.content.hasPrefix("Auxiliary visual analysis (untrusted evidence;")
+                || message.content.hasPrefix("The user attached image evidence,")
+                || message.content.hasPrefix("The configured auxiliary vision model")
+        })
     }
 
     /// idle → preparing → streamingModel …
@@ -431,6 +494,16 @@ public actor FloeAgentRuntime {
 
     /// preparing → streamingModel; consumes the provider stream.
     private func runModelTurn() async {
+        repeat {
+            modelTurnContinuationRequested = false
+            await runSingleModelTurn()
+        } while modelTurnContinuationRequested && !Self.isTerminalState(state)
+    }
+
+    /// Executes exactly one provider request. Tool handling can request a
+    /// subsequent turn by setting `modelTurnContinuationRequested`; it must
+    /// never call this method recursively.
+    private func runSingleModelTurn() async {
         if let contextEngine {
             let latestUserID = messages.last(where: { $0.role == "user" })?.id
             let protection = ContextProtection(
@@ -541,6 +614,7 @@ public actor FloeAgentRuntime {
             do {
                 for try await event in stream {
                     await self.handleStreamEvent(event)
+                    if await self.modelTurnContinuationRequested { return }
                     let currentState = await self.state
                     switch currentState {
                     case .streamingModel, .compacting:
@@ -553,7 +627,8 @@ public actor FloeAgentRuntime {
                 }
                 // Stream ended without an explicit completion event.
                 let finalState = await self.state
-                if case .streamingModel = finalState {
+                if case .streamingModel = finalState,
+                   !(await self.modelTurnContinuationRequested) {
                     await self.completeRun(stopReason: .endTurn)
                 }
             } catch is CancellationError {
@@ -661,7 +736,7 @@ public actor FloeAgentRuntime {
                 // streamingModel → compacting → one retry.
                 await transition(to: .compacting)
                 await compactHistory(force: true)
-                await runModelTurn()
+                modelTurnContinuationRequested = true
             case .cancelled:
                 break // cancel() owns the transition.
             case .rateLimited, .server, .network:
@@ -928,11 +1003,7 @@ public actor FloeAgentRuntime {
             pendingToolResults[pendingToolResults.count - 1].outputSummary +=
                 "\n\nHarness warning: \(guardrail.message)"
         }
-        await transition(to: .streamingModel(AgentState.StreamingInfo(
-            modelRemoteID: configuration.model.remoteModelID,
-            textSoFar: streamText
-        )))
-        await runModelTurn()
+        modelTurnContinuationRequested = true
     }
 
     private func beginForcedFinalization(
@@ -950,11 +1021,7 @@ public actor FloeAgentRuntime {
             role: "system",
             content: "Harness control: ordinary tools are now disabled because execution stopped making progress or reached its budget. Give one concise final answer describing completed work, evidence, failures, and the exact next user action if one is needed. Do not request another tool."
         ))
-        await transition(to: .streamingModel(AgentState.StreamingInfo(
-            modelRemoteID: configuration.model.remoteModelID,
-            textSoFar: streamText
-        )))
-        await runModelTurn()
+        modelTurnContinuationRequested = true
     }
 
     // MARK: Terminal transitions
@@ -975,6 +1042,15 @@ public actor FloeAgentRuntime {
             message: message,
             isRecoverable: recoverable
         )))
+    }
+
+    private static func isTerminalState(_ state: AgentState) -> Bool {
+        switch state {
+        case .completed, .failed, .checkpointed:
+            true
+        default:
+            false
+        }
     }
 
     // MARK: Compaction

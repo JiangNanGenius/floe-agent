@@ -27,6 +27,7 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published var selectedRunID: UUID?
     /// Persisted events of the selected run, in sequence order.
     @Published private(set) var events: [RunEventRecord] = []
+    @Published private(set) var eventsByRun: [UUID: [RunEventRecord]] = [:]
     /// Live snapshot of the selected run, when the center owns it.
     @Published private(set) var liveStateName: String?
     @Published private(set) var liveReasoningText: String = ""
@@ -81,6 +82,8 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var isDraining = false
 
     private var liveEventTask: Task<Void, Never>?
+    private var sessionEventTask: Task<Void, Never>?
+    private var sessionRevision = -1
     private let diagnostics: ThreadStreamingDiagnostics
 
     init(conversationID: UUID, center: ConversationCenter) {
@@ -159,8 +162,9 @@ final class ThreadDetailViewModel: ObservableObject {
                 .latestPlan(conversationID: conversationID)
             activeGoal = try await center.environment.intelligenceStore
                 .goals(conversationID: conversationID).first
-            if selectedRunID == nil { selectedRunID = runs.first?.id }
-            try await loadEvents()
+            selectedRunID = runs.first?.id
+            try await loadAllEvents()
+            startSessionUpdates()
             startLiveUpdates()
         } catch {
             actionError = error.localizedDescription
@@ -186,18 +190,33 @@ final class ThreadDetailViewModel: ObservableObject {
         // assistantText events stay in the timeline: they carry the final
         // reply in stored sequence order (before terminal).
         events = try await center.environment.runStore.events(runID: runID)
+        eventsByRun[runID] = events
         let errors = try await center.environment.runStore.errors(runID: runID)
         if selectedRun?.state == "failed", let latest = errors.last {
             actionError = latest.message
         }
     }
 
+    private func loadAllEvents() async throws {
+        var loaded: [UUID: [RunEventRecord]] = [:]
+        for run in runs {
+            loaded[run.id] = try await center.environment.runStore.events(runID: run.id)
+        }
+        eventsByRun = loaded
+        events = selectedRun.flatMap { loaded[$0.id] } ?? []
+        if selectedRun?.state == "failed", let runID = selectedRun?.id {
+            let errors = try await center.environment.runStore.errors(runID: runID)
+            actionError = errors.last?.message
+        }
+    }
+
     /// The unified, sequence-ordered timeline for the selected run.
     var timeline: [ThreadTimelineItem] {
-        ThreadTimelineBuilder.build(
+        ThreadTimelineBuilder.buildConversation(
             messages: messages,
-            events: events,
-            run: selectedRun,
+            runs: runs,
+            eventsByRun: eventsByRun,
+            liveRunID: selectedRun?.id,
             isRunning: showsLiveTail,
             liveStreamedText: liveStreamedText,
             liveReasoningText: liveReasoningText,
@@ -236,7 +255,7 @@ final class ThreadDetailViewModel: ObservableObject {
             // waits for the first token or races a very fast completion.
             runs = try await center.environment.runStore.runs(conversationID: conversationID)
             selectedRunID = started.runID
-            try await loadEvents()
+            try await loadAllEvents()
             startLiveUpdates()
             switch await started.result.value {
             case .success:
@@ -317,6 +336,30 @@ final class ThreadDetailViewModel: ObservableObject {
 
     // MARK: - Live push stream
 
+    private func startSessionUpdates() {
+        sessionEventTask?.cancel()
+        let stream = center.sessionEvents(conversationID: conversationID)
+        sessionEventTask = Task { [weak self] in
+            guard let self else { return }
+            for await snapshot in stream {
+                guard !Task.isCancelled, snapshot.revision >= self.sessionRevision else { continue }
+                self.sessionRevision = snapshot.revision
+                let previousRunID = self.selectedRunID
+                self.taskTitle = snapshot.conversation.title
+                self.messages = snapshot.messages
+                self.runs = snapshot.runs
+                self.eventsByRun = snapshot.eventsByRun
+                self.selectedRunID = snapshot.runs.first?.id
+                self.events = self.selectedRunID.flatMap { snapshot.eventsByRun[$0] } ?? []
+                self.latestPlan = snapshot.latestPlan
+                self.activeGoal = snapshot.activeGoal
+                if previousRunID != self.selectedRunID {
+                    self.startLiveUpdates()
+                }
+            }
+        }
+    }
+
     private func startLiveUpdates() {
         liveEventTask?.cancel()
         guard let run = selectedRun else { return }
@@ -384,7 +427,7 @@ final class ThreadDetailViewModel: ObservableObject {
         await reasoningAnimator.drain()
         isDraining = false
         guard !Task.isCancelled, selectedRunID == runID else { return }
-        try? await loadEvents()
+        try? await loadAllEvents()
         messages = (try? await center.environment.conversationStore
             .messages(conversationID: conversationID)) ?? messages
         runs = (try? await center.environment.runStore
@@ -395,6 +438,8 @@ final class ThreadDetailViewModel: ObservableObject {
     func stopLiveUpdates() {
         liveEventTask?.cancel()
         liveEventTask = nil
+        sessionEventTask?.cancel()
+        sessionEventTask = nil
         // Leaving the thread stops the animation immediately; the partial
         // display is discarded with the live tail, persisted rows reload
         // from the store on the next open.
@@ -409,9 +454,17 @@ final class ThreadDetailViewModel: ObservableObject {
 /// names. Only counts and flags — never transcript content.
 private struct ThreadStreamingDiagnostics: StreamingTextAnimatorDiagnostics {
     private let logger = FloeLogger(category: .app)
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var targetUpdates = 0
 
     func streamTargetAdvanced(pendingCharacters: Int) {
-        logger.debug("streamTargetAdvanced pending=\(pendingCharacters)")
+        let count = Self.lock.withLock {
+            Self.targetUpdates += 1
+            return Self.targetUpdates
+        }
+        if count == 1 || count.isMultiple(of: 60) {
+            logger.debug("streamTargetAdvanced samples=\(count) pending=\(pendingCharacters)")
+        }
     }
 
     func streamNonPrefixDetected() {

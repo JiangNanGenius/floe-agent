@@ -50,6 +50,7 @@ struct BrowserProtocolTests {
     @MainActor
     func stableSnapshotAndEvents() async throws {
         let center = BrowserSessionCenter()
+        center.bind(to: UUID())
         let tabID = try #require(center.activeTabID)
         let webView = try #require(center.activeWebView)
         webView.loadHTMLString(

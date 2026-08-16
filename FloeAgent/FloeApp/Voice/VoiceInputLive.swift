@@ -45,6 +45,75 @@ struct SystemSpeechAuthorizationProvider: SpeechAuthorizationProviding {
 
 // MARK: - Transcription (SpeechAnalyzer / SpeechTranscriber)
 
+/// Stable Speech framework backend used by Auto mode. It has shipped for
+/// years and provides partial results directly from the same ordered audio
+/// buffers as the modern analyzer backend.
+final class StreamingSpeechRecognizerTranscriber: SpeechTranscribing, @unchecked Sendable {
+    private final class FirstResultFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var received = false
+
+        func consume() -> Bool {
+            lock.withLock {
+                defer { received = true }
+                return !received
+            }
+        }
+    }
+
+    private let request = SFSpeechAudioBufferRecognitionRequest()
+    private var recognitionTask: SFSpeechRecognitionTask?
+    private let continuation: AsyncStream<String>.Continuation
+    private let diagnostics: (any VoiceInputDiagnostics)?
+    let transcripts: AsyncStream<String>
+
+    init(locale: Locale = .current, diagnostics: (any VoiceInputDiagnostics)? = nil) throws {
+        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
+            throw VoiceSessionError.failure(.localeUnsupported)
+        }
+        self.diagnostics = diagnostics
+        var streamContinuation: AsyncStream<String>.Continuation!
+        transcripts = AsyncStream { streamContinuation = $0 }
+        continuation = streamContinuation
+        request.shouldReportPartialResults = true
+        request.taskHint = .dictation
+        request.addsPunctuation = true
+        // Auto mode prioritizes reliability. Requiring the local asset here
+        // makes an otherwise available recognizer silently produce no
+        // result while the asset is absent or being evicted.
+        request.requiresOnDeviceRecognition = false
+        let firstResult = FirstResultFlag()
+        recognitionTask = recognizer.recognitionTask(with: request) { [continuation, diagnostics, firstResult] result, error in
+            if let result {
+                diagnostics?.voiceTranscriptReceived(first: firstResult.consume())
+                continuation.yield(result.bestTranscription.formattedString)
+                if result.isFinal { continuation.finish() }
+            }
+            if let error {
+                FloeLogger(category: .app).warning(
+                    "speechRecognizerEnded domain=voice error=\(String(describing: type(of: error)))"
+                )
+                continuation.finish()
+            }
+        }
+    }
+
+    func feed(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime?) {
+        guard VoiceBufferValidator.isUsable(buffer) else { return }
+        diagnostics?.voiceAudioBufferAccepted(frameCount: buffer.frameLength)
+        request.append(buffer)
+    }
+
+    func finishAudio() async {
+        request.endAudio()
+    }
+
+    deinit {
+        recognitionTask?.cancel()
+        continuation.finish()
+    }
+}
+
 /// One SpeechAnalyzer-backed transcription session.
 final class SpeechAnalyzerTranscriber: SpeechTranscribing, @unchecked Sendable {
 
@@ -310,6 +379,15 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
             throw VoiceSessionError.failure(.noAudioInput)
         }
 
+        // CoreAudio's simulator RemoteIO service can abort the entire
+        // process from `AVAudioEngine.inputNode` when no host microphone is
+        // routed. That failure is below Swift/Objective-C exception
+        // handling, so never touch the input node in the simulator. Device
+        // capture continues through the exact production path below.
+        #if targetEnvironment(simulator)
+        stop()
+        throw VoiceSessionError.failure(.noAudioInput)
+        #else
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         // The legacy crash: installing a tap with an invalid format (no
@@ -335,6 +413,7 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
             stop()
             throw VoiceSessionError.failure(.noAudioInput)
         }
+        #endif
     }
 
     /// Idempotent teardown: stops the engine, removes the tap exactly
@@ -374,11 +453,16 @@ extension VoiceInputController {
         VoiceInputController(
             authorization: SystemSpeechAuthorizationProvider(),
             makeTranscriber: {
-                let transcriber = try await makeSpeechAnalyzerTranscriber(
+                let stored = UserDefaults.standard.string(
+                    forKey: VoiceRecognitionLanguage.defaultsKey
+                )
+                let language = stored.flatMap(VoiceRecognitionLanguage.init(rawValue:))
+                    ?? .automatic
+                FloeLogger(category: .app).info("voiceBackendSelected domain=voice backend=sfSpeechRecognizer")
+                return try StreamingSpeechRecognizerTranscriber(
+                    locale: language.locale,
                     diagnostics: diagnostics
                 )
-                try await transcriber.startAnalysis()
-                return transcriber
             },
             makeCapturer: { AudioEngineCapturer() },
             diagnostics: diagnostics

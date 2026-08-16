@@ -239,11 +239,9 @@ struct AgentRuntimeTests {
         try await runtime.start(goal: "echo")
         let state = await runtime.state
         #expect(state.name == "completed")
-        // resumeStream emits the streamingModel transition, then
-        // runModelTurn re-emits it (same state, distinct transition event).
         #expect(sink.transitions == [
             "preparing", "streamingModel", "executingTool",
-            "streamingModel", "streamingModel", "completed"
+            "streamingModel", "completed"
         ])
         #expect(executor.executedCalls.count == 1)
         #expect(adapter.requests.count == 2)

@@ -76,6 +76,24 @@ struct HarnessPlanningTests {
         ).mayComplete)
     }
 
+    @Test("Goal blocks after three identical no-progress cycles without claiming completion")
+    func repeatedGoalBlocker() {
+        var goal = ConversationGoal(
+            conversationID: UUID(),
+            objective: "Collect evidence",
+            acceptanceCriteria: [GoalCriterion(text: "Evidence exists")],
+            steps: [GoalStep(title: "Inspect", order: 0)],
+            status: .active
+        )
+        goal.recordBlocker(key: "no-evidence")
+        goal.recordBlocker(key: "no-evidence")
+        #expect(goal.status == .active)
+        goal.recordBlocker(key: "no-evidence")
+        #expect(goal.status == .blocked)
+        #expect(goal.status != .completed)
+        #expect(goal.budgets.maxCycles == nil)
+    }
+
     @Test("Harness budget forbids grandchildren and enforces total reservations")
     func harnessBudget() async throws {
         let root = UUID()

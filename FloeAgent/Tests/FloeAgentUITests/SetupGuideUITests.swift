@@ -70,7 +70,13 @@ final class SetupGuideUITests: XCTestCase {
             app.buttons["setup.skip"].tap()
         }
 
-        let providers = app.staticTexts["sidebar.more.providers"]
+        let settings = app.buttons["sidebar.settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        settings.tap()
+
+        let providers = app.descendants(matching: .any)
+            .matching(identifier: "settings.section.providers")
+            .firstMatch
         XCTAssertTrue(providers.waitForExistence(timeout: 5))
         providers.tap()
 

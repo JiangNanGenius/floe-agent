@@ -8,6 +8,13 @@ import CryptoKit
 
 @MainActor
 final class BrowserSessionCenter: NSObject, ObservableObject {
+    enum SurfaceState: Equatable {
+        case unbound
+        case ready
+        case loading
+        case failed(String)
+        case needsUser(String)
+    }
     struct Tab: Identifiable {
         let id: UUID
         let webView: WKWebView
@@ -23,6 +30,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     @Published private(set) var isUserControlling = false
     @Published var addressText = ""
     @Published private(set) var presentationRequestID = UUID()
+    @Published private(set) var surfaceState: SurfaceState = .unbound
 
     private struct TaskSession {
         var sessionID: UUID
@@ -52,7 +60,6 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             .appendingPathComponent("BrowserArtifacts", isDirectory: true)
         super.init()
         cleanupArtifacts()
-        _ = createTab()
     }
 
     /// Binds the visible WebKit surface to one durable task. Tabs and page
@@ -76,6 +83,8 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             activeTabID = saved.activeTabID
             isUserControlling = saved.isUserControlling
             addressText = saved.addressText
+            surfaceState = saved.isUserControlling
+                ? .needsUser("User takeover is active") : .ready
         } else {
             sessionID = UUID()
             tabs.forEach { $0.webView.stopLoading() }
@@ -83,7 +92,12 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             activeTabID = nil
             isUserControlling = false
             addressText = ""
-            _ = createTab()
+            if newConversationID != nil {
+                _ = createTab()
+                surfaceState = .ready
+            } else {
+                surfaceState = .unbound
+            }
         }
     }
 
@@ -154,8 +168,14 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         activeWebView.load(URLRequest(url: url))
     }
 
-    func takeControl() { isUserControlling = true }
-    func returnToAgent() { isUserControlling = false }
+    func takeControl() {
+        isUserControlling = true
+        surfaceState = .needsUser("Complete login, QR scan, verification, or file selection, then return control to the Agent.")
+    }
+    func returnToAgent() {
+        isUserControlling = false
+        surfaceState = .ready
+    }
     func requestPresentation() { presentationRequestID = UUID() }
 
     func execute(_ command: BrowserCommand) async -> BrowserResult {
@@ -258,6 +278,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             return await observeResult(command, tabID: tabID, cursor: nil)
         } catch BrowserInteractionError.needsUser(let message) {
             isUserControlling = true
+            surfaceState = .needsUser(message)
             return failure(command, status: .needsUser, code: "takeover", message)
         } catch BrowserInteractionError.stale(let message) {
             return failure(command, status: .stale, code: "document", message)
@@ -918,6 +939,7 @@ extension BrowserSessionCenter: WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard let tabID = tabs.first(where: { $0.webView === webView })?.id else { return }
         appendEvent(tabID: tabID, method: "Page.frameStartedLoading")
+        surfaceState = .loading
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -934,6 +956,7 @@ extension BrowserSessionCenter: WKNavigationDelegate, WKUIDelegate {
         guard let index = tabs.firstIndex(where: { $0.webView === webView }) else { return }
         appendEvent(tabID: tabs[index].id, method: "Page.loadEventFired")
         if tabs[index].id == activeTabID { addressText = webView.url?.absoluteString ?? "" }
+        surfaceState = isUserControlling ? .needsUser("User takeover is active") : .ready
         objectWillChange.send()
     }
 
@@ -945,6 +968,7 @@ extension BrowserSessionCenter: WKNavigationDelegate, WKUIDelegate {
         guard let tabID = tabs.first(where: { $0.webView === webView })?.id else { return }
         let nsError = error as NSError
         appendEvent(tabID: tabID, method: "Network.loadingFailed", detail: "\(nsError.domain):\(nsError.code)")
+        surfaceState = .failed("\(nsError.localizedDescription) (\(nsError.code))")
     }
 
     func webView(
@@ -955,6 +979,7 @@ extension BrowserSessionCenter: WKNavigationDelegate, WKUIDelegate {
         guard let tabID = tabs.first(where: { $0.webView === webView })?.id else { return }
         let nsError = error as NSError
         appendEvent(tabID: tabID, method: "Network.loadingFailed", detail: "\(nsError.domain):\(nsError.code)")
+        surfaceState = .failed("\(nsError.localizedDescription) (\(nsError.code))")
     }
 
     func webView(

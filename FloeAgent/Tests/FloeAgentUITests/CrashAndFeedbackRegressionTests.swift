@@ -65,5 +65,15 @@ struct CrashAndFeedbackRegressionTests {
             )
         }
     }
+
+    @Test("Feedback success requires a server-issued report ID")
+    func feedbackReceiptContract() {
+        #expect(FeedbackUploadService.reportID(
+            from: Data(#"{"report_id":"report-123"}"#.utf8)
+        ) == "report-123")
+        #expect(FeedbackUploadService.reportID(
+            from: Data(#"{"accepted":[]}"#.utf8)
+        ) == nil)
+    }
 }
 #endif

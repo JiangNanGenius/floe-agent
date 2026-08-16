@@ -38,6 +38,7 @@ public struct PersistedMessage: Sendable, Hashable, Identifiable {
     public var content: String
     public var createdAt: Date
     public var parts: [MessagePart]
+    public var runID: UUID?
 
     public init(
         id: UUID,
@@ -45,7 +46,8 @@ public struct PersistedMessage: Sendable, Hashable, Identifiable {
         role: String,
         content: String,
         createdAt: Date,
-        parts: [MessagePart] = []
+        parts: [MessagePart] = [],
+        runID: UUID? = nil
     ) {
         self.id = id
         self.conversationID = conversationID
@@ -53,6 +55,7 @@ public struct PersistedMessage: Sendable, Hashable, Identifiable {
         self.content = content
         self.createdAt = createdAt
         self.parts = parts
+        self.runID = runID
     }
 }
 
@@ -159,8 +162,8 @@ public actor SQLiteConversationStore: ConversationStore {
         try await database.writer { db in
             try db.execute(
                 sql: """
-                    INSERT INTO messages (id, conversation_id, role, content, created_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO messages (id, conversation_id, role, content, created_at, run_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         content = excluded.content
                     """,
@@ -169,7 +172,8 @@ public actor SQLiteConversationStore: ConversationStore {
                     message.conversationID.uuidString,
                     message.role,
                     message.content,
-                    PersistenceCodec.encode(message.createdAt)
+                    PersistenceCodec.encode(message.createdAt),
+                    message.runID?.uuidString
                 ]
             )
             for part in message.parts {
@@ -199,7 +203,8 @@ public actor SQLiteConversationStore: ConversationStore {
                     role: row["role"],
                     content: row["content"],
                     createdAt: try PersistenceCodec.decodeDate(row["created_at"]),
-                    parts: parts
+                    parts: parts,
+                    runID: (row["run_id"] as String?).flatMap(UUID.init(uuidString:))
                 )
             }
         }

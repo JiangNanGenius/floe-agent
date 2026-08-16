@@ -32,6 +32,7 @@ enum WorkbenchSelection: Hashable, Sendable {
 /// Views bind to this; they never hold policy or selection state of their own.
 @MainActor
 final class AppRouter: ObservableObject {
+    private var hasExplicitLaunchTarget = false
 
     // MARK: - Selection
 
@@ -123,25 +124,33 @@ final class AppRouter: ObservableObject {
         var id: String { rawValue }
     }
 
+    struct InspectorRoute: Identifiable, Hashable, Sendable {
+        var content: InspectorContent
+        var conversationID: UUID
+        var id: String { "\(content.rawValue).\(conversationID.uuidString)" }
+    }
+
     /// Requested inspector content. Non-nil means "show the inspector":
     /// iPad reveals the third column on demand, iPhone presents a sheet.
-    @Published var inspectorContent: InspectorContent?
+    @Published var inspectorRoute: InspectorRoute?
+    @Published var presentedSettings = false
 
     /// Convenience flag derived from inspectorContent (views bind to
     /// this; FileInspectorView reads the content).
-    var inspectorVisible: Bool { inspectorContent != nil }
+    var inspectorVisible: Bool { inspectorRoute != nil }
 
     /// Opens the inspector with the given content (iPad: third column;
     /// iPhone: sheet — presentation chosen by the shell).
     func showInspector(_ content: InspectorContent) {
-        inspectorContent = content
+        guard let conversationID = selectedConversationID else { return }
+        inspectorRoute = InspectorRoute(content: content, conversationID: conversationID)
         columnVisibility = .all
     }
 
     /// Dismisses the inspector; the iPad third column collapses instead
     /// of leaving an empty placeholder behind.
     func hideInspector() {
-        inspectorContent = nil
+        inspectorRoute = nil
         columnVisibility = .doubleColumn
     }
 
@@ -201,6 +210,10 @@ final class AppRouter: ObservableObject {
     /// Reconciles remote session state after a cold launch: any session
     /// not explicitly disconnected is honestly unknown (never paused).
     func reconcileOnLaunch(environment: AppEnvironment) {
+        if !hasExplicitLaunchTarget {
+            startNewTask()
+            hideInspector()
+        }
         Task { @MainActor in
             await environment.remoteSessionCenter.reconcileOnLaunch()
         }
@@ -230,6 +243,8 @@ final class AppRouter: ObservableObject {
     /// Keeping this operation here prevents Home and Chat from drifting into
     /// separate navigation behavior.
     func openConversation(_ conversationID: UUID, runID: UUID? = nil) {
+        hasExplicitLaunchTarget = true
+        if inspectorRoute?.conversationID != conversationID { hideInspector() }
         workbenchSelection = .conversation(conversationID)
         workbenchPath = [conversationID]
         selectedRunID = runID
@@ -240,6 +255,7 @@ final class AppRouter: ObservableObject {
     /// point. Home and history still project the same canonical workbench
     /// selection, so switching tabs cannot resurrect an older thread.
     func openThreadFromHome(_ conversationID: UUID, runID: UUID? = nil) {
+        if inspectorRoute?.conversationID != conversationID { hideInspector() }
         workbenchSelection = .conversation(conversationID)
         workbenchPath = [conversationID]
         selectedRunID = runID
@@ -255,6 +271,7 @@ final class AppRouter: ObservableObject {
     }
 
     func startNewTask(workspaceID: UUID? = nil) {
+        hideInspector()
         workbenchSelection = .newTask(workspaceID: workspaceID)
         workbenchPath = []
         selectedRunID = nil
@@ -263,6 +280,7 @@ final class AppRouter: ObservableObject {
     }
 
     func selectWorkspace(_ workspaceID: UUID) {
+        hideInspector()
         workbenchSelection = .workspace(workspaceID)
         workbenchPath = []
         selectedRunID = nil

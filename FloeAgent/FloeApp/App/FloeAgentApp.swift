@@ -11,6 +11,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import UIKit
+import AVFoundation
 import FloeModels
 import FloePersistence
 
@@ -77,6 +78,15 @@ struct RootView: View {
         }
         .onChange(of: scenePhase, initial: true) { _, newPhase in
             router.handleScenePhase(newPhase, environment: environment)
+            if newPhase != .active {
+                environment.voiceInput.handleInterruption(reason: .interrupted)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) {
+            environment.voiceInput.handleAudioInterruption($0)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) {
+            environment.voiceInput.handleAudioRouteChange($0)
         }
         .task(id: environment.persistenceReady) {
             guard environment.persistenceReady else { return }
@@ -104,6 +114,10 @@ struct RootView: View {
         }
         .sheet(item: $router.presentedSetup, onDismiss: markDismissedSetupSkipped) { _ in
             OnboardingView(center: environment.conversationCenter)
+                .presentationSizing(.page)
+        }
+        .sheet(isPresented: $router.presentedSettings) {
+            NavigationStack { SettingsRootView() }
                 .presentationSizing(.page)
         }
         .sheet(item: $renamingConversation) { conversation in
@@ -184,9 +198,9 @@ struct RootView: View {
         } detail: {
             contentColumn
         }
-        .sheet(item: inspectorSheetBinding) { content in
+        .sheet(item: inspectorSheetBinding) { route in
             NavigationStack {
-                InspectorColumnView(content: content)
+                InspectorColumnView(route: route)
             }
             .presentationSizing(.page)
         }
@@ -194,9 +208,9 @@ struct RootView: View {
 
     /// On iPhone the inspector shows as a sheet; on iPad the third
     /// column handles it, so the binding stays nil there.
-    private var inspectorSheetBinding: Binding<AppRouter.InspectorContent?> {
+    private var inspectorSheetBinding: Binding<AppRouter.InspectorRoute?> {
         Binding(
-            get: { router.inspectorContent },
+            get: { router.inspectorRoute },
             set: { newValue in
                 if newValue == nil { router.hideInspector() }
             }
@@ -207,13 +221,13 @@ struct RootView: View {
 
     @ViewBuilder
     private var iPadRoot: some View {
-        if let inspectorContent = router.inspectorContent {
+        if let inspectorRoute = router.inspectorRoute {
             NavigationSplitView(columnVisibility: $router.columnVisibility) {
                 sidebarColumn
             } content: {
                 contentColumn
             } detail: {
-                InspectorColumnView(content: inspectorContent)
+                InspectorColumnView(route: inspectorRoute)
             }
         } else {
             NavigationSplitView(columnVisibility: $router.columnVisibility) {
@@ -280,13 +294,14 @@ struct RootView: View {
                 Label("账户", systemImage: "person.crop.circle")
                 Spacer()
                 Button {
-                    router.openMore(.settings)
+                    router.presentedSettings = true
                 } label: {
                     Image(systemName: "gearshape")
                 }
                 .buttonStyle(.plain)
                 .frame(minWidth: 44, minHeight: 44)
                 .accessibilityLabel("more.settings")
+                .accessibilityIdentifier("sidebar.settings")
             }
             .padding(.horizontal, 16)
         }
@@ -423,15 +438,15 @@ struct RootView: View {
 /// The on-demand inspector column (iPad third column / iPhone sheet).
 /// T05: renders the real workspace file inspector through WorkspaceCenter.
 private struct InspectorColumnView: View {
-    let content: AppRouter.InspectorContent
+    let route: AppRouter.InspectorRoute
     @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var environment: AppEnvironment
 
     var body: some View {
         Group {
-        switch content {
+        switch route.content {
         case .changes:
-            TaskChangesInspectorView(conversationID: router.selectedConversationID)
+            TaskChangesInspectorView(conversationID: route.conversationID)
         case .workspaceFiles:
             FileInspectorView(center: environment.workspaceCenter)
                 .background(FloeTheme.readingSurface)
@@ -440,16 +455,16 @@ private struct InspectorColumnView: View {
         case .terminal:
             HostListView(center: environment.remoteSessionCenter)
         case .progress:
-            TaskProgressInspectorView(conversationID: router.selectedConversationID)
+            TaskProgressInspectorView(conversationID: route.conversationID)
         case .childAgents:
-            ChildAgentsInspectorView(conversationID: router.selectedConversationID)
+            ChildAgentsInspectorView(conversationID: route.conversationID)
         case .permissions:
-            TaskPermissionsInspectorView(conversationID: router.selectedConversationID)
+            TaskPermissionsInspectorView(conversationID: route.conversationID)
         }
         }
-        .task(id: "\(content.rawValue)-\(router.selectedConversationID?.uuidString ?? "none")") {
-            guard let conversationID = router.selectedConversationID else { return }
-            switch content {
+        .task(id: route.id) {
+            let conversationID = route.conversationID
+            switch route.content {
             case .changes, .workspaceFiles:
                 try? await environment.workspaceCenter.openTaskWorkspace(
                     conversationID: conversationID

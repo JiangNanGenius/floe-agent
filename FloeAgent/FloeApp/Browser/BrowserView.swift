@@ -12,6 +12,9 @@ struct BrowserView: View {
             BrowserAddressBar(center: center)
             Divider()
             BrowserWebContainer(webView: center.activeWebView)
+                .overlay {
+                    BrowserSurfaceStatus(center: center)
+                }
                 .overlay(alignment: .topTrailing) {
                     if center.isUserControlling {
                         Button("browser.return_to_agent") { center.returnToAgent() }
@@ -26,6 +29,43 @@ struct BrowserView: View {
         }
         .navigationTitle("browser.title")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct BrowserSurfaceStatus: View {
+    @ObservedObject var center: BrowserSessionCenter
+
+    var body: some View {
+        switch center.surfaceState {
+        case .unbound:
+            ContentUnavailableView(
+                "No task browser",
+                systemImage: "rectangle.slash",
+                description: Text("Open a task before starting a browser session.")
+            )
+            .background(.background)
+        case .loading:
+            ProgressView("Loading page…")
+                .padding(20)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        case .failed(let message):
+            ContentUnavailableView(
+                "Page failed to load",
+                systemImage: "wifi.exclamationmark",
+                description: Text(message)
+            )
+            .background(.background)
+        case .needsUser(let message):
+            VStack(spacing: 10) {
+                Label("User action required", systemImage: "person.crop.circle.badge.exclamationmark")
+                    .font(.headline)
+                Text(message).font(.caption).multilineTextAlignment(.center)
+            }
+            .padding(18)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        case .ready:
+            EmptyView()
+        }
     }
 }
 

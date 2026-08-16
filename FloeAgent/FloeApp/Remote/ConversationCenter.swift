@@ -66,6 +66,17 @@ struct StartedConversationTask: Sendable {
     let run: StartedConversationRun
 }
 
+struct ConversationSessionSnapshot: Sendable {
+    let revision: Int
+    let conversation: ConversationRecord
+    let messages: [PersistedMessage]
+    let runs: [RunRecord]
+    let eventsByRun: [UUID: [RunEventRecord]]
+    let pendingApprovals: [PendingApproval]
+    let latestPlan: PlanDraft?
+    let activeGoal: ConversationGoal?
+}
+
 /// Coordinates conversations and agent runs for the UI layer.
 @MainActor
 final class ConversationCenter: ObservableObject {
@@ -109,6 +120,8 @@ final class ConversationCenter: ObservableObject {
     private var runTasks: [UUID: Task<Result<Void, Error>, Never>] = [:]
     /// Snapshot polling tasks keyed by run ID.
     private var snapshotTasks: [UUID: Task<Void, Never>] = [:]
+    private var sessionRevisions: [UUID: Int] = [:]
+    private var sessionContinuations: [UUID: [UUID: AsyncStream<ConversationSessionSnapshot>.Continuation]] = [:]
     /// Launch/delete coordination. A delete first closes the conversation to
     /// new launches, then waits for any transaction already in progress.
     private var launchCount = 0
@@ -140,6 +153,52 @@ final class ConversationCenter: ObservableObject {
             modelPreferences = try await loadedPreferences
         } catch {
             // Honest degradation: keep prior state; the list surfaces empty.
+        }
+    }
+
+    func sessionSnapshot(conversationID: UUID) async throws -> ConversationSessionSnapshot {
+        guard let conversation = try await environment.conversationStore.conversation(id: conversationID) else {
+            throw FloeError.notFound("conversation \(conversationID.uuidString)")
+        }
+        let messages = try await environment.conversationStore.messages(conversationID: conversationID)
+        let runs = try await environment.runStore.runs(conversationID: conversationID)
+        var events: [UUID: [RunEventRecord]] = [:]
+        for run in runs { events[run.id] = try await environment.runStore.events(runID: run.id) }
+        return ConversationSessionSnapshot(
+            revision: sessionRevisions[conversationID, default: 0],
+            conversation: conversation,
+            messages: messages,
+            runs: runs,
+            eventsByRun: events,
+            pendingApprovals: pendingApprovals.filter { $0.conversationID == conversationID },
+            latestPlan: try await environment.intelligenceStore.latestPlan(conversationID: conversationID),
+            activeGoal: try await environment.intelligenceStore.goals(conversationID: conversationID).first
+        )
+    }
+
+    func sessionEvents(conversationID: UUID) -> AsyncStream<ConversationSessionSnapshot> {
+        let subscriberID = UUID()
+        return AsyncStream(bufferingPolicy: .bufferingNewest(4)) { continuation in
+            sessionContinuations[conversationID, default: [:]][subscriberID] = continuation
+            continuation.onTermination = { [weak self] _ in
+                Task { @MainActor in
+                    self?.sessionContinuations[conversationID]?[subscriberID] = nil
+                }
+            }
+            Task { @MainActor [weak self] in
+                guard let self, let snapshot = try? await self.sessionSnapshot(conversationID: conversationID) else { return }
+                continuation.yield(snapshot)
+            }
+        }
+    }
+
+    private func publishSession(_ conversationID: UUID) {
+        sessionRevisions[conversationID, default: 0] += 1
+        let subscribers = Array(sessionContinuations[conversationID, default: [:]].values)
+        guard !subscribers.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            guard let self, let snapshot = try? await self.sessionSnapshot(conversationID: conversationID) else { return }
+            subscribers.forEach { $0.yield(snapshot) }
         }
     }
 
@@ -231,8 +290,13 @@ final class ConversationCenter: ObservableObject {
         } else {
             canonicalWorkspaceID = try? await workspaceStore.workspaceID(conversationID: conversationID)
         }
-        let canonicalWorkspace = canonicalWorkspaceID.flatMap { id in
-            environment.workspaceCenter.workspaces.first(where: { $0.id == id })
+        // Resolve from persistence, not the UI cache. A private workspace is
+        // created in the same transaction as the first run and may not have
+        // reached WorkspaceCenter's published list yet.
+        let canonicalWorkspace: WorkspaceRecord? = if let canonicalWorkspaceID {
+            try? await workspaceStore.workspace(id: canonicalWorkspaceID)
+        } else {
+            nil
         }
         let taskRootLease: WorkspaceCenter.TaskRootLease? = if let canonicalWorkspace {
             try? await environment.workspaceCenter.acquireTaskRoot(
@@ -273,7 +337,7 @@ final class ConversationCenter: ObservableObject {
             }
             return names
         }()
-        let allowedToolNames: Set<String>? = {
+        var allowedToolNames: Set<String>? = {
             switch (skills.allowedToolNames, taskPolicyToolNames) {
             case (let skill?, let task?): return skill.intersection(task)
             case (let skill?, nil): return skill
@@ -281,6 +345,13 @@ final class ConversationCenter: ObservableObject {
             case (nil, nil): return nil
             }
         }()
+        if taskRootLease == nil {
+            let nonWorkspace = Set(ToolCatalog.allDescriptors.lazy
+                .map(\.name)
+                .filter { !$0.hasPrefix("workspace.") && !$0.hasPrefix("preview.") })
+            allowedToolNames = allowedToolNames.map { $0.intersection(nonWorkspace) }
+                ?? nonWorkspace
+        }
         let credentials = resolveCredentials(for: provider)
         let configuration = FloeAgentRuntime.Configuration(
             conversationID: conversationID,
@@ -342,7 +413,8 @@ final class ConversationCenter: ObservableObject {
         model: ModelProfile,
         workspaceID: UUID? = nil,
         attachments: [AttachmentRef] = [],
-        executionMode: AgentExecutionMode = .agent
+        executionMode: AgentExecutionMode = .agent,
+        isGoalContinuation: Bool = false
     ) async throws -> StartedConversationRun {
         let trimmed = goal.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -363,9 +435,10 @@ final class ConversationCenter: ObservableObject {
             workspaceID: workspaceID,
             attachments: attachments,
             conversationMode: executionMode.conversationMode.rawValue,
-            initialApprovalMode: TaskApprovalMode(
+            initialPolicy: DraftTaskPolicy(approvalMode: TaskApprovalMode(
                 rawValue: environment.settingsCenter.defaultAgentMode.taskApprovalModeName
-            ) ?? .ask
+            ) ?? .ask),
+            messageRole: isGoalContinuation ? "goalContinuation" : "user"
         ))
         guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else {
             throw FloeError.validationFailed("Conversation was deleted during launch")
@@ -389,7 +462,13 @@ final class ConversationCenter: ObservableObject {
             conversationHistory: history,
             currentUserImages: visual.images
         )
-        return startPreparedService(service, goal: trimmed)
+        return startPreparedService(
+            service,
+            goal: trimmed,
+            goalContinuation: executionMode == .goal
+                ? (prepared.conversation.id, provider, model, prepared.workspace.id)
+                : nil
+        )
     }
 
     /// Atomically creates a conversation and its first run/message/link, then
@@ -401,7 +480,8 @@ final class ConversationCenter: ObservableObject {
         model: ModelProfile,
         workspaceID: UUID? = nil,
         attachments: [AttachmentRef] = [],
-        executionMode: AgentExecutionMode = .agent
+        executionMode: AgentExecutionMode = .agent,
+        initialPolicy: DraftTaskPolicy? = nil
     ) async throws -> StartedConversationTask {
         let trimmed = goal.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -422,9 +502,9 @@ final class ConversationCenter: ObservableObject {
             workspaceID: workspaceID,
             attachments: attachments,
             conversationMode: executionMode.conversationMode.rawValue,
-            initialApprovalMode: TaskApprovalMode(
+            initialPolicy: initialPolicy ?? DraftTaskPolicy(approvalMode: TaskApprovalMode(
                 rawValue: environment.settingsCenter.defaultAgentMode.taskApprovalModeName
-            ) ?? .ask
+            ) ?? .ask)
         ))
         guard !isClearingHistory else {
             throw FloeError.validationFailed("Conversation history was cleared during launch")
@@ -443,14 +523,17 @@ final class ConversationCenter: ObservableObject {
             model: model,
             runID: runID,
             executionMode: executionMode,
-            workspaceID: workspaceID,
+            workspaceID: prepared.workspace.id,
             conversationHistory: visual.context,
             currentUserImages: visual.images
         )
         let run = startPreparedService(
             service,
             goal: trimmed,
-            automaticTitle: (prepared.conversation.id, provider, model)
+            automaticTitle: (prepared.conversation.id, provider, model),
+            goalContinuation: executionMode == .goal
+                ? (prepared.conversation.id, provider, model, prepared.workspace.id)
+                : nil
         )
         await reload()
         return StartedConversationTask(conversationID: prepared.conversation.id, run: run)
@@ -569,7 +652,13 @@ final class ConversationCenter: ObservableObject {
     private func startPreparedService(
         _ service: ConversationRunService,
         goal: String,
-        automaticTitle: (conversationID: UUID, provider: ProviderProfile, model: ModelProfile)? = nil
+        automaticTitle: (conversationID: UUID, provider: ProviderProfile, model: ModelProfile)? = nil,
+        goalContinuation: (
+            conversationID: UUID,
+            provider: ProviderProfile,
+            model: ModelProfile,
+            workspaceID: UUID
+        )? = nil
     ) -> StartedConversationRun {
         let runID = service.runID
         runServices[runID] = service
@@ -581,6 +670,7 @@ final class ConversationCenter: ObservableObject {
             startedAt: Date()
         )
         track(service)
+        publishSession(service.conversationID)
         let result = Task<Result<Void, Error>, Never> { [weak self, service] in
             let outcome: Result<Void, Error>
             do {
@@ -599,6 +689,15 @@ final class ConversationCenter: ObservableObject {
                         goal: goal,
                         provider: automaticTitle.provider,
                         model: automaticTitle.model
+                    )
+                }
+                if case .success = outcome, let goalContinuation {
+                    await self?.evaluateAndContinueGoal(
+                        completedRunID: runID,
+                        conversationID: goalContinuation.conversationID,
+                        provider: goalContinuation.provider,
+                        model: goalContinuation.model,
+                        workspaceID: goalContinuation.workspaceID
                     )
                 }
             } catch {
@@ -624,6 +723,165 @@ final class ConversationCenter: ObservableObject {
             title: conversations.first(where: { $0.id == service.conversationID })?.title ?? goal
         )
         return StartedConversationRun(runID: runID, result: result)
+    }
+
+    /// Evaluates one completed Goal cycle from durable evidence. A provider
+    /// saying "done" is deliberately insufficient: only successful tool
+    /// evidence can satisfy the default criterion. No-progress cycles are
+    /// allowed to continue, but the third identical blocker becomes a
+    /// durable `.blocked` state instead of an endless harness loop.
+    private func evaluateAndContinueGoal(
+        completedRunID: UUID,
+        conversationID: UUID,
+        provider: ProviderProfile,
+        model: ModelProfile,
+        workspaceID: UUID
+    ) async {
+        guard var goal = try? await environment.intelligenceStore
+            .goals(conversationID: conversationID).first,
+              !goal.status.isTerminal else { return }
+
+        let events = (try? await environment.runStore.events(runID: completedRunID)) ?? []
+        let existingReferences = Set(goal.evidence.map(\.reference))
+        var newEvidence: [GoalEvidence] = []
+        for event in events where event.kind == .toolResult {
+            let payload = Self.stringMap(from: event.payloadJSON)
+            guard payload["status"] == "success" else { continue }
+            let reference = "run:\(completedRunID.uuidString):event:\(event.sequence)"
+            guard !existingReferences.contains(reference) else { continue }
+            newEvidence.append(GoalEvidence(
+                kind: .toolResult,
+                reference: reference,
+                summary: String((payload["summary"] ?? payload["tool"] ?? "Successful tool result").prefix(1_000)),
+                capturedAt: event.createdAt
+            ))
+        }
+        goal.evidence.append(contentsOf: newEvidence)
+        goal.progress.lastCheckpointAt = Date()
+
+        if !newEvidence.isEmpty {
+            let reviewApproved = await reviewGoalEvidence(
+                goal: goal,
+                newEvidence: newEvidence,
+                provider: provider,
+                model: model
+            )
+            goal.progress.modelCallCount += 1
+            let evidenceIDs = newEvidence.map(\.id)
+            if reviewApproved {
+                for index in goal.steps.indices where goal.steps[index].status != .skipped {
+                    goal.steps[index].status = .completed
+                    goal.steps[index].evidenceIDs = Array(Set(goal.steps[index].evidenceIDs + evidenceIDs))
+                }
+                for index in goal.acceptanceCriteria.indices {
+                    goal.acceptanceCriteria[index].isSatisfied = true
+                    goal.acceptanceCriteria[index].evidenceIDs = Array(Set(
+                        goal.acceptanceCriteria[index].evidenceIDs + evidenceIDs
+                    ))
+                }
+                let proposal = GoalCompletionProposal(
+                    goalID: goal.id,
+                    criterionEvidence: Dictionary(uniqueKeysWithValues: goal.acceptanceCriteria.map {
+                        ($0.id, $0.evidenceIDs)
+                    }),
+                    reviewModelApproved: true
+                )
+                let verdict = GoalCompletionGate.evaluate(goal: goal, proposal: proposal)
+                if verdict.mayComplete {
+                    goal.status = .completed
+                    goal.progress.repeatedBlockerKey = nil
+                    goal.progress.repeatedBlockerCount = 0
+                    goal.updatedAt = Date()
+                    try? await environment.intelligenceStore.saveGoal(goal)
+                    publishSession(conversationID)
+                    return
+                }
+            }
+            goal.recordBlocker(key: "evidence-review-rejected")
+            if goal.status != .blocked { goal.status = .active }
+        }
+
+        if let maxCycles = goal.budgets.maxCycles,
+           goal.progress.cycleCount >= maxCycles {
+            goal.status = .budgetLimited
+        } else if let maxCalls = goal.budgets.maxModelCalls,
+                  goal.progress.modelCallCount >= maxCalls {
+            goal.status = .budgetLimited
+        } else if let seconds = goal.budgets.maxWallClockSeconds,
+                  let started = goal.progress.startedAt,
+                  Date().timeIntervalSince(started) >= seconds {
+            goal.status = .budgetLimited
+        } else if newEvidence.isEmpty {
+            goal.recordBlocker(key: "no-inspectable-evidence")
+            if goal.status != .blocked { goal.status = .active }
+        }
+        goal.updatedAt = Date()
+        try? await environment.intelligenceStore.saveGoal(goal)
+        publishSession(conversationID)
+        guard goal.status == .active else { return }
+
+        let nextPrompt = """
+        Continue the active task goal: \(goal.objective)
+        This is a new execution cycle in the same task. Inspect prior messages and tool evidence, make concrete progress, and produce inspectable evidence. Do not repeat an unchanged attempt. End this cycle when no further safe action is available.
+        """
+        _ = try? await startRun(
+            goal: nextPrompt,
+            in: conversationID,
+            provider: provider,
+            model: model,
+            workspaceID: workspaceID,
+            executionMode: .goal,
+            isGoalContinuation: true
+        )
+    }
+
+    private static func stringMap(from json: String) -> [String: String] {
+        guard let data = json.data(using: .utf8) else { return [:] }
+        return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+    }
+
+    private func reviewGoalEvidence(
+        goal: ConversationGoal,
+        newEvidence: [GoalEvidence],
+        provider: ProviderProfile,
+        model: ModelProfile
+    ) async -> Bool {
+        let evidenceText = newEvidence.map {
+            "[\($0.reference)] \($0.summary)"
+        }.joined(separator: "\n")
+        let criteriaText = goal.acceptanceCriteria.map(\.text).joined(separator: "; ")
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            contentMessages: [
+                ProviderMessage(
+                    role: "system",
+                    text: "Review whether inspectable evidence proves the stated goal. Return strict JSON only: {\"approved\":true|false}. Never approve from a completion claim alone. No tools are available."
+                ),
+                ProviderMessage(
+                    role: "user",
+                    text: "Goal: \(goal.objective)\nCriteria: \(criteriaText)\nEvidence:\n\(evidenceText)"
+                )
+            ]
+        )
+        var output = ""
+        do {
+            for try await event in adapterFactory.adapter(for: provider).stream(
+                request: request,
+                credentials: resolveCredentials(for: provider)
+            ) {
+                if case .textDelta(let delta) = event {
+                    output += delta.text
+                    if output.utf8.count > 2_048 { return false }
+                }
+            }
+        } catch { return false }
+        guard let start = output.firstIndex(of: "{"),
+              let end = output.lastIndex(of: "}"), start <= end,
+              let data = String(output[start...end]).data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return object["approved"] as? Bool == true
     }
 
     func persistActiveRecoveryPoints() async {
@@ -676,6 +934,7 @@ final class ConversationCenter: ObservableObject {
             title: normalized
         )) == true {
             await reload()
+            publishSession(conversationID)
         }
     }
 
@@ -733,6 +992,11 @@ final class ConversationCenter: ObservableObject {
             title: String(normalized.prefix(120))
         )
         await reload()
+        publishSession(id)
+    }
+
+    func taskPolicyDidChange(conversationID: UUID) {
+        publishSession(conversationID)
     }
 
     /// Explicit ownership migration. Follow-up sends can never silently
@@ -893,6 +1157,7 @@ final class ConversationCenter: ObservableObject {
         }
         await service.resolveApproval(resolvedDecision)
         pendingApprovals.removeAll { $0.id == approval.id }
+        publishSession(approval.conversationID)
     }
 
     /// The live service for a run, if this center owns one.
@@ -1071,12 +1336,25 @@ final class ConversationCenter: ObservableObject {
         snapshotTasks[runID]?.cancel()
         snapshotTasks[runID] = Task { [weak self, weak service] in
             guard let service else { return }
-            while !Task.isCancelled {
-                guard let self else { return }
+            let stream = service.events()
+            if let self {
                 let snapshot = await service.snapshot()
                 self.apply(snapshot)
-                if snapshot.isTerminal { break }
-                try? await Task.sleep(for: .milliseconds(250))
+                self.publishSession(snapshot.conversationID)
+            }
+            for await event in stream {
+                guard !Task.isCancelled, let self else { break }
+                switch event {
+                case .stateChanged, .toolLifecycle, .approvalRequested,
+                     .contextCompacted, .planChanged, .goalChanged,
+                     .childRunChanged, .terminal:
+                    let snapshot = await service.snapshot()
+                    self.apply(snapshot)
+                    self.publishSession(snapshot.conversationID)
+                    if snapshot.isTerminal { break }
+                case .answerDelta, .reasoningDelta, .usageChanged:
+                    break
+                }
             }
             self?.snapshotTasks[runID] = nil
         }

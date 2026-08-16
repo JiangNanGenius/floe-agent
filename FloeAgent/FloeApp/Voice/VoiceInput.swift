@@ -19,6 +19,24 @@ import Foundation
 import Speech
 import AVFoundation
 
+enum VoiceRecognitionLanguage: String, CaseIterable, Sendable {
+    case automatic
+    case simplifiedChinese
+    case traditionalChinese
+    case english
+
+    static let defaultsKey = "org.floeagent.voice.recognitionLanguage"
+
+    var locale: Locale {
+        switch self {
+        case .automatic: .current
+        case .simplifiedChinese: Locale(identifier: "zh-CN")
+        case .traditionalChinese: Locale(identifier: "zh-TW")
+        case .english: Locale(identifier: "en-US")
+        }
+    }
+}
+
 /// The composer-facing voice state machine.
 enum VoiceInputState: Equatable, Sendable {
     /// No session; the microphone is ready.

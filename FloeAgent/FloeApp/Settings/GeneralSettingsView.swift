@@ -13,6 +13,8 @@ import FloeCore
 
 struct GeneralSettingsView: View {
     @ObservedObject var center: SettingsCenter
+    @AppStorage(VoiceRecognitionLanguage.defaultsKey)
+    private var voiceLanguage = VoiceRecognitionLanguage.automatic.rawValue
 
     var body: some View {
         Form {
@@ -37,6 +39,18 @@ struct GeneralSettingsView: View {
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
 
+            }
+
+            Section("语音输入") {
+                Picker("识别语言", selection: $voiceLanguage) {
+                    Text("自动").tag(VoiceRecognitionLanguage.automatic.rawValue)
+                    Text("简体中文").tag(VoiceRecognitionLanguage.simplifiedChinese.rawValue)
+                    Text("繁體中文").tag(VoiceRecognitionLanguage.traditionalChinese.rawValue)
+                    Text("English").tag(VoiceRecognitionLanguage.english.rawValue)
+                }
+                Text("自动识别无结果时，请明确选择正在使用的语言。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("settings.general.accessibility") {

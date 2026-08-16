@@ -25,7 +25,7 @@ public struct ConversationHistoryAssembler: Sendable {
         excludingMessageID: UUID? = nil
     ) async throws -> [ConversationMessage] {
         let persisted = try await store.messages(conversationID: conversationID)
-            .filter { $0.id != excludingMessageID }
+            .filter { $0.id != excludingMessageID && $0.role != "goalContinuation" }
         let selected = Array(persisted.suffix(maximumMessages))
         let omitted = Array(persisted.dropLast(selected.count))
         var recent: [ConversationMessage] = []
