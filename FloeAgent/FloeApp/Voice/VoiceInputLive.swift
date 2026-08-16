@@ -162,27 +162,20 @@ final class SpeechAnalyzerTranscriber: SpeechTranscribing, @unchecked Sendable {
             throw VoiceSessionError.failure(.modelNotReady)
         }
 
-        if #available(iOS 27.0, *) {
-            let converter = try await AnalyzerInputConverter.converter(
-                compatibleWith: [transcriber]
-            )
-            convertBuffer = { buffer in
-                guard VoiceBufferValidator.isUsable(buffer) else { return [] }
-                return try converter.convert(buffer, at: nil)
-            }
-            flushConverter = { try converter.flush() }
-        } else {
-            guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
-                compatibleWith: [transcriber]
-            ), let converter = LegacyAnalyzerInputConverter(outputFormat: analyzerFormat) else {
-                throw VoiceSessionError.failure(.noAudioInput)
-            }
-            convertBuffer = { buffer in
-                guard VoiceBufferValidator.isUsable(buffer) else { return [] }
-                return converter.convert(buffer)
-            }
-            flushConverter = { [] }
+        // Keep the source buildable with the Xcode 26 SDK used by release
+        // automation. AnalyzerInputConverter is an iOS 27 SDK symbol, so a
+        // runtime #available check cannot make it visible to an older
+        // compiler. This AVAudioConverter path is safe on iOS 26 and 27.
+        guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
+            compatibleWith: [transcriber]
+        ), let converter = LegacyAnalyzerInputConverter(outputFormat: analyzerFormat) else {
+            throw VoiceSessionError.failure(.noAudioInput)
         }
+        convertBuffer = { buffer in
+            guard VoiceBufferValidator.isUsable(buffer) else { return [] }
+            return converter.convert(buffer)
+        }
+        flushConverter = { [] }
 
         var continuation: AsyncStream<AnalyzerInput>.Continuation!
         inputSequence = AsyncStream { continuation = $0 }
