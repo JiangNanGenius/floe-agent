@@ -1,0 +1,3 @@
+# Synthetic credential-shape fixtures used only to verify diagnostics redaction.
+784eff8a0382f0792089acd6054e89ba31bb68cd:FloeAgent/Tests/FloeCoreTests/FloeLoggerBufferTests.swift:generic-api-key:34
+784eff8a0382f0792089acd6054e89ba31bb68cd:FloeAgent/Tests/FloePersistenceTests/SettingsFlowTests.swift:generic-api-key:86
