@@ -4202,6 +4202,118 @@
         }
       }
     },
+    "feedback.entry.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Describe the problem and upload a redacted diagnostic log, or export it for manual sharing." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "描述问题并上传脱敏诊断日志，也可以导出后手动分享。" } }
+      }
+    },
+    "feedback.error.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Please describe the problem before submitting." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "提交前请先描述你遇到的问题。" } }
+      }
+    },
+    "feedback.error.invalid_response": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The feedback service returned an invalid response." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "反馈服务返回了无效响应。" } }
+      }
+    },
+    "feedback.error.rejected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The feedback service rejected the report (HTTP %d)." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "反馈服务拒绝了报告（HTTP %d）。" } }
+      }
+    },
+    "feedback.logs.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Logs contain app version, capability states and recent lifecycle events. API keys, credentials and token-shaped values are removed before upload." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "日志包含版本、能力状态与近期生命周期事件；API Key、凭据和令牌形态内容会在上传前移除。" } }
+      }
+    },
+    "feedback.logs.include": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Attach diagnostic log" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "附加诊断日志" } }
+      }
+    },
+    "feedback.logs.redacted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Secrets are redacted before upload" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "上传前会自动脱敏" } }
+      }
+    },
+    "feedback.logs.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Diagnostics" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "诊断信息" } }
+      }
+    },
+    "feedback.open": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Report a Problem" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "反馈问题并上传日志" } }
+      }
+    },
+    "feedback.problem.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Include what you were doing, what happened, and whether it happens every time." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请写明当时在做什么、发生了什么，以及是否每次都能复现。" } }
+      }
+    },
+    "feedback.problem.placeholder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "For example: I tapped the microphone, granted access, and the app closed immediately…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "例如：点击麦克风并授权后，App 立即退出……" } }
+      }
+    },
+    "feedback.problem.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "What happened?" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "你遇到了什么问题？" } }
+      }
+    },
+    "feedback.submit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Submit" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "提交" } }
+      }
+    },
+    "feedback.success.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Reference: %@. Thank you for helping improve Floe Agent." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "参考编号：%@。感谢你帮助改进 Floe Agent。" } }
+      }
+    },
+    "feedback.success.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Feedback Sent" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "反馈已发送" } }
+      }
+    },
+    "feedback.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Problem Report" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "问题反馈" } }
+      }
+    },
     "settings.capability.unknown": {
       "extractionState": "manual",
       "localizations": {
@@ -4378,13 +4490,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "In-memory only, redacted on write, cleared when the app quits."
+            "value": "Redacted on write and retained in a bounded local crash-recovery buffer."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "仅内存保留，写入时已脱敏，退出应用即清除。"
+            "value": "写入时自动脱敏，并保存在有容量上限的本地崩溃恢复缓冲区中。"
           }
         }
       }

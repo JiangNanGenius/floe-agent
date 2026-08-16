@@ -25,6 +25,35 @@ public enum BackgroundTaskKind: String, Sendable, CaseIterable {
     }
 }
 
+/// Process-wide registration gate for `BGTaskScheduler`.
+///
+/// `submit(_:)` raises an Objective-C exception (and terminates the app) when
+/// the request identifier has no matching launch handler. Continued tasks use
+/// a concrete identifier per user-started run, so the exact identifier must be
+/// registered before it is submitted; registering only the Info.plist wildcard
+/// is not sufficient. Keeping this gate process-wide also prevents the second-
+/// registration termination documented by BackgroundTasks.
+@MainActor
+enum BackgroundTaskRegistrar {
+    private static var registeredIdentifiers: Set<String> = []
+
+    static func register(
+        identifier: String,
+        launchHandler: @escaping (BGTask) -> Void
+    ) -> Bool {
+        if registeredIdentifiers.contains(identifier) { return true }
+        let didRegister = BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: identifier,
+            using: nil,
+            launchHandler: launchHandler
+        )
+        if didRegister {
+            registeredIdentifiers.insert(identifier)
+        }
+        return didRegister
+    }
+}
+
 /// Time-boxed permission to finish work before suspension.
 public struct BackgroundExecutionLease: Sendable {
     public var name: String

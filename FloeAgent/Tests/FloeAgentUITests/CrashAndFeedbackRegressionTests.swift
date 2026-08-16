@@ -1,0 +1,69 @@
+// FloeAppTests — regressions for the two production 1.2.0 crashes and
+// redacted feedback request construction.
+
+#if canImport(SwiftUI) && canImport(UIKit)
+import Foundation
+import AVFoundation
+import Testing
+@testable import FloeApp
+
+@Suite("FloeApp crash and feedback regressions")
+struct CrashAndFeedbackRegressionTests {
+    @Test("Continued processing submits a concrete registered identifier")
+    func continuedIdentifierIsConcrete() {
+        let identifier = BackgroundTaskKind.continued.submissionIdentifier
+        #expect(identifier.hasPrefix("org.floeagent.ios.continued."))
+        #expect(!identifier.contains("*"))
+        #expect(identifier != BackgroundTaskKind.continued.rawValue)
+    }
+
+    @Test("Empty audio buffers are rejected before Speech Analyzer")
+    func emptyAudioBufferIsRejected() throws {
+        let format = try #require(AVAudioFormat(
+            standardFormatWithSampleRate: 48_000,
+            channels: 1
+        ))
+        let empty = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 32))
+        #expect(empty.frameLength == 0)
+        #expect(!VoiceBufferValidator.isUsable(empty))
+
+        empty.frameLength = 1
+        #expect(VoiceBufferValidator.isUsable(empty))
+    }
+
+    @Test("Feedback request includes the problem and redacts diagnostics")
+    func feedbackRequestIsRedacted() throws {
+        let secret = ["sk", "live1234567890abcdef"].joined(separator: "-")
+        let request = try FeedbackUploadService.makeRequest(
+            FeedbackSubmission(
+                id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+                problem: "Voice button crashes with key \(secret)",
+                diagnostics: "authorization: Bearer eyJhbGciOiJ9.payload"
+            ),
+            boundary: "TestBoundary"
+        )
+
+        #expect(request.url == FeedbackUploadService.endpoint)
+        #expect(request.httpMethod == "POST")
+        #expect(request.value(forHTTPHeaderField: "Content-Type")
+            == "multipart/form-data; boundary=TestBoundary")
+        let body = try #require(request.httpBody.flatMap { String(data: $0, encoding: .utf8) })
+        #expect(body.contains("name=\"problem\""))
+        #expect(body.contains("Voice button crashes"))
+        #expect(body.contains("name=\"diagnostics\""))
+        #expect(body.contains("⟨redacted⟩"))
+        #expect(!body.contains(secret))
+        #expect(!body.contains("eyJhbGciOiJ9.payload"))
+    }
+
+    @Test("Feedback requires a user-written problem")
+    func feedbackRequiresProblem() {
+        #expect(throws: FeedbackUploadError.emptyProblem) {
+            _ = try FeedbackUploadService.makeRequest(
+                FeedbackSubmission(problem: "   ", diagnostics: nil),
+                boundary: "TestBoundary"
+            )
+        }
+    }
+}
+#endif

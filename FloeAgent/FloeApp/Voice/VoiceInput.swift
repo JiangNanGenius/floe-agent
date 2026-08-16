@@ -87,7 +87,7 @@ protocol SpeechTranscribing: Sendable {
     /// This is deliberately synchronous: AVAudioEngine may reuse its tap
     /// buffer after the callback returns, and spawning one Task per buffer
     /// can reorder or corrupt the audio stream.
-    func feed(_ buffer: AVAudioPCMBuffer)
+    func feed(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime?)
     /// Signals end of audio and lets the transcriber finish.
     func finishAudio() async
 }
@@ -102,5 +102,17 @@ protocol VoiceAudioCapturing: AnyObject, Sendable {
     /// Idempotent teardown: stops the engine, removes any tap, releases
     /// the audio session.
     func stop()
+}
+
+/// Pure validation kept outside Speech framework initializers because
+/// `AnalyzerInput(buffer:)` traps on malformed or empty buffers rather than
+/// reporting a Swift error.
+enum VoiceBufferValidator {
+    static func isUsable(_ buffer: AVAudioPCMBuffer) -> Bool {
+        buffer.frameLength > 0
+            && buffer.format.sampleRate.isFinite
+            && buffer.format.sampleRate > 0
+            && buffer.format.channelCount > 0
+    }
 }
 #endif

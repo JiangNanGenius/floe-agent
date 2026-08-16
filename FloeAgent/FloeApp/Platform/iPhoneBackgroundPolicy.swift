@@ -7,14 +7,10 @@
 #if canImport(UIKit)
 import UIKit
 import BackgroundTasks
+import FloeCore
 
 @MainActor
 public final class iPhoneBackgroundPolicy: PlatformBackgroundPolicy, @unchecked Sendable {
-
-    /// `BGTaskScheduler` rejects duplicate registrations with an Objective-C
-    /// exception. More than one router may exist in previews or hosted tests,
-    /// therefore registration must be process-wide rather than per instance.
-    private static var didRegisterTasks = false
 
     private var expirationHandlers: [String: UIBackgroundTaskIdentifier] = [:]
     private let lock = NSLock()
@@ -22,11 +18,8 @@ public final class iPhoneBackgroundPolicy: PlatformBackgroundPolicy, @unchecked 
     public init() {}
 
     public func registerTasks() {
-        guard !Self.didRegisterTasks else { return }
-        Self.didRegisterTasks = true
-        BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: BackgroundTaskKind.refresh.rawValue,
-            using: nil
+        _ = BackgroundTaskRegistrar.register(
+            identifier: BackgroundTaskKind.refresh.rawValue
         ) { task in
             guard let task = task as? BGAppRefreshTask else {
                 task.setTaskCompleted(success: false)
@@ -34,25 +27,10 @@ public final class iPhoneBackgroundPolicy: PlatformBackgroundPolicy, @unchecked 
             }
             Task { @MainActor in BackgroundPolicyRegistry.shared.handleRefreshTask(task) }
         }
-        BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: BackgroundTaskKind.processing.rawValue,
-            using: nil
+        _ = BackgroundTaskRegistrar.register(
+            identifier: BackgroundTaskKind.processing.rawValue
         ) { task in
             task.setTaskCompleted(success: true)
-        }
-        if #available(iOS 26.0, *) {
-            BGTaskScheduler.shared.register(
-                forTaskWithIdentifier: BackgroundTaskKind.continued.rawValue,
-                using: nil
-            ) { task in
-                guard let task = task as? BGContinuedProcessingTask else {
-                    task.setTaskCompleted(success: false)
-                    return
-                }
-                Task { @MainActor in
-                    BackgroundPolicyRegistry.shared.handleContinuedTask(task)
-                }
-            }
         }
     }
 
@@ -64,12 +42,34 @@ public final class iPhoneBackgroundPolicy: PlatformBackgroundPolicy, @unchecked 
 
     public func requestContinuedProcessing(_ kind: BackgroundTaskKind) {
         if #available(iOS 26.0, *), kind == .continued {
+            let identifier = kind.submissionIdentifier
+            let didRegister = BackgroundTaskRegistrar.register(identifier: identifier) { task in
+                guard let task = task as? BGContinuedProcessingTask else {
+                    task.setTaskCompleted(success: false)
+                    return
+                }
+                Task { @MainActor in
+                    BackgroundPolicyRegistry.shared.handleContinuedTask(task)
+                }
+            }
+            guard didRegister else {
+                FloeLogger(category: .app).error(
+                    "backgroundTaskRegistrationFailed kind=continued"
+                )
+                return
+            }
             let request = BGContinuedProcessingTaskRequest(
-                identifier: kind.submissionIdentifier,
+                identifier: identifier,
                 title: "Floe Agent task",
                 subtitle: "Continuing in the background"
             )
-            try? BGTaskScheduler.shared.submit(request)
+            do {
+                try BGTaskScheduler.shared.submit(request)
+            } catch {
+                FloeLogger(category: .app).warning(
+                    "backgroundTaskSubmissionFailed kind=continued error=\(error.localizedDescription)"
+                )
+            }
         } else {
             // Fallback: plain processing task.
             let request = BGProcessingTaskRequest(identifier: BackgroundTaskKind.processing.rawValue)

@@ -18,6 +18,7 @@ struct DiagnosticsAboutView: View {
     @State private var exportURL: IdentifiableDiagnosticsURL?
     @State private var isExporting = false
     @State private var errorMessage: String?
+    @State private var presentsFeedback = false
 
     var body: some View {
         Form {
@@ -95,6 +96,14 @@ struct DiagnosticsAboutView: View {
 
             Section {
                 Button {
+                    presentsFeedback = true
+                } label: {
+                    Label("feedback.open", systemImage: "ladybug")
+                }
+                .frame(minHeight: FloeTheme.minimumTarget)
+                .accessibilityIdentifier("diagnostics.feedback")
+
+                Button {
                     Task { await export() }
                 } label: {
                     if isExporting {
@@ -108,7 +117,7 @@ struct DiagnosticsAboutView: View {
             } header: {
                 Text("settings.privacy.diagnostics")
             } footer: {
-                Text("settings.privacy.export.footer")
+                Text("feedback.entry.footer")
             }
 
             Section("settings.diagnostics.legal") {
@@ -134,6 +143,12 @@ struct DiagnosticsAboutView: View {
         }
         .sheet(item: $exportURL) { wrapper in
             DiagnosticsShareSheet(items: [wrapper.url])
+        }
+        .sheet(isPresented: $presentsFeedback) {
+            NavigationStack {
+                FeedbackReportView(center: center)
+            }
+            .presentationSizing(.page)
         }
     }
 

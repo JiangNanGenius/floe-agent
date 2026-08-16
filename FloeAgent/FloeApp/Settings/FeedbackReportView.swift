@@ -1,0 +1,140 @@
+// FloeApp — User-authored feedback plus explicit diagnostics consent.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+#if canImport(SwiftUI) && canImport(UIKit)
+import SwiftUI
+import FloeCore
+
+struct FeedbackReportView: View {
+    @ObservedObject var center: SettingsCenter
+    @Environment(\.dismiss) private var dismiss
+    @State private var problem = ""
+    @State private var includesDiagnostics = true
+    @State private var isSubmitting = false
+    @State private var errorMessage: String?
+    @State private var submittedID: UUID?
+
+    private var trimmedProblem: String {
+        problem.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                ZStack(alignment: .topLeading) {
+                    if problem.isEmpty {
+                        Text("feedback.problem.placeholder")
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 8)
+                            .allowsHitTesting(false)
+                    }
+                    TextEditor(text: $problem)
+                        .frame(minHeight: 150)
+                        .accessibilityIdentifier("feedback.problem")
+                }
+                Text("\(problem.count)/\(FeedbackUploadService.maximumProblemCharacters)")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(
+                        problem.count > FeedbackUploadService.maximumProblemCharacters
+                            ? FloeTheme.destructive : .secondary
+                    )
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            } header: {
+                Text("feedback.problem.title")
+            } footer: {
+                Text("feedback.problem.footer")
+            }
+
+            Section {
+                Toggle("feedback.logs.include", isOn: $includesDiagnostics)
+                    .accessibilityIdentifier("feedback.include_diagnostics")
+                if includesDiagnostics {
+                    Label("feedback.logs.redacted", systemImage: "lock.shield")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("feedback.logs.title")
+            } footer: {
+                Text("feedback.logs.footer")
+            }
+
+            if let errorMessage {
+                Section {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(FloeTheme.destructive)
+                }
+            }
+        }
+        .navigationTitle("feedback.title")
+        .navigationBarTitleDisplayMode(.inline)
+        .interactiveDismissDisabled(isSubmitting)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("action.cancel") { dismiss() }
+                    .disabled(isSubmitting)
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button {
+                    Task { await submit() }
+                } label: {
+                    if isSubmitting {
+                        ProgressView()
+                    } else {
+                        Text("feedback.submit")
+                    }
+                }
+                .disabled(
+                    isSubmitting
+                        || trimmedProblem.isEmpty
+                        || problem.count > FeedbackUploadService.maximumProblemCharacters
+                )
+                .accessibilityIdentifier("feedback.submit")
+            }
+        }
+        .alert("feedback.success.title", isPresented: successBinding) {
+            Button("action.done") { dismiss() }
+        } message: {
+            if let submittedID {
+                Text(String(
+                    format: String(localized: "feedback.success.message"),
+                    String(submittedID.uuidString.prefix(8))
+                ))
+            }
+        }
+    }
+
+    private var successBinding: Binding<Bool> {
+        Binding(
+            get: { submittedID != nil },
+            set: { if !$0 { submittedID = nil } }
+        )
+    }
+
+    private func submit() async {
+        isSubmitting = true
+        errorMessage = nil
+        defer { isSubmitting = false }
+
+        let diagnostics: String?
+        if includesDiagnostics {
+            diagnostics = SecretRedactor.redact(await DiagnosticsExporter.render(center: center))
+        } else {
+            diagnostics = nil
+        }
+
+        let submission = FeedbackSubmission(
+            problem: trimmedProblem,
+            diagnostics: diagnostics
+        )
+        do {
+            try await FeedbackUploadService.upload(submission)
+            submittedID = submission.id
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+#endif

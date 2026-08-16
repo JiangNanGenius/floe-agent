@@ -41,7 +41,7 @@ struct VoiceInputControllerTests {
             continuation = c
         }
 
-        func feed(_ buffer: AVAudioPCMBuffer) {}
+        func feed(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime?) {}
 
         func finishAudio() async { finishCount += 1 }
 

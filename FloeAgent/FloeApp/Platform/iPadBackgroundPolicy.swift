@@ -7,15 +7,10 @@
 #if canImport(UIKit)
 import UIKit
 import BackgroundTasks
+import FloeCore
 
 @MainActor
 public final class iPadBackgroundPolicy: PlatformBackgroundPolicy, @unchecked Sendable {
-
-    /// `BGTaskScheduler` permits each identifier to be registered only once
-    /// per process. SwiftUI previews, hosted unit tests, and scene recovery can
-    /// legitimately construct more than one router/policy instance, so keep
-    /// registration process-wide and idempotent.
-    private static var didRegisterTasks = false
 
     /// sceneID → latest known phase.
     private var scenePhases: [String: PolicyScenePhase] = [:]
@@ -25,11 +20,8 @@ public final class iPadBackgroundPolicy: PlatformBackgroundPolicy, @unchecked Se
     public init() {}
 
     public func registerTasks() {
-        guard !Self.didRegisterTasks else { return }
-        Self.didRegisterTasks = true
-        BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: BackgroundTaskKind.refresh.rawValue,
-            using: nil
+        _ = BackgroundTaskRegistrar.register(
+            identifier: BackgroundTaskKind.refresh.rawValue
         ) { task in
             guard let task = task as? BGAppRefreshTask else {
                 task.setTaskCompleted(success: false)
@@ -37,25 +29,10 @@ public final class iPadBackgroundPolicy: PlatformBackgroundPolicy, @unchecked Se
             }
             Task { @MainActor in BackgroundPolicyRegistry.shared.handleRefreshTask(task) }
         }
-        BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: BackgroundTaskKind.processing.rawValue,
-            using: nil
+        _ = BackgroundTaskRegistrar.register(
+            identifier: BackgroundTaskKind.processing.rawValue
         ) { task in
             task.setTaskCompleted(success: true)
-        }
-        if #available(iOS 26.0, *) {
-            BGTaskScheduler.shared.register(
-                forTaskWithIdentifier: BackgroundTaskKind.continued.rawValue,
-                using: nil
-            ) { task in
-                guard let task = task as? BGContinuedProcessingTask else {
-                    task.setTaskCompleted(success: false)
-                    return
-                }
-                Task { @MainActor in
-                    BackgroundPolicyRegistry.shared.handleContinuedTask(task)
-                }
-            }
         }
     }
 
@@ -70,12 +47,34 @@ public final class iPadBackgroundPolicy: PlatformBackgroundPolicy, @unchecked Se
         // presented via Live Activity and the Runs list (GRDB polling),
         // never bound to a single scene.
         if #available(iOS 26.0, *), kind == .continued {
+            let identifier = kind.submissionIdentifier
+            let didRegister = BackgroundTaskRegistrar.register(identifier: identifier) { task in
+                guard let task = task as? BGContinuedProcessingTask else {
+                    task.setTaskCompleted(success: false)
+                    return
+                }
+                Task { @MainActor in
+                    BackgroundPolicyRegistry.shared.handleContinuedTask(task)
+                }
+            }
+            guard didRegister else {
+                FloeLogger(category: .app).error(
+                    "backgroundTaskRegistrationFailed kind=continued"
+                )
+                return
+            }
             let request = BGContinuedProcessingTaskRequest(
-                identifier: kind.submissionIdentifier,
+                identifier: identifier,
                 title: "Floe Agent task",
                 subtitle: "Continuing in the background"
             )
-            try? BGTaskScheduler.shared.submit(request)
+            do {
+                try BGTaskScheduler.shared.submit(request)
+            } catch {
+                FloeLogger(category: .app).warning(
+                    "backgroundTaskSubmissionFailed kind=continued error=\(error.localizedDescription)"
+                )
+            }
         } else {
             let request = BGProcessingTaskRequest(identifier: BackgroundTaskKind.processing.rawValue)
             try? BGTaskScheduler.shared.submit(request)

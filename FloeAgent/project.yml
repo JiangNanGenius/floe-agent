@@ -131,6 +131,7 @@ targets:
           - BrowserProtocolTests.swift
           - ThreadTimelineTests.swift
           - VoiceInputControllerTests.swift
+          - CrashAndFeedbackRegressionTests.swift
     dependencies:
       - target: FloeAgent
     settings:
@@ -150,6 +151,7 @@ targets:
       - path: Tests/FloeAgentUITests/ThreadTimelineTests.swift
       - path: Tests/FloeAgentUITests/VoiceInputControllerTests.swift
       - path: Tests/FloeAgentUITests/BrowserProtocolTests.swift
+      - path: Tests/FloeAgentUITests/CrashAndFeedbackRegressionTests.swift
     dependencies:
       - target: FloeAgent
     settings:

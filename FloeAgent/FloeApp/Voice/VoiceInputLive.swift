@@ -52,6 +52,10 @@ final class SpeechAnalyzerTranscriber: SpeechTranscribing, @unchecked Sendable {
     private let inputSequence: AsyncStream<AnalyzerInput>
     private let inputContinuation: AsyncStream<AnalyzerInput>.Continuation
     private let transcriptContinuation: AsyncStream<String>.Continuation
+    /// Converts hardware microphone buffers into a format accepted by the
+    /// analyzer. Passing the input-node format straight into `AnalyzerInput`
+    /// traps inside Speech on affected iOS 27 builds instead of throwing.
+    private let convertBuffer: (AVAudioPCMBuffer, AVAudioTime?) -> [AnalyzerInput]
 
     let transcripts: AsyncStream<String>
 
@@ -81,6 +85,26 @@ final class SpeechAnalyzerTranscriber: SpeechTranscribing, @unchecked Sendable {
         }
         guard await SpeechTranscriber.installedLocales.contains(supported) else {
             throw VoiceSessionError.failure(.modelNotReady)
+        }
+
+        if #available(iOS 27.0, *) {
+            let converter = try await AnalyzerInputConverter.converter(
+                compatibleWith: [transcriber]
+            )
+            convertBuffer = { buffer, time in
+                guard VoiceBufferValidator.isUsable(buffer) else { return [] }
+                return (try? converter.convert(buffer, at: time)) ?? []
+            }
+        } else {
+            guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
+                compatibleWith: [transcriber]
+            ), let converter = LegacyAnalyzerInputConverter(outputFormat: analyzerFormat) else {
+                throw VoiceSessionError.failure(.noAudioInput)
+            }
+            convertBuffer = { buffer, _ in
+                guard VoiceBufferValidator.isUsable(buffer) else { return [] }
+                return converter.convert(buffer)
+            }
         }
 
         var continuation: AsyncStream<AnalyzerInput>.Continuation!
@@ -120,13 +144,75 @@ final class SpeechAnalyzerTranscriber: SpeechTranscribing, @unchecked Sendable {
         try await analyzer.start(inputSequence: inputSequence)
     }
 
-    func feed(_ buffer: AVAudioPCMBuffer) {
-        inputContinuation.yield(AnalyzerInput(buffer: buffer))
+    func feed(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime?) {
+        for input in convertBuffer(buffer, time) {
+            inputContinuation.yield(input)
+        }
     }
 
     func finishAudio() async {
         inputContinuation.finish()
         try? await analyzer.finalizeAndFinishThroughEndOfInput()
+    }
+
+}
+
+/// iOS 26 compatibility converter. iOS 27 provides
+/// `AnalyzerInputConverter`; on iOS 26 we perform the equivalent format
+/// conversion with AVFAudio and only construct `AnalyzerInput` from a fresh,
+/// non-empty buffer. AVAudioConverter is stateful and not thread-safe, hence
+/// the narrow lock even though AVAudioEngine normally serializes tap calls.
+private final class LegacyAnalyzerInputConverter: @unchecked Sendable {
+    private let outputFormat: AVAudioFormat
+    private let lock = NSLock()
+    private var converterByInputDescription: [String: AVAudioConverter] = [:]
+
+    init?(outputFormat: AVAudioFormat) {
+        guard outputFormat.sampleRate.isFinite,
+              outputFormat.sampleRate > 0,
+              outputFormat.channelCount > 0 else { return nil }
+        self.outputFormat = outputFormat
+    }
+
+    func convert(_ input: AVAudioPCMBuffer) -> [AnalyzerInput] {
+        lock.withLock {
+            let key = input.format.description
+            let converter: AVAudioConverter
+            if let existing = converterByInputDescription[key] {
+                converter = existing
+            } else {
+                guard let created = AVAudioConverter(from: input.format, to: outputFormat) else {
+                    return []
+                }
+                converterByInputDescription[key] = created
+                converter = created
+            }
+
+            let ratio = outputFormat.sampleRate / input.format.sampleRate
+            let estimatedFrames = max(
+                1,
+                Int(ceil(Double(input.frameLength) * ratio)) + 32
+            )
+            guard estimatedFrames <= Int(UInt32.max),
+                  let output = AVAudioPCMBuffer(
+                    pcmFormat: outputFormat,
+                    frameCapacity: AVAudioFrameCount(estimatedFrames)
+                  ) else { return [] }
+
+            var suppliedInput = false
+            var conversionError: NSError?
+            _ = converter.convert(to: output, error: &conversionError) { _, status in
+                guard !suppliedInput else {
+                    status.pointee = .noDataNow
+                    return nil
+                }
+                suppliedInput = true
+                status.pointee = .haveData
+                return input
+            }
+            guard conversionError == nil, output.frameLength > 0 else { return [] }
+            return [AnalyzerInput(buffer: output)]
+        }
     }
 }
 
@@ -167,8 +253,11 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
             throw VoiceSessionError.failure(.noAudioInput)
         }
 
-        input.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, _ in
-            transcriber.feed(buffer)
+        input.installTap(onBus: 0, bufferSize: 4_096, format: format) { buffer, time in
+            // Some route transitions deliver an empty terminal buffer. Speech
+            // treats that as a programmer error and traps, so drop it here.
+            guard buffer.frameLength > 0 else { return }
+            transcriber.feed(buffer, at: time)
         }
         lock.withLock { tapInstalled = true }
 
