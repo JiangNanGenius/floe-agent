@@ -36,6 +36,7 @@ final class VoiceInputController: ObservableObject {
     private let diagnostics: (any VoiceInputDiagnostics)?
 
     private var capturer: (any VoiceAudioCapturing)?
+    private var transcriber: (any SpeechTranscribing)?
     private var transcriptTask: Task<Void, Never>?
     private var preparationTask: Task<Void, Never>?
     /// Monotonic token: a superseded start must never activate a session.
@@ -126,6 +127,7 @@ final class VoiceInputController: ObservableObject {
         }
 
         let capturer = makeCapturer()
+        self.transcriber = transcriber
         self.capturer = capturer
         do {
             try await capturer.start(into: transcriber)
@@ -258,6 +260,11 @@ final class VoiceInputController: ObservableObject {
         transcriptTask = nil
         capturer?.stop()
         capturer = nil
+        let activeTranscriber = transcriber
+        transcriber = nil
+        if let activeTranscriber {
+            Task { await activeTranscriber.finishAudio() }
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import GRDB
+import LocalAuthentication
 import FloeModels
 import FloePersistence
 
@@ -106,35 +107,23 @@ struct TaskPermissionsInspectorView: View {
     @State private var policy: TaskPolicy?
     @State private var isSaving = false
     @State private var errorMessage: String?
-    @State private var fileScopeText = ""
+    @State private var isConfirmingFullAccess = false
 
     var body: some View {
         Form {
             if policy != nil {
                 Section("审批模式") {
                     Picker("本任务", selection: approvalModeBinding) {
-                        Text("继承全局设置").tag("inherit")
-                        Text("每次副作用均询问").tag("askEveryTime")
-                        Text("只读工具").tag("readOnly")
+                        Text("询问").tag(TaskApprovalMode.ask.rawValue)
+                        Text("自动审批").tag(TaskApprovalMode.automatic.rawValue)
+                        Text("完全放开").tag(TaskApprovalMode.fullAccess.rawValue)
                     }
+                    .pickerStyle(.segmented)
+                    Text(modeExplanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                Section("任务权限") {
-                    optionalToggle("网络访问", keyPath: \.networkAllowed)
-                    optionalToggle("浏览器控制", keyPath: \.browserControlAllowed)
-                    optionalToggle("文件上传", keyPath: \.uploadAllowed)
-                    optionalToggle("使用凭据", keyPath: \.credentialsAllowed)
-                    optionalToggle("远程执行", keyPath: \.remoteExecutionAllowed)
-                }
-                Section {
-                    TextField("相对路径，逗号分隔；留空允许整个任务工作区", text: $fileScopeText)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                } header: {
-                    Text("文件范围")
-                } footer: {
-                    Text("路径始终相对于本任务唯一绑定的工作区；不能访问其他任务或项目。")
-                }
-                Section("恢复与通知") {
+                Section("任务设置") {
                     Picker("后台恢复", selection: binding(\.recoveryPolicy, fallback: .safePoint)) {
                         Text("安全点自动恢复").tag(TaskRecoveryPolicy.safePoint)
                         Text("总是自动重试").tag(TaskRecoveryPolicy.alwaysRetry)
@@ -150,7 +139,7 @@ struct TaskPermissionsInspectorView: View {
                     Button("保存任务权限") { Task { await save() } }
                         .disabled(isSaving)
                 } footer: {
-                    Text("删除、付款、登录、凭据、上传和灾难性命令仍会逐次确认。任务权限不能突破全局与工作区上限。")
+                    Text("任务仍受工作区和工具范围限制；灾难性命令始终阻止。")
                 }
             } else {
                 ContentUnavailableView("请选择任务", systemImage: "lock.shield")
@@ -159,26 +148,52 @@ struct TaskPermissionsInspectorView: View {
         }
         .navigationTitle("权限")
         .task(id: conversationID) { await load() }
-    }
-
-    private func optionalToggle(
-        _ title: String,
-        keyPath: WritableKeyPath<TaskPolicy, Bool?>
-    ) -> some View {
-        Toggle(title, isOn: Binding(
-            get: { policy?[keyPath: keyPath] ?? false },
-            set: { value in policy?[keyPath: keyPath] = value }
-        ))
+        .alert("确认完全放开？", isPresented: $isConfirmingFullAccess) {
+            Button("取消", role: .cancel) {}
+            Button("继续并验证身份", role: .destructive) {
+                Task { await authenticateFullAccess() }
+            }
+        } message: {
+            Text("启用后，普通文件写入、远程命令和网页操作会在任务范围内自动执行；删除、凭据和上传仍会逐次询问，灾难性命令始终阻止。")
+        }
     }
 
     private var approvalModeBinding: Binding<String> {
         Binding<String>(
-            get: { policy?.approvalMode ?? "inherit" },
+            get: { policy?.resolvedApprovalMode.rawValue ?? TaskApprovalMode.ask.rawValue },
             set: { value in
-                if value == "inherit" { policy?.approvalMode = nil }
-                else { policy?.approvalMode = value }
+                if value == TaskApprovalMode.fullAccess.rawValue {
+                    isConfirmingFullAccess = true
+                } else {
+                    policy?.approvalMode = value
+                }
             }
         )
+    }
+
+    private var modeExplanation: String {
+        switch policy?.resolvedApprovalMode ?? .ask {
+        case .ask: "读取自动运行，副作用操作会先询问。"
+        case .automatic: "低风险自动批准；浏览器、远程执行和高风险操作仍会询问。"
+        case .fullAccess: "普通操作自动执行；删除、凭据和上传仍询问，灾难性命令始终阻止。"
+        }
+    }
+
+    private func authenticateFullAccess() async {
+        let context = LAContext()
+        do {
+            guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else {
+                errorMessage = "设备未设置可用的身份验证。"
+                return
+            }
+            let allowed = try await context.evaluatePolicy(
+                .deviceOwnerAuthentication,
+                localizedReason: "确认本任务启用完全放开权限"
+            )
+            if allowed { policy?.approvalMode = TaskApprovalMode.fullAccess.rawValue }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func binding<Value>(
@@ -196,7 +211,6 @@ struct TaskPermissionsInspectorView: View {
         let store = SQLiteWorkspaceStore(database: environment.database)
         policy = (try? await store.taskPolicy(conversationID: conversationID))
             ?? TaskPolicy(conversationID: conversationID)
-        fileScopeText = policy?.filePaths.joined(separator: ", ") ?? ""
     }
 
     private func save() async {
@@ -204,9 +218,6 @@ struct TaskPermissionsInspectorView: View {
         isSaving = true
         defer { isSaving = false }
         policy.updatedAt = Date()
-        policy.filePaths = fileScopeText.split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
         do {
             try await SQLiteWorkspaceStore(database: environment.database).saveTaskPolicy(policy)
             self.policy = policy

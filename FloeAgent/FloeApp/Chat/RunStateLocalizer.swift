@@ -78,6 +78,8 @@ enum RunStateLocalizer {
             "state.stopped"
         case "maxTokens", "length":
             "state.truncated"
+        case "budgetLimited", "noProgress":
+            "state.completed"
         case "toolUse":
             "state.completed"
         default:

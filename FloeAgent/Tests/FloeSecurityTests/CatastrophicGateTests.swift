@@ -145,7 +145,10 @@ struct CatastrophicGateTests {
 @Suite("FloeSecurity.ApprovalPolicies")
 struct ApprovalPolicyTests {
 
-    private func action(hostID: UUID? = nil) throws -> ProposedAction {
+    private func action(
+        hostID: UUID? = nil,
+        riskLabels: Set<String> = ["executesRemoteCommand"]
+    ) throws -> ProposedAction {
         let scope: ToolScope = hostID.map { .host($0) } ?? .local
         let call = try ToolCall(
             id: "c1",
@@ -155,10 +158,36 @@ struct ApprovalPolicyTests {
         )
         return ProposedAction(
             toolCall: call,
-            riskLabels: ["executesRemoteCommand"],
+            riskLabels: riskLabels,
             userGoal: "list files",
             hostAndPathScope: scope
         )
+    }
+
+    @Test("Automatic mode allows low risk and asks for sensitive actions")
+    func automaticPolicyTiers() async throws {
+        let policy = AutomaticApprovalPolicy()
+        #expect(try await policy.decide(action(riskLabels: [])).permitsExecution)
+        guard case .escalateToHuman = try await policy.decide(
+            action(riskLabels: ["accessesCredentials"])
+        ) else {
+            Issue.record("Credential access must remain a human decision")
+            return
+        }
+    }
+
+    @Test("Full access still asks before deletion, credentials, or upload")
+    func taskFullAccessSensitiveBoundary() async throws {
+        let policy = TaskFullAccessPolicy()
+        #expect(try await policy.decide(action()).permitsExecution)
+        for risk in ["deletesFiles", "accessesCredentials", "sendsDataToProvider"] {
+            guard case .escalateToHuman = try await policy.decide(
+                action(riskLabels: [risk])
+            ) else {
+                Issue.record("\(risk) must require a user decision")
+                return
+            }
+        }
     }
 
     @Test("HumanApprovalPolicy always escalates")

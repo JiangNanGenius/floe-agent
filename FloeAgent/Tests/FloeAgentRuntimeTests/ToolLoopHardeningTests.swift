@@ -110,7 +110,7 @@ struct ToolLoopHardeningTests {
 
     // MARK: 2. Infinite loop trips the ceiling
 
-    @Test("Infinite tool requests fail at maxToolSteps+1 as recoverable")
+    @Test("Infinite tool requests stop at the activation budget and finalize")
     func infiniteLoopTripsCeiling() async throws {
         let maxSteps = 4
         let adapter = LoopingAdapter()
@@ -130,18 +130,17 @@ struct ToolLoopHardeningTests {
         try await runtime.start(goal: "loop forever")
 
         let state = await runtime.state
-        guard case .failed(let failure) = state else {
-            Issue.record("expected failed, got \(state.name)")
+        guard case .completed(let completion) = state else {
+            Issue.record("expected completed, got \(state.name)")
             return
         }
-        #expect(failure.message.contains("max tool steps"))
-        #expect(failure.isRecoverable)
+        #expect(completion.stopReason == .budgetLimited)
         // Exactly maxToolSteps executions happened; the (max+1)-th request
         // was refused before reaching the executor.
         #expect(executor.executedCalls.count == maxSteps)
-        // The adapter saw maxToolSteps+1 turns (the turn that tripped the
-        // ceiling never loops back into the model).
-        #expect(adapter.requests.count == maxSteps + 1)
+        // The final request is tool-free. A non-compliant adapter that still
+        // emits a tool request is stopped without executing it.
+        #expect(adapter.requests.count == maxSteps + 2)
     }
 
     // MARK: 3. Audit records survive the ceiling trip
@@ -168,11 +167,12 @@ struct ToolLoopHardeningTests {
         try await runtime.start(goal: "audit me")
 
         let state = await runtime.state
-        #expect(state.name == "failed")
-        // One audit entry per executed step, all "allow" decisions.
-        #expect(audit.entries.count == maxSteps)
+        #expect(state.name == "completed")
+        // Executed steps are followed by one explicit harness-budget denial.
+        #expect(audit.entries.count == maxSteps + 1)
         #expect(audit.entries.allSatisfy { $0.toolName == "test.echo" })
-        #expect(audit.entries.allSatisfy { $0.decision.hasPrefix("allow:") })
+        #expect(audit.entries.dropLast().allSatisfy { $0.decision.hasPrefix("allow:") })
+        #expect(audit.entries.last?.decision == "deny:harness-budget")
     }
 
     // MARK: 4. durationMs in mirrored toolResult payloads

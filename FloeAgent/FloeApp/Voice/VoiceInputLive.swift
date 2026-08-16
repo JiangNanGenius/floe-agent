@@ -55,14 +55,20 @@ final class SpeechAnalyzerTranscriber: SpeechTranscribing, @unchecked Sendable {
     /// Converts hardware microphone buffers into a format accepted by the
     /// analyzer. Passing the input-node format straight into `AnalyzerInput`
     /// traps inside Speech on affected iOS 27 builds instead of throwing.
-    private let convertBuffer: (AVAudioPCMBuffer, AVAudioTime?) -> [AnalyzerInput]
+    private let convertBuffer: (AVAudioPCMBuffer) throws -> [AnalyzerInput]
+    private let flushConverter: () throws -> [AnalyzerInput]
+    private let diagnostics: (any VoiceInputDiagnostics)?
 
     let transcripts: AsyncStream<String>
 
     /// Builds the analyzer for the given locale. Throws
     /// `VoiceSessionError` (never traps) when the locale is unsupported or
     /// the on-device assets are missing and cannot be used right now.
-    init(locale: Locale = .current) async throws {
+    init(
+        locale: Locale = .current,
+        diagnostics: (any VoiceInputDiagnostics)? = nil
+    ) async throws {
+        self.diagnostics = diagnostics
         guard let supported = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else {
             throw VoiceSessionError.failure(.localeUnsupported)
         }
@@ -91,20 +97,22 @@ final class SpeechAnalyzerTranscriber: SpeechTranscribing, @unchecked Sendable {
             let converter = try await AnalyzerInputConverter.converter(
                 compatibleWith: [transcriber]
             )
-            convertBuffer = { buffer, time in
+            convertBuffer = { buffer in
                 guard VoiceBufferValidator.isUsable(buffer) else { return [] }
-                return (try? converter.convert(buffer, at: time)) ?? []
+                return try converter.convert(buffer, at: nil)
             }
+            flushConverter = { try converter.flush() }
         } else {
             guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
                 compatibleWith: [transcriber]
             ), let converter = LegacyAnalyzerInputConverter(outputFormat: analyzerFormat) else {
                 throw VoiceSessionError.failure(.noAudioInput)
             }
-            convertBuffer = { buffer, _ in
+            convertBuffer = { buffer in
                 guard VoiceBufferValidator.isUsable(buffer) else { return [] }
                 return converter.convert(buffer)
             }
+            flushConverter = { [] }
         }
 
         var continuation: AsyncStream<AnalyzerInput>.Continuation!
@@ -126,13 +134,19 @@ final class SpeechAnalyzerTranscriber: SpeechTranscribing, @unchecked Sendable {
         // Forward ordered results into the transcript stream. The analyzer
         // delivers results in audio order, so the composer never sees a
         // transcript older than the one it already has.
-        Task { [transcripts = self.transcriptContinuation] in
+        Task { [transcripts = self.transcriptContinuation, diagnostics] in
             do {
+                var isFirst = true
                 for try await result in transcriber.results {
+                    diagnostics?.voiceTranscriptReceived(first: isFirst)
+                    isFirst = false
                     transcripts.yield(String(result.text.characters))
                 }
                 transcripts.finish()
             } catch {
+                FloeLogger(category: .app).warning(
+                    "speechResultFailed domain=voice error=\(String(describing: type(of: error)))"
+                )
                 transcripts.finish()
             }
         }
@@ -145,14 +159,67 @@ final class SpeechAnalyzerTranscriber: SpeechTranscribing, @unchecked Sendable {
     }
 
     func feed(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime?) {
-        for input in convertBuffer(buffer, time) {
-            inputContinuation.yield(input)
+        guard let copied = Self.copyBuffer(buffer) else {
+            FloeLogger(category: .app).warning("speechBufferCopyFailed domain=voice")
+            return
+        }
+        diagnostics?.voiceAudioBufferAccepted(frameCount: copied.frameLength)
+        do {
+            let converted = try convertBuffer(copied)
+            diagnostics?.voiceAnalyzerInputProduced(count: converted.count)
+            for input in converted { inputContinuation.yield(input) }
+        } catch {
+            FloeLogger(category: .app).warning(
+                "speechConvertFailed domain=voice error=\(String(describing: type(of: error)))"
+            )
         }
     }
 
     func finishAudio() async {
+        do {
+            let flushed = try flushConverter()
+            diagnostics?.voiceConverterFlushed(count: flushed.count)
+            for input in flushed { inputContinuation.yield(input) }
+        } catch {
+            FloeLogger(category: .app).warning(
+                "speechFlushFailed domain=voice error=\(String(describing: type(of: error)))"
+            )
+        }
         inputContinuation.finish()
-        try? await analyzer.finalizeAndFinishThroughEndOfInput()
+        do {
+            try await analyzer.finalizeAndFinishThroughEndOfInput()
+        } catch {
+            FloeLogger(category: .app).warning(
+                "speechFinalizeFailed domain=voice error=\(String(describing: type(of: error)))"
+            )
+        }
+    }
+
+    private static func copyBuffer(_ source: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard VoiceBufferValidator.isUsable(source),
+              let copy = AVAudioPCMBuffer(
+                pcmFormat: source.format,
+                frameCapacity: source.frameLength
+              ) else { return nil }
+        copy.frameLength = source.frameLength
+        let sourceBuffers = UnsafeMutableAudioBufferListPointer(source.mutableAudioBufferList)
+        let destinationBuffers = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
+        guard sourceBuffers.count == destinationBuffers.count else { return nil }
+        for index in sourceBuffers.indices {
+            let sourceBuffer = sourceBuffers[index]
+            let byteCount = min(
+                Int(sourceBuffer.mDataByteSize),
+                Int(destinationBuffers[index].mDataByteSize)
+            )
+            guard byteCount == 0 || (
+                sourceBuffer.mData != nil && destinationBuffers[index].mData != nil
+            ) else { return nil }
+            if byteCount > 0 {
+                memcpy(destinationBuffers[index].mData, sourceBuffer.mData, byteCount)
+                destinationBuffers[index].mDataByteSize = UInt32(byteCount)
+            }
+        }
+        return copy
     }
 
 }
@@ -307,7 +374,9 @@ extension VoiceInputController {
         VoiceInputController(
             authorization: SystemSpeechAuthorizationProvider(),
             makeTranscriber: {
-                let transcriber = try await makeSpeechAnalyzerTranscriber()
+                let transcriber = try await makeSpeechAnalyzerTranscriber(
+                    diagnostics: diagnostics
+                )
                 try await transcriber.startAnalysis()
                 return transcriber
             },
@@ -319,14 +388,19 @@ extension VoiceInputController {
 
 /// Isolated factory so the controller's @MainActor closure can await the
 /// transcriber's nonisolated async initializer.
-private func makeSpeechAnalyzerTranscriber() async throws -> SpeechAnalyzerTranscriber {
-    try await SpeechAnalyzerTranscriber()
+private func makeSpeechAnalyzerTranscriber(
+    diagnostics: (any VoiceInputDiagnostics)?
+) async throws -> SpeechAnalyzerTranscriber {
+    try await SpeechAnalyzerTranscriber(diagnostics: diagnostics)
 }
 
 /// Forwards voice lifecycle diagnostics into FloeLogger with the exact
 /// structured event names. Messages carry state and reason codes only.
 struct FloeVoiceDiagnostics: VoiceInputDiagnostics {
     private let logger = FloeLogger(category: .app)
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var acceptedBuffers = 0
+    nonisolated(unsafe) private static var analyzerInputs = 0
 
     func voicePermissionRequested() { logger.info("permissionRequested domain=voice") }
     func voicePermissionDenied(kind: String) { logger.info("permissionDenied domain=voice kind=\(kind)") }
@@ -336,5 +410,30 @@ struct FloeVoiceDiagnostics: VoiceInputDiagnostics {
     func voiceRouteChanged() { logger.info("routeChanged domain=voice") }
     func voiceListeningStopped() { logger.info("listeningStopped domain=voice") }
     func voiceFailed(reason: VoiceInputFailure) { logger.warning("speechFailed reason=\(reason.rawValue)") }
+    func voiceAudioBufferAccepted(frameCount: AVAudioFrameCount) {
+        let count = Self.lock.withLock {
+            Self.acceptedBuffers += 1
+            return Self.acceptedBuffers
+        }
+        if count == 1 || count.isMultiple(of: 100) {
+            logger.info("audioAccepted domain=voice buffers=\(count) frames=\(frameCount)")
+        }
+    }
+    func voiceAnalyzerInputProduced(count: Int) {
+        guard count > 0 else { return }
+        let total = Self.lock.withLock {
+            Self.analyzerInputs += count
+            return Self.analyzerInputs
+        }
+        if total == count || total.isMultiple(of: 100) {
+            logger.info("analyzerInputProduced domain=voice total=\(total)")
+        }
+    }
+    func voiceConverterFlushed(count: Int) {
+        logger.info("converterFlushed domain=voice inputs=\(count)")
+    }
+    func voiceTranscriptReceived(first: Bool) {
+        if first { logger.info("firstTranscript domain=voice") }
+    }
 }
 #endif

@@ -4,6 +4,19 @@
 import Foundation
 
 enum BrowserURLPolicy {
+    private static let previewLock = NSLock()
+    nonisolated(unsafe) private static var previewPrefixes: Set<String> = []
+
+    static func authorizePreview(_ url: URL) {
+        guard let prefix = previewPrefix(for: url) else { return }
+        previewLock.withLock { _ = previewPrefixes.insert(prefix) }
+    }
+
+    static func revokePreview(_ url: URL) {
+        guard let prefix = previewPrefix(for: url) else { return }
+        previewLock.withLock { _ = previewPrefixes.remove(prefix) }
+    }
+
     static func validate(_ value: String) throws -> URL {
         guard let url = URL(string: value),
               let scheme = url.scheme?.lowercased(),
@@ -12,13 +25,27 @@ enum BrowserURLPolicy {
         else {
             throw BrowserPolicyError.blocked("Only http and https URLs are allowed")
         }
-        guard !isPrivate(host) else {
+        guard !isPrivate(host) || isAuthorizedPreview(url) else {
             throw BrowserPolicyError.blocked("Loopback and private-network navigation is blocked")
         }
         guard url.user == nil, url.password == nil else {
             throw BrowserPolicyError.blocked("Credentials in URLs are not allowed")
         }
         return url
+    }
+
+    private static func isAuthorizedPreview(_ url: URL) -> Bool {
+        guard let prefix = previewPrefix(for: url) else { return false }
+        return previewLock.withLock { previewPrefixes.contains(prefix) }
+    }
+
+    private static func previewPrefix(for url: URL) -> String? {
+        guard url.scheme?.lowercased() == "http",
+              url.host == "127.0.0.1",
+              let port = url.port,
+              let token = url.pathComponents.dropFirst().first,
+              token.count >= 32 else { return nil }
+        return "http://127.0.0.1:\(port)/\(token)/"
     }
 
     private static func isPrivate(_ host: String) -> Bool {

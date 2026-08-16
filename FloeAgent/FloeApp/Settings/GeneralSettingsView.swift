@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // See docs/ARCHITECTURE_SETTINGS.md §5 row 1: appearance, language, default
-// start page, reduce-motion override, haptics, date-time display style and
-// the default agent mode. Every control reads from and writes to
+// reduce-motion override, haptics and date-time display style. Every control
+// reads from and writes to
 // SettingsCenter (UserDefaults or DB app_settings); no placeholder text.
 
 #if canImport(SwiftUI) && canImport(UIKit)
@@ -37,17 +37,6 @@ struct GeneralSettingsView: View {
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
 
-                Picker("settings.general.start_page", selection: Binding(
-                    get: { center.defaultStartPage },
-                    set: { newValue in
-                        Task { await center.setDefaultStartPage(newValue) }
-                    }
-                )) {
-                    ForEach(StartPage.allCases, id: \.self) { page in
-                        Text(title(for: page)).tag(page)
-                    }
-                }
-                .frame(minHeight: FloeTheme.minimumTarget)
             }
 
             Section("settings.general.accessibility") {
@@ -78,23 +67,6 @@ struct GeneralSettingsView: View {
                 .frame(minHeight: FloeTheme.minimumTarget)
             }
 
-            Section {
-                Picker("settings.general.agent_mode", selection: Binding(
-                    get: { center.defaultAgentMode },
-                    set: { newValue in
-                        Task { await center.setDefaultAgentMode(newValue) }
-                    }
-                )) {
-                    ForEach(AgentMode.allCases, id: \.self) { mode in
-                        Text(title(for: mode)).tag(mode)
-                    }
-                }
-                .frame(minHeight: FloeTheme.minimumTarget)
-            } header: {
-                Text("settings.general.agent")
-            } footer: {
-                Text("settings.general.agent_mode.footer")
-            }
         }
         .navigationTitle("settings.section.general")
         .task { await center.load() }
@@ -118,16 +90,6 @@ struct GeneralSettingsView: View {
         }
     }
 
-    private func title(for page: StartPage) -> LocalizedStringKey {
-        switch page {
-        case .home: "tab.home"
-        case .chat: "tab.chat"
-        case .files: "tab.files"
-        case .remote: "tab.hosts"
-        case .more: "tab.more"
-        }
-    }
-
     private func title(for style: DateTimeDisplayStyle) -> LocalizedStringKey {
         switch style {
         case .relative: "settings.general.datetime_style.relative"
@@ -135,12 +97,5 @@ struct GeneralSettingsView: View {
         }
     }
 
-    private func title(for mode: AgentMode) -> LocalizedStringKey {
-        switch mode {
-        case .human: "settings.general.agent_mode.human"
-        case .approvalModel: "settings.general.agent_mode.approval_model"
-        case .fullControl: "settings.general.agent_mode.full_control"
-        }
-    }
 }
 #endif

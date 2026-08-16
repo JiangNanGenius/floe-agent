@@ -8,6 +8,44 @@ import WebKit
 
 @Suite("FloeApp.FloeBrowserProtocol")
 struct BrowserProtocolTests {
+    @Test("Static preview serves only its tokenized workspace files")
+    func staticPreviewServerIsBounded() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-preview-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("<h1>Floe preview</h1>".utf8).write(
+            to: root.appendingPathComponent("index.html"),
+            options: .atomic
+        )
+
+        let (server, session) = try await LocalPreviewServer.start(root: root, entry: nil)
+        defer { server.stop() }
+        let (data, response) = try await URLSession.shared.data(from: session.url)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        #expect(String(data: data, encoding: .utf8) == "<h1>Floe preview</h1>")
+
+        let wrongToken = session.url
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("wrong-token/index.html")
+        let (_, deniedResponse) = try await URLSession.shared.data(from: wrongToken)
+        #expect((deniedResponse as? HTTPURLResponse)?.statusCode == 404)
+    }
+
+    @Test("Only an explicitly authorized tokenized loopback preview is allowed")
+    func localPreviewAuthorizationIsExact() throws {
+        let allowed = try #require(URL(string: "http://127.0.0.1:54321/0123456789abcdef0123456789abcdef/index.html"))
+        #expect(throws: BrowserPolicyError.self) { try BrowserURLPolicy.validate(allowed.absoluteString) }
+        BrowserURLPolicy.authorizePreview(allowed)
+        #expect(try BrowserURLPolicy.validate(allowed.absoluteString) == allowed)
+        #expect(throws: BrowserPolicyError.self) {
+            try BrowserURLPolicy.validate("http://127.0.0.1:54321/ffffffffffffffffffffffffffffffff/index.html")
+        }
+        BrowserURLPolicy.revokePreview(allowed)
+        #expect(throws: BrowserPolicyError.self) { try BrowserURLPolicy.validate(allowed.absoluteString) }
+    }
+
     @Test("DOM snapshots keep stable refs and emit mutation/input events")
     @MainActor
     func stableSnapshotAndEvents() async throws {

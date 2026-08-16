@@ -70,6 +70,17 @@ protocol VoiceInputDiagnostics: Sendable {
     func voiceRouteChanged()
     func voiceListeningStopped()
     func voiceFailed(reason: VoiceInputFailure)
+    func voiceAudioBufferAccepted(frameCount: AVAudioFrameCount)
+    func voiceAnalyzerInputProduced(count: Int)
+    func voiceConverterFlushed(count: Int)
+    func voiceTranscriptReceived(first: Bool)
+}
+
+extension VoiceInputDiagnostics {
+    func voiceAudioBufferAccepted(frameCount: AVAudioFrameCount) {}
+    func voiceAnalyzerInputProduced(count: Int) {}
+    func voiceConverterFlushed(count: Int) {}
+    func voiceTranscriptReceived(first: Bool) {}
 }
 
 /// Microphone + speech authorization seam.

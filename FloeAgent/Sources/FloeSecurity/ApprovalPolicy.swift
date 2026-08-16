@@ -68,6 +68,103 @@ public struct ModelApprovalPolicy: ApprovalPolicy {
     }
 }
 
+/// Three-tier automatic mode: deterministic low-risk actions are allowed,
+/// sensitive actions always return to the user, and only the ambiguous
+/// middle tier may be delegated to a configured, tool-free approval model.
+public struct AutomaticApprovalPolicy: ApprovalPolicy {
+    public let policyName = "automatic"
+    private let backend: (any ModelApprovalPolicy.DecisionBackend)?
+
+    public init(backend: (any ModelApprovalPolicy.DecisionBackend)? = nil) {
+        self.backend = backend
+    }
+
+    public func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+        let risks = action.riskLabels
+        let alwaysAsk: Set<String> = [
+            "deletesFiles",
+            "accessesCredentials",
+            "modifiesRemoteSystem"
+        ]
+        if !risks.isDisjoint(with: alwaysAsk) {
+            return .escalateToHuman(reason: "Sensitive action requires explicit approval")
+        }
+
+        let ambiguous: Set<String> = [
+            "controlsGUI",
+            "sendsDataToProvider",
+            "executesRemoteCommand"
+        ]
+        if !risks.isDisjoint(with: ambiguous) {
+            guard let backend else {
+                return .escalateToHuman(reason: "No approval model is configured for this medium-risk action")
+            }
+            do {
+                return try await backend.decide(action)
+            } catch {
+                return .escalateToHuman(reason: "Approval model unavailable: \(error.localizedDescription)")
+            }
+        }
+        return .allow(
+            scope: Self.scope(for: action.toolCall),
+            expiresAt: nil
+        )
+    }
+
+    private static func scope(for call: ToolCall) -> ApprovalScope {
+        switch call.scope {
+        case .local:
+            ApprovalScope(toolName: call.toolName, singleUse: true)
+        case .host(let hostID):
+            ApprovalScope(toolName: call.toolName, hostID: hostID, singleUse: true)
+        case .hostPath(let hostID, let path):
+            ApprovalScope(
+                toolName: call.toolName,
+                hostID: hostID,
+                paths: [path],
+                singleUse: true
+            )
+        }
+    }
+}
+
+/// Per-task full access removes ordinary prompts, but does not turn deletion,
+/// credential access or data upload into ambient authority. Those categories
+/// remain explicit single-action decisions in every user-facing mode.
+public struct TaskFullAccessPolicy: ApprovalPolicy {
+    public let policyName = "full-access"
+
+    public init() {}
+
+    public func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+        let alwaysAsk: Set<String> = [
+            "deletesFiles",
+            "accessesCredentials",
+            "sendsDataToProvider"
+        ]
+        if !action.riskLabels.isDisjoint(with: alwaysAsk) {
+            return .escalateToHuman(reason: "This sensitive action always requires explicit approval")
+        }
+        return .allow(
+            scope: AutomaticApprovalPolicyScope.scope(for: action.toolCall),
+            expiresAt: nil
+        )
+    }
+}
+
+private enum AutomaticApprovalPolicyScope {
+    static func scope(for call: ToolCall) -> ApprovalScope {
+        switch call.scope {
+        case .local:
+            ApprovalScope(toolName: call.toolName, singleUse: true)
+        case .host(let hostID):
+            ApprovalScope(toolName: call.toolName, hostID: hostID, singleUse: true)
+        case .hostPath(let hostID, let path):
+            ApprovalScope(toolName: call.toolName, hostID: hostID, paths: [path], singleUse: true)
+        }
+    }
+}
+
 /// Policy 3: full control for one host within a time window.
 /// Enabling requires Face ID or passcode plus a risk acknowledgement
 /// (handled by the UI layer before constructing the grant).

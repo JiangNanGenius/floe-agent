@@ -74,5 +74,11 @@ public enum AgentEvent: Sendable, Codable, Hashable {
         case maxTokens
         case stopSequence
         case cancelled
+        /// The model was given one tool-free turn to summarize after the
+        /// activation exhausted its mobile-safe iteration budget.
+        case budgetLimited
+        /// Deterministic loop guardrails detected repeated calls without
+        /// observable progress and forced a final response.
+        case noProgress
     }
 }

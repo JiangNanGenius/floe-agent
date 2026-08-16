@@ -18,6 +18,14 @@ public enum ConversationTitleOrigin: String, Sendable, Codable, CaseIterable, Ha
     case manual
 }
 
+/// User-facing approval choice. Detailed capability and path fields remain
+/// internal ceilings; the task UI intentionally exposes only these modes.
+public enum TaskApprovalMode: String, Sendable, Codable, CaseIterable, Hashable {
+    case ask
+    case automatic
+    case fullAccess
+}
+
 public struct TaskPolicy: Sendable, Codable, Hashable {
     public var conversationID: UUID
     public var approvalMode: String?
@@ -31,6 +39,15 @@ public struct TaskPolicy: Sendable, Codable, Hashable {
     public var recoveryPolicy: TaskRecoveryPolicy
     public var notificationPolicy: TaskNotificationPolicy
     public var updatedAt: Date
+
+    public var resolvedApprovalMode: TaskApprovalMode {
+        guard let approvalMode else { return .ask }
+        switch approvalMode {
+        case TaskApprovalMode.automatic.rawValue, "approvalModel": return .automatic
+        case TaskApprovalMode.fullAccess.rawValue, "fullControl": return .fullAccess
+        default: return .ask
+        }
+    }
 
     public init(
         conversationID: UUID,

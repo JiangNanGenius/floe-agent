@@ -235,15 +235,15 @@ public struct HarnessBudgets: Sendable, Codable, Hashable {
     public var maxConcurrentChildren: Int
 
     public init(
-        maxParentIterations: Int = 64,
-        maxChildIterations: Int = 24,
-        maxTotalIterations: Int = 96,
-        maxConcurrentChildren: Int = 3
+        maxParentIterations: Int = 90,
+        maxChildIterations: Int = 50,
+        maxTotalIterations: Int = 290,
+        maxConcurrentChildren: Int = 4
     ) {
         self.maxParentIterations = max(1, maxParentIterations)
         self.maxChildIterations = max(1, maxChildIterations)
         self.maxTotalIterations = max(1, maxTotalIterations)
-        self.maxConcurrentChildren = min(3, max(0, maxConcurrentChildren))
+        self.maxConcurrentChildren = min(4, max(0, maxConcurrentChildren))
     }
 }
 
@@ -324,6 +324,14 @@ public actor HarnessBudgetLedger {
 
     public func snapshot() -> (parent: Int, total: Int, activeChildren: Int) {
         (parentIterations, totalIterations, activeChildren.count)
+    }
+
+    /// Restores durable counters before a resumed activation makes another
+    /// provider call. Values are clamped so a malformed checkpoint cannot
+    /// manufacture additional budget or move counters backwards.
+    public func restore(parent: Int, total: Int) {
+        parentIterations = min(budgets.maxParentIterations, max(parentIterations, parent))
+        totalIterations = min(budgets.maxTotalIterations, max(totalIterations, total))
     }
 
     private func reserveTotal() throws {

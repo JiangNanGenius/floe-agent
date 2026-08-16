@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // Presentation state for the More tab: Runs history, Providers, Settings,
-// Privacy, and (DEBUG) Diagnostics. Presentation state only.
+// and Diagnostics. Presentation state only.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation

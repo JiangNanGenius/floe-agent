@@ -22,6 +22,7 @@ public struct RunLaunchRequest: Sendable, Hashable {
     public var attachments: [AttachmentRef]
     public var startedAt: Date
     public var conversationMode: String
+    public var initialApprovalMode: TaskApprovalMode
 
     public init(
         conversationID: UUID? = nil,
@@ -32,6 +33,7 @@ public struct RunLaunchRequest: Sendable, Hashable {
         workspaceID: UUID? = nil,
         attachments: [AttachmentRef] = [],
         conversationMode: String = "chat",
+        initialApprovalMode: TaskApprovalMode = .ask,
         startedAt: Date = Date()
     ) {
         self.conversationID = conversationID
@@ -42,6 +44,7 @@ public struct RunLaunchRequest: Sendable, Hashable {
         self.workspaceID = workspaceID
         self.attachments = attachments
         self.conversationMode = conversationMode
+        self.initialApprovalMode = initialApprovalMode
         self.startedAt = startedAt
     }
 }
@@ -186,10 +189,15 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 )
                 try db.execute(
                     sql: """
-                        INSERT INTO task_policies (conversation_id, updated_at)
-                        VALUES (?, ?)
+                        INSERT INTO task_policies
+                            (conversation_id, approval_mode, updated_at)
+                        VALUES (?, ?, ?)
                         """,
-                    arguments: [conversation.id.uuidString, PersistenceCodec.encode(now)]
+                    arguments: [
+                        conversation.id.uuidString,
+                        request.initialApprovalMode.rawValue,
+                        PersistenceCodec.encode(now)
+                    ]
                 )
             } else {
                 guard let rawOwner = try String.fetchOne(

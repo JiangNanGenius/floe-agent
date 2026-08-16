@@ -22,6 +22,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     @Published private(set) var activeTabID: UUID?
     @Published private(set) var isUserControlling = false
     @Published var addressText = ""
+    @Published private(set) var presentationRequestID = UUID()
 
     private struct TaskSession {
         var sessionID: UUID
@@ -110,7 +111,13 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             forMainFrameOnly: true,
             in: contentWorld
         ))
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        // Give off-screen/task-owned tabs a real viewport before SwiftUI
+        // presents them. A zero-sized WKWebView makes every DOM node appear
+        // invisible and breaks semantic observation during background work.
+        let webView = WKWebView(
+            frame: CGRect(x: 0, y: 0, width: 1_024, height: 768),
+            configuration: configuration
+        )
         webView.navigationDelegate = self
         webView.uiDelegate = self
         let id = UUID()
@@ -149,6 +156,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
 
     func takeControl() { isUserControlling = true }
     func returnToAgent() { isUserControlling = false }
+    func requestPresentation() { presentationRequestID = UUID() }
 
     func execute(_ command: BrowserCommand) async -> BrowserResult {
         guard command.version == 1 else {
@@ -528,7 +536,12 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
                     return await observeResult(command, tabID: tabID, cursor: nil)
                 }
             } catch {
-                return failure(command, status: .failed, code: "probe", error.localizedDescription)
+                // Document-start script injection and the isolated content
+                // world can briefly race navigation commit. Treat that as a
+                // not-yet-satisfied wait and retry until the bounded deadline.
+                if Date() >= deadline {
+                    return failure(command, status: .failed, code: "probe", error.localizedDescription)
+                }
             }
             try? await Task.sleep(for: .milliseconds(100))
         } while Date() < deadline && !Task.isCancelled
@@ -888,8 +901,15 @@ extension BrowserSessionCenter: WKNavigationDelegate, WKUIDelegate {
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction
     ) async -> WKNavigationActionPolicy {
-        guard let url = navigationAction.request.url,
-              (try? BrowserURLPolicy.validate(url.absoluteString)) != nil else {
+        guard let url = navigationAction.request.url else {
+            return .cancel
+        }
+        // WebKit uses its own blank document while `loadHTMLString` commits.
+        // It is not a tool-addressable URL and must remain available for
+        // local fixtures/previews; all external navigations still pass the
+        // normal http/https/private-network policy below.
+        if url.absoluteString == "about:blank" { return .allow }
+        guard (try? BrowserURLPolicy.validate(url.absoluteString)) != nil else {
             return .cancel
         }
         return .allow

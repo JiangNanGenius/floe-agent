@@ -91,6 +91,12 @@ struct RootView: View {
         .onReceive(environment.conversationCenter.$conversations) { conversations in
             router.reconcileConversations(Set(conversations.map(\.id)))
         }
+        .onChange(of: environment.browserCenter.presentationRequestID) { _, _ in
+            // Browser and preview tools run outside the view hierarchy. Their
+            // presentation request is projected through the shared router so
+            // the visible WKWebView appears in the current task inspector.
+            router.showInspector(.browser)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .floeOpenConversation)) { notification in
             if let id = notification.userInfo?["conversationID"] as? UUID {
                 router.openConversation(id)
@@ -516,8 +522,8 @@ private struct ChatDetailEmptyView: View {
     }
 }
 
-/// The More list: Runs, Providers, Settings, Privacy, and (DEBUG only)
-/// Diagnostics. As the iPhone More tab root it pushes sub-screens; as the
+/// The More list: Runs, Providers, Settings, and Diagnostics. As the iPhone
+/// More tab root it pushes sub-screens; as the
 /// iPad content column it renders the sidebar-selected section directly.
 private struct MoreListView: View {
     /// When set (iPad content column), that section's screen is embedded

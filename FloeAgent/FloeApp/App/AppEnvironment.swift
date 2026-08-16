@@ -141,6 +141,7 @@ final class AppEnvironment: ObservableObject {
         let pythonService = Self.makeRemotePythonService(hostStore: hostStore)
         registerExecutionTools(pythonService: pythonService)
         registerBrowserTools(center: browserCenter)
+        registerPreviewTools(browser: browserCenter)
         self.remotePythonProbe = FloeExecution.RemotePythonProbe(service: pythonService)
     }
 

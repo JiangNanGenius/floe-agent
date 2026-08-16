@@ -146,9 +146,9 @@ public actor FloeAgentRuntime {
         public var toolsEnabled: Bool
         /// Pause timeout before automatic checkpoint.
         public var pauseTimeout: TimeInterval
-        /// Maximum tool executions per run. The only reliable defense
-        /// against an infinite tool-request loop; exceeding it fails the
-        /// run as recoverable (see ARCHITECTURE_EXECUTION.md §3.3).
+        /// Maximum parent iterations in the mobile activation budget. The
+        /// runtime uses the shared Harness ledger and finishes with a
+        /// tool-free summary when this value is exhausted.
         public var maxToolSteps: Int
 
         public init(
@@ -162,7 +162,7 @@ public actor FloeAgentRuntime {
             allowedWorkspacePaths: [String] = [],
             toolsEnabled: Bool = true,
             pauseTimeout: TimeInterval = 300,
-            maxToolSteps: Int = 32
+            maxToolSteps: Int = 90
         ) {
             self.conversationID = conversationID
             self.provider = provider
@@ -194,6 +194,7 @@ public actor FloeAgentRuntime {
     private let intelligenceStore: SQLiteIntelligenceStore?
     private let sink: (any AgentEventSink)?
     private let contextEngine: (any ContextEngine)?
+    private let budgetLedger: HarnessBudgetLedger
 
     private var messages: [ConversationMessage] = []
     private var pendingToolCalls: [ToolCall] = []
@@ -210,6 +211,9 @@ public actor FloeAgentRuntime {
     /// `Configuration.maxToolSteps`).
     private var toolStepCount = 0
     private var contextOverflowRecoveryCount = 0
+    private var loopGuard = ToolLoopGuard()
+    private var forcedStopReason: AgentEvent.StopReason?
+    private var isFinalizingWithoutTools = false
 
     private var streamTask: Task<Void, Never>?
     private var cancellationToken = CancellationToken()
@@ -244,6 +248,15 @@ public actor FloeAgentRuntime {
         self.contextEngine = contextEngine
         self.sink = sink
         self.runID = runID
+        self.budgetLedger = HarnessBudgetLedger(
+            rootRunID: runID,
+            budgets: HarnessBudgets(
+                maxParentIterations: max(1, configuration.maxToolSteps),
+                maxChildIterations: 50,
+                maxTotalIterations: max(1, configuration.maxToolSteps + 200),
+                maxConcurrentChildren: 4
+            )
+        )
     }
 
     // MARK: Transitions
@@ -393,6 +406,11 @@ public actor FloeAgentRuntime {
         pendingToolResults = checkpoint.pendingToolResults
         grants = checkpoint.approvals
         executedIdempotencyKeys = checkpoint.idempotencyKeys
+        toolStepCount = checkpoint.parentIterationCount ?? 0
+        await budgetLedger.restore(
+            parent: checkpoint.parentIterationCount ?? 0,
+            total: checkpoint.totalIterationCount ?? checkpoint.parentIterationCount ?? 0
+        )
         let goal = messages.last(where: { $0.role == "user" })?.content ?? ""
         await transition(to: .preparing(AgentState.PreparingInfo(goal: goal, resumedFromCheckpoint: true)))
         await runModelTurn()
@@ -446,7 +464,9 @@ public actor FloeAgentRuntime {
         streamText = ""
         streamTextByteCount = 0
 
-        let supportsTools = configuration.toolsEnabled && configuration.model.capabilities.contains(.tools)
+        let supportsTools = configuration.toolsEnabled
+            && configuration.model.capabilities.contains(.tools)
+            && !isFinalizingWithoutTools
         var catalogDescriptors: [ToolCatalog.Descriptor]
         if configuration.conversationMode == .plan {
             catalogDescriptors = PlanToolPolicy().allowedDescriptors(from: ToolCatalog.allDescriptors)
@@ -460,6 +480,7 @@ public actor FloeAgentRuntime {
         if let effectiveAllowedNames {
             catalogDescriptors.removeAll { !effectiveAllowedNames.contains($0.name) }
         }
+        var legacyMessages = messages.map { (role: $0.role, content: $0.content) }
         var contentMessages = messages.map { message in
             var parts: [ProviderContentPart] = [.text(message.content)]
             if configuration.model.capabilities.contains(.vision) {
@@ -468,6 +489,21 @@ public actor FloeAgentRuntime {
                 }
             }
             return ProviderMessage(role: message.role, content: parts)
+        }
+        // Hermes-style budget pressure is ephemeral: it guides this provider
+        // request but never pollutes durable conversation history.
+        let iterationSnapshot = await budgetLedger.snapshot()
+        let remainingIterations = max(0, configuration.maxToolSteps - iterationSnapshot.parent)
+        let pressure: String? = if !isFinalizingWithoutTools && remainingIterations <= 3 {
+            "Harness control: only \(remainingIterations) tool iterations remain. Return the final answer now and do not call another tool unless it is strictly required to avoid an incorrect answer."
+        } else if !isFinalizingWithoutTools && remainingIterations <= 10 {
+            "Harness control: \(remainingIterations) tool iterations remain. Start wrapping up, consolidate evidence, and prepare a final answer."
+        } else {
+            nil
+        }
+        if let pressure {
+            legacyMessages.append((role: "system", content: pressure))
+            contentMessages.append(ProviderMessage(role: "system", content: [.text(pressure)]))
         }
         if configuration.model.capabilities.contains(.vision) {
             let evidence = pendingToolResults.flatMap(\.artifacts)
@@ -482,7 +518,7 @@ public actor FloeAgentRuntime {
         let request = ProviderStreamRequest(
             provider: configuration.provider,
             model: configuration.model,
-            messages: messages.map { (role: $0.role, content: $0.content) },
+            messages: legacyMessages,
             contentMessages: contentMessages,
             toolResults: pendingToolResults.map {
                 (callID: $0.callID, output: $0.outputSummary)
@@ -601,6 +637,10 @@ public actor FloeAgentRuntime {
             ))
 
         case .toolRequest(let call):
+            if isFinalizingWithoutTools {
+                await completeRun(stopReason: forcedStopReason ?? .budgetLimited)
+                return
+            }
             let scoped = call.withIDContext(runID: runID)
             await handleToolRequest(scoped)
 
@@ -631,22 +671,26 @@ public actor FloeAgentRuntime {
             }
 
         case .completed(let completion):
-            await completeRun(stopReason: completion.stopReason)
+            await completeRun(stopReason: forcedStopReason ?? completion.stopReason)
         }
     }
 
     /// streamingModel → executingTool | waitingApproval → streamingModel.
     private func handleToolRequest(_ call: ToolCall) async {
-        // Anti-loop guard: count every tool request, including rejected or
-        // failed ones — a model that keeps re-requesting after failures
-        // must still hit the ceiling. Exceeding it fails the run as
-        // recoverable instead of re-entering the model stream.
-        toolStepCount += 1
-        guard toolStepCount <= configuration.maxToolSteps else {
-            await failRun(
-                message: "Exceeded max tool steps (\(configuration.maxToolSteps))",
-                recoverable: true
+        do {
+            try await budgetLedger.reserveParentIteration()
+            toolStepCount += 1
+        } catch {
+            pendingToolCalls.append(call)
+            let exhausted = ToolResult(
+                callID: call.id,
+                status: .failed,
+                outputSummary: "The activation iteration budget is exhausted. Summarize the work completed, evidence collected, and any remaining limitations without calling more tools.",
+                outputDigest: ""
             )
+            await audit(toolCall: call, result: exhausted, decision: "deny:harness-budget")
+            await emit(.toolResult(exhausted))
+            await beginForcedFinalization(with: exhausted, stopReason: .budgetLimited)
             return
         }
 
@@ -664,7 +708,7 @@ public actor FloeAgentRuntime {
                 outputDigest: ""
             )
             await audit(toolCall: call, result: result, decision: "deny:not-in-catalog")
-            await resumeStream(with: result)
+            await resumeStream(with: result, after: call)
             return
         }
 
@@ -682,14 +726,14 @@ public actor FloeAgentRuntime {
                 outputDigest: ""
             )
             await audit(toolCall: call, result: result, decision: "deny:skill-capability")
-            await resumeStream(with: result)
+            await resumeStream(with: result, after: call)
             return
         }
 
         if configuration.conversationMode == .plan,
            let denial = PlanToolPolicy().denialResult(call: call, descriptor: descriptor) {
             await audit(toolCall: call, result: denial, decision: "deny:plan-read-only")
-            await resumeStream(with: denial)
+            await resumeStream(with: denial, after: call)
             return
         }
 
@@ -702,7 +746,7 @@ public actor FloeAgentRuntime {
                 outputDigest: ""
             )
             await audit(toolCall: call, result: result, decision: "deny:missing-remote-scope")
-            await resumeStream(with: result)
+            await resumeStream(with: result, after: call)
             return
         }
 
@@ -725,7 +769,7 @@ public actor FloeAgentRuntime {
                     outputDigest: ""
                 )
                 await audit(toolCall: call, result: result, decision: "stopped:\(patternID)")
-                await resumeStream(with: result)
+                await resumeStream(with: result, after: call)
                 return
             }
         }
@@ -758,7 +802,7 @@ public actor FloeAgentRuntime {
                 outputDigest: ""
             )
             await audit(toolCall: call, result: result, decision: "deny:\(reason)")
-            await resumeStream(with: result)
+            await resumeStream(with: result, after: call)
 
         case .escalateToHuman(let reason):
             await transition(to: .waitingApproval(AgentState.WaitingApproval(toolCall: call, reason: reason)))
@@ -780,7 +824,7 @@ public actor FloeAgentRuntime {
                     outputDigest: ""
                 )
                 await audit(toolCall: call, result: result, decision: "deny:human:\(denyReason)")
-                await resumeStream(with: result)
+                await resumeStream(with: result, after: call)
             case .escalateToHuman, .stopped:
                 let result = ToolResult(
                     callID: call.id,
@@ -789,7 +833,7 @@ public actor FloeAgentRuntime {
                     outputDigest: ""
                 )
                 await audit(toolCall: call, result: result, decision: "deny:unresolved")
-                await resumeStream(with: result)
+                await resumeStream(with: result, after: call)
             }
 
         case .stopped(let gateReason):
@@ -800,7 +844,7 @@ public actor FloeAgentRuntime {
                 outputDigest: ""
             )
             await audit(toolCall: call, result: result, decision: "stopped:\(gateReason)")
-            await resumeStream(with: result)
+            await resumeStream(with: result, after: call)
         }
     }
 
@@ -815,7 +859,7 @@ public actor FloeAgentRuntime {
                 outputDigest: ""
             )
             await audit(toolCall: call, result: result, decision: "deny:scope-mismatch-or-expired")
-            await resumeStream(with: result)
+            await resumeStream(with: result, after: call)
             return
         }
 
@@ -826,7 +870,7 @@ public actor FloeAgentRuntime {
                 status: .ok,
                 outputSummary: "Skipped: duplicate idempotency key",
                 outputDigest: ""
-            ))
+            ), after: call)
             return
         }
 
@@ -869,13 +913,43 @@ public actor FloeAgentRuntime {
         guard case .executingTool = state else { return }
 
         await emit(.toolResult(result))
-        await resumeStream(with: result)
+        await resumeStream(with: result, after: call)
     }
 
     /// streamingModel ← toolResult: queues the result and starts the next
     /// model turn.
-    private func resumeStream(with result: ToolResult) async {
+    private func resumeStream(with result: ToolResult, after call: ToolCall) async {
         pendingToolResults.append(result)
+        if let guardrail = loopGuard.record(call: call, result: result) {
+            if guardrail.shouldStop {
+                await beginForcedFinalization(with: nil, stopReason: .noProgress)
+                return
+            }
+            pendingToolResults[pendingToolResults.count - 1].outputSummary +=
+                "\n\nHarness warning: \(guardrail.message)"
+        }
+        await transition(to: .streamingModel(AgentState.StreamingInfo(
+            modelRemoteID: configuration.model.remoteModelID,
+            textSoFar: streamText
+        )))
+        await runModelTurn()
+    }
+
+    private func beginForcedFinalization(
+        with result: ToolResult?,
+        stopReason: AgentEvent.StopReason
+    ) async {
+        if let result { pendingToolResults.append(result) }
+        guard !isFinalizingWithoutTools else {
+            await completeRun(stopReason: stopReason)
+            return
+        }
+        forcedStopReason = stopReason
+        isFinalizingWithoutTools = true
+        messages.append(ConversationMessage(
+            role: "system",
+            content: "Harness control: ordinary tools are now disabled because execution stopped making progress or reached its budget. Give one concise final answer describing completed work, evidence, failures, and the exact next user action if one is needed. Do not request another tool."
+        ))
         await transition(to: .streamingModel(AgentState.StreamingInfo(
             modelRemoteID: configuration.model.remoteModelID,
             textSoFar: streamText
@@ -957,6 +1031,7 @@ public actor FloeAgentRuntime {
                 content: streamText
             ))
         }
+        let iterationSnapshot = await budgetLedger.snapshot()
         let checkpoint = AgentCheckpoint(
             runID: runID,
             conversationID: configuration.conversationID,
@@ -967,8 +1042,8 @@ public actor FloeAgentRuntime {
             approvals: grants,
             idempotencyKeys: executedIdempotencyKeys,
             conversationMode: configuration.conversationMode,
-            parentIterationCount: toolStepCount,
-            totalIterationCount: toolStepCount
+            parentIterationCount: iterationSnapshot.parent,
+            totalIterationCount: iterationSnapshot.total
         )
         try await checkpointStore.save(checkpoint)
     }
@@ -1065,5 +1140,109 @@ public actor FloeAgentRuntime {
         case .completed:
             return 64
         }
+    }
+}
+
+private struct ToolLoopGuardrailDecision {
+    var shouldStop: Bool
+    var message: String
+}
+
+/// Hermes-style per-user-turn guardrails. This deliberately compares
+/// canonical arguments and observable results rather than call IDs, which
+/// providers commonly regenerate on every retry.
+private struct ToolLoopGuard {
+    private var previousExactFingerprint: String?
+    private var exactFailureCount = 0
+    private var previousFailedTool: String?
+    private var sameToolFailureCount = 0
+    private var previousProgressFingerprint: String?
+    private var idempotentNoProgressCount = 0
+
+    mutating func record(
+        call: ToolCall,
+        result: ToolResult
+    ) -> ToolLoopGuardrailDecision? {
+        let arguments = Self.canonicalDigest(call.argumentsJSON)
+        let observableOutput = result.outputDigest.isEmpty
+            ? Self.digest(Data(result.outputSummary.utf8))
+            : result.outputDigest.lowercased()
+        let exact = "\(call.toolName)|\(arguments)|\(result.status.rawValue)|\(observableOutput)"
+        let progress = "\(call.toolName)|\(arguments)|\(observableOutput)"
+        let failed = result.status != .ok
+
+        if failed, exact == previousExactFingerprint {
+            exactFailureCount += 1
+        } else {
+            previousExactFingerprint = failed ? exact : nil
+            exactFailureCount = failed ? 1 : 0
+        }
+
+        if failed, call.toolName == previousFailedTool {
+            sameToolFailureCount += 1
+        } else {
+            previousFailedTool = failed ? call.toolName : nil
+            sameToolFailureCount = failed ? 1 : 0
+        }
+
+        if progress == previousProgressFingerprint {
+            idempotentNoProgressCount += 1
+        } else {
+            previousProgressFingerprint = progress
+            idempotentNoProgressCount = 1
+        }
+
+        if exactFailureCount >= 5 {
+            return ToolLoopGuardrailDecision(
+                shouldStop: true,
+                message: "The same tool call failed five times with the same result."
+            )
+        }
+        if sameToolFailureCount >= 8 {
+            return ToolLoopGuardrailDecision(
+                shouldStop: true,
+                message: "The same tool continued failing without a successful alternative."
+            )
+        }
+        if idempotentNoProgressCount >= 5 {
+            return ToolLoopGuardrailDecision(
+                shouldStop: true,
+                message: "Repeated idempotent calls produced no observable progress."
+            )
+        }
+        if exactFailureCount == 2 {
+            return ToolLoopGuardrailDecision(
+                shouldStop: false,
+                message: "This exact call already failed twice; change the approach instead of retrying it."
+            )
+        }
+        if sameToolFailureCount == 3 {
+            return ToolLoopGuardrailDecision(
+                shouldStop: false,
+                message: "This tool has failed three times; inspect the failure and choose a different path."
+            )
+        }
+        if idempotentNoProgressCount == 2 {
+            return ToolLoopGuardrailDecision(
+                shouldStop: false,
+                message: "The previous identical call produced the same result and should not be repeated."
+            )
+        }
+        return nil
+    }
+
+    private static func canonicalDigest(_ data: Data) -> String {
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let canonical = try? JSONSerialization.data(
+                withJSONObject: object,
+                options: [.sortedKeys, .withoutEscapingSlashes]
+              ) else {
+            return digest(data)
+        }
+        return digest(canonical)
+    }
+
+    private static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }

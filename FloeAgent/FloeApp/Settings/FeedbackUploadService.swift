@@ -1,4 +1,4 @@
-// FloeApp — Explicit, redacted user feedback upload through FormBold.
+// FloeApp — Explicit, redacted user feedback upload to Floe's own service.
 //
 // SPDX-License-Identifier: MPL-2.0
 
@@ -36,13 +36,17 @@ enum FeedbackUploadError: LocalizedError, Equatable {
 }
 
 enum FeedbackUploadService {
-    static let endpoint = URL(string: "https://formbold.com/s/oJaR2")!
+    static let endpoint = URL(string: "https://www.floe-agent.com/api/v1/public/reports")!
     static let maximumProblemCharacters = 8_000
-    static let maximumDiagnosticsCharacters = 240_000
+    // The service accepts at most twenty 8 KiB events. Reserve one event for
+    // the report summary and keep every diagnostics chunk comfortably below
+    // the server's UTF-8 byte limit.
+    static let maximumDiagnosticsCharacters = 120_000
+    private static let diagnosticsChunkBytes = 7_000
 
-    /// Uploads only after the user explicitly presses Submit. FormBold accepts
-    /// normal named form fields, so diagnostics travel as bounded UTF-8 text;
-    /// this avoids requiring FormBold's separately billed file-upload feature.
+    /// Uploads only after the user explicitly presses Submit. The public app
+    /// endpoint is server-rate-limited and deliberately requires no reusable
+    /// secret in the IPA.
     static func upload(
         _ submission: FeedbackSubmission,
         session: URLSession = .shared
@@ -65,36 +69,60 @@ enum FeedbackUploadService {
             throw FeedbackUploadError.emptyProblem
         }
 
-        let problem = SecretRedactor.redact(
+        let redactedProblem = SecretRedactor.redact(
             String(submission.problem.prefix(maximumProblemCharacters))
         )
+        let problem = utf8Chunks(redactedProblem, maximumBytes: 7_800).first ?? ""
         let diagnostics = submission.diagnostics.map {
             SecretRedactor.redact(String($0.suffix(maximumDiagnosticsCharacters)))
         }
         let info = Bundle.main.infoDictionary
-        var fields: [(String, String)] = [
-            ("subject", "Floe Agent problem report"),
-            ("problem", problem),
-            ("message", problem),
-            ("submission_id", submission.id.uuidString),
-            ("app_version", info?["CFBundleShortVersionString"] as? String ?? "unknown"),
-            ("app_build", info?["CFBundleVersion"] as? String ?? "unknown"),
-            ("os", ProcessInfo.processInfo.operatingSystemVersionString),
-            ("locale", Locale.current.identifier),
-            ("diagnostics_included", diagnostics == nil ? "false" : "true")
-        ]
+        let version = info?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = info?["CFBundleVersion"] as? String ?? "unknown"
+        let os = ProcessInfo.processInfo.operatingSystemVersionString
+        var events = [ReportEvent(
+            clientEventID: "feedback-\(submission.id.uuidString)",
+            occurredAt: reportTimestamp(),
+            level: "info",
+            category: "feedback",
+            message: problem,
+            appVersion: version,
+            appBuild: build,
+            osVersion: os,
+            deviceModel: deviceModel,
+            sessionID: submission.id.uuidString,
+            metadata: ["diagnostics_included": diagnostics == nil ? "false" : "true"]
+        )]
         if let diagnostics {
-            fields.append(("diagnostics", diagnostics))
+            for (index, chunk) in utf8Chunks(diagnostics, maximumBytes: diagnosticsChunkBytes).prefix(19).enumerated() {
+                events.append(ReportEvent(
+                    clientEventID: "diagnostics-\(submission.id.uuidString)-\(index)",
+                    occurredAt: reportTimestamp(),
+                    level: "info",
+                    category: "feedback",
+                    message: chunk,
+                    appVersion: version,
+                    appBuild: build,
+                    osVersion: os,
+                    deviceModel: deviceModel,
+                    sessionID: submission.id.uuidString,
+                    metadata: ["kind": "diagnostics", "part": String(index + 1)]
+                ))
+            }
+        }
+
+        let manifest = ReportManifest(problem: problem, locale: Locale.current.identifier, events: events)
+        let manifestData = try JSONEncoder().encode(manifest)
+        guard let manifestString = String(data: manifestData, encoding: .utf8) else {
+            throw FeedbackUploadError.invalidResponse
         }
 
         var body = Data()
-        for (name, value) in fields {
-            body.appendUTF8("--\(boundary)\r\n")
-            body.appendUTF8("Content-Disposition: form-data; name=\"\(name)\"\r\n")
-            body.appendUTF8("Content-Type: text/plain; charset=utf-8\r\n\r\n")
-            body.appendUTF8(value)
-            body.appendUTF8("\r\n")
-        }
+        body.appendUTF8("--\(boundary)\r\n")
+        body.appendUTF8("Content-Disposition: form-data; name=\"manifest\"\r\n")
+        body.appendUTF8("Content-Type: application/json; charset=utf-8\r\n\r\n")
+        body.appendUTF8(manifestString)
+        body.appendUTF8("\r\n")
         body.appendUTF8("--\(boundary)--\r\n")
 
         var request = URLRequest(url: endpoint)
@@ -107,6 +135,71 @@ enum FeedbackUploadService {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.httpBody = body
         return request
+    }
+
+    private static var deviceModel: String {
+        var system = utsname()
+        uname(&system)
+        return withUnsafePointer(to: &system.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) }
+        }
+    }
+
+    private static func utf8Chunks(_ value: String, maximumBytes: Int) -> [String] {
+        var chunks: [String] = []
+        var current = ""
+        var size = 0
+        for scalar in value.unicodeScalars {
+            let scalarString = String(scalar)
+            let scalarSize = scalarString.utf8.count
+            if size + scalarSize > maximumBytes, !current.isEmpty {
+                chunks.append(current)
+                current = ""
+                size = 0
+            }
+            current.append(scalarString)
+            size += scalarSize
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
+    }
+
+    private static func reportTimestamp() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: Date())
+    }
+}
+
+private struct ReportManifest: Encodable {
+    let problem: String
+    let locale: String
+    let events: [ReportEvent]
+}
+
+private struct ReportEvent: Encodable {
+    let clientEventID: String
+    let occurredAt: String
+    let level: String
+    let category: String
+    let message: String
+    let appVersion: String
+    let appBuild: String
+    let osVersion: String
+    let deviceModel: String
+    let sessionID: String
+    let metadata: [String: String]
+
+    enum CodingKeys: String, CodingKey {
+        case clientEventID = "client_event_id"
+        case occurredAt = "occurred_at"
+        case level, category, message
+        case appVersion = "app_version"
+        case appBuild = "app_build"
+        case osVersion = "os_version"
+        case deviceModel = "device_model"
+        case sessionID = "session_id"
+        case metadata
     }
 }
 

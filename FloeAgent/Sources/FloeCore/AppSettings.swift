@@ -34,6 +34,16 @@ public enum AgentMode: String, Sendable, Codable, CaseIterable, Hashable {
     case fullControl
 }
 
+public extension AgentMode {
+    var taskApprovalModeName: String {
+        switch self {
+        case .human: "ask"
+        case .approvalModel: "automatic"
+        case .fullControl: "fullAccess"
+        }
+    }
+}
+
 /// Default execution target for agent runs. Mirrors `WorkspaceTarget` in
 /// FloeModels but lives in FloeCore so settings stay dependency-free.
 public enum ExecutionTargetPreference: Sendable, Codable, Hashable {
