@@ -121,7 +121,8 @@ struct HomeLaunchpadView: View {
                 attachments: $viewModel.attachments,
                 onSend: sendTask,
                 onStop: {},
-                onPermissions: { showsDraftPermissions = true }
+                onPermissions: { showsDraftPermissions = true },
+                approvalMode: viewModel.draftPolicy.approvalMode
             )
         }
     }

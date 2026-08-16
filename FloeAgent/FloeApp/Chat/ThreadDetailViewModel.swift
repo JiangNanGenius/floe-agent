@@ -62,6 +62,7 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var latestPlan: PlanDraft?
     @Published private(set) var activeGoal: ConversationGoal?
     @Published private(set) var taskTitle: String = ""
+    @Published private(set) var taskPolicy: TaskPolicy
 
     let conversationID: UUID
     let center: ConversationCenter
@@ -89,6 +90,7 @@ final class ThreadDetailViewModel: ObservableObject {
     init(conversationID: UUID, center: ConversationCenter) {
         self.conversationID = conversationID
         self.center = center
+        self.taskPolicy = TaskPolicy(conversationID: conversationID)
         let diagnostics = ThreadStreamingDiagnostics()
         self.animator = StreamingTextAnimator(diagnostics: diagnostics)
         self.reasoningAnimator = StreamingTextAnimator(diagnostics: diagnostics)
@@ -353,6 +355,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 self.events = self.selectedRunID.flatMap { snapshot.eventsByRun[$0] } ?? []
                 self.latestPlan = snapshot.latestPlan
                 self.activeGoal = snapshot.activeGoal
+                self.taskPolicy = snapshot.taskPolicy
                 if previousRunID != self.selectedRunID {
                     self.startLiveUpdates()
                 }
@@ -423,8 +426,8 @@ final class ThreadDetailViewModel: ObservableObject {
     private func finishLiveRun(runID: UUID, center: ConversationCenter) async {
         isRunning = false
         isDraining = true
-        await animator.drain()
-        await reasoningAnimator.drain()
+        await animator.drain(maximumDuration: .milliseconds(750))
+        await reasoningAnimator.drain(maximumDuration: .milliseconds(500))
         isDraining = false
         guard !Task.isCancelled, selectedRunID == runID else { return }
         try? await loadAllEvents()

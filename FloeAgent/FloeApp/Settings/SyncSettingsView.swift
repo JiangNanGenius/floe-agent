@@ -6,10 +6,12 @@
 import SwiftUI
 import FloeCore
 import FloeSyncCore
+import LocalAuthentication
 
 struct SyncSettingsView: View {
     @ObservedObject var center: SettingsCenter
     @State private var isSynchronizing = false
+    @State private var credentialAuthenticationError: String?
 
     var body: some View {
         Form {
@@ -84,10 +86,20 @@ struct SyncSettingsView: View {
             }
 
             Section {
-                Label("settings.sync.secrets.title", systemImage: "key.icloud")
+                Toggle("同步已保存凭据", isOn: Binding(
+                    get: { center.savedCredentialsSyncEnabled },
+                    set: { value in Task { await changeCredentialSync(to: value) } }
+                ))
+                .disabled(!center.overallSyncEnabled || center.syncControlBusy)
+                .accessibilityIdentifier("settings.sync.saved_credentials")
+                Label("API Key、已保存 SSH/VNC 密钥和网页密码仅通过 iCloud Keychain 同步。任务和项目临时凭据永不上传。", systemImage: "key.icloud")
                     .frame(minHeight: FloeTheme.minimumTarget)
             } footer: {
-                Text("settings.sync.secrets.footer")
+                Text("默认关闭。启用需要验证设备身份；不可导出的设备密钥仍只存在于当前设备。")
+            }
+
+            if let credentialAuthenticationError {
+                Section { Text(credentialAuthenticationError).foregroundStyle(FloeTheme.destructive) }
             }
 
             if let error = center.syncControlError {
@@ -113,6 +125,24 @@ struct SyncSettingsView: View {
         case .waitingForSecret: return String(localized: "settings.sync.status.waiting_secret")
         case .error: return String(localized: "settings.sync.status.error")
         }
+    }
+
+    private func changeCredentialSync(to enabled: Bool) async {
+        if enabled {
+            let context = LAContext()
+            do {
+                guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil),
+                      try await context.evaluatePolicy(
+                        .deviceOwnerAuthentication,
+                        localizedReason: "同步已明确保存的密钥和网页密码"
+                      ) else { return }
+            } catch {
+                credentialAuthenticationError = error.localizedDescription
+                return
+            }
+        }
+        await center.setSavedCredentialsSyncEnabled(enabled)
+        credentialAuthenticationError = center.syncControlError
     }
 
     private var canSynchronizeManually: Bool {

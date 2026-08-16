@@ -5,6 +5,7 @@
   <p>A native, private, bring-your-own-key AI agent workspace for iPhone and iPad.</p>
   <p>
     <a href="README.zh-CN.md">简体中文</a> ·
+    <a href="https://www.floe-agent.com/">Website</a> ·
     <a href="docs/USER_GUIDE.md">User guide</a> ·
     <a href="https://github.com/JiangNanGenius/floe-agent/releases">Releases</a> ·
     <a href="SECURITY.md">Security</a>
@@ -17,6 +18,8 @@
 [![MPL 2.0](https://img.shields.io/badge/license-MPL--2.0-4A5568)](LICENSE)
 
 ![Floe Agent new-task workspace on iPad](docs/images/floe-agent-new-task-ipad.webp)
+
+![Floe Agent continuous task workflow](docs/images/floe-agent-workflow.svg)
 
 Floe Agent turns a model conversation into a durable task. Each message continues the same task, while every model execution becomes a separate run with its own progress, tool evidence, approvals, checkpoints, and recovery state. A task can use an app-managed private workspace or an explicitly selected project workspace.
 
@@ -51,7 +54,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Signed builds are distributed through TestFlight when a testing group is available. Floe Agent 1.2.0 (build 11) was accepted by App Store Connect for TestFlight processing. TestFlight access may remain limited while the project is in prerelease.
+Signed builds are distributed through TestFlight when a testing group is available. The current source targets Floe Agent 1.2.3 (build 14); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) for artifacts that actually completed the release gates. TestFlight access may remain limited while the project is in prerelease.
 
 ### Unsigned IPA
 
@@ -100,7 +103,17 @@ See the [English user guide](docs/USER_GUIDE.md), [简体中文使用指南](doc
 | Visible browser | Automate a real `WKWebView`, then hand control to the user for login, QR codes, verification, uploads, or other trusted interaction. |
 | Settings | Configure providers, auxiliary models, task defaults, execution, files, sync, remote hosts, data controls, and diagnostics. |
 
+### Python execution
+
+Floe does not download or execute a Python runtime inside the App Store app. Pair an SSH host that has `python3`, trust its host key in the Hosts screen, select that host as the task execution target, and allow remote execution in the task policy. `exec.remotePython` then runs bounded source through the same catastrophic-command gate and approval path as other remote commands. Output, stderr, timeout, truncation, cancellation, missing-host, authentication, and missing-Python states are returned explicitly.
+
+### Archive and credential sync
+
+Swipe a task to archive it or open Task Center → Archived to restore or batch-delete tasks. Deletion always requires confirmation. Configuration sync covers provider/model profiles and non-secret host metadata; API keys use iCloud Keychain. The separate **Sync saved credentials** switch is off by default and publishes only vault descriptors to CloudKit while SSH, VNC, website, and token secret bytes remain in Keychain. Task/workspace-scoped temporary credentials never sync.
+
 ## Security boundary
+
+![Floe Agent credential security boundary](docs/images/floe-agent-security.svg)
 
 ```mermaid
 flowchart TD

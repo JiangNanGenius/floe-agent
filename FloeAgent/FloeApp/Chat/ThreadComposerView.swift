@@ -144,6 +144,7 @@ struct ThreadComposerView: View {
     let onSend: () -> Void
     let onStop: () -> Void
     var onPermissions: () -> Void = {}
+    var approvalMode: TaskApprovalMode = .ask
 
     @State private var isPickerPresented = false
     @State private var attachmentError: String?
@@ -328,7 +329,7 @@ struct ThreadComposerView: View {
                     onPermissions()
                 } label: {
                     composerChip(
-                        title: router.selectedConversationID == nil ? "默认权限" : "任务权限",
+                        title: approvalModeTitle,
                         systemImage: "lock.shield"
                     )
                 }
@@ -337,6 +338,14 @@ struct ThreadComposerView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
+        }
+    }
+
+    private var approvalModeTitle: String {
+        switch approvalMode {
+        case .ask: "询问"
+        case .automatic: "自动审批"
+        case .fullAccess: "完全放开"
         }
     }
 

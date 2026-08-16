@@ -35,7 +35,7 @@ public protocol StreamingTextAnimatorDiagnostics: Sendable {
 ///   `streamNonPrefixDetected` and a safe rebuild from the new target.
 /// - Exactly one animation task exists at any time; rapid updates never
 ///   stack competing loops.
-/// - The nominal cadence is one grapheme cluster every 12–20 ms. A large
+/// - The nominal cadence is one grapheme cluster around 30 fps. A large
 ///   backlog adaptively widens to 2–6 clusters per tick, but never dumps
 ///   the whole remainder in one assignment.
 /// - `cancel()` stops the animation immediately and keeps the partially
@@ -60,7 +60,7 @@ public final class StreamingTextAnimator {
     public var onDisplayedTextChange: (@MainActor (String) -> Void)?
 
     private let diagnostics: (any StreamingTextAnimatorDiagnostics)?
-    /// Nominal per-cluster interval; clamped into 12–20 ms by `tick`.
+    /// Nominal presentation interval; clamped to a UI-friendly 24–40 ms.
     private let baseIntervalNanoseconds: UInt64
     private var animationTask: Task<Void, Never>?
     /// Latched while a drain is in progress; after the target stops
@@ -69,10 +69,10 @@ public final class StreamingTextAnimator {
 
     public init(
         diagnostics: (any StreamingTextAnimatorDiagnostics)? = nil,
-        baseIntervalNanoseconds: UInt64 = 16_000_000
+        baseIntervalNanoseconds: UInt64 = 33_000_000
     ) {
         self.diagnostics = diagnostics
-        self.baseIntervalNanoseconds = min(20_000_000, max(12_000_000, baseIntervalNanoseconds))
+        self.baseIntervalNanoseconds = min(40_000_000, max(24_000_000, baseIntervalNanoseconds))
     }
 
     deinit {
@@ -113,13 +113,21 @@ public final class StreamingTextAnimator {
 
     /// Signals that the network stream is finished and asks the animator
     /// to display everything that remains. Awaits completion.
-    public func drain() async {
+    public func drain(maximumDuration: Duration? = nil) async {
         guard !isSettled else { return }
         drainRequested = true
         diagnostics?.streamDrainStarted(pendingCharacters: pendingCount)
         startAnimationIfNeeded()
+        let clock = ContinuousClock()
+        let deadline = maximumDuration.map { clock.now.advanced(by: $0) }
         while !isSettled {
             if Task.isCancelled { return }
+            if let deadline, clock.now >= deadline {
+                animationTask?.cancel()
+                animationTask = nil
+                displayedText = targetText
+                break
+            }
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
         drainRequested = false
@@ -155,12 +163,19 @@ public final class StreamingTextAnimator {
         while !Task.isCancelled {
             if isSettled { break }
             let backlog = pendingCount
-            let clustersThisTick = Self.clustersPerTick(backlog: backlog)
+            let requested = drainRequested
+                ? min(max(8, backlog / 10), 48)
+                : Self.clustersPerTick(backlog: backlog)
+            // A terminal signal may accelerate a backlog, but it must not
+            // collapse a multi-character tail into one final line jump.
+            let clustersThisTick = backlog > 1
+                ? min(requested, backlog - 1)
+                : requested
             advance(by: clustersThisTick)
             // Under backlog pressure, shorten the interval slightly (never
-            // below 12 ms) so long answers still catch up promptly.
+            // below 20 ms) so long answers still catch up promptly.
             let interval = backlog > 120
-                ? max(12_000_000, baseIntervalNanoseconds - 4_000_000)
+                ? max(20_000_000, baseIntervalNanoseconds - 8_000_000)
                 : baseIntervalNanoseconds
             try? await Task.sleep(nanoseconds: interval)
         }

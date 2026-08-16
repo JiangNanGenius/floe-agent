@@ -5,13 +5,17 @@ import CloudKit
 import Foundation
 import FloeCore
 import FloePersistence
+import FloeSecurity
 import FloeSyncCore
 
 public enum ConfigSyncRecordType: String, Sendable, CaseIterable {
     case providerProfile = "ProviderProfile"
     case modelProfile = "ModelProfile"
-    case approvalModelSelection = "ApprovalModelSelection"
     case preference = "Preference"
+    case remoteHostProfile = "RemoteHostProfile"
+    /// Secret-free metadata for credentials the user explicitly promoted to
+    /// the vault. Secret bytes remain exclusively in synchronizable Keychain.
+    case credentialDescriptor = "CredentialDescriptor"
 }
 
 /// Private-database configuration sync. API-key bodies are never accepted by
@@ -25,13 +29,26 @@ public actor ConfigSyncEngine {
 
     private let configurationStore: ModelConfigurationStore?
     private let metadataStore: ConfigSyncMetadataStore?
+    private let remoteHostStore: RemoteHostStore?
+    private var credentialStore: CredentialStore?
 
     public init(
         configurationStore: ModelConfigurationStore? = nil,
-        metadataStore: ConfigSyncMetadataStore? = nil
+        metadataStore: ConfigSyncMetadataStore? = nil,
+        remoteHostStore: RemoteHostStore? = nil,
+        credentialStore: CredentialStore? = nil
     ) {
         self.configurationStore = configurationStore
         self.metadataStore = metadataStore
+        self.remoteHostStore = remoteHostStore
+        self.credentialStore = credentialStore
+    }
+
+    /// AppEnvironment creates the v11 credential store after the sync engine.
+    /// Attaching it keeps construction acyclic while still making descriptors
+    /// first-class CloudKit records.
+    public func setCredentialStore(_ store: CredentialStore) {
+        credentialStore = store
     }
 
     public func mergeRemoteChange(
@@ -187,6 +204,48 @@ public actor ConfigSyncEngine {
         try await enqueueDelete(type: .modelProfile, id: id.uuidString)
     }
 
+    public func saveRemoteHost(_ host: RemoteHostStore.StoredHost) async throws {
+        guard let remoteHostStore else {
+            throw FloeError.invalidConfiguration("ConfigSyncEngine requires a remote host store")
+        }
+        try await remoteHostStore.saveHost(host)
+        try await enqueueSave(type: .remoteHostProfile, id: host.id.uuidString, value: host, changedFields: nil)
+    }
+
+    public func deleteRemoteHost(id: UUID) async throws {
+        try await remoteHostStore?.deleteHost(id: id)
+        try await enqueueDelete(type: .remoteHostProfile, id: id.uuidString)
+    }
+
+    public func saveCredentialDescriptor(_ record: CredentialRecord) async throws {
+        guard record.owner == .vault, record.synchronizable else {
+            throw FloeError.validationFailed(
+                "Only explicitly saved, synchronizable vault credentials may publish descriptors"
+            )
+        }
+        guard let credentialStore else {
+            throw FloeError.invalidConfiguration("ConfigSyncEngine requires a credential store")
+        }
+        try await credentialStore.save(record)
+        try await enqueueSave(
+            type: .credentialDescriptor,
+            id: record.id.uuidString,
+            value: record,
+            changedFields: nil
+        )
+    }
+
+    public func deleteCredentialDescriptor(id: UUID) async throws {
+        try await credentialStore?.delete(id: id)
+        try await enqueueDelete(type: .credentialDescriptor, id: id.uuidString)
+    }
+
+    /// Stops publishing a descriptor without deleting the local vault item.
+    /// Used when the device-local saved-credential sync switch is disabled.
+    public func unpublishCredentialDescriptor(id: UUID) async throws {
+        try await enqueueDelete(type: .credentialDescriptor, id: id.uuidString)
+    }
+
     public func synchronize() async throws {
         guard synchronizationEnabled else {
             status = .paused
@@ -213,7 +272,7 @@ public actor ConfigSyncEngine {
             // Remote merges may enqueue a conflict-resolving save.
             try await syncEngine.sendChanges()
             lastSyncAt = Date()
-            status = .synced
+            status = await credentialSyncStatus()
         } catch {
             status = .error(String(describing: error))
             throw error
@@ -319,6 +378,25 @@ public actor ConfigSyncEngine {
                 zoneID: zoneID
             )
         }
+        if let remoteHostStore {
+            for host in try await remoteHostStore.hosts() {
+                try await stageIfUntracked(
+                    type: .remoteHostProfile, id: host.id.uuidString,
+                    value: host, timestamp: Date(timeIntervalSince1970: 0),
+                    metadataStore: metadataStore, syncEngine: syncEngine, zoneID: zoneID
+                )
+            }
+        }
+        if SyncControlPreferences.load().savedCredentialsEnabled, let credentialStore {
+            for credential in try await credentialStore.records(owner: .vault)
+                where credential.synchronizable {
+                try await stageIfUntracked(
+                    type: .credentialDescriptor, id: credential.id.uuidString,
+                    value: credential, timestamp: credential.updatedAt,
+                    metadataStore: metadataStore, syncEngine: syncEngine, zoneID: zoneID
+                )
+            }
+        }
         let preferences = try await configurationStore.preferences()
         if preferences.updatedAt > Date(timeIntervalSince1970: 1) {
             try await stageIfUntracked(
@@ -386,7 +464,7 @@ public actor ConfigSyncEngine {
                     try await applyRemoteDeletion(recordID: deletion.recordID, recordType: deletion.recordType)
                 }
                 lastSyncAt = Date()
-                status = .synced
+                status = await credentialSyncStatus()
 
             case .sentRecordZoneChanges(let sent):
                 for record in sent.savedRecords { try await acknowledge(record) }
@@ -397,7 +475,7 @@ public actor ConfigSyncEngine {
                     status = .error(firstFailure.localizedDescription)
                 } else {
                     lastSyncAt = Date()
-                    status = .synced
+                    status = await credentialSyncStatus()
                 }
 
             case .didFetchRecordZoneChanges(let result):
@@ -447,6 +525,10 @@ public actor ConfigSyncEngine {
         if let configurationStore, let uuid = UUID(uuidString: id) {
             if (try? await configurationStore.provider(id: uuid)) != nil { return .providerProfile }
             if (try? await configurationStore.model(id: uuid)) != nil { return .modelProfile }
+            if let remoteHostStore, (try? await remoteHostStore.host(id: uuid)) != nil { return .remoteHostProfile }
+            if let credentialStore, (try? await credentialStore.record(id: uuid)) != nil {
+                return .credentialDescriptor
+            }
         }
         // A locally deleted object can no longer reveal its type through the
         // configuration store. Its tombstone metadata remains authoritative.
@@ -486,8 +568,19 @@ public actor ConfigSyncEngine {
                 throw FloeError.storageCorrupted("Missing model for pending CloudKit save")
             }
             return try Self.encode(model)
-        case .approvalModelSelection:
-            throw FloeError.invalidConfiguration("Record type is not implemented yet")
+        case .remoteHostProfile:
+            guard let uuid = UUID(uuidString: id), let remoteHostStore,
+                  let host = try await remoteHostStore.host(id: uuid) else {
+                throw FloeError.storageCorrupted("Missing host for pending CloudKit save")
+            }
+            return try Self.encode(host)
+        case .credentialDescriptor:
+            guard let uuid = UUID(uuidString: id), let credentialStore,
+                  let credential = try await credentialStore.record(id: uuid),
+                  credential.owner == .vault, credential.synchronizable else {
+                throw FloeError.storageCorrupted("Missing synchronizable vault credential descriptor")
+            }
+            return try Self.encode(credential)
         }
     }
 
@@ -519,7 +612,18 @@ public actor ConfigSyncEngine {
             try await configurationStore.savePreferences(
                 try JSONDecoder.floe.decode(ModelSelectionPreferences.self, from: mergedPayload)
             )
-        case .approvalModelSelection: return
+        case .remoteHostProfile:
+            guard let remoteHostStore else { return }
+            try await remoteHostStore.saveHost(
+                try JSONDecoder.floe.decode(RemoteHostStore.StoredHost.self, from: mergedPayload)
+            )
+        case .credentialDescriptor:
+            guard let credentialStore else { return }
+            let descriptor = try JSONDecoder.floe.decode(CredentialRecord.self, from: mergedPayload)
+            guard descriptor.owner == .vault, descriptor.synchronizable else {
+                throw FloeError.storageCorrupted("Cloud credential descriptor exceeded vault scope")
+            }
+            try await credentialStore.save(descriptor)
         }
 
         var mergedTimestamps = localTimestamps
@@ -560,7 +664,14 @@ public actor ConfigSyncEngine {
             }
         case .preference:
             try await configurationStore.savePreferences(ModelSelectionPreferences())
-        case .approvalModelSelection: break
+        case .remoteHostProfile:
+            if let uuid = UUID(uuidString: recordID.recordName) {
+                try await remoteHostStore?.deleteHost(id: uuid)
+            }
+        case .credentialDescriptor:
+            if let uuid = UUID(uuidString: recordID.recordName) {
+                try await credentialStore?.delete(id: uuid)
+            }
         }
         let now = Date()
         try await metadataStore.save(ConfigSyncMetadata(
@@ -609,9 +720,30 @@ public actor ConfigSyncEngine {
         case .providerProfile: 0
         case .modelProfile: 1
         case .preference: 2
-        case .approvalModelSelection: 3
-        case nil: 4
+        case .remoteHostProfile: 3
+        case .credentialDescriptor: 4
+        case nil: 5
         }
+    }
+
+    /// CloudKit records and iCloud Keychain arrive independently. Keep the
+    /// global sync status honest until every synchronized descriptor has a
+    /// corresponding secret on this device.
+    private func credentialSyncStatus() async -> SyncStatus {
+        guard SyncControlPreferences.load().savedCredentialsEnabled,
+              let credentialStore,
+              let records = try? await credentialStore.records(owner: .vault)
+        else { return .synced }
+        let keychain = KeychainStore(
+            service: CredentialVaultService.serviceName,
+            synchronizable: true
+        )
+        for record in records where record.synchronizable {
+            if record.deviceBound { return .waitingForSecret }
+            do { _ = try keychain.read(account: record.keychainAccount) }
+            catch { return .waitingForSecret }
+        }
+        return .synced
     }
 
     private static func jsonObject(_ data: Data) throws -> [String: Any] {

@@ -70,6 +70,14 @@ final class ConversationListViewModel: ObservableObject {
         }
     }
 
+    func archive(_ conversation: ConversationRecord) async {
+        try? await center.archiveConversation(id: conversation.id)
+    }
+
+    func delete(_ conversation: ConversationRecord) async {
+        try? await center.deleteConversation(id: conversation.id)
+    }
+
     /// Display title: the stored title, falling back to the latest run's
     /// goal, finally to a localized untitled label handled by the view.
     func title(for conversation: ConversationRecord) -> String {

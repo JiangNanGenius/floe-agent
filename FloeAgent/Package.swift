@@ -383,7 +383,7 @@ let package = Package(
         ),
         .testTarget(
             name: "FloeSyncTests",
-            dependencies: ["FloeSync"],
+            dependencies: ["FloeSync", "FloePersistence"],
             path: "Tests/FloeSyncTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

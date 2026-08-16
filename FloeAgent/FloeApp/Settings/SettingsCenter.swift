@@ -75,6 +75,7 @@ final class SettingsCenter: ObservableObject {
     @Published private(set) var configSyncLastSyncAt: Date?
     @Published private(set) var overallSyncEnabled = true
     @Published private(set) var configurationSyncEnabled = true
+    @Published private(set) var savedCredentialsSyncEnabled = false
     @Published private(set) var syncControlBusy = false
     @Published private(set) var syncControlError: String?
 
@@ -235,6 +236,7 @@ final class SettingsCenter: ObservableObject {
         let syncPreferences = SyncControlPreferences.load(from: defaults)
         overallSyncEnabled = syncPreferences.overallEnabled
         configurationSyncEnabled = syncPreferences.configurationEnabled
+        savedCredentialsSyncEnabled = syncPreferences.savedCredentialsEnabled
         if let raw = defaults.string(forKey: UDKey.appearance),
            let value = AppearancePreference(rawValue: raw) {
             appearance = value
@@ -309,6 +311,10 @@ final class SettingsCenter: ObservableObject {
                     enabled,
                     providerIDs: providers.map(\.id)
                 )
+                if !enabled, savedCredentialsSyncEnabled {
+                    try await environment.credentialVault.setSavedCredentialSyncEnabled(false)
+                    savedCredentialsSyncEnabled = false
+                }
                 // Keychain migration commits the production device-wide
                 // preference only after every secret was verified at its
                 // destination. Mirror that committed value into an injected
@@ -361,6 +367,36 @@ final class SettingsCenter: ObservableObject {
             }
             syncControlBusy = false
             FloeLogger(category: .sync).info("Configuration sync preference operation finished")
+        }
+    }
+
+    func setSavedCredentialsSyncEnabled(_ enabled: Bool) async {
+        guard savedCredentialsSyncEnabled != enabled, !syncControlBusy else { return }
+        syncControlBusy = true
+        syncControlError = nil
+        defer { syncControlBusy = false }
+        do {
+            let existingVault = try await environment.credentialStore.records(owner: .vault)
+            if !enabled {
+                for credential in existingVault where credential.synchronizable {
+                    try await environment.configurationSync.unpublishCredentialDescriptor(
+                        id: credential.id
+                    )
+                }
+            }
+            try await environment.credentialVault.setSavedCredentialSyncEnabled(enabled)
+            if enabled {
+                for credential in try await environment.credentialStore.records(owner: .vault)
+                    where credential.synchronizable {
+                    try await environment.configurationSync.saveCredentialDescriptor(credential)
+                }
+            }
+            savedCredentialsSyncEnabled = enabled
+            if overallSyncEnabled && configurationSyncEnabled {
+                await synchronizeConfiguration()
+            }
+        } catch {
+            syncControlError = SecretRedactor.redact(error.localizedDescription)
         }
     }
 

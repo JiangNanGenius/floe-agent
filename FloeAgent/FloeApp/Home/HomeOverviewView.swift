@@ -21,6 +21,9 @@ struct HomeOverviewView: View {
     @State private var searchText = ""
     @State private var schedules: [TaskScheduleRecord] = []
     @State private var showingSchedule = false
+    @State private var archivedTasks: [ConversationRecord] = []
+    @State private var selectedArchivedIDs: Set<UUID> = []
+    @State private var confirmingArchiveDeletion = false
 
     init(center: ConversationCenter) {
         self.center = center
@@ -94,6 +97,35 @@ struct HomeOverviewView: View {
                     }
                 }
             }
+            if !archivedTasks.isEmpty {
+                Section("已归档") {
+                    ForEach(archivedTasks) { conversation in
+                        HStack {
+                            Image(systemName: selectedArchivedIDs.contains(conversation.id)
+                                  ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(FloeTheme.primary)
+                            Text(conversation.title.isEmpty ? String(localized: "chat.untitled") : conversation.title)
+                                .lineLimit(1)
+                            Spacer()
+                            Button("恢复") {
+                                Task {
+                                    try? await center.restoreConversation(id: conversation.id)
+                                    await load()
+                                }
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if selectedArchivedIDs.contains(conversation.id) {
+                                selectedArchivedIDs.remove(conversation.id)
+                            } else {
+                                selectedArchivedIDs.insert(conversation.id)
+                            }
+                        }
+                    }
+                }
+            }
         }
         .listStyle(.insetGrouped)
         .overlay {
@@ -117,6 +149,20 @@ struct HomeOverviewView: View {
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("安排任务")
             }
+            if !selectedArchivedIDs.isEmpty {
+                ToolbarItem(placement: .bottomBar) {
+                    Button("恢复所选") {
+                        Task {
+                            for id in selectedArchivedIDs { try? await center.restoreConversation(id: id) }
+                            selectedArchivedIDs.removeAll()
+                            await load()
+                        }
+                    }
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    Button("删除所选", role: .destructive) { confirmingArchiveDeletion = true }
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     router.startNewTask()
@@ -132,6 +178,18 @@ struct HomeOverviewView: View {
         .refreshable { await load() }
         .sheet(isPresented: $showingSchedule) {
             TaskScheduleSheet { await load() }
+        }
+        .alert("永久删除归档任务？", isPresented: $confirmingArchiveDeletion) {
+            Button("取消", role: .cancel) {}
+            Button("删除", role: .destructive) {
+                Task {
+                    for id in selectedArchivedIDs { try? await center.deleteConversation(id: id) }
+                    selectedArchivedIDs.removeAll()
+                    await load()
+                }
+            }
+        } message: {
+            Text("所选任务及其私有数据将被永久删除。")
         }
     }
 
@@ -172,6 +230,8 @@ struct HomeOverviewView: View {
         await viewModel.load()
         schedules = (try? await SQLiteTaskScheduleStore(database: viewModel.environment.database)
             .schedules().filter(\.isEnabled)) ?? []
+        archivedTasks = ((try? await viewModel.environment.conversationStore
+            .conversations(includeArchived: true)) ?? []).filter { $0.archivedAt != nil }
     }
 
     private func overviewRow(_ conversation: ConversationRecord, showsState: Bool) -> some View {

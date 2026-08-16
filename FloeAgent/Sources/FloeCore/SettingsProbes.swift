@@ -36,26 +36,28 @@ public struct JavaScriptCoreProbe: CapabilityProbe {
     }
 }
 
-/// Local Python execution has not landed (P3). Honest unavailability —
-/// the UI must grey this out rather than show a fake toggle.
+/// Arbitrary on-device Python is deliberately unavailable in the App Store
+/// build. Python runs on a user-paired SSH host through FloeExecution, where
+/// the command is visible to the normal task policy and approval gates.
 public struct LocalPythonProbe: CapabilityProbe {
     public let name = "python.local"
 
     public init() {}
 
     public func probe() async -> CapabilityState {
-        .unavailable(reason: "Local Python execution is not implemented yet (P3)")
+        .unavailable(reason: "On-device Python is disabled in the App Store build; pair an SSH host for remote Python")
     }
 }
 
-/// Remote Python execution over paired hosts has not landed (P3).
+/// Compatibility fallback for clients that have not injected the live
+/// FloeExecution probe. Production uses FloeExecution.RemotePythonProbe.
 public struct RemotePythonProbe: CapabilityProbe {
     public let name = "python.remote"
 
     public init() {}
 
     public func probe() async -> CapabilityState {
-        .unavailable(reason: "Remote Python execution is not implemented yet (P3)")
+        .unknown
     }
 }
 

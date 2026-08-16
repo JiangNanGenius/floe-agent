@@ -134,7 +134,7 @@ public actor RemoteHostStore {
     /// A persisted host row, decoded into the profile field set the UI
     /// needs. Auth/jump/VNC JSON are returned raw for the caller (FloeSSH)
     /// to decode, avoiding a FloePersistence → FloeSSH dependency.
-    public struct StoredHost: Sendable, Hashable, Identifiable {
+    public struct StoredHost: Sendable, Codable, Hashable, Identifiable {
         public var id: UUID
         public var displayName: String
         public var address: String
@@ -184,6 +184,16 @@ public actor RemoteHostStore {
             ) else { return nil }
             return try Self.storedHost(from: row)
         }
+    }
+
+    public func saveHost(_ host: StoredHost) async throws {
+        try await saveHost(
+            id: host.id, displayName: host.displayName, address: host.address,
+            port: host.port, user: host.user, authJSON: host.authJSON,
+            jumpChainJSON: host.jumpChainJSON, hostKeyPolicy: host.hostKeyPolicy,
+            allowsLegacyAlgorithms: host.allowsLegacyAlgorithms,
+            vncEndpointJSON: host.vncEndpointJSON
+        )
     }
 
     /// Deletes a host; known_hosts and sessions cascade per schema.

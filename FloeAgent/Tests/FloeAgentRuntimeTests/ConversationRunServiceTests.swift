@@ -142,6 +142,54 @@ struct ConversationRunServiceTests {
         #expect(events.last?.id == terminal.id)
     }
 
+    @Test("Text emitted before a tool request remains before that tool in the timeline")
+    func textIsSealedAtToolBoundary() async throws {
+        let (conversationStore, runStore) = try await makeStores()
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "Ordered", createdAt: Date(), updatedAt: Date()
+        ))
+        let call = try TestFixtures.toolCall(id: "call_ordered")
+        let adapter = MockAdapter()
+        adapter.script = [
+            [
+                .reasoningSummary(.init(text: "先检查")),
+                .textDelta(.init(text: "我先读取文件。")),
+                .toolRequest(call)
+            ],
+            [
+                .textDelta(.init(text: "读取完成。")),
+                .completed(.init(stopReason: .endTurn))
+            ]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors[call.toolName] = .init(
+            name: call.toolName, riskLabels: [], isSideEffecting: false
+        )
+        let service = ConversationRunService(
+            configuration: .init(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID())
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        try await service.start(goal: "检查文件")
+        let events = try await runStore.events(runID: service.runID)
+        let before = try #require(events.first { $0.kind == .assistantText && $0.payloadJSON.contains("我先读取") })
+        let request = try #require(events.first { $0.kind == .toolRequest })
+        let result = try #require(events.first { $0.kind == .toolResult })
+        let after = try #require(events.first { $0.kind == .assistantText && $0.payloadJSON.contains("读取完成") })
+        #expect(before.sequence < request.sequence)
+        #expect(request.sequence < result.sequence)
+        #expect(result.sequence < after.sequence)
+    }
+
     @Test("A completion without final text persists an explicit error event")
     func completionWithoutFinalText() async throws {
         let (conversationStore, runStore) = try await makeStores()

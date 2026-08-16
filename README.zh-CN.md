@@ -5,6 +5,7 @@
   <p>面向 iPhone 与 iPad 的原生、私有、自带密钥 AI Agent 工作空间。</p>
   <p>
     <a href="README.md">English</a> ·
+    <a href="https://www.floe-agent.com/">官方网站</a> ·
     <a href="docs/USER_GUIDE.zh-CN.md">使用指南</a> ·
     <a href="https://github.com/JiangNanGenius/floe-agent/releases">下载版本</a> ·
     <a href="SECURITY.zh-CN.md">安全策略</a>
@@ -17,6 +18,8 @@
 [![MPL 2.0](https://img.shields.io/badge/license-MPL--2.0-4A5568)](LICENSE)
 
 ![Floe Agent 在 iPad 上的新建任务界面](docs/images/floe-agent-new-task-ipad.webp)
+
+![Floe Agent 持续任务工作流](docs/images/floe-agent-workflow.svg)
 
 Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送都会在同一任务中创建新的 Run，并保留历史消息、工具证据、用户决策、计划、目标、记忆、权限和恢复检查点。任务可以使用 App 内部的私有工作区，也可以归属于用户明确选择的项目工作区。
 
@@ -51,7 +54,7 @@ flowchart LR
 
 ### TestFlight
 
-项目会在测试组开放时通过 TestFlight 分发签名版本。Floe Agent 1.2.0（build 11）已被 App Store Connect 接收并进入 TestFlight 处理流程；预发布阶段的测试名额可能有限。
+项目会在测试组开放时通过 TestFlight 分发签名版本。当前源码目标版本为 Floe Agent 1.2.3（build 14）；只有在[发布页](https://github.com/JiangNanGenius/floe-agent/releases)出现并通过发布门禁的构建才算真正完成发布。预发布阶段的测试名额可能有限。
 
 ### 未签名 IPA
 
@@ -90,7 +93,17 @@ scripts/local_build.sh
 | 可见浏览器 | Agent 操作真实 `WKWebView`；登录、扫码、验证或上传时交由用户接管。 |
 | 设置 | 配置服务商、辅助模型、权限默认值、执行环境、文件、同步、主机、数据管理和诊断。 |
 
+### Python 执行
+
+App Store 版本不会下载或在设备内执行 Python 运行时。请先添加装有 `python3` 的 SSH 主机，在主机页面核对并信任主机密钥，再把该主机选为任务执行目标，并在任务权限中允许远程执行。`exec.remotePython` 会经过与其他远程命令相同的灾难性命令拦截和审批链；标准输出、标准错误、超时、截断、取消、缺少主机、认证失败以及未安装 Python 都会明确返回，不能伪装为成功。
+
+### 归档与凭据同步
+
+在任务上左滑可归档，或在“任务中心 → 已归档”中恢复和批量删除；删除始终需要二次确认。配置同步只包含服务商/模型配置与主机非秘密信息，API Key 通过 iCloud Keychain 同步。“同步已保存凭据”是独立开关并默认关闭：CloudKit 只保存凭据库描述符，SSH、VNC、网页密码和 Token 正文仍只在 Keychain；任务或工作区临时凭据永远不同步。
+
 ## 安全边界
+
+![Floe Agent 凭据安全边界](docs/images/floe-agent-security.svg)
 
 ```mermaid
 flowchart TD

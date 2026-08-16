@@ -66,6 +66,26 @@ final class RemoteSessionCenter: ObservableObject {
     func loadHosts() async {
         let stored = (try? await hostStore.hosts()) ?? []
         hosts = stored.compactMap { try? RemoteHostProfile(stored: $0) }
+        for host in hosts {
+            let authMetadata: (SecretReference, CredentialKind, Bool) = switch host.auth {
+            case .password(let ref): (ref, .sshPassword, false)
+            case .importedKey(let ref, _): (ref, .sshPrivateKey, false)
+            case .deviceGeneratedKey(let ref, _): (ref, .sshPrivateKey, true)
+            }
+            let (reference, kind, deviceBound) = authMetadata
+            try? await environment.credentialVault.registerExisting(
+                account: reference.keychainAccount, kind: kind,
+                label: host.displayName, hostID: host.id,
+                synchronizable: reference.synchronizable, deviceBound: deviceBound
+            )
+            if let vnc = host.vncEndpoint?.passwordRef {
+                try? await environment.credentialVault.registerExisting(
+                    account: vnc.keychainAccount, kind: .vncPassword,
+                    label: "\(host.displayName) VNC", hostID: host.id,
+                    synchronizable: vnc.synchronizable
+                )
+            }
+        }
     }
 
     func saveHost(_ profile: RemoteHostProfile) async throws {
@@ -90,11 +110,18 @@ final class RemoteSessionCenter: ObservableObject {
                 String(decoding: try encoder.encode($0), as: UTF8.self)
             }
         )
+        if let stored = try await hostStore.host(id: profile.id) {
+            try await environment.configurationSync.saveRemoteHost(stored)
+        }
         await loadHosts()
     }
 
     func deleteHost(id: UUID) async throws {
-        try await hostStore.deleteHost(id: id)
+        let credentials = try await environment.credentialStore.records(owner: nil)
+            .filter { $0.hostID == id }
+        try await environment.configurationSync.deleteRemoteHost(id: id)
+        for credential in credentials { try? await environment.credentialStore.delete(id: credential.id) }
+        await environment.credentialVault.drainDeletionQueue()
         try? await secretStore.deleteSecret(scope: .hostSSH(id))
         try? await secretStore.deleteSecret(scope: .hostVNC(id))
         await loadHosts()

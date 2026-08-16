@@ -111,6 +111,12 @@ public struct KeychainSecretStore: Sendable {
         }
         switch scope {
         case .hostSSH, .hostVNC:
+            if SyncControlPreferences.load().savedCredentialsEnabled {
+                try store.store(account: account, secret: secret)
+                try? KeychainStore(service: store.service, synchronizable: false)
+                    .delete(account: account)
+                return
+            }
             let localStore = KeychainStore(service: store.service, synchronizable: false)
             try localStore.store(account: account, secret: secret)
             try? store.delete(account: account)

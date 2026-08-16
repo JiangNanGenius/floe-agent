@@ -1,7 +1,6 @@
 // FloeCore — Runtime capability probe contract.
 // See docs/ARCHITECTURE_SETTINGS.md §3.3. P2 ships honest probes (JS via
-// JavaScriptCore presence, Python unavailable until P3); P3 replaces the
-// implementations without touching the UI.
+// JavaScriptCore presence plus honest platform/runtime availability.
 
 import Foundation
 
@@ -18,7 +17,7 @@ public enum CapabilityState: Sendable, Hashable {
 
 /// Probes one runtime capability (JS engine, local Python, remote Python…).
 /// Implementations must be side-effect free and must never fabricate
-/// availability — unimplemented capabilities report `.unavailable`.
+/// availability — unavailable capabilities report `.unavailable`.
 public protocol CapabilityProbe: Sendable {
     /// Stable display/identifier name (e.g. "javascript", "python.local").
     var name: String { get }

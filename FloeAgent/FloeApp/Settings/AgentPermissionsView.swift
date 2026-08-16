@@ -43,6 +43,18 @@ struct AgentPermissionsView: View {
                 Text("settings.general.agent_mode.footer")
             }
 
+            Section("自动审批模型") {
+                Picker("审批模型", selection: approvalModelBinding) {
+                    Text("未配置（遇到中风险操作时询问）").tag(UUID?.none)
+                    ForEach(center.environment.conversationCenter.approvalModels) { model in
+                        Text(model.displayName).tag(UUID?.some(model.id))
+                    }
+                }
+                Text("审批模型不获得工具，只能返回允许、拒绝或询问；任何异常都会回退为询问。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section {
                 Label("settings.permissions.full_control.info", systemImage: "info.circle")
                     .font(FloeTheme.Typography.metadata)
@@ -127,6 +139,19 @@ struct AgentPermissionsView: View {
         } catch {
             authenticationError = error.localizedDescription
         }
+    }
+
+    private var approvalModelBinding: Binding<UUID?> {
+        Binding(
+            get: { center.environment.conversationCenter.modelPreferences.approvalModelID },
+            set: { value in
+                Task {
+                    var preferences = center.environment.conversationCenter.modelPreferences
+                    preferences.approvalModelID = value
+                    try? await center.environment.conversationCenter.saveModelPreferences(preferences)
+                }
+            }
+        )
     }
 
     private func grantRow(

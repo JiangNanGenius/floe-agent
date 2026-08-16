@@ -248,6 +248,32 @@ struct RemotePythonToolTests {
         #expect(output.summary.contains("SyntaxError"))
     }
 
+    @Test("Successful execution preserves stderr and opens one SSH session")
+    func stderrAndSingleSession() async throws {
+        let session = FakePythonSession()
+        session.stdout = "done\n"
+        session.stderr = "warning: sample\n"
+        let opens = FakeLock(0)
+        let service = RemotePythonService(
+            sessionFactory: { _ in
+                opens.withLock { $0 += 1 }
+                return session
+            },
+            hostResolver: { id in
+                id == hostID ? .init(id: id, displayName: "test") : nil
+            },
+            defaultHostProvider: { hostID }
+        )
+        let output = try await RemotePythonTool(service: service).execute(
+            .init(script: "import sys; print('warning: sample', file=sys.stderr); print('done')"),
+            context: makeContext()
+        )
+
+        #expect(output.summary.contains("stdout:\ndone"))
+        #expect(output.summary.contains("stderr:\nwarning: sample"))
+        #expect(opens.withLock { $0 } == 1)
+    }
+
     // MARK: Timeout / cancel
 
     @Test("Timeout on the script maps to status=timedOut")

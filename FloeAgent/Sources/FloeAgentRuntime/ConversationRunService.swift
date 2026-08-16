@@ -77,6 +77,9 @@ public actor ConversationRunService {
     private let streamedTextLimitBytes: Int
     private let logger = FloeLogger(category: .runtime)
     private var streamedText = ""
+    /// Text generated since the previous durable interaction boundary.
+    /// Each segment is persisted before the tool event that follows it.
+    private var unflushedAssistantSegment = ""
     private var unpublishedAnswerText = ""
     private var answerPushTask: Task<Void, Never>?
     private var reasoningText = ""
@@ -343,6 +346,7 @@ public actor ConversationRunService {
             if remaining > 0 {
                 let accepted = Self.utf8Prefix(delta.text, maxBytes: remaining)
                 streamedText += accepted
+                unflushedAssistantSegment += accepted
                 unpublishedAnswerText += accepted
                 scheduleAnswerPush()
             }
@@ -358,6 +362,7 @@ public actor ConversationRunService {
                 scheduleRecoveryPoint()
             }
         case .toolRequest(let call):
+            await flushAssistantSegment()
             eventChannel.yield(.toolLifecycle(.requested(call)))
             toolNames[call.id] = call.toolName
             _ = try? await runStore.appendEvent(
@@ -399,6 +404,7 @@ public actor ConversationRunService {
                 costEstimate: report.costEstimate.map { "\($0)" }
             ))
         case .error(let error):
+            await flushAssistantSegment()
             logger.error("Run \(runID.uuidString) provider error: \(error.kind.rawValue)")
             try? await runStore.recordError(RunErrorRecord(
                 runID: runID,
@@ -409,6 +415,7 @@ public actor ConversationRunService {
             ))
         case .completed(let completion):
             flushAnswerPush()
+            await flushAssistantSegment()
             // Ordering rule: the final assistant reply must be durable
             // BEFORE the terminal marker. The unified thread timeline reads
             // the `.assistantText` event for ordering and the conversation
@@ -426,10 +433,6 @@ public actor ConversationRunService {
                     parts: [MessagePart(messageID: messageID, partIndex: 0, kind: .text, text: streamedText)],
                     runID: runID
                 ))
-                _ = try? await runStore.appendEvent(
-                    runID: runID, kind: .assistantText,
-                    payloadJSON: Self.jsonPayload(["text": streamedText])
-                )
                 logger.info("finalMessagePersisted run=\(runID.uuidString) messageID=\(messageID.uuidString)")
             } else {
                 // The provider reported a stop reason without any final
@@ -455,6 +458,21 @@ public actor ConversationRunService {
     }
 
     // MARK: - Helpers
+
+    /// Commits only the text produced since the previous tool/error/final
+    /// boundary. The conversation message remains the full assistant answer
+    /// for model history, while run events preserve the visible chronology.
+    private func flushAssistantSegment() async {
+        guard !unflushedAssistantSegment.isEmpty else { return }
+        flushAnswerPush()
+        let text = unflushedAssistantSegment
+        unflushedAssistantSegment = ""
+        _ = try? await runStore.appendEvent(
+            runID: runID,
+            kind: .assistantText,
+            payloadJSON: Self.jsonPayload(["text": text])
+        )
+    }
 
     private func flushReasoning() async {
         flushReasoningPush()

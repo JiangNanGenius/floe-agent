@@ -75,6 +75,7 @@ struct ConversationSessionSnapshot: Sendable {
     let pendingApprovals: [PendingApproval]
     let latestPlan: PlanDraft?
     let activeGoal: ConversationGoal?
+    let taskPolicy: TaskPolicy
 }
 
 /// Coordinates conversations and agent runs for the UI layer.
@@ -162,6 +163,9 @@ final class ConversationCenter: ObservableObject {
         }
         let messages = try await environment.conversationStore.messages(conversationID: conversationID)
         let runs = try await environment.runStore.runs(conversationID: conversationID)
+        let taskPolicy = try await SQLiteWorkspaceStore(database: environment.database)
+            .taskPolicy(conversationID: conversationID)
+            ?? TaskPolicy(conversationID: conversationID)
         var events: [UUID: [RunEventRecord]] = [:]
         for run in runs { events[run.id] = try await environment.runStore.events(runID: run.id) }
         return ConversationSessionSnapshot(
@@ -172,7 +176,8 @@ final class ConversationCenter: ObservableObject {
             eventsByRun: events,
             pendingApprovals: pendingApprovals.filter { $0.conversationID == conversationID },
             latestPlan: try await environment.intelligenceStore.latestPlan(conversationID: conversationID),
-            activeGoal: try await environment.intelligenceStore.goals(conversationID: conversationID).first
+            activeGoal: try await environment.intelligenceStore.goals(conversationID: conversationID).first,
+            taskPolicy: taskPolicy
         )
     }
 
@@ -397,7 +402,19 @@ final class ConversationCenter: ObservableObject {
         case .ask:
             return HumanApprovalPolicy()
         case .automatic:
-            return AutomaticApprovalPolicy()
+            guard let modelID = modelPreferences.approvalModelID,
+                  let model = modelsByProvider.values.flatMap({ $0 }).first(where: {
+                      $0.id == modelID && $0.isEnabled && $0.capabilities.contains(.approval)
+                  }),
+                  let provider = providers.first(where: { $0.id == model.providerID }) else {
+                return AutomaticApprovalPolicy()
+            }
+            return AutomaticApprovalPolicy(backend: ApprovalModelBackend(
+                adapter: adapterFactory.adapter(for: provider),
+                provider: provider,
+                model: model,
+                credentials: resolveCredentials(for: provider)
+            ))
         case .fullAccess:
             return TaskFullAccessPolicy()
         }
@@ -416,7 +433,8 @@ final class ConversationCenter: ObservableObject {
         executionMode: AgentExecutionMode = .agent,
         isGoalContinuation: Bool = false
     ) async throws -> StartedConversationRun {
-        let trimmed = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ingress = SecretIngressScanner.scan(goal.trimmingCharacters(in: .whitespacesAndNewlines))
+        let trimmed = ingress.sanitizedText
         guard !trimmed.isEmpty else {
             throw FloeError.validationFailed("Goal must not be empty")
         }
@@ -440,6 +458,7 @@ final class ConversationCenter: ObservableObject {
             ) ?? .ask),
             messageRole: isGoalContinuation ? "goalContinuation" : "user"
         ))
+        await captureIngressSecrets(ingress.captures, prepared: prepared)
         guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else {
             throw FloeError.validationFailed("Conversation was deleted during launch")
         }
@@ -483,7 +502,8 @@ final class ConversationCenter: ObservableObject {
         executionMode: AgentExecutionMode = .agent,
         initialPolicy: DraftTaskPolicy? = nil
     ) async throws -> StartedConversationTask {
-        let trimmed = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ingress = SecretIngressScanner.scan(goal.trimmingCharacters(in: .whitespacesAndNewlines))
+        let trimmed = ingress.sanitizedText
         guard !trimmed.isEmpty else {
             throw FloeError.validationFailed("Goal must not be empty")
         }
@@ -506,6 +526,7 @@ final class ConversationCenter: ObservableObject {
                 rawValue: environment.settingsCenter.defaultAgentMode.taskApprovalModeName
             ) ?? .ask)
         ))
+        await captureIngressSecrets(ingress.captures, prepared: prepared)
         guard !isClearingHistory else {
             throw FloeError.validationFailed("Conversation history was cleared during launch")
         }
@@ -567,6 +588,30 @@ final class ConversationCenter: ObservableObject {
             .prefix(6)
         guard !selected.isEmpty else { return nil }
         return selected.map { "- \(String($0.content.prefix(500)))" }.joined(separator: "\n")
+    }
+
+    private func captureIngressSecrets(
+        _ captures: [CapturedSecret],
+        prepared: PreparedRun
+    ) async {
+        guard !captures.isEmpty else { return }
+        let owner: CredentialOwner = prepared.workspace.kind == .project
+            ? .workspace(prepared.workspace.id)
+            : .conversation(prepared.conversation.id)
+        for capture in captures {
+            let lower = capture.label.lowercased()
+            let kind: CredentialKind = lower.contains("private key")
+                ? .sshPrivateKey
+                : (lower.contains("password") || lower.contains("密码")
+                    ? .websitePassword : .genericToken)
+            _ = try? await environment.credentialVault.capture(
+                capture.value,
+                kind: kind,
+                owner: owner,
+                label: capture.label,
+                id: capture.id
+            )
+        }
     }
 
     /// Sends image evidence directly to a vision-capable primary model, or
@@ -977,6 +1022,7 @@ final class ConversationCenter: ObservableObject {
         if ownedWorkspace?.kind == .privateTask, let ownedWorkspaceID {
             try? await workspaceStore.deleteWorkspace(id: ownedWorkspaceID)
         }
+        await environment.credentialVault.drainDeletionQueue()
         environment.browserCenter.discard(conversationID: id)
         await reload()
         await environment.workspaceCenter.reload()
@@ -997,6 +1043,31 @@ final class ConversationCenter: ObservableObject {
 
     func taskPolicyDidChange(conversationID: UUID) {
         publishSession(conversationID)
+    }
+
+    func updateTaskPolicy(_ policy: TaskPolicy) async throws {
+        var normalized = policy
+        normalized.updatedAt = Date()
+        try await SQLiteWorkspaceStore(database: environment.database).saveTaskPolicy(normalized)
+        publishSession(normalized.conversationID)
+    }
+
+    func archiveConversation(id: UUID) async throws {
+        let live = runServices.values.filter { $0.conversationID == id }
+        for service in live { await service.cancel() }
+        for service in live {
+            if let task = runTasks[service.runID] { _ = await task.value }
+        }
+        try await environment.conversationStore.setArchived(id: id, archived: true)
+        environment.browserCenter.discard(conversationID: id)
+        await reload()
+        publishSession(id)
+    }
+
+    func restoreConversation(id: UUID) async throws {
+        try await environment.conversationStore.setArchived(id: id, archived: false)
+        await reload()
+        publishSession(id)
     }
 
     /// Explicit ownership migration. Follow-up sends can never silently
@@ -1044,6 +1115,7 @@ final class ConversationCenter: ObservableObject {
         for workspaceID in privateWorkspaceIDs {
             try? await workspaceStore.deleteWorkspace(id: workspaceID)
         }
+        await environment.credentialVault.drainDeletionQueue()
         await environment.workspaceCenter.reload()
         await reload()
         return (records.count, runCount)
@@ -1210,6 +1282,14 @@ final class ConversationCenter: ObservableObject {
             .sorted {
                 $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
             }
+    }
+
+    var approvalModels: [ModelProfile] {
+        let enabledProviderIDs = Set(providers.map(\.id))
+        return modelsByProvider.values.flatMap { $0 }
+            .filter { $0.isEnabled && $0.capabilities.contains(.approval)
+                && enabledProviderIDs.contains($0.providerID) }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
     func auxiliaryVisionProviderAndModel() -> (ProviderProfile, ModelProfile)? {

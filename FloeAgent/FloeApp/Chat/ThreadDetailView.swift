@@ -232,12 +232,7 @@ struct ThreadDetailView: View {
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
-            if viewModel.isDraining {
-                Text("thread.finishing")
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(FloeTheme.primary)
-                    .accessibilityIdentifier("thread.run_state.finishing")
-            } else if let state = viewModel.liveStateName {
+            if let state = viewModel.liveStateName {
                 Text(RunStateLocalizer.title(for: state))
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(RunStateLocalizer.color(for: state))
@@ -308,7 +303,8 @@ struct ThreadDetailView: View {
                     attachments: $viewModel.attachments,
                     onSend: { Task { await viewModel.send() } },
                     onStop: { Task { await viewModel.cancel() } },
-                    onPermissions: { router.showInspector(.permissions) }
+                    onPermissions: { router.showInspector(.permissions) },
+                    approvalMode: viewModel.taskPolicy.resolvedApprovalMode
                 )
             }
         }

@@ -138,15 +138,16 @@ public actor ModelConfigurationStore {
                 sql: """
                     INSERT INTO model_preferences (
                         id, onboarding_status, default_agent_model_id,
-                        vision_model_id,
+                        vision_model_id, approval_model_id,
                         auxiliary_image_mode, shared_image_model_id,
                         image_generation_model_id, image_editing_model_id,
                         updated_at, sync_revision
-                    ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         onboarding_status = excluded.onboarding_status,
                         default_agent_model_id = excluded.default_agent_model_id,
                         vision_model_id = excluded.vision_model_id,
+                        approval_model_id = excluded.approval_model_id,
                         auxiliary_image_mode = excluded.auxiliary_image_mode,
                         shared_image_model_id = excluded.shared_image_model_id,
                         image_generation_model_id = excluded.image_generation_model_id,
@@ -158,6 +159,7 @@ public actor ModelConfigurationStore {
                     preferences.onboardingStatus.rawValue,
                     preferences.defaultAgentModelID?.uuidString,
                     preferences.visionModelID?.uuidString,
+                    preferences.approvalModelID?.uuidString,
                     preferences.auxiliaryImageMode.rawValue,
                     preferences.sharedImageModelID?.uuidString,
                     preferences.imageGenerationModelID?.uuidString,
@@ -370,6 +372,7 @@ private enum ConfigurationCodec {
             onboardingStatus: onboardingStatus,
             defaultAgentModelID: uuid("default_agent_model_id"),
             visionModelID: uuid("vision_model_id"),
+            approvalModelID: uuid("approval_model_id"),
             auxiliaryImageMode: imageMode,
             sharedImageModelID: uuid("shared_image_model_id"),
             imageGenerationModelID: uuid("image_generation_model_id"),
@@ -396,6 +399,10 @@ private enum ConfigurationCodec {
         if let capabilities = try capabilities(for: preferences.visionModelID),
            !capabilities.contains(.vision) {
             throw FloeError.invalidConfiguration("Vision model must support image understanding")
+        }
+        if let capabilities = try capabilities(for: preferences.approvalModelID),
+           !capabilities.contains(.approval) {
+            throw FloeError.invalidConfiguration("Approval model lacks approval capability")
         }
         if let capabilities = try capabilities(for: preferences.sharedImageModelID),
            !(capabilities.contains(.imageGeneration) && capabilities.contains(.imageEditing)) {

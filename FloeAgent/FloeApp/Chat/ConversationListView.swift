@@ -17,6 +17,7 @@ struct ConversationListView: View {
     @StateObject private var viewModel: ConversationListViewModel
     @EnvironmentObject private var router: AppRouter
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var pendingDeletion: ConversationRecord?
 
     init(center: ConversationCenter) {
         _viewModel = StateObject(wrappedValue: ConversationListViewModel(center: center))
@@ -45,6 +46,19 @@ struct ConversationListView: View {
         )
         .navigationDestination(for: UUID.self) { conversationID in
             ThreadDetailView(conversationID: conversationID, center: viewModel.center)
+        }
+        .alert("删除任务？", isPresented: Binding(
+            get: { pendingDeletion != nil },
+            set: { if !$0 { pendingDeletion = nil } }
+        )) {
+            Button("取消", role: .cancel) { pendingDeletion = nil }
+            Button("删除", role: .destructive) {
+                guard let target = pendingDeletion else { return }
+                pendingDeletion = nil
+                Task { await viewModel.delete(target) }
+            }
+        } message: {
+            Text("任务、私有工作区和临时凭据将被删除，此操作不可撤销。")
         }
     }
 
@@ -105,9 +119,17 @@ struct ConversationListView: View {
                     .buttonStyle(.plain)
                     .accessibilityHint("chat.open.hint")
                     .accessibilityIdentifier("chat.row.\(conversation.id.uuidString)")
-                }
-                .onDelete { offsets in
-                    Task { await viewModel.delete(at: offsets) }
+                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                        Button {
+                            Task { await viewModel.archive(conversation) }
+                        } label: { Label("归档", systemImage: "archivebox") }
+                        .tint(.orange)
+                    }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            pendingDeletion = conversation
+                        } label: { Label("删除", systemImage: "trash") }
+                    }
                 }
             }
         }

@@ -38,6 +38,8 @@ final class AppEnvironment: ObservableObject {
     let skillStore: SQLiteSkillStore
     let configurationStore: ModelConfigurationStore
     let configurationSync: ConfigSyncEngine
+    let credentialStore: CredentialStore
+    let credentialVault: CredentialVaultService
     let remoteSessionRegistry: any RemoteSessionRegistry
 
     // MARK: Security
@@ -54,6 +56,7 @@ final class AppEnvironment: ObservableObject {
     let remotePythonProbe: FloeExecution.RemotePythonProbe
     /// Long-lived visible WebKit session shared by UI and browser tools.
     let browserCenter: BrowserSessionCenter
+    let previewCenter: LocalPreviewCoordinator
     /// The single microphone/SpeechAnalyzer session for the whole app. A
     /// composer never constructs its own AVAudioEngine.
     let voiceInput: VoiceInputController
@@ -118,11 +121,14 @@ final class AppEnvironment: ObservableObject {
         self.skillStore = SQLiteSkillStore(database: database)
         self.configurationStore = configurationStore
         self.configurationSync = configurationSync
+        self.credentialStore = CredentialStore(database: database)
+        self.credentialVault = CredentialVaultService(records: self.credentialStore)
         self.remoteSessionRegistry = remoteSessionRegistry
         self.keychain = keychain
         self.catastrophicGate = catastrophicGate
         self.isEphemeral = isEphemeral
         self.browserCenter = BrowserSessionCenter()
+        self.previewCenter = LocalPreviewCoordinator(browser: self.browserCenter)
         self.voiceInput = VoiceInputController.live()
 
         // T04/T05: register the nine workspace file tools (catalog
@@ -141,7 +147,7 @@ final class AppEnvironment: ObservableObject {
         let pythonService = Self.makeRemotePythonService(hostStore: hostStore)
         registerExecutionTools(pythonService: pythonService)
         registerBrowserTools(center: browserCenter)
-        registerPreviewTools(browser: browserCenter)
+        registerPreviewTools(environment: previewCenter)
         self.remotePythonProbe = FloeExecution.RemotePythonProbe(service: pythonService)
     }
 
@@ -209,9 +215,11 @@ final class AppEnvironment: ObservableObject {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let database = try DatabaseManager(path: directory.appendingPathComponent("floe.sqlite"))
             let configurationStore = ModelConfigurationStore(database: database)
+            let remoteHostStore = RemoteHostStore(database: database)
             let configurationSync = ConfigSyncEngine(
                 configurationStore: configurationStore,
-                metadataStore: ConfigSyncMetadataStore(database: database)
+                metadataStore: ConfigSyncMetadataStore(database: database),
+                remoteHostStore: remoteHostStore
             )
 
             environment = AppEnvironment(
@@ -230,6 +238,7 @@ final class AppEnvironment: ObservableObject {
             // can surface an honest recovery state instead of crashing.
             let database = try! DatabaseManager.inMemory() // in-memory open cannot fail here
             let configurationStore = ModelConfigurationStore(database: database)
+            let remoteHostStore = RemoteHostStore(database: database)
             environment = AppEnvironment(
                 database: database,
                 conversationStore: SQLiteConversationStore(database: database),
@@ -237,7 +246,8 @@ final class AppEnvironment: ObservableObject {
                 configurationStore: configurationStore,
                 configurationSync: ConfigSyncEngine(
                     configurationStore: configurationStore,
-                    metadataStore: ConfigSyncMetadataStore(database: database)
+                    metadataStore: ConfigSyncMetadataStore(database: database),
+                    remoteHostStore: remoteHostStore
                 ),
                 remoteSessionRegistry: SQLiteRemoteSessionRegistry(database: database),
                 keychain: KeychainStore(service: "org.floeagent.ios.providers"),
@@ -256,6 +266,8 @@ final class AppEnvironment: ObservableObject {
     func bootstrap() async {
         do {
             try await database.migrate()
+            await configurationSync.setCredentialStore(credentialStore)
+            await credentialVault.drainDeletionQueue()
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ui-test-reset-onboarding") {
                 ConversationCenter.persistOnboardingSkippedMarker(false)
@@ -306,6 +318,7 @@ final class AppEnvironment: ObservableObject {
     static func preview() -> AppEnvironment {
         let database = try! DatabaseManager.inMemory()
         let configurationStore = ModelConfigurationStore(database: database)
+        let remoteHostStore = RemoteHostStore(database: database)
         return AppEnvironment(
             database: database,
             conversationStore: SQLiteConversationStore(database: database),
@@ -313,7 +326,8 @@ final class AppEnvironment: ObservableObject {
             configurationStore: configurationStore,
             configurationSync: ConfigSyncEngine(
                 configurationStore: configurationStore,
-                metadataStore: ConfigSyncMetadataStore(database: database)
+                metadataStore: ConfigSyncMetadataStore(database: database),
+                remoteHostStore: remoteHostStore
             ),
             remoteSessionRegistry: SQLiteRemoteSessionRegistry(database: database),
             keychain: KeychainStore(service: "org.floeagent.ios.providers"),

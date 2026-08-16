@@ -49,7 +49,9 @@ struct RootView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var expandedWorkspaceIDs: Set<UUID> = []
     @State private var renamingConversation: ConversationRecord?
+    @State private var deletingConversation: ConversationRecord?
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
+    @State private var isPhoneSidebarOpen = false
 
     /// UITest runs pin a deterministic layout: `-ui-testing` forces the
     /// compact (iPhone-style) tab layout; `-ui-testing-ipad` additionally
@@ -128,6 +130,19 @@ struct RootView: View {
                 )
             }
         }
+        .alert("删除任务？", isPresented: Binding(
+            get: { deletingConversation != nil },
+            set: { if !$0 { deletingConversation = nil } }
+        )) {
+            Button("取消", role: .cancel) { deletingConversation = nil }
+            Button("删除", role: .destructive) {
+                guard let target = deletingConversation else { return }
+                deletingConversation = nil
+                Task { try? await environment.conversationCenter.deleteConversation(id: target.id) }
+            }
+        } message: {
+            Text("任务、私有工作区和临时凭据将被删除，此操作不可撤销。")
+        }
     }
 
     @ViewBuilder
@@ -190,31 +205,78 @@ struct RootView: View {
     // MARK: - iPhone: task workbench with a native sidebar drawer
 
     private var iPhoneRoot: some View {
-        NavigationSplitView(
-            columnVisibility: $router.columnVisibility,
-            preferredCompactColumn: $preferredCompactColumn
-        ) {
-            sidebarColumn
-        } detail: {
-            contentColumn
-        }
-        .sheet(item: inspectorSheetBinding) { route in
-            NavigationStack {
-                InspectorColumnView(route: route)
+        GeometryReader { proxy in
+            let drawerWidth = min(360, max(280, proxy.size.width - 44))
+            ZStack(alignment: .leading) {
+                contentColumn
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .offset(x: isPhoneSidebarOpen ? drawerWidth : 0)
+                    .overlay(alignment: .topLeading) {
+                        if !isPhoneSidebarOpen {
+                            Button { withAnimation(.snappy) { isPhoneSidebarOpen = true } } label: {
+                                Image(systemName: "sidebar.left")
+                                    .frame(width: 44, height: 44)
+                                    .background(.regularMaterial, in: Circle())
+                            }
+                            .padding(.leading, 8)
+                            .padding(.top, 4)
+                            .accessibilityLabel("打开任务列表")
+                            .accessibilityIdentifier("phone.sidebar.open")
+                        }
+                    }
+
+                sidebarColumn
+                    .frame(width: drawerWidth, height: proxy.size.height)
+                    .background(FloeTheme.readingSurface)
+                    .offset(x: isPhoneSidebarOpen ? 0 : -drawerWidth)
+                    .shadow(radius: isPhoneSidebarOpen ? 12 : 0)
+
+                if isPhoneSidebarOpen {
+                    Color.clear
+                        .frame(width: 44)
+                        .contentShape(Rectangle())
+                        .offset(x: drawerWidth)
+                        .onTapGesture { withAnimation(.snappy) { isPhoneSidebarOpen = false } }
+                        .accessibilityLabel("收起任务列表")
+                }
+
+                if let route = router.inspectorRoute {
+                    Color.black.opacity(0.18)
+                        .ignoresSafeArea()
+                        .onTapGesture { router.hideInspector() }
+                    NavigationStack { InspectorColumnView(route: route) }
+                        .frame(width: drawerWidth, height: proxy.size.height)
+                        .background(FloeTheme.readingSurface)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .transition(.move(edge: .trailing))
+                        .shadow(radius: 12)
+                        .accessibilityIdentifier("phone.inspector.drawer")
+                }
             }
-            .presentationSizing(.page)
+            .clipped()
+            .animation(.snappy, value: isPhoneSidebarOpen)
+            .animation(.snappy, value: router.inspectorRoute)
+            .contentShape(Rectangle())
+            .simultaneousGesture(phoneDrawerGesture(drawerWidth: drawerWidth))
+        }
+        .onChange(of: router.workbenchSelection) { _, _ in
+            withAnimation(.snappy) { isPhoneSidebarOpen = false }
         }
     }
 
-    /// On iPhone the inspector shows as a sheet; on iPad the third
-    /// column handles it, so the binding stays nil there.
-    private var inspectorSheetBinding: Binding<AppRouter.InspectorRoute?> {
-        Binding(
-            get: { router.inspectorRoute },
-            set: { newValue in
-                if newValue == nil { router.hideInspector() }
+    private func phoneDrawerGesture(drawerWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 18, coordinateSpace: .global)
+            .onEnded { value in
+                let horizontal = value.translation.width
+                guard abs(horizontal) > abs(value.translation.height), abs(horizontal) > 54 else { return }
+                if horizontal > 0, value.startLocation.x < 28, router.inspectorRoute == nil {
+                    withAnimation(.snappy) { isPhoneSidebarOpen = true }
+                } else if horizontal < 0, isPhoneSidebarOpen {
+                    withAnimation(.snappy) { isPhoneSidebarOpen = false }
+                } else if horizontal > 0, router.inspectorRoute != nil {
+                    router.hideInspector()
+                }
             }
-        )
     }
 
     // MARK: - iPad: task surface with an on-demand inspector
@@ -363,9 +425,20 @@ struct RootView: View {
                 }
             }
             Button(role: .destructive) {
-                Task { try? await environment.conversationCenter.deleteConversation(id: conversation.id) }
+                deletingConversation = conversation
             } label: {
                 Label("删除任务", systemImage: "trash")
+            }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button {
+                Task { try? await environment.conversationCenter.archiveConversation(id: conversation.id) }
+            } label: { Label("归档", systemImage: "archivebox") }
+            .tint(.orange)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) { deletingConversation = conversation } label: {
+                Label("删除", systemImage: "trash")
             }
         }
     }

@@ -127,6 +127,7 @@ final class WorkspaceCenter: ObservableObject {
             closeCurrentWorkspace()
         }
         try await store.deleteWorkspace(id: id)
+        await environment.credentialVault.drainDeletionQueue()
         await reload()
     }
 

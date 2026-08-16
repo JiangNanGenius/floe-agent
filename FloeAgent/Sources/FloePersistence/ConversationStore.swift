@@ -14,19 +14,22 @@ public struct ConversationRecord: Sendable, Hashable, Identifiable {
     public var createdAt: Date
     public var updatedAt: Date
     public var titleOrigin: ConversationTitleOrigin
+    public var archivedAt: Date?
 
     public init(
         id: UUID,
         title: String,
         createdAt: Date,
         updatedAt: Date,
-        titleOrigin: ConversationTitleOrigin = .autoPending
+        titleOrigin: ConversationTitleOrigin = .autoPending,
+        archivedAt: Date? = nil
     ) {
         self.id = id
         self.title = title
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.titleOrigin = titleOrigin
+        self.archivedAt = archivedAt
     }
 }
 
@@ -65,11 +68,13 @@ public struct PersistedMessage: Sendable, Hashable, Identifiable {
 public protocol ConversationStore: Sendable {
     func saveConversation(_ conversation: ConversationRecord) async throws
     func conversations() async throws -> [ConversationRecord]
+    func conversations(includeArchived: Bool) async throws -> [ConversationRecord]
     func conversation(id: UUID) async throws -> ConversationRecord?
     func renameConversation(id: UUID, title: String) async throws
     @discardableResult
     func setAutomaticTitle(id: UUID, title: String) async throws -> Bool
     func deleteConversation(id: UUID) async throws
+    func setArchived(id: UUID, archived: Bool) async throws
 
     func appendMessage(_ message: PersistedMessage) async throws
     func messages(conversationID: UUID) async throws -> [PersistedMessage]
@@ -78,6 +83,19 @@ public protocol ConversationStore: Sendable {
     func saveAttachment(_ attachment: AttachmentRef) async throws
     func attachment(id: UUID) async throws -> AttachmentRef?
     func attachments(conversationID: UUID) async throws -> [AttachmentRef]
+}
+
+public extension ConversationStore {
+    func conversations(includeArchived: Bool) async throws -> [ConversationRecord] {
+        guard !includeArchived else {
+            throw FloeError.invalidConfiguration("This conversation store does not support archives")
+        }
+        return try await conversations()
+    }
+
+    func setArchived(id: UUID, archived: Bool) async throws {
+        throw FloeError.invalidConfiguration("This conversation store does not support archives")
+    }
 }
 
 /// SQLite/GRDB implementation of `ConversationStore`.
@@ -109,10 +127,16 @@ public actor SQLiteConversationStore: ConversationStore {
     }
 
     public func conversations() async throws -> [ConversationRecord] {
+        try await conversations(includeArchived: false)
+    }
+
+    public func conversations(includeArchived: Bool) async throws -> [ConversationRecord] {
         try await database.reader { db in
             try Row.fetchAll(
                 db,
-                sql: "SELECT * FROM conversations ORDER BY updated_at DESC, id"
+                sql: includeArchived
+                    ? "SELECT * FROM conversations ORDER BY updated_at DESC, id"
+                    : "SELECT * FROM conversations WHERE archived_at IS NULL ORDER BY updated_at DESC, id"
             ).map(Self.conversation(from:))
         }
     }
@@ -155,6 +179,19 @@ public actor SQLiteConversationStore: ConversationStore {
     public func deleteConversation(id: UUID) async throws {
         try await database.writer { db in
             try db.execute(sql: "DELETE FROM conversations WHERE id = ?", arguments: [id.uuidString])
+        }
+    }
+
+    public func setArchived(id: UUID, archived: Bool) async throws {
+        try await database.writer { db in
+            try db.execute(
+                sql: "UPDATE conversations SET archived_at = ?, updated_at = ? WHERE id = ?",
+                arguments: [
+                    archived ? PersistenceCodec.encode(Date()) : nil,
+                    PersistenceCodec.encode(Date()),
+                    id.uuidString
+                ]
+            )
         }
     }
 
@@ -284,7 +321,8 @@ public actor SQLiteConversationStore: ConversationStore {
             createdAt: try PersistenceCodec.decodeDate(row["created_at"]),
             updatedAt: try PersistenceCodec.decodeDate(row["updated_at"]),
             titleOrigin: ConversationTitleOrigin(rawValue: row["title_origin"] as String? ?? "autoPending")
-                ?? .autoPending
+                ?? .autoPending,
+            archivedAt: (row["archived_at"] as String?).flatMap { try? PersistenceCodec.decodeDate($0) }
         )
     }
 

@@ -17,6 +17,8 @@ import FloeWorkspace
 struct FilePreviewView: View {
     let relativePath: String
     @ObservedObject var center: WorkspaceCenter
+    @EnvironmentObject private var environment: AppEnvironment
+    @EnvironmentObject private var router: AppRouter
     /// Called when the user adds this file to the conversation context.
     var onAddToContext: (() -> Void)? = nil
 
@@ -24,6 +26,7 @@ struct FilePreviewView: View {
     @State private var loadError: String?
     @State private var isEditing = false
     @State private var quickLookURL: URL?
+    @State private var previewError: String?
 
     var body: some View {
         Group {
@@ -56,6 +59,12 @@ struct FilePreviewView: View {
             QuickLookView(url: url)
                 .ignoresSafeArea()
         }
+        .alert("无法预览网页", isPresented: Binding(
+            get: { previewError != nil },
+            set: { if !$0 { previewError = nil } }
+        )) { Button("好", role: .cancel) {} } message: {
+            Text(previewError ?? "")
+        }
     }
 
     private var fileName: String {
@@ -65,6 +74,11 @@ struct FilePreviewView: View {
     private var isMarkdown: Bool {
         let ext = (relativePath as NSString).pathExtension.lowercased()
         return ext == "md" || ext == "markdown"
+    }
+
+    private var isHTML: Bool {
+        let ext = (relativePath as NSString).pathExtension.lowercased()
+        return ext == "html" || ext == "htm"
     }
 
     private var isTextual: Bool {
@@ -79,6 +93,15 @@ struct FilePreviewView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
+            if isHTML, content != nil {
+                Button {
+                    startWebPreview()
+                } label: {
+                    Label("预览网页", systemImage: "safari")
+                }
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .accessibilityIdentifier("file.preview.html")
+            }
             if let onAddToContext {
                 Button {
                     onAddToContext()
@@ -164,6 +187,22 @@ struct FilePreviewView: View {
     private func presentQuickLook() {
         guard let root = center.currentRootURL else { return }
         quickLookURL = root.appendingPathComponent(relativePath)
+    }
+
+    private func startWebPreview() {
+        guard let root = center.currentRootURL else { return }
+        Task {
+            do {
+                _ = try await environment.previewCenter.start(
+                    root: root,
+                    relativeRoot: nil,
+                    entry: relativePath
+                )
+                router.showInspector(.browser)
+            } catch {
+                previewError = error.localizedDescription
+            }
+        }
     }
 }
 

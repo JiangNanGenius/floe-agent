@@ -1,6 +1,6 @@
 # Floe Agent User Guide
 
-[简体中文](USER_GUIDE.zh-CN.md) · [README](../README.md) · [Security](../SECURITY.md)
+[简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
 This guide describes Floe Agent 1.2.x. Labels may vary slightly with the system language and the configured provider.
 
@@ -111,7 +111,13 @@ Only instruction-only or read-only low-risk packages can install automatically. 
 - **Task interrupted after backgrounding:** reopen the task and use the offered safe recovery action.
 - **Browser says `stale`:** observe the page again before interacting.
 - **Remote tool unavailable:** confirm the host, SSH authorization, task permission, and network path.
+- **Remote Python unavailable:** select a trusted SSH host with `python3`; on-device Python is intentionally disabled in the App Store build.
 - **Voice fails or exits:** check microphone and speech-recognition permissions, audio route, and whether another app owns the input session.
 
 Export a redacted diagnostics report from **Settings → Privacy & Security** when filing a reproducible bug. See [Support](../SUPPORT.md) for the report checklist and [Security](../SECURITY.md) for private vulnerability reporting.
 
+## 13. Archive tasks and sync credentials
+
+Swipe a task to archive it. Deletion never runs as a full-swipe action and requires confirmation. Use **Task Center → Archived** to restore multiple tasks or delete selected archived tasks.
+
+Task history is device-local. Configuration sync includes provider/model profiles and non-secret host profiles, while provider API keys use iCloud Keychain. **Sync saved credentials** is off by default and requires device authentication. When enabled, only credentials explicitly promoted to the vault can sync; task/workspace temporary credentials never do. A descriptor may arrive before its Keychain item, in which case the UI shows **Waiting for secret** instead of claiming synchronization completed.

@@ -192,11 +192,15 @@ private final class PreviewContinuationGate: @unchecked Sendable {
     }
 }
 
+/// One long-lived preview owner shared by the file UI and model tools. Keeping
+/// ownership here prevents a view dismissal from tearing down a page that is
+/// still open in the task browser.
 @MainActor
-private final class PreviewToolEnvironment: @unchecked Sendable {
+final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
     private weak var browser: BrowserSessionCenter?
     private var server: LocalPreviewServer?
     private var session: LocalPreviewServer.Session?
+    @Published private(set) var activeURL: URL?
 
     init(browser: BrowserSessionCenter) { self.browser = browser }
 
@@ -215,6 +219,7 @@ private final class PreviewToolEnvironment: @unchecked Sendable {
         let started = try await LocalPreviewServer.start(root: selectedRoot, entry: entry)
         server = started.0
         session = started.1
+        activeURL = started.1.url
         browser.requestPresentation()
         let result = await browser.execute(BrowserCommand(
             sessionID: browser.sessionID,
@@ -240,6 +245,7 @@ private final class PreviewToolEnvironment: @unchecked Sendable {
         server?.stop()
         server = nil
         session = nil
+        activeURL = nil
         return ToolExecutionOutput(summary: "Preview stopped", fullOutputSHA256: "")
     }
 }
@@ -252,7 +258,7 @@ private struct PreviewStartTool: AgentTool {
     static let riskLabels: Set<RiskLabel> = [.controlsGUI]
     static let isSideEffecting = false
     static let toolEffect: ToolEffect = .readOnly
-    let environment: PreviewToolEnvironment
+    let environment: LocalPreviewCoordinator
     func validate(_ args: Arguments) throws {}
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         guard let root = context.workspaceRootURL else { throw FloeError.notFound("No task workspace is open") }
@@ -267,7 +273,7 @@ private struct PreviewReloadTool: AgentTool {
     static let riskLabels: Set<RiskLabel> = [.controlsGUI]
     static let isSideEffecting = false
     static let toolEffect: ToolEffect = .readOnly
-    let environment: PreviewToolEnvironment
+    let environment: LocalPreviewCoordinator
     func validate(_ args: Arguments) throws {}
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try await environment.reload()
@@ -281,7 +287,7 @@ private struct PreviewStopTool: AgentTool {
     static let riskLabels: Set<RiskLabel> = []
     static let isSideEffecting = false
     static let toolEffect: ToolEffect = .readOnly
-    let environment: PreviewToolEnvironment
+    let environment: LocalPreviewCoordinator
     func validate(_ args: Arguments) throws {}
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         await environment.stop()
@@ -289,8 +295,7 @@ private struct PreviewStopTool: AgentTool {
 }
 
 @MainActor
-func registerPreviewTools(browser: BrowserSessionCenter, registry: ToolRunnerRegistry = .shared) {
-    let environment = PreviewToolEnvironment(browser: browser)
+func registerPreviewTools(environment: LocalPreviewCoordinator, registry: ToolRunnerRegistry = .shared) {
     ToolCatalog.register(PreviewStartTool.self)
     ToolCatalog.register(PreviewReloadTool.self)
     ToolCatalog.register(PreviewStopTool.self)

@@ -1,6 +1,6 @@
 # Floe Agent Documentation / 文档中心
 
-[English README](../README.md) · [简体中文 README](../README.zh-CN.md)
+[Official website](https://www.floe-agent.com/) · [English README](../README.md) · [简体中文 README](../README.zh-CN.md)
 
 ## Start here / 从这里开始
 
@@ -27,4 +27,4 @@
 
 Files whose names contain `AUDIT`, `VALIDATION_REPORT`, `IMPLEMENTATION_REPORT`, `HANDOFF`, or `DELIVERY` capture a specific review or handoff. They are retained for traceability, not as current release documentation. When a historical statement conflicts with the README, user guide, current source, or latest release evidence, the current source and release evidence win.
 
-Reference mockups in [`design/reference`](design/reference/README.md) are historical visual explorations. The real App screenshot in [`images`](images/) reflects the 1.2.0 workbench more closely.
+Reference mockups in [`design/reference`](design/reference/README.md) are historical visual explorations. The App screenshot and bilingual architecture diagrams in [`images`](images/) reflect the current 1.2.x workbench and security model more closely.

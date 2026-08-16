@@ -101,8 +101,13 @@ public struct RemotePythonTool: AgentTool {
                 cancellation: context.cancellation
             )
             switch outcome {
-            case .ok(_, let stdout, _, let truncated, _, let durationMs):
-                let summary = "status=ok durationMs=\(durationMs) truncated=\(truncated)\n" + stdout
+            case .ok(_, let stdout, let stderr, let truncated, let stderrTruncated, let durationMs):
+                var summary = "status=ok durationMs=\(durationMs) stdoutTruncated=\(truncated) stderrTruncated=\(stderrTruncated)\n"
+                if !stdout.isEmpty { summary += "stdout:\n\(stdout)" }
+                if !stderr.isEmpty {
+                    if !stdout.isEmpty { summary += "\n" }
+                    summary += "stderr:\n\(stderr)"
+                }
                 return ToolExecutionOutput(summary: summary, fullOutputSHA256: Self.sha256Hex(of: summary))
             case .jsException(let message, let stdout):
                 // Python syntax/runtime errors come back as non-zero exit,

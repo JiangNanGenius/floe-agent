@@ -94,7 +94,20 @@ public struct RemotePythonService: Sendable {
         guard try await hostResolver(hostID) != nil else {
             throw RemotePythonError.hostNotFound(hostID)
         }
-        let session = try await sessionFactory(hostID)
+        let session: any RemotePythonSession
+        do {
+            session = try await sessionFactory(hostID)
+        } catch let error as RemotePythonError {
+            throw error
+        } catch {
+            throw RemotePythonError.connectionFailed(
+                SecretRedactor.redact(error.localizedDescription)
+            )
+        }
+        return try await detectPython3(using: session)
+    }
+
+    private func detectPython3(using session: any RemotePythonSession) async throws -> String? {
         let result: SSHExecResult
         do {
             result = try await session.execute(
@@ -111,7 +124,8 @@ public struct RemotePythonService: Sendable {
             return nil
         }
         guard result.exitCode == 0 else { return nil }
-        let version = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        let version = (result.stdout.isEmpty ? result.stderr : result.stdout)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return version.isEmpty ? "python3" : version
     }
 
@@ -130,12 +144,21 @@ public struct RemotePythonService: Sendable {
         guard try await hostResolver(resolvedID) != nil else {
             throw RemotePythonError.hostNotFound(resolvedID)
         }
-        guard let version = try await detectPython3(hostID: resolvedID) else {
+        let session: any RemotePythonSession
+        do {
+            session = try await sessionFactory(resolvedID)
+        } catch let error as RemotePythonError {
+            throw error
+        } catch {
+            throw RemotePythonError.connectionFailed(
+                SecretRedactor.redact(error.localizedDescription)
+            )
+        }
+        guard let version = try await detectPython3(using: session) else {
             throw RemotePythonError.pythonNotFound(hostID: resolvedID)
         }
         _ = version
 
-        let session = try await sessionFactory(resolvedID)
         let started = Date()
         let encoded = Data(script.utf8).base64EncodedString()
         // The gate sees a command containing "python3"; the payload is
@@ -153,6 +176,12 @@ public struct RemotePythonService: Sendable {
             return .cancelled
         } catch SSHExecError.timedOut {
             return .timedOut(afterMs: Int(timeout * 1000), partialStdout: "")
+        } catch let error as RemotePythonError {
+            throw error
+        } catch {
+            throw RemotePythonError.connectionFailed(
+                SecretRedactor.redact(error.localizedDescription)
+            )
         }
 
         let durationMs = Int(Date().timeIntervalSince(started) * 1000)

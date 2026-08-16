@@ -130,9 +130,10 @@ final class HostEditorViewModel: ObservableObject {
             throw FloeError.validationFailed("A password or key is required")
         }
         try await secretStore.storeSecret(data, scope: .hostSSH(hostID))
+        let synchronizable = SyncControlPreferences.load().savedCredentialsEnabled
         let reference = SecretReference(
             keychainAccount: "host.ssh.\(hostID.uuidString)",
-            synchronizable: false
+            synchronizable: synchronizable
         )
         switch authKind {
         case .password:
@@ -150,9 +151,10 @@ final class HostEditorViewModel: ObservableObject {
         let password = vncPassword.trimmingCharacters(in: .whitespacesAndNewlines)
         if !password.isEmpty, let data = password.data(using: .utf8) {
             try await secretStore.storeSecret(data, scope: .hostVNC(hostID))
+            let synchronizable = SyncControlPreferences.load().savedCredentialsEnabled
             passwordRef = SecretReference(
                 keychainAccount: "host.vnc.\(hostID.uuidString)",
-                synchronizable: false
+                synchronizable: synchronizable
             )
         } else if let existing, let endpoint = existing.vncEndpoint {
             passwordRef = endpoint.passwordRef

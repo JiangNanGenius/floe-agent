@@ -220,9 +220,8 @@ struct TaskPermissionsInspectorView: View {
         defer { isSaving = false }
         policy.updatedAt = Date()
         do {
-            try await SQLiteWorkspaceStore(database: environment.database).saveTaskPolicy(policy)
+            try await conversationCenter.updateTaskPolicy(policy)
             self.policy = policy
-            conversationCenter.taskPolicyDidChange(conversationID: policy.conversationID)
             errorMessage = nil
         } catch { errorMessage = error.localizedDescription }
     }
