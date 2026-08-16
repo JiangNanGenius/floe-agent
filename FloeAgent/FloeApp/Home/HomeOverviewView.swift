@@ -2,8 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// Home's middle column is a task overview, NOT the conversation-history
-// list (that is Chat's content column). It shows at most three quiet
+// The workbench overview shows at most three quiet
 // sections — active tasks, pending approvals, recent threads — and stays
 // empty-clean when there is nothing to show. Rows open the owning thread
 // in Home's detail column via the router.
@@ -64,23 +63,23 @@ struct HomeOverviewView: View {
         .overlay {
             if overviewIsEmpty && !viewModel.isLoading {
                 ContentUnavailableView {
-                    Label("tab.home", systemImage: "house")
+                    Label("tab.workbench", systemImage: "rectangle.grid.2x2")
                 } description: {
                     Text("home.overview.empty")
                 }
             }
         }
-        .navigationTitle("tab.home")
+        .navigationTitle("tab.workbench")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    router.navigate(to: .chat)
+                    router.startNewTask()
                 } label: {
-                    Image(systemName: "bubble.left.and.bubble.right")
+                    Image(systemName: "plus")
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("tab.chat")
-                .accessibilityIdentifier("home.overview.open_chat")
+                .accessibilityLabel("workbench.new_task")
+                .accessibilityIdentifier("workbench.overview.new_task")
             }
         }
         .task { await viewModel.load() }

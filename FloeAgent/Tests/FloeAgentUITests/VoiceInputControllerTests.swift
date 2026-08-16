@@ -218,6 +218,56 @@ struct VoiceInputControllerTests {
         #expect(harness.diagnostics.events.contains("routeChanged"))
     }
 
+    @Test("Self-induced audio category changes do not stop dictation")
+    @MainActor
+    func categoryChangeIsIgnored() async {
+        let harness = Harness()
+        await harness.controller.start()
+        harness.controller.handleAudioRouteChange(Notification(
+            name: AVAudioSession.routeChangeNotification,
+            userInfo: [
+                AVAudioSessionRouteChangeReasonKey:
+                    NSNumber(value: AVAudioSession.RouteChangeReason.categoryChange.rawValue)
+            ]
+        ))
+        #expect(harness.controller.state == .listening)
+        #expect(!harness.diagnostics.events.contains("routeChanged"))
+
+        harness.controller.handleAudioRouteChange(Notification(
+            name: AVAudioSession.routeChangeNotification,
+            userInfo: [
+                AVAudioSessionRouteChangeReasonKey:
+                    NSNumber(value: AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue)
+            ]
+        ))
+        #expect(harness.controller.state == .idle)
+        #expect(harness.diagnostics.events.contains("routeChanged"))
+    }
+
+    @Test("Only interruption began stops an active voice session")
+    @MainActor
+    func interruptionEndIsIgnored() async {
+        let harness = Harness()
+        await harness.controller.start()
+        harness.controller.handleAudioInterruption(Notification(
+            name: AVAudioSession.interruptionNotification,
+            userInfo: [
+                AVAudioSessionInterruptionTypeKey:
+                    NSNumber(value: AVAudioSession.InterruptionType.ended.rawValue)
+            ]
+        ))
+        #expect(harness.controller.state == .listening)
+
+        harness.controller.handleAudioInterruption(Notification(
+            name: AVAudioSession.interruptionNotification,
+            userInfo: [
+                AVAudioSessionInterruptionTypeKey:
+                    NSNumber(value: AVAudioSession.InterruptionType.began.rawValue)
+            ]
+        ))
+        #expect(harness.controller.state == .idle)
+    }
+
     @Test("Partial transcripts arrive in order and never duplicate")
     @MainActor
     func orderedTranscriptMerge() async {

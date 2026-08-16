@@ -76,6 +76,8 @@ targets:
       - package: FloeAgentPackages
         product: FloeTools
       - package: FloeAgentPackages
+        product: FloeSkills
+      - package: FloeAgentPackages
         product: FloePersistence
       - package: FloeAgentPackages
         product: FloeSecurity
@@ -106,8 +108,8 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "8"
+        MARKETING_VERSION: "1.1.0"
+        CURRENT_PROJECT_VERSION: "9"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
         ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -126,6 +128,7 @@ targets:
       - path: Tests/FloeAgentUITests
         excludes:
           - HomeChatSeparationTests.swift
+          - BrowserProtocolTests.swift
           - ThreadTimelineTests.swift
           - VoiceInputControllerTests.swift
     dependencies:
@@ -146,6 +149,7 @@ targets:
       - path: Tests/FloeAgentUITests/HomeChatSeparationTests.swift
       - path: Tests/FloeAgentUITests/ThreadTimelineTests.swift
       - path: Tests/FloeAgentUITests/VoiceInputControllerTests.swift
+      - path: Tests/FloeAgentUITests/BrowserProtocolTests.swift
     dependencies:
       - target: FloeAgent
     settings:

@@ -60,6 +60,12 @@ struct StartedConversationRun: Sendable {
     let result: Task<Result<Void, Error>, Never>
 }
 
+/// A newly-created conversation and its already-durable first run.
+struct StartedConversationTask: Sendable {
+    let conversationID: UUID
+    let run: StartedConversationRun
+}
+
 /// Coordinates conversations and agent runs for the UI layer.
 @MainActor
 final class ConversationCenter: ObservableObject {
@@ -98,8 +104,18 @@ final class ConversationCenter: ObservableObject {
     /// Live run services keyed by run ID. The center is the single owner;
     /// thread view-models observe through it.
     private var runServices: [UUID: ConversationRunService] = [:]
+    /// Provider-loop tasks retained so destructive actions can cancel and
+    /// await them before cascading database rows.
+    private var runTasks: [UUID: Task<Result<Void, Error>, Never>] = [:]
     /// Snapshot polling tasks keyed by run ID.
     private var snapshotTasks: [UUID: Task<Void, Never>] = [:]
+    /// Launch/delete coordination. A delete first closes the conversation to
+    /// new launches, then waits for any transaction already in progress.
+    private var launchCount = 0
+    private var launchWaiters: [CheckedContinuation<Void, Never>] = []
+    private var deletingConversationIDs: Set<UUID> = []
+    private var isClearingHistory = false
+    private var didReconcileInterruptedRuns = false
     private let adapterFactory = ProviderAdapterFactory()
 
     init(environment: AppEnvironment) {
@@ -126,6 +142,31 @@ final class ConversationCenter: ObservableObject {
         }
     }
 
+    /// One-shot cold-launch repair. iOS cannot keep a local provider loop
+    /// alive across process death, so every persisted non-terminal run with
+    /// no service owner becomes explicitly retryable instead of appearing to
+    /// stream forever.
+    func reconcileInterruptedRunsOnLaunch() async {
+        guard !didReconcileInterruptedRuns else { return }
+        didReconcileInterruptedRuns = true
+        let records = (try? await environment.conversationStore.conversations()) ?? []
+        for conversation in records {
+            let runs = (try? await environment.runStore.runs(conversationID: conversation.id)) ?? []
+            for run in runs where !Self.isPersistedTerminal(run.state) && runServices[run.id] == nil {
+                try? await environment.runStore.updateRunState(
+                    id: run.id,
+                    state: "interrupted",
+                    endedAt: Date()
+                )
+                _ = try? await environment.runStore.appendEvent(
+                    runID: run.id,
+                    kind: .status,
+                    payloadJSON: #"{"state":"interrupted"}"#
+                )
+            }
+        }
+    }
+
     /// Creates a conversation with an optional title and refreshes the list.
     @discardableResult
     func createConversation(title: String?) async throws -> ConversationRecord {
@@ -148,13 +189,24 @@ final class ConversationCenter: ObservableObject {
     func runService(
         for conversationID: UUID,
         provider: ProviderProfile,
-        model: ModelProfile
-    ) throws -> ConversationRunService {
+        model: ModelProfile,
+        runID: UUID = UUID(),
+        executionMode: AgentExecutionMode = .agent,
+        workspaceID: UUID? = nil
+    ) async -> ConversationRunService {
+        let skills = await environment.skillsCenter.runtimeSelection()
+        let memory = await runtimeMemoryContext(
+            workspaceID: workspaceID ?? environment.workspaceCenter.currentWorkspace?.id
+        )
         let credentials = resolveCredentials(for: provider)
         let configuration = FloeAgentRuntime.Configuration(
             conversationID: conversationID,
             provider: provider,
-            model: model
+            model: model,
+            conversationMode: executionMode.conversationMode,
+            activeSkillIDs: skills.skillIDs,
+            allowedToolNames: skills.allowedToolNames,
+            toolsEnabled: executionMode.toolsEnabled
         )
         return ConversationRunService(
             configuration: configuration,
@@ -163,8 +215,17 @@ final class ConversationCenter: ObservableObject {
             executor: CatalogToolExecutor(),
             credentials: credentials,
             gate: environment.catastrophicGate,
+            intelligenceStore: environment.intelligenceStore,
             conversationStore: environment.conversationStore,
-            runStore: environment.runStore
+            runStore: environment.runStore,
+            runID: runID,
+            runContext: ConversationRunService.RunContext(
+                workspaceName: environment.workspaceCenter.currentWorkspace?.name,
+                executionTarget: environment.workspaceCenter.currentWorkspace?.activeTarget.kindName,
+                availableToolNames: skills.allowedToolNames,
+                skillInstructions: skills.instructions,
+                memoryContext: memory
+            )
         )
     }
 
@@ -192,24 +253,117 @@ final class ConversationCenter: ObservableObject {
         goal: String,
         in conversationID: UUID,
         provider: ProviderProfile,
-        model: ModelProfile
-    ) throws -> StartedConversationRun {
+        model: ModelProfile,
+        workspaceID: UUID? = nil,
+        attachments: [AttachmentRef] = [],
+        executionMode: AgentExecutionMode = .agent
+    ) async throws -> StartedConversationRun {
         let trimmed = goal.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw FloeError.validationFailed("Goal must not be empty")
         }
-        let service = try runService(for: conversationID, provider: provider, model: model)
-        runServices[service.runID] = service
-        track(service)
-        let result = Task<Result<Void, Error>, Never> {
-            do {
-                try await service.start(goal: trimmed)
-                return .success(())
-            } catch {
-                return .failure(error)
-            }
+        guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else {
+            throw FloeError.validationFailed("Conversation is being deleted")
         }
-        return StartedConversationRun(runID: service.runID, result: result)
+
+        beginLaunch()
+        defer { finishLaunch() }
+        let runID = UUID()
+        let prepared = try await environment.runLaunchStore.prepare(RunLaunchRequest(
+            conversationID: conversationID,
+            runID: runID,
+            goal: trimmed,
+            initialState: "preparing",
+            workspaceID: workspaceID,
+            attachments: attachments,
+            conversationMode: executionMode.conversationMode.rawValue
+        ))
+        guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else {
+            throw FloeError.validationFailed("Conversation was deleted during launch")
+        }
+        let service = await runService(
+            for: prepared.conversation.id,
+            provider: provider,
+            model: model,
+            runID: runID,
+            executionMode: executionMode,
+            workspaceID: workspaceID
+        )
+        return startPreparedService(service, goal: trimmed)
+    }
+
+    /// Atomically creates a conversation and its first run/message/link, then
+    /// returns immediately after provider execution has been scheduled.
+    func startTask(
+        goal: String,
+        title: String,
+        provider: ProviderProfile,
+        model: ModelProfile,
+        workspaceID: UUID? = nil,
+        attachments: [AttachmentRef] = [],
+        executionMode: AgentExecutionMode = .agent
+    ) async throws -> StartedConversationTask {
+        let trimmed = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw FloeError.validationFailed("Goal must not be empty")
+        }
+        guard !isClearingHistory else {
+            throw FloeError.validationFailed("Conversation history is being cleared")
+        }
+
+        beginLaunch()
+        defer { finishLaunch() }
+        let runID = UUID()
+        let prepared = try await environment.runLaunchStore.prepare(RunLaunchRequest(
+            conversationTitle: title,
+            runID: runID,
+            goal: trimmed,
+            initialState: "preparing",
+            workspaceID: workspaceID,
+            attachments: attachments,
+            conversationMode: executionMode.conversationMode.rawValue
+        ))
+        guard !isClearingHistory else {
+            throw FloeError.validationFailed("Conversation history was cleared during launch")
+        }
+        let service = await runService(
+            for: prepared.conversation.id,
+            provider: provider,
+            model: model,
+            runID: runID,
+            executionMode: executionMode,
+            workspaceID: workspaceID
+        )
+        let run = startPreparedService(service, goal: trimmed)
+        await reload()
+        return StartedConversationTask(conversationID: prepared.conversation.id, run: run)
+    }
+
+    /// Injects a small, explicitly data-only memory projection. Secrets are
+    /// rejected at write time and expired/rejected rows are excluded here.
+    private func runtimeMemoryContext(workspaceID: UUID?) async -> String? {
+        var entries = (try? await environment.intelligenceStore.memories(
+            scope: .userProfile, status: .active
+        )) ?? []
+        entries += (try? await environment.intelligenceStore.memories(
+            scope: .agentGlobal, status: .active
+        )) ?? []
+        if let workspaceID {
+            entries += (try? await environment.intelligenceStore.memories(
+                scope: .workspace(workspaceID), status: .active
+            )) ?? []
+        }
+        let now = Date()
+        let selected = entries
+            .filter { $0.expiresAt.map { $0 > now } ?? true }
+            .sorted {
+                if $0.isPinned != $1.isPinned { return $0.isPinned }
+                if $0.importance != $1.importance { return $0.importance > $1.importance }
+                return $0.updatedAt > $1.updatedAt
+            }
+            .prefix(6)
+        guard !selected.isEmpty else { return nil }
+        return selected.map { "- \(String($0.content.prefix(500)))" }.joined(separator: "\n")
     }
 
     /// Starts a new run for `goal` and awaits the complete agent loop.
@@ -219,13 +373,19 @@ final class ConversationCenter: ObservableObject {
         goal: String,
         in conversationID: UUID,
         provider: ProviderProfile,
-        model: ModelProfile
+        model: ModelProfile,
+        workspaceID: UUID? = nil,
+        attachments: [AttachmentRef] = [],
+        executionMode: AgentExecutionMode = .agent
     ) async throws {
-        let started = try startRun(
+        let started = try await startRun(
             goal: goal,
             in: conversationID,
             provider: provider,
-            model: model
+            model: model,
+            workspaceID: workspaceID,
+            attachments: attachments,
+            executionMode: executionMode
         )
         switch await started.result.value {
         case .success:
@@ -235,10 +395,113 @@ final class ConversationCenter: ObservableObject {
         }
     }
 
+    private func startPreparedService(
+        _ service: ConversationRunService,
+        goal: String
+    ) -> StartedConversationRun {
+        let runID = service.runID
+        runServices[runID] = service
+        activeRuns[runID] = RunRecord(
+            id: runID,
+            conversationID: service.conversationID,
+            state: "preparing",
+            goal: goal,
+            startedAt: Date()
+        )
+        track(service)
+        let result = Task<Result<Void, Error>, Never> { [weak self, service] in
+            let outcome: Result<Void, Error>
+            do {
+                try await service.startPrepared(goal: goal)
+                outcome = .success(())
+            } catch {
+                outcome = .failure(error)
+            }
+            self?.runTasks[runID] = nil
+            return outcome
+        }
+        runTasks[runID] = result
+        return StartedConversationRun(runID: runID, result: result)
+    }
+
     /// Cancels a live run. The runtime owns the terminal transition.
     func cancel(runID: UUID) async {
         guard let service = runServices[runID] else { return }
         await service.cancel()
+    }
+
+    /// The only conversation deletion path used by the UI. It closes the
+    /// conversation to new launches, lets an in-flight launch transaction
+    /// settle, then cancels and awaits provider work before the FK cascade.
+    func deleteConversation(id: UUID) async throws {
+        guard deletingConversationIDs.insert(id).inserted else {
+            throw FloeError.validationFailed("Conversation deletion is already in progress")
+        }
+        defer { deletingConversationIDs.remove(id) }
+        await waitForLaunches()
+        try await stopRunsAndDelete(conversationIDs: [id])
+        await reload()
+    }
+
+    /// Clears all durable conversations with the same cancellation ordering
+    /// as one-row deletion. Counts are captured before the cascade so the
+    /// settings confirmation can report truthfully.
+    func deleteAllConversations() async throws -> (conversations: Int, runs: Int) {
+        guard !isClearingHistory else {
+            throw FloeError.validationFailed("Conversation history is already being cleared")
+        }
+        isClearingHistory = true
+        defer { isClearingHistory = false }
+        await waitForLaunches()
+
+        let records = try await environment.conversationStore.conversations()
+        let ids = Set(records.map(\.id))
+        var runCount = 0
+        for id in ids {
+            runCount += try await environment.runStore.runs(conversationID: id).count
+        }
+        try await stopRunsAndDelete(conversationIDs: ids)
+        await reload()
+        return (records.count, runCount)
+    }
+
+    private func stopRunsAndDelete(conversationIDs: Set<UUID>) async throws {
+        let services = runServices.values.filter {
+            conversationIDs.contains($0.conversationID)
+        }
+        for service in services {
+            await service.cancel()
+        }
+        let tasks = services.compactMap { runTasks[$0.runID] }
+        for task in tasks {
+            _ = await task.value
+        }
+
+        let runIDs = Set(services.map(\.runID))
+        for runID in runIDs {
+            snapshotTasks[runID]?.cancel()
+            snapshotTasks[runID] = nil
+            runTasks[runID]?.cancel()
+            runTasks[runID] = nil
+            runServices[runID] = nil
+            activeRuns[runID] = nil
+        }
+        pendingApprovals.removeAll { conversationIDs.contains($0.conversationID) }
+
+        for id in conversationIDs {
+            try await environment.conversationStore.deleteConversation(id: id)
+        }
+        // Also forget completed services retained for historical live-tail
+        // access, even when no task was running at deletion time.
+        let retainedRunIDs = runServices.compactMap { runID, service in
+            conversationIDs.contains(service.conversationID) ? runID : nil
+        }
+        for runID in retainedRunIDs {
+            snapshotTasks[runID]?.cancel()
+            snapshotTasks[runID] = nil
+            runServices[runID] = nil
+            activeRuns[runID] = nil
+        }
     }
 
     /// Retries a terminal run by starting a fresh run with the same goal,
@@ -491,12 +754,38 @@ final class ConversationCenter: ObservableObject {
         throw FloeError.invalidConfiguration("No provider and model configured")
     }
 
+    private func beginLaunch() {
+        launchCount += 1
+    }
+
+    private func finishLaunch() {
+        launchCount = max(0, launchCount - 1)
+        guard launchCount == 0 else { return }
+        let waiters = launchWaiters
+        launchWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    private func waitForLaunches() async {
+        guard launchCount > 0 else { return }
+        await withCheckedContinuation { continuation in
+            launchWaiters.append(continuation)
+        }
+    }
+
     static func decodePayload(_ json: String) -> [String: String] {
         guard let data = json.data(using: .utf8),
               let object = try? JSONDecoder().decode([String: String].self, from: data) else {
             return [:]
         }
         return object
+    }
+
+    private static func isPersistedTerminal(_ state: String) -> Bool {
+        switch state {
+        case "completed", "failed", "checkpointed", "interrupted": true
+        default: false
+        }
     }
 }
 #endif

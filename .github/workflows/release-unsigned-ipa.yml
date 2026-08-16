@@ -1,0 +1,177 @@
+name: Unsigned IPA Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing SemVer tag to validate and build
+        required: true
+        type: string
+      publish:
+        description: Publish the draft prerelease after validation
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unsigned-ipa-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-verify-release:
+    runs-on: macos-26
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        working-directory: FloeAgent
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Install release tooling
+        run: brew install xcodegen gitleaks syft
+
+      - name: Generate project and validate tag
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          scripts/gen_project.sh
+          scripts/release_preflight.sh "$RELEASE_TAG"
+
+      - name: Resolve dependencies and run Swift tests
+        run: |
+          swift package resolve
+          scripts/pin_check.sh
+          swift build
+          swift test
+
+      - name: Build iOS simulator release gate
+        run: |
+          xcodebuild \
+            -project FloeAgent.xcodeproj \
+            -scheme FloeAgent \
+            -configuration Release \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/FloeSimulatorDerivedData" \
+            build
+
+      - name: Scan source and generate compliance artifacts
+        run: |
+          scripts/secret_scan.sh
+          scripts/sbom.sh
+          scripts/license_inventory.sh
+
+      - name: Build unsigned device application
+        run: |
+          xcodebuild \
+            -project FloeAgent.xcodeproj \
+            -scheme FloeAgent \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/FloeDeviceDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            DEVELOPMENT_TEAM='' \
+            build
+
+      - name: Package and verify unsigned IPA
+        id: package
+        env:
+          ASSET_NAME: ${{ steps.release.outputs.asset_name }}
+        run: |
+          APP_PATH="$(find "$RUNNER_TEMP/FloeDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          scripts/package_unsigned_ipa.sh "$APP_PATH" release-assets "$ASSET_NAME"
+
+      - name: Verify artifact metadata and scan built application
+        run: |
+          test "${{ steps.package.outputs.bundle_id }}" = "${{ steps.release.outputs.bundle_id }}"
+          test "${{ steps.package.outputs.version }}" = "${{ steps.release.outputs.version }}"
+          test "${{ steps.package.outputs.build }}" = "${{ steps.release.outputs.build }}"
+          APP_PATH="$(find "$RUNNER_TEMP/FloeDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          gitleaks detect \
+            --source "$APP_PATH" \
+            --no-git \
+            --redact \
+            --report-path release-assets/app-gitleaks-report.json
+          cp sbom.spdx.json release-assets/
+          cp LICENSES-THIRD-PARTY.md release-assets/
+          cp .gitleaks-report.json release-assets/source-gitleaks-report.json
+          {
+            echo "tag=${{ steps.release.outputs.tag }}"
+            echo "version=${{ steps.release.outputs.version }}"
+            echo "build=${{ steps.release.outputs.build }}"
+            echo "bundle=${{ steps.package.outputs.bundle_id }}"
+            echo "minimum_iOS=${{ steps.package.outputs.minimum_os }}"
+            echo "swift_tests=passed"
+            echo "simulator_release_build=passed"
+            echo "unsigned_device_build=passed"
+          } > release-assets/TEST-SUMMARY.txt
+
+      - name: Attest unsigned IPA provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ steps.package.outputs.ipa_path }}
+
+      - name: Upload verified build artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: unsigned-ipa-${{ steps.release.outputs.version }}-build${{ steps.release.outputs.build }}
+          path: FloeAgent/release-assets/
+          if-no-files-found: error
+
+      - name: Create draft prerelease and upload assets
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          BUILD: ${{ steps.release.outputs.build }}
+        run: |
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          ## Floe Agent $VERSION (build $BUILD)
+
+          > [!WARNING]
+          > This is an **unsigned, pre-release IPA**. iOS will not install it directly. You must inspect, verify, and sign it with your own certificate using a compatible sideloading workflow. It is not an App Store package.
+
+          Verify the download with the accompanying SHA-256 file. This release also includes an SPDX SBOM, third-party license inventory, secret-scan report, test summary, and GitHub build-provenance attestation.
+
+          Known platform limits: iOS may suspend local agent, browser, and model-stream work in the background; remote jobs resume only when they expose a reconnectable job identifier.
+          EOF
+          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = "true"
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+            gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --prerelease
+          else
+            gh release create "$RELEASE_TAG" release-assets/* \
+              --verify-tag \
+              --draft \
+              --prerelease \
+              --title "Floe Agent $VERSION (build $BUILD)" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+
+      - name: Publish validated prerelease
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --prerelease

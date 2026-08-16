@@ -48,6 +48,10 @@ private struct MoreDestinationRouter: View {
             ProviderListView(center: viewModel.center)
         case .auxiliaryModels:
             AuxiliaryModelsView(center: viewModel.center)
+        case .skills:
+            SkillsView(center: viewModel.environment.skillsCenter)
+        case .memory:
+            MemoryView(center: viewModel.environment.memoryCenter)
         case .settings:
             SettingsRootView()
         case .privacy:

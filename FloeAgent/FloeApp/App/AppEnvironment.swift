@@ -16,6 +16,7 @@ import FloeSync
 import FloeWorkspace
 import FloeExecution
 import FloeSSH
+import FloeAgentRuntime
 import CloudKit
 
 /// Owns the app's long-lived services and stores. Created once at launch and
@@ -29,6 +30,11 @@ final class AppEnvironment: ObservableObject {
     let database: DatabaseManager
     let conversationStore: any ConversationStore
     let runStore: any RunStore
+    /// Atomic preparation of conversation + run + first message before any
+    /// provider work begins.
+    let runLaunchStore: any RunLaunchStore
+    let intelligenceStore: SQLiteIntelligenceStore
+    let skillStore: SQLiteSkillStore
     let configurationStore: ModelConfigurationStore
     let configurationSync: ConfigSyncEngine
     let remoteSessionRegistry: any RemoteSessionRegistry
@@ -45,6 +51,8 @@ final class AppEnvironment: ObservableObject {
     /// Real remote-Python capability probe (FloeExecution), surfaced to
     /// SettingsCenter so the UI reads live state instead of a placeholder.
     let remotePythonProbe: FloeExecution.RemotePythonProbe
+    /// Long-lived visible WebKit session shared by UI and browser tools.
+    let browserCenter: BrowserSessionCenter
 
     // MARK: Coordinators
 
@@ -56,6 +64,8 @@ final class AppEnvironment: ObservableObject {
     private lazy var _filesCenter = FilesCenter(environment: self)
     private lazy var _workspaceCenter = WorkspaceCenter(environment: self)
     private lazy var _settingsCenter = SettingsCenter(environment: self)
+    private lazy var _skillsCenter = SkillsCenter(environment: self)
+    private lazy var _memoryCenter = MemoryCenter(environment: self)
 
     var conversationCenter: ConversationCenter { _conversationCenter }
     var remoteSessionCenter: RemoteSessionCenter { _remoteSessionCenter }
@@ -64,6 +74,8 @@ final class AppEnvironment: ObservableObject {
     /// Lazily created on first access; ConversationCenter reads
     /// `defaultAgentMode` through it without a construction cycle.
     var settingsCenter: SettingsCenter { _settingsCenter }
+    var skillsCenter: SkillsCenter { _skillsCenter }
+    var memoryCenter: MemoryCenter { _memoryCenter }
 
     // MARK: State
 
@@ -89,12 +101,16 @@ final class AppEnvironment: ObservableObject {
         self.database = database
         self.conversationStore = conversationStore
         self.runStore = runStore
+        self.runLaunchStore = SQLiteRunLaunchStore(database: database)
+        self.intelligenceStore = SQLiteIntelligenceStore(database: database)
+        self.skillStore = SQLiteSkillStore(database: database)
         self.configurationStore = configurationStore
         self.configurationSync = configurationSync
         self.remoteSessionRegistry = remoteSessionRegistry
         self.keychain = keychain
         self.catastrophicGate = catastrophicGate
         self.isEphemeral = isEphemeral
+        self.browserCenter = BrowserSessionCenter()
 
         // T04/T05: register the nine workspace file tools (catalog
         // descriptors + runtime runners). The root provider reads the
@@ -111,6 +127,7 @@ final class AppEnvironment: ObservableObject {
         self.remoteHostStore = hostStore
         let pythonService = Self.makeRemotePythonService(hostStore: hostStore)
         registerExecutionTools(pythonService: pythonService)
+        registerBrowserTools(center: browserCenter)
         self.remotePythonProbe = FloeExecution.RemotePythonProbe(service: pythonService)
     }
 

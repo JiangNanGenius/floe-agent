@@ -73,6 +73,9 @@ public struct ToolResult: Sendable, Codable, Hashable {
     /// store or is discarded per size policy; only the digest is kept here.
     public var outputDigest: String
     public var exitStatus: Int32?
+    /// Bounded Floe-owned artifacts produced by this tool. The provider only
+    /// receives verified image bytes when the selected model supports vision.
+    public var artifacts: [ToolArtifactReference]
 
     public enum Status: String, Sendable, Codable, Hashable {
         case ok
@@ -87,12 +90,60 @@ public struct ToolResult: Sendable, Codable, Hashable {
         status: Status,
         outputSummary: String,
         outputDigest: String,
-        exitStatus: Int32? = nil
+        exitStatus: Int32? = nil,
+        artifacts: [ToolArtifactReference] = []
     ) {
         self.callID = callID
         self.status = status
         self.outputSummary = String(outputSummary.prefix(4096))
         self.outputDigest = outputDigest
         self.exitStatus = exitStatus
+        self.artifacts = artifacts
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case callID, status, outputSummary, outputDigest, exitStatus, artifacts
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        callID = try values.decode(String.self, forKey: .callID)
+        status = try values.decode(Status.self, forKey: .status)
+        outputSummary = String(try values.decode(String.self, forKey: .outputSummary).prefix(4096))
+        outputDigest = try values.decode(String.self, forKey: .outputDigest)
+        exitStatus = try values.decodeIfPresent(Int32.self, forKey: .exitStatus)
+        artifacts = try values.decodeIfPresent([ToolArtifactReference].self, forKey: .artifacts) ?? []
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(callID, forKey: .callID)
+        try values.encode(status, forKey: .status)
+        try values.encode(outputSummary, forKey: .outputSummary)
+        try values.encode(outputDigest, forKey: .outputDigest)
+        try values.encodeIfPresent(exitStatus, forKey: .exitStatus)
+        if !artifacts.isEmpty { try values.encode(artifacts, forKey: .artifacts) }
+    }
+}
+
+/// A path-scoped, digest-addressed tool artifact. Paths are relative to
+/// Floe's Application Support directory; arbitrary filesystem URLs are never
+/// accepted from a tool or model.
+public struct ToolArtifactReference: Sendable, Codable, Hashable, Identifiable {
+    public var id: UUID
+    public var relativePath: String
+    public var mimeType: String
+    public var byteCount: Int
+    public var sha256: String
+
+    public init(
+        id: UUID, relativePath: String, mimeType: String,
+        byteCount: Int, sha256: String
+    ) {
+        self.id = id
+        self.relativePath = relativePath
+        self.mimeType = mimeType
+        self.byteCount = byteCount
+        self.sha256 = sha256
     }
 }

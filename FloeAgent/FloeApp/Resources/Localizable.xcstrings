@@ -715,6 +715,62 @@
         }
       }
     },
+    "action.delete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Delete" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "删除" } }
+      }
+    },
+    "action.install": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Install" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "安装" } }
+      }
+    },
+    "browser.address": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Website address" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "网页地址" } }
+      }
+    },
+    "browser.close_tab": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Close tab" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "关闭标签页" } }
+      }
+    },
+    "browser.new_tab": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "New tab" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "新标签页" } }
+      }
+    },
+    "browser.return_to_agent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Return to agent" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "交还智能体" } }
+      }
+    },
+    "browser.take_control": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Take control" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "接管浏览器" } }
+      }
+    },
+    "browser.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Browser" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "浏览器" } }
+      }
+    },
     "composer.attach": {
       "extractionState": "manual",
       "localizations": {
@@ -781,6 +837,20 @@
             "value": "仅对话"
           }
         }
+      }
+    },
+    "composer.mode.goal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Goal" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "目标" } }
+      }
+    },
+    "composer.mode.plan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Plan" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "计划" } }
       }
     },
     "composer.no_model": {
@@ -7148,6 +7218,125 @@
         }
       }
     },
+    "skills.creator": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Skill Creator" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "技能创建器" } }
+      }
+    },
+    "skills.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "When should Floe use it?" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Floe 应在何时使用它？" } }
+      }
+    },
+    "skills.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No skills installed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "尚未安装技能" } }
+      }
+    },
+    "skills.enabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Enabled" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已启用" } }
+      }
+    },
+    "skills.finder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Skill Finder" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "技能查找器" } }
+      }
+    },
+    "skills.finder.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Install a reviewed HTTPS skill envelope. Floe validates every file and never executes install hooks." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "安装经审查的 HTTPS 技能包。Floe 会验证每个文件，且不会执行安装钩子。" } }
+      }
+    },
+    "skills.finder.source": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "HTTPS source" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "HTTPS 来源" } }
+      }
+    },
+    "skills.instructions": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Instructions" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "说明" } }
+      }
+    },
+    "skills.name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Skill name" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "技能名称" } }
+      }
+    },
+    "skills.review.none": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No additional capabilities" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无附加能力" } }
+      }
+    },
+    "skills.review.permissions": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Requested capabilities" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请求的能力" } }
+      }
+    },
+    "skills.review.scripts": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Contains scripts. iOS keeps them as visible source; remote execution still requires per-run approval." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "包含脚本。iOS 仅将其作为可见源码保存；远程执行仍需逐次审批。" } }
+      }
+    },
+    "skills.review.source": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Source" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "来源" } }
+      }
+    },
+    "skills.review.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Review skill installation" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "审查技能安装" } }
+      }
+    },
+    "skills.review.tools": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tools" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "工具" } }
+      }
+    },
+    "skills.remove.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Remove this skill?" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "移除此技能？" } }
+      }
+    },
+    "skills.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Skills" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "技能" } }
+      }
+    },
     "tab.files": {
       "extractionState": "manual",
       "localizations": {
@@ -7214,6 +7403,13 @@
             "value": "更多"
           }
         }
+      }
+    },
+    "tab.workbench": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Workbench" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "工作台" } }
       }
     },
     "terminal.input": {
@@ -8557,6 +8753,111 @@
             "value": "正在停止"
           }
         }
+      }
+    },
+    "workbench.new_task": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "New task" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "新建任务" } }
+      }
+    },
+    "skills.finder.model": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Rewrite model" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "改写模型" } }
+      }
+    },
+    "goal.confirm_complete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Confirm completion" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "确认完成" } }
+      }
+    },
+    "goal.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Goal" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "目标" } }
+      }
+    },
+    "plan.accept": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Accept plan" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "接受计划" } }
+      }
+    },
+    "plan.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Plan" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "计划" } }
+      }
+    },
+    "memory.add": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Add Memory" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "添加记忆" } }
+      }
+    },
+    "memory.content": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "What should Floe remember?" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "希望 Floe 记住什么？" } }
+      }
+    },
+    "memory.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No saved memories" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "暂无已保存记忆" } }
+      }
+    },
+    "memory.save": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Save" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "保存" } }
+      }
+    },
+    "memory.scope.agent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Agent" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "智能体" } }
+      }
+    },
+    "memory.scope.user": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Your profile" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "个人偏好" } }
+      }
+    },
+    "memory.scope.workspace": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Current workspace" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前工作空间" } }
+      }
+    },
+    "memory.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Memory" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "记忆" } }
+      }
+    },
+    "memory.workspace_only": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Only in this workspace" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "仅用于当前工作空间" } }
       }
     },
     "state.stopped": {

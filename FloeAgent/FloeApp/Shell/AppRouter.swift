@@ -19,6 +19,16 @@ enum SetupPresentation: String, Identifiable, Hashable, Sendable {
     var id: String { rawValue }
 }
 
+/// The one source of truth for the work surface. Home, history rows,
+/// workspace rows and newly-created tasks all project this same selection;
+/// there is no independent Home-vs-Chat conversation state to become stale.
+enum WorkbenchSelection: Hashable, Sendable {
+    case overview
+    case newTask(workspaceID: UUID?)
+    case workspace(UUID)
+    case conversation(UUID)
+}
+
 /// Navigation state and background-policy wiring for the whole app.
 /// Views bind to this; they never hold policy or selection state of their own.
 @MainActor
@@ -30,29 +40,36 @@ final class AppRouter: ObservableObject {
     @Published var selection: AppDestination = .home
 
     /// The active iPad sidebar selection, including promoted More sections.
-    @Published var sidebarSelection: SidebarSelection? = .primary(.home)
+    @Published var sidebarSelection: SidebarSelection? = .workbench(.overview)
 
     /// iPad split-view column visibility.
     @Published var columnVisibility: NavigationSplitViewVisibility = .all
 
     // MARK: - Cross-screen selection
 
-    /// Conversation currently opened in the thread detail, if any.
-    @Published var selectedConversationID: UUID?
-    /// iPhone Chat navigation path. iPad uses selectedConversationID to
-    /// project the same thread into the split-view detail column.
-    @Published var chatPath: [UUID] = []
-    /// iPhone Home navigation path. Home and Chat own separate stacks so
-    /// starting a task from Home never pollutes the Chat list's back
-    /// behavior, and returning in Chat never disturbs Home.
-    @Published var homePath: [UUID] = []
+    /// Canonical workbench selection shared by every idiom and entry point.
+    @Published var workbenchSelection: WorkbenchSelection = .overview
+    /// The single compact-navigation projection of `workbenchSelection`.
+    /// A user-driven NavigationStack pop writes this binding directly, so
+    /// reconcile the canonical selection here as well as in router methods.
+    @Published var workbenchPath: [UUID] = [] {
+        didSet {
+            if let id = workbenchPath.last {
+                if workbenchSelection != .conversation(id) {
+                    workbenchSelection = .conversation(id)
+                }
+            } else if case .conversation = workbenchSelection {
+                workbenchSelection = .overview
+                selectedRunID = nil
+                if case .workbench = sidebarSelection {
+                    sidebarSelection = .workbench(.overview)
+                }
+            }
+        }
+    }
     /// iPhone More navigation path. It also gives Home quick actions a
     /// single cross-idiom way to open a concrete settings surface.
     @Published var morePath: [MoreDestination] = []
-    /// Conversation shown in Home's iPad detail column (a task started
-    /// from Home). Separate from `selectedConversationID`, which belongs
-    /// to Chat, so the two pages never share selection state.
-    @Published var homeDetailConversationID: UUID?
     /// Run currently inspected (thread detail / runs history), if any.
     @Published var selectedRunID: UUID?
     /// Host currently inspected (host detail / terminal / VNC), if any.
@@ -60,13 +77,44 @@ final class AppRouter: ObservableObject {
     /// A single app-wide setup sheet shared by iPhone and iPad routes.
     @Published var presentedSetup: SetupPresentation?
 
+    /// Compatibility projections for feature views while their callers move
+    /// to `workbenchSelection`. Both aliases read and write the same state.
+    var selectedConversationID: UUID? {
+        get {
+            guard case .conversation(let id) = workbenchSelection else { return nil }
+            return id
+        }
+        set {
+            if let newValue {
+                workbenchSelection = .conversation(newValue)
+                workbenchPath = [newValue]
+            } else if case .conversation = workbenchSelection {
+                workbenchSelection = .overview
+                workbenchPath = []
+            }
+        }
+    }
+
+    var homeDetailConversationID: UUID? {
+        get { selectedConversationID }
+        set { selectedConversationID = newValue }
+    }
+
+    var homePath: [UUID] {
+        get { workbenchPath }
+        set { setWorkbenchPath(newValue) }
+    }
+
+    var chatPath: [UUID] {
+        get { workbenchPath }
+        set { setWorkbenchPath(newValue) }
+    }
+
     // MARK: - Inspector (iPad third column / iPhone sheet)
 
-    /// What the inspector column/sheet should display. T05 fills in the
-    /// real workspace inspector; T03 only owns the routing surface so
-    /// views never invent their own presentation.
+    /// What the inspector column/sheet should display.
     enum InspectorContent: String, Identifiable, Hashable, Sendable {
-        /// The workspace file inspector (content provided by T05).
+        /// The workspace file inspector.
         case workspaceFiles
         var id: String { rawValue }
     }
@@ -76,7 +124,7 @@ final class AppRouter: ObservableObject {
     @Published var inspectorContent: InspectorContent?
 
     /// Convenience flag derived from inspectorContent (views bind to
-    /// this; T05's FileInspectorView reads the content).
+    /// this; FileInspectorView reads the content).
     var inspectorVisible: Bool { inspectorContent != nil }
 
     /// Opens the inspector with the given content (iPad: third column;
@@ -149,7 +197,12 @@ final class AppRouter: ObservableObject {
     /// on iPad it also moves the sidebar selection.
     func navigate(to destination: AppDestination) {
         selection = destination
-        sidebarSelection = .primary(destination)
+        switch destination {
+        case .home, .chat:
+            sidebarSelection = .workbench(workbenchSelection)
+        case .files, .browser, .hosts, .more:
+            sidebarSelection = .primary(destination)
+        }
     }
 
     /// Opens a concrete More destination on both idioms: a pushed screen
@@ -164,21 +217,63 @@ final class AppRouter: ObservableObject {
     /// Keeping this operation here prevents Home and Chat from drifting into
     /// separate navigation behavior.
     func openConversation(_ conversationID: UUID, runID: UUID? = nil) {
-        selectedConversationID = conversationID
-        selectedRunID = runID
-        navigate(to: .chat)
-        chatPath = [conversationID]
-    }
-
-    /// Opens a freshly started task thread WITHOUT leaving Home. The new
-    /// conversation is pushed onto Home's own navigation stack (iPhone) or
-    /// projected into Home's detail column (iPad); the Chat list and its
-    /// selection stay untouched until the user visits Chat themselves.
-    func openThreadFromHome(_ conversationID: UUID, runID: UUID? = nil) {
-        homeDetailConversationID = conversationID
+        workbenchSelection = .conversation(conversationID)
+        workbenchPath = [conversationID]
         selectedRunID = runID
         navigate(to: .home)
-        homePath = [conversationID]
+    }
+
+    /// Opens a freshly-started task while keeping Home as the visible entry
+    /// point. Home and history still project the same canonical workbench
+    /// selection, so switching tabs cannot resurrect an older thread.
+    func openThreadFromHome(_ conversationID: UUID, runID: UUID? = nil) {
+        workbenchSelection = .conversation(conversationID)
+        workbenchPath = [conversationID]
+        selectedRunID = runID
+        navigate(to: .home)
+    }
+
+    func showOverview() {
+        workbenchSelection = .overview
+        workbenchPath = []
+        selectedRunID = nil
+        sidebarSelection = .workbench(.overview)
+        selection = .home
+    }
+
+    func startNewTask(workspaceID: UUID? = nil) {
+        workbenchSelection = .newTask(workspaceID: workspaceID)
+        workbenchPath = []
+        selectedRunID = nil
+        sidebarSelection = .workbench(workbenchSelection)
+        selection = .home
+    }
+
+    func selectWorkspace(_ workspaceID: UUID) {
+        workbenchSelection = .workspace(workspaceID)
+        workbenchPath = []
+        selectedRunID = nil
+        sidebarSelection = .workbench(workbenchSelection)
+        selection = .home
+    }
+
+    /// Repairs selections after deletion, history clear or cross-scene DB
+    /// changes. A missing parent can never leave an enabled composer behind.
+    func reconcileConversations(_ availableIDs: Set<UUID>) {
+        guard case .conversation(let id) = workbenchSelection,
+              !availableIDs.contains(id) else { return }
+        showOverview()
+        hideInspector()
+    }
+
+    private func setWorkbenchPath(_ path: [UUID]) {
+        workbenchPath = path
+        if let id = path.last {
+            workbenchSelection = .conversation(id)
+        } else if case .conversation = workbenchSelection {
+            workbenchSelection = .overview
+            selectedRunID = nil
+        }
     }
 
     private func policyPhase(for phase: ScenePhase) -> PolicyScenePhase {

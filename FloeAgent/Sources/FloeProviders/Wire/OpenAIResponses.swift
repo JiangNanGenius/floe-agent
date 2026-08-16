@@ -31,8 +31,36 @@ public struct ResponsesRequest: Sendable, Codable, Hashable {
 
     public enum InputItem: Sendable, Hashable {
         case message(role: String, content: String)
+        case multimodalMessage(role: String, content: [ContentPart])
         case functionCall(callID: String, name: String, arguments: String)
         case functionCallOutput(callID: String, output: String)
+
+        public enum ContentPart: Sendable, Codable, Hashable {
+            case text(String)
+            case imageURL(String)
+
+            private enum CodingKeys: String, CodingKey { case type, text, imageURL = "image_url" }
+
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                switch try container.decode(String.self, forKey: .type) {
+                case "input_image": self = .imageURL(try container.decode(String.self, forKey: .imageURL))
+                default: self = .text(try container.decodeIfPresent(String.self, forKey: .text) ?? "")
+                }
+            }
+
+            public func encode(to encoder: any Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                switch self {
+                case .text(let text):
+                    try container.encode("input_text", forKey: .type)
+                    try container.encode(text, forKey: .text)
+                case .imageURL(let url):
+                    try container.encode("input_image", forKey: .type)
+                    try container.encode(url, forKey: .imageURL)
+                }
+            }
+        }
 
         enum CodingKeys: String, CodingKey {
             case type, role, content, callID = "call_id", name, arguments, output
@@ -54,10 +82,15 @@ public struct ResponsesRequest: Sendable, Codable, Hashable {
                     output: try container.decode(String.self, forKey: .output)
                 )
             default:
-                self = .message(
-                    role: try container.decode(String.self, forKey: .role),
-                    content: try container.decode(String.self, forKey: .content)
-                )
+                let role = try container.decode(String.self, forKey: .role)
+                if let text = try? container.decode(String.self, forKey: .content) {
+                    self = .message(role: role, content: text)
+                } else {
+                    self = .multimodalMessage(
+                        role: role,
+                        content: try container.decode([ContentPart].self, forKey: .content)
+                    )
+                }
             }
         }
 
@@ -65,6 +98,10 @@ public struct ResponsesRequest: Sendable, Codable, Hashable {
             var container = encoder.container(keyedBy: CodingKeys.self)
             switch self {
             case .message(let role, let content):
+                try container.encode("message", forKey: .type)
+                try container.encode(role, forKey: .role)
+                try container.encode(content, forKey: .content)
+            case .multimodalMessage(let role, let content):
                 try container.encode("message", forKey: .type)
                 try container.encode(role, forKey: .role)
                 try container.encode(content, forKey: .content)

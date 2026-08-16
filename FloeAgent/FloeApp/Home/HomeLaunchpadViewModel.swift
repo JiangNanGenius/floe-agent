@@ -62,10 +62,15 @@ final class HomeLaunchpadViewModel: ObservableObject {
     /// Injectable task starter (defaults to the live center-backed one).
     private let taskStarter: (any HomeTaskStarting)?
 
-    init(center: ConversationCenter, taskStarter: (any HomeTaskStarting)? = nil) {
+    init(
+        center: ConversationCenter,
+        taskStarter: (any HomeTaskStarting)? = nil,
+        selectedProjectID: UUID? = nil
+    ) {
         self.center = center
         self.environment = center.environment
         self.taskStarter = taskStarter
+        self.selectedProjectID = selectedProjectID
     }
 
     var pendingApprovals: [PendingApproval] { center.pendingApprovals }
@@ -96,6 +101,9 @@ final class HomeLaunchpadViewModel: ObservableObject {
         await center.reload()
         await environment.workspaceCenter.reload()
         if selectedModelID == nil { selectedModelID = center.modelPreferences.defaultAgentModelID }
+        if selectedProjectID == nil {
+            selectedProjectID = environment.workspaceCenter.currentWorkspace?.id
+        }
 
         var states: [UUID: String] = [:]
         var active: [ConversationRecord] = []
@@ -150,75 +158,22 @@ final class HomeLaunchpadViewModel: ObservableObject {
         }
     }
 
-    /// Live path: create the conversation, start the run, and remove the
-    /// would-be empty thread if the send itself fails — Home never
-    /// abandons a blank, eternally-timed conversation behind.
+    /// Live path: one persistence transaction creates the conversation, run,
+    /// first message, attachments and workspace link before provider I/O.
     private func startTaskLive(goal: String, stagedAttachments: [AttachmentRef]) async throws -> UUID {
         guard let (provider, model) = center.providerAndModel(modelID: selectedModelID) else {
             throw FloeError.invalidConfiguration("No provider and model configured")
         }
-        let conversation = try await center.createConversation(title: Self.title(from: goal))
-        do {
-            let started = try center.startRun(
-                goal: goal,
-                in: conversation.id,
-                provider: provider,
-                model: model
-            )
-
-            // The run service writes its run row and user message before
-            // opening provider I/O. Navigate as soon as that durable start
-            // is visible instead of waiting for the entire model response.
-            for _ in 0..<50 where !Task.isCancelled {
-                if try await environment.runStore.run(id: started.runID) != nil {
-                    if !stagedAttachments.isEmpty {
-                        await persistAttachments(stagedAttachments, in: conversation.id)
-                    }
-                    return conversation.id
-                }
-                try await Task.sleep(for: .milliseconds(40))
-            }
-
-            // No durable run appeared: stop the launch and surface its
-            // concrete failure (or a bounded start timeout) so the empty
-            // conversation can be removed below.
-            started.result.cancel()
-            switch await started.result.value {
-            case .success:
-                throw FloeError.internalError("Run did not become available")
-            case .failure(let error):
-                throw error
-            }
-        } catch {
-            try? await environment.conversationStore.deleteConversation(id: conversation.id)
-            await center.reload()
-            throw error
-        }
-    }
-
-    /// Persists staged attachments as file/image parts on the user goal
-    /// message so ThreadDetailView's UserMessageBubble shows chips.
-    private func persistAttachments(
-        _ attachments: [AttachmentRef],
-        in conversationID: UUID
-    ) async {
-        let store = environment.conversationStore
-        guard let messages = try? await store.messages(conversationID: conversationID),
-              var userMessage = messages.first(where: { $0.role == "user" }) else { return }
-        for attachment in attachments {
-            try? await store.saveAttachment(attachment)
-        }
-        let newParts = attachments.enumerated().map { offset, attachment in
-            MessagePart(
-                messageID: userMessage.id,
-                partIndex: offset + 1,
-                kind: attachment.kind == .image ? .image : .file,
-                attachmentID: attachment.id,
-                metadata: ["name": attachment.displayName]
-            )
-        }
-        userMessage.parts.append(contentsOf: newParts)
-        try? await store.appendMessage(userMessage)
+        let started = try await center.startTask(
+            goal: goal,
+            title: Self.title(from: goal),
+            provider: provider,
+            model: model,
+            workspaceID: selectedProjectID,
+            attachments: stagedAttachments,
+            executionMode: agentMode
+        )
+        return started.conversationID
     }
 
     /// Derives a conversation title from the goal (first ~40 chars).

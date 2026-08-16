@@ -19,11 +19,11 @@ struct V6AppSettingsTests {
 
     // MARK: 1. Migration reaches v6 from v1
 
-    @Test("Migration v1…v6 applies cleanly and sets user_version = 6")
+    @Test("Migration chain includes v6 app settings")
     func migratesToV6() async throws {
         let database = try await makeDatabase()
-        #expect(try await database.userVersion() == 6)
-        #expect(DatabaseManager.currentSchemaVersion == 6)
+        #expect(try await database.userVersion() == DatabaseManager.currentSchemaVersion)
+        #expect(DatabaseManager.currentSchemaVersion >= 6)
         let applied = try await database.appliedMigrations()
         for identifier in ["v1", "v2", "v3", "v4", "v5", "v6"] {
             #expect(applied.contains(identifier), "missing migration \(identifier)")
@@ -109,7 +109,7 @@ struct V6AppSettingsTests {
         // Re-open through DatabaseManager: v6 must apply on top.
         let database = try DatabaseManager(path: fileURL)
         try await database.migrate()
-        #expect(try await database.userVersion() == 6)
+        #expect(try await database.userVersion() == DatabaseManager.currentSchemaVersion)
 
         let workspaceStore = SQLiteWorkspaceStore(database: database)
         let workspace = try await workspaceStore.workspace(id: workspaceID)
@@ -168,7 +168,7 @@ struct V6AppSettingsTests {
     func migrationIdempotent() async throws {
         let database = try await makeDatabase()
         try await database.migrate()
-        #expect(try await database.userVersion() == 6)
+        #expect(try await database.userVersion() == DatabaseManager.currentSchemaVersion)
         let applied = try await database.appliedMigrations()
         #expect(applied.filter { $0 == "v6" }.count == 1)
     }

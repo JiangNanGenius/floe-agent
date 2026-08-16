@@ -5,8 +5,7 @@
 // The one composer used by both the Chat-first home and the thread
 // detail: multi-line input pinned to the bottom (chrome material is
 // allowed here), attachment picking (security-scoped bookmark via
-// FilesCenter), model selection, workspace project selection (placeholder
-// data source until T05's WorkspaceCenter), execution target and Agent
+// FilesCenter), model selection, workspace project selection, execution target and Agent
 // mode. While a run is non-terminal the send button becomes a stop
 // button. All controls keep the 44pt minimum target; the app stays
 // fully usable without a configured model — only AI send is disabled.
@@ -16,6 +15,7 @@ import SwiftUI
 import AVFoundation
 import FloeCore
 import FloeModels
+import FloeAgentRuntime
 
 /// How the next run should execute. Forward-looking selection surface;
 /// the runtime mapping lands with the workspace tasks (T04/T05).
@@ -24,6 +24,10 @@ enum AgentExecutionMode: String, CaseIterable, Identifiable, Sendable {
     case agent
     /// Chat only — no tool execution requested.
     case chat
+    /// Read-only discovery that produces a reviewable plan.
+    case plan
+    /// Persistent, budgeted execution toward evidence-backed criteria.
+    case goal
 
     var id: String { rawValue }
 
@@ -31,6 +35,8 @@ enum AgentExecutionMode: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .agent: "composer.mode.agent"
         case .chat: "composer.mode.chat"
+        case .plan: "composer.mode.plan"
+        case .goal: "composer.mode.goal"
         }
     }
 
@@ -38,6 +44,8 @@ enum AgentExecutionMode: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .agent: String(localized: "composer.mode.agent")
         case .chat: String(localized: "composer.mode.chat")
+        case .plan: String(localized: "composer.mode.plan")
+        case .goal: String(localized: "composer.mode.goal")
         }
     }
 
@@ -45,8 +53,20 @@ enum AgentExecutionMode: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .agent: "wand.and.sparkles"
         case .chat: "text.bubble"
+        case .plan: "list.bullet.clipboard"
+        case .goal: "target"
         }
     }
+
+    var conversationMode: ConversationMode {
+        switch self {
+        case .plan: .plan
+        case .goal: .goal
+        case .agent, .chat: .chat
+        }
+    }
+
+    var toolsEnabled: Bool { self != .chat }
 }
 
 /// Where the next run executes. Hosts are wired when SSH tools land;
@@ -110,7 +130,7 @@ struct ThreadComposerView: View {
     var isRunning: Bool = false
     /// True when sending is allowed (non-empty draft + model + not running).
     let canSend: Bool
-    /// Placeholder projects (empty until T05 wires WorkspaceCenter).
+    /// Workspaces available to this conversation.
     var projects: [ComposerProject] = []
     @Binding var selectedProjectID: UUID?
     @Binding var executionTarget: AgentExecutionTarget
@@ -170,11 +190,11 @@ struct ThreadComposerView: View {
                 voiceInput.handleInterruption(reason: .interrupted)
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in
-            voiceInput.handleInterruption(reason: .interrupted)
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { notification in
+            voiceInput.handleAudioInterruption(notification)
         }
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { _ in
-            voiceInput.handleInterruption(reason: .interrupted, routeChange: true)
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { notification in
+            voiceInput.handleAudioRouteChange(notification)
         }
     }
 

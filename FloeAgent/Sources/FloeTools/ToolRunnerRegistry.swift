@@ -30,7 +30,9 @@ public struct AnyAgentTool: Sendable {
             toolDescription: T.toolDescription,
             parametersJSON: T.parametersJSON,
             riskLabels: T.riskLabels,
-            isSideEffecting: T.isSideEffecting
+            isSideEffecting: T.isSideEffecting,
+            effect: T.toolEffect,
+            requiresHostScope: T.requiresHostScope
         )
         self.run = { argumentsJSON, context in
             let arguments: T.Arguments

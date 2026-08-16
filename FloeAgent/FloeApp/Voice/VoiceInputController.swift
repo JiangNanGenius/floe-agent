@@ -20,6 +20,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
 import SwiftUI
+import AVFoundation
 
 @MainActor
 final class VoiceInputController: ObservableObject {
@@ -180,6 +181,36 @@ final class VoiceInputController: ObservableObject {
             diagnostics?.voiceInterrupted(reason: reason.rawValue)
         }
         stop()
+    }
+
+    /// Filters system audio-session notifications before they reach the
+    /// state machine. Category changes and route reconfiguration caused by
+    /// our own `setCategory`/`setActive` calls must not stop a session that
+    /// just started.
+    func handleAudioRouteChange(_ notification: Notification) {
+        guard let rawValue = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)?.uintValue,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: rawValue),
+              Self.shouldInterruptForRouteChange(reason) else { return }
+        handleInterruption(reason: .interrupted, routeChange: true)
+    }
+
+    /// Only interruption-began tears capture down. The matching ended event
+    /// is informational and must not trigger another stop/log cycle.
+    func handleAudioInterruption(_ notification: Notification) {
+        guard let rawValue = (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? NSNumber)?.uintValue,
+              AVAudioSession.InterruptionType(rawValue: rawValue) == .began else { return }
+        handleInterruption(reason: .interrupted)
+    }
+
+    static func shouldInterruptForRouteChange(
+        _ reason: AVAudioSession.RouteChangeReason
+    ) -> Bool {
+        switch reason {
+        case .oldDeviceUnavailable, .noSuitableRouteForCategory:
+            true
+        default:
+            false
+        }
     }
 
     // MARK: - Transcript pipeline

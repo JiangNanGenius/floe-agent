@@ -35,12 +35,38 @@ public struct ToolSchemaDescriptor: Sendable, Hashable {
     }
 }
 
+/// Ordered, wire-neutral content sent to a model. Keeping images as bounded
+/// inline data or an HTTPS URL lets the runtime attach browser screenshots
+/// without teaching the harness about each provider's JSON dialect.
+public enum ProviderContentPart: Sendable, Hashable {
+    case text(String)
+    case imageData(mimeType: String, base64: String)
+    case imageURL(URL)
+}
+
+public struct ProviderMessage: Sendable, Hashable {
+    public var role: String
+    public var content: [ProviderContentPart]
+
+    public init(role: String, content: [ProviderContentPart]) {
+        self.role = role
+        self.content = content
+    }
+
+    public init(role: String, text: String) {
+        self.init(role: role, content: [.text(text)])
+    }
+}
+
 /// Everything an adapter needs to build one streaming request.
 public struct ProviderStreamRequest: Sendable {
     public var provider: ProviderProfile
     public var model: ModelProfile
     /// Conversation messages in wire-neutral form: (role, text content).
     public var messages: [(role: String, content: String)]
+    /// Ordered multimodal messages. When non-empty these supersede `messages`.
+    /// The legacy text field remains source-compatible with existing callers.
+    public var contentMessages: [ProviderMessage]
     /// Tool results to feed back, in wire-neutral form.
     public var toolResults: [(callID: String, output: String)]
     /// Pending assistant tool calls awaiting results (for context).
@@ -52,6 +78,7 @@ public struct ProviderStreamRequest: Sendable {
         provider: ProviderProfile,
         model: ModelProfile,
         messages: [(role: String, content: String)] = [],
+        contentMessages: [ProviderMessage] = [],
         toolResults: [(callID: String, output: String)] = [],
         pendingToolCalls: [ToolCall] = [],
         toolSchemas: [ToolSchemaDescriptor] = []
@@ -59,9 +86,15 @@ public struct ProviderStreamRequest: Sendable {
         self.provider = provider
         self.model = model
         self.messages = messages
+        self.contentMessages = contentMessages
         self.toolResults = toolResults
         self.pendingToolCalls = pendingToolCalls
         self.toolSchemas = toolSchemas
+    }
+
+    public var effectiveMessages: [ProviderMessage] {
+        if !contentMessages.isEmpty { return contentMessages }
+        return messages.map { ProviderMessage(role: $0.role, text: $0.content) }
     }
 }
 
@@ -319,8 +352,21 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
     }
 
     func buildBody(from request: ProviderStreamRequest) -> ResponsesRequest {
-        var input: [ResponsesRequest.InputItem] = request.messages.map {
-            .message(role: $0.role, content: $0.content)
+        var input: [ResponsesRequest.InputItem] = request.effectiveMessages.map { message in
+            if case .text(let text) = message.content.first, message.content.count == 1 {
+                return .message(role: message.role, content: text)
+            }
+            return .multimodalMessage(
+                role: message.role,
+                content: message.content.map { part in
+                    switch part {
+                    case .text(let text): return .text(text)
+                    case .imageData(let mimeType, let base64):
+                        return .imageURL("data:\(mimeType);base64,\(base64)")
+                    case .imageURL(let url): return .imageURL(url.absoluteString)
+                    }
+                }
+            )
         }
         for call in request.pendingToolCalls {
             input.append(.functionCall(
@@ -425,8 +471,21 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
     }
 
     func buildBody(from request: ProviderStreamRequest) -> ChatRequest {
-        var messages: [ChatRequest.Message] = request.messages.map {
-            ChatRequest.Message(role: $0.role, content: $0.content)
+        var messages: [ChatRequest.Message] = request.effectiveMessages.map { message in
+            if case .text(let text) = message.content.first, message.content.count == 1 {
+                return ChatRequest.Message(role: message.role, content: text)
+            }
+            return ChatRequest.Message(
+                role: message.role,
+                contentParts: message.content.map { part in
+                    switch part {
+                    case .text(let text): return .text(text)
+                    case .imageData(let mimeType, let base64):
+                        return .imageURL("data:\(mimeType);base64,\(base64)")
+                    case .imageURL(let url): return .imageURL(url.absoluteString)
+                    }
+                }
+            )
         }
         if !request.pendingToolCalls.isEmpty {
             messages.append(ChatRequest.Message(
@@ -546,14 +605,24 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
     }
 
     func buildBody(from request: ProviderStreamRequest) -> AnthropicRequest {
-        let system = request.messages
+        let system = request.effectiveMessages
             .filter { $0.role == "system" }
-            .map(\.content)
+            .flatMap(\.content)
+            .compactMap { part -> String? in
+                if case .text(let text) = part { return text }
+                return nil
+            }
             .joined(separator: "\n\n")
-        var messages: [AnthropicRequest.Message] = request.messages
+        var messages: [AnthropicRequest.Message] = request.effectiveMessages
             .filter { $0.role != "system" }
-            .map {
-            AnthropicRequest.Message(role: $0.role, content: [.text($0.content)])
+            .map { message in
+            AnthropicRequest.Message(role: message.role, content: message.content.map { part in
+                switch part {
+                case .text(let text): return .text(text)
+                case .imageData(let mimeType, let base64): return .image(mimeType: mimeType, base64: base64)
+                case .imageURL(let url): return .text("[Image: \(url.absoluteString)]")
+                }
+            })
         }
         if !request.pendingToolCalls.isEmpty {
             messages.append(AnthropicRequest.Message(

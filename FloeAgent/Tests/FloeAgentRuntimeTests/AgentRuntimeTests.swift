@@ -389,7 +389,7 @@ struct AgentRuntimeTests {
 
     // MARK: Checkpoint / resume
 
-    @Test("Checkpoint v1 golden: format is stable and decode-validates")
+    @Test("Checkpoint v2 golden: format is stable and decode-validates")
     func checkpointGolden() async throws {
         let runID = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
         let conversationID = UUID(uuidString: "55555555-5555-5555-5555-555555555555")!
@@ -413,7 +413,7 @@ struct AgentRuntimeTests {
         let data = try checkpoint.encoded()
         // Golden field assertions (stable contract for v1 readers).
         let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        #expect(object["formatVersion"] as? Int == 1)
+        #expect(object["formatVersion"] as? Int == 2)
         #expect(object["schemaVersion"] as? Int == 1)
         #expect(object["runID"] as? String == runID.uuidString)
         // Round-trip decode.

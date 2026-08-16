@@ -115,6 +115,49 @@ struct RequestContractTests {
         #expect(input.contains { $0["type"] as? String == "function_call_output" && $0["call_id"] as? String == call.id })
     }
 
+    @Test("Vision content maps to every provider wire format")
+    func visionContentMapping() throws {
+        let providerID = UUID()
+        let model = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "vision-model",
+            displayName: "Vision",
+            limits: ModelLimits(contextTokens: 8_000, maxOutputTokens: 256),
+            capabilities: [.vision]
+        )
+        let provider = ProviderProfile(
+            id: providerID,
+            kind: .custom,
+            wireProtocol: .openAIResponses,
+            baseURL: try #require(URL(string: "https://example.invalid/v1"))
+        )
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            contentMessages: [
+                ProviderMessage(role: "user", content: [
+                    .text("Inspect this page"),
+                    .imageData(mimeType: "image/png", base64: "aGVsbG8=")
+                ])
+            ]
+        )
+
+        let responses = try #require(
+            (try jsonObject(OpenAIResponsesAdapter().buildBody(from: request))["input"] as? [[String: Any]])?.first
+        )
+        #expect((responses["content"] as? [[String: Any]])?.contains { $0["type"] as? String == "input_image" } == true)
+
+        let chat = try #require(
+            (try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: request))["messages"] as? [[String: Any]])?.first
+        )
+        #expect((chat["content"] as? [[String: Any]])?.contains { $0["type"] as? String == "image_url" } == true)
+
+        let anthropic = try #require(
+            (try jsonObject(AnthropicMessagesAdapter().buildBody(from: request))["messages"] as? [[String: Any]])?.first
+        )
+        #expect((anthropic["content"] as? [[String: Any]])?.contains { $0["type"] as? String == "image" } == true)
+    }
+
     @Test("Unspecified maximum output is omitted when optional and defaulted when required")
     func unspecifiedMaximumOutput() throws {
         let providerID = UUID()

@@ -2,12 +2,11 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// iPhone shows exactly five locked tabs (Home, Chat, Files, Hosts, More) in
+// iPhone shows exactly five locked tabs (Workbench, Files, Browser, Hosts, More) in
 // a TabView; iPad shows a three-column NavigationSplitView with a functional
 // sidebar, a content column, and a detail column. Both idioms are driven by
 // one AppRouter so navigation state and scene-phase background-policy
-// wiring are shared. Feature screens land in T02–T05; the tab roots below
-// are honest structural placeholders with localized empty states.
+// wiring are shared.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -68,7 +67,13 @@ struct RootView: View {
         .task(id: environment.persistenceReady) {
             guard environment.persistenceReady else { return }
             router.reconcileOnLaunch(environment: environment)
+            await environment.conversationCenter.reload()
+            await environment.conversationCenter.reconcileInterruptedRunsOnLaunch()
+            await environment.workspaceCenter.reload()
             await presentOnboardingIfNeeded()
+        }
+        .onReceive(environment.conversationCenter.$conversations) { conversations in
+            router.reconcileConversations(Set(conversations.map(\.id)))
         }
         .sheet(item: $router.presentedSetup, onDismiss: markDismissedSetupSkipped) { _ in
             OnboardingView(center: environment.conversationCenter)
@@ -139,15 +144,15 @@ struct RootView: View {
         TabView(selection: $router.selection) {
             ForEach(AppDestination.allCases) { destination in
                 Tab(value: destination) {
-                    // Home and Chat own separate navigation stacks so
-                    // starting a task never pollutes the Chat list's back
-                    // behavior and vice versa.
+                    // Home and Chat are two projections of one workbench
+                    // selection/path; switching entry points cannot expose a
+                    // stale or deleted conversation.
                     if destination == .chat {
-                        NavigationStack(path: $router.chatPath) {
+                        NavigationStack(path: $router.workbenchPath) {
                             PrimaryDestinationView(destination, environment: environment)
                         }
                     } else if destination == .home {
-                        NavigationStack(path: $router.homePath) {
+                        NavigationStack(path: $router.workbenchPath) {
                             PrimaryDestinationView(destination, environment: environment)
                                 .navigationDestination(for: UUID.self) { conversationID in
                                     ThreadDetailView(
@@ -197,7 +202,52 @@ struct RootView: View {
         NavigationSplitView(columnVisibility: $router.columnVisibility) {
             List(selection: $router.sidebarSelection) {
                 Section {
-                    ForEach(AppDestination.allCases) { destination in
+                    Label("tab.home", systemImage: "rectangle.grid.2x2")
+                        .tag(SidebarSelection.workbench(.overview))
+                        .accessibilityIdentifier("sidebar.workbench.overview")
+                    Label("chat.new", systemImage: "square.and.pencil")
+                        .tag(SidebarSelection.workbench(.newTask(
+                            workspaceID: environment.workspaceCenter.currentWorkspace?.id
+                        )))
+                        .accessibilityIdentifier("sidebar.workbench.new_task")
+                }
+                if !environment.workspaceCenter.workspaces.isEmpty {
+                    Section("workspace.title") {
+                        ForEach(environment.workspaceCenter.workspaces) { workspace in
+                            Label(workspace.name, systemImage: "folder")
+                                .tag(SidebarSelection.workbench(.workspace(workspace.id)))
+                                .accessibilityIdentifier("sidebar.workspace.\(workspace.id.uuidString)")
+                        }
+                    }
+                }
+                if !environment.conversationCenter.conversations.isEmpty {
+                    Section("home.recent") {
+                        ForEach(environment.conversationCenter.conversations) { conversation in
+                            Label(
+                                conversation.title.isEmpty
+                                    ? String(localized: "chat.untitled")
+                                    : conversation.title,
+                                systemImage: "bubble.left"
+                            )
+                            .lineLimit(1)
+                            .tag(SidebarSelection.workbench(.conversation(conversation.id)))
+                            .accessibilityIdentifier("sidebar.conversation.\(conversation.id.uuidString)")
+                        }
+                        .onDelete { offsets in
+                            let conversations = environment.conversationCenter.conversations
+                            let targets = offsets.compactMap {
+                                conversations.indices.contains($0) ? conversations[$0].id : nil
+                            }
+                            Task {
+                                for id in targets {
+                                    try? await environment.conversationCenter.deleteConversation(id: id)
+                                }
+                            }
+                        }
+                    }
+                }
+                Section {
+                    ForEach([AppDestination.files, .browser, .hosts, .more]) { destination in
                         Label(destination.title, systemImage: destination.systemImage)
                             .tag(SidebarSelection.primary(destination))
                             .accessibilityIdentifier("sidebar.primary.\(destination.rawValue)")
@@ -212,6 +262,13 @@ struct RootView: View {
                 }
             }
             .navigationTitle("app.name")
+            .task {
+                await environment.conversationCenter.reload()
+                await environment.workspaceCenter.reload()
+            }
+            .onChange(of: router.sidebarSelection) { _, selection in
+                applySidebarSelection(selection)
+            }
         } content: {
             contentColumn
         } detail: {
@@ -219,15 +276,40 @@ struct RootView: View {
         }
     }
 
-    /// Column 2: the list for the sidebar selection. Home owns a task
-    /// overview (never the conversation-history list); Chat owns the
-    /// conversation list with its own selection; everything else renders
-    /// its root screen or the More sub-destination.
+    /// Column 2 renders the canonical workbench selection or the selected
+    /// primary/More destination.
     @ViewBuilder
     private var contentColumn: some View {
-        switch router.sidebarSelection ?? .primary(router.selection) {
+        switch router.sidebarSelection ?? .workbench(router.workbenchSelection) {
+        case .workbench(let selection):
+            switch selection {
+            case .overview:
+                HomeOverviewView(center: environment.conversationCenter)
+            case .newTask(let workspaceID):
+                NavigationStack {
+                    HomeLaunchpadView(
+                        center: environment.conversationCenter,
+                        workspaceID: workspaceID
+                    )
+                }
+            case .workspace(let workspaceID):
+                NavigationStack {
+                    HomeLaunchpadView(
+                        center: environment.conversationCenter,
+                        workspaceID: workspaceID
+                    )
+                }
+            case .conversation(let conversationID):
+                NavigationStack {
+                    ThreadDetailView(
+                        conversationID: conversationID,
+                        center: environment.conversationCenter
+                    )
+                }
+                .id(conversationID)
+            }
         case .primary(let destination):
-            if destination == .home {
+            if destination == .home || destination == .chat {
                 HomeOverviewView(center: environment.conversationCenter)
             } else {
                 PrimaryDestinationView(destination, environment: environment)
@@ -238,48 +320,26 @@ struct RootView: View {
     }
 
     /// Column 3 projects the current selection into a stable work surface.
-    /// When the inspector is requested (T03 router surface), it replaces
+    /// When the inspector is requested, it replaces
     /// the detail content on demand — the column never idles as an empty
     /// placeholder once content exists.
-    ///
-    /// Home and Chat project from SEPARATE selection state: Home shows the
-    /// thread it started (or the launchpad), Chat shows the conversation
-    /// selected in its own list (or a quiet empty state). Neither renders
-    /// the other's root.
     @ViewBuilder
     private var detailColumn: some View {
         if let inspectorContent = router.inspectorContent {
             InspectorColumnView(content: inspectorContent)
         } else {
-            switch router.sidebarSelection ?? .primary(router.selection) {
-            case .primary(.home):
-                if let conversationID = router.homeDetailConversationID {
-                    NavigationStack {
-                        ThreadDetailView(
-                            conversationID: conversationID,
-                            center: environment.conversationCenter
-                        )
-                    }
-                    .id(conversationID)
-                } else {
+            switch router.sidebarSelection ?? .workbench(router.workbenchSelection) {
+            case .workbench(let selection):
+                switch selection {
+                case .overview:
                     NavigationStack {
                         HomeLaunchpadView(center: environment.conversationCenter)
                     }
+                case .newTask(_), .workspace(_), .conversation(_):
+                    HomeOverviewView(center: environment.conversationCenter)
                 }
-            case .primary(.chat):
-                if let conversationID = router.selectedConversationID {
-                    NavigationStack {
-                        ThreadDetailView(
-                            conversationID: conversationID,
-                            center: environment.conversationCenter
-                        )
-                    }
-                    .id(conversationID)
-                } else {
-                    // A quiet empty state plus a real new-conversation
-                    // entry — never the Home launchpad.
-                    ChatDetailEmptyView()
-                }
+            case .primary(.home), .primary(.chat):
+                HomeOverviewView(center: environment.conversationCenter)
             default:
                 ShellPlaceholderView(
                     title: LocalizedStringKey("app.name"),
@@ -287,6 +347,27 @@ struct RootView: View {
                     messageKey: "empty.detail"
                 )
             }
+        }
+    }
+
+    private func applySidebarSelection(_ selection: SidebarSelection?) {
+        guard let selection else { return }
+        switch selection {
+        case .workbench(.overview):
+            router.showOverview()
+        case .workbench(.newTask(let workspaceID)):
+            router.startNewTask(workspaceID: workspaceID)
+        case .workbench(.workspace(let workspaceID)):
+            router.selectWorkspace(workspaceID)
+            Task { try? await environment.workspaceCenter.openWorkspace(id: workspaceID) }
+        case .workbench(.conversation(let conversationID)):
+            router.workbenchSelection = .conversation(conversationID)
+            router.workbenchPath = [conversationID]
+            router.selection = .home
+        case .primary(let destination):
+            router.navigate(to: destination)
+        case .more(let destination):
+            router.openMore(destination)
         }
     }
 }
@@ -306,8 +387,6 @@ private struct InspectorColumnView: View {
         }
     }
 }
-
-// MARK: - Placeholder screens (replaced by T02–T05)
 
 /// Routes a primary destination to its root screen. Every root is a real
 /// navigation-titled screen with a localized empty state — never a promise
@@ -329,6 +408,8 @@ private struct PrimaryDestinationView: View {
             ConversationListView(center: environment.conversationCenter)
         case .files:
             FilesView(center: environment.filesCenter)
+        case .browser:
+            BrowserView(center: environment.browserCenter)
         case .hosts:
             HostListView(center: environment.remoteSessionCenter)
         case .more:
@@ -413,6 +494,10 @@ private struct MoreDestinationView: View {
             ProviderListView(center: environment.conversationCenter)
         case .auxiliaryModels:
             AuxiliaryModelsView(center: environment.conversationCenter)
+        case .skills:
+            SkillsView(center: environment.skillsCenter)
+        case .memory:
+            MemoryView(center: environment.memoryCenter)
         case .settings:
             SettingsRootView()
         case .privacy:

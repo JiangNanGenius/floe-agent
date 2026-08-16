@@ -4,6 +4,7 @@
 
 import Foundation
 import FloeCore
+import FloeModels
 
 /// Deterministic risk classification attached to every tool. Fed to the
 /// approval model and shown to the user; never derived from model output.
@@ -17,6 +18,22 @@ public enum RiskLabel: String, Sendable, Codable, Hashable, CaseIterable {
     case sendsDataToProvider
     case controlsGUI
     case accessesCredentials
+}
+
+/// Deterministic description of the externally observable effect of a
+/// compiled tool. Unlike risk labels this is intentionally small and is
+/// suitable for runtime capability filtering (notably Plan mode).
+public enum ToolEffect: String, Sendable, Codable, Hashable, CaseIterable {
+    /// Reads state without changing the target environment.
+    case readOnly
+    /// Writes Floe-owned draft/checkpoint state only.
+    case internalState
+    /// Changes files, a host, a browser session, or another external system.
+    case mutating
+
+    public var isAllowedInPlanMode: Bool {
+        self == .readOnly
+    }
 }
 
 /// A compiled, catalog-registered operation the agent may invoke.
@@ -33,6 +50,11 @@ public protocol AgentTool: Sendable {
     static var riskLabels: Set<RiskLabel> { get }
     /// Side-effecting tools require approval under Human and Model policies.
     static var isSideEffecting: Bool { get }
+    /// Effect used for capability filtering and executor-side enforcement.
+    static var toolEffect: ToolEffect { get }
+    /// Whether execution requires a concrete remote host scope. GUI control
+    /// alone does not imply this: an in-app browser is a local GUI target.
+    static var requiresHostScope: Bool { get }
 
     /// Validates decoded arguments before they reach the policy engine.
     func validate(_ args: Arguments) throws
@@ -43,6 +65,10 @@ public protocol AgentTool: Sendable {
 public extension AgentTool {
     static var toolDescription: String { name }
     static var parametersJSON: String { #"{"type":"object","additionalProperties":false}"# }
+    static var toolEffect: ToolEffect { isSideEffecting ? .mutating : .readOnly }
+    static var requiresHostScope: Bool {
+        !riskLabels.isDisjoint(with: [.executesRemoteCommand, .modifiesRemoteSystem])
+    }
 }
 
 /// Bounded execution output; the digest covers the full pre-truncation bytes.
@@ -50,10 +76,17 @@ public struct ToolExecutionOutput: Sendable {
     public var summary: String
     public var fullOutputSHA256: String
     public var exitStatus: Int32?
+    public var artifacts: [ToolArtifactReference]
 
-    public init(summary: String, fullOutputSHA256: String, exitStatus: Int32? = nil) {
+    public init(
+        summary: String,
+        fullOutputSHA256: String,
+        exitStatus: Int32? = nil,
+        artifacts: [ToolArtifactReference] = []
+    ) {
         self.summary = String(summary.prefix(4096))
         self.fullOutputSHA256 = fullOutputSHA256
         self.exitStatus = exitStatus
+        self.artifacts = artifacts
     }
 }

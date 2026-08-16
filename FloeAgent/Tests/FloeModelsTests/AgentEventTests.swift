@@ -63,6 +63,25 @@ struct ToolCallTests {
         let result = ToolResult(callID: "c", status: .ok, outputSummary: long, outputDigest: "")
         #expect(result.outputSummary.count == 4096)
     }
+
+    @Test("Tool artifact references round-trip and old results default to none")
+    func toolArtifactRoundTrip() throws {
+        let artifact = ToolArtifactReference(
+            id: UUID(), relativePath: "BrowserArtifacts/view.jpg",
+            mimeType: "image/jpeg", byteCount: 123, sha256: "abc"
+        )
+        let result = ToolResult(
+            callID: "shot", status: .ok, outputSummary: "viewport",
+            outputDigest: "abc", artifacts: [artifact]
+        )
+        let decoded = try JSONDecoder().decode(
+            ToolResult.self, from: JSONEncoder().encode(result)
+        )
+        #expect(decoded == result)
+
+        let legacy = #"{"callID":"old","status":"ok","outputSummary":"ok","outputDigest":""}"#
+        #expect(try JSONDecoder().decode(ToolResult.self, from: Data(legacy.utf8)).artifacts.isEmpty)
+    }
 }
 
 @Suite("FloeModels.AgentEvent")

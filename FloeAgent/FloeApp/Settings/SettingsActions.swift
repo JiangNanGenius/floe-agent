@@ -42,19 +42,9 @@ final class SettingsActions {
     func clearLocalHistory() async throws -> ClearReport {
         var report = ClearReport()
 
-        let conversations = try await environment.conversationStore.conversations()
-        for conversation in conversations {
-            try await environment.conversationStore.deleteConversation(id: conversation.id)
-        }
-        report.deletedConversations = conversations.count
-
-        // Run rows cascade from conversations, but count them first so the
-        // report reflects what the user actually lost.
-        var runCount = 0
-        for conversation in conversations {
-            runCount += (try? await environment.runStore.runs(conversationID: conversation.id).count) ?? 0
-        }
-        report.deletedRuns = runCount
+        let deletion = try await environment.conversationCenter.deleteAllConversations()
+        report.deletedConversations = deletion.conversations
+        report.deletedRuns = deletion.runs
 
         let persistedGrants = try await workspaceStore.allGrants()
         for grant in persistedGrants {

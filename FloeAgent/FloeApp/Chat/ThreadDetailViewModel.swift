@@ -13,6 +13,7 @@ import FloeCore
 import FloeModels
 import FloePersistence
 import FloeSecurity
+import FloeAgentRuntime
 
 /// View model for the canonical foldable thread of one conversation.
 @MainActor
@@ -38,7 +39,7 @@ final class ThreadDetailViewModel: ObservableObject {
     /// Composer draft text.
     @Published var draft: String = ""
     @Published var selectedModelID: UUID?
-    /// Workspace project selection (placeholder until T05).
+    /// Workspace selected for the next run.
     @Published var selectedProjectID: UUID?
     /// Where the next run executes (local only until host tools land).
     @Published var executionTarget: AgentExecutionTarget = .local
@@ -46,7 +47,7 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published var agentMode: AgentExecutionMode = .agent
     /// Attachments staged in the composer.
     @Published var attachments: [AttachmentRef] = []
-    /// Real workspace list from WorkspaceCenter (T05).
+    /// Real workspace list from WorkspaceCenter.
     var availableProjects: [ComposerProject] {
         center.environment.workspaceCenter.workspaces.map(ComposerProject.init(record:))
     }
@@ -54,6 +55,11 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var isRunning = false
     /// Honest error surface for the last failed action.
     @Published private(set) var actionError: String?
+    /// The parent row may disappear through another scene or history clear.
+    /// When true the composer is removed and no follow-up can launch.
+    @Published private(set) var isConversationMissing = false
+    @Published private(set) var latestPlan: PlanDraft?
+    @Published private(set) var activeGoal: ConversationGoal?
 
     let conversationID: UUID
     let center: ConversationCenter
@@ -70,7 +76,7 @@ final class ThreadDetailViewModel: ObservableObject {
     /// gap before the persisted message takes over.
     @Published private(set) var isDraining = false
 
-    private var pollTask: Task<Void, Never>?
+    private var liveEventTask: Task<Void, Never>?
     private let diagnostics: ThreadStreamingDiagnostics
 
     init(conversationID: UUID, center: ConversationCenter) {
@@ -100,7 +106,8 @@ final class ThreadDetailViewModel: ObservableObject {
 
     /// Whether the composer may send (provider configured + non-empty draft).
     var canSend: Bool {
-        center.providerAndModel(modelID: selectedModelID) != nil
+        !isConversationMissing
+            && center.providerAndModel(modelID: selectedModelID) != nil
             && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !isRunning
     }
@@ -117,19 +124,33 @@ final class ThreadDetailViewModel: ObservableObject {
 
     // MARK: - Loading
 
-    /// Loads runs, messages and the selected run's events, then starts
-    /// polling the live snapshot while the selected run is non-terminal.
+    /// Loads persisted state, then subscribes to the selected run's bounded
+    /// push stream while it is non-terminal.
     func load() async {
         do {
             await center.reload()
             await center.environment.workspaceCenter.reload()
+            guard try await center.environment.conversationStore
+                .conversation(id: conversationID) != nil else {
+                isConversationMissing = true
+                runs = []
+                messages = []
+                events = []
+                stopLiveUpdates()
+                return
+            }
+            isConversationMissing = false
             if selectedModelID == nil { selectedModelID = center.modelPreferences.defaultAgentModelID }
             runs = try await center.environment.runStore.runs(conversationID: conversationID)
             messages = try await center.environment.conversationStore
                 .messages(conversationID: conversationID)
+            latestPlan = try await center.environment.intelligenceStore
+                .latestPlan(conversationID: conversationID)
+            activeGoal = try await center.environment.intelligenceStore
+                .goals(conversationID: conversationID).first
             if selectedRunID == nil { selectedRunID = runs.first?.id }
             try await loadEvents()
-            startPolling()
+            startLiveUpdates()
         } catch {
             actionError = error.localizedDescription
         }
@@ -143,7 +164,7 @@ final class ThreadDetailViewModel: ObservableObject {
         } catch {
             actionError = error.localizedDescription
         }
-        startPolling()
+        startLiveUpdates()
     }
 
     private func loadEvents() async throws {
@@ -186,30 +207,37 @@ final class ThreadDetailViewModel: ObservableObject {
     func send() async {
         guard canSend, let (provider, model) = center.providerAndModel(modelID: selectedModelID) else { return }
         let goal = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stagedAttachments = attachments
         draft = ""
         actionError = nil
         do {
-            let existingRunIDs = Set(runs.map(\.id))
-            let sendTask = Task {
-                try await center.send(goal: goal, in: conversationID, provider: provider, model: model)
+            let started = try await center.startRun(
+                goal: goal,
+                in: conversationID,
+                provider: provider,
+                model: model,
+                workspaceID: selectedProjectID,
+                attachments: stagedAttachments,
+                executionMode: agentMode
+            )
+            // The atomic launch returns a durable run identity immediately.
+            // Subscribe before awaiting the provider loop so the UI no longer
+            // waits for the first token or races a very fast completion.
+            runs = try await center.environment.runStore.runs(conversationID: conversationID)
+            selectedRunID = started.runID
+            try await loadEvents()
+            startLiveUpdates()
+            switch await started.result.value {
+            case .success:
+                break
+            case .failure(let error):
+                throw error
             }
-            // The provider stream is long-lived. Surface the persisted run
-            // immediately so Stop, state and live activity are usable while
-            // the request is still in flight.
-            for _ in 0..<30 where !Task.isCancelled {
-                try await Task.sleep(for: .milliseconds(100))
-                let refreshed = try await center.environment.runStore.runs(conversationID: conversationID)
-                if let newest = refreshed.first, !existingRunIDs.contains(newest.id) {
-                    runs = refreshed
-                    selectedRunID = newest.id
-                    try await loadEvents()
-                    startPolling()
-                    break
-                }
-            }
-            try await sendTask.value
+            attachments = []
             await load()
         } catch {
+            if draft.isEmpty { draft = goal }
+            if attachments.isEmpty { attachments = stagedAttachments }
             actionError = error.localizedDescription
         }
     }
@@ -237,67 +265,121 @@ final class ThreadDetailViewModel: ObservableObject {
         await center.resolve(approval, decision: decision)
     }
 
-    // MARK: - Live polling
+    func acceptLatestPlan() async {
+        guard let latestPlan else { return }
+        let accepted = latestPlan.revised(
+            status: .accepted,
+            assumptions: latestPlan.assumptions.map {
+                PlanAssumption(id: $0.id, text: $0.text, isAccepted: true)
+            },
+            digest: latestPlan.digest
+        )
+        do {
+            try await center.environment.intelligenceStore.savePlanRevision(accepted)
+            self.latestPlan = accepted
+        } catch { actionError = error.localizedDescription }
+    }
 
-    private func startPolling() {
-        pollTask?.cancel()
+    func confirmGoalCompletion() async {
+        guard var goal = activeGoal, goal.status == .verifying else { return }
+        let evidence = GoalEvidence(
+            kind: .userConfirmation,
+            reference: conversationID.uuidString,
+            summary: "User confirmed the goal result"
+        )
+        goal.evidence.append(evidence)
+        goal.acceptanceCriteria = goal.acceptanceCriteria.map { criterion in
+            var copy = criterion
+            if copy.requiresUserConfirmation {
+                copy.isSatisfied = true
+                copy.evidenceIDs.append(evidence.id)
+            }
+            return copy
+        }
+        goal.status = .completed
+        goal.updatedAt = Date()
+        do {
+            try await center.environment.intelligenceStore.saveGoal(goal)
+            activeGoal = goal
+        } catch { actionError = error.localizedDescription }
+    }
+
+    // MARK: - Live push stream
+
+    private func startLiveUpdates() {
+        liveEventTask?.cancel()
         guard let run = selectedRun else { return }
         liveStateName = run.state
         liveReasoningText = ""
         hasProviderActivity = false
         isDraining = false
         animator.reset()
-        pollTask = Task { [weak self, center] in
+        liveEventTask = Task { [weak self, center] in
             guard let self else { return }
-            while !Task.isCancelled {
-                if let service = center.service(for: run.id) {
-                    let snapshot = await service.snapshot()
-                    guard self.selectedRunID == run.id else { break }
-                    // Feed the animator only; the view reads displayedText.
-                    // A terminal snapshot advances the target but does NOT
-                    // dump the remainder on screen.
-                    self.animator.update(target: snapshot.streamedText)
-                    self.liveReasoningText = snapshot.reasoningText
-                    self.hasProviderActivity = snapshot.hasProviderActivity
-                    if snapshot.isTerminal {
-                        // Network finished ≠ display finished. Drain the
-                        // animator first so the last characters still
-                        // appear in order, then promote to persisted state.
-                        self.isRunning = false
-                        self.isDraining = true
-                        await self.animator.drain()
-                        self.liveStateName = snapshot.stateName
-                        self.isDraining = false
-                        guard !Task.isCancelled, self.selectedRunID == run.id else { break }
-                        try? await self.loadEvents()
-                        self.messages = (try? await center.environment.conversationStore
-                            .messages(conversationID: self.conversationID)) ?? self.messages
-                        self.runs = (try? await center.environment.runStore
-                            .runs(conversationID: self.conversationID)) ?? self.runs
-                        break
-                    }
-                    self.liveStateName = snapshot.stateName
-                    self.isRunning = true
-                } else {
-                    // No live service: render the persisted record honestly.
-                    // A reopened historical thread never keeps streaming or
-                    // timing — terminal state is read from the store.
-                    self.liveStateName = run.state
-                    self.isRunning = false
-                    self.isDraining = false
-                    break
+            guard let service = center.service(for: run.id) else {
+                self.liveStateName = run.state
+                self.isRunning = false
+                self.isDraining = false
+                return
+            }
+
+            // Subscribe before reading the snapshot so an event arriving at
+            // the boundary is buffered instead of falling between snapshot
+            // and stream consumption. The animator still owns display cadence.
+            let stream = service.events()
+            let snapshot = await service.snapshot()
+            guard self.selectedRunID == run.id else { return }
+            var answerTarget = snapshot.streamedText
+            self.animator.update(target: answerTarget)
+            self.liveReasoningText = snapshot.reasoningText
+            self.hasProviderActivity = snapshot.hasProviderActivity
+            self.liveStateName = snapshot.stateName
+            self.isRunning = !snapshot.isTerminal
+            if snapshot.isTerminal {
+                await self.finishLiveRun(runID: run.id, center: center)
+                return
+            }
+
+            for await event in stream {
+                guard !Task.isCancelled, self.selectedRunID == run.id else { break }
+                switch event {
+                case .answerDelta(let delta):
+                    answerTarget += delta.text
+                    self.animator.update(target: answerTarget)
+                    self.hasProviderActivity = true
+                case .reasoningDelta(let delta):
+                    self.liveReasoningText += delta.text
+                    self.hasProviderActivity = true
+                case .stateChanged(let state):
+                    self.liveStateName = state.rawValue
+                    self.isRunning = ![.completed, .cancelled, .failed, .interrupted].contains(state)
+                case .terminal:
+                    await self.finishLiveRun(runID: run.id, center: center)
+                    return
+                default:
+                    self.hasProviderActivity = true
                 }
-                // Provider SSE chunks are often much smaller than 300 ms.
-                // Sampling at display cadence keeps output visibly
-                // incremental without writing one database row per token.
-                try? await Task.sleep(for: .milliseconds(50))
             }
         }
     }
 
-    func stopPolling() {
-        pollTask?.cancel()
-        pollTask = nil
+    private func finishLiveRun(runID: UUID, center: ConversationCenter) async {
+        isRunning = false
+        isDraining = true
+        await animator.drain()
+        isDraining = false
+        guard !Task.isCancelled, selectedRunID == runID else { return }
+        try? await loadEvents()
+        messages = (try? await center.environment.conversationStore
+            .messages(conversationID: conversationID)) ?? messages
+        runs = (try? await center.environment.runStore
+            .runs(conversationID: conversationID)) ?? runs
+        liveStateName = runs.first(where: { $0.id == runID })?.state ?? liveStateName
+    }
+
+    func stopLiveUpdates() {
+        liveEventTask?.cancel()
+        liveEventTask = nil
         // Leaving the thread stops the animation immediately; the partial
         // display is discarded with the live tail, persisted rows reload
         // from the store on the next open.

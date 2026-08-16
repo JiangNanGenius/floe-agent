@@ -14,19 +14,26 @@ public enum ToolCatalog {
         public var parametersJSON: String
         public var riskLabels: Set<RiskLabel>
         public var isSideEffecting: Bool
+        public var effect: ToolEffect
+        public var requiresHostScope: Bool
 
         public init(
             name: String,
             toolDescription: String? = nil,
             parametersJSON: String = #"{"type":"object","additionalProperties":false}"#,
             riskLabels: Set<RiskLabel>,
-            isSideEffecting: Bool
+            isSideEffecting: Bool,
+            effect: ToolEffect? = nil,
+            requiresHostScope: Bool? = nil
         ) {
             self.name = name
             self.toolDescription = toolDescription ?? name
             self.parametersJSON = parametersJSON
             self.riskLabels = riskLabels
             self.isSideEffecting = isSideEffecting
+            self.effect = effect ?? (isSideEffecting ? .mutating : .readOnly)
+            self.requiresHostScope = requiresHostScope
+                ?? !riskLabels.isDisjoint(with: [.executesRemoteCommand, .modifiesRemoteSystem])
         }
     }
 
@@ -65,7 +72,9 @@ public enum ToolCatalog {
             toolDescription: T.toolDescription,
             parametersJSON: T.parametersJSON,
             riskLabels: T.riskLabels,
-            isSideEffecting: T.isSideEffecting
+            isSideEffecting: T.isSideEffecting,
+            effect: T.toolEffect,
+            requiresHostScope: T.requiresHostScope
         ))
     }
 

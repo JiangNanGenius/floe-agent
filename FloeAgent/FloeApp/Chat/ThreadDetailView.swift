@@ -13,6 +13,7 @@ import SwiftUI
 import FloeModels
 import FloePersistence
 import FloeSecurity
+import FloeAgentRuntime
 
 /// The canonical thread: messages + run events for one conversation.
 struct ThreadDetailView: View {
@@ -31,6 +32,9 @@ struct ThreadDetailView: View {
             if !viewModel.runs.isEmpty {
                 runPicker
             }
+            if viewModel.latestPlan != nil || viewModel.activeGoal != nil {
+                intelligenceStatus
+            }
             Divider()
             threadScroll
             if let error = viewModel.actionError {
@@ -46,7 +50,46 @@ struct ThreadDetailView: View {
             viewModel.selectedRunID = router.selectedRunID
             await viewModel.load()
         }
-        .onDisappear { viewModel.stopPolling() }
+        .onDisappear { viewModel.stopLiveUpdates() }
+    }
+
+    private var intelligenceStatus: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let plan = viewModel.latestPlan {
+                HStack(alignment: .top) {
+                    Label("plan.title", systemImage: "list.bullet.clipboard")
+                        .font(.headline)
+                    Spacer()
+                    Text(plan.status.rawValue).font(.caption).foregroundStyle(.secondary)
+                }
+                Text(plan.title).font(.subheadline).lineLimit(2)
+                if plan.status == .awaitingInput || plan.status == .ready {
+                    Button("plan.accept") { Task { await viewModel.acceptLatestPlan() } }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+            if let goal = viewModel.activeGoal {
+                HStack {
+                    Label("goal.title", systemImage: "target").font(.headline)
+                    Spacer()
+                    Text(goal.status.rawValue).font(.caption).foregroundStyle(.secondary)
+                }
+                Text(goal.objective).font(.subheadline).lineLimit(2)
+                ProgressView(
+                    value: Double(goal.steps.filter { $0.status == .completed }.count),
+                    total: Double(max(1, goal.steps.count))
+                )
+                if goal.status == .verifying {
+                    Button("goal.confirm_complete") {
+                        Task { await viewModel.confirmGoalCompletion() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+        .padding(12)
+        .background(FloeTheme.groupedSurface)
+        .accessibilityElement(children: .contain)
     }
 
     // MARK: - Run picker (multiple runs per conversation)
@@ -138,7 +181,9 @@ struct ThreadDetailView: View {
                 event: event,
                 isLive: viewModel.isRunning,
                 hasError: viewModel.events.contains { $0.kind == .error },
-                onRetry: viewModel.selectedRun?.state == "failed"
+                onRetry: viewModel.selectedRun.map {
+                    $0.state == "failed" || $0.state == "interrupted"
+                } == true
                     ? { Task { await viewModel.retry() } }
                     : nil
             )
@@ -205,7 +250,8 @@ struct ThreadDetailView: View {
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("action.stop")
-            } else if let run = viewModel.selectedRun, run.state == "failed" {
+            } else if let run = viewModel.selectedRun,
+                      run.state == "failed" || run.state == "interrupted" {
                 Button {
                     Task { await viewModel.retry() }
                 } label: {
@@ -250,27 +296,41 @@ struct ThreadDetailView: View {
 
     // MARK: - Composer (glass; reading surfaces stay opaque)
 
+    @ViewBuilder
     private var composer: some View {
-        VStack(spacing: 0) {
-            if viewModel.needsProvider {
-                addProviderBar
+        if viewModel.isConversationMissing {
+            HStack(spacing: 8) {
+                Image(systemName: "bubble.left.and.exclamationmark.bubble.right")
+                    .foregroundStyle(FloeTheme.pending)
+                Text("chat.select_or_new")
+                    .font(FloeTheme.Typography.metadata)
+                Spacer()
             }
-            ThreadComposerView(
-                draft: $viewModel.draft,
-                selectedModelID: $viewModel.selectedModelID,
-                models: viewModel.availableModels,
-                modelName: viewModel.selectedModelName,
-                providerConfigured: !viewModel.needsProvider,
-                isRunning: viewModel.isRunning,
-                canSend: viewModel.canSend || viewModel.isRunning,
-                projects: viewModel.availableProjects,
-                selectedProjectID: $viewModel.selectedProjectID,
-                executionTarget: $viewModel.executionTarget,
-                agentMode: $viewModel.agentMode,
-                attachments: $viewModel.attachments,
-                onSend: { Task { await viewModel.send() } },
-                onStop: { Task { await viewModel.cancel() } }
-            )
+            .padding()
+            .background(FloeTheme.pending.opacity(0.08))
+            .accessibilityIdentifier("thread.conversation_missing")
+        } else {
+            VStack(spacing: 0) {
+                if viewModel.needsProvider {
+                    addProviderBar
+                }
+                ThreadComposerView(
+                    draft: $viewModel.draft,
+                    selectedModelID: $viewModel.selectedModelID,
+                    models: viewModel.availableModels,
+                    modelName: viewModel.selectedModelName,
+                    providerConfigured: !viewModel.needsProvider,
+                    isRunning: viewModel.isRunning,
+                    canSend: viewModel.canSend || viewModel.isRunning,
+                    projects: viewModel.availableProjects,
+                    selectedProjectID: $viewModel.selectedProjectID,
+                    executionTarget: $viewModel.executionTarget,
+                    agentMode: $viewModel.agentMode,
+                    attachments: $viewModel.attachments,
+                    onSend: { Task { await viewModel.send() } },
+                    onStop: { Task { await viewModel.cancel() } }
+                )
+            }
         }
     }
 

@@ -1,15 +1,14 @@
-// FloeAppTests — Home/Chat navigation separation: distinct projection
-// state, single-creation task start, and failure cleanup.
+// FloeAppTests — unified workbench navigation, task start and cleanup.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
 import Testing
 @testable import FloeApp
 
-@Suite("FloeApp.HomeChatSeparation")
+@Suite("FloeApp.WorkbenchNavigation")
 struct HomeChatSeparationTests {
 
-    @Test("Home and Chat project from separate navigation state")
+    @Test("Home and history entry points share one conversation selection")
     @MainActor
     func separateNavigationState() {
         let router = AppRouter()
@@ -18,22 +17,19 @@ struct HomeChatSeparationTests {
 
         router.openThreadFromHome(homeThread)
         #expect(router.selection == .home)
-        #expect(router.homeDetailConversationID == homeThread)
-        #expect(router.homePath == [homeThread])
-        // Chat state untouched by a Home-started task.
-        #expect(router.selectedConversationID == nil)
-        #expect(router.chatPath.isEmpty)
+        #expect(router.workbenchSelection == .conversation(homeThread))
+        #expect(router.workbenchPath == [homeThread])
+        #expect(router.selectedConversationID == homeThread)
 
         router.openConversation(chatThread)
-        #expect(router.selection == .chat)
+        #expect(router.selection == .home)
         #expect(router.selectedConversationID == chatThread)
-        #expect(router.chatPath == [chatThread])
-        // Home state survives a Chat selection — no cross-pollution.
-        #expect(router.homeDetailConversationID == homeThread)
-        #expect(router.homePath == [homeThread])
+        #expect(router.workbenchSelection == .conversation(chatThread))
+        #expect(router.workbenchPath == [chatThread])
+        #expect(router.homeDetailConversationID == chatThread)
     }
 
-    @Test("Returning in Chat never disturbs Home's thread selection")
+    @Test("Popping either compact projection returns the workbench to overview")
     @MainActor
     func chatBackDoesNotTouchHome() {
         let router = AppRouter()
@@ -41,12 +37,10 @@ struct HomeChatSeparationTests {
         router.openThreadFromHome(homeThread)
 
         router.openConversation(UUID())
-        // iPhone Chat back navigation pops the chat path only.
         router.chatPath = []
-        router.selectedConversationID = nil
-
-        #expect(router.homeDetailConversationID == homeThread)
-        #expect(router.homePath == [homeThread])
+        #expect(router.workbenchSelection == .overview)
+        #expect(router.homeDetailConversationID == nil)
+        #expect(router.homePath.isEmpty)
     }
 
     @Test("Home quick actions deep-link to one concrete More destination")
@@ -58,6 +52,21 @@ struct HomeChatSeparationTests {
         #expect(router.selection == .more)
         #expect(router.sidebarSelection == .more(.providers))
         #expect(router.morePath == [.providers])
+    }
+
+    @Test("Deleted conversation selection reconciles to overview")
+    @MainActor
+    func deletionReconcilesSelection() {
+        let router = AppRouter()
+        let kept = UUID()
+        router.openConversation(UUID())
+        router.showInspector(.workspaceFiles)
+
+        router.reconcileConversations([kept])
+
+        #expect(router.workbenchSelection == .overview)
+        #expect(router.workbenchPath.isEmpty)
+        #expect(!router.inspectorVisible)
     }
 }
 

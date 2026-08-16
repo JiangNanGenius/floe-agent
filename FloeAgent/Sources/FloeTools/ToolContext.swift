@@ -13,17 +13,25 @@ public struct ToolContext: Sendable {
     /// Canonical scope from the approved `ToolCall`. Tools must authorize
     /// against this value instead of re-inferring authority from JSON.
     public var scope: ToolScope
+    /// Skills active for this run. This is provenance, not authority.
+    public var activeSkillIDs: Set<String>
+    /// Executor-side capability ceiling derived before the provider request.
+    public var allowedToolNames: Set<String>?
     public var cancellation: CancellationToken
 
     public init(
         runID: UUID,
         approvalGrantID: UUID? = nil,
         scope: ToolScope = .local,
+        activeSkillIDs: Set<String> = [],
+        allowedToolNames: Set<String>? = nil,
         cancellation: CancellationToken
     ) {
         self.runID = runID
         self.approvalGrantID = approvalGrantID
         self.scope = scope
+        self.activeSkillIDs = activeSkillIDs
+        self.allowedToolNames = allowedToolNames
         self.cancellation = cancellation
     }
 }

@@ -24,7 +24,7 @@ enum RunStateLocalizer {
         case "streamingModel": "state.streaming"
         case "executingTool": "state.executing_tool"
         case "waitingApproval": "state.waiting_approval"
-        case "compacting", "checkpointed", "paused": "state.paused"
+        case "compacting", "checkpointed", "paused", "interrupted": "state.paused"
         case "cancelling": "state.cancelling"
         case "completed": "state.completed"
         case "failed": "state.failed"
@@ -37,7 +37,7 @@ enum RunStateLocalizer {
         switch stateName {
         case "preparing", "streamingModel", "executingTool":
             FloeTheme.primary
-        case "waitingApproval", "compacting", "checkpointed", "paused":
+        case "waitingApproval", "compacting", "checkpointed", "paused", "interrupted":
             FloeTheme.pending
         case "cancelling", "failed":
             FloeTheme.destructive
@@ -65,7 +65,7 @@ enum RunStateLocalizer {
 
     /// Whether the state name is terminal (completed or failed).
     static func isTerminal(_ stateName: String) -> Bool {
-        stateName == "completed" || stateName == "failed"
+        stateName == "completed" || stateName == "failed" || stateName == "interrupted"
     }
 
     /// Localized, user-comprehensible title for a terminal stop reason.

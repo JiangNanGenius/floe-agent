@@ -60,6 +60,17 @@ struct ToolCatalogTests {
         #expect(descriptor?.riskLabels.contains(.executesRemoteCommand) == true)
         #expect(descriptor?.riskLabels.contains(.modifiesRemoteSystem) == true)
         #expect(descriptor?.isSideEffecting == true)
+        #expect(descriptor?.requiresHostScope == true)
+    }
+
+    @Test("GUI control does not imply remote host scope")
+    func localGUIIsNotRemote() {
+        let descriptor = ToolCatalog.Descriptor(
+            name: "browser.click",
+            riskLabels: [.controlsGUI],
+            isSideEffecting: true
+        )
+        #expect(descriptor.requiresHostScope == false)
     }
 
     @Test("allDescriptors is sorted by name")

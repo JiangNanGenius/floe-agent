@@ -31,7 +31,7 @@ public struct ChatRequest: Sendable, Codable, Hashable {
 
     public struct Message: Sendable, Codable, Hashable {
         public var role: String
-        public var content: String?
+        public var content: Content?
         /// Present on assistant messages that requested tools.
         public var toolCalls: [ToolCall]?
         /// Present on tool-result messages.
@@ -44,9 +44,71 @@ public struct ChatRequest: Sendable, Codable, Hashable {
             toolCallID: String? = nil
         ) {
             self.role = role
-            self.content = content
+            self.content = content.map(Content.text)
             self.toolCalls = toolCalls
             self.toolCallID = toolCallID
+        }
+
+        public init(
+            role: String,
+            contentParts: [ContentPart],
+            toolCalls: [ToolCall]? = nil,
+            toolCallID: String? = nil
+        ) {
+            self.role = role
+            self.content = .parts(contentParts)
+            self.toolCalls = toolCalls
+            self.toolCallID = toolCallID
+        }
+
+        public enum Content: Sendable, Codable, Hashable {
+            case text(String)
+            case parts([ContentPart])
+
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.singleValueContainer()
+                if let text = try? container.decode(String.self) { self = .text(text) }
+                else { self = .parts(try container.decode([ContentPart].self)) }
+            }
+
+            public func encode(to encoder: any Encoder) throws {
+                var container = encoder.singleValueContainer()
+                switch self {
+                case .text(let text): try container.encode(text)
+                case .parts(let parts): try container.encode(parts)
+                }
+            }
+        }
+
+        public enum ContentPart: Sendable, Codable, Hashable {
+            case text(String)
+            case imageURL(String)
+
+            private enum CodingKeys: String, CodingKey { case type, text, imageURL = "image_url" }
+            private enum ImageKeys: String, CodingKey { case url }
+
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                if try container.decode(String.self, forKey: .type) == "image_url" {
+                    let image = try container.nestedContainer(keyedBy: ImageKeys.self, forKey: .imageURL)
+                    self = .imageURL(try image.decode(String.self, forKey: .url))
+                } else {
+                    self = .text(try container.decodeIfPresent(String.self, forKey: .text) ?? "")
+                }
+            }
+
+            public func encode(to encoder: any Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                switch self {
+                case .text(let text):
+                    try container.encode("text", forKey: .type)
+                    try container.encode(text, forKey: .text)
+                case .imageURL(let url):
+                    try container.encode("image_url", forKey: .type)
+                    var image = container.nestedContainer(keyedBy: ImageKeys.self, forKey: .imageURL)
+                    try image.encode(url, forKey: .url)
+                }
+            }
         }
 
         public struct ToolCall: Sendable, Codable, Hashable {

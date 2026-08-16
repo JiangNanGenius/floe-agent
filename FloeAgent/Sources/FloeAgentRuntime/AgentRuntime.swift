@@ -17,6 +17,7 @@ import FloeModels
 import FloeProviders
 import FloeTools
 import FloeSecurity
+import Crypto
 
 /// Sink observing state transitions and normalized events. Implemented by
 /// the UI layer (iOS) and by tests.
@@ -70,7 +71,8 @@ public struct CatalogToolExecutor: ToolExecutor {
                 status: .ok,
                 outputSummary: output.summary,
                 outputDigest: output.fullOutputSHA256,
-                exitStatus: output.exitStatus
+                exitStatus: output.exitStatus,
+                artifacts: output.artifacts
             )
         } catch let error as FloeError where error == .cancelled {
             return ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
@@ -128,6 +130,16 @@ public actor FloeAgentRuntime {
         public var conversationID: UUID
         public var provider: ProviderProfile
         public var model: ModelProfile
+        /// Determines the hard capability contract for this run. Plan mode
+        /// exposes and executes read-only tools only.
+        public var conversationMode: ConversationMode
+        /// Installed instruction skills selected for this activation.
+        public var activeSkillIDs: Set<String>
+        /// Tool ceiling after skill declarations, device compatibility and
+        /// user grants are intersected. `nil` preserves legacy no-skill runs.
+        public var allowedToolNames: Set<String>?
+        /// Chat-only runs can disable the compiled catalog entirely.
+        public var toolsEnabled: Bool
         /// Pause timeout before automatic checkpoint.
         public var pauseTimeout: TimeInterval
         /// Maximum tool executions per run. The only reliable defense
@@ -139,12 +151,20 @@ public actor FloeAgentRuntime {
             conversationID: UUID = UUID(),
             provider: ProviderProfile,
             model: ModelProfile,
+            conversationMode: ConversationMode = .chat,
+            activeSkillIDs: Set<String> = [],
+            allowedToolNames: Set<String>? = nil,
+            toolsEnabled: Bool = true,
             pauseTimeout: TimeInterval = 300,
             maxToolSteps: Int = 32
         ) {
             self.conversationID = conversationID
             self.provider = provider
             self.model = model
+            self.conversationMode = conversationMode
+            self.activeSkillIDs = activeSkillIDs
+            self.allowedToolNames = allowedToolNames
+            self.toolsEnabled = toolsEnabled
             self.pauseTimeout = pauseTimeout
             self.maxToolSteps = maxToolSteps
         }
@@ -164,6 +184,7 @@ public actor FloeAgentRuntime {
     private let auditSink: (any AuditSink)?
     private let checkpointStore: (any CheckpointStore)?
     private let sink: (any AgentEventSink)?
+    private let contextEngine: (any ContextEngine)?
 
     private var messages: [ConversationMessage] = []
     private var pendingToolCalls: [ToolCall] = []
@@ -179,6 +200,7 @@ public actor FloeAgentRuntime {
     /// Tool executions so far in this run (bounded by
     /// `Configuration.maxToolSteps`).
     private var toolStepCount = 0
+    private var contextOverflowRecoveryCount = 0
 
     private var streamTask: Task<Void, Never>?
     private var cancellationToken = CancellationToken()
@@ -196,6 +218,7 @@ public actor FloeAgentRuntime {
         gate: CatastrophicActionGate? = nil,
         auditSink: (any AuditSink)? = nil,
         checkpointStore: (any CheckpointStore)? = nil,
+        contextEngine: (any ContextEngine)? = nil,
         sink: (any AgentEventSink)? = nil,
         runID: UUID = UUID()
     ) {
@@ -207,6 +230,7 @@ public actor FloeAgentRuntime {
         self.gate = gate
         self.auditSink = auditSink
         self.checkpointStore = checkpointStore
+        self.contextEngine = contextEngine
         self.sink = sink
         self.runID = runID
     }
@@ -364,21 +388,66 @@ public actor FloeAgentRuntime {
 
     /// preparing → streamingModel; consumes the provider stream.
     private func runModelTurn() async {
+        if let contextEngine {
+            let latestUserID = messages.last(where: { $0.role == "user" })?.id
+            let protection = ContextProtection(
+                messageIDs: latestUserID.map { [$0] } ?? []
+            )
+            let request = ContextRequest(
+                messages: messages,
+                budget: ContextBudget(
+                    contextWindowTokens: configuration.model.limits.contextTokens,
+                    reservedOutputTokens: Self.contextOutputReservation(
+                        limits: configuration.model.limits
+                    )
+                ),
+                protection: protection
+            )
+            if let prepared = try? await contextEngine.prepareContext(for: request),
+               prepared.compaction != nil {
+                messages = prepared.messages
+            }
+        }
         let streamInfo = AgentState.StreamingInfo(modelRemoteID: configuration.model.remoteModelID)
         await transition(to: .streamingModel(streamInfo))
         streamText = ""
         streamTextByteCount = 0
 
-        let supportsTools = configuration.model.capabilities.contains(.tools)
+        let supportsTools = configuration.toolsEnabled && configuration.model.capabilities.contains(.tools)
+        var catalogDescriptors: [ToolCatalog.Descriptor]
+        if configuration.conversationMode == .plan {
+            catalogDescriptors = PlanToolPolicy().allowedDescriptors(from: ToolCatalog.allDescriptors)
+        } else {
+            catalogDescriptors = ToolCatalog.allDescriptors
+        }
+        let effectiveAllowedNames: Set<String>? = {
+            if let configured = configuration.allowedToolNames { return configured }
+            return configuration.activeSkillIDs.isEmpty ? nil : []
+        }()
+        if let effectiveAllowedNames {
+            catalogDescriptors.removeAll { !effectiveAllowedNames.contains($0.name) }
+        }
+        var contentMessages = messages.map { ProviderMessage(role: $0.role, text: $0.content) }
+        if configuration.model.capabilities.contains(.vision) {
+            let evidence = pendingToolResults.flatMap(\.artifacts)
+                .compactMap(Self.providerImageEvidence)
+            if !evidence.isEmpty {
+                contentMessages.append(ProviderMessage(
+                    role: "user",
+                    content: [.text("Visible browser evidence for the immediately preceding tool result.")] + evidence
+                ))
+            }
+        }
         let request = ProviderStreamRequest(
             provider: configuration.provider,
             model: configuration.model,
             messages: messages.map { (role: $0.role, content: $0.content) },
+            contentMessages: contentMessages,
             toolResults: pendingToolResults.map {
                 (callID: $0.callID, output: $0.outputSummary)
             },
             pendingToolCalls: supportsTools ? pendingToolCalls : [],
-            toolSchemas: supportsTools ? ToolCatalog.allDescriptors.map {
+            toolSchemas: supportsTools ? catalogDescriptors.map {
                 ToolSchemaDescriptor(
                     name: $0.name,
                     description: $0.toolDescription,
@@ -424,6 +493,27 @@ public actor FloeAgentRuntime {
         await streamTask?.value
     }
 
+    private static func providerImageEvidence(
+        _ artifact: ToolArtifactReference
+    ) -> ProviderContentPart? {
+        guard artifact.mimeType == "image/jpeg" || artifact.mimeType == "image/png",
+              artifact.byteCount > 0, artifact.byteCount <= 8 * 1024 * 1024,
+              artifact.relativePath.hasPrefix("BrowserArtifacts/"),
+              !artifact.relativePath.split(separator: "/").contains("..")
+        else { return nil }
+        guard let support = try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: false
+        ) else { return nil }
+        let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
+        let url = root.appendingPathComponent(artifact.relativePath)
+        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
+              data.count == artifact.byteCount else { return nil }
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        guard digest == artifact.sha256.lowercased() else { return nil }
+        return .imageData(mimeType: artifact.mimeType, base64: data.base64EncodedString())
+    }
+
     private func handleStreamEvent(_ event: AgentEvent) async {
         // Never mutate after leaving streamingModel (cancel race safety).
         guard case .streamingModel(var info) = state else { return }
@@ -462,6 +552,12 @@ public actor FloeAgentRuntime {
         case .usage(let report):
             totalInputTokens = report.inputTokens
             totalOutputTokens = report.outputTokens
+            await contextEngine?.observeUsage(UsageSnapshot(
+                inputTokens: report.inputTokens,
+                outputTokens: report.outputTokens,
+                modelCalls: 1,
+                costEstimate: report.costEstimate
+            ))
 
         case .toolRequest(let call):
             let scoped = call.withIDContext(runID: runID)
@@ -473,10 +569,18 @@ public actor FloeAgentRuntime {
         case .error(let error):
             switch error.kind {
             case .contextOverflow:
-                // streamingModel → compacting → streamingModel.
+                guard contextOverflowRecoveryCount == 0 else {
+                    await failRun(
+                        message: "Context still exceeds the model limit after compaction",
+                        recoverable: true
+                    )
+                    return
+                }
+                contextOverflowRecoveryCount += 1
+                // streamingModel → compacting → one retry.
                 await transition(to: .compacting)
-                compactHistory()
-                await transition(to: .streamingModel(info))
+                await compactHistory(force: true)
+                await runModelTurn()
             case .cancelled:
                 break // cancel() owns the transition.
             case .rateLimited, .server, .network:
@@ -523,13 +627,33 @@ public actor FloeAgentRuntime {
             return
         }
 
+        let effectiveAllowedNames: Set<String>?
+        if let configured = configuration.allowedToolNames {
+            effectiveAllowedNames = configured
+        } else {
+            effectiveAllowedNames = configuration.activeSkillIDs.isEmpty ? nil : []
+        }
+        if let effectiveAllowedNames, !effectiveAllowedNames.contains(call.toolName) {
+            let result = ToolResult(
+                callID: call.id,
+                status: .denied,
+                outputSummary: "Tool '\(call.toolName)' is outside the active skill capability set",
+                outputDigest: ""
+            )
+            await audit(toolCall: call, result: result, decision: "deny:skill-capability")
+            await resumeStream(with: result)
+            return
+        }
 
-        let remoteRiskLabels: Set<RiskLabel> = [
-            .executesRemoteCommand,
-            .modifiesRemoteSystem,
-            .controlsGUI
-        ]
-        if !descriptor.riskLabels.isDisjoint(with: remoteRiskLabels), case .local = call.scope {
+        if configuration.conversationMode == .plan,
+           let denial = PlanToolPolicy().denialResult(call: call, descriptor: descriptor) {
+            await audit(toolCall: call, result: denial, decision: "deny:plan-read-only")
+            await resumeStream(with: denial)
+            return
+        }
+
+
+        if descriptor.requiresHostScope, case .local = call.scope {
             let result = ToolResult(
                 callID: call.id,
                 status: .denied,
@@ -671,6 +795,8 @@ public actor FloeAgentRuntime {
             runID: runID,
             approvalGrantID: grant.id,
             scope: call.scope,
+            activeSkillIDs: configuration.activeSkillIDs,
+            allowedToolNames: configuration.allowedToolNames,
             cancellation: cancellationToken
         )
         let result: ToolResult
@@ -736,9 +862,31 @@ public actor FloeAgentRuntime {
 
     // MARK: Compaction
 
-    /// Naive M1 compaction: keep system messages and the last eight turns.
-    /// Semantic summarization lands in M2.
-    private func compactHistory() {
+    /// Uses the injected hybrid context engine when available and falls back
+    /// to a bounded recent tail if summarization is unavailable.
+    private func compactHistory(force: Bool = false) async {
+        if let contextEngine {
+            let latestUserID = messages.last(where: { $0.role == "user" })?.id
+            let request = CompactionRequest(
+                context: ContextRequest(
+                    messages: messages,
+                    budget: ContextBudget(
+                        contextWindowTokens: configuration.model.limits.contextTokens,
+                        reservedOutputTokens: Self.contextOutputReservation(
+                            limits: configuration.model.limits
+                        )
+                    ),
+                    protection: ContextProtection(
+                        messageIDs: latestUserID.map { [$0] } ?? []
+                    )
+                ),
+                force: force
+            )
+            if let result = try? await contextEngine.compact(request) {
+                messages = result.messages
+                return
+            }
+        }
         let system = messages.filter { $0.role == "system" }
         let rest = messages.filter { $0.role != "system" }
         messages = system + rest.suffix(8)
@@ -767,7 +915,10 @@ public actor FloeAgentRuntime {
             pendingToolCalls: pendingToolCalls,
             pendingToolResults: pendingToolResults,
             approvals: grants,
-            idempotencyKeys: executedIdempotencyKeys
+            idempotencyKeys: executedIdempotencyKeys,
+            conversationMode: configuration.conversationMode,
+            parentIterationCount: toolStepCount,
+            totalIterationCount: toolStepCount
         )
         try await checkpointStore.save(checkpoint)
     }
@@ -838,6 +989,13 @@ public actor FloeAgentRuntime {
         case .hostPath(let hostID, let path):
             return scope.hostID == hostID && scope.paths.contains(path)
         }
+    }
+
+    private static func contextOutputReservation(limits: ModelLimits) -> Int {
+        if let configured = limits.configuredMaxOutputTokens {
+            return min(configured, max(1, limits.contextTokens / 2))
+        }
+        return min(4_096, max(512, limits.contextTokens / 4))
     }
 
     private static func payloadSize(of event: AgentEvent) -> Int {

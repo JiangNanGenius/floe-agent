@@ -66,10 +66,8 @@ final class ConversationListViewModel: ObservableObject {
         let visible = filteredConversations
         let targets = offsets.compactMap { visible.indices.contains($0) ? visible[$0] : nil }
         for conversation in targets {
-            try? await center.environment.conversationStore
-                .deleteConversation(id: conversation.id)
+            try? await center.deleteConversation(id: conversation.id)
         }
-        await center.reload()
     }
 
     /// Display title: the stored title, falling back to the latest run's

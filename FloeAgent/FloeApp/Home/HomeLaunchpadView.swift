@@ -25,9 +25,12 @@ struct HomeLaunchpadView: View {
     @StateObject private var viewModel: HomeLaunchpadViewModel
     @EnvironmentObject private var router: AppRouter
 
-    init(center: ConversationCenter) {
+    init(center: ConversationCenter, workspaceID: UUID? = nil) {
         self.center = center
-        _viewModel = StateObject(wrappedValue: HomeLaunchpadViewModel(center: center))
+        _viewModel = StateObject(wrappedValue: HomeLaunchpadViewModel(
+            center: center,
+            selectedProjectID: workspaceID
+        ))
     }
 
     var body: some View {

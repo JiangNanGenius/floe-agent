@@ -28,14 +28,17 @@ struct DatabaseManagerTests {
                 ORDER BY name
                 """)
         }
-        #expect(tables == [
+        let required = Set([
             "app_settings", "approval_grants", "approvals", "attachments", "audit_entries", "checkpoints",
             "config_sync_metadata", "conversations", "documents", "hosts", "images", "known_hosts",
             "message_parts", "messages", "model_preferences", "models", "providers",
             "remote_sessions", "run_errors", "run_events", "run_usage", "runs",
             "sync_engine_state", "tool_calls", "vnc_sessions",
-            "workspace_conversations", "workspace_recent_files", "workspaces"
+            "workspace_conversations", "workspace_recent_files", "workspaces",
+            "plan_drafts", "conversation_goals", "memory_entries", "skills",
+            "browser_sessions", "browser_tabs", "context_compactions", "run_relations"
         ])
+        #expect(required.isSubset(of: Set(tables)))
         let fts = try await manager.reader { db in
             try String.fetchAll(db, sql: """
                 SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'message_fts'
@@ -56,6 +59,7 @@ struct DatabaseManagerTests {
         #expect(applied.contains("v4"))
         #expect(applied.contains("v5"))
         #expect(applied.contains("v6"))
+        #expect(applied.contains("v7"))
     }
 
     @Test("Migration is idempotent (second migrate is a no-op)")

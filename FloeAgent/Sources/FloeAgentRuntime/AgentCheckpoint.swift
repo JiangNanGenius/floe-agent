@@ -12,7 +12,7 @@ import FloeSecurity
 /// Serializable snapshot of an agent run, written on cancellation, app
 /// suspension, or explicit user pause timeout.
 public struct AgentCheckpoint: Sendable, Codable, Hashable {
-    /// Checkpoint file format version. Current: 1.
+    /// Checkpoint file format version. Current: 2.
     public var formatVersion: Int
     public var runID: UUID
     public var conversationID: UUID
@@ -33,9 +33,18 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     public var createdAt: Date
     /// GRDB schema version the embedded records were written against.
     public var schemaVersion: Int
+    /// V2 orchestration metadata. Optional fields keep V1 files decodable.
+    public var parentRunID: UUID?
+    public var conversationMode: ConversationMode?
+    public var planID: UUID?
+    public var goalID: UUID?
+    public var contextCompaction: ContextCompactionRecord?
+    public var activeChildRunIDs: [UUID]?
+    public var parentIterationCount: Int?
+    public var totalIterationCount: Int?
 
     /// Current checkpoint file format.
-    public static let currentFormatVersion = 1
+    public static let currentFormatVersion = 2
     /// Current GRDB schema version.
     public static let currentSchemaVersion = 1
 
@@ -50,7 +59,15 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         approvals: [ApprovalGrant] = [],
         idempotencyKeys: Set<String> = [],
         createdAt: Date = Date(),
-        schemaVersion: Int = AgentCheckpoint.currentSchemaVersion
+        schemaVersion: Int = AgentCheckpoint.currentSchemaVersion,
+        parentRunID: UUID? = nil,
+        conversationMode: ConversationMode? = nil,
+        planID: UUID? = nil,
+        goalID: UUID? = nil,
+        contextCompaction: ContextCompactionRecord? = nil,
+        activeChildRunIDs: [UUID]? = nil,
+        parentIterationCount: Int? = nil,
+        totalIterationCount: Int? = nil
     ) {
         self.formatVersion = formatVersion
         self.runID = runID
@@ -63,6 +80,14 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         self.idempotencyKeys = idempotencyKeys
         self.createdAt = createdAt
         self.schemaVersion = schemaVersion
+        self.parentRunID = parentRunID
+        self.conversationMode = conversationMode
+        self.planID = planID
+        self.goalID = goalID
+        self.contextCompaction = contextCompaction
+        self.activeChildRunIDs = activeChildRunIDs
+        self.parentIterationCount = parentIterationCount
+        self.totalIterationCount = totalIterationCount
     }
 
     public func encoded() throws -> Data {

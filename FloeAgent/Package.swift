@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "FloeProviders", targets: ["FloeProviders"]),
         .library(name: "FloeAgentRuntime", targets: ["FloeAgentRuntime"]),
         .library(name: "FloeTools", targets: ["FloeTools"]),
+        .library(name: "FloeSkills", targets: ["FloeSkills"]),
         .library(name: "FloePersistence", targets: ["FloePersistence"]),
         .library(name: "FloeSecurity", targets: ["FloeSecurity"]),
         .library(name: "FloeSyncCore", targets: ["FloeSyncCore"]),
@@ -93,7 +94,12 @@ let package = Package(
 
         .target(
             name: "FloeAgentRuntime",
-            dependencies: ["FloeCore", "FloeModels", "FloeProviders", "FloeTools", "FloePersistence", "FloeSecurity"],
+            dependencies: [
+                "FloeCore", "FloeModels", "FloeProviders", "FloeTools",
+                "FloePersistence", "FloeSecurity",
+                .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "Crypto", package: "swift-crypto")
+            ],
             path: "Sources/FloeAgentRuntime",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -107,6 +113,21 @@ let package = Package(
             name: "FloeTools",
             dependencies: ["FloeCore", "FloeModels"],
             path: "Sources/FloeTools",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency"),
+                .enableUpcomingFeature("InferSendableFromCaptures"),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault")
+            ]
+        ),
+
+        .target(
+            name: "FloeSkills",
+            dependencies: [
+                "FloeTools",
+                .product(name: "Crypto", package: "swift-crypto")
+            ],
+            path: "Sources/FloeSkills",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency"),
@@ -335,6 +356,16 @@ let package = Package(
             name: "FloeToolsTests",
             dependencies: ["FloeTools", "FloeAgentRuntime", "FloeTestSupport"],
             path: "Tests/FloeToolsTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+
+        .testTarget(
+            name: "FloeSkillsTests",
+            dependencies: ["FloeSkills", "FloeTools"],
+            path: "Tests/FloeSkillsTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency")

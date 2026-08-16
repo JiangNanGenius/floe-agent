@@ -84,12 +84,13 @@ public struct AnthropicRequest: Sendable, Codable, Hashable {
 /// Content block in an Anthropic message (request or response).
 public enum AnthropicContent: Sendable, Codable, Hashable {
     case text(String)
+    case image(mimeType: String, base64: String)
     case thinking(String)
     case toolUse(id: String, name: String, inputJSON: String)
     case toolResult(toolUseID: String, content: String, isError: Bool)
 
     private enum CodingKeys: String, CodingKey {
-        case type, text, thinking, id, name, input
+        case type, text, thinking, id, name, input, source
         case toolUseID = "tool_use_id"
         case content, isError = "is_error"
     }
@@ -100,6 +101,9 @@ public enum AnthropicContent: Sendable, Codable, Hashable {
         switch type {
         case "text":
             self = .text(try container.decode(String.self, forKey: .text))
+        case "image":
+            let source = try container.decode(ImageSource.self, forKey: .source)
+            self = .image(mimeType: source.mediaType, base64: source.data)
         case "thinking":
             self = .thinking(try container.decode(String.self, forKey: .thinking))
         case "tool_use":
@@ -128,6 +132,9 @@ public enum AnthropicContent: Sendable, Codable, Hashable {
         case .text(let text):
             try container.encode("text", forKey: .type)
             try container.encode(text, forKey: .text)
+        case .image(let mimeType, let base64):
+            try container.encode("image", forKey: .type)
+            try container.encode(ImageSource(mediaType: mimeType, data: base64), forKey: .source)
         case .thinking(let thinking):
             try container.encode("thinking", forKey: .type)
             try container.encode(thinking, forKey: .thinking)
@@ -141,6 +148,17 @@ public enum AnthropicContent: Sendable, Codable, Hashable {
             try container.encode(toolUseID, forKey: .toolUseID)
             try container.encode(content, forKey: .content)
             try container.encode(isError, forKey: .isError)
+        }
+    }
+
+    private struct ImageSource: Sendable, Codable, Hashable {
+        var type = "base64"
+        var mediaType: String
+        var data: String
+
+        enum CodingKeys: String, CodingKey {
+            case type, data
+            case mediaType = "media_type"
         }
     }
 }
