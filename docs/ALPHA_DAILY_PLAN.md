@@ -1,5 +1,8 @@
 # Floe Agent 可日用 Alpha 大迭代计划
 
+> [!NOTE]
+> 历史 Alpha 执行计划。其中五 Tab 导航已经被 1.2.x 的“新建任务”统一工作台取代；当前结构以[架构总览](ARCHITECTURE_OVERVIEW.md)为准。
+
 Status: approved for implementation
 
 Branch: `agent/alpha-daily`

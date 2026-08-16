@@ -8,11 +8,13 @@ This direction was selected from seven grounded alternatives because it best ser
 
 ## Information architecture
 
-- iPhone uses five top-level tabs: **Home, Chat, Files, Hosts, More**.
-- iPad uses a three-column `NavigationSplitView`: functional sidebar, task/session list, detail.
-- Runs, Providers, Settings, privacy and diagnostics live under More.
-- Home is a task workbench, not a grid of feature cards.
-- The execution thread is the canonical representation of assistant output, tool steps, terminal results, approvals, errors, checkpoints and evidence.
+- Normal cold launch and every newly created scene open directly into **New Task**. Returning from the background preserves the current task; notifications and Live Activities deep-link to their task.
+- The primary sidebar contains **New Task**, **Task Center**, **Skills**, expandable project workspaces, a **Chats** group for private tasks, and account/settings at the bottom.
+- Providers, auxiliary models, memory, permissions, privacy/data controls, and diagnostics live inside Settings and never duplicate in the primary sidebar.
+- The center column contains exactly one new-task draft or one continuous task thread.
+- The right inspector is collapsed by default and exposes Changes, Files, Browser, Terminal/Host, Progress, Child Agents, and Permissions for the selected task.
+- iPhone projects the same workbench selection into a drawer, navigation stack, and inspector sheet/full-screen browser instead of maintaining a separate business state.
+- The execution thread is the canonical representation of assistant output, tool steps, terminal results, approvals, errors, checkpoints, questions and evidence.
 
 ## Visual system
 
@@ -39,4 +41,4 @@ This direction was selected from seven grounded alternatives because it best ser
 - `docs/design/reference/floe-alpha-ipad-workbench.png`
 - `FloeAgent/FloeApp/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png`
 
-The iPhone reference has an exploratory tab bar. Production must use the locked five tabs above. The iPad reference is closer to the required hierarchy, but any identity/avatar or plan text shown in it is illustrative and must not be implemented.
+Both generated Alpha references are historical explorations and do not define the 1.2.0 navigation. The current workbench screenshot in `docs/images/floe-agent-new-task-ipad.webp` is the closest checked-in visual evidence; implementation remains the source of truth.

@@ -2,7 +2,7 @@
 
 ## Current status
 
-Floe Agent is pre-release software. There is no supported production release. Do not use development builds to operate production systems or store production credentials.
+Floe Agent publishes prerelease builds for evaluation. They are not a supported production service, and the community unsigned IPA is not an App Store package. Do not use development or unsigned builds to operate production systems or store production credentials. [简体中文安全策略](SECURITY.zh-CN.md)
 
 ## Reporting a vulnerability
 
@@ -30,5 +30,7 @@ The following are core requirements:
 - High-confidence catastrophic actions stop for separate user confirmation, including while full control is active.
 - VNC sessions on public networks require an encrypted SSH tunnel.
 - Downloaded or model-generated code is never executed on iOS.
+- Visible browser references are document-scoped, and sensitive login/upload/payment flows require explicit user review or takeover.
+- Skill packages are declarative, statically validated, and cannot dynamically register native runners or grant themselves authority.
 
 These controls reduce risk but cannot make unrestricted remote shell or graphical access safe. A user who enables powerful remote access remains responsible for the selected host, credentials, backups, provider terms, and actions they approve.
