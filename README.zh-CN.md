@@ -54,7 +54,7 @@ flowchart LR
 
 ### TestFlight
 
-项目会在测试组开放时通过 TestFlight 分发签名版本。当前源码目标版本为 Floe Agent 1.2.5（build 16）；只有在[发布页](https://github.com/JiangNanGenius/floe-agent/releases)出现并通过发布门禁的构建才算真正完成发布。预发布阶段的测试名额可能有限。
+项目会在测试组开放时通过 TestFlight 分发签名版本。当前源码目标版本为 Floe Agent 1.2.6（build 17）；只有在[发布页](https://github.com/JiangNanGenius/floe-agent/releases)出现并通过发布门禁的构建才算真正完成发布。预发布阶段的测试名额可能有限。
 
 ### 未签名 IPA
 

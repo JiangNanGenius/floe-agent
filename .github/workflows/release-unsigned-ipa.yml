@@ -189,7 +189,13 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
           PROFILE_UUID="$(security cms -D -i "$RUNNER_TEMP/Floe.mobileprovision" | plutil -extract UUID raw -)"
-          cp "$RUNNER_TEMP/Floe.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+          for PROFILE_DIRECTORY in \
+            "$HOME/Library/MobileDevice/Provisioning Profiles" \
+            "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          do
+            mkdir -p "$PROFILE_DIRECTORY"
+            cp "$RUNNER_TEMP/Floe.mobileprovision" "$PROFILE_DIRECTORY/$PROFILE_UUID.mobileprovision"
+          done
 
       - name: Install App Store Connect API key
         env:
@@ -216,6 +222,10 @@ jobs:
             -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8" \
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY='Apple Distribution' \
+            PROVISIONING_PROFILE_SPECIFIER='Floe TestFlight GitHub Actions' \
+            DEVELOPMENT_TEAM=QYL72C43K6 \
             archive
 
       - name: Export and upload to TestFlight
@@ -228,7 +238,6 @@ jobs:
             -archivePath "$RUNNER_TEMP/FloeAgent.xcarchive" \
             -exportPath "$RUNNER_TEMP/TestFlightExport" \
             -exportOptionsPlist Config/ExportOptions-TestFlight.plist \
-            -allowProvisioningUpdates \
             -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8" \
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
