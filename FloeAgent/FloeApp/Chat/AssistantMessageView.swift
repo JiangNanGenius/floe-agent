@@ -37,7 +37,7 @@ struct AssistantMessageView: View {
     private var readAloudButton: some View {
         let isThisMessageSpeaking = speechService.isSpeaking
             && speechService.speakingText == text
-        Button {
+        return Button {
             speechService.speak(text)
         } label: {
             Label(

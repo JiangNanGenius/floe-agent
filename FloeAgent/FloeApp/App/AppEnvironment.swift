@@ -169,7 +169,7 @@ final class AppEnvironment: ObservableObject {
         // with no workspace open the tools fail with a structured "no
         // workspace" result instead of crashing.
         registerWorkspaceTools(rootProvider: WorkspaceCenter.toolRootProvider)
-        // Local spreadsheet reading (Cuneiform) for the document surface.
+        // Local value-only OOXML spreadsheet reading for the document surface.
         registerDocumentTools(rootProvider: WorkspaceCenter.toolRootProvider)
         // Local image processing (Core Image) for the image surface.
         registerImageTools(rootProvider: WorkspaceCenter.toolRootProvider)
@@ -201,7 +201,7 @@ final class AppEnvironment: ObservableObject {
         // VNC remote-desktop driving: the agent clicks/types into the user's
         // open VNC session.
         registerVNCTools { [weak remoteSessionCenter] in
-            remoteSessionCenter?.activeVNCSession()
+            await remoteSessionCenter?.activeVNCSession()
         }
         self.remotePythonProbe = FloeExecution.RemotePythonProbe(service: pythonService)
         self.localPythonProbe = FloeExecution.LocalPythonCapabilityProbe(

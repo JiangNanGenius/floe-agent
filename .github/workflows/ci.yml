@@ -36,17 +36,6 @@ jobs:
           swift package resolve
           scripts/pin_check.sh
 
-      - name: SPM build (cross-platform targets)
-        run: swift build
-
-      - name: SPM test (cross-platform targets)
-        run: |
-          # JavaScriptCore cannot terminate an evaluated infinite loop. Run its
-          # deadline tests in a separate process so abandoned VM threads cannot
-          # starve unrelated actor/state-machine tests on shared CI runners.
-          swift test --skip 'FloeExecutionTests.JavaScriptEngineTests'
-          swift test --filter 'FloeExecutionTests.JavaScriptEngineTests'
-
       - name: xcodebuild iPhone Simulator
         run: |
           xcodebuild \
@@ -62,6 +51,17 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
             -resultBundlePath FloeAgent-iPad.xcresult \
             build
+
+      - name: SPM build (cross-platform targets)
+        run: swift build
+
+      - name: SPM test (cross-platform targets)
+        run: |
+          # JavaScriptCore cannot terminate an evaluated infinite loop. Run its
+          # deadline tests in a separate process so abandoned VM threads cannot
+          # starve unrelated actor/state-machine tests on shared CI runners.
+          swift test --skip 'FloeExecutionTests.JavaScriptEngineTests'
+          swift test --filter 'FloeExecutionTests.JavaScriptEngineTests'
 
       - name: Secret scan
         run: |
