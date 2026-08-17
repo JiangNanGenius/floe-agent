@@ -166,6 +166,7 @@ public enum HarnessEvent: Sendable, Codable, Hashable {
     case planChanged(PlanSnapshot)
     case goalChanged(GoalSnapshot)
     case childRunChanged(ChildRunSnapshot)
+    case userInputConsumed(SteerConsumptionReceipt)
     case usageChanged(UsageSnapshot)
     case terminal(HarnessTerminal)
 }

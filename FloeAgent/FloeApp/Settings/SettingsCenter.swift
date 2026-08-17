@@ -51,6 +51,7 @@ final class SettingsCenter: ObservableObject {
     @Published private(set) var sshDefaults: RemoteSessionDefaults = RemoteSessionDefaults()
     @Published private(set) var vncDefaults: RemoteSessionDefaults = RemoteSessionDefaults()
     @Published private(set) var idleDisconnectMinutes: Int = 15
+    @Published private(set) var runningInputMode: RunningInputMode = .queue
 
     // MARK: - Agent 与权限
 
@@ -136,7 +137,7 @@ final class SettingsCenter: ObservableObject {
         async let workspacesResult = (try? workspaceStore.workspaces()) ?? []
         async let memory = approvalGrants.allGrants
         async let js = JavaScriptCoreProbe().probe()
-        async let localPython = LocalPythonProbe().probe()
+        async let localPython = environment.localPythonProbe.probe()
         // Real remote-Python probe from FloeExecution (wired in
         // AppEnvironment); replaces the always-unavailable placeholder.
         async let remotePython = environment.remotePythonProbe.probe()
@@ -229,6 +230,9 @@ final class SettingsCenter: ObservableObject {
         }
         if let idle: Int = decode(Int.self, AppSettingsKey.idleDisconnectMinutes) {
             idleDisconnectMinutes = idle
+        }
+        if let mode: RunningInputMode = decode(RunningInputMode.self, AppSettingsKey.runningInputMode) {
+            runningInputMode = mode
         }
     }
 
@@ -416,6 +420,20 @@ final class SettingsCenter: ObservableObject {
     func setDefaultAgentMode(_ mode: AgentMode) async {
         defaultAgentMode = mode
         await persist(mode, forKey: AppSettingsKey.defaultAgentMode)
+    }
+
+    func loadRunningInputMode() async {
+        if let stored = try? await settingsStore.value(
+            forKey: AppSettingsKey.runningInputMode,
+            as: RunningInputMode.self
+        ) {
+            runningInputMode = stored
+        }
+    }
+
+    func setRunningInputMode(_ mode: RunningInputMode) async {
+        runningInputMode = mode
+        await persist(mode, forKey: AppSettingsKey.runningInputMode)
     }
 
     func setDefaultStartPage(_ page: StartPage) async {

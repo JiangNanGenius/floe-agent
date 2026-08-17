@@ -33,8 +33,12 @@ final class AppEnvironment: ObservableObject {
     /// Atomic preparation of conversation + run + first message before any
     /// provider work begins.
     let runLaunchStore: any RunLaunchStore
+    let runningInputStore: any RunningInputStore
     let checkpointStore: any CheckpointStore
     let intelligenceStore: SQLiteIntelligenceStore
+    let personalizationStore: SQLitePersonalizationStore
+    let personalizationService: PersonalizationService
+    let memoryCandidatePipeline: MemoryCandidatePipeline
     let skillStore: SQLiteSkillStore
     let configurationStore: ModelConfigurationStore
     let configurationSync: ConfigSyncEngine
@@ -51,6 +55,9 @@ final class AppEnvironment: ObservableObject {
 
     /// Host store backing SSH + remote Python (shares the database).
     let remoteHostStore: RemoteHostStore
+    /// Bundled CPython capability. Unavailable only when the reproducible
+    /// runtime bootstrap was intentionally omitted from the build.
+    let localPythonProbe: FloeExecution.LocalPythonCapabilityProbe
     /// Real remote-Python capability probe (FloeExecution), surfaced to
     /// SettingsCenter so the UI reads live state instead of a placeholder.
     let remotePythonProbe: FloeExecution.RemotePythonProbe
@@ -111,13 +118,25 @@ final class AppEnvironment: ObservableObject {
         self.conversationStore = conversationStore
         self.runStore = runStore
         self.runLaunchStore = SQLiteRunLaunchStore(database: database)
+        self.runningInputStore = SQLiteRunningInputStore(database: database)
         let checkpointRoot = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first?.appendingPathComponent("FloeAgent/Checkpoints", isDirectory: true)
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("FloeAgent-Checkpoints")
         self.checkpointStore = FileCheckpointStore(directory: checkpointRoot)
-        self.intelligenceStore = SQLiteIntelligenceStore(database: database)
+        let intelligenceStore = SQLiteIntelligenceStore(database: database)
+        self.intelligenceStore = intelligenceStore
+        let personalizationStore = SQLitePersonalizationStore(database: database)
+        self.personalizationStore = personalizationStore
+        self.personalizationService = PersonalizationService(
+            documents: personalizationStore,
+            memories: intelligenceStore
+        )
+        self.memoryCandidatePipeline = MemoryCandidatePipeline(
+            documents: personalizationStore,
+            memories: intelligenceStore
+        )
         self.skillStore = SQLiteSkillStore(database: database)
         self.configurationStore = configurationStore
         self.configurationSync = configurationSync
@@ -138,17 +157,23 @@ final class AppEnvironment: ObservableObject {
         // workspace" result instead of crashing.
         registerWorkspaceTools(rootProvider: WorkspaceCenter.toolRootProvider)
 
-        // T13/T14: register remote Python only. Model-generated code is never
-        // executed on-device; JavaScriptCore is intentionally absent from the
-        // production model tool catalog. Remote credentials resolve from the
-        // Keychain at the call site only.
+        // Register both execution locations. Local CPython is a stripped,
+        // fixed app resource and always asks before executing; remote Python
+        // continues to resolve credentials at the call site only.
         let hostStore = RemoteHostStore(database: database)
         self.remoteHostStore = hostStore
         let pythonService = Self.makeRemotePythonService(hostStore: hostStore)
-        registerExecutionTools(pythonService: pythonService)
+        let localPythonService = CPythonServiceFactory.make()
+        registerExecutionTools(
+            pythonService: pythonService,
+            localPythonService: localPythonService
+        )
         registerBrowserTools(center: browserCenter)
         registerPreviewTools(environment: previewCenter)
         self.remotePythonProbe = FloeExecution.RemotePythonProbe(service: pythonService)
+        self.localPythonProbe = FloeExecution.LocalPythonCapabilityProbe(
+            service: localPythonService
+        )
     }
 
     /// Builds the remote-Python service against the shared host store.
@@ -266,6 +291,7 @@ final class AppEnvironment: ObservableObject {
     func bootstrap() async {
         do {
             try await database.migrate()
+            try await runningInputStore.recoverTransientInputs()
             await configurationSync.setCredentialStore(credentialStore)
             await credentialVault.drainDeletionQueue()
             #if DEBUG

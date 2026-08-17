@@ -47,6 +47,7 @@ final class ProviderEditorViewModel: ObservableObject {
     @Published private(set) var testState: ConnectionTestState = .idle
     @Published private(set) var secretStatus: SyncStatus = .synced
     @Published private(set) var isSaving = false
+    @Published private(set) var nativeToolStatusByModelID: [UUID: NativeToolCapabilityStatus] = [:]
     @Published var errorMessage: String?
 
     let center: ConversationCenter
@@ -99,6 +100,9 @@ final class ProviderEditorViewModel: ObservableObject {
         syncEnabled = await secretStore.isSyncEnabled(for: providerID)
         let existingModels = center.modelsByProvider[providerID] ?? []
         candidateModels = existingModels.filter { $0.capabilities.contains(.text) }
+        nativeToolStatusByModelID = Dictionary(uniqueKeysWithValues: candidateModels.map {
+            ($0.id, NativeToolCapabilityProbe.initialStatus(for: $0))
+        })
         selectedModelIDs = Set(candidateModels.map(\.id))
         defaultModelID = center.modelPreferences.defaultAgentModelID
     }
@@ -226,6 +230,7 @@ final class ProviderEditorViewModel: ObservableObject {
         var normalized = model
         normalized.capabilities.insert(.text)
         candidateModels[index] = normalized
+        nativeToolStatusByModelID[normalized.id] = NativeToolCapabilityProbe.initialStatus(for: normalized)
     }
 
     func setDefaultModel(_ id: UUID) {
@@ -234,19 +239,9 @@ final class ProviderEditorViewModel: ObservableObject {
     }
 
     private func mergeDiscovered(_ discovered: [ModelProfile]) {
-        var existingByRemoteID: [String: ModelProfile] = [:]
-        for model in candidateModels {
-            // Corrupt or legacy stores may contain duplicates. Prefer the last
-            // locally loaded entry, matching the v4 migration's merge rule.
-            existingByRemoteID[model.remoteModelID] = model
-        }
-        for model in discovered where existingByRemoteID[model.remoteModelID] == nil {
-            var conservative = model
-            conservative.capabilities = [.text]
-            existingByRemoteID[model.remoteModelID] = conservative
-        }
-        candidateModels = existingByRemoteID.values.sorted {
-            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        candidateModels = ModelCatalogMerger.merge(existing: candidateModels, discovered: discovered)
+        for model in candidateModels where nativeToolStatusByModelID[model.id] != .verified {
+            nativeToolStatusByModelID[model.id] = NativeToolCapabilityProbe.initialStatus(for: model)
         }
     }
 
@@ -259,14 +254,44 @@ final class ProviderEditorViewModel: ObservableObject {
             remoteModelID: trimmed,
             displayName: displayName.isEmpty ? trimmed : displayName,
             limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 8_192),
-            capabilities: [.text]
+            capabilities: ModelCapabilities.defaultTextModel(for: selectedProtocol)
         )
         candidateModels.append(model)
+        nativeToolStatusByModelID[model.id] = NativeToolCapabilityProbe.initialStatus(for: model)
         selectedModelIDs.insert(model.id)
+    }
+
+    /// Runs an explicit, inert native-tool round trip for one candidate model.
+    /// This is intentionally opt-in because it consumes a small model request.
+    func probeNativeTools(for modelID: UUID) async {
+        guard let model = candidateModels.first(where: { $0.id == modelID }) else { return }
+        nativeToolStatusByModelID[modelID] = .probing
+        do {
+            let profile = try buildProfile()
+            let enteredKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            let credentials: ProviderCredentials
+            if !enteredKey.isEmpty {
+                credentials = ProviderCredentials(apiKey: enteredKey)
+            } else if profile.secretRef != nil {
+                let secret = try await secretStore.readSecret(scope: .provider(providerID))
+                credentials = ProviderCredentials(apiKey: String(data: secret, encoding: .utf8))
+            } else {
+                credentials = ProviderCredentials()
+            }
+            nativeToolStatusByModelID[modelID] = await NativeToolCapabilityProbe.run(
+                adapter: adapterFactory.adapter(for: profile),
+                provider: profile,
+                model: model,
+                credentials: credentials
+            )
+        } catch {
+            nativeToolStatusByModelID[modelID] = .failed(SecretRedactor.redact(error.localizedDescription))
+        }
     }
 
     func removeManualModel(id: UUID) {
         candidateModels.removeAll { $0.id == id }
+        nativeToolStatusByModelID.removeValue(forKey: id)
         selectedModelIDs.remove(id)
         if defaultModelID == id { defaultModelID = nil }
     }

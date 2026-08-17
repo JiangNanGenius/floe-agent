@@ -27,6 +27,7 @@ jobs:
       - name: Generate Xcode project
         run: |
           brew install xcodegen
+          scripts/bootstrap_python_runtime.sh
           scripts/gen_project.sh
 
       - name: Resolve and pin-check dependencies

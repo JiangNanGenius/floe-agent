@@ -173,6 +173,13 @@ public struct ConversationGoal: Sendable, Codable, Hashable, Identifiable {
     public var sourcePlanID: UUID?
     public var sourcePlanDigest: String?
     public var objective: String
+    /// Explicit user-defined conditions that stop further action and surface
+    /// the Goal as blocked instead of encouraging improvisation.
+    public var blockingConditions: [String]?
+    /// User-defined successful stopping conditions, separate from budgets.
+    public var stoppingConditions: [String]?
+    /// Monotonic revision for user edits; nil decodes legacy rows as v1.
+    public var revision: Int?
     public var acceptanceCriteria: [GoalCriterion]
     public var steps: [GoalStep]
     public var evidence: [GoalEvidence]
@@ -188,6 +195,9 @@ public struct ConversationGoal: Sendable, Codable, Hashable, Identifiable {
         sourcePlanID: UUID? = nil,
         sourcePlanDigest: String? = nil,
         objective: String,
+        blockingConditions: [String]? = nil,
+        stoppingConditions: [String]? = nil,
+        revision: Int? = 1,
         acceptanceCriteria: [GoalCriterion],
         steps: [GoalStep],
         evidence: [GoalEvidence] = [],
@@ -202,6 +212,9 @@ public struct ConversationGoal: Sendable, Codable, Hashable, Identifiable {
         self.sourcePlanID = sourcePlanID
         self.sourcePlanDigest = sourcePlanDigest
         self.objective = objective
+        self.blockingConditions = blockingConditions
+        self.stoppingConditions = stoppingConditions
+        self.revision = revision
         self.acceptanceCriteria = acceptanceCriteria
         self.steps = steps
         self.evidence = evidence

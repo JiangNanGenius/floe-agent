@@ -53,6 +53,19 @@ struct GeneralSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("运行中输入") {
+                Picker("默认发送方式", selection: Binding(
+                    get: { center.runningInputMode },
+                    set: { value in Task { await center.setRunningInputMode(value) } }
+                )) {
+                    Text("加入消息队列").tag(RunningInputMode.queue)
+                    Text("引导当前运行").tag(RunningInputMode.steer)
+                }
+                Text("队列会在当前任务结束后启动新一轮；引导会在当前模型输出或工具调用完整结束后插入上下文。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("settings.general.accessibility") {
                 Picker("settings.general.reduce_motion", selection: Binding(
                     get: { center.reduceMotionOverride },

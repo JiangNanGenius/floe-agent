@@ -6,8 +6,8 @@
 // detail: multi-line input pinned to the bottom (chrome material is
 // allowed here), attachment picking (security-scoped bookmark via
 // FilesCenter), model selection, workspace project selection, execution target and Agent
-// mode. While a run is non-terminal the send button becomes a stop
-// button. All controls keep the 44pt minimum target; the app stays
+// mode. While a run is non-terminal Stop remains separate from the running
+// input Queue/Steer send action. All controls keep the 44pt minimum target; the app stays
 // fully usable without a configured model — only AI send is disabled.
 
 #if canImport(SwiftUI) && canImport(UIKit)
@@ -128,7 +128,10 @@ struct ThreadComposerView: View {
     let providerConfigured: Bool
     /// True while the displayed run is non-terminal (send → stop).
     var isRunning: Bool = false
-    /// True when sending is allowed (non-empty draft + model + not running).
+    /// Present in a thread composer. Home omits it because no run is active.
+    var runningInputMode: Binding<RunningInputMode>? = nil
+    /// True when sending is allowed. During an active run this controls the
+    /// independent queue/steer action; Stop remains available beside it.
     let canSend: Bool
     /// Workspaces available to this conversation.
     var projects: [ComposerProject] = []
@@ -297,20 +300,20 @@ struct ThreadComposerView: View {
                 .buttonStyle(.plain)
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("action.stop")
-            } else {
-                Button {
-                    onSend()
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(canSend ? FloeTheme.primary : Color.secondary)
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
-                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("thread.send")
-                .accessibilityIdentifier("composer.send")
             }
+
+            Button {
+                onSend()
+            } label: {
+                Image(systemName: sendSystemImage)
+                    .font(.title2)
+                    .foregroundStyle(canSend ? FloeTheme.primary : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSend)
+            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            .accessibilityLabel(sendAccessibilityLabel)
+            .accessibilityIdentifier("composer.send")
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
@@ -325,6 +328,29 @@ struct ThreadComposerView: View {
                 projectPicker
                 targetPicker
                 modePicker
+                if isRunning, let runningInputMode {
+                    Menu {
+                        Button {
+                            runningInputMode.wrappedValue = .queue
+                        } label: {
+                            Label("加入消息队列", systemImage: runningInputMode.wrappedValue == .queue
+                                  ? "checkmark" : "text.badge.plus")
+                        }
+                        Button {
+                            runningInputMode.wrappedValue = .steer
+                        } label: {
+                            Label("引导当前运行", systemImage: runningInputMode.wrappedValue == .steer
+                                  ? "checkmark" : "arrow.triangle.turn.up.right.diamond")
+                        }
+                    } label: {
+                        composerChip(
+                            title: runningInputMode.wrappedValue == .queue ? "排队" : "引导",
+                            systemImage: runningInputMode.wrappedValue == .queue
+                                ? "text.badge.plus" : "arrow.triangle.turn.up.right.diamond"
+                        )
+                    }
+                    .accessibilityLabel("运行中发送方式")
+                }
                 Button {
                     onPermissions()
                 } label: {
@@ -347,6 +373,20 @@ struct ThreadComposerView: View {
         case .automatic: "自动审批"
         case .fullAccess: "完全放开"
         }
+    }
+
+    private var sendSystemImage: String {
+        guard isRunning, let mode = runningInputMode?.wrappedValue else {
+            return "arrow.up.circle.fill"
+        }
+        return mode == .queue ? "text.badge.plus" : "arrow.triangle.turn.up.right.diamond.fill"
+    }
+
+    private var sendAccessibilityLabel: String {
+        guard isRunning, let mode = runningInputMode?.wrappedValue else {
+            return String(localized: "thread.send")
+        }
+        return mode == .queue ? "加入消息队列" : "引导当前运行"
     }
 
     private var modelPicker: some View {

@@ -52,6 +52,7 @@ struct RootView: View {
     @State private var deletingConversation: ConversationRecord?
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
     @State private var isPhoneSidebarOpen = false
+    @GestureState private var phoneDrawerTranslation: CGFloat = 0
 
     /// UITest runs pin a deterministic layout: `-ui-testing` forces the
     /// compact (iPhone-style) tab layout; `-ui-testing-ipad` additionally
@@ -206,13 +207,18 @@ struct RootView: View {
 
     private var iPhoneRoot: some View {
         GeometryReader { proxy in
-            let drawerWidth = min(360, max(280, proxy.size.width - 44))
+            let drawerWidth = min(390, max(300, proxy.size.width - 44))
+            let baseOffset = isPhoneSidebarOpen ? CGFloat.zero : -drawerWidth
+            let interactiveOffset = min(0, max(-drawerWidth, baseOffset + phoneDrawerTranslation))
+            let drawerProgress = 1 - abs(interactiveOffset / drawerWidth)
             ZStack(alignment: .leading) {
                 contentColumn
                     .frame(width: proxy.size.width, height: proxy.size.height)
-                    .offset(x: isPhoneSidebarOpen ? drawerWidth : 0)
+                    .scaleEffect(1 - drawerProgress * 0.025, anchor: .trailing)
+                    .offset(x: drawerProgress * 18)
+                    .clipShape(.rect(cornerRadius: drawerProgress * 22))
                     .overlay(alignment: .topLeading) {
-                        if !isPhoneSidebarOpen {
+                        if drawerProgress == 0 {
                             Button { withAnimation(.snappy) { isPhoneSidebarOpen = true } } label: {
                                 Image(systemName: "sidebar.left")
                                     .frame(width: 44, height: 44)
@@ -225,20 +231,22 @@ struct RootView: View {
                         }
                     }
 
-                sidebarColumn
-                    .frame(width: drawerWidth, height: proxy.size.height)
-                    .background(FloeTheme.readingSurface)
-                    .offset(x: isPhoneSidebarOpen ? 0 : -drawerWidth)
-                    .shadow(radius: isPhoneSidebarOpen ? 12 : 0)
-
-                if isPhoneSidebarOpen {
-                    Color.clear
-                        .frame(width: 44)
+                if drawerProgress > 0 {
+                    Color.black.opacity(0.22 * drawerProgress)
+                        .ignoresSafeArea()
                         .contentShape(Rectangle())
-                        .offset(x: drawerWidth)
                         .onTapGesture { withAnimation(.snappy) { isPhoneSidebarOpen = false } }
                         .accessibilityLabel("收起任务列表")
                 }
+
+                sidebarColumn
+                    .frame(width: drawerWidth)
+                    .frame(maxHeight: .infinity)
+                    .background(FloeTheme.readingSurface.ignoresSafeArea())
+                    .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                    .offset(x: interactiveOffset)
+                    .shadow(color: .black.opacity(0.18 * drawerProgress), radius: 24, x: 8)
+                    .accessibilityIdentifier("phone.sidebar.drawer")
 
                 if let route = router.inspectorRoute {
                     Color.black.opacity(0.18)
@@ -253,7 +261,7 @@ struct RootView: View {
                         .accessibilityIdentifier("phone.inspector.drawer")
                 }
             }
-            .clipped()
+            .ignoresSafeArea(edges: [.top, .bottom])
             .animation(.snappy, value: isPhoneSidebarOpen)
             .animation(.snappy, value: router.inspectorRoute)
             .contentShape(Rectangle())
@@ -265,13 +273,26 @@ struct RootView: View {
     }
 
     private func phoneDrawerGesture(drawerWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 18, coordinateSpace: .global)
+        DragGesture(minimumDistance: 12, coordinateSpace: .global)
+            .updating($phoneDrawerTranslation) { value, state, _ in
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                if isPhoneSidebarOpen {
+                    state = min(0, value.translation.width)
+                } else if value.startLocation.x < 28, router.inspectorRoute == nil {
+                    state = max(0, value.translation.width)
+                }
+            }
             .onEnded { value in
                 let horizontal = value.translation.width
-                guard abs(horizontal) > abs(value.translation.height), abs(horizontal) > 54 else { return }
-                if horizontal > 0, value.startLocation.x < 28, router.inspectorRoute == nil {
+                let predicted = value.predictedEndTranslation.width
+                guard abs(horizontal) > abs(value.translation.height) else { return }
+                if !isPhoneSidebarOpen,
+                   value.startLocation.x < 28,
+                   router.inspectorRoute == nil,
+                   max(horizontal, predicted) > drawerWidth * 0.22 {
                     withAnimation(.snappy) { isPhoneSidebarOpen = true }
-                } else if horizontal < 0, isPhoneSidebarOpen {
+                } else if isPhoneSidebarOpen,
+                          min(horizontal, predicted) < -drawerWidth * 0.22 {
                     withAnimation(.snappy) { isPhoneSidebarOpen = false }
                 } else if horizontal > 0, router.inspectorRoute != nil {
                     router.hideInspector()

@@ -12,6 +12,8 @@ public enum RiskLabel: String, Sendable, Codable, Hashable, CaseIterable {
     case readsFiles
     case writesFiles
     case deletesFiles
+    /// Executes code inside Floe's on-device application sandbox.
+    case executesLocalCode
     case executesRemoteCommand
     case modifiesRemoteSystem
     case networkAccess

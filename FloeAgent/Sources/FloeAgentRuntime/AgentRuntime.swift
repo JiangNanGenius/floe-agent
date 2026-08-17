@@ -24,6 +24,47 @@ import Crypto
 public protocol AgentEventSink: Sendable {
     func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async
     func agentRuntime(_ runtime: FloeAgentRuntime, didEmit event: AgentEvent) async
+    /// Called only after a complete assistant/model step and before a steer
+    /// is inserted. Persistence uses it to seal the assistant message without
+    /// falsely emitting a terminal event.
+    func agentRuntime(_ runtime: FloeAgentRuntime, didCompleteAssistantStep text: String) async
+    /// Called after the steer is durably part of the runtime's message list,
+    /// immediately before the next provider request is constructed.
+    func agentRuntime(_ runtime: FloeAgentRuntime, didConsumeSteer input: RuntimeSteerInput) async
+}
+
+public extension AgentEventSink {
+    func agentRuntime(_ runtime: FloeAgentRuntime, didCompleteAssistantStep text: String) async {}
+    func agentRuntime(_ runtime: FloeAgentRuntime, didConsumeSteer input: RuntimeSteerInput) async {}
+}
+
+/// Input accepted for delivery at a safe model/tool step boundary.
+public struct RuntimeSteerInput: Sendable, Hashable, Identifiable {
+    public var id: UUID
+    public var content: String
+    public var images: [ConversationImagePart]
+    public var attachments: [AttachmentRef]
+    public var createdAt: Date
+
+    public init(
+        id: UUID,
+        content: String,
+        images: [ConversationImagePart] = [],
+        attachments: [AttachmentRef] = [],
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.content = content
+        self.images = images
+        self.attachments = attachments
+        self.createdAt = createdAt
+    }
+}
+
+public enum RuntimeSteerAcceptance: Sendable, Hashable {
+    case accepted
+    case alreadyAccepted
+    case rejected(reason: String)
 }
 
 /// Abstraction over tool execution so tests can inject fakes without
@@ -218,6 +259,10 @@ public actor FloeAgentRuntime {
     /// The outer model loop consumes this flag; handlers never recursively
     /// enter `runModelTurn`, which keeps one owner for state transitions.
     private var modelTurnContinuationRequested = false
+    /// User guidance waits here until the current model output and any tool
+    /// request/result pair have reached a complete step boundary.
+    private var pendingSteers: [RuntimeSteerInput] = []
+    private var acceptedSteerIDs: Set<UUID> = []
 
     private var streamTask: Task<Void, Never>?
     private var cancellationToken = CancellationToken()
@@ -490,6 +535,31 @@ public actor FloeAgentRuntime {
         }
     }
 
+    /// Registers guidance for the active run without interrupting a model
+    /// stream or in-flight tool. `expectedRunID` prevents a UI race from
+    /// steering a newer run after the displayed run changed.
+    public func steer(
+        _ input: RuntimeSteerInput,
+        expectedRunID: UUID
+    ) -> RuntimeSteerAcceptance {
+        guard expectedRunID == runID else {
+            return .rejected(reason: "The active run changed before guidance was delivered")
+        }
+        let trimmed = input.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .rejected(reason: "Guidance must not be empty") }
+        if acceptedSteerIDs.contains(input.id) { return .alreadyAccepted }
+        switch state {
+        case .preparing, .streamingModel, .executingTool, .waitingApproval, .compacting, .paused:
+            var normalized = input
+            normalized.content = trimmed
+            pendingSteers.append(normalized)
+            acceptedSteerIDs.insert(input.id)
+            return .accepted
+        case .idle, .cancelling, .checkpointed, .completed, .failed:
+            return .rejected(reason: "The target run is no longer accepting guidance")
+        }
+    }
+
     // MARK: Core loop
 
     /// preparing → streamingModel; consumes the provider stream.
@@ -504,6 +574,20 @@ public actor FloeAgentRuntime {
     /// subsequent turn by setting `modelTurnContinuationRequested`; it must
     /// never call this method recursively.
     private func runSingleModelTurn() async {
+        if !pendingSteers.isEmpty, !streamText.isEmpty {
+            messages.append(ConversationMessage(role: "assistant", content: streamText))
+            await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
+        }
+        await consumeSteersAtStepBoundary()
+        // Sink callbacks perform durable persistence and therefore suspend.
+        // A user cancel/pause can win during that suspension; never revive a
+        // parked or terminal run by starting a provider request afterwards.
+        switch state {
+        case .cancelling, .paused, .checkpointed, .completed, .failed:
+            return
+        default:
+            break
+        }
         if let contextEngine {
             let latestUserID = messages.last(where: { $0.role == "user" })?.id
             let protection = ContextProtection(
@@ -603,7 +687,13 @@ public actor FloeAgentRuntime {
                     description: $0.toolDescription,
                     parametersJSON: $0.parametersJSON
                 )
-            } : []
+            } + (configuration.conversationMode == .plan ? [
+                ToolSchemaDescriptor(
+                    name: PlanSubmission.toolName,
+                    description: PlanSubmission.toolDescription,
+                    parametersJSON: PlanSubmission.parametersJSON
+                )
+            ] : []) : []
         )
         pendingToolResults.removeAll(keepingCapacity: true)
         pendingToolCalls.removeAll(keepingCapacity: true)
@@ -629,7 +719,7 @@ public actor FloeAgentRuntime {
                 let finalState = await self.state
                 if case .streamingModel = finalState,
                    !(await self.modelTurnContinuationRequested) {
-                    await self.completeRun(stopReason: .endTurn)
+                    await self.finishOrSteer(stopReason: .endTurn)
                 }
             } catch is CancellationError {
                 // cancel() owns the terminal transition.
@@ -681,6 +771,14 @@ public actor FloeAgentRuntime {
             return
         }
 
+        // A provider completion is only terminal when no guidance is waiting.
+        // Suppressing the terminal event here is essential: persistence must
+        // not close the run before the steer is inserted.
+        if case .completed(let completion) = event {
+            await finishOrSteer(stopReason: forcedStopReason ?? completion.stopReason)
+            return
+        }
+
         await emit(event)
         switch event {
         case .textDelta(let delta):
@@ -712,8 +810,19 @@ public actor FloeAgentRuntime {
             ))
 
         case .toolRequest(let call):
+            // A tool is executable only when the selected model is explicitly
+            // configured for native structured calls. Text resembling a call
+            // is handled by `.textDelta` and can never reach this branch.
+            guard configuration.toolsEnabled,
+                  configuration.model.capabilities.contains(.tools) else {
+                await failRun(
+                    message: "Provider emitted a structured tool call while native tools are disabled for this model",
+                    recoverable: false
+                )
+                return
+            }
             if isFinalizingWithoutTools {
-                await completeRun(stopReason: forcedStopReason ?? .budgetLimited)
+                await finishOrSteer(stopReason: forcedStopReason ?? .budgetLimited)
                 return
             }
             let scoped = call.withIDContext(runID: runID)
@@ -745,9 +854,44 @@ public actor FloeAgentRuntime {
                 await failRun(message: error.providerMessage, recoverable: false)
             }
 
-        case .completed(let completion):
-            await completeRun(stopReason: forcedStopReason ?? completion.stopReason)
+        case .completed:
+            break // handled before generic event publication above
         }
+    }
+
+    /// Consumes every accepted steer in FIFO order immediately before a
+    /// provider request. Each remains a distinct user message.
+    private func consumeSteersAtStepBoundary() async {
+        guard !pendingSteers.isEmpty else { return }
+        let inputs = pendingSteers
+        pendingSteers.removeAll(keepingCapacity: true)
+        for input in inputs {
+            messages.append(ConversationMessage(
+                id: input.id,
+                role: "user",
+                content: input.content,
+                createdAt: input.createdAt,
+                images: input.images
+            ))
+            await sink?.agentRuntime(self, didConsumeSteer: input)
+        }
+    }
+
+    /// Seals a complete assistant step, injects pending guidance, and keeps
+    /// the same run alive. With no guidance it publishes the ordinary
+    /// completion and transitions terminally.
+    private func finishOrSteer(stopReason: AgentEvent.StopReason) async {
+        guard !pendingSteers.isEmpty else {
+            await emit(.completed(.init(stopReason: stopReason)))
+            await completeRun(stopReason: stopReason)
+            return
+        }
+        if !streamText.isEmpty {
+            messages.append(ConversationMessage(role: "assistant", content: streamText))
+            await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
+        }
+        await consumeSteersAtStepBoundary()
+        modelTurnContinuationRequested = true
     }
 
     /// streamingModel → executingTool | waitingApproval → streamingModel.
@@ -774,6 +918,44 @@ public actor FloeAgentRuntime {
         // misinterpret an orphan tool-result message, which previously made
         // runs stop after a file write without a final assistant reply.
         pendingToolCalls.append(call)
+
+        // `plan.submit` is an internal, run-scoped persistence hand-off. It is
+        // deliberately not registered in the process-global tool registry:
+        // concurrent conversations must never share a captured store or ID.
+        if configuration.conversationMode == .plan,
+           call.toolName == PlanSubmission.toolName {
+            let result: ToolResult
+            do {
+                let submission = try JSONDecoder().decode(
+                    PlanSubmission.self,
+                    from: call.argumentsJSON
+                )
+                if submission.validationErrors.isEmpty {
+                    result = ToolResult(
+                        callID: call.id,
+                        status: .ok,
+                        outputSummary: "Plan submitted for user review. Briefly summarize it, then stop.",
+                        outputDigest: ""
+                    )
+                } else {
+                    result = ToolResult(
+                        callID: call.id,
+                        status: .failed,
+                        outputSummary: "Plan is incomplete: \(submission.validationErrors.joined(separator: ", ")). Repair and submit again.",
+                        outputDigest: ""
+                    )
+                }
+            } catch {
+                result = ToolResult(
+                    callID: call.id,
+                    status: .failed,
+                    outputSummary: "Invalid plan.submit payload: \(error.localizedDescription)",
+                    outputDigest: ""
+                )
+            }
+            await resumeStream(with: result, after: call)
+            return
+        }
 
         guard let descriptor = executor.descriptor(named: call.toolName) else {
             let result = ToolResult(
@@ -1012,7 +1194,7 @@ public actor FloeAgentRuntime {
     ) async {
         if let result { pendingToolResults.append(result) }
         guard !isFinalizingWithoutTools else {
-            await completeRun(stopReason: stopReason)
+            await finishOrSteer(stopReason: stopReason)
             return
         }
         forcedStopReason = stopReason

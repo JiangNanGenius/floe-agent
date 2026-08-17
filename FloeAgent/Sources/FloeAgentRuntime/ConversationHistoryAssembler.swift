@@ -64,8 +64,15 @@ public struct ConversationHistoryAssembler: Sendable {
         return [ConversationMessage(role: "system", content: summary)] + recent
     }
 
+    /// Resolves staged image attachments for a runtime steer. Non-images,
+    /// oversized files and inaccessible bookmarks are omitted safely.
+    public static func inlineImages(_ attachments: [AttachmentRef]) -> [ConversationImagePart] {
+        attachments.compactMap(Self.inlineImage)
+    }
+
     private static func inlineImage(_ attachment: AttachmentRef) -> ConversationImagePart? {
-        guard attachment.byteCount <= 8 * 1_024 * 1_024,
+        guard attachment.kind == .image,
+              attachment.byteCount <= 8 * 1_024 * 1_024,
               let bookmark = attachment.urlBookmark else { return nil }
         var stale = false
         guard let url = try? URL(

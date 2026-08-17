@@ -84,7 +84,8 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy {
         let alwaysAsk: Set<String> = [
             "deletesFiles",
             "accessesCredentials",
-            "modifiesRemoteSystem"
+            "modifiesRemoteSystem",
+            "executesLocalCode"
         ]
         if !risks.isDisjoint(with: alwaysAsk) {
             return .escalateToHuman(reason: "Sensitive action requires explicit approval")
@@ -140,7 +141,8 @@ public struct TaskFullAccessPolicy: ApprovalPolicy {
         let alwaysAsk: Set<String> = [
             "deletesFiles",
             "accessesCredentials",
-            "sendsDataToProvider"
+            "sendsDataToProvider",
+            "executesLocalCode"
         ]
         if !action.riskLabels.isDisjoint(with: alwaysAsk) {
             return .escalateToHuman(reason: "This sensitive action always requires explicit approval")

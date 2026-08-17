@@ -20,6 +20,8 @@ struct ThreadDetailView: View {
     @StateObject private var viewModel: ThreadDetailViewModel
     @EnvironmentObject private var router: AppRouter
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var editingPendingInput: PendingUserInput?
+    @State private var showingGoalBuilder = false
 
     init(conversationID: UUID, center: ConversationCenter) {
         _viewModel = StateObject(
@@ -48,6 +50,23 @@ struct ThreadDetailView: View {
             await viewModel.load()
         }
         .onDisappear { viewModel.stopLiveUpdates() }
+        .sheet(item: $editingPendingInput) { input in
+            PendingInputEditor(input: input) { text in
+                Task { await viewModel.editPendingInput(input, content: text) }
+            }
+        }
+        .sheet(isPresented: $showingGoalBuilder) {
+            GoalBuilderSheet { objective, criteria, blockers, stops in
+                Task {
+                    await viewModel.createGoal(
+                        objective: objective,
+                        criteria: criteria,
+                        blockingConditions: blockers,
+                        stoppingConditions: stops
+                    )
+                }
+            }
+        }
     }
 
     private var intelligenceStatus: some View {
@@ -60,9 +79,28 @@ struct ThreadDetailView: View {
                     Text(plan.status.rawValue).font(.caption).foregroundStyle(.secondary)
                 }
                 Text(plan.title).font(.subheadline).lineLimit(2)
+                if let recommendation = plan.executionRecommendation {
+                    Label(
+                        recommendation == .goal ? "建议转为 Goal" : "建议普通执行",
+                        systemImage: recommendation == .goal ? "target" : "play.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    if let reason = plan.recommendationReason, !reason.isEmpty {
+                        Text(reason).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    }
+                }
                 if plan.status == .awaitingInput || plan.status == .ready {
-                    Button("plan.accept") { Task { await viewModel.acceptLatestPlan() } }
+                    HStack {
+                        Button("按普通计划执行") {
+                            Task { await viewModel.acceptLatestPlan(as: .normal) }
+                        }
                         .buttonStyle(.borderedProminent)
+                        Button("转为 Goal") {
+                            Task { await viewModel.acceptLatestPlan(as: .goal) }
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
             }
             if let goal = viewModel.activeGoal {
@@ -194,6 +232,10 @@ struct ThreadDetailView: View {
     private var stateToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
+                Button("直接设置 Goal", systemImage: "target") {
+                    showingGoalBuilder = true
+                }
+                Divider()
                 inspectorButton("变更", icon: "arrow.triangle.2.circlepath", content: .changes)
                 inspectorButton("文件", icon: "folder", content: .workspaceFiles)
                 inspectorButton("浏览器", icon: "safari", content: .browser)
@@ -284,6 +326,16 @@ struct ThreadDetailView: View {
             .accessibilityIdentifier("thread.conversation_missing")
         } else {
             VStack(spacing: 0) {
+                if !viewModel.pendingInputs.isEmpty {
+                    PendingInputQueueView(
+                        inputs: viewModel.pendingInputs,
+                        canSteer: viewModel.isRunning,
+                        onEdit: { editingPendingInput = $0 },
+                        onDelete: { input in Task { await viewModel.removePendingInput(input) } },
+                        onMove: { input, offset in Task { await viewModel.movePendingInput(input, offset: offset) } },
+                        onSteer: { input in Task { await viewModel.promotePendingInput(input) } }
+                    )
+                }
                 if viewModel.needsProvider {
                     addProviderBar
                 }
@@ -294,7 +346,8 @@ struct ThreadDetailView: View {
                     modelName: viewModel.selectedModelName,
                     providerConfigured: !viewModel.needsProvider,
                     isRunning: viewModel.isRunning,
-                    canSend: viewModel.canSend || viewModel.isRunning,
+                    runningInputMode: $viewModel.runningInputMode,
+                    canSend: viewModel.canSend,
                     projects: viewModel.availableProjects,
                     projectSelectionLocked: true,
                     selectedProjectID: $viewModel.selectedProjectID,
@@ -324,6 +377,166 @@ struct ThreadDetailView: View {
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(FloeTheme.pending.opacity(0.08))
+    }
+}
+
+private struct PendingInputQueueView: View {
+    let inputs: [PendingUserInput]
+    let canSteer: Bool
+    let onEdit: (PendingUserInput) -> Void
+    let onDelete: (PendingUserInput) -> Void
+    let onMove: (PendingUserInput, Int) -> Void
+    let onSteer: (PendingUserInput) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("消息队列", systemImage: "text.badge.plus")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("\(inputs.count)")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(inputs) { input in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(input.content)
+                            .font(.subheadline)
+                            .lineLimit(2)
+                        Text(statusTitle(input.status))
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(input.status == .queued ? .secondary : FloeTheme.pending)
+                    }
+                    Spacer(minLength: 4)
+                    if input.status == .queued {
+                        let queuedIndex = queuedInputs.firstIndex(where: { $0.id == input.id })
+                        Menu {
+                            Button("编辑", systemImage: "pencil") { onEdit(input) }
+                            Button("上移", systemImage: "arrow.up") { onMove(input, -1) }
+                                .disabled(queuedIndex == queuedInputs.startIndex)
+                            Button("下移", systemImage: "arrow.down") { onMove(input, 1) }
+                                .disabled(queuedIndex == queuedInputs.indices.last)
+                            Button("转为引导", systemImage: "arrow.triangle.turn.up.right.diamond") {
+                                onSteer(input)
+                            }
+                            .disabled(!canSteer)
+                            Divider()
+                            Button("删除", systemImage: "trash", role: .destructive) { onDelete(input) }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                        }
+                        .accessibilityLabel("队列消息操作")
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var queuedInputs: [PendingUserInput] {
+        inputs.filter { $0.status == .queued }
+    }
+
+    private func statusTitle(_ status: PendingUserInputStatus) -> String {
+        switch status {
+        case .queued: "等待当前运行结束"
+        case .promoting: "正在转为引导"
+        case .steerPending: "等待安全插入点"
+        case .consumed: "已发送"
+        case .cancelled: "已取消"
+        }
+    }
+}
+
+private struct GoalBuilderSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var objective = ""
+    @State private var criteria = ""
+    @State private var blockers = ""
+    @State private var stops = ""
+    let onCreate: (String, [String], [String], [String]) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("最终目标") {
+                    TextEditor(text: $objective).frame(minHeight: 90)
+                }
+                Section("验收标准（每行一条）") {
+                    TextEditor(text: $criteria).frame(minHeight: 80)
+                }
+                Section("阻断条件（每行一条）") {
+                    TextEditor(text: $blockers).frame(minHeight: 80)
+                }
+                Section("停止条件（每行一条）") {
+                    TextEditor(text: $stops).frame(minHeight: 80)
+                }
+            }
+            .navigationTitle("设置 Goal")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("创建并开始") {
+                        onCreate(objective, lines(criteria), lines(blockers), lines(stops))
+                        dismiss()
+                    }
+                    .disabled(objective.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+
+    private func lines(_ value: String) -> [String] {
+        value.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+}
+
+private struct PendingInputEditor: View {
+    let input: PendingUserInput
+    let onSave: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var text: String
+
+    init(input: PendingUserInput, onSave: @escaping (String) -> Void) {
+        self.input = input
+        self.onSave = onSave
+        _text = State(initialValue: input.content)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("队列消息", text: $text, axis: .vertical)
+                    .lineLimit(3...10)
+            }
+            .navigationTitle("编辑队列消息")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        onSave(text.trimmingCharacters(in: .whitespacesAndNewlines))
+                        dismiss()
+                    }
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }
 

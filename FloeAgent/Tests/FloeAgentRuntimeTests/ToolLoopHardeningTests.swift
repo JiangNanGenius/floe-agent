@@ -53,6 +53,60 @@ private final class LoopingAdapter: ProviderAdapter, @unchecked Sendable {
 @Suite("FloeAgentRuntime.ToolLoopHardening")
 struct ToolLoopHardeningTests {
 
+    @Test("Pseudo function-call text is rendered but never executed")
+    func pseudoFunctionCallTextNeverExecutes() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [[
+            .textDelta(.init(text: #"<|FunctionCallBegin|>[{"name":"test.echo","parameters":{}}]<|FunctionCallEnd|>"#)),
+            .completed(.init(stopReason: .endTurn))
+        ]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let sink = MockSink()
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id)
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            sink: sink
+        )
+
+        try await runtime.start(goal: "show a pseudo call")
+
+        #expect(executor.executedCalls.isEmpty)
+        #expect(sink.events.contains {
+            if case .textDelta(let delta) = $0 { return delta.text.contains("FunctionCallBegin") }
+            return false
+        })
+    }
+
+    @Test("Structured provider calls are rejected when native tools are disabled")
+    func structuredCallsRequireCapability() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [[.toolRequest(try TestFixtures.toolCall())]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let provider = TestFixtures.localhostProvider()
+        var model = TestFixtures.testModel(providerID: provider.id)
+        model.capabilities.remove(.tools)
+        let runtime = FloeAgentRuntime(
+            configuration: .init(provider: provider, model: model),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "do not run tools")
+
+        #expect(executor.executedCalls.isEmpty)
+        let state = await runtime.state
+        #expect(state.name == "failed")
+    }
+
     private func makeStores() async throws -> (SQLiteConversationStore, SQLiteRunStore) {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()

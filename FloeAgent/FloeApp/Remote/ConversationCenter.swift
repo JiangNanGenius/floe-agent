@@ -18,6 +18,9 @@ import FloePersistence
 import FloeProviders
 import FloeSecurity
 import FloeTools
+#if canImport(NaturalLanguage)
+import NaturalLanguage
+#endif
 
 /// A human-decision prompt surfaced by a run in `.waitingApproval`. Wraps
 /// the runtime's waiting payload with the tool descriptor's deterministic
@@ -76,6 +79,7 @@ struct ConversationSessionSnapshot: Sendable {
     let latestPlan: PlanDraft?
     let activeGoal: ConversationGoal?
     let taskPolicy: TaskPolicy
+    let pendingInputs: [PendingUserInput]
 }
 
 /// Coordinates conversations and agent runs for the UI layer.
@@ -165,7 +169,6 @@ final class ConversationCenter: ObservableObject {
         let runs = try await environment.runStore.runs(conversationID: conversationID)
         let taskPolicy = try await SQLiteWorkspaceStore(database: environment.database)
             .taskPolicy(conversationID: conversationID)
-            ?? TaskPolicy(conversationID: conversationID)
         var events: [UUID: [RunEventRecord]] = [:]
         for run in runs { events[run.id] = try await environment.runStore.events(runID: run.id) }
         return ConversationSessionSnapshot(
@@ -177,7 +180,8 @@ final class ConversationCenter: ObservableObject {
             pendingApprovals: pendingApprovals.filter { $0.conversationID == conversationID },
             latestPlan: try await environment.intelligenceStore.latestPlan(conversationID: conversationID),
             activeGoal: try await environment.intelligenceStore.goals(conversationID: conversationID).first,
-            taskPolicy: taskPolicy
+            taskPolicy: taskPolicy,
+            pendingInputs: try await environment.runningInputStore.pending(conversationID: conversationID)
         )
     }
 
@@ -285,6 +289,7 @@ final class ConversationCenter: ObservableObject {
         runID: UUID = UUID(),
         executionMode: AgentExecutionMode = .agent,
         workspaceID: UUID? = nil,
+        memoryQuery: String = "",
         conversationHistory: [ConversationMessage] = [],
         currentUserImages: [ConversationImagePart] = []
     ) async -> ConversationRunService {
@@ -314,10 +319,15 @@ final class ConversationCenter: ObservableObject {
         let taskPolicy = (try? await workspaceStore.taskPolicy(conversationID: conversationID))
             ?? TaskPolicy(conversationID: conversationID)
         let skills = await environment.skillsCenter.runtimeSelection()
-        let memory = await runtimeMemoryContext(
+        let personalization = await runtimePersonalizationContext(
+            query: memoryQuery,
             workspaceID: canonicalWorkspaceID,
             conversationID: conversationID
         )
+        let activePlan = try? await environment.intelligenceStore
+            .latestPlan(conversationID: conversationID)
+        let activeGoal = try? await environment.intelligenceStore
+            .goals(conversationID: conversationID).first(where: { !$0.status.isTerminal })
         let taskPolicyToolNames: Set<String>? = {
             let hasExplicitRestriction = taskPolicy.allowedToolNames != nil
                 || taskPolicy.approvalMode == "readOnly"
@@ -380,6 +390,7 @@ final class ConversationCenter: ObservableObject {
             intelligenceStore: environment.intelligenceStore,
             conversationStore: environment.conversationStore,
             runStore: environment.runStore,
+            runningInputStore: environment.runningInputStore,
             runID: runID,
             conversationHistory: conversationHistory,
             currentUserImages: currentUserImages,
@@ -388,7 +399,11 @@ final class ConversationCenter: ObservableObject {
                 executionTarget: canonicalWorkspace?.activeTarget.kindName,
                 availableToolNames: allowedToolNames,
                 skillInstructions: skills.instructions,
-                memoryContext: memory
+                memoryContext: personalization.memory,
+                soulContext: personalization.soul,
+                userProfileContext: personalization.profile,
+                activePlan: activePlan,
+                activeGoal: activeGoal
             ),
             resourceAccessCleanup: taskRootLease?.release
         )
@@ -458,6 +473,7 @@ final class ConversationCenter: ObservableObject {
             ) ?? .ask),
             messageRole: isGoalContinuation ? "goalContinuation" : "user"
         ))
+        await recordPersonalizationActivity(userMessages: 1, workspaceID: workspaceID)
         await captureIngressSecrets(ingress.captures, prepared: prepared)
         guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else {
             throw FloeError.validationFailed("Conversation was deleted during launch")
@@ -478,6 +494,7 @@ final class ConversationCenter: ObservableObject {
             runID: runID,
             executionMode: executionMode,
             workspaceID: workspaceID,
+            memoryQuery: trimmed,
             conversationHistory: history,
             currentUserImages: visual.images
         )
@@ -526,6 +543,7 @@ final class ConversationCenter: ObservableObject {
                 rawValue: environment.settingsCenter.defaultAgentMode.taskApprovalModeName
             ) ?? .ask)
         ))
+        await recordPersonalizationActivity(userMessages: 1, workspaceID: workspaceID)
         await captureIngressSecrets(ingress.captures, prepared: prepared)
         guard !isClearingHistory else {
             throw FloeError.validationFailed("Conversation history was cleared during launch")
@@ -545,6 +563,7 @@ final class ConversationCenter: ObservableObject {
             runID: runID,
             executionMode: executionMode,
             workspaceID: prepared.workspace.id,
+            memoryQuery: trimmed,
             conversationHistory: visual.context,
             currentUserImages: visual.images
         )
@@ -562,7 +581,29 @@ final class ConversationCenter: ObservableObject {
 
     /// Injects a small, explicitly data-only memory projection. Secrets are
     /// rejected at write time and expired/rejected rows are excluded here.
-    private func runtimeMemoryContext(workspaceID: UUID?, conversationID: UUID) async -> String? {
+    private struct RuntimePersonalizationContext {
+        var memory: String?
+        var soul: String?
+        var profile: String?
+    }
+
+    private func runtimePersonalizationContext(
+        query: String,
+        workspaceID: UUID?,
+        conversationID: UUID
+    ) async -> RuntimePersonalizationContext {
+        async let globalSoul = environment.personalizationStore.activeDocument(
+            kind: .soul, workspaceID: nil
+        )
+        async let workspaceSoul = environment.personalizationStore.activeDocument(
+            kind: .soul, workspaceID: workspaceID
+        )
+        async let globalProfile = environment.personalizationStore.activeDocument(
+            kind: .userProfile, workspaceID: nil
+        )
+        async let workspaceProfile = environment.personalizationStore.activeDocument(
+            kind: .userProfile, workspaceID: workspaceID
+        )
         var entries = (try? await environment.intelligenceStore.memories(
             scope: .userProfile, status: .active
         )) ?? []
@@ -578,6 +619,64 @@ final class ConversationCenter: ObservableObject {
             scope: .task(conversationID), status: .active
         )) ?? []
         let now = Date()
+        entries = entries.filter { $0.expiresAt.map { $0 > now } ?? true }
+        entries = Array(Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) }).values)
+
+        var recalled: [HybridMemoryRecallItem] = []
+        #if canImport(NaturalLanguage)
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !normalizedQuery.isEmpty {
+            let recognizer = NLLanguageRecognizer()
+            recognizer.processString(normalizedQuery)
+            let language = recognizer.dominantLanguage ?? .english
+            let embeddingProvider = AppleNaturalLanguageEmbeddingProvider(language: language)
+            let queryVector = try? await embeddingProvider.embedding(for: normalizedQuery)
+            if let queryVector {
+                for entry in entries.prefix(200) {
+                    let digest = MemoryContentDigest.make(entry.content)
+                    let needsRefresh = (try? await environment.intelligenceStore.embeddingNeedsRefresh(
+                        memoryID: entry.id,
+                        modality: .text,
+                        modelIdentifier: embeddingProvider.modelIdentifier,
+                        modelRevision: embeddingProvider.modelRevision,
+                        contentDigest: digest
+                    )) ?? true
+                    if needsRefresh,
+                       let vector = try? await embeddingProvider.embedding(for: entry.content) {
+                        try? await environment.intelligenceStore.saveEmbedding(MemoryEmbedding(
+                            memoryID: entry.id,
+                            modality: .text,
+                            modelIdentifier: embeddingProvider.modelIdentifier,
+                            modelRevision: embeddingProvider.modelRevision,
+                            values: vector,
+                            contentDigest: digest
+                        ))
+                    }
+                }
+                recalled = (try? await environment.intelligenceStore.hybridRecall(
+                    HybridMemoryRecallRequest(
+                        query: normalizedQuery,
+                        workspaceID: workspaceID,
+                        conversationID: conversationID,
+                        queryEmbedding: queryVector,
+                        modelIdentifier: embeddingProvider.modelIdentifier,
+                        modelRevision: embeddingProvider.modelRevision,
+                        limit: 8
+                    )
+                )) ?? []
+            }
+        }
+        #endif
+        if recalled.isEmpty, !query.isEmpty {
+            recalled = (try? await environment.intelligenceStore.hybridRecall(
+                HybridMemoryRecallRequest(
+                    query: query,
+                    workspaceID: workspaceID,
+                    conversationID: conversationID,
+                    limit: 8
+                )
+            )) ?? []
+        }
         let selected = entries
             .filter { $0.expiresAt.map { $0 > now } ?? true }
             .sorted {
@@ -585,9 +684,22 @@ final class ConversationCenter: ObservableObject {
                 if $0.importance != $1.importance { return $0.importance > $1.importance }
                 return $0.updatedAt > $1.updatedAt
             }
-            .prefix(6)
-        guard !selected.isEmpty else { return nil }
-        return selected.map { "- \(String($0.content.prefix(500)))" }.joined(separator: "\n")
+            .prefix(4)
+        let recalledIDs = Set(recalled.map(\.id))
+        let memoryLines = recalled.map { "- \(String($0.content.prefix(500)))" }
+            + selected.filter { !recalledIDs.contains($0.id) }
+                .map { "- \(String($0.content.prefix(500)))" }
+        let workspaceSoulValue = try? await workspaceSoul
+        let globalSoulValue = try? await globalSoul
+        let workspaceProfileValue = try? await workspaceProfile
+        let globalProfileValue = try? await globalProfile
+        let soul = workspaceSoulValue ?? globalSoulValue
+        let profile = workspaceProfileValue ?? globalProfileValue
+        return RuntimePersonalizationContext(
+            memory: memoryLines.isEmpty ? nil : Array(memoryLines.prefix(8)).joined(separator: "\n"),
+            soul: soul?.content,
+            profile: profile?.content
+        )
     }
 
     private func captureIngressSecrets(
@@ -694,6 +806,119 @@ final class ConversationCenter: ObservableObject {
         }
     }
 
+    // MARK: - Running input queue / steer
+
+    /// Persists input composed during a run. Queue is the safe default;
+    /// steering additionally performs an expected-run conditional promotion.
+    func submitRunningInput(
+        content: String,
+        in conversationID: UUID,
+        expectedRunID: UUID,
+        mode: RunningInputMode,
+        selectedModelID: UUID?,
+        workspaceID: UUID?,
+        executionMode: AgentExecutionMode,
+        attachments: [AttachmentRef]
+    ) async throws {
+        let input = try await environment.runningInputStore.enqueue(PendingUserInput(
+            conversationID: conversationID,
+            targetRunID: expectedRunID,
+            content: content,
+            mode: mode,
+            attachments: attachments,
+            selectedModelID: selectedModelID,
+            workspaceID: workspaceID,
+            executionMode: executionMode.rawValue
+        ))
+        if mode == .steer {
+            try await promoteToSteer(inputID: input.id, expectedRunID: expectedRunID)
+        }
+        publishSession(conversationID)
+    }
+
+    func editPendingInput(id: UUID, content: String) async throws {
+        let value = try await environment.runningInputStore.input(id: id)
+        try await environment.runningInputStore.updateContent(id: id, content: content)
+        if let value { publishSession(value.conversationID) }
+    }
+
+    func removePendingInput(id: UUID) async throws {
+        let value = try await environment.runningInputStore.input(id: id)
+        try await environment.runningInputStore.cancel(id: id)
+        if let value { publishSession(value.conversationID) }
+    }
+
+    func reorderPendingInputs(conversationID: UUID, orderedIDs: [UUID]) async throws {
+        try await environment.runningInputStore.reorder(
+            conversationID: conversationID,
+            orderedIDs: orderedIDs
+        )
+        publishSession(conversationID)
+    }
+
+    /// Atomic queued -> promoting -> steerPending/consumed transition. The
+    /// row is removed from queue semantics only after this exact runtime
+    /// confirms acceptance; rejection restores it to queued.
+    func promoteToSteer(inputID: UUID, expectedRunID: UUID) async throws {
+        guard let input = try await environment.runningInputStore.beginSteerPromotion(
+            id: inputID,
+            expectedRunID: expectedRunID
+        ) else {
+            throw FloeError.validationFailed("The queued message changed before it could be guided")
+        }
+        guard let service = runServices[expectedRunID], service.conversationID == input.conversationID else {
+            try? await environment.runningInputStore.restoreQueued(id: inputID)
+            throw FloeError.validationFailed("The target run is no longer active")
+        }
+        let acceptance = await service.steer(RuntimeSteerInput(
+            id: input.id,
+            content: input.content,
+            images: ConversationHistoryAssembler.inlineImages(input.attachments),
+            attachments: input.attachments,
+            createdAt: input.createdAt
+        ), expectedRunID: expectedRunID)
+        switch acceptance {
+        case .accepted, .alreadyAccepted:
+            // Conditional update is a no-op if the runtime consumed the input
+            // and its callback won the race first.
+            try await environment.runningInputStore.markSteerAccepted(id: input.id, runID: expectedRunID)
+        case .rejected(let reason):
+            try? await environment.runningInputStore.restoreQueued(id: input.id)
+            throw FloeError.validationFailed(reason)
+        }
+        publishSession(input.conversationID)
+    }
+
+    private func launchNextQueuedInput(conversationID: UUID) async {
+        for service in runServices.values where service.conversationID == conversationID {
+            guard await service.snapshot().isTerminal else { return }
+        }
+        guard let input = try? await environment.runningInputStore.claimNextQueued(
+            conversationID: conversationID
+        ) else { return }
+        guard let (provider, model) = providerAndModel(modelID: input.selectedModelID),
+              let mode = AgentExecutionMode(rawValue: input.executionMode) else {
+            try? await environment.runningInputStore.restoreQueued(id: input.id)
+            publishSession(conversationID)
+            return
+        }
+        do {
+            let started = try await startRun(
+                goal: input.content,
+                in: conversationID,
+                provider: provider,
+                model: model,
+                workspaceID: input.workspaceID,
+                attachments: input.attachments,
+                executionMode: mode
+            )
+            try await environment.runningInputStore.markConsumed(id: input.id, runID: started.runID)
+        } catch {
+            try? await environment.runningInputStore.restoreQueued(id: input.id)
+        }
+        publishSession(conversationID)
+    }
+
     private func startPreparedService(
         _ service: ConversationRunService,
         goal: String,
@@ -718,9 +943,11 @@ final class ConversationCenter: ObservableObject {
         publishSession(service.conversationID)
         let result = Task<Result<Void, Error>, Never> { [weak self, service] in
             let outcome: Result<Void, Error>
+            var terminalState = "failed"
             do {
                 try await service.startPrepared(goal: goal)
                 let snapshot = await service.snapshot()
+                terminalState = snapshot.stateName
                 if snapshot.stateName == "completed" {
                     outcome = .success(())
                 } else {
@@ -735,6 +962,9 @@ final class ConversationCenter: ObservableObject {
                         provider: automaticTitle.provider,
                         model: automaticTitle.model
                     )
+                }
+                if case .success = outcome {
+                    await self?.recordPersonalizationActivity(completedRuns: 1)
                 }
                 if case .success = outcome, let goalContinuation {
                     await self?.evaluateAndContinueGoal(
@@ -759,6 +989,9 @@ final class ConversationCenter: ObservableObject {
                 )
             }
             self?.runTasks[runID] = nil
+            if terminalState == "completed" || terminalState == "failed" {
+                await self?.launchNextQueuedInput(conversationID: service.conversationID)
+            }
             return outcome
         }
         runTasks[runID] = result
@@ -768,6 +1001,27 @@ final class ConversationCenter: ObservableObject {
             title: conversations.first(where: { $0.id == service.conversationID })?.title ?? goal
         )
         return StartedConversationRun(runID: runID, result: result)
+    }
+
+    /// Advances the deliberately low-frequency SOUL/profile cadence and
+    /// performs an automatic regeneration only when its persisted threshold
+    /// is due (default: seven days plus 10 runs or 30 user messages).
+    private func recordPersonalizationActivity(
+        completedRuns: Int = 0,
+        userMessages: Int = 0,
+        workspaceID: UUID? = nil
+    ) async {
+        try? await environment.personalizationService.recordActivity(
+            completedRuns: completedRuns,
+            userMessages: userMessages,
+            workspaceID: workspaceID
+        )
+        for kind in PersonalizationDocumentKind.allCases {
+            _ = try? await environment.personalizationService.generateIfDue(
+                kind: kind,
+                workspaceID: workspaceID
+            )
+        }
     }
 
     /// Evaluates one completed Goal cycle from durable evidence. A provider
@@ -805,7 +1059,7 @@ final class ConversationCenter: ObservableObject {
         goal.progress.lastCheckpointAt = Date()
 
         if !newEvidence.isEmpty {
-            let reviewApproved = await reviewGoalEvidence(
+            let review = await reviewGoalEvidence(
                 goal: goal,
                 newEvidence: newEvidence,
                 provider: provider,
@@ -813,12 +1067,20 @@ final class ConversationCenter: ObservableObject {
             )
             goal.progress.modelCallCount += 1
             let evidenceIDs = newEvidence.map(\.id)
-            if reviewApproved {
-                for index in goal.steps.indices where goal.steps[index].status != .skipped {
+            if let blockingCondition = review.blockingCondition {
+                goal.status = .blocked
+                goal.progress.repeatedBlockerKey = "user-condition:\(blockingCondition)"
+                goal.progress.repeatedBlockerCount = 3
+            }
+            if review.isValid && goal.status != .blocked {
+                for index in goal.steps.indices
+                    where review.completedStepIDs.contains(goal.steps[index].id)
+                        && goal.steps[index].status != .skipped {
                     goal.steps[index].status = .completed
                     goal.steps[index].evidenceIDs = Array(Set(goal.steps[index].evidenceIDs + evidenceIDs))
                 }
-                for index in goal.acceptanceCriteria.indices {
+                for index in goal.acceptanceCriteria.indices
+                    where review.satisfiedCriterionIDs.contains(goal.acceptanceCriteria[index].id) {
                     goal.acceptanceCriteria[index].isSatisfied = true
                     goal.acceptanceCriteria[index].evidenceIDs = Array(Set(
                         goal.acceptanceCriteria[index].evidenceIDs + evidenceIDs
@@ -829,7 +1091,7 @@ final class ConversationCenter: ObservableObject {
                     criterionEvidence: Dictionary(uniqueKeysWithValues: goal.acceptanceCriteria.map {
                         ($0.id, $0.evidenceIDs)
                     }),
-                    reviewModelApproved: true
+                    reviewModelApproved: review.isValid
                 )
                 let verdict = GoalCompletionGate.evaluate(goal: goal, proposal: proposal)
                 if verdict.mayComplete {
@@ -841,9 +1103,23 @@ final class ConversationCenter: ObservableObject {
                     publishSession(conversationID)
                     return
                 }
+                let onlyUserConfirmationRemains = !verdict.blockers.isEmpty
+                    && verdict.blockers.allSatisfy { blocker in
+                        if case .userConfirmationRequired = blocker { return true }
+                        return false
+                    }
+                if onlyUserConfirmationRemains {
+                    goal.status = .verifying
+                    goal.updatedAt = Date()
+                    try? await environment.intelligenceStore.saveGoal(goal)
+                    publishSession(conversationID)
+                    return
+                }
             }
-            goal.recordBlocker(key: "evidence-review-rejected")
-            if goal.status != .blocked { goal.status = .active }
+            if !review.isValid {
+                goal.recordBlocker(key: "evidence-review-rejected")
+            }
+            if goal.status != .blocked && goal.status != .completed { goal.status = .active }
         }
 
         if let maxCycles = goal.budgets.maxCycles,
@@ -885,27 +1161,40 @@ final class ConversationCenter: ObservableObject {
         return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
     }
 
+    private struct GoalEvidenceReview {
+        var isValid = false
+        var satisfiedCriterionIDs: Set<UUID> = []
+        var completedStepIDs: Set<UUID> = []
+        var blockingCondition: String?
+    }
+
     private func reviewGoalEvidence(
         goal: ConversationGoal,
         newEvidence: [GoalEvidence],
         provider: ProviderProfile,
         model: ModelProfile
-    ) async -> Bool {
+    ) async -> GoalEvidenceReview {
         let evidenceText = newEvidence.map {
             "[\($0.reference)] \($0.summary)"
         }.joined(separator: "\n")
-        let criteriaText = goal.acceptanceCriteria.map(\.text).joined(separator: "; ")
+        let criteriaWithIDs = goal.acceptanceCriteria.map {
+            "\($0.id.uuidString): \($0.text)"
+        }.joined(separator: "\n")
+        let stepsWithIDs = goal.steps.map {
+            "\($0.id.uuidString): \($0.title) — \($0.detail)"
+        }.joined(separator: "\n")
+        let blockers = (goal.blockingConditions ?? []).joined(separator: "\n")
         let request = ProviderStreamRequest(
             provider: provider,
             model: model,
             contentMessages: [
                 ProviderMessage(
                     role: "system",
-                    text: "Review whether inspectable evidence proves the stated goal. Return strict JSON only: {\"approved\":true|false}. Never approve from a completion claim alone. No tools are available."
+                    text: "Review inspectable evidence item by item. Return strict JSON only: {\"valid\":true|false,\"satisfiedCriterionIDs\":[\"uuid\"],\"completedStepIDs\":[\"uuid\"],\"blockingCondition\":null|\"exact matched condition\"}. Include an ID only when this evidence specifically proves it. Never approve from a completion claim alone. No tools are available."
                 ),
                 ProviderMessage(
                     role: "user",
-                    text: "Goal: \(goal.objective)\nCriteria: \(criteriaText)\nEvidence:\n\(evidenceText)"
+                    text: "Goal: \(goal.objective)\nCriteria:\n\(criteriaWithIDs)\nSteps:\n\(stepsWithIDs)\nUser blocking conditions:\n\(blockers)\nEvidence:\n\(evidenceText)"
                 )
             ]
         )
@@ -917,16 +1206,31 @@ final class ConversationCenter: ObservableObject {
             ) {
                 if case .textDelta(let delta) = event {
                     output += delta.text
-                    if output.utf8.count > 2_048 { return false }
+                    if output.utf8.count > 4_096 { return GoalEvidenceReview() }
                 }
             }
-        } catch { return false }
+        } catch { return GoalEvidenceReview() }
         guard let start = output.firstIndex(of: "{"),
               let end = output.lastIndex(of: "}"), start <= end,
               let data = String(output[start...end]).data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return false }
-        return object["approved"] as? Bool == true
+        else { return GoalEvidenceReview() }
+        let knownCriteria = Set(goal.acceptanceCriteria.map(\.id))
+        let knownSteps = Set(goal.steps.map(\.id))
+        let criterionIDs = (object["satisfiedCriterionIDs"] as? [String] ?? [])
+            .compactMap(UUID.init(uuidString:))
+        let stepIDs = (object["completedStepIDs"] as? [String] ?? [])
+            .compactMap(UUID.init(uuidString:))
+        let reportedBlocker = object["blockingCondition"] as? String
+        let blockingCondition = reportedBlocker.flatMap { reported in
+            (goal.blockingConditions ?? []).first { $0 == reported }
+        }
+        return GoalEvidenceReview(
+            isValid: object["valid"] as? Bool == true,
+            satisfiedCriterionIDs: Set(criterionIDs).intersection(knownCriteria),
+            completedStepIDs: Set(stepIDs).intersection(knownSteps),
+            blockingCondition: blockingCondition
+        )
     }
 
     func persistActiveRecoveryPoints() async {
@@ -1427,7 +1731,7 @@ final class ConversationCenter: ObservableObject {
                 switch event {
                 case .stateChanged, .toolLifecycle, .approvalRequested,
                      .contextCompacted, .planChanged, .goalChanged,
-                     .childRunChanged, .terminal:
+                     .childRunChanged, .userInputConsumed, .terminal:
                     let snapshot = await service.snapshot()
                     self.apply(snapshot)
                     self.publishSession(snapshot.conversationID)

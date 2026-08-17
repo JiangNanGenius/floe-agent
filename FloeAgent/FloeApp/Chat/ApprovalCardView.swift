@@ -294,6 +294,7 @@ struct ApprovalCardView: View {
         case "readsFiles": "risk.reads_files"
         case "writesFiles": "risk.writes_files"
         case "deletesFiles": "risk.deletes_files"
+        case "executesLocalCode": "运行设备上的 Python 代码"
         case "executesRemoteCommand": "risk.executes_remote_command"
         case "modifiesRemoteSystem": "risk.modifies_remote_system"
         case "networkAccess": "risk.network_access"

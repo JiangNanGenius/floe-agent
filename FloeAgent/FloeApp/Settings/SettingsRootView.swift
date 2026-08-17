@@ -13,13 +13,14 @@ import FloeCore
 
 /// One settings category in the settings center.
 enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case general, providers, auxiliary, permissions, execution, files, sync, remote, diagnostics
+    case general, personalization, providers, auxiliary, permissions, execution, files, sync, remote, diagnostics
 
     var id: String { rawValue }
 
     var title: LocalizedStringKey {
         switch self {
         case .general: "settings.section.general"
+        case .personalization: "记忆与个性化"
         case .providers: "settings.section.providers"
         case .auxiliary: "settings.section.auxiliary"
         case .permissions: "settings.section.permissions"
@@ -34,6 +35,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
     var systemImage: String {
         switch self {
         case .general: "gearshape"
+        case .personalization: "person.crop.circle.badge.checkmark"
         case .providers: "antenna.radiowaves.left.and.right"
         case .auxiliary: "photo.badge.plus"
         case .permissions: "checkmark.shield"
@@ -88,6 +90,8 @@ struct SettingsRootView: View {
         switch section {
         case .general:
             GeneralSettingsView(center: environment.settingsCenter)
+        case .personalization:
+            MemoryView(center: environment.memoryCenter)
         case .providers:
             ProvidersSettingsView(center: environment.conversationCenter)
         case .auxiliary:

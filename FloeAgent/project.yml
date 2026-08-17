@@ -26,6 +26,11 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: FloeApp
+        excludes:
+          - Resources/python
+      - path: FloeApp/Resources/python
+        type: folder
+        buildPhase: resources
     info:
       path: FloeApp/Resources/Info.plist
       properties:
@@ -65,6 +70,8 @@ targets:
         com.apple.developer.user-fonts:
           - app-usage
     dependencies:
+      - framework: Vendor/Python.xcframework
+        embed: true
       - package: FloeAgentPackages
         product: FloeCore
       - package: FloeAgentPackages
@@ -107,9 +114,10 @@ targets:
         PRODUCT_MODULE_NAME: FloeApp
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
+        SWIFT_OBJC_BRIDGING_HEADER: FloeApp/Execution/FloeApp-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.2.4"
-        CURRENT_PROJECT_VERSION: "15"
+        MARKETING_VERSION: "1.2.5"
+        CURRENT_PROJECT_VERSION: "16"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
         ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -132,6 +140,7 @@ targets:
           - ThreadTimelineTests.swift
           - VoiceInputControllerTests.swift
           - CrashAndFeedbackRegressionTests.swift
+          - LocalPythonRuntimeTests.swift
     dependencies:
       - target: FloeAgent
     settings:
@@ -152,6 +161,7 @@ targets:
       - path: Tests/FloeAgentUITests/VoiceInputControllerTests.swift
       - path: Tests/FloeAgentUITests/BrowserProtocolTests.swift
       - path: Tests/FloeAgentUITests/CrashAndFeedbackRegressionTests.swift
+      - path: Tests/FloeAgentUITests/LocalPythonRuntimeTests.swift
     dependencies:
       - target: FloeAgent
     settings:
@@ -178,3 +188,11 @@ schemes:
       config: Debug
     archive:
       config: Release
+  FloeAppTests:
+    build:
+      targets:
+        FloeAgent: all
+        FloeAppTests: [test]
+    test:
+      targets:
+        - FloeAppTests

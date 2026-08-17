@@ -113,6 +113,44 @@ struct RequestContractTests {
         let input = try #require(responsesObject["input"] as? [[String: Any]])
         #expect(input.contains { $0["type"] as? String == "function_call" && $0["call_id"] as? String == call.id })
         #expect(input.contains { $0["type"] as? String == "function_call_output" && $0["call_id"] as? String == call.id })
+
+        let anthropicObject = try jsonObject(AnthropicMessagesAdapter().buildBody(from: request))
+        let anthropicMessages = try #require(anthropicObject["messages"] as? [[String: Any]])
+        let assistantContent = anthropicMessages.first { $0["role"] as? String == "assistant" }?["content"] as? [[String: Any]]
+        let userContent = anthropicMessages
+            .compactMap { $0["content"] as? [[String: Any]] }
+            .first { blocks in blocks.contains { $0["type"] as? String == "tool_result" } }
+        #expect(assistantContent?.contains { $0["type"] as? String == "tool_use" && $0["id"] as? String == call.id } == true)
+        #expect(userContent?.contains { $0["type"] as? String == "tool_result" && $0["tool_use_id"] as? String == call.id } == true)
+    }
+
+    @Test("Volcengine Ark uses native Chat Completions tool contracts")
+    func arkNativeToolContract() throws {
+        let providerID = UUID()
+        let provider = ProviderProfile(
+            id: providerID,
+            kind: .volcengineArk,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://ark.cn-beijing.volces.com/api/v3"))
+        )
+        let model = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "ep-test",
+            displayName: "Ark Endpoint",
+            limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 4_096),
+            capabilities: [.text, .tools]
+        )
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [(role: "user", content: "list files")],
+            toolSchemas: [.init(name: "workspace.listDirectory", description: "List", parametersJSON: schema)]
+        )
+
+        let object = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: request))
+        let tools = try #require(object["tools"] as? [[String: Any]])
+        #expect((tools.first?["function"] as? [String: Any])?["name"] as? String == "workspace.listDirectory")
+        #expect(object["model"] as? String == "ep-test")
     }
 
     @Test("Vision content maps to every provider wire format")

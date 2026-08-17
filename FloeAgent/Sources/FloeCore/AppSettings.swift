@@ -68,6 +68,12 @@ public enum StartPage: String, Sendable, Codable, CaseIterable, Hashable {
     case more
 }
 
+/// Default delivery behavior for text submitted while an agent run is active.
+public enum RunningInputMode: String, Sendable, Codable, CaseIterable, Hashable {
+    case queue
+    case steer
+}
+
 /// SSH/VNC default behaviour. Persisted as `remote.ssh` / `remote.vnc`.
 public struct RemoteSessionDefaults: Sendable, Codable, Hashable {
     public var autoReconnect: Bool
@@ -143,6 +149,7 @@ public enum AppSettingsKey {
     public static let sshDefaults = "remote.ssh"
     public static let vncDefaults = "remote.vnc"
     public static let idleDisconnectMinutes = "remote.idleDisconnectMinutes"
+    public static let runningInputMode = "agent.runningInputMode"
 }
 
 /// Counts returned by destructive clear operations so the UI can echo

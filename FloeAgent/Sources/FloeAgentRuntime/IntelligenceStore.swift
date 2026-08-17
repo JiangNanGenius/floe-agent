@@ -56,6 +56,12 @@ public protocol DurableMemoryStore: Sendable {
     func saveMemory(_ entry: MemoryEntry, evidence: [MemoryEvidenceReference]) async throws
     func memories(scope: MemoryScope, status: MemoryEntryStatus?) async throws -> [MemoryEntry]
     func recall(query: String, workspaceID: UUID?, conversationID: UUID?, limit: Int) async throws -> [MemoryRecallItem]
+    func saveEmbedding(_ embedding: MemoryEmbedding) async throws
+    func embeddingNeedsRefresh(
+        memoryID: UUID, modality: MemoryEmbeddingModality,
+        modelIdentifier: String, modelRevision: String, contentDigest: String
+    ) async throws -> Bool
+    func hybridRecall(_ request: HybridMemoryRecallRequest) async throws -> [HybridMemoryRecallItem]
     func deleteMemory(id: UUID, syncRevision: Int64) async throws
 }
 
@@ -109,12 +115,13 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                     id, conversation_id, workspace_id, revision, status, title, summary,
                     sections_json, assumptions_json, risks_json, criteria_json,
                     source_message_ids_json, source_conversation_refs_json, digest,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    execution_recommendation, recommendation_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, arguments: [
                     plan.id.uuidString, plan.conversationID.uuidString, plan.workspaceID?.uuidString,
                     plan.revision, plan.status.rawValue, plan.title, plan.summary, sections,
                     assumptions, risks, criteria, messages, references, plan.digest,
+                    plan.executionRecommendation?.rawValue, plan.recommendationReason,
                     Self.date(plan.createdAt), Self.date(plan.updatedAt)
                 ])
         }
@@ -144,14 +151,17 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         let evidence = try Self.json(goal.evidence)
         let budgets = try Self.json(goal.budgets)
         let progress = try Self.json(goal.progress)
+        let blockingConditions = try Self.json(goal.blockingConditions ?? [])
+        let stoppingConditions = try Self.json(goal.stoppingConditions ?? [])
         try await database.writer { db in
             try db.execute(sql: """
                 INSERT INTO conversation_goals (
                     id, conversation_id, source_plan_id, source_plan_digest, objective,
                     status, criteria_json, steps_json, evidence_json, budgets_json,
                     progress_json, blocking_fingerprint, consecutive_blocked_cycles,
+                    blocking_conditions_json, stopping_conditions_json, revision,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     objective=excluded.objective, status=excluded.status,
                     criteria_json=excluded.criteria_json, steps_json=excluded.steps_json,
@@ -159,12 +169,16 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                     progress_json=excluded.progress_json,
                     blocking_fingerprint=excluded.blocking_fingerprint,
                     consecutive_blocked_cycles=excluded.consecutive_blocked_cycles,
+                    blocking_conditions_json=excluded.blocking_conditions_json,
+                    stopping_conditions_json=excluded.stopping_conditions_json,
+                    revision=excluded.revision,
                     updated_at=excluded.updated_at
                 """, arguments: [
                     goal.id.uuidString, goal.conversationID.uuidString, goal.sourcePlanID?.uuidString,
                     goal.sourcePlanDigest, goal.objective, goal.status.rawValue, criteria, steps,
                     evidence, budgets, progress, goal.progress.repeatedBlockerKey,
-                    goal.progress.repeatedBlockerCount, Self.date(goal.createdAt), Self.date(goal.updatedAt)
+                    goal.progress.repeatedBlockerCount, blockingConditions, stoppingConditions,
+                    goal.revision ?? 1, Self.date(goal.createdAt), Self.date(goal.updatedAt)
                 ])
             try db.execute(sql: "DELETE FROM goal_criteria WHERE goal_id = ?", arguments: [goal.id.uuidString])
             for (index, criterion) in goal.acceptanceCriteria.enumerated() {
@@ -275,6 +289,132 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         }
     }
 
+    public func saveEmbedding(_ embedding: MemoryEmbedding) async throws {
+        guard embedding.isValid else {
+            throw FloeError.validationFailed("Embedding must contain finite values with a supported dimension")
+        }
+        guard !embedding.modelIdentifier.isEmpty, !embedding.modelRevision.isEmpty,
+              !embedding.contentDigest.isEmpty else {
+            throw FloeError.validationFailed("Embedding identity and content digest are required")
+        }
+        var values = embedding.values
+        let blob = values.withUnsafeMutableBytes { Data($0) }
+        try await database.writer { db in
+            let exists = try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM memory_entries WHERE id = ?)",
+                arguments: [embedding.memoryID.uuidString]) ?? false
+            guard exists else { throw FloeError.validationFailed("Embedding memory entry does not exist") }
+            try db.execute(sql: """
+                INSERT INTO memory_embeddings (
+                    memory_id, modality, model_identifier, model_revision,
+                    dimensions, vector_blob, content_digest, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(memory_id, modality, model_identifier, model_revision)
+                DO UPDATE SET dimensions=excluded.dimensions,
+                    vector_blob=excluded.vector_blob,
+                    content_digest=excluded.content_digest,
+                    created_at=excluded.created_at
+                """, arguments: [embedding.memoryID.uuidString, embedding.modality.rawValue,
+                    embedding.modelIdentifier, embedding.modelRevision, embedding.values.count,
+                    blob, embedding.contentDigest, Self.date(embedding.createdAt)])
+        }
+    }
+
+    public func embeddingNeedsRefresh(
+        memoryID: UUID,
+        modality: MemoryEmbeddingModality,
+        modelIdentifier: String,
+        modelRevision: String,
+        contentDigest: String
+    ) async throws -> Bool {
+        try await database.reader { db in
+            let stored: String? = try String.fetchOne(db, sql: """
+                SELECT content_digest FROM memory_embeddings
+                WHERE memory_id = ? AND modality = ? AND model_identifier = ?
+                  AND model_revision = ?
+                """, arguments: [memoryID.uuidString, modality.rawValue,
+                    modelIdentifier, modelRevision])
+            return stored != contentDigest
+        }
+    }
+
+    public func hybridRecall(_ request: HybridMemoryRecallRequest) async throws
+        -> [HybridMemoryRecallItem] {
+        let lexicalMatch = Self.ftsQuery(request.query)
+        let lexicalRows: [HybridRecallDatabaseRow]
+        if lexicalMatch.isEmpty {
+            lexicalRows = []
+        } else {
+            lexicalRows = try await database.reader { db in
+                try Row.fetchAll(db, sql: """
+                    SELECT m.id, m.content, m.importance, m.is_pinned, m.updated_at
+                    FROM memory_fts JOIN memory_entries m ON m.rowid = memory_fts.rowid
+                    WHERE memory_fts MATCH ? AND m.status = 'active'
+                      AND (m.workspace_id IS NULL OR m.workspace_id = ?)
+                      AND (m.conversation_id IS NULL OR m.conversation_id = ?)
+                      AND (m.expires_at IS NULL OR m.expires_at > ?)
+                    ORDER BY bm25(memory_fts), m.is_pinned DESC, m.importance DESC
+                    LIMIT 50
+                    """, arguments: [lexicalMatch, request.workspaceID?.uuidString,
+                        request.conversationID?.uuidString, Self.date(Date())])
+                    .compactMap(Self.hybridRow)
+            }
+        }
+
+        var semanticRows: [(HybridRecallDatabaseRow, Double)] = []
+        if let queryVector = request.queryEmbedding,
+           !queryVector.isEmpty, queryVector.count <= 4_096,
+           queryVector.allSatisfy(\.isFinite),
+           let modelIdentifier = request.modelIdentifier,
+           let modelRevision = request.modelRevision {
+            let rows: [(HybridRecallDatabaseRow, Data, Int)] = try await database.reader { db in
+                try Row.fetchAll(db, sql: """
+                    SELECT m.id, m.content, m.importance, m.is_pinned, m.updated_at,
+                           e.vector_blob, e.dimensions
+                    FROM memory_embeddings e
+                    JOIN memory_entries m ON m.id = e.memory_id
+                    WHERE e.modality = ? AND e.model_identifier = ?
+                      AND e.model_revision = ? AND e.dimensions = ?
+                      AND m.status = 'active'
+                      AND (m.workspace_id IS NULL OR m.workspace_id = ?)
+                      AND (m.conversation_id IS NULL OR m.conversation_id = ?)
+                      AND (m.expires_at IS NULL OR m.expires_at > ?)
+                    LIMIT 2000
+                    """, arguments: [request.modality.rawValue, modelIdentifier, modelRevision,
+                        queryVector.count, request.workspaceID?.uuidString,
+                        request.conversationID?.uuidString, Self.date(Date())])
+                    .compactMap { row in
+                        guard let candidate = Self.hybridRow(row) else { return nil }
+                        let blob: Data = row["vector_blob"]
+                        let dimensions: Int = row["dimensions"]
+                        return (candidate, blob, dimensions)
+                    }
+            }
+            semanticRows = rows.compactMap { row, blob, dimensions in
+                guard let values = Self.floatValues(blob, dimensions: dimensions),
+                      let similarity = MemoryVectorMath.cosineSimilarity(queryVector, values),
+                      similarity > 0 else { return nil }
+                return (row, similarity)
+            }.sorted { $0.1 > $1.1 }
+        }
+
+        var fused: [UUID: MemoryReciprocalRankFusion.Candidate] = [:]
+        for (offset, row) in lexicalRows.enumerated() {
+            fused[row.id] = MemoryReciprocalRankFusion.Candidate(id: row.id,
+                content: row.content, lexicalRank: offset + 1, importance: row.importance,
+                isPinned: row.isPinned, updatedAt: row.updatedAt)
+        }
+        for (offset, pair) in semanticRows.enumerated() {
+            let (row, similarity) = pair
+            var candidate = fused[row.id] ?? MemoryReciprocalRankFusion.Candidate(id: row.id,
+                content: row.content, importance: row.importance, isPinned: row.isPinned,
+                updatedAt: row.updatedAt)
+            candidate.semanticRank = offset + 1
+            candidate.semanticSimilarity = similarity
+            fused[row.id] = candidate
+        }
+        return MemoryReciprocalRankFusion.fuse(Array(fused.values), limit: request.limit)
+    }
+
     public func deleteMemory(id: UUID, syncRevision: Int64) async throws {
         try await database.writer { db in
             try db.execute(sql: "DELETE FROM memory_entries WHERE id = ?", arguments: [id.uuidString])
@@ -364,6 +504,9 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             acceptanceCriteria: Self.decode([PlanCriterion].self, row["criteria_json"]),
             sourceMessageIDs: Self.decode([UUID].self, row["source_message_ids_json"]),
             sourceReferences: Self.decode([PlanSourceReference].self, row["source_conversation_refs_json"]),
+            executionRecommendation: (row["execution_recommendation"] as String?)
+                .flatMap(PlanExecutionRecommendation.init(rawValue:)),
+            recommendationReason: row["recommendation_reason"],
             digest: row["digest"], createdAt: Self.parseDate(row["created_at"]), updatedAt: Self.parseDate(row["updated_at"]))
     }
 
@@ -372,7 +515,11 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
               let status = GoalStatus(rawValue: row["status"]) else { throw FloeError.storageCorrupted("Invalid goal row") }
         return try ConversationGoal(id: id, conversationID: conversationID,
             sourcePlanID: (row["source_plan_id"] as String?).flatMap(UUID.init(uuidString:)), sourcePlanDigest: row["source_plan_digest"],
-            objective: row["objective"], acceptanceCriteria: Self.decode([GoalCriterion].self, row["criteria_json"]),
+            objective: row["objective"],
+            blockingConditions: Self.decode([String].self, row["blocking_conditions_json"]),
+            stoppingConditions: Self.decode([String].self, row["stopping_conditions_json"]),
+            revision: row["revision"],
+            acceptanceCriteria: Self.decode([GoalCriterion].self, row["criteria_json"]),
             steps: Self.decode([GoalStep].self, row["steps_json"]), evidence: Self.decode([GoalEvidence].self, row["evidence_json"]),
             status: status, budgets: Self.decode(GoalBudgets.self, row["budgets_json"]), progress: Self.decode(GoalProgress.self, row["progress_json"]),
             createdAt: Self.parseDate(row["created_at"]), updatedAt: Self.parseDate(row["updated_at"]))
@@ -419,6 +566,21 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         return ConversationHistoryMessage(id: id, role: row["role"], content: row["content"], createdAt: parseDate(row["created_at"]))
     }
 
+    private static func hybridRow(_ row: Row) -> HybridRecallDatabaseRow? {
+        guard let id = UUID(uuidString: row["id"]) else { return nil }
+        return HybridRecallDatabaseRow(id: id, content: row["content"],
+            importance: row["importance"], isPinned: row["is_pinned"],
+            updatedAt: parseDate(row["updated_at"]))
+    }
+
+    private static func floatValues(_ data: Data, dimensions: Int) -> [Float]? {
+        guard dimensions > 0, dimensions <= 4_096,
+              data.count == dimensions * MemoryLayout<Float>.stride else { return nil }
+        return data.withUnsafeBytes { bytes in
+            Array(bytes.bindMemory(to: Float.self))
+        }
+    }
+
     private static func ftsQuery(_ value: String) -> String {
         value.split(whereSeparator: \.isWhitespace).prefix(16)
             .map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }.joined(separator: " AND ")
@@ -442,4 +604,12 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         // in FloeSkills/FloeSecurity.
         String(value.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { ($0 ^ UInt64($1)) &* 1_099_511_628_211 }, radix: 16)
     }
+}
+
+private struct HybridRecallDatabaseRow: Sendable {
+    var id: UUID
+    var content: String
+    var importance: Double
+    var isPinned: Bool
+    var updatedAt: Date
 }

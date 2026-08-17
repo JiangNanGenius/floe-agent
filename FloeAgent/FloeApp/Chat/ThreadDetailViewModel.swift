@@ -63,6 +63,8 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var activeGoal: ConversationGoal?
     @Published private(set) var taskTitle: String = ""
     @Published private(set) var taskPolicy: TaskPolicy
+    @Published private(set) var pendingInputs: [PendingUserInput] = []
+    @Published var runningInputMode: RunningInputMode = .queue
 
     let conversationID: UUID
     let center: ConversationCenter
@@ -117,12 +119,11 @@ final class ThreadDetailViewModel: ObservableObject {
         return center.pendingApprovals.filter { $0.runID == run.id }
     }
 
-    /// Whether the composer may send (provider configured + non-empty draft).
+    /// Whether the composer may send, queue or steer the current draft.
     var canSend: Bool {
         !isConversationMissing
             && center.providerAndModel(modelID: selectedModelID) != nil
             && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !isRunning
     }
 
     var needsProvider: Bool {
@@ -142,6 +143,8 @@ final class ThreadDetailViewModel: ObservableObject {
     func load() async {
         do {
             await center.reload()
+            await center.environment.settingsCenter.loadRunningInputMode()
+            runningInputMode = center.environment.settingsCenter.runningInputMode
             await center.environment.workspaceCenter.reload()
             guard let conversation = try await center.environment.conversationStore
                 .conversation(id: conversationID) else {
@@ -164,6 +167,8 @@ final class ThreadDetailViewModel: ObservableObject {
                 .latestPlan(conversationID: conversationID)
             activeGoal = try await center.environment.intelligenceStore
                 .goals(conversationID: conversationID).first
+            pendingInputs = try await center.environment.runningInputStore
+                .pending(conversationID: conversationID)
             selectedRunID = runs.first?.id
             try await loadAllEvents()
             startSessionUpdates()
@@ -240,8 +245,29 @@ final class ThreadDetailViewModel: ObservableObject {
         guard canSend, let (provider, model) = center.providerAndModel(modelID: selectedModelID) else { return }
         let goal = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let stagedAttachments = attachments
-        draft = ""
         actionError = nil
+        if isRunning, let expectedRunID = selectedRun?.id {
+            do {
+                try await center.submitRunningInput(
+                    content: goal,
+                    in: conversationID,
+                    expectedRunID: expectedRunID,
+                    mode: runningInputMode,
+                    selectedModelID: selectedModelID,
+                    workspaceID: selectedProjectID,
+                    executionMode: agentMode,
+                    attachments: stagedAttachments
+                )
+                draft = ""
+                attachments = []
+                pendingInputs = try await center.environment.runningInputStore
+                    .pending(conversationID: conversationID)
+            } catch {
+                actionError = error.localizedDescription
+            }
+            return
+        }
+        draft = ""
         do {
             let started = try await center.startRun(
                 goal: goal,
@@ -280,6 +306,43 @@ final class ThreadDetailViewModel: ObservableObject {
         await center.cancel(runID: runID)
     }
 
+    func editPendingInput(_ input: PendingUserInput, content: String) async {
+        do {
+            try await center.editPendingInput(id: input.id, content: content)
+            pendingInputs = try await center.environment.runningInputStore.pending(conversationID: conversationID)
+        } catch { actionError = error.localizedDescription }
+    }
+
+    func removePendingInput(_ input: PendingUserInput) async {
+        do {
+            try await center.removePendingInput(id: input.id)
+            pendingInputs = try await center.environment.runningInputStore.pending(conversationID: conversationID)
+        } catch { actionError = error.localizedDescription }
+    }
+
+    func movePendingInput(_ input: PendingUserInput, offset: Int) async {
+        var queued = pendingInputs.filter { $0.status == .queued }
+        guard let source = queued.firstIndex(where: { $0.id == input.id }) else { return }
+        let destination = source + offset
+        guard queued.indices.contains(destination) else { return }
+        queued.swapAt(source, destination)
+        do {
+            try await center.reorderPendingInputs(
+                conversationID: conversationID,
+                orderedIDs: queued.map(\.id)
+            )
+            pendingInputs = try await center.environment.runningInputStore.pending(conversationID: conversationID)
+        } catch { actionError = error.localizedDescription }
+    }
+
+    func promotePendingInput(_ input: PendingUserInput) async {
+        guard let runID = selectedRun?.id, isRunning else { return }
+        do {
+            try await center.promoteToSteer(inputID: input.id, expectedRunID: runID)
+            pendingInputs = try await center.environment.runningInputStore.pending(conversationID: conversationID)
+        } catch { actionError = error.localizedDescription }
+    }
+
     /// Retries the selected run (fresh run, same goal/provider/model).
     func retry() async {
         guard let runID = selectedRun?.id else { return }
@@ -297,8 +360,14 @@ final class ThreadDetailViewModel: ObservableObject {
         await center.resolve(approval, decision: decision)
     }
 
-    func acceptLatestPlan() async {
+    func acceptLatestPlan(as execution: PlanExecutionRecommendation? = nil) async {
         guard let latestPlan else { return }
+        guard !isRunning,
+              let (provider, model) = center.providerAndModel(modelID: selectedModelID) else {
+            actionError = "请先选择可用模型，并等待当前运行结束"
+            return
+        }
+        let selectedExecution = execution ?? latestPlan.executionRecommendation ?? .normal
         let accepted = latestPlan.revised(
             status: .accepted,
             assumptions: latestPlan.assumptions.map {
@@ -309,7 +378,89 @@ final class ThreadDetailViewModel: ObservableObject {
         do {
             try await center.environment.intelligenceStore.savePlanRevision(accepted)
             self.latestPlan = accepted
+            if selectedExecution == .goal {
+                var goal = try GoalFromPlanFactory.makeGoal(from: accepted)
+                goal.status = .active
+                goal.progress.startedAt = Date()
+                try await center.environment.intelligenceStore.saveGoal(goal)
+                activeGoal = goal
+            }
+            let ordered = accepted.sections.sorted { $0.order < $1.order }.map {
+                "## \($0.title)\n\($0.body)"
+            }.joined(separator: "\n\n")
+            let criteria = accepted.acceptanceCriteria.map {
+                "- \($0.text)（验证：\($0.verification)）"
+            }.joined(separator: "\n")
+            let prompt = """
+            Execute the accepted plan below. Preserve its ordering, verify each criterion with inspectable evidence, and continue until the safe in-scope work is complete.
+
+            # \(accepted.title)
+            \(accepted.summary)
+
+            \(ordered)
+
+            Acceptance criteria:
+            \(criteria)
+            """
+            let started = try await center.startRun(
+                goal: prompt,
+                in: conversationID,
+                provider: provider,
+                model: model,
+                workspaceID: selectedProjectID,
+                executionMode: selectedExecution == .goal ? .goal : .agent
+            )
+            selectedRunID = started.runID
+            await load()
         } catch { actionError = error.localizedDescription }
+    }
+
+    func createGoal(
+        objective: String,
+        criteria: [String],
+        blockingConditions: [String],
+        stoppingConditions: [String]
+    ) async {
+        let cleanObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanObjective.isEmpty else { return }
+        guard !isRunning,
+              let (provider, model) = center.providerAndModel(modelID: selectedModelID) else {
+            actionError = "请先选择可用模型，并等待当前运行结束"
+            return
+        }
+        let cleanCriteria = criteria.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let goalCriteria = cleanCriteria.isEmpty
+            ? ["目标已通过可检查证据验证"]
+            : cleanCriteria
+        let goal = ConversationGoal(
+            conversationID: conversationID,
+            objective: cleanObjective,
+            blockingConditions: blockingConditions.filter { !$0.isEmpty },
+            stoppingConditions: stoppingConditions.filter { !$0.isEmpty },
+            acceptanceCriteria: goalCriteria.map { GoalCriterion(text: $0) },
+            steps: [GoalStep(title: "推进目标", status: .inProgress, order: 0)],
+            status: .active,
+            progress: GoalProgress(startedAt: Date())
+        )
+        do {
+            try await center.environment.intelligenceStore.saveGoal(goal)
+            activeGoal = goal
+            let blockers = blockingConditions.filter { !$0.isEmpty }.map { "- \($0)" }.joined(separator: "\n")
+            let stops = stoppingConditions.filter { !$0.isEmpty }.map { "- \($0)" }.joined(separator: "\n")
+            let started = try await center.startRun(
+                goal: "Goal: \(cleanObjective)\nBlocking conditions:\n\(blockers)\nStopping conditions:\n\(stops)",
+                in: conversationID,
+                provider: provider,
+                model: model,
+                workspaceID: selectedProjectID,
+                executionMode: .goal
+            )
+            selectedRunID = started.runID
+            await load()
+        } catch {
+            actionError = error.localizedDescription
+        }
     }
 
     func confirmGoalCompletion() async {
@@ -327,6 +478,27 @@ final class ThreadDetailViewModel: ObservableObject {
                 copy.evidenceIDs.append(evidence.id)
             }
             return copy
+        }
+        let confirmedIDs = Set(
+            goal.acceptanceCriteria
+                .filter(\.requiresUserConfirmation)
+                .map(\.id)
+        )
+        let proposal = GoalCompletionProposal(
+            goalID: goal.id,
+            criterionEvidence: Dictionary(uniqueKeysWithValues: goal.acceptanceCriteria.map {
+                ($0.id, $0.evidenceIDs)
+            }),
+            reviewModelApproved: true
+        )
+        let verdict = GoalCompletionGate.evaluate(
+            goal: goal,
+            proposal: proposal,
+            userConfirmedCriterionIDs: confirmedIDs
+        )
+        guard verdict.mayComplete else {
+            actionError = "仍有步骤、验收证据或检查项未完成，Goal 不会提前结束"
+            return
         }
         goal.status = .completed
         goal.updatedAt = Date()
@@ -356,6 +528,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 self.latestPlan = snapshot.latestPlan
                 self.activeGoal = snapshot.activeGoal
                 self.taskPolicy = snapshot.taskPolicy
+                self.pendingInputs = snapshot.pendingInputs
                 if previousRunID != self.selectedRunID {
                     self.startLiveUpdates()
                 }
@@ -410,6 +583,12 @@ final class ThreadDetailViewModel: ObservableObject {
                     reasoningTarget += delta.text
                     self.reasoningAnimator.update(target: reasoningTarget)
                     self.hasProviderActivity = true
+                case .userInputConsumed:
+                    answerTarget = ""
+                    reasoningTarget = ""
+                    self.animator.reset()
+                    self.reasoningAnimator.reset()
+                    self.hasProviderActivity = false
                 case .stateChanged(let state):
                     self.liveStateName = state.rawValue
                     self.isRunning = ![.completed, .cancelled, .failed, .interrupted].contains(state)

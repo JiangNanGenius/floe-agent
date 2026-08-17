@@ -22,6 +22,48 @@ struct HarnessPlanningTests {
         #expect(revised.isDecisionComplete)
     }
 
+    @Test("structured plan submission is complete and carries advisory Goal conversion")
+    func structuredPlanSubmission() {
+        let submission = PlanSubmission(
+            title: "Ship feature",
+            summary: "Implement and verify the feature",
+            sections: [.init(title: "Implement", body: "Change the runtime")],
+            assumptions: ["The current API remains available"],
+            risks: [.init(text: "Regression", mitigation: "Run tests", severity: .medium)],
+            acceptanceCriteria: [.init(text: "Build passes", verification: "Run swift test")],
+            executionRecommendation: .goal,
+            recommendationReason: "Requires repeated verification cycles"
+        )
+        #expect(submission.validationErrors.isEmpty)
+        let draft = submission.draft(conversationID: UUID())
+        #expect(draft.isDecisionComplete)
+        #expect(draft.executionRecommendation == .goal)
+        #expect((try? GoalFromPlanFactory.makeGoal(from: draft)) != nil)
+    }
+
+    @Test("mode prompt replaces planning rules and preserves Goal boundaries")
+    func layeredPrompt() {
+        let goal = ConversationGoal(
+            conversationID: UUID(),
+            objective: "Finish migration",
+            blockingConditions: ["Production credentials are unavailable"],
+            stoppingConditions: ["All migration tests pass"],
+            acceptanceCriteria: [GoalCriterion(text: "Tests pass")],
+            steps: [GoalStep(title: "Migrate", order: 0)]
+        )
+        let prompt = AgentPromptComposer.compose(
+            mode: .goal,
+            runtimeContext: "Available tools: none",
+            soul: "Be concise",
+            userProfile: "Prefers evidence",
+            activeGoal: goal
+        )
+        #expect(prompt.contains("Production credentials are unavailable"))
+        #expect(prompt.contains("All migration tests pass"))
+        #expect(prompt.contains("SOUL.md"))
+        #expect(!prompt.contains("call the native `plan.submit`"))
+    }
+
     @Test("Plan policy exposes and executes read-only tools only")
     func planToolPolicy() async throws {
         let read = ToolCatalog.Descriptor(

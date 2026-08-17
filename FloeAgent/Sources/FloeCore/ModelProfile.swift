@@ -15,6 +15,17 @@ public struct ModelCapabilities: OptionSet, Sendable, Codable, Hashable {
     public static let imageGeneration = ModelCapabilities(rawValue: 1 << 3)
     public static let imageEditing    = ModelCapabilities(rawValue: 1 << 4)
     public static let approval        = ModelCapabilities(rawValue: 1 << 5)
+
+    /// Every wire protocol currently implemented by Floe has a native
+    /// structured function/tool-call contract. Manual entries therefore start
+    /// tool-capable; users may still disable the flag in the model editor for
+    /// endpoints or models that do not implement that part of the protocol.
+    public static func defaultTextModel(for wireProtocol: ModelProtocol) -> ModelCapabilities {
+        switch wireProtocol {
+        case .openAIResponses, .openAIChatCompletions, .anthropicMessages:
+            return [.text, .tools]
+        }
+    }
 }
 
 /// Hard limits enforced client-side before sending a request.
