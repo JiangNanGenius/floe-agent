@@ -60,6 +60,11 @@ private struct EvaluationResult: Sendable {
 /// output, guaranteed-timely return.
 public struct JavaScriptExecutionService: ScriptExecutionService {
 
+    private static let deadlineQueue = DispatchQueue(
+        label: "floe.jsexec.deadline",
+        qos: .userInitiated
+    )
+
     /// A fresh serial queue per `run` call. A runaway script (while(true){})
     /// occupies only that run's queue thread; because the queue is created
     /// per execution rather than shared, a timed-out/abandoned run can
@@ -84,50 +89,59 @@ public struct JavaScriptExecutionService: ScriptExecutionService {
 
         let console = BoundedConsole(maxBytes: request.maxOutputBytes)
         let errConsole = BoundedConsole(maxBytes: request.maxOutputBytes)
-        let resultBox = LockedBox<EvaluationResult?>(nil)
-        let done = LockedBox(false)
-
-        // Submit the evaluation on a fresh serial queue. A fresh JSContext
-        // per run guarantees isolation between executions.
         let queue = makeQueue()
-        queue.async {
-            let result = Self.evaluate(script: request.script, inputJSON: request.inputJSON, console: console, errConsole: errConsole)
-            resultBox.withLock { $0 = result }
-            done.withLock { $0 = true }
-        }
 
-        // Race the evaluation against timeout / cancellation. The caller
-        // wins deterministically; an abandoned evaluation is left on the
-        // serial queue (it cannot block a future run's outcome because a
-        // new queue is created per service instance only once — see note in
-        // ARCHITECTURE §1.2: the leaked thread is the accepted boundary).
+        // Race the evaluation against an independent GCD deadline. Using a
+        // dispatch timer keeps timeout/cancellation prompt even when Swift's
+        // cooperative executor is saturated by unrelated concurrent tests.
         let timeout = max(0.05, request.timeout)
-        while true {
-            if done.withLock({ $0 }) {
-                let evaluation = resultBox.withLock { $0 }
+        return await withCheckedContinuation { continuation in
+            let race = ExecutionRace(continuation: continuation)
+
+            // Submit the evaluation on a fresh serial queue. A fresh JSContext
+            // per run guarantees isolation between executions.
+            queue.async {
+                let evaluation = Self.evaluate(
+                    script: request.script,
+                    inputJSON: request.inputJSON,
+                    console: console,
+                    errConsole: errConsole
+                )
                 let durationMs = Int(Date().timeIntervalSince(started) * 1000)
-                if let exception = evaluation?.exceptionMessage {
-                    return .jsException(message: exception, stdout: console.text)
+                if let exception = evaluation.exceptionMessage {
+                    race.finish(.jsException(message: exception, stdout: console.text))
+                } else {
+                    race.finish(.ok(
+                        resultJSON: evaluation.resultJSON,
+                        stdout: console.text,
+                        stderr: errConsole.text,
+                        truncated: console.isTruncated,
+                        stderrTruncated: errConsole.isTruncated,
+                        durationMs: durationMs
+                    ))
                 }
-                return .ok(
-                    resultJSON: evaluation?.resultJSON,
-                    stdout: console.text,
-                    stderr: errConsole.text,
-                    truncated: console.isTruncated,
-                    stderrTruncated: errConsole.isTruncated,
-                    durationMs: durationMs
-                )
             }
-            if cancellation?.isCancelled == true {
-                return .cancelled
+
+            let timeoutNanoseconds = Int(timeout * 1_000_000_000)
+            let deadline = DispatchTime.now() + .nanoseconds(timeoutNanoseconds)
+            let timer = DispatchSource.makeTimerSource(queue: Self.deadlineQueue)
+            timer.schedule(
+                deadline: .now() + .milliseconds(10),
+                repeating: .milliseconds(10),
+                leeway: .milliseconds(2)
+            )
+            timer.setEventHandler {
+                if cancellation?.isCancelled == true {
+                    race.finish(.cancelled)
+                } else if DispatchTime.now() >= deadline {
+                    race.finish(.timedOut(
+                        afterMs: Int(timeout * 1000),
+                        partialStdout: console.text
+                    ))
+                }
             }
-            if Date().timeIntervalSince(started) >= timeout {
-                return .timedOut(
-                    afterMs: Int(timeout * 1000),
-                    partialStdout: console.text
-                )
-            }
-            try? await Task.sleep(for: .milliseconds(10))
+            timer.resume()
+            race.install(timer: timer)
         }
     }
 
@@ -203,19 +217,43 @@ public struct JavaScriptExecutionService: ScriptExecutionService {
     }
 }
 
-/// Minimal lock box for cross-thread handoff (execution queue → async loop).
-private final class LockedBox<Value>: @unchecked Sendable {
-    private var value: Value
+/// Exactly-once handoff for the evaluation/deadline race. The timer is always
+/// resumed before installation so cancelling an already-finished race is safe.
+private final class ExecutionRace: @unchecked Sendable {
     private let lock = NSLock()
+    private var continuation: CheckedContinuation<ScriptExecutionOutcome, Never>?
+    private var timer: DispatchSourceTimer?
+    private var isFinished = false
 
-    init(_ value: Value) {
-        self.value = value
+    init(continuation: CheckedContinuation<ScriptExecutionOutcome, Never>) {
+        self.continuation = continuation
     }
 
-    func withLock<T>(_ body: (inout Value) -> T) -> T {
+    func install(timer: DispatchSourceTimer) {
         lock.lock()
-        defer { lock.unlock() }
-        return body(&value)
+        if isFinished {
+            lock.unlock()
+            timer.cancel()
+        } else {
+            self.timer = timer
+            lock.unlock()
+        }
+    }
+
+    func finish(_ outcome: ScriptExecutionOutcome) {
+        lock.lock()
+        guard !isFinished, let continuation else {
+            lock.unlock()
+            return
+        }
+        isFinished = true
+        self.continuation = nil
+        let timer = self.timer
+        self.timer = nil
+        lock.unlock()
+
+        timer?.cancel()
+        continuation.resume(returning: outcome)
     }
 }
 
