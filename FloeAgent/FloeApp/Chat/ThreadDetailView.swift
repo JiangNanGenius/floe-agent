@@ -151,16 +151,13 @@ struct ThreadDetailView: View {
                 }
                 .padding()
             }
-            .onChange(of: viewModel.timeline.count) { _, _ in
-                guard let last = viewModel.timeline.last else { return }
-                withAnimation(FloeTheme.motionAnimation(reduceMotion: reduceMotion)) {
-                    proxy.scrollTo(last.id, anchor: .bottom)
-                }
-            }
             .onChange(of: viewModel.liveStreamedText.count) { _, _ in
                 // Follow the streaming tail smoothly without yanking the
                 // scroll position on every cluster — only while the tail
-                // is the live bottom of the thread.
+                // is the live bottom of the thread. Persisted-event growth
+                // deliberately does NOT auto-scroll, so the user can review
+                // reasoning, tool calls, and earlier output mid-thread
+                // without being dragged back to the bottom.
                 guard viewModel.showsLiveTail,
                       !viewModel.liveStreamedText.isEmpty else { return }
                 proxy.scrollTo(ThreadTimelineItem.liveAssistantTail.id, anchor: .bottom)
@@ -228,12 +225,28 @@ struct ThreadDetailView: View {
 
     // MARK: - State toolbar (status + Stop/Retry + inspector)
 
+    /// Plain-text export of the conversation (title + user/assistant turns).
+    private var exportText: String? {
+        let messages = viewModel.messages
+        guard !messages.isEmpty else { return nil }
+        let title = viewModel.taskTitle.isEmpty ? "对话" : viewModel.taskTitle
+        let body = messages
+            .map { "\($0.role == "user" ? "用户" : "助手"): \($0.content)" }
+            .joined(separator: "\n\n")
+        return "\(title)\n\n\(body)"
+    }
+
     @ToolbarContentBuilder
     private var stateToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Button("直接设置 Goal", systemImage: "target") {
                     showingGoalBuilder = true
+                }
+                if let exportText {
+                    ShareLink(item: exportText) {
+                        Label("导出对话", systemImage: "square.and.arrow.up")
+                    }
                 }
                 Divider()
                 inspectorButton("变更", icon: "arrow.triangle.2.circlepath", content: .changes)

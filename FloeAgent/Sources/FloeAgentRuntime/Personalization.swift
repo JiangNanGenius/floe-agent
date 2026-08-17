@@ -388,7 +388,17 @@ public actor SQLitePersonalizationStore: PersonalizationDocumentStore {
 
     public func saveCandidate(_ record: DurableMemoryCandidate) async throws {
         let (scope, workspaceID, conversationID) = Self.scope(record.candidate.scope)
-        let evidence = try Self.json(record.candidate.evidence)
+        // Candidate rows survive even when rejected, so never persist raw
+        // conversation excerpts here. Message identity plus a digest is
+        // enough for provenance and cannot leak a credential into SQLite.
+        let redactedEvidence = record.candidate.evidence.map {
+            MemoryEvidenceReference(
+                id: $0.id,
+                messageID: $0.messageID,
+                excerpt: "sha256:\(MemoryContentDigest.make($0.excerpt))"
+            )
+        }
+        let evidence = try Self.json(redactedEvidence)
         let conflicts = try Self.json(record.candidate.conflictsWithEntryIDs)
         try await database.writer { db in
             try db.execute(sql: """
@@ -717,6 +727,18 @@ public actor MemoryCandidatePipeline {
     @discardableResult
     public func submit(_ candidate: MemoryCandidate) async throws -> DurableMemoryCandidate {
         let modelDisposition = await reviewer?.review(candidate)
+        return try await submit(candidate, modelDisposition: modelDisposition)
+    }
+
+    /// Submits a candidate with an explicit model disposition — used by the
+    /// memory "dream" pass, where the extraction model already produced a
+    /// keep/park/drop verdict alongside the candidate. The local policy still
+    /// applies its hard guardrails (secrets, personal data, thresholds).
+    @discardableResult
+    public func submit(
+        _ candidate: MemoryCandidate,
+        modelDisposition: MemoryReviewDisposition?
+    ) async throws -> DurableMemoryCandidate {
         let disposition = policy.disposition(for: candidate, modelDisposition: modelDisposition)
         let record: DurableMemoryCandidate
         switch disposition {

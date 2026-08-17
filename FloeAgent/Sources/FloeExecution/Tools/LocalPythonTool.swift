@@ -30,7 +30,7 @@ public struct LocalPythonTool: AgentTool {
 
     public static let name = "exec.localPython"
     public static let toolDescription =
-        "Execute Python 3 in Floe's on-device app sandbox. No pip or runtime package downloads are available. stdout/stderr share a strict size cap; the cooperative bytecode deadline is at most 30 seconds."
+        "Execute the app-bundled Python 3.13 standard library in Floe's on-device sandbox. pip and runtime package downloads are unavailable, and downloaded or model-generated modules are never added to sys.path. For quick pure computation prefer exec.javascript, and to run against a configured SSH host use exec.remotePython. stdout/stderr share a strict size cap; the cooperative bytecode deadline is at most 30 seconds."
     public static let parametersJSON = #"""
     {
       "type": "object",

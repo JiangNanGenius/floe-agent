@@ -222,6 +222,9 @@ public actor ConversationRunService {
         forwarder.onSteerConsumed = { [weak self] input in
             await self?.handleConsumedSteer(input)
         }
+        forwarder.onCompaction = { [weak self] record in
+            await self?.handleCompaction(record)
+        }
     }
 
     /// Current live snapshot for the UI.
@@ -395,6 +398,10 @@ public actor ConversationRunService {
         )))
     }
 
+    private func handleCompaction(_ record: ContextCompactionRecord) async {
+        eventChannel.yield(.contextCompacted(record))
+    }
+
     private func handleTransition(_ state: AgentState) async {
         latestState = state
         eventChannel.yield(.stateChanged(Self.harnessState(state)))
@@ -495,6 +502,9 @@ public actor ConversationRunService {
                     String(decoding: call.argumentsJSON, as: UTF8.self)
                 )
                 try? await intelligenceStore?.savePlanRevision(draft)
+                eventChannel.yield(.planChanged(PlanSnapshot(
+                    id: draft.id, revision: draft.revision, status: draft.status
+                )))
             }
             eventChannel.yield(.toolLifecycle(.requested(call)))
             toolNames[call.id] = call.toolName
@@ -740,6 +750,9 @@ public actor ConversationRunService {
             )
         }
         try? await intelligenceStore.savePlanRevision(plan)
+        eventChannel.yield(.planChanged(PlanSnapshot(
+            id: plan.id, revision: plan.revision, status: plan.status
+        )))
     }
 
     private func ensureDurableGoal(objective: String) async {
@@ -762,6 +775,11 @@ public actor ConversationRunService {
             progress: GoalProgress(startedAt: Date())
         )
         try? await intelligenceStore.saveGoal(goal)
+        eventChannel.yield(.goalChanged(GoalSnapshot(
+            id: goal.id, status: goal.status,
+            completedSteps: goal.steps.filter { $0.status == .completed }.count,
+            totalSteps: goal.steps.count
+        )))
         try? await runStore.assignGoal(runID: runID, goalID: goal.id)
     }
 
@@ -776,6 +794,11 @@ public actor ConversationRunService {
         goal.progress.lastCheckpointAt = Date()
         goal.updatedAt = Date()
         try? await intelligenceStore.saveGoal(goal)
+        eventChannel.yield(.goalChanged(GoalSnapshot(
+            id: goal.id, status: goal.status,
+            completedSteps: goal.steps.filter { $0.status == .completed }.count,
+            totalSteps: goal.steps.count
+        )))
     }
 
     private func isTerminal(_ state: AgentState) -> Bool {
@@ -800,6 +823,7 @@ public actor ConversationRunService {
         case .waitingApproval: .waitingApproval
         case .executingTool: .executingTool
         case .compacting: .compacting
+        case .verifying: .verifying
         case .checkpointed: .interrupted
         case .paused: .paused
         case .cancelling: .cancelled
@@ -932,6 +956,7 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
     var onEvent: (@Sendable (AgentEvent) async -> Void)?
     var onAssistantStep: (@Sendable (String) async -> Void)?
     var onSteerConsumed: (@Sendable (RuntimeSteerInput) async -> Void)?
+    var onCompaction: (@Sendable (ContextCompactionRecord) async -> Void)?
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {
         await onTransition?(state)
@@ -947,5 +972,9 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didConsumeSteer input: RuntimeSteerInput) async {
         await onSteerConsumed?(input)
+    }
+
+    func agentRuntime(_ runtime: FloeAgentRuntime, didCompact record: ContextCompactionRecord) async {
+        await onCompaction?(record)
     }
 }

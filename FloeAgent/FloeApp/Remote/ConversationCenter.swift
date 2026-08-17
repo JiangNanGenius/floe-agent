@@ -379,6 +379,16 @@ final class ConversationCenter: ObservableObject {
             allowedWorkspacePaths: taskPolicy.filePaths,
             toolsEnabled: executionMode.toolsEnabled
         )
+        await environment.subagentRunnerRegistry.register(
+            SubagentRunner(
+                provider: provider,
+                model: model,
+                adapter: adapterFactory.adapter(for: provider),
+                credentials: credentials,
+                executor: CatalogToolExecutor()
+            ),
+            for: runID
+        )
         return ConversationRunService(
             configuration: configuration,
             adapter: adapterFactory.adapter(for: provider),
@@ -419,7 +429,7 @@ final class ConversationCenter: ObservableObject {
         case .automatic:
             guard let modelID = modelPreferences.approvalModelID,
                   let model = modelsByProvider.values.flatMap({ $0 }).first(where: {
-                      $0.id == modelID && $0.isEnabled && $0.capabilities.contains(.approval)
+                      $0.id == modelID && $0.isEnabled && $0.capabilities.contains(.text)
                   }),
                   let provider = providers.first(where: { $0.id == model.providerID }) else {
                 return AutomaticApprovalPolicy()
@@ -964,7 +974,10 @@ final class ConversationCenter: ObservableObject {
                     )
                 }
                 if case .success = outcome {
-                    await self?.recordPersonalizationActivity(completedRuns: 1)
+                    await self?.recordPersonalizationActivity(
+                        completedRuns: 1,
+                        conversationID: service.conversationID
+                    )
                 }
                 if case .success = outcome, let goalContinuation {
                     await self?.evaluateAndContinueGoal(
@@ -992,6 +1005,7 @@ final class ConversationCenter: ObservableObject {
             if terminalState == "completed" || terminalState == "failed" {
                 await self?.launchNextQueuedInput(conversationID: service.conversationID)
             }
+            await self?.environment.subagentRunnerRegistry.remove(runID: runID)
             return outcome
         }
         runTasks[runID] = result
@@ -1009,7 +1023,8 @@ final class ConversationCenter: ObservableObject {
     private func recordPersonalizationActivity(
         completedRuns: Int = 0,
         userMessages: Int = 0,
-        workspaceID: UUID? = nil
+        workspaceID: UUID? = nil,
+        conversationID: UUID? = nil
     ) async {
         try? await environment.personalizationService.recordActivity(
             completedRuns: completedRuns,
@@ -1021,6 +1036,21 @@ final class ConversationCenter: ObservableObject {
                 kind: kind,
                 workspaceID: workspaceID
             )
+        }
+        // Post-run memory "dream": count the run, then distill durable
+        // candidates from the just-completed exchange (cadence-gated, and
+        // best-effort only — never breaks the run's completion path).
+        if completedRuns > 0 {
+            environment.memoryDreamService.noteRunCompleted()
+        }
+        if let conversationID, completedRuns > 0 {
+            await environment.memoryDreamService.dream(
+                conversationID: conversationID,
+                workspaceID: workspaceID
+            )
+            // Hermes-style self-evolution: distill a reusable skill when the
+            // cadence is due (best-effort).
+            await environment.skillDreamService.dream(conversationID: conversationID)
         }
     }
 
@@ -1591,7 +1621,7 @@ final class ConversationCenter: ObservableObject {
     var approvalModels: [ModelProfile] {
         let enabledProviderIDs = Set(providers.map(\.id))
         return modelsByProvider.values.flatMap { $0 }
-            .filter { $0.isEnabled && $0.capabilities.contains(.approval)
+            .filter { $0.isEnabled && $0.capabilities.contains(.text)
                 && enabledProviderIDs.contains($0.providerID) }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }

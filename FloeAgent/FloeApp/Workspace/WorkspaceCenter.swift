@@ -346,6 +346,38 @@ final class WorkspaceCenter: ObservableObject {
         fileService?.diff(original: original, modified: modified, label: label) ?? ""
     }
 
+    /// Creates a directory in the open workspace.
+    func createDirectory(relativePath: String) throws {
+        guard let service = fileService else {
+            throw FloeError.validationFailed("No workspace is open")
+        }
+        try service.createDirectory(relativePath)
+    }
+
+    /// Deletes a file or directory (recursive when requested).
+    func delete(relativePath: String, recursive: Bool = false) throws {
+        guard let service = fileService else {
+            throw FloeError.validationFailed("No workspace is open")
+        }
+        try service.delete(relativePath, recursive: recursive)
+    }
+
+    /// Moves (or renames) a file or directory.
+    func move(from: String, to: String) throws {
+        guard let service = fileService else {
+            throw FloeError.validationFailed("No workspace is open")
+        }
+        try service.move(from, to: to)
+    }
+
+    /// Copies a file or directory.
+    func copy(from: String, to: String) throws {
+        guard let service = fileService else {
+            throw FloeError.validationFailed("No workspace is open")
+        }
+        try service.copy(from, to: to)
+    }
+
     // MARK: - Conversation context
 
     /// Attaches a workspace file to a conversation's context: persists an

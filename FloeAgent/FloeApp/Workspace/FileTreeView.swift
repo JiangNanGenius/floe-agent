@@ -1,10 +1,11 @@
-// FloeApp — Lazy directory tree with search.
+// FloeApp — Lazy directory tree with search and file operations.
 //
 // SPDX-License-Identifier: MPL-2.0
 //
 // OutlineGroup-based tree over FileTreeViewModel. Typing in the search
 // field switches to a flat hit list (path + line number + context).
-// Selecting a file opens the preview through FileInspectorView.
+// Selecting a file opens the preview through FileInspectorView. Each row
+// exposes a context menu for creating a folder, renaming, and deleting.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -16,11 +17,59 @@ struct FileTreeView: View {
     /// Called when the user taps a file (tree mode) or a hit (search mode).
     let onSelectFile: (String) -> Void
 
+    @State private var showingNewFolder = false
+    @State private var newFolderParent = ""
+    @State private var newFolderName = ""
+    @State private var showingRename = false
+    @State private var renameTarget: FileTreeNode?
+    @State private var renameName = ""
+    @State private var pendingDelete: FileTreeNode?
+    @State private var operationError: String?
+
     var body: some View {
         VStack(spacing: 0) {
             searchField
             Divider()
             content
+        }
+        .alert("新建文件夹", isPresented: $showingNewFolder) {
+            TextField("文件夹名称", text: $newFolderName)
+            Button("创建") { Task { await createFolder() } }
+            Button("取消", role: .cancel) {}
+        }
+        .alert("重命名", isPresented: $showingRename) {
+            TextField("新名称", text: $renameName)
+            Button("确定") { Task { await rename() } }
+            Button("取消", role: .cancel) {}
+        }
+        .alert(
+            "确认删除？",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            presenting: pendingDelete
+        ) { node in
+            Button("删除", role: .destructive) {
+                pendingDelete = nil
+                Task { await deleteNode(node) }
+            }
+            Button("取消", role: .cancel) { pendingDelete = nil }
+        } message: { node in
+            Text(node.isDirectory
+                ? "将递归删除“\(node.name)”及其中的全部内容，此操作不可撤销。"
+                : "将删除“\(node.name)”，此操作不可撤销。")
+        }
+        .alert(
+            "操作失败",
+            isPresented: Binding(
+                get: { operationError != nil },
+                set: { if !$0 { operationError = nil } }
+            )
+        ) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(operationError ?? "")
         }
     }
 
@@ -69,9 +118,64 @@ struct FileTreeView: View {
                         onSelectFile(node.relativePath)
                     }
                 }
+                .contextMenu { rowMenu(for: node) }
             }
         }
         .listStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func rowMenu(for node: FileTreeNode) -> some View {
+        if node.isDirectory {
+            Button {
+                newFolderParent = node.relativePath
+                newFolderName = ""
+                showingNewFolder = true
+            } label: {
+                Label("新建文件夹", systemImage: "folder.badge.plus")
+            }
+        }
+        Button {
+            renameTarget = node
+            renameName = node.name
+            showingRename = true
+        } label: {
+            Label("重命名", systemImage: "pencil")
+        }
+        Button(role: .destructive) {
+            pendingDelete = node
+        } label: {
+            Label("删除", systemImage: "trash")
+        }
+    }
+
+    private func createFolder() async {
+        let name = newFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        do {
+            try await viewModel.createDirectory(parent: newFolderParent, name: name)
+        } catch {
+            operationError = error.localizedDescription
+        }
+    }
+
+    private func rename() async {
+        guard let target = renameTarget else { return }
+        let name = renameName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        do {
+            try await viewModel.rename(target, to: name)
+        } catch {
+            operationError = error.localizedDescription
+        }
+    }
+
+    private func deleteNode(_ node: FileTreeNode) async {
+        do {
+            try await viewModel.delete(node, recursive: true)
+        } catch {
+            operationError = error.localizedDescription
+        }
     }
 
     private var searchResults: some View {

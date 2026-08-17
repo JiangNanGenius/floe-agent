@@ -31,11 +31,15 @@ public protocol AgentEventSink: Sendable {
     /// Called after the steer is durably part of the runtime's message list,
     /// immediately before the next provider request is constructed.
     func agentRuntime(_ runtime: FloeAgentRuntime, didConsumeSteer input: RuntimeSteerInput) async
+    /// Called after the context engine compacts the conversation, so the UI
+    /// can reflect the token reduction.
+    func agentRuntime(_ runtime: FloeAgentRuntime, didCompact record: ContextCompactionRecord) async
 }
 
 public extension AgentEventSink {
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompleteAssistantStep text: String) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didConsumeSteer input: RuntimeSteerInput) async {}
+    func agentRuntime(_ runtime: FloeAgentRuntime, didCompact record: ContextCompactionRecord) async {}
 }
 
 /// Input accepted for delivery at a safe model/tool step boundary.
@@ -191,6 +195,10 @@ public actor FloeAgentRuntime {
         /// runtime uses the shared Harness ledger and finishes with a
         /// tool-free summary when this value is exhausted.
         public var maxToolSteps: Int
+        /// When enabled, a completed answer gets one tool-free self-critique
+        /// pass (verifying) before the run terminates, letting the model
+        /// correct omissions or tighten its final reply.
+        public var verifyFinalAnswer: Bool
 
         public init(
             conversationID: UUID = UUID(),
@@ -203,7 +211,8 @@ public actor FloeAgentRuntime {
             allowedWorkspacePaths: [String] = [],
             toolsEnabled: Bool = true,
             pauseTimeout: TimeInterval = 300,
-            maxToolSteps: Int = 90
+            maxToolSteps: Int = 90,
+            verifyFinalAnswer: Bool = false
         ) {
             self.conversationID = conversationID
             self.provider = provider
@@ -216,6 +225,7 @@ public actor FloeAgentRuntime {
             self.toolsEnabled = toolsEnabled
             self.pauseTimeout = pauseTimeout
             self.maxToolSteps = maxToolSteps
+            self.verifyFinalAnswer = verifyFinalAnswer
         }
     }
 
@@ -240,6 +250,9 @@ public actor FloeAgentRuntime {
     private var messages: [ConversationMessage] = []
     private var pendingToolCalls: [ToolCall] = []
     private var pendingToolResults: [ToolResult] = []
+    /// Tool calls collected from the current model response, executed as a
+    /// batch on the provider's completion event.
+    private var pendingToolBatch: [ToolCall] = []
     private var grants: [ApprovalGrant] = []
     private var executedIdempotencyKeys: Set<String> = []
     private var totalInputTokens = 0
@@ -255,6 +268,8 @@ public actor FloeAgentRuntime {
     private var loopGuard = ToolLoopGuard()
     private var forcedStopReason: AgentEvent.StopReason?
     private var isFinalizingWithoutTools = false
+    /// Guards the single self-critique pass so verification runs once.
+    private var didVerifyFinalAnswer = false
     /// Set by tool/compaction handling to request another provider turn.
     /// The outer model loop consumes this flag; handlers never recursively
     /// enter `runModelTurn`, which keeps one owner for state transitions.
@@ -555,7 +570,7 @@ public actor FloeAgentRuntime {
             pendingSteers.append(normalized)
             acceptedSteerIDs.insert(input.id)
             return .accepted
-        case .idle, .cancelling, .checkpointed, .completed, .failed:
+        case .idle, .cancelling, .checkpointed, .verifying, .completed, .failed:
             return .rejected(reason: "The target run is no longer accepting guidance")
         }
     }
@@ -614,6 +629,7 @@ public actor FloeAgentRuntime {
                     record: compaction,
                     summary: summary
                 )
+                await sink?.agentRuntime(self, didCompact: compaction)
             }
         }
         let streamInfo = AgentState.StreamingInfo(modelRemoteID: configuration.model.remoteModelID)
@@ -719,7 +735,13 @@ public actor FloeAgentRuntime {
                 let finalState = await self.state
                 if case .streamingModel = finalState,
                    !(await self.modelTurnContinuationRequested) {
-                    await self.finishOrSteer(stopReason: .endTurn)
+                    let batch = await self.drainPendingToolBatch()
+                    if !batch.isEmpty {
+                        await self.executeToolBatch(batch)
+                        // The batch's resumeStream requested the next turn.
+                    } else {
+                        await self.finishOrSteer(stopReason: .endTurn)
+                    }
                 }
             } catch is CancellationError {
                 // cancel() owns the terminal transition.
@@ -775,6 +797,13 @@ public actor FloeAgentRuntime {
         // Suppressing the terminal event here is essential: persistence must
         // not close the run before the steer is inserted.
         if case .completed(let completion) = event {
+            if !pendingToolBatch.isEmpty {
+                let batch = pendingToolBatch
+                pendingToolBatch = []
+                await executeToolBatch(batch)
+                // The batch's resumeStream already requested the next turn.
+                return
+            }
             await finishOrSteer(stopReason: forcedStopReason ?? completion.stopReason)
             return
         }
@@ -825,8 +854,11 @@ public actor FloeAgentRuntime {
                 await finishOrSteer(stopReason: forcedStopReason ?? .budgetLimited)
                 return
             }
+            // Collect into the response batch; execution happens on the
+            // provider's completion event so read-only calls can run in
+            // parallel and writes act as barriers.
             let scoped = call.withIDContext(runID: runID)
-            await handleToolRequest(scoped)
+            pendingToolBatch.append(scoped)
 
         case .toolResult:
             break // Providers never emit tool results; runtime owns them.
@@ -882,6 +914,13 @@ public actor FloeAgentRuntime {
     /// completion and transitions terminally.
     private func finishOrSteer(stopReason: AgentEvent.StopReason) async {
         guard !pendingSteers.isEmpty else {
+            if stopReason == .endTurn,
+               configuration.verifyFinalAnswer,
+               !didVerifyFinalAnswer,
+               !streamText.isEmpty {
+                await beginFinalAnswerVerification(stopReason: stopReason)
+                return
+            }
             await emit(.completed(.init(stopReason: stopReason)))
             await completeRun(stopReason: stopReason)
             return
@@ -894,81 +933,50 @@ public actor FloeAgentRuntime {
         modelTurnContinuationRequested = true
     }
 
-    /// streamingModel → executingTool | waitingApproval → streamingModel.
-    private func handleToolRequest(_ call: ToolCall) async {
+    /// One tool-free self-critique pass before completion: the model reviews
+    /// its own answer and may correct it. The draft is sealed first so the
+    /// verification turn's output is appended as the final confirmation or
+    /// correction without losing the original answer.
+    private func beginFinalAnswerVerification(stopReason: AgentEvent.StopReason) async {
+        didVerifyFinalAnswer = true
+        forcedStopReason = stopReason
+        isFinalizingWithoutTools = true
+        messages.append(ConversationMessage(role: "assistant", content: streamText))
+        await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
+        await transition(to: .verifying)
+        messages.append(ConversationMessage(
+            role: "system",
+            content: "Harness control: review your just-given answer for correctness, omissions, and clarity. If it is already accurate and complete, reply with exactly CONFIRM. Otherwise give only the corrected final answer. Do not call any tool."
+        ))
+        modelTurnContinuationRequested = true
+    }
+
+    /// Terminal resolution of one tool call after the budget, catalog, gate
+    /// and approval-policy passes.
+    private enum ToolResolution {
+        case approved(grant: ApprovalGrant)
+        case denied(reason: String, decision: String)
+        case stopped(reason: String)
+        case budgetExhausted
+    }
+
+    /// Resolves a single tool call through the budget, catalog, catastrophic
+    /// gate and approval policy. Approval escalation blocks here (the runtime
+    /// waits for the human decision), so this phase must always run serially —
+    /// never inside a concurrent task group.
+    private func resolveToolCall(_ call: ToolCall) async -> ToolResolution {
         do {
             try await budgetLedger.reserveParentIteration()
             toolStepCount += 1
         } catch {
-            pendingToolCalls.append(call)
-            let exhausted = ToolResult(
-                callID: call.id,
-                status: .failed,
-                outputSummary: "The activation iteration budget is exhausted. Summarize the work completed, evidence collected, and any remaining limitations without calling more tools.",
-                outputDigest: ""
-            )
-            await audit(toolCall: call, result: exhausted, decision: "deny:harness-budget")
-            await emit(.toolResult(exhausted))
-            await beginForcedFinalization(with: exhausted, stopReason: .budgetLimited)
-            return
+            return .budgetExhausted
         }
-
-        // The next provider turn must receive the assistant tool call and
-        // its result as a pair. Chat Completions and Anthropic reject or
-        // misinterpret an orphan tool-result message, which previously made
-        // runs stop after a file write without a final assistant reply.
-        pendingToolCalls.append(call)
-
-        // `plan.submit` is an internal, run-scoped persistence hand-off. It is
-        // deliberately not registered in the process-global tool registry:
-        // concurrent conversations must never share a captured store or ID.
-        if configuration.conversationMode == .plan,
-           call.toolName == PlanSubmission.toolName {
-            let result: ToolResult
-            do {
-                let submission = try JSONDecoder().decode(
-                    PlanSubmission.self,
-                    from: call.argumentsJSON
-                )
-                if submission.validationErrors.isEmpty {
-                    result = ToolResult(
-                        callID: call.id,
-                        status: .ok,
-                        outputSummary: "Plan submitted for user review. Briefly summarize it, then stop.",
-                        outputDigest: ""
-                    )
-                } else {
-                    result = ToolResult(
-                        callID: call.id,
-                        status: .failed,
-                        outputSummary: "Plan is incomplete: \(submission.validationErrors.joined(separator: ", ")). Repair and submit again.",
-                        outputDigest: ""
-                    )
-                }
-            } catch {
-                result = ToolResult(
-                    callID: call.id,
-                    status: .failed,
-                    outputSummary: "Invalid plan.submit payload: \(error.localizedDescription)",
-                    outputDigest: ""
-                )
-            }
-            await resumeStream(with: result, after: call)
-            return
-        }
-
         guard let descriptor = executor.descriptor(named: call.toolName) else {
-            let result = ToolResult(
-                callID: call.id,
-                status: .failed,
-                outputSummary: "Unknown tool '\(call.toolName)' — not in catalog",
-                outputDigest: ""
+            return .denied(
+                reason: "Unknown tool '\(call.toolName)' — not in catalog",
+                decision: "deny:not-in-catalog"
             )
-            await audit(toolCall: call, result: result, decision: "deny:not-in-catalog")
-            await resumeStream(with: result, after: call)
-            return
         }
-
         let effectiveAllowedNames: Set<String>?
         if let configured = configuration.allowedToolNames {
             effectiveAllowedNames = configured
@@ -976,67 +984,38 @@ public actor FloeAgentRuntime {
             effectiveAllowedNames = configuration.activeSkillIDs.isEmpty ? nil : []
         }
         if let effectiveAllowedNames, !effectiveAllowedNames.contains(call.toolName) {
-            let result = ToolResult(
-                callID: call.id,
-                status: .denied,
-                outputSummary: "Tool '\(call.toolName)' is outside the active skill capability set",
-                outputDigest: ""
+            return .denied(
+                reason: "Tool '\(call.toolName)' is outside the active skill capability set",
+                decision: "deny:skill-capability"
             )
-            await audit(toolCall: call, result: result, decision: "deny:skill-capability")
-            await resumeStream(with: result, after: call)
-            return
         }
-
         if configuration.conversationMode == .plan,
            let denial = PlanToolPolicy().denialResult(call: call, descriptor: descriptor) {
-            await audit(toolCall: call, result: denial, decision: "deny:plan-read-only")
-            await resumeStream(with: denial, after: call)
-            return
+            return .denied(reason: denial.outputSummary, decision: "deny:plan-read-only")
         }
-
-
         if descriptor.requiresHostScope, case .local = call.scope {
-            let result = ToolResult(
-                callID: call.id,
-                status: .denied,
-                outputSummary: "Remote tool call is missing a valid hostID scope",
-                outputDigest: ""
+            return .denied(
+                reason: "Remote tool call is missing a valid hostID scope",
+                decision: "deny:missing-remote-scope"
             )
-            await audit(toolCall: call, result: result, decision: "deny:missing-remote-scope")
-            await resumeStream(with: result, after: call)
-            return
         }
-
         let action = ProposedAction(
             toolCall: call,
             riskLabels: Set(descriptor.riskLabels.map(\.rawValue)),
             userGoal: messages.last(where: { $0.role == "user" })?.content ?? "",
             hostAndPathScope: call.scope
         )
-
         // Catastrophic gate runs before every policy.
         if let gate, let command = extractCommandString(from: call) {
             let verdict = gate.evaluate(command: command)
             if verdict.stopped {
                 let patternID = verdict.matchedPatternID ?? "gate"
-                let result = ToolResult(
-                    callID: call.id,
-                    status: .denied,
-                    outputSummary: "Stopped by catastrophic gate: \(verdict.reason ?? patternID)",
-                    outputDigest: ""
-                )
-                await audit(toolCall: call, result: result, decision: "stopped:\(patternID)")
-                await resumeStream(with: result, after: call)
-                return
+                return .stopped(reason: verdict.reason ?? patternID)
             }
         }
-
         let decision: ApprovalDecision
         if !descriptor.isSideEffecting {
-            decision = .allow(
-                scope: Self.approvalScope(for: call),
-                expiresAt: nil
-            )
+            decision = .allow(scope: Self.approvalScope(for: call), expiresAt: nil)
         } else {
             do {
                 decision = try await policy.decide(action)
@@ -1044,70 +1023,77 @@ public actor FloeAgentRuntime {
                 decision = .escalateToHuman(reason: "Policy error: \(error.localizedDescription)")
             }
         }
-
         switch decision {
         case .allow(let scope, let expiresAt):
-            let grant = ApprovalGrant(scope: scope, expiresAt: expiresAt, policyName: policy.policyName)
-            grants.append(grant)
-            await executeApproved(call: call, grant: grant)
-
+            return .approved(grant: ApprovalGrant(
+                scope: scope, expiresAt: expiresAt, policyName: policy.policyName
+            ))
         case .deny(let reason):
-            let result = ToolResult(
-                callID: call.id,
-                status: .denied,
-                outputSummary: "Denied: \(reason)",
-                outputDigest: ""
-            )
-            await audit(toolCall: call, result: result, decision: "deny:\(reason)")
-            await resumeStream(with: result, after: call)
-
+            return .denied(reason: reason, decision: "deny:\(reason)")
         case .escalateToHuman(let reason):
             await transition(to: .waitingApproval(AgentState.WaitingApproval(toolCall: call, reason: reason)))
             let humanDecision = await withCheckedContinuation {
                 (continuation: CheckedContinuation<ApprovalDecision, Never>) in
                 approvalContinuation = continuation
             }
-            guard case .waitingApproval = state else { return } // cancelled meanwhile
+            guard case .waitingApproval = state else {
+                return .denied(reason: "Cancelled while waiting for approval", decision: "deny:cancelled")
+            }
             switch humanDecision {
             case .allow(let scope, let expiresAt):
-                let grant = ApprovalGrant(scope: scope, expiresAt: expiresAt, policyName: "human")
-                grants.append(grant)
-                await executeApproved(call: call, grant: grant)
+                return .approved(grant: ApprovalGrant(scope: scope, expiresAt: expiresAt, policyName: "human"))
             case .deny(let denyReason):
-                let result = ToolResult(
-                    callID: call.id,
-                    status: .denied,
-                    outputSummary: "Denied by user: \(denyReason)",
-                    outputDigest: ""
-                )
-                await audit(toolCall: call, result: result, decision: "deny:human:\(denyReason)")
-                await resumeStream(with: result, after: call)
+                return .denied(reason: denyReason, decision: "deny:human:\(denyReason)")
             case .escalateToHuman, .stopped:
-                let result = ToolResult(
-                    callID: call.id,
-                    status: .denied,
-                    outputSummary: "Approval not granted",
-                    outputDigest: ""
-                )
-                await audit(toolCall: call, result: result, decision: "deny:unresolved")
-                await resumeStream(with: result, after: call)
+                return .denied(reason: "Approval not granted", decision: "deny:unresolved")
             }
-
         case .stopped(let gateReason):
-            let result = ToolResult(
-                callID: call.id,
-                status: .denied,
-                outputSummary: "Stopped: \(gateReason)",
-                outputDigest: ""
-            )
-            await audit(toolCall: call, result: result, decision: "stopped:\(gateReason)")
-            await resumeStream(with: result, after: call)
+            return .stopped(reason: gateReason)
         }
     }
 
-    /// executingTool → streamingModel. Executes one approved call, audits
-    /// the result before it flows back, then starts the next model turn.
-    private func executeApproved(call: ToolCall, grant: ApprovalGrant) async {
+    /// Resolves the run-scoped plan hand-off without registering it in the
+    /// process-global tool registry. The caller still pairs the assistant
+    /// tool call with this result in provider history.
+    private func planSubmissionResult(for call: ToolCall) -> ToolResult {
+        do {
+            let submission = try JSONDecoder().decode(
+                PlanSubmission.self,
+                from: call.argumentsJSON
+            )
+            if submission.validationErrors.isEmpty {
+                return ToolResult(
+                    callID: call.id,
+                    status: .ok,
+                    outputSummary: "Plan submitted for user review. Briefly summarize it, then stop.",
+                    outputDigest: ""
+                )
+            }
+            return ToolResult(
+                callID: call.id,
+                status: .failed,
+                outputSummary: "Plan is incomplete: \(submission.validationErrors.joined(separator: ", ")). Repair and submit again.",
+                outputDigest: ""
+            )
+        } catch {
+            return ToolResult(
+                callID: call.id,
+                status: .failed,
+                outputSummary: "Invalid plan.submit payload: \(error.localizedDescription)",
+                outputDigest: ""
+            )
+        }
+    }
+
+    /// Executes one approved call (with its child budget) and returns the
+    /// result. Audits and emits the result before returning so the caller can
+    /// never drop it. The caller owns the stream resume, which lets a batch
+    /// execute several calls before advancing the model loop once.
+    private func executeResolved(
+        call: ToolCall,
+        grant: ApprovalGrant,
+        emitTransition: Bool = true
+    ) async -> ToolResult {
         guard !grant.isExpired(), Self.scopePermits(grant.scope, call: call) else {
             let result = ToolResult(
                 callID: call.id,
@@ -1116,22 +1102,26 @@ public actor FloeAgentRuntime {
                 outputDigest: ""
             )
             await audit(toolCall: call, result: result, decision: "deny:scope-mismatch-or-expired")
-            await resumeStream(with: result, after: call)
-            return
+            return result
         }
 
         // Idempotency: never re-execute a key already executed in this run.
         if !call.idempotencyKey.isEmpty, executedIdempotencyKeys.contains(call.idempotencyKey) {
-            await resumeStream(with: ToolResult(
+            return ToolResult(
                 callID: call.id,
                 status: .ok,
                 outputSummary: "Skipped: duplicate idempotency key",
                 outputDigest: ""
-            ), after: call)
-            return
+            )
         }
 
-        await transition(to: .executingTool(AgentState.ExecutingInfo(toolCall: call)))
+        if emitTransition {
+            await transition(to: .executingTool(AgentState.ExecutingInfo(toolCall: call)))
+        }
+
+        // Subagent delegation opens a child slot in the shared budget ledger
+        // so the subagent's iterations are charged against this run's total.
+        let childBudget = await makeChildBudget(for: call)
 
         let context = ToolContext(
             runID: runID,
@@ -1141,7 +1131,8 @@ public actor FloeAgentRuntime {
             allowedToolNames: configuration.allowedToolNames,
             workspaceRootURL: configuration.workspaceRootURL,
             allowedWorkspacePaths: configuration.allowedWorkspacePaths,
-            cancellation: cancellationToken
+            cancellation: cancellationToken,
+            childBudget: childBudget
         )
         let result: ToolResult
         do {
@@ -1165,12 +1156,221 @@ public actor FloeAgentRuntime {
         if !call.idempotencyKey.isEmpty {
             executedIdempotencyKeys.insert(call.idempotencyKey)
         }
-
-        // If cancel() moved us to .cancelling while the tool ran, stop here.
-        guard case .executingTool = state else { return }
-
         await emit(.toolResult(result))
-        await resumeStream(with: result, after: call)
+        return result
+    }
+
+    /// Atomically drains the pending tool batch (used by the stream loop when
+    /// the provider closes without an explicit completion event).
+    private func drainPendingToolBatch() -> [ToolCall] {
+        let batch = pendingToolBatch
+        pendingToolBatch = []
+        return batch
+    }
+
+    /// Executes a batch of tool calls resolved from one model response.
+    /// Read-only calls run in parallel; side-effecting calls act as barriers
+    /// and run serially (their approval already resolved during `resolve`).
+    /// Every result is audited and resumed exactly once.
+    private func executeToolBatch(_ calls: [ToolCall]) async {
+        guard !calls.isEmpty else { return }
+        var approvedByID: [String: ApprovalGrant] = [:]
+        var resultsByID: [String: ToolResult] = [:]
+
+        // Phase 1 — resolve serially (approval escalation blocks).
+        for call in calls {
+            // Every provider tool call must be paired with one result in the
+            // next request, including the run-scoped plan hand-off.
+            pendingToolCalls.append(call)
+            // plan.submit is an internal, run-scoped persistence hand-off and
+            // is not part of the batch/parallel path.
+            if configuration.conversationMode == .plan,
+               call.toolName == PlanSubmission.toolName {
+                resultsByID[call.id] = planSubmissionResult(for: call)
+                continue
+            }
+            switch await resolveToolCall(call) {
+            case .approved(let grant):
+                grants.append(grant)
+                approvedByID[call.id] = grant
+            case .denied(let reason, let decision):
+                let result = ToolResult(callID: call.id, status: .denied, outputSummary: reason, outputDigest: "")
+                await audit(toolCall: call, result: result, decision: decision)
+                resultsByID[call.id] = result
+            case .stopped(let reason):
+                let result = ToolResult(callID: call.id, status: .denied, outputSummary: "Stopped: \(reason)", outputDigest: "")
+                await audit(toolCall: call, result: result, decision: "stopped:\(reason)")
+                resultsByID[call.id] = result
+            case .budgetExhausted:
+                let exhausted = ToolResult(
+                    callID: call.id,
+                    status: .failed,
+                    outputSummary: "The activation iteration budget is exhausted. Summarize the work completed, evidence collected, and any remaining limitations without calling more tools.",
+                    outputDigest: ""
+                )
+                await audit(toolCall: call, result: exhausted, decision: "deny:harness-budget")
+                await emit(.toolResult(exhausted))
+                await beginForcedFinalization(with: exhausted, stopReason: .budgetLimited)
+                return
+            }
+        }
+
+        // Phase 2 — execute approved calls.
+        if let first = calls.first(where: { approvedByID[$0.id] != nil }) {
+            await transition(to: .executingTool(AgentState.ExecutingInfo(
+                toolCall: first
+            )))
+        }
+        // Preserve provider order: consecutive reads may run in parallel, but
+        // every write is a barrier before and after its position in the batch.
+        var pendingReads: [(call: ToolCall, grant: ApprovalGrant)] = []
+        for call in calls {
+            guard let grant = approvedByID[call.id] else { continue }
+            let isReadOnly = executor.descriptor(named: call.toolName)?.isSideEffecting == false
+            if isReadOnly {
+                pendingReads.append((call, grant))
+                continue
+            }
+            if !pendingReads.isEmpty {
+                for item in await executeApprovedInParallel(pendingReads) {
+                    resultsByID[item.call.id] = item.result
+                }
+                pendingReads.removeAll(keepingCapacity: true)
+            }
+            resultsByID[call.id] = await executeResolved(
+                call: call, grant: grant, emitTransition: false
+            )
+        }
+        if !pendingReads.isEmpty {
+            for item in await executeApprovedInParallel(pendingReads) {
+                resultsByID[item.call.id] = item.result
+            }
+        }
+
+        // Phase 3 — resume once per result.
+        for call in calls {
+            if let result = resultsByID[call.id] {
+                await resumeStream(with: result, after: call)
+            }
+        }
+    }
+
+    /// Executes read-only calls in parallel. Context construction, audit,
+    /// emission and idempotency bookkeeping stay serial (actor-isolated);
+    /// only the tool execution itself runs concurrently.
+    private func executeApprovedInParallel(
+        _ calls: [(call: ToolCall, grant: ApprovalGrant)]
+    ) async -> [(call: ToolCall, result: ToolResult)] {
+        var toRun: [(call: ToolCall, grant: ApprovalGrant, context: ToolContext)] = []
+        var precomputed: [String: ToolResult] = [:]
+        var reservedIdempotencyKeys = executedIdempotencyKeys
+        for (call, grant) in calls {
+            if !call.idempotencyKey.isEmpty {
+                if reservedIdempotencyKeys.contains(call.idempotencyKey) {
+                    precomputed[call.id] = ToolResult(
+                        callID: call.id,
+                        status: .ok,
+                        outputSummary: "Skipped: duplicate idempotency key",
+                        outputDigest: ""
+                    )
+                    continue
+                }
+                reservedIdempotencyKeys.insert(call.idempotencyKey)
+            }
+            let childBudget = await makeChildBudget(for: call)
+            let context = ToolContext(
+                runID: runID,
+                approvalGrantID: grant.id,
+                scope: call.scope,
+                activeSkillIDs: configuration.activeSkillIDs,
+                allowedToolNames: configuration.allowedToolNames,
+                workspaceRootURL: configuration.workspaceRootURL,
+                allowedWorkspacePaths: configuration.allowedWorkspacePaths,
+                cancellation: cancellationToken,
+                childBudget: childBudget
+            )
+            toRun.append((call, grant, context))
+        }
+
+        let executor = self.executor
+        let results = await withTaskGroup(
+            of: (String, ToolResult).self,
+            returning: [String: ToolResult].self
+        ) { group in
+            for (call, _, context) in toRun {
+                group.addTask {
+                    let result: ToolResult
+                    do {
+                        result = try await executor.execute(call, context: context)
+                    } catch {
+                        result = ToolResult(
+                            callID: call.id,
+                            status: .failed,
+                            outputSummary: "Execution error: \(error.localizedDescription)",
+                            outputDigest: ""
+                        )
+                    }
+                    return (call.id, result)
+                }
+            }
+            var map: [String: ToolResult] = [:]
+            for await (id, result) in group {
+                map[id] = result
+            }
+            return map
+        }
+
+        var contextsByID = Dictionary(uniqueKeysWithValues: toRun.map { ($0.call.id, $0) })
+        var out: [(call: ToolCall, result: ToolResult)] = []
+        for (call, _) in calls {
+            if let result = precomputed[call.id] {
+                out.append((call, result))
+                continue
+            }
+            guard let (_, grant, _) = contextsByID.removeValue(forKey: call.id) else {
+                continue
+            }
+            let result = results[call.id] ?? ToolResult(
+                callID: call.id, status: .failed,
+                outputSummary: "Missing execution result", outputDigest: ""
+            )
+            await audit(toolCall: call, result: result, decision: "allow:\(grant.policyName)")
+            if !call.idempotencyKey.isEmpty {
+                executedIdempotencyKeys.insert(call.idempotencyKey)
+            }
+            await emit(.toolResult(result))
+            out.append((call, result))
+        }
+        return out
+    }
+
+    /// Opens a child slot in the shared budget ledger for a subagent
+    /// delegation. Non-delegating tools get nil (no child is charged).
+    private func makeChildBudget(for call: ToolCall) async -> ChildBudgetContext? {
+        guard call.toolName == DelegateTool.name else { return nil }
+        let childID = UUID()
+        do {
+            try await budgetLedger.startChild(id: childID, requestedByRunID: runID)
+        } catch {
+            // Fail closed. DelegateTool requires a child budget and returns a
+            // structured failure without starting another provider loop.
+            return nil
+        }
+        let ledger = budgetLedger
+        return ChildBudgetContext(
+            maximumIterations: ledger.budgets.maxChildIterations,
+            reserve: {
+                do {
+                    try await ledger.reserveChildIteration(id: childID)
+                    return true
+                } catch {
+                    return false
+                }
+            },
+            finish: {
+                await ledger.finishChild(id: childID)
+            }
+        )
     }
 
     /// streamingModel ← toolResult: queues the result and starts the next
@@ -1209,7 +1409,11 @@ public actor FloeAgentRuntime {
     // MARK: Terminal transitions
 
     private func completeRun(stopReason: AgentEvent.StopReason) async {
-        if !streamText.isEmpty {
+        // A verification pass that answers with a bare confirmation should
+        // not append "CONFIRM" onto the already-sealed draft answer.
+        let isConfirmation = didVerifyFinalAnswer
+            && streamText.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "CONFIRM"
+        if !streamText.isEmpty, !isConfirmation {
             messages.append(ConversationMessage(role: "assistant", content: streamText))
         }
         await transition(to: .completed(AgentState.CompletionInfo(

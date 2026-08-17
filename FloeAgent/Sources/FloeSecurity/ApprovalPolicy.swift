@@ -85,7 +85,9 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy {
             "deletesFiles",
             "accessesCredentials",
             "modifiesRemoteSystem",
-            "executesLocalCode"
+            "executesLocalCode",
+            "persistsPersonalData",
+            "changesAgentBehavior"
         ]
         if !risks.isDisjoint(with: alwaysAsk) {
             return .escalateToHuman(reason: "Sensitive action requires explicit approval")
@@ -142,7 +144,9 @@ public struct TaskFullAccessPolicy: ApprovalPolicy {
             "deletesFiles",
             "accessesCredentials",
             "sendsDataToProvider",
-            "executesLocalCode"
+            "executesLocalCode",
+            "persistsPersonalData",
+            "changesAgentBehavior"
         ]
         if !action.riskLabels.isDisjoint(with: alwaysAsk) {
             return .escalateToHuman(reason: "This sensitive action always requires explicit approval")

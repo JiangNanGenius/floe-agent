@@ -16,7 +16,8 @@ public struct RemotePythonTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         /// Python source (≤64 KiB).
         public var script: String
-        /// Target host identifier; omit to use the first configured host.
+        /// Target host identifier. Agent calls require an explicit host so
+        /// approval scope and execution scope are identical.
         public var hostID: String?
         /// Timeout in seconds; clamped to (0, 120].
         public var timeout: Double?
@@ -44,11 +45,11 @@ public struct RemotePythonTool: AgentTool {
       "type": "object",
       "properties": {
         "script": {"type": "string", "description": "Python 3 source to execute remotely (max 64 KiB)"},
-        "hostID": {"type": "string", "description": "UUID of the paired host; omit to use the first configured host"},
+        "hostID": {"type": "string", "description": "UUID of the paired SSH host"},
         "timeout": {"type": "number", "description": "Timeout in seconds (default 30, max 120)"},
         "maxOutputBytes": {"type": "integer", "description": "Output cap in bytes (default 65536, max 262144)"}
       },
-      "required": ["script"],
+      "required": ["script", "hostID"],
       "additionalProperties": false
     }
     """#
@@ -77,7 +78,7 @@ public struct RemotePythonTool: AgentTool {
                 "script exceeds the \(Self.maxScriptBytes)-byte limit"
             )
         }
-        if let hostID = args.hostID, UUID(uuidString: hostID) == nil {
+        guard let hostID = args.hostID, UUID(uuidString: hostID) != nil else {
             throw FloeError.validationFailed("hostID must be a UUID")
         }
         if let timeout = args.timeout, timeout <= 0 {

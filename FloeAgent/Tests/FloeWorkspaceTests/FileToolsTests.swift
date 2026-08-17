@@ -62,7 +62,7 @@ struct FileToolsTests {
 
     // MARK: Registration
 
-    @Test("Registration wires all nine tools into catalog and registry")
+    @Test("Registration wires all eleven tools into catalog and registry")
     func registration() throws {
         let fixture = try makeFixture()
         let registry = ToolRunnerRegistry()
@@ -71,7 +71,8 @@ struct FileToolsTests {
         let expected = [
             "workspace.listDirectory", "workspace.readFile", "workspace.searchFiles",
             "workspace.inspectFileMetadata", "workspace.createFile", "workspace.writeFile",
-            "workspace.applyPatch", "workspace.moveFile", "workspace.deleteFile"
+            "workspace.applyPatch", "workspace.moveFile", "workspace.deleteFile",
+            "workspace.createDirectory", "workspace.copyFile"
         ]
         for name in expected {
             #expect(ToolCatalog.descriptor(named: name) != nil, "descriptor missing for \(name)")
@@ -478,6 +479,59 @@ struct FileToolsTests {
                 return
             }
         }
+    }
+
+    @Test("deleteFile recursive=true removes non-empty directories")
+    func deleteRecursive() async throws {
+        let fixture = try makeFixture()
+        try fixture.write("tree/a.txt", "x")
+        try fixture.write("tree/sub/b.txt", "y")
+        let tool = WorkspaceDeleteFileTool(environment: fixture.environment)
+
+        _ = try await tool.execute(
+            .init(path: "tree", recursive: true), context: fixture.context
+        )
+        #expect(!fixture.exists("tree"))
+    }
+
+    @Test("mutating the workspace root is always rejected")
+    func rejectsRootMutation() async throws {
+        let fixture = try makeFixture()
+        try fixture.write("keep.txt", "important")
+        let delete = WorkspaceDeleteFileTool(environment: fixture.environment)
+        let copy = WorkspaceCopyFileTool(environment: fixture.environment)
+
+        await #expect(throws: (any Error).self) {
+            _ = try await delete.execute(
+                .init(path: ".", recursive: true), context: fixture.context
+            )
+        }
+        await #expect(throws: (any Error).self) {
+            _ = try await copy.execute(
+                .init(from: ".", to: "nested-copy"), context: fixture.context
+            )
+        }
+        #expect(fixture.exists("keep.txt"))
+    }
+
+    @Test("copyFile copies files and directories")
+    func copyFile() async throws {
+        let fixture = try makeFixture()
+        try fixture.write("src.txt", "data")
+        try fixture.write("dir/inner.txt", "y")
+        let tool = WorkspaceCopyFileTool(environment: fixture.environment)
+
+        let fileOut = try await tool.execute(
+            .init(from: "src.txt", to: "copied.txt"), context: fixture.context
+        )
+        #expect(fileOut.summary.contains("src.txt -> copied.txt"))
+        #expect(try fixture.read("copied.txt") == "data")
+
+        _ = try await tool.execute(
+            .init(from: "dir", to: "dir-copy"), context: fixture.context
+        )
+        #expect(try fixture.read("dir-copy/inner.txt") == "y")
+        #expect(try fixture.read("dir/inner.txt") == "y")
     }
 
     // MARK: Guard integration through tools

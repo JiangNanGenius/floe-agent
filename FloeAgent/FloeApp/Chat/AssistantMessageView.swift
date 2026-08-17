@@ -5,7 +5,8 @@
 // The assistant's answer is the visual subject of the thread: a wide,
 // left-aligned reading column on the opaque reading surface, rendered
 // through MarkdownRendererView. It deliberately does NOT mirror the
-// user bubble's tint/alignment so the two roles never blur.
+// user bubble's tint/alignment so the two roles never blur. A read-aloud
+// button lets the user hear the answer.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -18,12 +19,37 @@ struct AssistantMessageView: View {
     /// reparse instead of full-document parse per token).
     var isStreaming: Bool = false
 
+    @EnvironmentObject private var speechService: SpeechService
+
     var body: some View {
-        MarkdownRendererView(source: text, isStreaming: isStreaming)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(String(localized: "thread.role.assistant"))
-            .accessibilityIdentifier("thread.assistant_message")
+        VStack(alignment: .leading, spacing: 6) {
+            MarkdownRendererView(source: text, isStreaming: isStreaming)
+            if !isStreaming, !text.isEmpty {
+                readAloudButton
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(String(localized: "thread.role.assistant"))
+        .accessibilityIdentifier("thread.assistant_message")
+    }
+
+    private var readAloudButton: some View {
+        let isThisMessageSpeaking = speechService.isSpeaking
+            && speechService.speakingText == text
+        Button {
+            speechService.speak(text)
+        } label: {
+            Label(
+                isThisMessageSpeaking ? "停止朗读" : "朗读",
+                systemImage: isThisMessageSpeaking ? "stop.circle.fill" : "speaker.wave.2"
+            )
+            .font(FloeTheme.Typography.metadata)
+            .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: FloeTheme.minimumTarget)
+        .accessibilityLabel(isThisMessageSpeaking ? "停止朗读" : "朗读")
     }
 }
 #endif

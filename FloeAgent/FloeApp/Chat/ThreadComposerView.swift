@@ -611,6 +611,16 @@ struct ThreadComposerView: View {
                 .font(FloeTheme.Typography.metadata)
                 .foregroundStyle(FloeTheme.destructive)
             Spacer()
+            Button {
+                attachmentError = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(FloeTheme.destructive)
+            }
+            .buttonStyle(.plain)
+            .frame(minWidth: 28, minHeight: 28)
+            .accessibilityLabel(Text("action.done"))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)

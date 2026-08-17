@@ -49,35 +49,51 @@ final class SkillsCenter: ObservableObject {
 
     func create(name: String, description: String, instructions: String) async {
         await perform {
-            let id = try Self.identifier(name)
-            let temporary = FileManager.default.temporaryDirectory
-                .appendingPathComponent("floe-skill-\(UUID().uuidString)", isDirectory: true)
-            defer { try? FileManager.default.removeItem(at: temporary) }
-            try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
-            let safeDescription = description.replacingOccurrences(of: "\n", with: " ")
-            let markdown = """
-                ---
-                name: \(id)
-                description: \(safeDescription)
-                ---
-                \(instructions)
-                """
-            let manifest = SkillManifest(id: id, version: "1.0.0")
-            try Data(markdown.utf8).write(to: temporary.appendingPathComponent("SKILL.md"), options: .atomic)
-            try JSONEncoder().encode(manifest).write(to: temporary.appendingPathComponent("floe.json"), options: .atomic)
-            let agents = temporary.appendingPathComponent("agents", isDirectory: true)
-            try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
-            let openAIYAML = """
-                interface:
-                  display_name: "\(Self.yaml(name))"
-                  short_description: "\(Self.yaml(String(safeDescription.prefix(64))))"
-                  default_prompt: "Use $\(id) to help with this task."
-                policy:
-                  allow_implicit_invocation: true
-                """
-            try Data(openAIYAML.utf8).write(to: agents.appendingPathComponent("openai.yaml"), options: .atomic)
-            try await self.installCanonicalPackage(at: temporary, sourceURL: URL(string: "floe-creator://local/\(id)")!)
+            _ = try await self.createSkill(SkillCreationRequest(
+                name: name, description: description, instructions: instructions
+            ))
         }
+    }
+
+    /// Throwing core shared by the UI authoring flow and the `skill.create`
+    /// tool. Returns the created skill's identity so callers can report it.
+    func createSkill(
+        _ request: SkillCreationRequest,
+        enabled: Bool = true
+    ) async throws -> CreatedSkill {
+        let id = try Self.identifier(request.name)
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-skill-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        let safeDescription = request.description.replacingOccurrences(of: "\n", with: " ")
+        let markdown = """
+            ---
+            name: \(id)
+            description: \(safeDescription)
+            ---
+            \(request.instructions)
+            """
+        let manifest = SkillManifest(id: id, version: "1.0.0")
+        try Data(markdown.utf8).write(to: temporary.appendingPathComponent("SKILL.md"), options: .atomic)
+        try JSONEncoder().encode(manifest).write(to: temporary.appendingPathComponent("floe.json"), options: .atomic)
+        let agents = temporary.appendingPathComponent("agents", isDirectory: true)
+        try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+        let openAIYAML = """
+            interface:
+              display_name: "\(Self.yaml(request.name))"
+              short_description: "\(Self.yaml(String(safeDescription.prefix(64))))"
+              default_prompt: "Use $\(id) to help with this task."
+            policy:
+              allow_implicit_invocation: true
+            """
+        try Data(openAIYAML.utf8).write(to: agents.appendingPathComponent("openai.yaml"), options: .atomic)
+        try await self.installCanonicalPackage(
+            at: temporary,
+            sourceURL: URL(string: "floe-creator://local/\(id)")!,
+            initialStatus: enabled ? "enabled" : "disabled"
+        )
+        return CreatedSkill(id: id, name: request.name, version: "1.0.0")
     }
 
     /// Finder v1 accepts a small HTTPS JSON envelope containing the rewritten
@@ -208,6 +224,21 @@ final class SkillsCenter: ObservableObject {
         await perform { try await self.environment.skillStore.setEnabled(enabled, id: skill.id) }
     }
 
+    /// Curator: disables agent-created skills that have been untouched for a
+    /// long time. Only local/agent-authored skills are touched — never
+    /// official or community-installed packages. Never deletes.
+    func curate(now: Date = Date()) async {
+        let installed = (try? await environment.skillStore.all()) ?? []
+        let stale = installed.filter { skill in
+            guard skill.sourceURL?.hasPrefix("floe-creator") == true else { return false }
+            guard skill.status == "enabled" else { return false }
+            return now.timeIntervalSince(skill.updatedAt) > 90 * 24 * 60 * 60
+        }
+        for skill in stale {
+            try? await environment.skillStore.setEnabled(false, id: skill.id)
+        }
+    }
+
     func remove(_ skill: PersistedSkill) async {
         await perform {
             try await self.environment.skillStore.remove(id: skill.id)
@@ -222,7 +253,8 @@ final class SkillsCenter: ObservableObject {
         at url: URL,
         sourceURL: URL,
         sourceDigest: String? = nil,
-        rewriteModelID: String? = nil
+        rewriteModelID: String? = nil,
+        initialStatus: String = "enabled"
     ) async throws {
         let validator = SkillPackageValidator()
         let package = try validator.validate(packageAt: url)
@@ -243,6 +275,7 @@ final class SkillsCenter: ObservableObject {
             id: record.skillID,
             name: package.metadata.name,
             version: record.version,
+            status: initialStatus,
             skillMarkdown: markdown,
             manifestJSON: String(decoding: manifestData, as: UTF8.self),
             declaredCapabilitiesJSON: capabilities,

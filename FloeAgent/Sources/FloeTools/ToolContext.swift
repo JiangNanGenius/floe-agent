@@ -24,6 +24,8 @@ public struct ToolContext: Sendable {
     /// the whole task workspace; entries authorize the path and descendants.
     public var allowedWorkspacePaths: [String]
     public var cancellation: CancellationToken
+    /// Subagent budget handle when this tool runs as a delegated child.
+    public var childBudget: ChildBudgetContext?
 
     public init(
         runID: UUID,
@@ -33,7 +35,8 @@ public struct ToolContext: Sendable {
         allowedToolNames: Set<String>? = nil,
         workspaceRootURL: URL? = nil,
         allowedWorkspacePaths: [String] = [],
-        cancellation: CancellationToken
+        cancellation: CancellationToken,
+        childBudget: ChildBudgetContext? = nil
     ) {
         self.runID = runID
         self.approvalGrantID = approvalGrantID
@@ -43,6 +46,7 @@ public struct ToolContext: Sendable {
         self.workspaceRootURL = workspaceRootURL
         self.allowedWorkspacePaths = allowedWorkspacePaths
         self.cancellation = cancellation
+        self.childBudget = childBudget
     }
 
     /// Enforces the task's persisted file scope before the workspace path

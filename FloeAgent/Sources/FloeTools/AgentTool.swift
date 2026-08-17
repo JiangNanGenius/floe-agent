@@ -20,6 +20,10 @@ public enum RiskLabel: String, Sendable, Codable, Hashable, CaseIterable {
     case sendsDataToProvider
     case controlsGUI
     case accessesCredentials
+    /// Persists user or conversation information across runs.
+    case persistsPersonalData
+    /// Installs or changes instructions that influence future agent behavior.
+    case changesAgentBehavior
 }
 
 /// Deterministic description of the externally observable effect of a

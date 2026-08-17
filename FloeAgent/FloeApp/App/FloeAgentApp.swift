@@ -34,6 +34,7 @@ struct FloeAgentApp: App {
                 .environmentObject(environment)
                 .environmentObject(router)
                 .environmentObject(environment.voiceInput)
+                .environmentObject(environment.speechService)
                 .task { await environment.bootstrap() }
         }
     }
@@ -147,6 +148,28 @@ struct RootView: View {
             }
         } message: {
             Text("任务、私有工作区和临时凭据将被删除，此操作不可撤销。")
+        }
+        .preferredColorScheme(resolvedColorScheme)
+        .environment(\.locale, resolvedLocale)
+    }
+
+    /// Maps the appearance preference to a concrete color scheme (nil = follow
+    /// the system).
+    private var resolvedColorScheme: ColorScheme? {
+        switch environment.settingsCenter.appearance {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
+    /// Maps the language override to a concrete locale (autoupdating follows
+    /// the system language).
+    private var resolvedLocale: Locale {
+        switch environment.settingsCenter.languageOverride {
+        case .system: return .autoupdatingCurrent
+        case .en: return Locale(identifier: "en")
+        case .zhHans: return Locale(identifier: "zh-Hans")
         }
     }
 

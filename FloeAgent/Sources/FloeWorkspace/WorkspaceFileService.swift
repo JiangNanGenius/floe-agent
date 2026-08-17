@@ -324,6 +324,24 @@ public struct WorkspaceFileService: Sendable {
         return try performWrite(url, path: path, content: content)
     }
 
+    /// Creates a directory (and any missing intermediate parents). Fails when
+    /// a file already exists at the target path.
+    public func createDirectory(
+        _ path: String,
+        cancellation: CancellationToken? = nil
+    ) throws {
+        try cancellation?.throwIfCancelled()
+        let url = try guardResolver.resolve(path)
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) {
+            if isDirectory.boolValue {
+                throw WorkspaceToolError.alreadyExists(path)
+            }
+            throw WorkspaceToolError.invalidArguments("A file already exists at \(path)")
+        }
+        try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+
     /// Writes `content` to `path` with optimistic-concurrency checking.
     ///
     /// When `expectedMtime`/`expectedSHA256` are provided and the file
@@ -447,10 +465,12 @@ public struct WorkspaceFileService: Sendable {
     ) throws {
         try cancellation?.throwIfCancelled()
         let source = try guardResolver.resolve(from)
+        try rejectWorkspaceRootMutation(source, operation: "move")
         guard fileManager.fileExists(atPath: source.path) else {
             throw WorkspaceToolError.notFound(from)
         }
         let destination = try guardResolver.resolve(to)
+        try rejectDescendantDestination(source: source, destination: destination, operation: "move")
         guard !fileManager.fileExists(atPath: destination.path) else {
             throw WorkspaceToolError.alreadyExists(to)
         }
@@ -459,23 +479,77 @@ public struct WorkspaceFileService: Sendable {
         try fileManager.moveItem(at: source, to: destination)
     }
 
-    /// Deletes a file or an empty directory.
-    public func delete(_ path: String, cancellation: CancellationToken? = nil) throws {
+    /// Copies a file or directory (recursively) within the workspace.
+    public func copy(
+        _ from: String,
+        to: String,
+        cancellation: CancellationToken? = nil
+    ) throws {
+        try cancellation?.throwIfCancelled()
+        let source = try guardResolver.resolve(from)
+        try rejectWorkspaceRootMutation(source, operation: "copy")
+        guard fileManager.fileExists(atPath: source.path) else {
+            throw WorkspaceToolError.notFound(from)
+        }
+        let destination = try guardResolver.resolve(to)
+        try rejectDescendantDestination(source: source, destination: destination, operation: "copy")
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            throw WorkspaceToolError.alreadyExists(to)
+        }
+        let parent = destination.deletingLastPathComponent()
+        try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+        try fileManager.copyItem(at: source, to: destination)
+    }
+
+    /// Deletes a file or directory. Non-empty directories are only removed
+    /// when `recursive` is true; otherwise they are refused so a stray path
+    /// cannot wipe a subtree silently.
+    public func delete(
+        _ path: String,
+        recursive: Bool = false,
+        cancellation: CancellationToken? = nil
+    ) throws {
         try cancellation?.throwIfCancelled()
         let url = try guardResolver.resolve(path)
+        try rejectWorkspaceRootMutation(url, operation: "delete")
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             throw WorkspaceToolError.notFound(path)
         }
-        if isDirectory.boolValue {
+        if isDirectory.boolValue && !recursive {
             let children = try fileManager.contentsOfDirectory(atPath: url.path)
             guard children.isEmpty else {
                 throw WorkspaceToolError.invalidArguments(
-                    "directory is not empty; delete its contents first: \(path)"
+                    "directory is not empty; use recursive delete to remove it: \(path)"
                 )
             }
         }
         try fileManager.removeItem(at: url)
+    }
+
+    private func rejectWorkspaceRootMutation(_ url: URL, operation: String) throws {
+        guard url.standardizedFileURL != guardResolver.rootURL.standardizedFileURL else {
+            throw WorkspaceToolError.invalidArguments(
+                "The workspace root cannot be the target of \(operation)"
+            )
+        }
+    }
+
+    private func rejectDescendantDestination(
+        source: URL,
+        destination: URL,
+        operation: String
+    ) throws {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: source.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return }
+        let sourcePath = source.standardizedFileURL.path
+        let destinationPath = destination.standardizedFileURL.path
+        guard !destinationPath.hasPrefix(sourcePath + "/") else {
+            throw WorkspaceToolError.invalidArguments(
+                "A directory cannot be the destination of its own \(operation)"
+            )
+        }
     }
 
     // MARK: - Metadata

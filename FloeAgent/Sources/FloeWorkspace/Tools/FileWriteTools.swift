@@ -229,3 +229,58 @@ public struct WorkspaceApplyPatchTool: AgentTool {
         )
     }
 }
+
+// MARK: - workspace.createDirectory
+
+/// Creates a new directory (and any missing parent directories).
+public struct WorkspaceCreateDirectoryTool: AgentTool {
+    public struct Arguments: Decodable, Sendable {
+        public var path: String
+        public var scope: String?
+
+        public init(path: String, scope: String? = nil) {
+            self.path = path
+            self.scope = scope
+        }
+    }
+
+    public static let name = "workspace.createDirectory"
+    public static let toolDescription =
+        "Create a new directory (and any missing parent directories) in the workspace. Fails when a file already exists at the path."
+    public static let parametersJSON = #"""
+    {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string", "description": "Workspace-relative directory path to create"},
+        "scope": {"type": "string", "description": "Execution scope; only the local workspace is supported"}
+      },
+      "required": ["path"],
+      "additionalProperties": false
+    }
+    """#
+    public static let riskLabels: Set<RiskLabel> = [.writesFiles]
+    public static let isSideEffecting = true
+
+    private let environment: WorkspaceToolEnvironment
+    public init(environment: WorkspaceToolEnvironment) {
+        self.environment = environment
+    }
+
+    public func validate(_ args: Arguments) throws {
+        if args.path.trimmingCharacters(in: .whitespaces).isEmpty {
+            throw WorkspaceToolError.invalidArguments("path must not be empty")
+        }
+    }
+
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        try WorkspaceToolSupport.rejectHostScope(context.scope)
+        if let scope = args.scope, scope != "local" {
+            throw WorkspaceToolError.unsupportedScope(scope)
+        }
+        try context.authorizeWorkspacePath(args.path)
+        let service = try environment.makeService(context: context)
+        try service.createDirectory(args.path, cancellation: context.cancellation)
+        return WorkspaceToolSupport.output("created=\(args.path)")
+    }
+}

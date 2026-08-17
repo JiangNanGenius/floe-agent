@@ -17,6 +17,7 @@ public enum AgentState: Sendable, Codable, Hashable {
     case waitingApproval(WaitingApproval)
     case executingTool(ExecutingInfo)
     case compacting
+    case verifying
     case checkpointed(CheckpointRef)
     case paused(PausedInfo)
     case cancelling
@@ -130,6 +131,7 @@ public enum AgentState: Sendable, Codable, Hashable {
         case .waitingApproval: return "waitingApproval"
         case .executingTool: return "executingTool"
         case .compacting: return "compacting"
+        case .verifying: return "verifying"
         case .checkpointed: return "checkpointed"
         case .paused: return "paused"
         case .cancelling: return "cancelling"

@@ -457,6 +457,7 @@ public final class AgentRuntimeHarnessBridge: AgentEventSink, @unchecked Sendabl
         case .waitingApproval: .waitingApproval
         case .executingTool: .executingTool
         case .compacting: .compacting
+        case .verifying: .verifying
         case .checkpointed: .paused
         case .paused: .paused
         case .cancelling: .cancelled

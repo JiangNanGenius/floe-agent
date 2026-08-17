@@ -48,7 +48,10 @@ let package = Package(
         // tag (1.1.0) transitively depends on an unstable CryptoSwift pin,
         // so a stable-version requirement cannot resolve. Revision pin of
         // the 1.1.0 tag commit (deviation flagged in report).
-        .package(url: "https://github.com/royalapplications/royalvnc.git", revision: "92d4427c73817d8f849bb289ff190aa4b40c44ea")
+        .package(url: "https://github.com/royalapplications/royalvnc.git", revision: "92d4427c73817d8f849bb289ff190aa4b40c44ea"),
+        // Pure-Swift Office Open XML spreadsheet read/write (formulas, styles).
+        // Used by FloeDocuments for xlsx document editing.
+        .package(url: "https://github.com/Jramos57/cuneiform.git", exact: "0.1.0")
     ],
     targets: [
         // MARK: - Cross-platform targets (buildable on macOS host without iOS SDK)
@@ -210,7 +213,13 @@ let package = Package(
 
         .target(
             name: "FloeDocuments",
-            dependencies: ["FloeCore", "FloeTools"],
+            dependencies: [
+                "FloeCore",
+                "FloeTools",
+                "FloeWorkspace",
+                .product(name: "Cuneiform", package: "cuneiform"),
+                .product(name: "Crypto", package: "swift-crypto")
+            ],
             path: "Sources/FloeDocuments",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -222,7 +231,12 @@ let package = Package(
 
         .target(
             name: "FloeImages",
-            dependencies: ["FloeCore", "FloeTools"],
+            dependencies: [
+                "FloeCore",
+                "FloeTools",
+                "FloeWorkspace",
+                .product(name: "Crypto", package: "swift-crypto")
+            ],
             path: "Sources/FloeImages",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -259,7 +273,9 @@ let package = Package(
             dependencies: [
                 "FloeCore",
                 "FloePersistence",
-                .product(name: "RoyalVNCKit", package: "royalvnc")
+                "FloeTools",
+                .product(name: "RoyalVNCKit", package: "royalvnc"),
+                .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeVNC",
             swiftSettings: [

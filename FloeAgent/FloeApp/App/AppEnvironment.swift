@@ -16,6 +16,11 @@ import FloeSync
 import FloeWorkspace
 import FloeExecution
 import FloeSSH
+import FloeVNC
+import FloeSkills
+import FloeDocuments
+import FloeImages
+import FloeProviders
 import FloeAgentRuntime
 import CloudKit
 
@@ -50,6 +55,7 @@ final class AppEnvironment: ObservableObject {
 
     let keychain: KeychainStore
     let catastrophicGate: CatastrophicActionGate
+    let subagentRunnerRegistry: SubagentRunnerRegistry
 
     // MARK: Execution (T13/T14)
 
@@ -80,6 +86,9 @@ final class AppEnvironment: ObservableObject {
     private lazy var _settingsCenter = SettingsCenter(environment: self)
     private lazy var _skillsCenter = SkillsCenter(environment: self)
     private lazy var _memoryCenter = MemoryCenter(environment: self)
+    private lazy var _memoryDreamService = MemoryDreamService(environment: self)
+    private lazy var _skillDreamService = SkillDreamService(environment: self)
+    private lazy var _speechService = SpeechService()
     private lazy var _backgroundRunCoordinator = BackgroundRunCoordinator(environment: self)
 
     var conversationCenter: ConversationCenter { _conversationCenter }
@@ -91,6 +100,9 @@ final class AppEnvironment: ObservableObject {
     var settingsCenter: SettingsCenter { _settingsCenter }
     var skillsCenter: SkillsCenter { _skillsCenter }
     var memoryCenter: MemoryCenter { _memoryCenter }
+    var memoryDreamService: MemoryDreamService { _memoryDreamService }
+    var skillDreamService: SkillDreamService { _skillDreamService }
+    var speechService: SpeechService { _speechService }
     var backgroundRunCoordinator: BackgroundRunCoordinator { _backgroundRunCoordinator }
 
     // MARK: State
@@ -145,6 +157,7 @@ final class AppEnvironment: ObservableObject {
         self.remoteSessionRegistry = remoteSessionRegistry
         self.keychain = keychain
         self.catastrophicGate = catastrophicGate
+        self.subagentRunnerRegistry = SubagentRunnerRegistry()
         self.isEphemeral = isEphemeral
         self.browserCenter = BrowserSessionCenter()
         self.previewCenter = LocalPreviewCoordinator(browser: self.browserCenter)
@@ -156,20 +169,40 @@ final class AppEnvironment: ObservableObject {
         // with no workspace open the tools fail with a structured "no
         // workspace" result instead of crashing.
         registerWorkspaceTools(rootProvider: WorkspaceCenter.toolRootProvider)
+        // Local spreadsheet reading (Cuneiform) for the document surface.
+        registerDocumentTools(rootProvider: WorkspaceCenter.toolRootProvider)
+        // Local image processing (Core Image) for the image surface.
+        registerImageTools(rootProvider: WorkspaceCenter.toolRootProvider)
 
         // Register both execution locations. Local CPython is a stripped,
         // fixed app resource and always asks before executing; remote Python
         // continues to resolve credentials at the call site only.
         let hostStore = RemoteHostStore(database: database)
         self.remoteHostStore = hostStore
-        let pythonService = Self.makeRemotePythonService(hostStore: hostStore)
+        let remoteServices = Self.makeRemoteServices(hostStore: hostStore)
+        let pythonService = remoteServices.python
+        let sshCommandService = remoteServices.ssh
         let localPythonService = CPythonServiceFactory.make()
         registerExecutionTools(
             pythonService: pythonService,
-            localPythonService: localPythonService
+            localPythonService: localPythonService,
+            sshCommandService: sshCommandService
         )
         registerBrowserTools(center: browserCenter)
         registerPreviewTools(environment: previewCenter)
+        // The agent can author skills through the same reviewed pipeline as
+        // the on-device UI.
+        registerSkillTools(creator: LocalSkillCreator(center: skillsCenter))
+        // Durable memory: the agent records and recalls across runs.
+        registerMemoryTools(store: intelligenceStore)
+        // Supervisor-Worker delegation is strictly read-only. Each run binds
+        // its selected provider/model into this registry before execution.
+        registerDelegateTool(runners: subagentRunnerRegistry)
+        // VNC remote-desktop driving: the agent clicks/types into the user's
+        // open VNC session.
+        registerVNCTools { [weak remoteSessionCenter] in
+            remoteSessionCenter?.activeVNCSession()
+        }
         self.remotePythonProbe = FloeExecution.RemotePythonProbe(service: pythonService)
         self.localPythonProbe = FloeExecution.LocalPythonCapabilityProbe(
             service: localPythonService
@@ -179,9 +212,9 @@ final class AppEnvironment: ObservableObject {
     /// Builds the remote-Python service against the shared host store.
     /// Sessions open on demand through SSHConnectionService; credentials
     /// resolve through the Keychain and are never held beyond the connect.
-    private static func makeRemotePythonService(
+    private static func makeRemoteServices(
         hostStore: RemoteHostStore
-    ) -> RemotePythonService {
+    ) -> (python: RemotePythonService, ssh: SSHCommandService) {
         let sshService = SSHConnectionService(hostStore: hostStore)
 
         let sessionFactory: RemotePythonService.SessionFactory = { hostID in
@@ -217,11 +250,17 @@ final class AppEnvironment: ObservableObject {
             try await hostStore.hosts().first?.id
         }
 
-        return RemotePythonService(
+        let python = RemotePythonService(
             sessionFactory: sessionFactory,
             hostResolver: hostResolver,
             defaultHostProvider: defaultHostProvider
         )
+        let ssh = SSHCommandService(
+            sessionFactory: sessionFactory,
+            hostResolver: hostResolver,
+            defaultHostProvider: defaultHostProvider
+        )
+        return (python, ssh)
     }
 
     /// Builds the production environment against the on-disk database,

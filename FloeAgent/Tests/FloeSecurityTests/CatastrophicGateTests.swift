@@ -176,11 +176,14 @@ struct ApprovalPolicyTests {
         }
     }
 
-    @Test("Full access still asks before deletion, credentials, or upload")
+    @Test("Full access still asks before irreversible or persistent sensitive actions")
     func taskFullAccessSensitiveBoundary() async throws {
         let policy = TaskFullAccessPolicy()
         #expect(try await policy.decide(action()).permitsExecution)
-        for risk in ["deletesFiles", "accessesCredentials", "sendsDataToProvider"] {
+        for risk in [
+            "deletesFiles", "accessesCredentials", "sendsDataToProvider",
+            "persistsPersonalData", "changesAgentBehavior"
+        ] {
             guard case .escalateToHuman = try await policy.decide(
                 action(riskLabels: [risk])
             ) else {

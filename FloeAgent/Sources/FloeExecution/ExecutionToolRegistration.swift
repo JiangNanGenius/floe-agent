@@ -26,6 +26,8 @@ public func registerExecutionTools(
     service: any ScriptExecutionService = JavaScriptExecutionService(),
     pythonService: RemotePythonService? = nil,
     localPythonService: LocalPythonService? = nil,
+    sshCommandService: SSHCommandService? = nil,
+    httpRequestService: HTTPRequestService = HTTPRequestService(),
     includeOnDeviceJavaScript: Bool = false
 ) -> any ScriptExecutionService {
     // Compile-time catalog descriptors.
@@ -38,6 +40,10 @@ public func registerExecutionTools(
     if localPythonService != nil {
         ToolCatalog.register(LocalPythonTool.self)
     }
+    if sshCommandService != nil {
+        ToolCatalog.register(SSHExecTool.self)
+    }
+    ToolCatalog.register(HTTPRequestTool.self)
     // Runtime runners.
     if includeOnDeviceJavaScript {
         registry.register(JavaScriptExecutionTool(service: service))
@@ -48,5 +54,9 @@ public func registerExecutionTools(
     if let localPythonService {
         registry.register(LocalPythonTool(service: localPythonService))
     }
+    if let sshCommandService {
+        registry.register(SSHExecTool(service: sshCommandService))
+    }
+    registry.register(HTTPRequestTool(service: httpRequestService))
     return service
 }

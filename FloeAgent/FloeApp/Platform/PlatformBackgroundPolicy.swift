@@ -140,6 +140,7 @@ public final class BackgroundPolicyRegistry {
     private var policy: (any PlatformBackgroundPolicy)?
     private var continuedTaskHandler: ((BGContinuedProcessingTask) -> Void)?
     private var refreshTaskHandler: ((BGAppRefreshTask) -> Void)?
+    private var processingTaskHandler: ((BGProcessingTask) -> Void)?
 
     private init() {}
 
@@ -183,6 +184,20 @@ public final class BackgroundPolicyRegistry {
             return
         }
         continuedTaskHandler(task)
+    }
+
+    public func installProcessingTaskHandler(
+        _ handler: @escaping (BGProcessingTask) -> Void
+    ) {
+        processingTaskHandler = handler
+    }
+
+    public func handleProcessingTask(_ task: BGProcessingTask) {
+        guard let processingTaskHandler else {
+            task.setTaskCompleted(success: false)
+            return
+        }
+        processingTaskHandler(task)
     }
 
     public func beginShortCompletion(name: String) -> BackgroundExecutionLease? {

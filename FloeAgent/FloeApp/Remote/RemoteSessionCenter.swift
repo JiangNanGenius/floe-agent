@@ -212,6 +212,11 @@ final class RemoteSessionCenter: ObservableObject {
         vncOwners[sessionID]?.session
     }
 
+    /// The first connected VNC session the agent can drive (nil = none open).
+    func activeVNCSession() -> VNCSession? {
+        vncOwners.values.compactMap(\.session).first
+    }
+
     /// Current FPS for a VNC session.
     func vncFPS(for sessionID: UUID) -> Double {
         vncOwners[sessionID]?.framesPerSecond ?? 0

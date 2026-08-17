@@ -38,6 +38,8 @@ struct FilePreviewView: View {
                 }
             } else if let content {
                 contentView(content)
+            } else if !isTextual {
+                binaryPlaceholder
             } else {
                 ProgressView("inspector.preview.loading")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -136,6 +138,25 @@ struct FilePreviewView: View {
         center.currentRootURL != nil
     }
 
+    /// Placeholder for non-text files (Office documents, PDFs, images, …):
+    /// never decode their bytes as text — offer system Quick Look instead.
+    private var binaryPlaceholder: some View {
+        ContentUnavailableView {
+            Label(fileName, systemImage: "doc.richtext")
+        } description: {
+            Text("inspector.preview.binary")
+        } actions: {
+            Button {
+                presentQuickLook()
+            } label: {
+                Label("inspector.preview.quicklook", systemImage: "eye")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!quickLookAvailable)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     @ViewBuilder
     private func contentView(_ content: FileContent) -> some View {
         ScrollView {
@@ -172,6 +193,13 @@ struct FilePreviewView: View {
         content = nil
         guard let service = center.fileService else {
             loadError = String(localized: "inspector.no_workspace")
+            return
+        }
+        guard isTextual else {
+            // Office documents, PDFs, images and other binaries are previewed
+            // via Quick Look — never decoded as UTF-8 text (which would show
+            // garbled bytes).
+            await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
             return
         }
         do {

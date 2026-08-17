@@ -2349,6 +2349,40 @@
         }
       }
     },
+    "inspector.editor.edit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑"
+          }
+        }
+      }
+    },
+    "inspector.editor.preview": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preview"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预览"
+          }
+        }
+      }
+    },
     "inspector.editor.save": {
       "extractionState": "manual",
       "localizations": {
@@ -2430,6 +2464,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "尚未打开工作区"
+          }
+        }
+      }
+    },
+    "inspector.preview.binary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This document is previewed with Quick Look"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此文档通过快速查看预览"
           }
         }
       }

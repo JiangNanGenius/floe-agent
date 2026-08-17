@@ -20,6 +20,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private var notifiedApprovalRuns: Set<UUID> = []
     private var lease: BackgroundExecutionLease?
     private var refreshWork: Task<Void, Never>?
+    private var processingWork: Task<Void, Never>?
+    private var activeProcessingTaskID: UUID?
     @available(iOS 26.0, *)
     private var continuedTask: BGContinuedProcessingTask?
 
@@ -33,6 +35,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         BackgroundPolicyRegistry.shared.installRefreshTaskHandler { [weak self] task in
             self?.acceptRefreshTask(task)
+        }
+        BackgroundPolicyRegistry.shared.installProcessingTaskHandler { [weak self] task in
+            self?.acceptProcessingTask(task)
         }
         UNUserNotificationCenter.current().delegate = self
         Task { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) }
@@ -147,6 +152,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             Task { [weak self] in
                 guard let self else { return }
                 await self.environment.conversationCenter.persistActiveRecoveryPoints()
+                // Provider-backed memory/profile work is not safe inside the
+                // short pre-suspension lease. Schedule it as processing work.
+                self.scheduleMemoryDeepSleep()
                 self.lease?.release()
                 self.lease = nil
             }
@@ -156,12 +164,46 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             Task { [weak self] in
                 await self?.environment.conversationCenter.resumeSafeRunsAfterForeground()
                 await self?.runDueSchedules()
+                // ④ catch-up dream on foreground resume (gated internally).
+                await self?.environment.memoryDreamService.deepDream()
             }
         case .inactive:
             break
         @unknown default:
             break
         }
+    }
+
+    private func acceptProcessingTask(_ task: BGProcessingTask) {
+        processingWork?.cancel()
+        let taskID = UUID()
+        activeProcessingTaskID = taskID
+        task.expirationHandler = { [weak self, weak task] in
+            Task { @MainActor in
+                guard let self, self.activeProcessingTaskID == taskID else { return }
+                self.activeProcessingTaskID = nil
+                self.processingWork?.cancel()
+                self.processingWork = nil
+                task?.setTaskCompleted(success: false)
+            }
+        }
+        processingWork = Task { [weak self, weak task] in
+            guard let self else { return }
+            // ③ deep sleep: regenerate profile/SOUL when due and distill
+            // memory from the most recent conversation.
+            await self.environment.memoryDreamService.deepDream()
+            guard !Task.isCancelled, self.activeProcessingTaskID == taskID else { return }
+            self.activeProcessingTaskID = nil
+            task?.setTaskCompleted(success: true)
+            self.processingWork = nil
+        }
+    }
+
+    private func scheduleMemoryDeepSleep() {
+        let request = BGProcessingTaskRequest(identifier: BackgroundTaskKind.processing.rawValue)
+        request.requiresNetworkConnectivity = true
+        request.requiresExternalPower = true
+        try? BGTaskScheduler.shared.submit(request)
     }
 
     private func acceptRefreshTask(_ task: BGAppRefreshTask) {

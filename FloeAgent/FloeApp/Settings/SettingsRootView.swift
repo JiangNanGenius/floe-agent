@@ -53,6 +53,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
 /// Settings shell: category list + per-category detail.
 struct SettingsRootView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @State private var selection: SettingsSection? = .general
 
@@ -67,6 +68,11 @@ struct SettingsRootView: View {
                         .accessibilityIdentifier("settings.section.\(section.rawValue)")
                 }
                 .navigationTitle("settings.title")
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("action.done") { dismiss() }
+                    }
+                }
             } detail: {
                 detailView(for: selection ?? .general)
             }
@@ -83,6 +89,11 @@ struct SettingsRootView: View {
             .navigationTitle("settings.title")
             .navigationDestination(for: SettingsSection.self) { section in
                 detailView(for: section)
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("action.done") { dismiss() }
+                }
             }
         }
     }

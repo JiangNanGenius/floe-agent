@@ -401,8 +401,8 @@ private enum ConfigurationCodec {
             throw FloeError.invalidConfiguration("Vision model must support image understanding")
         }
         if let capabilities = try capabilities(for: preferences.approvalModelID),
-           !capabilities.contains(.approval) {
-            throw FloeError.invalidConfiguration("Approval model lacks approval capability")
+           !capabilities.contains(.text) {
+            throw FloeError.invalidConfiguration("Approval model must support text")
         }
         if let capabilities = try capabilities(for: preferences.sharedImageModelID),
            !(capabilities.contains(.imageGeneration) && capabilities.contains(.imageEditing)) {

@@ -30,7 +30,11 @@ public final class iPhoneBackgroundPolicy: PlatformBackgroundPolicy, @unchecked 
         _ = BackgroundTaskRegistrar.register(
             identifier: BackgroundTaskKind.processing.rawValue
         ) { task in
-            task.setTaskCompleted(success: true)
+            guard let task = task as? BGProcessingTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            Task { @MainActor in BackgroundPolicyRegistry.shared.handleProcessingTask(task) }
         }
     }
 

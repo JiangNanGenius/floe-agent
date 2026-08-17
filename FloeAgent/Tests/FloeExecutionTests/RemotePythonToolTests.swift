@@ -157,6 +157,7 @@ struct RemotePythonToolTests {
         #expect(throws: FloeError.self) { try tool.validate(.init(script: "  ")) }
         let big = String(repeating: "x", count: RemotePythonTool.maxScriptBytes + 1)
         #expect(throws: FloeError.self) { try tool.validate(.init(script: big)) }
+        #expect(throws: FloeError.self) { try tool.validate(.init(script: "print(1)")) }
         #expect(throws: FloeError.self) { try tool.validate(.init(script: "print(1)", hostID: "not-a-uuid")) }
     }
 

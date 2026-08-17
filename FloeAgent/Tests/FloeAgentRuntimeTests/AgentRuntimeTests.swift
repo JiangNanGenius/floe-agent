@@ -251,6 +251,31 @@ struct AgentRuntimeTests {
         #expect(executor.executedCalls[0].idempotencyKey.count == 64)
     }
 
+    @Test("Multiple tool calls from one response are paired exactly once")
+    func toolBatchPairsEveryCallOnce() async throws {
+        let adapter = MockAdapter()
+        let first = try TestFixtures.toolCall(id: "batch_1")
+        let second = try TestFixtures.toolCall(id: "batch_2")
+        adapter.script = [
+            [
+                .toolRequest(first),
+                .toolRequest(second),
+                .completed(AgentEvent.CompletionInfo(stopReason: .endTurn))
+            ],
+            [.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let runtime = makeRuntime(adapter: adapter, executor: executor)
+
+        try await runtime.start(goal: "echo twice in one turn")
+
+        #expect(executor.executedCalls.map(\.id).sorted() == [first.id, second.id])
+        #expect(adapter.requests.count == 2)
+        #expect(adapter.requests[1].pendingToolCalls.map(\.id) == [first.id, second.id])
+        #expect(adapter.requests[1].toolResults.map(\.callID) == [first.id, second.id])
+    }
+
     @Test("Side-effecting tool under human policy waits for approval; allow executes")
     func waitingApprovalAllow() async throws {
         let adapter = MockAdapter()

@@ -1,5 +1,5 @@
 {
-  "originHash" : "397f4bc7d9581874b90670d5e7ba56be7851db8b558d9df2173aa68fdbc93f55",
+  "originHash" : "98737bc39b3e9725763003f57eaca00c92d8229ec29b2c9f5f32f7a06c468c08",
   "pins" : [
     {
       "identity" : "bigint",
@@ -25,6 +25,15 @@
       "state" : {
         "branch" : "foundationessentials",
         "revision" : "a59b4d91ebb22011656c830f874fe7152e183a57"
+      }
+    },
+    {
+      "identity" : "cuneiform",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Jramos57/cuneiform.git",
+      "state" : {
+        "revision" : "2a9bffb139e7da34705602a8b9cf95687c6ca6c6",
+        "version" : "0.1.0"
       }
     },
     {

@@ -94,6 +94,29 @@ final class FileTreeViewModel: ObservableObject {
         )
     }
 
+    // MARK: - Mutations
+
+    /// Creates a directory under `parent` and reloads the tree.
+    func createDirectory(parent relativePath: String, name: String) async throws {
+        let path = relativePath.isEmpty ? name : "\(relativePath)/\(name)"
+        try center.createDirectory(relativePath: path)
+        await loadRoot()
+    }
+
+    /// Deletes a node and reloads the tree.
+    func delete(_ node: FileTreeNode, recursive: Bool = false) async throws {
+        try center.delete(relativePath: node.relativePath, recursive: recursive)
+        await loadRoot()
+    }
+
+    /// Renames a node (a move within its parent directory).
+    func rename(_ node: FileTreeNode, to newName: String) async throws {
+        let parent = (node.relativePath as NSString).deletingLastPathComponent
+        let destination = parent.isEmpty ? newName : "\(parent)/\(newName)"
+        try center.move(from: node.relativePath, to: destination)
+        await loadRoot()
+    }
+
     // MARK: - Search
 
     /// Debounced search: waits 300 ms after the last keystroke.
