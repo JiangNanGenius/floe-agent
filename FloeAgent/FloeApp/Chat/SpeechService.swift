@@ -14,6 +14,7 @@ import SwiftUI
 final class SpeechService: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     private let synthesizer = AVSpeechSynthesizer()
     private var activeUtterance: AVSpeechUtterance?
+    private var activeUtteranceIdentifier: ObjectIdentifier?
 
     @Published private(set) var isSpeaking = false
     @Published private(set) var speakingText: String?
@@ -36,6 +37,7 @@ final class SpeechService: NSObject, ObservableObject, AVSpeechSynthesizerDelega
         utterance.voice = AVSpeechSynthesisVoice(language: Self.preferredLanguage(for: text))
             ?? AVSpeechSynthesisVoice(language: "en-US")
         activeUtterance = utterance
+        activeUtteranceIdentifier = ObjectIdentifier(utterance)
         synthesizer.speak(utterance)
         isSpeaking = true
         speakingText = text
@@ -43,6 +45,7 @@ final class SpeechService: NSObject, ObservableObject, AVSpeechSynthesizerDelega
 
     func stop() {
         activeUtterance = nil
+        activeUtteranceIdentifier = nil
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
         }
@@ -64,9 +67,11 @@ final class SpeechService: NSObject, ObservableObject, AVSpeechSynthesizerDelega
         _ synthesizer: AVSpeechSynthesizer,
         didFinish utterance: AVSpeechUtterance
     ) {
+        let identifier = ObjectIdentifier(utterance)
         Task { @MainActor in
-            guard self.activeUtterance === utterance else { return }
+            guard self.activeUtteranceIdentifier == identifier else { return }
             self.activeUtterance = nil
+            self.activeUtteranceIdentifier = nil
             self.isSpeaking = false
             self.speakingText = nil
         }
@@ -76,9 +81,11 @@ final class SpeechService: NSObject, ObservableObject, AVSpeechSynthesizerDelega
         _ synthesizer: AVSpeechSynthesizer,
         didCancel utterance: AVSpeechUtterance
     ) {
+        let identifier = ObjectIdentifier(utterance)
         Task { @MainActor in
-            guard self.activeUtterance === utterance else { return }
+            guard self.activeUtteranceIdentifier == identifier else { return }
             self.activeUtterance = nil
+            self.activeUtteranceIdentifier = nil
             self.isSpeaking = false
             self.speakingText = nil
         }
