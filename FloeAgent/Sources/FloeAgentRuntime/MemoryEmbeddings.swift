@@ -1,4 +1,3 @@
-import Accelerate
 import Crypto
 import Foundation
 import FloeCore
@@ -135,17 +134,25 @@ public struct AppleNaturalLanguageEmbeddingProvider: MemoryEmbeddingProvider {
 #endif
 
 public enum MemoryVectorMath {
-    /// Cosine similarity backed by Accelerate. Nil means the vectors cannot
-    /// be compared; callers must never silently truncate dimensions.
+    /// Portable cosine similarity. Nil means the vectors cannot be compared;
+    /// callers must never silently truncate dimensions.
     public static func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Double? {
         guard !lhs.isEmpty, lhs.count == rhs.count,
               lhs.allSatisfy(\.isFinite), rhs.allSatisfy(\.isFinite) else { return nil }
-        let dot = vDSP.dot(lhs, rhs)
-        let lhsNormSquared = vDSP.sumOfSquares(lhs)
-        let rhsNormSquared = vDSP.sumOfSquares(rhs)
+        var dot = 0.0
+        var lhsNormSquared = 0.0
+        var rhsNormSquared = 0.0
+        for index in lhs.indices {
+            let left = Double(lhs[index])
+            let right = Double(rhs[index])
+            dot += left * right
+            lhsNormSquared += left * left
+            rhsNormSquared += right * right
+        }
         guard lhsNormSquared > 0, rhsNormSquared > 0 else { return nil }
         let value = dot / sqrt(lhsNormSquared * rhsNormSquared)
-        return Double(min(1, max(-1, value)))
+        guard value.isFinite else { return nil }
+        return min(1, max(-1, value))
     }
 }
 

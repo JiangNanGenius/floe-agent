@@ -13,7 +13,7 @@ struct PersonalizationMemoryTests {
         }
     }
 
-    @Test("Accelerate cosine rejects incompatible spaces")
+    @Test("cosine similarity rejects incompatible spaces")
     func vectorMath() {
         #expect(MemoryVectorMath.cosineSimilarity([1, 0], [1, 0]) == 1)
         #expect(MemoryVectorMath.cosineSimilarity([1, 0], [0, 1]) == 0)
