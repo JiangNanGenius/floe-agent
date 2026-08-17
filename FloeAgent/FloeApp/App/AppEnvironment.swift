@@ -183,6 +183,13 @@ final class AppEnvironment: ObservableObject {
         let pythonService = remoteServices.python
         let sshCommandService = remoteServices.ssh
         let localPythonService = CPythonServiceFactory.make()
+        self.remotePythonProbe = FloeExecution.RemotePythonProbe(service: pythonService)
+        self.localPythonProbe = FloeExecution.LocalPythonCapabilityProbe(
+            service: localPythonService
+        )
+
+        // All stored properties are initialized above. Registrations below
+        // may now safely resolve lazy centers that retain this environment.
         registerExecutionTools(
             pythonService: pythonService,
             localPythonService: localPythonService,
@@ -203,10 +210,6 @@ final class AppEnvironment: ObservableObject {
         registerVNCTools { [weak remoteSessionCenter] in
             await remoteSessionCenter?.activeVNCSession()
         }
-        self.remotePythonProbe = FloeExecution.RemotePythonProbe(service: pythonService)
-        self.localPythonProbe = FloeExecution.LocalPythonCapabilityProbe(
-            service: localPythonService
-        )
     }
 
     /// Builds the remote-Python service against the shared host store.
