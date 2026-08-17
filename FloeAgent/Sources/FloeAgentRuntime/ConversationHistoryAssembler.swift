@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
+#endif
 import FloeModels
 import FloePersistence
 
@@ -71,6 +73,7 @@ public struct ConversationHistoryAssembler: Sendable {
     }
 
     private static func inlineImage(_ attachment: AttachmentRef) -> ConversationImagePart? {
+        #if canImport(UniformTypeIdentifiers)
         guard attachment.kind == .image,
               attachment.byteCount <= 8 * 1_024 * 1_024,
               let bookmark = attachment.urlBookmark else { return nil }
@@ -87,6 +90,12 @@ public struct ConversationHistoryAssembler: Sendable {
         let mime = UTType(attachment.uti)?.preferredMIMEType
             ?? (url.pathExtension.lowercased() == "png" ? "image/png" : "image/jpeg")
         return ConversationImagePart(mimeType: mime, base64: data.base64EncodedString())
+        #else
+        // Security-scoped bookmarks and UTType are Apple-platform APIs.
+        // Linux builds retain text history and safely omit local image bytes.
+        _ = attachment
+        return nil
+        #endif
     }
 
     private static func historicalSummary(_ messages: [PersistedMessage]) -> String {

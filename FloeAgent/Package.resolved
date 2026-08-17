@@ -1,5 +1,5 @@
 {
-  "originHash" : "98737bc39b3e9725763003f57eaca00c92d8229ec29b2c9f5f32f7a06c468c08",
+  "originHash" : "ce7473e676f6348dc6a59e9ac28a8b75348814537a23092f4b2f2c2c2b13b23d",
   "pins" : [
     {
       "identity" : "bigint",
@@ -25,15 +25,6 @@
       "state" : {
         "branch" : "foundationessentials",
         "revision" : "a59b4d91ebb22011656c830f874fe7152e183a57"
-      }
-    },
-    {
-      "identity" : "cuneiform",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Jramos57/cuneiform.git",
-      "state" : {
-        "revision" : "2a9bffb139e7da34705602a8b9cf95687c6ca6c6",
-        "version" : "0.1.0"
       }
     },
     {
@@ -168,6 +159,15 @@
       "state" : {
         "revision" : "ca6f80ef534248d2f65c1b640656e3c9a270bfeb",
         "version" : "1.10.0"
+      }
+    },
+    {
+      "identity" : "zipfoundation",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/weichsel/ZIPFoundation.git",
+      "state" : {
+        "revision" : "22787ffb59de99e5dc1fbfe80b19c97a904ad48d",
+        "version" : "0.9.20"
       }
     }
   ],

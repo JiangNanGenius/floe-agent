@@ -49,9 +49,9 @@ let package = Package(
         // so a stable-version requirement cannot resolve. Revision pin of
         // the 1.1.0 tag commit (deviation flagged in report).
         .package(url: "https://github.com/royalapplications/royalvnc.git", revision: "92d4427c73817d8f849bb289ff190aa4b40c44ea"),
-        // Pure-Swift Office Open XML spreadsheet read/write (formulas, styles).
-        // Used by FloeDocuments for xlsx document editing.
-        .package(url: "https://github.com/Jramos57/cuneiform.git", exact: "0.1.0")
+        // ZIPFoundation supplies the bounded archive reader used for local,
+        // value-only Office Open XML spreadsheet inspection.
+        .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20")
     ],
     targets: [
         // MARK: - Cross-platform targets (buildable on macOS host without iOS SDK)
@@ -217,7 +217,7 @@ let package = Package(
                 "FloeCore",
                 "FloeTools",
                 "FloeWorkspace",
-                .product(name: "Cuneiform", package: "cuneiform"),
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeDocuments",
@@ -421,7 +421,10 @@ let package = Package(
 
         .testTarget(
             name: "FloeDocumentsTests",
-            dependencies: ["FloeDocuments"],
+            dependencies: [
+                "FloeDocuments",
+                .product(name: "ZIPFoundation", package: "ZIPFoundation")
+            ],
             path: "Tests/FloeDocumentsTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
