@@ -40,7 +40,12 @@ jobs:
         run: swift build
 
       - name: SPM test (cross-platform targets)
-        run: swift test
+        run: |
+          # JavaScriptCore cannot terminate an evaluated infinite loop. Run its
+          # deadline tests in a separate process so abandoned VM threads cannot
+          # starve unrelated actor/state-machine tests on shared CI runners.
+          swift test --skip 'FloeExecutionTests.JavaScriptEngineTests'
+          swift test --filter 'FloeExecutionTests.JavaScriptEngineTests'
 
       - name: xcodebuild iPhone Simulator
         run: |
