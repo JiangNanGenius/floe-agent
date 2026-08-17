@@ -8,7 +8,68 @@ import Testing
 @testable import FloeProviders
 import FloeTestSupport
 
-@Suite("FloeProviders.ImageAdapters")
+private final class ImageAdapterURLProtocol: URLProtocol, @unchecked Sendable {
+    struct Stub {
+        var statusCode: Int
+        var body: Data
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var stubs: [Stub] = []
+    nonisolated(unsafe) private(set) static var requests: [URLRequest] = []
+
+    static func prepare(_ newStubs: [Stub]) {
+        lock.lock()
+        stubs = newStubs
+        requests = []
+        lock.unlock()
+    }
+
+    static func snapshotRequests() -> [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        var recordedRequest = request
+        if recordedRequest.httpBody == nil, let stream = recordedRequest.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var body = Data()
+            var buffer = [UInt8](repeating: 0, count: 4_096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                guard count > 0 else { break }
+                body.append(buffer, count: count)
+            }
+            recordedRequest.httpBody = body
+        }
+        Self.lock.lock()
+        Self.requests.append(recordedRequest)
+        let stub = Self.stubs.isEmpty
+            ? Stub(statusCode: 500, body: Data(#"{"error":"missing stub"}"#.utf8))
+            : Self.stubs.removeFirst()
+        Self.lock.unlock()
+
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: stub.statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: stub.body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+@Suite("FloeProviders.ImageAdapters", .serialized)
 struct ImageAdapterTests {
 
     private func provider(kind: ProviderKind) -> ProviderProfile {
@@ -42,7 +103,8 @@ struct ImageAdapterTests {
         #expect(ark.supportedOperations(for: provider(kind: .volcengineArk)).contains(.edit))
 
         let alibaba = AlibabaImageAdapter()
-        #expect(alibaba.supportedOperations(for: provider(kind: .alibabaStudio)).isEmpty)
+        #expect(alibaba.supportedOperations(for: provider(kind: .alibabaStudio)).contains(.generate))
+        #expect(!alibaba.supportedOperations(for: provider(kind: .alibabaStudio)).contains(.edit))
     }
 
     @Test("Unsupported operations throw unsupportedOperation, never fabricate")
@@ -59,8 +121,96 @@ struct ImageAdapterTests {
     func supportsConsistency() {
         let adapter = AlibabaImageAdapter()
         let alibabaProvider = provider(kind: .alibabaStudio)
-        #expect(!adapter.supports(.generate, for: alibabaProvider))
+        #expect(adapter.supports(.generate, for: alibabaProvider))
         #expect(!adapter.supports(.edit, for: alibabaProvider))
         #expect(!adapter.supports(.removeBackground, for: alibabaProvider))
+    }
+
+    @Test("Alibaba legacy image models use the image-synthesis protocol")
+    func alibabaLegacyWireContract() async throws {
+        let requests = try await exerciseAlibabaSubmission(model: "wan2.5-t2i-preview", size: "1024x1024")
+        #expect(requests.count == 2)
+        #expect(requests[0].url?.path == "/api/v1/services/aigc/text2image/image-synthesis")
+        #expect(requests[1].url?.path == "/api/v1/tasks/task-123")
+        #expect(requests[0].value(forHTTPHeaderField: "X-DashScope-Async") == "enable")
+        #expect(requests[0].value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+        #expect(requests[1].value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+
+        let body = try #require(requests[0].httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let input = try #require(json["input"] as? [String: Any])
+        let parameters = try #require(json["parameters"] as? [String: Any])
+        #expect(input["prompt"] as? String == "draw a lake")
+        #expect(parameters["size"] as? String == "1024*1024")
+        #expect(parameters["n"] as? Int == 4)
+    }
+
+    @Test("Alibaba Wan 2.6 image models use the message protocol")
+    func alibabaWan26WireContract() async throws {
+        let requests = try await exerciseAlibabaSubmission(model: "wan2.6-t2i", size: nil)
+        #expect(requests.count == 2)
+        #expect(requests[0].url?.path == "/api/v1/services/aigc/image-generation/generation")
+
+        let body = try #require(requests[0].httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let input = try #require(json["input"] as? [String: Any])
+        let messages = try #require(input["messages"] as? [[String: Any]])
+        let content = try #require(messages.first?["content"] as? [[String: Any]])
+        let parameters = try #require(json["parameters"] as? [String: Any])
+        #expect(messages.first?["role"] as? String == "user")
+        #expect(content.first?["text"] as? String == "draw a lake")
+        #expect(parameters["size"] as? String == "1280*1280")
+        #expect(parameters["prompt_extend"] as? Bool == true)
+        #expect(parameters["watermark"] as? Bool == false)
+    }
+
+    @Test("Alibaba rejects result URLs outside its configured trust boundary")
+    func alibabaRejectsUntrustedResultHost() async throws {
+        let pollBody = Data(
+            #"{"output":{"task_id":"task-123","task_status":"SUCCEEDED","results":[{"url":"https://example.com/result.png"}]}}"#.utf8
+        )
+        let requests = try await exerciseAlibabaSubmission(
+            model: "wan2.5-t2i-preview",
+            size: nil,
+            pollBody: pollBody
+        )
+        #expect(requests.count == 2)
+    }
+
+    private func exerciseAlibabaSubmission(
+        model: String,
+        size: String?,
+        pollBody: Data = Data(#"{"output":{"task_id":"task-123","task_status":"FAILED"}}"#.utf8)
+    ) async throws -> [URLRequest] {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ImageAdapterURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        ImageAdapterURLProtocol.prepare([
+            .init(statusCode: 200, body: Data(#"{"output":{"task_id":"task-123","task_status":"PENDING"}}"#.utf8)),
+            .init(statusCode: 200, body: pollBody)
+        ])
+
+        let adapter = AlibabaImageAdapter(session: session)
+        let profile = ProviderProfile(
+            kind: .alibabaStudio,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")!
+        )
+        let request = RemoteImageRequest(
+            operation: .generate,
+            prompt: "draw a lake",
+            sizeHint: size,
+            count: 8,
+            modelRemoteID: model
+        )
+        await #expect(throws: RemoteImageError.self) {
+            _ = try await adapter.perform(
+                request,
+                provider: profile,
+                credentials: ProviderCredentials(apiKey: "test-key")
+            )
+        }
+        return ImageAdapterURLProtocol.snapshotRequests()
     }
 }

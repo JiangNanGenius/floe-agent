@@ -2,7 +2,7 @@
 
 [Website](https://www.floe-agent.com/) · [Product README](../README.md) · [中文 README](../README.zh-CN.md) · [Architecture](../docs/ARCHITECTURE_OVERVIEW.md) · [User guide](../docs/USER_GUIDE.md) · [中文使用指南](../docs/USER_GUIDE.zh-CN.md)
 
-This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for Floe Agent 1.2.x. The minimum deployment target is iOS/iPadOS 26.0 and the current database schema is v11.
+This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for Floe Agent 1.2.x. The minimum deployment target is iOS/iPadOS 26.0 and the current database schema is v14.
 
 ## Build prerequisites
 
@@ -56,7 +56,7 @@ CI regenerates the project and fails if the committed project differs.
 | `FloeProviders` | Streaming wire adapters and multimodal/image provider translation. |
 | `FloeAgentRuntime` | Continuous run state machine, context assembly, Plan/Goal/Memory, harness, checkpoints, and tool loop. |
 | `FloeTools`, `FloeSecurity` | Compile-time tool catalog, scoped execution, approvals, audit chain, Keychain, and catastrophic-action gate. |
-| `FloePersistence` | GRDB stores, atomic run launch, credential metadata, archive state, and append-only migrations through v11. |
+| `FloePersistence` | GRDB stores, atomic run launch, credential metadata, archive state, and append-only migrations through v14. |
 | `FloeWorkspace`, `FloeDocuments`, `FloeImages` | File scopes, change evidence, document working copies, and image operations. |
 | `FloeSSH`, `FloeExecution`, `FloeVNC` | SSH/jump/PTY/forwarding, remote execution, and Metal-backed VNC. |
 | `FloeSkills` | Declarative Skill validation, compatibility, provenance, install staging, and tool ceilings. |
@@ -78,7 +78,7 @@ CI regenerates the project and fails if the committed project differs.
 Version and build number live in `project.yml`. A SemVer tag must match `MARKETING_VERSION`, and the integer build must increase from the previous tag.
 
 ```bash
-scripts/release_preflight.sh v1.2.7
+scripts/release_preflight.sh v1.2.8
 scripts/pin_check.sh
 scripts/secret_scan.sh
 scripts/license_inventory.sh

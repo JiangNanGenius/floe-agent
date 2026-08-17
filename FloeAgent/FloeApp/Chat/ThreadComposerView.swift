@@ -371,7 +371,7 @@ struct ThreadComposerView: View {
         switch approvalMode {
         case .ask: "询问"
         case .automatic: "自动审批"
-        case .fullAccess: "完全放开"
+        case .fullAccess: "完全访问"
         }
     }
 

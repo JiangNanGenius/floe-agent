@@ -17,7 +17,7 @@ struct DraftTaskPermissionsSheet: View {
                     Picker("新任务", selection: modeBinding) {
                         Text("询问").tag(TaskApprovalMode.ask)
                         Text("自动审批").tag(TaskApprovalMode.automatic)
-                        Text("完全放开").tag(TaskApprovalMode.fullAccess)
+                        Text("完全访问").tag(TaskApprovalMode.fullAccess)
                     }
                     .pickerStyle(.segmented)
                     Text(explanation)
@@ -74,7 +74,7 @@ struct DraftTaskPermissionsSheet: View {
             }
             if try await context.evaluatePolicy(
                 .deviceOwnerAuthentication,
-                localizedReason: "确认新任务启用完全放开权限"
+                localizedReason: "确认新任务启用完全访问权限"
             ) {
                 policy.approvalMode = .fullAccess
                 errorMessage = nil

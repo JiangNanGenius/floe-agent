@@ -115,9 +115,7 @@ jobs:
           test "${{ steps.package.outputs.build }}" = "${{ steps.release.outputs.build }}"
           APP_PATH="$(find "$RUNNER_TEMP/FloeDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$APP_PATH"
-          gitleaks detect \
-            --source "$APP_PATH" \
-            --no-git \
+          gitleaks dir "$APP_PATH" \
             --redact \
             --report-path release-assets/app-gitleaks-report.json
           cp sbom.spdx.json release-assets/

@@ -54,7 +54,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Signed builds are distributed through TestFlight when a testing group is available. The current source targets Floe Agent 1.2.7 (build 18); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) for artifacts that actually completed the release gates. TestFlight access may remain limited while the project is in prerelease.
+Signed builds are distributed through TestFlight when a testing group is available. The current source targets Floe Agent 1.2.8 (build 19); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) for artifacts that actually completed the release gates. TestFlight access may remain limited while the project is in prerelease.
 
 ### Unsigned IPA
 
@@ -105,7 +105,7 @@ See the [English user guide](docs/USER_GUIDE.md), [简体中文使用指南](doc
 
 ### Python execution
 
-Floe does not download or execute a Python runtime inside the App Store app. Pair an SSH host that has `python3`, trust its host key in the Hosts screen, select that host as the task execution target, and allow remote execution in the task policy. `exec.remotePython` then runs bounded source through the same catastrophic-command gate and approval path as other remote commands. Output, stderr, timeout, truncation, cancellation, missing-host, authentication, and missing-Python states are returned explicitly.
+Signed Floe builds bundle a fixed CPython 3.13 runtime and standard library as app resources. `exec.localPython` runs bounded source inside the app sandbox only after the normal execution approval; it has no `pip`, JIT, runtime download, or dynamically installed native packages. For a fuller environment, pair an SSH host that has `python3`, trust its host key, select it as the task execution target, and allow remote execution. `exec.remotePython` uses the same catastrophic-command gate and approval path as other remote commands. Both paths report output, stderr, timeout, truncation, cancellation, and capability failures explicitly.
 
 ### Archive and credential sync
 

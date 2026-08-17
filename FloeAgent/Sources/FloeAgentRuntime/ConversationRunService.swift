@@ -76,6 +76,10 @@ public actor ConversationRunService {
     private let conversationMode: ConversationMode
     private let secretForRedaction: String?
     private let streamedTextLimitBytes: Int
+    /// Whether the selected model advertises native structured tool calling.
+    /// When false the run-context system message omits the tool list so the
+    /// model does not hallucinate pseudo `<tool_call>` markup it cannot execute.
+    private let modelSupportsTools: Bool
     private let logger = FloeLogger(category: .runtime)
     private var streamedText = ""
     /// Text generated since the previous durable interaction boundary.
@@ -188,6 +192,7 @@ public actor ConversationRunService {
         self.resourceAccessCleanup = resourceAccessCleanup
         self.secretForRedaction = credentials.apiKey
         self.streamedTextLimitBytes = configuration.model.limits.clientOutputSafetyBytes
+        self.modelSupportsTools = configuration.model.capabilities.contains(.tools)
         // The sink forwards into the service via closures so callbacks reach
         // the actor without an access-level or retain-cycle problem.
         let forwarder = SinkForwarder()
@@ -269,7 +274,11 @@ public actor ConversationRunService {
         // every model turn sees the workspace, selection, execution target
         // and the available tool names. Not persisted: it is runtime
         // context, not conversation history.
-        await runtime.injectSystemContext(Self.buildContextMessage(runContext, mode: conversationMode))
+        await runtime.injectSystemContext(Self.buildContextMessage(
+            runContext,
+            mode: conversationMode,
+            toolsAvailable: modelSupportsTools
+        ))
         try await runtime.start(goal: goal, images: currentUserImages)
     }
 
@@ -283,7 +292,11 @@ public actor ConversationRunService {
             await ensureDurableGoal(objective: goal)
         }
         await runtime.seedConversationHistory(conversationHistory)
-        await runtime.injectSystemContext(Self.buildContextMessage(runContext, mode: conversationMode))
+        await runtime.injectSystemContext(Self.buildContextMessage(
+            runContext,
+            mode: conversationMode,
+            toolsAvailable: modelSupportsTools
+        ))
         try await runtime.start(goal: goal, images: currentUserImages)
     }
 
@@ -814,11 +827,12 @@ public actor ConversationRunService {
 
     /// Builds the injected system message: workspace name, selected file,
     /// execution target, and the available tool names from the catalog.
-    /// The tool list always reflects the compile-time catalog so the model
-    /// sees exactly what the executor can run.
+    /// When the selected model does not advertise native tool calling, the
+    /// tool list is omitted so it never fabricates pseudo `<tool_call>` text.
     static func buildContextMessage(
         _ context: RunContext?,
-        mode: ConversationMode = .chat
+        mode: ConversationMode = .chat,
+        toolsAvailable: Bool = true
     ) -> String {
         var lines: [String] = ["# Run context"]
         if let workspace = context?.workspaceName, !workspace.isEmpty {
@@ -830,13 +844,17 @@ public actor ConversationRunService {
         if let target = context?.executionTarget, !target.isEmpty {
             lines.append("Execution target: \(target)")
         }
-        let toolNames = context?.availableToolNames.map(Array.init)?.sorted()
-            ?? ToolCatalog.allDescriptors.map(\.name).sorted()
-        lines.append(
-            toolNames.isEmpty
-                ? "Available tools: none registered"
-                : "Available tools: \(toolNames.joined(separator: ", "))"
-        )
+        if toolsAvailable {
+            let toolNames = context?.availableToolNames.map(Array.init)?.sorted()
+                ?? ToolCatalog.allDescriptors.map(\.name).sorted()
+            lines.append(
+                toolNames.isEmpty
+                    ? "Available tools: none registered"
+                    : "Available tools: \(toolNames.joined(separator: ", "))"
+            )
+        } else {
+            lines.append("Available tools: none (native tool calling is disabled for this model)")
+        }
         if let skills = context?.skillInstructions, !skills.isEmpty {
             lines.append("# Active skills")
             lines.append(skills)

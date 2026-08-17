@@ -33,7 +33,7 @@ struct AgentPermissionsView: View {
                 )) {
                     Text("询问").tag(AgentMode.human)
                     Text("自动审批").tag(AgentMode.approvalModel)
-                    Text("完全放开").tag(AgentMode.fullControl)
+                    Text("完全访问").tag(AgentMode.fullControl)
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
                 .pickerStyle(.segmented)
@@ -113,7 +113,7 @@ struct AgentPermissionsView: View {
         }
         .navigationTitle("settings.section.permissions")
         .task { await center.load() }
-        .alert("确认将完全放开设为默认？", isPresented: $isConfirmingFullAccess) {
+        .alert("确认将完全访问设为默认？", isPresented: $isConfirmingFullAccess) {
             Button("取消", role: .cancel) {}
             Button("继续并验证身份", role: .destructive) {
                 Task { await authenticateFullAccess() }
@@ -132,7 +132,7 @@ struct AgentPermissionsView: View {
             }
             guard try await context.evaluatePolicy(
                 .deviceOwnerAuthentication,
-                localizedReason: "确认新任务默认使用完全放开权限"
+                localizedReason: "确认新任务默认使用完全访问权限"
             ) else { return }
             await center.setDefaultAgentMode(.fullControl)
             authenticationError = nil

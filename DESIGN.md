@@ -41,4 +41,4 @@ This direction was selected from seven grounded alternatives because it best ser
 - `docs/design/reference/floe-alpha-ipad-workbench.png`
 - `FloeAgent/FloeApp/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png`
 
-Both generated Alpha references are historical explorations and do not define the 1.2.0 navigation. The current workbench screenshot in `docs/images/floe-agent-new-task-ipad.webp` is the closest checked-in visual evidence; implementation remains the source of truth.
+Both generated Alpha references are historical explorations and do not define the 1.2.x navigation. The current workbench screenshot in `docs/images/floe-agent-new-task-ipad.webp` is the closest checked-in visual evidence; implementation remains the source of truth.

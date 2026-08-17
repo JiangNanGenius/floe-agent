@@ -41,7 +41,9 @@ enum RemoteImageHTTP {
         provider: String,
         apiKey: String?
     ) throws {
-        guard let http = response as? HTTPURLResponse else { return }
+        guard let http = response as? HTTPURLResponse else {
+            throw RemoteImageError.invalidResponse("\(provider) returned a non-HTTP response")
+        }
         guard (200..<300).contains(http.statusCode) else {
             let body = SecretRedactor.redact(
                 String(decoding: data.prefix(512), as: UTF8.self),
@@ -80,11 +82,10 @@ enum RemoteImageDecoder {
                     session: session,
                     maxBytes: maximumImageBytes
                 )
-                if let http = response as? HTTPURLResponse {
-                    guard (200..<300).contains(http.statusCode),
-                          http.mimeType?.lowercased().hasPrefix("image/") == true else {
-                        throw RemoteImageError.invalidResponse("Image download returned a non-image response")
-                    }
+                guard let http = response as? HTTPURLResponse,
+                      (200..<300).contains(http.statusCode),
+                      http.mimeType?.lowercased().hasPrefix("image/") == true else {
+                    throw RemoteImageError.invalidResponse("Image download returned a non-image response")
                 }
                 images.append(imageData)
             }
@@ -104,6 +105,23 @@ enum RemoteImageDecoder {
 }
 
 private final class SafeImageRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let allowedHosts: Set<String>
+    private let allowedDomainSuffixes: [String]
+
+    init(allowedHosts: Set<String> = [], allowedDomainSuffixes: [String] = []) {
+        self.allowedHosts = Set(allowedHosts.map { $0.lowercased() })
+        self.allowedDomainSuffixes = allowedDomainSuffixes.map { $0.lowercased() }
+    }
+
+    private func permits(_ url: URL?) -> Bool {
+        guard RemoteImageDecoder.isAllowedRemoteImageURL(url) else { return false }
+        guard !allowedHosts.isEmpty || !allowedDomainSuffixes.isEmpty else { return true }
+        guard let host = url?.host?.lowercased() else { return false }
+        return allowedHosts.contains(host) || allowedDomainSuffixes.contains {
+            host == $0 || host.hasSuffix(".\($0)")
+        }
+    }
+
     func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
@@ -111,7 +129,7 @@ private final class SafeImageRedirectDelegate: NSObject, URLSessionTaskDelegate,
         newRequest request: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
-        completionHandler(RemoteImageDecoder.isAllowedRemoteImageURL(request.url) ? request : nil)
+        completionHandler(permits(request.url) ? request : nil)
     }
 }
 
@@ -308,13 +326,27 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
 
 // MARK: - Alibaba Model Studio
 
-/// Alibaba Model Studio (DashScope) image endpoints. Generation is supported;
-/// other operations are labelled unsupported.
+/// Alibaba Model Studio (DashScope) image endpoints. Text-to-image generation
+/// runs through DashScope's asynchronous task API: submit an `image-synthesis`
+/// job, poll `/tasks/{id}` until it succeeds, then download the results.
+/// Editing is not exposed by this adapter.
 public struct AlibabaImageAdapter: ImageProviderAdapter {
-    public init() {}
+    private let session: URLSession
+
+    public init() {
+        session = .shared
+    }
+
+    init(session: URLSession) {
+        self.session = session
+    }
+
+    private static let maximumPollAttempts = 60
+    private static let pollIntervalNanoseconds: UInt64 = 2_000_000_000
+    private static let maximumImageBytes = 12 * 1_024 * 1_024
 
     public func supportedOperations(for provider: ProviderProfile) -> Set<RemoteImageOperation> {
-        []
+        [.generate]
     }
 
     public func perform(
@@ -322,11 +354,250 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
         provider: ProviderProfile,
         credentials: ProviderCredentials
     ) async throws -> RemoteImageResult {
-        guard supports(request.operation, for: provider) else {
+        guard supports(request.operation, for: provider), request.operation == .generate else {
             throw RemoteImageError.unsupportedOperation(request.operation, provider: "Alibaba Model Studio")
         }
-        // Foundation: capability declaration is in place; the DashScope wire
-        // call lands with the image workflows in Phase 6.
-        throw RemoteImageError.unsupportedOperation(request.operation, provider: "Alibaba Model Studio (wire call pending Phase 6)")
+        guard let model = request.modelRemoteID, !model.isEmpty else {
+            throw RemoteImageError.requestFailed("Alibaba image model ID is required")
+        }
+
+        let root = Self.dashScopeRoot(from: provider.baseURL)
+        let taskID = try await submitTask(
+            request,
+            model: model,
+            root: root,
+            provider: provider,
+            credentials: credentials
+        )
+        let imageURLs = try await pollForResults(
+            taskID: taskID,
+            root: root,
+            provider: provider,
+            credentials: credentials
+        )
+        let images = try await downloadImages(imageURLs, providerHost: root.host)
+        guard !images.isEmpty else {
+            throw RemoteImageError.invalidResponse("Alibaba returned no images")
+        }
+        return RemoteImageResult(images: images, metadata: ["model": model])
+    }
+
+    // MARK: - Task submission
+
+    private struct LegacySubmitBody: Encodable {
+        struct Input: Encodable { var prompt: String }
+        struct Parameters: Encodable { var size: String; var n: Int }
+
+        var model: String
+        var input: Input
+        var parameters: Parameters
+    }
+
+    private struct Wan26SubmitBody: Encodable {
+        struct Input: Encodable {
+            struct Message: Encodable {
+                struct Content: Encodable { var text: String }
+                var role: String
+                var content: [Content]
+            }
+            var messages: [Message]
+        }
+        struct Parameters: Encodable {
+            var size: String
+            var n: Int
+            var prompt_extend: Bool
+            var watermark: Bool
+        }
+
+        var model: String
+        var input: Input
+        var parameters: Parameters
+    }
+
+    private func submitTask(
+        _ request: RemoteImageRequest,
+        model: String,
+        root: URL,
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws -> String {
+        let apiRoot = root
+            .appendingPathComponent("api").appendingPathComponent("v1")
+            .appendingPathComponent("services").appendingPathComponent("aigc")
+        let count = max(1, min(request.count, 4))
+        if Self.usesWan26Protocol(model) {
+            let body = Wan26SubmitBody(
+                model: model,
+                input: .init(messages: [
+                    .init(role: "user", content: [.init(text: request.prompt)])
+                ]),
+                parameters: .init(
+                    size: Self.normalizedSize(request.sizeHint, defaultValue: "1280*1280"),
+                    n: count,
+                    prompt_extend: true,
+                    watermark: false
+                )
+            )
+            return try await postTask(
+                url: apiRoot.appendingPathComponent("image-generation").appendingPathComponent("generation"),
+                body: body,
+                provider: provider,
+                credentials: credentials
+            )
+        }
+
+        let body = LegacySubmitBody(
+            model: model,
+            input: .init(prompt: request.prompt),
+            parameters: .init(
+                size: Self.normalizedSize(request.sizeHint, defaultValue: "1024*1024"),
+                n: count
+            )
+        )
+        return try await postTask(
+            url: apiRoot.appendingPathComponent("text2image").appendingPathComponent("image-synthesis"),
+            body: body,
+            provider: provider,
+            credentials: credentials
+        )
+    }
+
+    private func postTask(
+        url: URL,
+        body: some Encodable,
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws -> String {
+        let urlRequest = try RemoteImageHTTP.post(
+            url: url,
+            apiKey: credentials.apiKey,
+            authHeader: "Authorization",
+            extraHeaders: provider.nonSecretHeaders.merging(
+                ["X-DashScope-Async": "enable"], uniquingKeysWith: { _, new in new }
+            ),
+            body: body
+        )
+        let (data, response) = try await BoundedHTTP.data(
+            for: urlRequest,
+            session: session,
+            maxBytes: 1_048_576
+        )
+        try RemoteImageHTTP.validate(
+            response, data: data, provider: "Alibaba Model Studio", apiKey: credentials.apiKey
+        )
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let output = object?["output"] as? [String: Any],
+              let taskID = output["task_id"] as? String, !taskID.isEmpty else {
+            throw RemoteImageError.invalidResponse("Alibaba task submission returned no task ID")
+        }
+        return taskID
+    }
+
+    // MARK: - Polling
+
+    private func pollForResults(
+        taskID: String,
+        root: URL,
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws -> [URL] {
+        let taskURL = root
+            .appendingPathComponent("api").appendingPathComponent("v1")
+            .appendingPathComponent("tasks").appendingPathComponent(taskID)
+
+        for _ in 0..<Self.maximumPollAttempts {
+            try Task.checkCancellation()
+            var request = URLRequest(url: taskURL)
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            if let key = credentials.apiKey {
+                request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            }
+            for (field, value) in provider.nonSecretHeaders {
+                request.setValue(value, forHTTPHeaderField: field)
+            }
+            let (data, response) = try await BoundedHTTP.data(
+                for: request,
+                session: session,
+                maxBytes: 1_048_576
+            )
+            try RemoteImageHTTP.validate(
+                response, data: data, provider: "Alibaba Model Studio", apiKey: credentials.apiKey
+            )
+            let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let output = object?["output"] as? [String: Any]
+            let status = output?["task_status"] as? String ?? "UNKNOWN"
+            switch status {
+            case "SUCCEEDED":
+                let results = output?["results"] as? [[String: Any]] ?? []
+                return results.compactMap {
+                    ($0["url"] as? String).flatMap(URL.init(string:))
+                }
+            case "FAILED", "CANCELED", "CANCELLED":
+                throw RemoteImageError.requestFailed("Alibaba image task \(status)")
+            default:
+                try await Task.sleep(nanoseconds: Self.pollIntervalNanoseconds)
+            }
+        }
+        throw RemoteImageError.requestFailed("Alibaba image task timed out")
+    }
+
+    // MARK: - Download
+
+    private func downloadImages(_ urls: [URL], providerHost: String?) async throws -> [Data] {
+        var images: [Data] = []
+        for url in urls.prefix(4) {
+            try Task.checkCancellation()
+            guard Self.isAllowedResultURL(url, providerHost: providerHost) else {
+                throw RemoteImageError.invalidResponse("Alibaba returned an unsafe image URL")
+            }
+            let request = URLRequest(url: url)
+            let delegate = SafeImageRedirectDelegate(
+                allowedHosts: Set([providerHost].compactMap { $0 }),
+                allowedDomainSuffixes: ["aliyuncs.com"]
+            )
+            let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+            defer { session.invalidateAndCancel() }
+            let (imageData, response) = try await BoundedHTTP.data(
+                for: request, session: session, maxBytes: Self.maximumImageBytes
+            )
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode),
+                  http.mimeType?.lowercased().hasPrefix("image/") == true else {
+                throw RemoteImageError.invalidResponse("Alibaba image download returned a non-image response")
+            }
+            images.append(imageData)
+        }
+        return images
+    }
+
+    // MARK: - Helpers
+
+    /// The native DashScope API lives on the provider host root, not under the
+    /// OpenAI-compatible `/compatible-mode/v1` prefix used for chat.
+    private static func dashScopeRoot(from baseURL: URL) -> URL {
+        var components = URLComponents()
+        components.scheme = baseURL.scheme
+        components.host = baseURL.host
+        components.port = baseURL.port
+        return components.url ?? baseURL
+    }
+
+    /// DashScope sizes use an asterisk (`1024*1024`); normalise the common
+    /// `1024x1024` spelling so a user-entered hint still parses.
+    private static func usesWan26Protocol(_ model: String) -> Bool {
+        model.lowercased().hasPrefix("wan2.6-t2i")
+    }
+
+    private static func isAllowedResultURL(_ url: URL, providerHost: String?) -> Bool {
+        guard RemoteImageDecoder.isAllowedRemoteImageURL(url),
+              let host = url.host?.lowercased() else { return false }
+        let configuredHost = providerHost?.lowercased()
+        return host == configuredHost || host == "aliyuncs.com" || host.hasSuffix(".aliyuncs.com")
+    }
+
+    private static func normalizedSize(_ hint: String?, defaultValue: String) -> String {
+        let raw = (hint?.isEmpty == false ? hint! : defaultValue)
+        return raw.replacingOccurrences(of: "x", with: "*")
+            .replacingOccurrences(of: "X", with: "*")
     }
 }

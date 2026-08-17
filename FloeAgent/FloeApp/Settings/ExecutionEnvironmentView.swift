@@ -10,6 +10,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeCore
+import FloeSSH
 
 struct ExecutionEnvironmentView: View {
     @ObservedObject var center: SettingsCenter
@@ -44,6 +45,9 @@ struct ExecutionEnvironmentView: View {
                     }
                 )) {
                     Text("settings.exec.target.local").tag(ExecutionTargetPreference.local)
+                    ForEach(center.environment.remoteSessionCenter.hosts) { host in
+                        Text(host.displayName).tag(ExecutionTargetPreference.host(host.id))
+                    }
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
 

@@ -360,6 +360,18 @@ struct ToolLoopHardeningTests {
         #expect(first.content.contains("Available tools:"))
         #expect(!first.content.contains("Workspace:"))
     }
+
+    @Test("Models without native tool calling never receive tool names")
+    func systemContextSuppressesToolsForTextOnlyModels() {
+        let message = ConversationRunService.buildContextMessage(
+            .init(availableToolNames: ["workspace.listDirectory", "exec.localPython"]),
+            toolsAvailable: false
+        )
+
+        #expect(message.contains("native tool calling is disabled"))
+        #expect(!message.contains("workspace.listDirectory"))
+        #expect(!message.contains("exec.localPython"))
+    }
 }
 
 /// Catalog-registered probe tool used to prove the injected system message

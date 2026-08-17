@@ -117,7 +117,7 @@ struct TaskPermissionsInspectorView: View {
                     Picker("本任务", selection: approvalModeBinding) {
                         Text("询问").tag(TaskApprovalMode.ask.rawValue)
                         Text("自动审批").tag(TaskApprovalMode.automatic.rawValue)
-                        Text("完全放开").tag(TaskApprovalMode.fullAccess.rawValue)
+                        Text("完全访问").tag(TaskApprovalMode.fullAccess.rawValue)
                     }
                     .pickerStyle(.segmented)
                     Text(modeExplanation)
@@ -149,7 +149,7 @@ struct TaskPermissionsInspectorView: View {
         }
         .navigationTitle("权限")
         .task(id: conversationID) { await load() }
-        .alert("确认完全放开？", isPresented: $isConfirmingFullAccess) {
+        .alert("确认完全访问？", isPresented: $isConfirmingFullAccess) {
             Button("取消", role: .cancel) {}
             Button("继续并验证身份", role: .destructive) {
                 Task { await authenticateFullAccess() }
@@ -189,7 +189,7 @@ struct TaskPermissionsInspectorView: View {
             }
             let allowed = try await context.evaluatePolicy(
                 .deviceOwnerAuthentication,
-                localizedReason: "确认本任务启用完全放开权限"
+                localizedReason: "确认本任务启用完全访问权限"
             )
             if allowed { policy?.approvalMode = TaskApprovalMode.fullAccess.rawValue }
         } catch {

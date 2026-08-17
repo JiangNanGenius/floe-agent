@@ -608,13 +608,21 @@ final class ThreadDetailViewModel: ObservableObject {
         await animator.drain(maximumDuration: .milliseconds(750))
         await reasoningAnimator.drain(maximumDuration: .milliseconds(500))
         isDraining = false
-        guard !Task.isCancelled, selectedRunID == runID else { return }
-        try? await loadAllEvents()
+        // Refresh persisted state even if the selection moved on during the
+        // drain. A finished run must never strand the UI in a non-terminal
+        // "thinking" state merely because loadAllEvents was skipped.
+        guard !Task.isCancelled else { return }
         messages = (try? await center.environment.conversationStore
             .messages(conversationID: conversationID)) ?? messages
         runs = (try? await center.environment.runStore
             .runs(conversationID: conversationID)) ?? runs
-        liveStateName = runs.first(where: { $0.id == runID })?.state ?? liveStateName
+        // `loadAllEvents` iterates `runs`; refresh the run list first so a
+        // queued follow-up that started while the animator drained is not
+        // omitted from the timeline snapshot.
+        try? await loadAllEvents()
+        if selectedRunID == runID {
+            liveStateName = runs.first(where: { $0.id == runID })?.state ?? liveStateName
+        }
     }
 
     func stopLiveUpdates() {

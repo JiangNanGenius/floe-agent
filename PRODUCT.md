@@ -52,7 +52,7 @@ Floe Agent combines provider-neutral AI orchestration with direct, user-owned ac
 
 - A modular Swift 6 framework with provider wire adapters, persisted agent state machine, approval policies, CloudKit/Keychain configuration sync, SSH jump/PTY support, VNC Metal rendering, Files working-copy support, tests, and a successful internal TestFlight build.
 - A production app icon at `FloeAgent/FloeApp/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png`.
-- Floe Agent 1.2.0 (build 11), a signed App Store Connect/TestFlight upload, a paired GitHub unsigned IPA, and release evidence including tests, SBOM, license inventory, secret scan, and provenance.
+- Floe Agent 1.2.7 (build 18), a signed App Store Connect/TestFlight upload, a paired GitHub unsigned IPA, and release evidence including tests, SBOM, license inventory, secret scan, and provenance.
 - Current architecture and usage references in `docs/ARCHITECTURE_OVERVIEW.md`, `docs/USER_GUIDE.md`, and `docs/USER_GUIDE.zh-CN.md`; older validation and delivery reports remain historical evidence.
 - No testimonials, customer logos, benchmarks, pricing claims, or hosted-service claims may be invented.
 

@@ -54,7 +54,7 @@ flowchart LR
 
 ### TestFlight
 
-项目会在测试组开放时通过 TestFlight 分发签名版本。当前源码目标版本为 Floe Agent 1.2.7（build 18）；只有在[发布页](https://github.com/JiangNanGenius/floe-agent/releases)出现并通过发布门禁的构建才算真正完成发布。预发布阶段的测试名额可能有限。
+项目会在测试组开放时通过 TestFlight 分发签名版本。当前源码目标版本为 Floe Agent 1.2.8（build 19）；只有在[发布页](https://github.com/JiangNanGenius/floe-agent/releases)出现并通过发布门禁的构建才算真正完成发布。预发布阶段的测试名额可能有限。
 
 ### 未签名 IPA
 
@@ -80,6 +80,16 @@ xcodegen generate
 scripts/local_build.sh
 ```
 
+针对性检查：
+
+```bash
+swift build
+swift test
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  xcodebuild -project FloeAgent.xcodeproj -scheme FloeAgent \
+  -destination 'generic/platform=iOS Simulator' build
+```
+
 完整配置流程请阅读[简体中文使用指南](docs/USER_GUIDE.zh-CN.md)；开发环境与测试命令见[工程 README](FloeAgent/README.md)。
 
 ## 主要界面
@@ -95,7 +105,7 @@ scripts/local_build.sh
 
 ### Python 执行
 
-App Store 版本不会下载或在设备内执行 Python 运行时。请先添加装有 `python3` 的 SSH 主机，在主机页面核对并信任主机密钥，再把该主机选为任务执行目标，并在任务权限中允许远程执行。`exec.remotePython` 会经过与其他远程命令相同的灾难性命令拦截和审批链；标准输出、标准错误、超时、截断、取消、缺少主机、认证失败以及未安装 Python 都会明确返回，不能伪装为成功。
+Floe 的签名构建会把固定的 CPython 3.13 运行时和标准库作为 App 资源一同打包。`exec.localPython` 仅在常规执行审批后，于 App 沙盒内运行受限源码；不提供 `pip`、JIT、运行时下载或动态安装的原生扩展。需要更完整的环境时，可添加装有 `python3` 的 SSH 主机，核对并信任主机密钥，再把它选为任务执行目标并允许远程执行。`exec.remotePython` 会经过与其他远程命令相同的灾难性命令拦截和审批链。两种路径都会明确返回标准输出、标准错误、超时、截断、取消和能力缺失，不能伪装为成功。
 
 ### 归档与凭据同步
 
@@ -129,6 +139,7 @@ Floe Agent **不提供**托管模型代理、Floe 账户、远程中继、广告
 | 参与开发 | [贡献指南](CONTRIBUTING.zh-CN.md) | [Contributing](CONTRIBUTING.md) |
 | 安全 | [安全策略](SECURITY.zh-CN.md) | [Security policy](SECURITY.md) |
 | 支持 | [支持](SUPPORT.zh-CN.md) | [Support](SUPPORT.md) |
+| 设计方向 | [设计方向](DESIGN.md) | 关键术语包含中文对照 |
 
 历史实现报告和审计记录统一收录在 [`docs/README.md`](docs/README.md)。历史文件只代表其记录提交的状态，不能当作当前版本的功能声明。
 
