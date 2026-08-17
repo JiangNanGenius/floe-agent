@@ -95,9 +95,9 @@ final class MemoryDreamService {
         } catch {
             return
         }
-        let recent = messages
+        let recent = Array(messages
             .filter { $0.role == "user" || $0.role == "assistant" }
-            .suffix(12)
+            .suffix(12))
         guard !recent.isEmpty else { return }
 
         let prompt = Self.buildPrompt(recent)

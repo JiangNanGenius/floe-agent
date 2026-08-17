@@ -37,9 +37,9 @@ final class SkillDreamService {
             return
         }
         let messages = (try? await environment.conversationStore.messages(conversationID: conversationID)) ?? []
-        let recent = messages
+        let recent = Array(messages
             .filter { $0.role == "user" || $0.role == "assistant" }
-            .suffix(16)
+            .suffix(16))
         guard recent.count >= 6 else { return }
 
         let prompt = Self.buildPrompt(recent)
