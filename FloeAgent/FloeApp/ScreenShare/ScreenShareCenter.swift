@@ -109,7 +109,6 @@ final class ScreenShareCenter: NSObject, ObservableObject {
     /// Presents the system picker that lets the user start (or stop) screen sharing.
     func makeBroadcastPicker() -> RPBroadcastActivityViewController {
         let picker = RPBroadcastActivityViewController()
-        picker.preferredExtension = Self.screenShareExtensionID
         picker.delegate = self
         return picker
     }
