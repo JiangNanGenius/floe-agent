@@ -12,7 +12,7 @@ import ReplayKit
 import FloeCore
 
 @MainActor
-final class ScreenShareCenter: ObservableObject {
+final class ScreenShareCenter: NSObject, ObservableObject {
     @Published private(set) var isSharing = false
     /// The latest screen frame, refreshed ~1fps while broadcasting.
     @Published private(set) var latestFrame: UIImage?
@@ -32,6 +32,7 @@ final class ScreenShareCenter: ObservableObject {
 
     init(conversationCenter: ConversationCenter) {
         self.conversationCenter = conversationCenter
+        super.init()
     }
 
     /// Starts polling the App Group for the extension's key frames.
