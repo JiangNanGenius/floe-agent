@@ -288,7 +288,10 @@ struct RootView: View {
                         .accessibilityIdentifier("phone.inspector.drawer")
                 }
             }
-            .ignoresSafeArea(edges: .top)
+            // Respect the top safe area so the navigation bar (and the
+            // drawer's "Floe Agent" title) never collides with the system
+            // status-bar clock. Overlay scrims and drawer backgrounds still
+            // extend behind the status bar via their own .ignoresSafeArea().
             .animation(.snappy, value: isPhoneSidebarOpen)
             .animation(.snappy, value: router.inspectorRoute)
             .contentShape(Rectangle())

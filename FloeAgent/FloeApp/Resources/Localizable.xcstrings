@@ -6439,6 +6439,40 @@
         }
       }
     },
+    "settings.section.background_execution": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Background Execution"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台执行"
+          }
+        }
+      }
+    },
+    "agent.background_execution": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "How runs stay alive in the background"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台执行方式"
+          }
+        }
+      }
+    },
     "settings.section.files": {
       "extractionState": "manual",
       "localizations": {
@@ -7309,6 +7343,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "状态未知"
+          }
+        }
+      }
+    },
+    "state.verifying": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verifying"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "校验中"
           }
         }
       }

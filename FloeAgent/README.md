@@ -78,7 +78,7 @@ CI regenerates the project and fails if the committed project differs.
 Version and build number live in `project.yml`. A SemVer tag must match `MARKETING_VERSION`, and the integer build must increase from the previous tag.
 
 ```bash
-scripts/release_preflight.sh v1.2.9
+scripts/release_preflight.sh v1.3.0
 scripts/pin_check.sh
 scripts/secret_scan.sh
 scripts/license_inventory.sh

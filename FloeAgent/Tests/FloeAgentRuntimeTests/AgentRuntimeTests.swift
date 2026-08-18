@@ -276,6 +276,59 @@ struct AgentRuntimeTests {
         #expect(adapter.requests[1].toolResults.map(\.callID) == [first.id, second.id])
     }
 
+    @Test("Duplicate tool-call IDs fail closed before approval or execution")
+    func duplicateToolCallIDsFailClosed() async throws {
+        let adapter = MockAdapter()
+        let first = try ToolCall(
+            id: "duplicate",
+            toolName: "test.echo",
+            argumentsJSON: Data(#"{"text":"denied"}"#.utf8),
+            scope: .local
+        )
+        let second = try ToolCall(
+            id: "duplicate",
+            toolName: "test.echo",
+            argumentsJSON: Data(#"{"text":"allowed"}"#.utf8),
+            scope: .local
+        )
+        adapter.script = [[
+            .toolRequest(first),
+            .toolRequest(second),
+            .completed(AgentEvent.CompletionInfo(stopReason: .endTurn))
+        ]]
+        let executor = MockExecutor()
+        registerEcho(in: executor, sideEffecting: true)
+        let runtime = makeRuntime(adapter: adapter, executor: executor)
+
+        try await runtime.start(goal: "attempt duplicate calls")
+
+        #expect(await runtime.state.name == "failed")
+        #expect(executor.executedCalls.isEmpty)
+    }
+
+    @Test("Empty tool-call IDs fail closed before execution")
+    func emptyToolCallIDsFailClosed() async throws {
+        let adapter = MockAdapter()
+        let call = try ToolCall(
+            id: "   ",
+            toolName: "test.echo",
+            argumentsJSON: Data(#"{"text":"unsafe"}"#.utf8),
+            scope: .local
+        )
+        adapter.script = [[
+            .toolRequest(call),
+            .completed(AgentEvent.CompletionInfo(stopReason: .endTurn))
+        ]]
+        let executor = MockExecutor()
+        registerEcho(in: executor, sideEffecting: true)
+        let runtime = makeRuntime(adapter: adapter, executor: executor)
+
+        try await runtime.start(goal: "attempt empty call id")
+
+        #expect(await runtime.state.name == "failed")
+        #expect(executor.executedCalls.isEmpty)
+    }
+
     @Test("Side-effecting tool under human policy waits for approval; allow executes")
     func waitingApprovalAllow() async throws {
         let adapter = MockAdapter()

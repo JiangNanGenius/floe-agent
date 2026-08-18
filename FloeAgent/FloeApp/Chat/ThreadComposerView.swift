@@ -396,6 +396,9 @@ struct ThreadComposerView: View {
                     ForEach(models) { model in
                         Button {
                             selectedModelID = model.id
+                            // Persist so the task keeps this model after a
+                            // reload instead of reverting to the old default.
+                            Task { await environment.conversationCenter.setDefaultAgentModel(model.id) }
                         } label: {
                             if selectedModelID == model.id {
                                 Label(model.displayName, systemImage: "checkmark")

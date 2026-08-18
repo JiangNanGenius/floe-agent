@@ -35,6 +35,17 @@ public enum ApprovalDecision: Sendable, Codable, Hashable {
         if case .allow = self { return true }
         return false
     }
+
+    /// Stable machine label for logs — never carries a reason (which may be
+    /// sensitive); only the decision branch.
+    public var logLabel: String {
+        switch self {
+        case .allow: return "allow"
+        case .deny: return "deny"
+        case .escalateToHuman: return "escalateToHuman"
+        case .stopped: return "stopped"
+        }
+    }
 }
 
 /// A persisted grant derived from an `.allow` decision.

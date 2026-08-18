@@ -165,6 +165,13 @@ final class ThreadDetailViewModel: ObservableObject {
                 .messages(conversationID: conversationID)
             latestPlan = try await center.environment.intelligenceStore
                 .latestPlan(conversationID: conversationID)
+            // Restore Plan mode while an unfinished plan is still awaiting
+            // review, so leaving and reopening a task never silently drops
+            // the mode it was running in.
+            if let plan = latestPlan,
+               plan.status == .awaitingInput || plan.status == .ready {
+                agentMode = .plan
+            }
             activeGoal = try await center.environment.intelligenceStore
                 .goals(conversationID: conversationID).first
             pendingInputs = try await center.environment.runningInputStore
@@ -526,6 +533,12 @@ final class ThreadDetailViewModel: ObservableObject {
                 self.selectedRunID = snapshot.runs.first?.id
                 self.events = self.selectedRunID.flatMap { snapshot.eventsByRun[$0] } ?? []
                 self.latestPlan = snapshot.latestPlan
+                // Keep Plan mode in sync when a plan becomes ready or still
+                // awaits input, so reopening never drops the active mode.
+                if let plan = snapshot.latestPlan,
+                   plan.status == .awaitingInput || plan.status == .ready {
+                    self.agentMode = .plan
+                }
                 self.activeGoal = snapshot.activeGoal
                 self.taskPolicy = snapshot.taskPolicy
                 self.pendingInputs = snapshot.pendingInputs
@@ -576,12 +589,38 @@ final class ThreadDetailViewModel: ObservableObject {
                 guard !Task.isCancelled, self.selectedRunID == run.id else { break }
                 switch event {
                 case .answerDelta(let delta):
+                    // The reasoning segment ended the instant the answer
+                    // began; the service already persisted it. Drop the live
+                    // reasoning buffer now so it never duplicates the
+                    // persisted `.reasoning` row or piles the next turn's
+                    // reasoning on top of this turn's text.
+                    if !reasoningTarget.isEmpty {
+                        reasoningTarget = ""
+                        self.reasoningAnimator.reset()
+                    }
                     answerTarget += delta.text
                     self.animator.update(target: answerTarget)
                     self.hasProviderActivity = true
                 case .reasoningDelta(let delta):
+                    // A fresh reasoning segment starts. The previous answer
+                    // was already sealed at the last tool boundary; clear the
+                    // live tail defensively so reasoning always renders after
+                    // the answer that preceded it, never above it.
+                    if !answerTarget.isEmpty {
+                        answerTarget = ""
+                        self.animator.reset()
+                    }
                     reasoningTarget += delta.text
                     self.reasoningAnimator.update(target: reasoningTarget)
+                    self.hasProviderActivity = true
+                case .toolLifecycle(.requested):
+                    // Tool boundary: the answer segment is durable now. Clear
+                    // the live tail so the persisted assistant row — not a
+                    // duplicate — takes over.
+                    if !answerTarget.isEmpty {
+                        answerTarget = ""
+                        self.animator.reset()
+                    }
                     self.hasProviderActivity = true
                 case .userInputConsumed:
                     answerTarget = ""

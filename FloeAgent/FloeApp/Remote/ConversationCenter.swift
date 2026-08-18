@@ -131,6 +131,7 @@ final class ConversationCenter: ObservableObject {
     /// new launches, then waits for any transaction already in progress.
     private var launchCount = 0
     private var launchWaiters: [CheckedContinuation<Void, Never>] = []
+    private var launchFence = LaunchEpochFence()
     private var deletingConversationIDs: Set<UUID> = []
     private var isClearingHistory = false
     private var didReconcileInterruptedRuns = false
@@ -466,6 +467,7 @@ final class ConversationCenter: ObservableObject {
         guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else {
             throw FloeError.validationFailed("Conversation is being deleted")
         }
+        let launchToken = launchFence.issue(scope: conversationID)
 
         beginLaunch()
         defer { finishLaunch() }
@@ -508,6 +510,11 @@ final class ConversationCenter: ObservableObject {
             conversationHistory: history,
             currentUserImages: visual.images
         )
+        guard launchFence.isValid(launchToken),
+              !isClearingHistory,
+              !deletingConversationIDs.contains(conversationID) else {
+            throw FloeError.validationFailed("Conversation was deleted during launch")
+        }
         return startPreparedService(
             service,
             goal: trimmed,
@@ -537,6 +544,7 @@ final class ConversationCenter: ObservableObject {
         guard !isClearingHistory else {
             throw FloeError.validationFailed("Conversation history is being cleared")
         }
+        let launchToken = launchFence.issue()
 
         beginLaunch()
         defer { finishLaunch() }
@@ -577,6 +585,9 @@ final class ConversationCenter: ObservableObject {
             conversationHistory: visual.context,
             currentUserImages: visual.images
         )
+        guard launchFence.isValid(launchToken), !isClearingHistory else {
+            throw FloeError.validationFailed("Conversation history was cleared during launch")
+        }
         let run = startPreparedService(
             service,
             goal: trimmed,
@@ -762,18 +773,41 @@ final class ConversationCenter: ObservableObject {
             contentMessages: [ProviderMessage(role: "user", content: parts)]
         )
         var description = ""
-        do {
-            for try await event in adapterFactory.adapter(for: provider).stream(
-                request: request,
-                credentials: resolveCredentials(for: provider)
-            ) {
-                if case .textDelta(let delta) = event {
-                    description += delta.text
-                    if description.count >= 12_000 { break }
+        // Race the auxiliary vision stream against a timeout so a stalled
+        // provider request can never hang the launch path (and in turn pin
+        // delete / clear-history behind waitForLaunches). Resolve the adapter
+        // and credentials on the main actor first — they are not Sendable to
+        // call inside the task group's @Sendable closures.
+        let adapter = adapterFactory.adapter(for: provider)
+        let credentials = resolveCredentials(for: provider)
+        description = await withTaskGroup(of: String?.self, returning: String.self) { group in
+            group.addTask { () -> String? in
+                var text = ""
+                do {
+                    for try await event in adapter.stream(
+                        request: request,
+                        credentials: credentials
+                    ) {
+                        if case .textDelta(let delta) = event {
+                            text += delta.text
+                            if text.count >= 12_000 { break }
+                        }
+                    }
+                } catch {
+                    text = ""
                 }
+                return text
             }
-        } catch {
-            description = ""
+            group.addTask { () -> String? in
+                try? await Task.sleep(for: .seconds(20))
+                return nil
+            }
+            let first = await group.next()
+            group.cancelAll()
+            if let first, let result = first {
+                return result
+            }
+            return ""
         }
         guard !description.isEmpty else {
             return ([], [ConversationMessage(
@@ -1270,6 +1304,12 @@ final class ConversationCenter: ObservableObject {
         }
     }
 
+    /// True while any run is still streaming/tooling (non-terminal), used to
+    /// decide whether the 30s background lease should be held to completion.
+    var hasActiveRun: Bool {
+        runServices.values.contains { !$0.snapshot().isTerminal }
+    }
+
     /// Generates a concise title only after the first full answer. The
     /// database predicate prevents this asynchronous result from ever
     /// overwriting a user rename.
@@ -1345,6 +1385,7 @@ final class ConversationCenter: ObservableObject {
         guard deletingConversationIDs.insert(id).inserted else {
             throw FloeError.validationFailed("Conversation deletion is already in progress")
         }
+        launchFence.invalidate(scope: id)
         defer { deletingConversationIDs.remove(id) }
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
         let ownedWorkspaceID = try? await workspaceStore.workspaceID(conversationID: id)
@@ -1429,6 +1470,7 @@ final class ConversationCenter: ObservableObject {
             throw FloeError.validationFailed("Conversation history is already being cleared")
         }
         isClearingHistory = true
+        launchFence.invalidateAll()
         defer { isClearingHistory = false }
         await waitForLaunches()
 
@@ -1633,6 +1675,63 @@ final class ConversationCenter: ObservableObject {
         return (provider, model)
     }
 
+    func screenAnalysisDestinationName() -> String? {
+        guard let (provider, model) = auxiliaryVisionProviderAndModel() else { return nil }
+        let providerName = provider.baseURL.host ?? provider.kind.rawValue
+        return "\(model.displayName)（\(providerName)）"
+    }
+
+    /// Describes a single image (e.g. a screen-share key frame) with the
+    /// configured vision model. Returns nil when no vision model is set or
+    /// the request produces nothing. Capped by a timeout so a stalled vision
+    /// request can never hang the caller.
+    func describeImage(base64: String, mimeType: String, prompt: String) async -> String? {
+        guard let (provider, model) = auxiliaryVisionProviderAndModel() else { return nil }
+        let parts: [ProviderContentPart] = [
+            .text(prompt),
+            .imageData(mimeType: mimeType, base64: base64)
+        ]
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            contentMessages: [ProviderMessage(role: "user", content: parts)]
+        )
+        // Resolve adapter + credentials on the main actor before entering the
+        // task group's @Sendable closures.
+        let adapter = adapterFactory.adapter(for: provider)
+        let credentials = resolveCredentials(for: provider)
+        let description = await withTaskGroup(of: String?.self, returning: String.self) { group in
+            group.addTask { () -> String? in
+                var text = ""
+                do {
+                    for try await event in adapter.stream(
+                        request: request,
+                        credentials: credentials
+                    ) {
+                        if case .textDelta(let delta) = event {
+                            text += delta.text
+                            if text.count >= 4000 { break }
+                        }
+                    }
+                } catch {
+                    text = ""
+                }
+                return text
+            }
+            group.addTask { () -> String? in
+                try? await Task.sleep(for: .seconds(20))
+                return nil
+            }
+            let first = await group.next()
+            group.cancelAll()
+            if let first, let result = first {
+                return result
+            }
+            return ""
+        }
+        return description.isEmpty ? nil : description
+    }
+
     func auxiliaryProviderAndModel(for operation: RemoteImageOperation) -> (ProviderProfile, ModelProfile)? {
         let preferences = modelPreferences
         let modelID: UUID?
@@ -1698,6 +1797,14 @@ final class ConversationCenter: ObservableObject {
             Self.persistOnboardingSkippedMarker(false)
         }
         await reload()
+    }
+
+    /// Persists the agent model selection so a task keeps the chosen model
+    /// across reloads instead of snapping back to the previous default.
+    func setDefaultAgentModel(_ modelID: UUID) async {
+        var preferences = modelPreferences
+        preferences.defaultAgentModelID = modelID
+        try? await saveModelPreferences(preferences)
     }
 
     /// On the first launch only, an already-synced text model completes the
@@ -1844,9 +1951,22 @@ final class ConversationCenter: ObservableObject {
 
     private func waitForLaunches() async {
         guard launchCount > 0 else { return }
+        // Bound the wait: a launch that stalls (for example an auxiliary
+        // vision request that never returns) must not pin destructive
+        // actions like delete / clear-history forever. Resume all waiters
+        // after a grace period as a safety net; finishLaunch() resumes them
+        // earlier on the normal path.
+        let safetyNet = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(15))
+            guard let self else { return }
+            let waiters = self.launchWaiters
+            self.launchWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
         await withCheckedContinuation { continuation in
             launchWaiters.append(continuation)
         }
+        safetyNet.cancel()
     }
 
     static func decodePayload(_ json: String) -> [String: String] {

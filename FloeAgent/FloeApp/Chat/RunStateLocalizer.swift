@@ -20,8 +20,9 @@ enum RunStateLocalizer {
     /// leaking raw machine text into the UI.
     static func title(for stateName: String) -> LocalizedStringKey {
         switch stateName {
-        case "preparing": "state.preparing"
+        case "preparing", "idle": "state.preparing"
         case "streamingModel": "state.streaming"
+        case "verifying": "state.verifying"
         case "executingTool": "state.executing_tool"
         case "waitingApproval": "state.waiting_approval"
         case "compacting", "checkpointed", "paused", "interrupted": "state.paused"
@@ -35,7 +36,7 @@ enum RunStateLocalizer {
     /// Semantic color for a machine state name (§6.2 mapping table).
     static func color(for stateName: String) -> Color {
         switch stateName {
-        case "preparing", "streamingModel", "executingTool":
+        case "preparing", "idle", "streamingModel", "executingTool", "verifying":
             FloeTheme.primary
         case "waitingApproval", "compacting", "checkpointed", "paused", "interrupted":
             FloeTheme.pending

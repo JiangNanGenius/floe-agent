@@ -485,6 +485,7 @@ public actor ConversationRunService {
             }
         case .toolRequest(let call):
             await flushAssistantSegment()
+            logger.info("toolRequested run=\(runID.uuidString) tool=\(call.toolName) callID=\(call.id)")
             if conversationMode == .plan, call.toolName == PlanSubmission.toolName,
                let submission = try? JSONDecoder().decode(
                    PlanSubmission.self,
@@ -515,8 +516,11 @@ public actor ConversationRunService {
         case .toolResult(let result):
             eventChannel.yield(.toolLifecycle(.finished(result)))
             let durationMs = Self.milliseconds(since: toolStartDates.removeValue(forKey: result.callID))
+            let finishedToolName = toolNames.removeValue(forKey: result.callID) ?? ""
+            logger.info("toolFinished run=\(runID.uuidString) tool=\(finishedToolName) status=\(result.status.rawValue) durationMs=\(durationMs)")
             var persisted = [
-                "tool": toolNames.removeValue(forKey: result.callID) ?? "",
+                "tool": finishedToolName,
+                "id": result.callID,
                 "status": result.status.rawValue,
                 "summary": result.outputSummary,
                 "durationMs": String(durationMs)

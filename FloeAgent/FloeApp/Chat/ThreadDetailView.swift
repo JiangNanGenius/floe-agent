@@ -19,9 +19,13 @@ import FloeAgentRuntime
 struct ThreadDetailView: View {
     @StateObject private var viewModel: ThreadDetailViewModel
     @EnvironmentObject private var router: AppRouter
+    @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var editingPendingInput: PendingUserInput?
     @State private var showingGoalBuilder = false
+    @State private var showingScreenShare = false
+    @State private var showingScreenShareGuide = false
+    @State private var confirmingScreenTransmission = false
 
     init(conversationID: UUID, center: ConversationCenter) {
         _viewModel = StateObject(
@@ -66,6 +70,25 @@ struct ThreadDetailView: View {
                     )
                 }
             }
+        }
+        .sheet(isPresented: $showingScreenShare) {
+            BroadcastPickerView(center: environment.screenShareCenter)
+                .ignoresSafeArea()
+        }
+        .sheet(isPresented: $showingScreenShareGuide) {
+            ScreenShareGuideView(
+                center: environment.screenShareCenter,
+                userGoal: viewModel.draft
+            )
+        }
+        .alert("发送当前屏幕画面？", isPresented: $confirmingScreenTransmission) {
+            Button("取消", role: .cancel) {}
+            Button("发送并继续") {
+                guard environment.screenShareCenter.confirmScreenAnalysisTransmission() else { return }
+                showingScreenShareGuide = true
+            }
+        } message: {
+            Text("当前完整屏幕截图将发送到 \(environment.screenShareCenter.analysisDestinationName) 进行分析，画面可能包含其他 App 的敏感信息。")
         }
     }
 
@@ -246,6 +269,19 @@ struct ThreadDetailView: View {
                 if let exportText {
                     ShareLink(item: exportText) {
                         Label("导出对话", systemImage: "square.and.arrow.up")
+                    }
+                }
+                Divider()
+                Button("共享屏幕", systemImage: "rectangle.on.rectangle") {
+                    showingScreenShare = true
+                }
+                if environment.screenShareCenter.isSharing {
+                    Button("操作引导", systemImage: "hand.tap") {
+                        if environment.screenShareCenter.hasScreenAnalysisConsent {
+                            showingScreenShareGuide = true
+                        } else {
+                            confirmingScreenTransmission = true
+                        }
                     }
                 }
                 Divider()

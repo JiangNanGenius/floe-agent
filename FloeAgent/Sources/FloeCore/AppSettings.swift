@@ -150,6 +150,7 @@ public enum AppSettingsKey {
     public static let vncDefaults = "remote.vnc"
     public static let idleDisconnectMinutes = "remote.idleDisconnectMinutes"
     public static let runningInputMode = "agent.runningInputMode"
+    public static let backgroundExecution = "agent.backgroundExecution"
 }
 
 /// Counts returned by destructive clear operations so the UI can echo

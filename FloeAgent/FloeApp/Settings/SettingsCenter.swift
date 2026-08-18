@@ -52,6 +52,7 @@ final class SettingsCenter: ObservableObject {
     @Published private(set) var vncDefaults: RemoteSessionDefaults = RemoteSessionDefaults()
     @Published private(set) var idleDisconnectMinutes: Int = 15
     @Published private(set) var runningInputMode: RunningInputMode = .queue
+    @Published private(set) var backgroundExecution: BackgroundExecutionPreference = .standard
 
     // MARK: - Agent 与权限
 
@@ -233,6 +234,11 @@ final class SettingsCenter: ObservableObject {
         }
         if let mode: RunningInputMode = decode(RunningInputMode.self, AppSettingsKey.runningInputMode) {
             runningInputMode = mode
+        }
+        if let preference: BackgroundExecutionPreference = decode(
+            BackgroundExecutionPreference.self, AppSettingsKey.backgroundExecution
+        ) {
+            backgroundExecution = preference
         }
     }
 
@@ -434,6 +440,20 @@ final class SettingsCenter: ObservableObject {
     func setRunningInputMode(_ mode: RunningInputMode) async {
         runningInputMode = mode
         await persist(mode, forKey: AppSettingsKey.runningInputMode)
+    }
+
+    func loadBackgroundExecution() async {
+        if let stored = try? await settingsStore.value(
+            forKey: AppSettingsKey.backgroundExecution,
+            as: BackgroundExecutionPreference.self
+        ) {
+            backgroundExecution = stored
+        }
+    }
+
+    func setBackgroundExecution(_ preference: BackgroundExecutionPreference) async {
+        backgroundExecution = preference
+        await persist(preference, forKey: AppSettingsKey.backgroundExecution)
     }
 
     func setDefaultStartPage(_ page: StartPage) async {

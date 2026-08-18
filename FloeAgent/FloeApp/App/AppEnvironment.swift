@@ -90,6 +90,8 @@ final class AppEnvironment: ObservableObject {
     private lazy var _skillDreamService = SkillDreamService(environment: self)
     private lazy var _speechService = SpeechService()
     private lazy var _backgroundRunCoordinator = BackgroundRunCoordinator(environment: self)
+    private lazy var _screenShareCenter = ScreenShareCenter(conversationCenter: _conversationCenter)
+    private lazy var _backgroundVideoService = BackgroundVideoService()
 
     var conversationCenter: ConversationCenter { _conversationCenter }
     var remoteSessionCenter: RemoteSessionCenter { _remoteSessionCenter }
@@ -104,6 +106,8 @@ final class AppEnvironment: ObservableObject {
     var skillDreamService: SkillDreamService { _skillDreamService }
     var speechService: SpeechService { _speechService }
     var backgroundRunCoordinator: BackgroundRunCoordinator { _backgroundRunCoordinator }
+    var screenShareCenter: ScreenShareCenter { _screenShareCenter }
+    var backgroundVideoService: BackgroundVideoService { _backgroundVideoService }
 
     // MARK: State
 

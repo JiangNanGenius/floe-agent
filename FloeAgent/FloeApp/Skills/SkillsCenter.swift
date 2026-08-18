@@ -268,7 +268,11 @@ final class SkillsCenter: ObservableObject {
         )
         let record = try await SkillInstallStagingService(installationRoot: installationRoot)
             .installRewrittenPackage(at: url, provenance: provenance, replaceExisting: false)
-        let markdown = try String(contentsOf: url.appendingPathComponent("SKILL.md"), encoding: .utf8)
+        // Lossless UTF-8 decode: a non-UTF-8 SKILL.md must not surface a
+        // CocoaError.fileReadCorruptFile ("couldn't be opened because it
+        // isn't in the correct format") as a user-facing error banner.
+        let markdownData = try Data(contentsOf: url.appendingPathComponent("SKILL.md"))
+        let markdown = String(decoding: markdownData, as: UTF8.self)
         let manifestData = try Data(contentsOf: url.appendingPathComponent("floe.json"))
         let capabilities = try String(data: JSONEncoder().encode(package.manifest.capabilities), encoding: .utf8) ?? "[]"
         try await environment.skillStore.save(PersistedSkill(

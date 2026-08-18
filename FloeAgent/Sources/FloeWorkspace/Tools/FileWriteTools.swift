@@ -27,7 +27,7 @@ public struct WorkspaceCreateFileTool: AgentTool {
 
     public static let name = "workspace.createFile"
     public static let toolDescription =
-        "Create a new workspace file with the given content. Fails without overwriting when the file already exists; use writeFile for updates."
+        "Create a new workspace file with the given content. Fails without overwriting when the file already exists; use writeFile for updates. Prefer the .md extension for documents, notes, and reports; use a different extension only when the caller explicitly requires a specific format."
     public static let parametersJSON = #"""
     {
       "type": "object",

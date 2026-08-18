@@ -268,6 +268,10 @@ public actor FloeAgentRuntime {
     private var loopGuard = ToolLoopGuard()
     private var forcedStopReason: AgentEvent.StopReason?
     private var isFinalizingWithoutTools = false
+    /// Structured logging for run diagnostics (state transitions, approval
+    /// decisions, tool execution). Category `.runtime` shares the channel
+    /// with ConversationRunService.
+    private let logger = FloeLogger(category: .runtime)
     /// Guards the single self-critique pass so verification runs once.
     private var didVerifyFinalAnswer = false
     /// Set by tool/compaction handling to request another provider turn.
@@ -1023,6 +1027,7 @@ public actor FloeAgentRuntime {
                 decision = .escalateToHuman(reason: "Policy error: \(error.localizedDescription)")
             }
         }
+        logger.info("toolDecision run=\(runID.uuidString) tool=\(call.toolName) policy=\(policy.policyName) decision=\(decision.logLabel)")
         switch decision {
         case .allow(let scope, let expiresAt):
             return .approved(grant: ApprovalGrant(
@@ -1174,6 +1179,13 @@ public actor FloeAgentRuntime {
     /// Every result is audited and resumed exactly once.
     private func executeToolBatch(_ calls: [ToolCall]) async {
         guard !calls.isEmpty else { return }
+        guard Self.hasValidCallIDs(calls) else {
+            await failRun(
+                message: "Provider emitted empty or duplicate tool-call identifiers",
+                recoverable: false
+            )
+            return
+        }
         var approvedByID: [String: ApprovalGrant] = [:]
         var resultsByID: [String: ToolResult] = [:]
 
@@ -1576,6 +1588,19 @@ public actor FloeAgentRuntime {
         case .hostPath(let hostID, let path):
             return scope.hostID == hostID && scope.paths.contains(path)
         }
+    }
+
+    /// Provider IDs are correlation and authorization identities. Accepting an
+    /// empty or repeated ID would merge independent approval/result records.
+    private static func hasValidCallIDs(_ calls: [ToolCall]) -> Bool {
+        var seen = Set<String>()
+        for call in calls {
+            guard !call.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  seen.insert(call.id).inserted else {
+                return false
+            }
+        }
+        return true
     }
 
     private static func contextOutputReservation(limits: ModelLimits) -> Int {

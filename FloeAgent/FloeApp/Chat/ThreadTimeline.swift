@@ -149,6 +149,13 @@ enum ThreadTimelineBuilder {
         let nonTerminalEvents = sortedEvents.filter {
             $0.kind != .terminal && !isTerminalStatusEvent($0)
         }
+        // A tool request whose result has already arrived must not keep
+        // showing "pending" next to its "success" result — that reads as a
+        // hang. Match by the call id now persisted on both events.
+        let completedToolCallIDs = Set(sortedEvents
+            .filter { $0.kind == .toolResult }
+            .compactMap { decodePayload($0.payloadJSON)["id"] }
+            .filter { !$0.isEmpty })
 
         var finalReplyRendered = false
         for event in nonTerminalEvents {
@@ -161,6 +168,11 @@ enum ThreadTimelineBuilder {
                     ))
                     finalReplyRendered = true
                 }
+                continue
+            }
+            if event.kind == .toolRequest,
+               let callID = decodePayload(event.payloadJSON)["id"],
+               completedToolCallIDs.contains(callID) {
                 continue
             }
             items.append(.event(event))

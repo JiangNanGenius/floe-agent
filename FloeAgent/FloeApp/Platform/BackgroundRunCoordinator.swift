@@ -49,6 +49,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             updateContinuedTask(title: title, stage: "正在运行", progress: 5)
         }
         BackgroundPolicyRegistry.shared.requestContinuedProcessing()
+        applyBackgroundExecutionPreference(runTitle: title)
     }
 
     func didFinish(runID: UUID, succeeded: Bool, message: String?) {
@@ -74,6 +75,33 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if #available(iOS 26.0, *), activeRuns.isEmpty {
             finishContinuedTask(success: succeeded)
         }
+        if activeRuns.isEmpty {
+            tearDownBackgroundExecutionPreference()
+        }
+    }
+
+    /// Applies the user's background-execution choice when a run starts.
+    /// `standard` relies on the 30s lease + continued task (no extra UI);
+    /// `pictureInPicture` starts the progress video; `screenShare` expects the
+    /// user to have started broadcasting from the thread's share entry.
+    private func applyBackgroundExecutionPreference(runTitle: String) {
+        switch environment.settingsCenter.backgroundExecution {
+        case .standard:
+            break
+        case .pictureInPicture:
+            Task { [weak self] in
+                await self?.environment.backgroundVideoService.begin(
+                    title: runTitle,
+                    initialProgress: "正在运行"
+                )
+            }
+        case .screenShare:
+            break
+        }
+    }
+
+    private func tearDownBackgroundExecutionPreference() {
+        environment.backgroundVideoService.stop()
     }
 
     func didRequireApproval(conversationID: UUID, runID: UUID, toolName: String) {
@@ -148,15 +176,21 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
         case .background:
-            lease = BackgroundPolicyRegistry.shared.beginShortCompletion(name: "Persist agent checkpoints")
+            lease = BackgroundPolicyRegistry.shared.beginShortCompletion(name: "Keep agent run active")
             Task { [weak self] in
                 guard let self else { return }
                 await self.environment.conversationCenter.persistActiveRecoveryPoints()
                 // Provider-backed memory/profile work is not safe inside the
                 // short pre-suspension lease. Schedule it as processing work.
                 self.scheduleMemoryDeepSleep()
-                self.lease?.release()
-                self.lease = nil
+                // Hold the lease for the full 30s window while a run is still
+                // streaming, so short replies finish before suspension instead
+                // of being cut the instant the app backgrounds. The system's
+                // expiration handler ends the lease when the window closes.
+                if !self.environment.conversationCenter.hasActiveRun {
+                    self.lease?.release()
+                    self.lease = nil
+                }
             }
         case .active:
             lease?.release()

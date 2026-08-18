@@ -13,7 +13,7 @@ import FloeCore
 
 /// One settings category in the settings center.
 enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case general, personalization, providers, auxiliary, permissions, privacy, execution, files, sync, remote, diagnostics
+    case general, personalization, providers, auxiliary, permissions, privacy, execution, backgroundExecution, files, sync, remote, diagnostics
 
     var id: String { rawValue }
 
@@ -26,6 +26,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .permissions: "settings.section.permissions"
         case .privacy: "settings.section.privacy"
         case .execution: "settings.section.execution"
+        case .backgroundExecution: "settings.section.background_execution"
         case .files: "settings.section.files"
         case .sync: "settings.section.sync"
         case .remote: "settings.section.remote"
@@ -42,6 +43,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .permissions: "checkmark.shield"
         case .privacy: "hand.raised"
         case .execution: "terminal"
+        case .backgroundExecution: "pip"
         case .files: "folder"
         case .sync: "icloud"
         case .remote: "server.rack"
@@ -115,6 +117,8 @@ struct SettingsRootView: View {
             PrivacySecurityView(center: environment.settingsCenter)
         case .execution:
             ExecutionEnvironmentView(center: environment.settingsCenter)
+        case .backgroundExecution:
+            BackgroundExecutionSettingsView(center: environment.settingsCenter)
         case .files:
             FilesSettingsView(center: environment.settingsCenter)
         case .sync:
