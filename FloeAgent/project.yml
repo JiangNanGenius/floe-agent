@@ -121,8 +121,8 @@ targets:
         SWIFT_VERSION: "6.0"
         SWIFT_OBJC_BRIDGING_HEADER: FloeApp/Execution/FloeApp-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.3.0"
-        CURRENT_PROJECT_VERSION: "21"
+        MARKETING_VERSION: "1.3.1"
+        CURRENT_PROJECT_VERSION: "22"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
         ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -132,6 +132,9 @@ targets:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
         Release:
           SWIFT_COMPILATION_MODE: wholemodule
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
+          PROVISIONING_PROFILE_SPECIFIER: Floe TestFlight AppGroup 2026
 
   FloeScreenShare:
     type: app-extension
@@ -164,10 +167,15 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.3.0"
-        CURRENT_PROJECT_VERSION: "21"
+        MARKETING_VERSION: "1.3.1"
+        CURRENT_PROJECT_VERSION: "22"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
+          PROVISIONING_PROFILE_SPECIFIER: Floe Screen Share TestFlight AppGroup 2026
 
   FloeAgentUITests:
     type: bundle.ui-testing
