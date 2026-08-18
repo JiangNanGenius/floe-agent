@@ -185,8 +185,9 @@ extension ScreenShareCenter: RPBroadcastActivityViewControllerDelegate {
         didFinishWith broadcastController: RPBroadcastController?,
         error: Error?
     ) {
+        let didStartBroadcasting = broadcastController?.isBroadcasting == true
         Task { @MainActor in
-            if broadcastController?.isBroadcasting == true {
+            if didStartBroadcasting {
                 self.startSharing()
             } else {
                 self.stopSharing()
