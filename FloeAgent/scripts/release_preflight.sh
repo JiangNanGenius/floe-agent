@@ -31,6 +31,13 @@ if [[ "$TAG" != "v$VERSION" ]]; then
     exit 1
 fi
 
+SCREEN_SHARE_PLIST="FloeScreenShare/Info.plist"
+SCREEN_SHARE_DISPLAY_NAME="$(plutil -extract CFBundleDisplayName raw -o - "$SCREEN_SHARE_PLIST" 2>/dev/null || true)"
+if [[ -z "$SCREEN_SHARE_DISPLAY_NAME" ]]; then
+    echo "error: $SCREEN_SHARE_PLIST must define CFBundleDisplayName for App Store validation" >&2
+    exit 1
+fi
+
 PREVIOUS_TAG="$(git describe --tags --match 'v[0-9]*.[0-9]*.[0-9]*' --abbrev=0 "${TAG}^" 2>/dev/null || true)"
 if [[ -n "$PREVIOUS_TAG" ]]; then
     PREVIOUS_PROJECT="$(git show "$PREVIOUS_TAG:FloeAgent/project.yml" 2>/dev/null || true)"
