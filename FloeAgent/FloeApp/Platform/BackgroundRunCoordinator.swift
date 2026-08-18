@@ -187,7 +187,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 // streaming, so short replies finish before suspension instead
                 // of being cut the instant the app backgrounds. The system's
                 // expiration handler ends the lease when the window closes.
-                if !self.environment.conversationCenter.hasActiveRun {
+                if self.activeRuns.isEmpty {
                     self.lease?.release()
                     self.lease = nil
                 }

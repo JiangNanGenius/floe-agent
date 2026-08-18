@@ -1304,12 +1304,6 @@ final class ConversationCenter: ObservableObject {
         }
     }
 
-    /// True while any run is still streaming/tooling (non-terminal), used to
-    /// decide whether the 30s background lease should be held to completion.
-    var hasActiveRun: Bool {
-        runServices.values.contains { !$0.snapshot().isTerminal }
-    }
-
     /// Generates a concise title only after the first full answer. The
     /// database predicate prevents this asynchronous result from ever
     /// overwriting a user rename.

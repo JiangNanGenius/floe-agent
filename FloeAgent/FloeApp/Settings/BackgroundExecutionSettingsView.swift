@@ -15,7 +15,9 @@ struct BackgroundExecutionSettingsView: View {
             Section {
                 Picker("后台执行方式", selection: Binding(
                     get: { center.backgroundExecution },
-                    set: { Task { await center.setBackgroundExecution($0) } }
+                    set: { preference in
+                        Task { await center.setBackgroundExecution(preference) }
+                    }
                 )) {
                     ForEach(BackgroundExecutionPreference.allCases, id: \.self) { preference in
                         Text(preference.title).tag(preference)

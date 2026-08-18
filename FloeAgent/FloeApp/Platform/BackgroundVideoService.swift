@@ -50,8 +50,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         self.playerLayer = layer
         self.looper = AVPlayerLooper(player: queue, templateItem: item)
         queue.play()
-        if AVPictureInPictureController.isPictureInPictureSupported() {
-            let controller = AVPictureInPictureController(playerLayer: layer)
+        if AVPictureInPictureController.isPictureInPictureSupported(),
+           let controller = AVPictureInPictureController(playerLayer: layer) {
             controller.delegate = self
             self.pipController = controller
             controller.startPictureInPicture()
@@ -195,7 +195,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             attributes as CFDictionary,
             &buffer
         )
-        guard let pixelBuffer else { return nil }
+        guard let pixelBuffer = buffer else { return nil }
         CVPixelBufferLockBaseAddress(pixelBuffer, [])
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
         guard let context = CGContext(
