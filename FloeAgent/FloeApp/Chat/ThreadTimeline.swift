@@ -37,6 +37,10 @@ enum ThreadTimelineItem: Identifiable, Hashable {
     case assistantMessage(text: String, idSuffix: String)
     /// Persisted run event (status / reasoning / tool / approval / error).
     case event(RunEventRecord)
+    /// A collapsible group of consecutive reasoning/tool steps between two
+    /// text messages. Only the latest group is expanded by default; history
+    /// groups collapse to a single summary row so long runs stay readable.
+    case stepGroup(events: [RunEventRecord], isLatest: Bool)
     /// The run's terminal marker — always the final persisted row.
     case terminal(RunEventRecord)
     /// Provider stream ended without any final assistant text.
@@ -58,6 +62,8 @@ enum ThreadTimelineItem: Identifiable, Hashable {
             return "assistant.\(idSuffix)"
         case .event(let record):
             return "event.\(record.id.uuidString)"
+        case .stepGroup(let events, _):
+            return "stepGroup.\(events.first?.id.uuidString ?? "empty")"
         case .terminal(let record):
             return "terminal.\(record.id.uuidString)"
         case .missingFinalMessage(let idSuffix):
@@ -158,10 +164,19 @@ enum ThreadTimelineBuilder {
             .filter { !$0.isEmpty })
 
         var finalReplyRendered = false
+        var currentStepGroup: [RunEventRecord] = []
+        var stepGroups: [([RunEventRecord], Bool)] = []  // (events, isLatest)
         for event in nonTerminalEvents {
-            if event.kind == .assistantText, event.id == finalTextEvent?.id {
+            // Render every assistantText event in place (sequence order),
+            // not just the last one. The old "final text only" rule inverted
+            // the order when verifyFinalAnswer wrote a draft message.
+            if event.kind == .assistantText {
                 let text = decodePayload(event.payloadJSON)["text"] ?? ""
                 if !text.isEmpty {
+                    if !currentStepGroup.isEmpty {
+                        stepGroups.append((currentStepGroup, false))
+                        currentStepGroup = []
+                    }
                     items.append(.assistantMessage(
                         text: text,
                         idSuffix: event.id.uuidString
@@ -175,7 +190,24 @@ enum ThreadTimelineBuilder {
                completedToolCallIDs.contains(callID) {
                 continue
             }
+            // Group consecutive reasoning/tool events into a collapsible
+            // stepGroup. userMessage/assistantText breaks the group.
+            if event.kind == .reasoning || event.kind == .toolRequest || event.kind == .toolResult {
+                currentStepGroup.append(event)
+                continue
+            }
+            if !currentStepGroup.isEmpty {
+                stepGroups.append((currentStepGroup, false))
+                currentStepGroup = []
+            }
             items.append(.event(event))
+        }
+        if !currentStepGroup.isEmpty {
+            stepGroups.append((currentStepGroup, true))
+        }
+        // Render step groups: only the latest is expanded by default.
+        for (index, (groupEvents, isLatest)) in stepGroups.enumerated() {
+            items.append(.stepGroup(events: groupEvents, isLatest: isLatest && index == stepGroups.count - 1))
         }
 
         // 3. Legacy fallback: the run completed and persisted a final

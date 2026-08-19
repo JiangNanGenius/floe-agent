@@ -18,6 +18,12 @@ final class SpeechService: NSObject, ObservableObject, AVSpeechSynthesizerDelega
 
     @Published private(set) var isSpeaking = false
     @Published private(set) var speakingText: String?
+    /// Speech rate (0.0–1.0, default AVSpeechUtteranceDefaultSpeechRate).
+    @Published var rate: Float = AVSpeechUtteranceDefaultSpeechRate
+    /// Pitch multiplier (0.5–2.0, default 1.0).
+    @Published var pitch: Float = 1.0
+    /// Selected voice identifier (nil = auto by language).
+    @Published var voiceIdentifier: String?
 
     override init() {
         super.init()
@@ -34,8 +40,15 @@ final class SpeechService: NSObject, ObservableObject, AVSpeechSynthesizerDelega
             stop()
         }
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: Self.preferredLanguage(for: text))
-            ?? AVSpeechSynthesisVoice(language: "en-US")
+        utterance.rate = rate
+        utterance.pitchMultiplier = pitch
+        if let identifier = voiceIdentifier,
+           let voice = AVSpeechSynthesisVoice(identifier: identifier) {
+            utterance.voice = voice
+        } else {
+            utterance.voice = AVSpeechSynthesisVoice(language: Self.preferredLanguage(for: text))
+                ?? AVSpeechSynthesisVoice(language: "en-US")
+        }
         activeUtterance = utterance
         activeUtteranceIdentifier = ObjectIdentifier(utterance)
         synthesizer.speak(utterance)

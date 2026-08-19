@@ -44,6 +44,9 @@ public func registerExecutionTools(
         ToolCatalog.register(SSHExecTool.self)
     }
     ToolCatalog.register(HTTPRequestTool.self)
+    ToolCatalog.register(NetworkScanLANTool.self)
+    ToolCatalog.register(OCRTool.self)
+    ToolCatalog.register(BarcodeScanTool.self)
     // Runtime runners.
     if includeOnDeviceJavaScript {
         registry.register(JavaScriptExecutionTool(service: service))
@@ -58,5 +61,8 @@ public func registerExecutionTools(
         registry.register(SSHExecTool(service: sshCommandService))
     }
     registry.register(HTTPRequestTool(service: httpRequestService))
+    registry.register(NetworkScanLANTool(service: LANDiscoveryService()))
+    registry.register(OCRTool())
+    registry.register(BarcodeScanTool())
     return service
 }

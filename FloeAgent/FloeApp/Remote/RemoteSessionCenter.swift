@@ -169,6 +169,12 @@ final class RemoteSessionCenter: ObservableObject {
             }
         )
         let pty = try await handle.openPTY()
+        // Inject a tmux/screen bootstrap so the remote session survives
+        // disconnects. The command falls back to a plain shell if neither is
+        // installed. Session name is per-host so multiple hosts don't collide.
+        let sessionName = "floe-\(host.id.uuidString.prefix(8))"
+        let bootstrap = "command -v tmux >/dev/null && exec tmux new-session -A -s \(sessionName) || (command -v screen >/dev/null && exec screen -xRR \(sessionName) || exec $SHELL)\n"
+        try await pty.write(Data(bootstrap.utf8))
         let owner = SSHSessionOwner(
             sessionID: sessionID,
             hostID: host.id,

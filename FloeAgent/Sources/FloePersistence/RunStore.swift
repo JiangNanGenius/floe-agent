@@ -59,6 +59,41 @@ public protocol RunStore: Sendable {
     func saveCheckpoint(runID: UUID, conversationID: UUID, formatVersion: Int, state: String, bodyJSON: String) async throws
     func checkpointBody(runID: UUID) async throws -> String?
     func deleteCheckpoint(runID: UUID) async throws
+
+    /// Aggregated usage statistics across all runs.
+    func usageStatistics() async throws -> UsageStatistics
+}
+
+/// Aggregated token/cost usage across all runs.
+public struct UsageStatistics: Sendable, Codable, Hashable {
+    public var totalInputTokens: Int
+    public var totalOutputTokens: Int
+    public var totalTokens: Int
+    public var totalRuns: Int
+    public var byDay: [DailyUsage]
+
+    public init(totalInputTokens: Int, totalOutputTokens: Int, totalTokens: Int, totalRuns: Int, byDay: [DailyUsage]) {
+        self.totalInputTokens = totalInputTokens
+        self.totalOutputTokens = totalOutputTokens
+        self.totalTokens = totalTokens
+        self.totalRuns = totalRuns
+        self.byDay = byDay
+    }
+}
+
+public struct DailyUsage: Sendable, Codable, Hashable, Identifiable {
+    public var id: String { date }
+    public var date: String
+    public var inputTokens: Int
+    public var outputTokens: Int
+    public var runs: Int
+
+    public init(date: String, inputTokens: Int, outputTokens: Int, runs: Int) {
+        self.date = date
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.runs = runs
+    }
 }
 
 /// SQLite/GRDB implementation of `RunStore`.
@@ -345,5 +380,48 @@ public actor SQLiteRunStore: RunStore {
             recoverable: row["recoverable"],
             recordedAt: try PersistenceCodec.decodeDate(row["recorded_at"])
         )
+    }
+
+    public func usageStatistics() async throws -> UsageStatistics {
+        try await database.reader { db in
+            let totalRow = try Row.fetchOne(db, sql: """
+                SELECT
+                    COALESCE(SUM(input_tokens), 0) AS total_input,
+                    COALESCE(SUM(output_tokens), 0) AS total_output,
+                    COUNT(DISTINCT run_id) AS total_runs
+                FROM run_usage
+                """)
+            let totalInput: Int = totalRow?["total_input"] ?? 0
+            let totalOutput: Int = totalRow?["total_output"] ?? 0
+            let totalRuns: Int = totalRow?["total_runs"] ?? 0
+
+            let dailyRows = try Row.fetchAll(db, sql: """
+                SELECT
+                    date(recorded_at) AS day,
+                    COALESCE(SUM(input_tokens), 0) AS input,
+                    COALESCE(SUM(output_tokens), 0) AS output,
+                    COUNT(DISTINCT run_id) AS runs
+                FROM run_usage
+                GROUP BY date(recorded_at)
+                ORDER BY day DESC
+                LIMIT 30
+                """)
+            let byDay = dailyRows.map { row in
+                DailyUsage(
+                    date: row["day"],
+                    inputTokens: row["input"],
+                    outputTokens: row["output"],
+                    runs: row["runs"]
+                )
+            }
+
+            return UsageStatistics(
+                totalInputTokens: totalInput,
+                totalOutputTokens: totalOutput,
+                totalTokens: totalInput + totalOutput,
+                totalRuns: totalRuns,
+                byDay: byDay
+            )
+        }
     }
 }

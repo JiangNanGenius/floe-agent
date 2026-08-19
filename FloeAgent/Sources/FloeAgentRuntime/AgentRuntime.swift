@@ -162,7 +162,7 @@ public actor FileCheckpointStore: CheckpointStore {
     public func load(runID: UUID) throws -> AgentCheckpoint? {
         let url = directory.appendingPathComponent("\(runID.uuidString).checkpoint.json")
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return try AgentCheckpoint.decoded(from: Data(contentsOf: url))
+        return try AgentCheckpoint.decoded(from: Data(floeContentsOf: url))
     }
 }
 
@@ -780,7 +780,7 @@ public actor FloeAgentRuntime {
         ) else { return nil }
         let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
         let url = root.appendingPathComponent(artifact.relativePath)
-        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
+        guard let data = try? Data(floeContentsOf: url, options: [.mappedIfSafe]),
               data.count == artifact.byteCount else { return nil }
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         guard digest == artifact.sha256.lowercased() else { return nil }

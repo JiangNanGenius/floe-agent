@@ -178,6 +178,91 @@ targets:
           CODE_SIGN_IDENTITY: Apple Distribution
           PROVISIONING_PROFILE_SPECIFIER: Floe Screen Share TestFlight AppGroup 2026
 
+  FloeShare:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: FloeShare
+    info:
+      path: FloeShare/Info.plist
+      properties:
+        CFBundleDisplayName: Floe Share
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionActivationRule:
+            NSExtensionActivationSupportsText: true
+            NSExtensionActivationSupportsWebURLWithMaxCount: 1
+            NSExtensionActivationSupportsImageWithMaxCount: 1
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+    entitlements:
+      path: FloeShare/FloeShare.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.org.floeagent.ios
+    dependencies:
+      - package: FloeAgentPackages
+        product: FloeCore
+    settings:
+      base:
+        DEVELOPMENT_TEAM: QYL72C43K6
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios.share
+        PRODUCT_NAME: Floe Share
+        PRODUCT_MODULE_NAME: FloeShare
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "6.0"
+        MARKETING_VERSION: "1.3.3"
+        CURRENT_PROJECT_VERSION: "24"
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
+          PROVISIONING_PROFILE_SPECIFIER: Floe Share TestFlight AppGroup 2026
+
+  FloeWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: FloeWidgets
+    info:
+      path: FloeWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Floe Widgets
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+    entitlements:
+      path: FloeWidgets/FloeWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.org.floeagent.ios
+    dependencies:
+      - package: FloeAgentPackages
+        product: FloeCore
+    settings:
+      base:
+        DEVELOPMENT_TEAM: QYL72C43K6
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios.widgets
+        PRODUCT_NAME: Floe Widgets
+        PRODUCT_MODULE_NAME: FloeWidgets
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "6.0"
+        MARKETING_VERSION: "1.3.3"
+        CURRENT_PROJECT_VERSION: "24"
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
+          PROVISIONING_PROFILE_SPECIFIER: Floe Widgets TestFlight AppGroup 2026
+
   FloeAgentUITests:
     type: bundle.ui-testing
     platform: iOS

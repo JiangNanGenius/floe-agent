@@ -224,6 +224,14 @@ struct ThreadDetailView: View {
                     : nil
             )
 
+        case .stepGroup(let events, let isLatest):
+            StepGroupView(
+                events: events,
+                isLatest: isLatest,
+                isLive: viewModel.isRunning,
+                hasError: viewModel.events.contains { $0.kind == .error }
+            )
+
         case .terminal(let event):
             TerminalEventRow(event: event)
 
@@ -262,6 +270,22 @@ struct ThreadDetailView: View {
 
     // MARK: - State toolbar (status + Stop/Retry + inspector)
 
+    /// Markdown export of the conversation (title + user/assistant turns).
+    private var exportMarkdown: String? {
+        let messages = viewModel.messages
+        guard !messages.isEmpty else { return nil }
+        let title = viewModel.taskTitle.isEmpty ? "对话" : viewModel.taskTitle
+        var lines: [String] = ["# \(title)", ""]
+        for message in messages {
+            let role = message.role == "user" ? "用户" : "助手"
+            lines.append("## \(role)")
+            lines.append("")
+            lines.append(message.content)
+            lines.append("")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     /// Plain-text export of the conversation (title + user/assistant turns).
     private var exportText: String? {
         let messages = viewModel.messages
@@ -282,7 +306,12 @@ struct ThreadDetailView: View {
                 }
                 if let exportText {
                     ShareLink(item: exportText) {
-                        Label("导出对话", systemImage: "square.and.arrow.up")
+                        Label("导出对话（文本）", systemImage: "square.and.arrow.up")
+                    }
+                }
+                if let exportMarkdown {
+                    ShareLink(item: exportMarkdown) {
+                        Label("导出对话（Markdown）", systemImage: "doc.richtext")
                     }
                 }
                 Divider()

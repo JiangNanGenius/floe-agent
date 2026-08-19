@@ -1979,16 +1979,22 @@ final class ConversationCenter: ObservableObject {
     // MARK: - Helpers
 
     /// Resolves a provider's API key from Keychain at the call site only.
-    /// Exposed for the provider editor's Test connection; the key is never
-    /// stored on self or in any @Published state.
+    /// Falls back between synchronizable and local namespaces so a key written
+    /// under one is still found when the toggle changes.
     func resolveCredentials(for provider: ProviderProfile) -> ProviderCredentials {
         guard let secretRef = provider.secretRef else { return ProviderCredentials() }
-        let store = KeychainStore(
-            service: "org.floeagent.ios.secrets",
-            synchronizable: secretRef.synchronizable
-        )
-        let data = try? store.read(account: secretRef.keychainAccount)
-        return ProviderCredentials(apiKey: data.flatMap { String(data: $0, encoding: .utf8) })
+        // Try the recorded namespace first, then fall back to the other one.
+        let namespaces = [secretRef.synchronizable, !secretRef.synchronizable]
+        for synchronizable in namespaces {
+            let store = KeychainStore(
+                service: "org.floeagent.ios.secrets",
+                synchronizable: synchronizable
+            )
+            if let data = try? store.read(account: secretRef.keychainAccount) {
+                return ProviderCredentials(apiKey: String(data: data, encoding: .utf8))
+            }
+        }
+        return ProviderCredentials()
     }
 
     private func resolveProviderAndModel() async throws -> (ProviderProfile, ModelProfile) {

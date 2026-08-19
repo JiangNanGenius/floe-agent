@@ -11,15 +11,20 @@ public struct ConversationHistoryAssembler: Sendable {
     private let store: any ConversationStore
     private let maximumMessages: Int
     private let maximumBytes: Int
+    /// Separate byte budget for images so a real photo (2–6 MB base64) is not
+    /// silently dropped by the 512 KiB text budget.
+    private let maximumImageBytes: Int
 
     public init(
         store: any ConversationStore,
         maximumMessages: Int = 120,
-        maximumBytes: Int = 512 * 1024
+        maximumBytes: Int = 512 * 1024,
+        maximumImageBytes: Int = 8 * 1_024 * 1_024
     ) {
         self.store = store
         self.maximumMessages = max(2, maximumMessages)
         self.maximumBytes = max(16 * 1024, maximumBytes)
+        self.maximumImageBytes = max(1_024 * 1_024, maximumImageBytes)
     }
 
     public func build(
@@ -32,6 +37,7 @@ public struct ConversationHistoryAssembler: Sendable {
         let omitted = Array(persisted.dropLast(selected.count))
         var recent: [ConversationMessage] = []
         var bytes = 0
+        var imageBytes = 0
         for message in selected.reversed() {
             let attachmentNames = message.parts.compactMap { part -> String? in
                 guard part.kind != .text else { return nil }
@@ -46,8 +52,8 @@ public struct ConversationHistoryAssembler: Sendable {
                 guard let attachmentID = part.attachmentID,
                       let attachment = try await store.attachment(id: attachmentID),
                       let image = Self.inlineImage(attachment),
-                      bytes + image.base64.utf8.count <= maximumBytes else { continue }
-                bytes += image.base64.utf8.count
+                      imageBytes + image.base64.utf8.count <= maximumImageBytes else { continue }
+                imageBytes += image.base64.utf8.count
                 images.append(image)
             }
             recent.append(ConversationMessage(
@@ -111,7 +117,7 @@ public struct ConversationHistoryAssembler: Sendable {
             return nil
         }
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        guard let data = try? Data(contentsOf: url), data.count <= 8 * 1_024 * 1_024 else { return nil }
+        guard let data = try? Data(floeContentsOf: url), data.count <= 8 * 1_024 * 1_024 else { return nil }
         let mime = UTType(attachment.uti)?.preferredMIMEType
             ?? (url.pathExtension.lowercased() == "png" ? "image/png" : "image/jpeg")
         return ConversationImagePart(mimeType: mime, base64: data.base64EncodedString())

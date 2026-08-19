@@ -141,6 +141,11 @@ enum FeedbackUploadService {
             forHTTPHeaderField: "Content-Type"
         )
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        // Attach the write token from Keychain so the server accepts the
+        // upload. The token is entered once in Settings and never hardcoded.
+        if let token = FeedbackTokenStore.readToken() {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         request.httpBody = body
         return request
     }

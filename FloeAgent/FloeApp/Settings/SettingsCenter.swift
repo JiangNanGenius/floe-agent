@@ -55,6 +55,10 @@ final class SettingsCenter: ObservableObject {
     @Published private(set) var backgroundExecution: BackgroundExecutionPreference = .standard
     /// Self-critique pass on the final answer before the run completes.
     @Published private(set) var verifyFinalAnswer: Bool = false
+    /// Speech settings for TTS.
+    @Published private(set) var speechRate: Float = 0.5
+    @Published private(set) var speechPitch: Float = 1.0
+    @Published private(set) var speechVoiceIdentifier: String?
 
     // MARK: - Agent 与权限
 
@@ -244,6 +248,15 @@ final class SettingsCenter: ObservableObject {
         }
         if let verify: Bool = decode(Bool.self, AppSettingsKey.verifyFinalAnswer) {
             verifyFinalAnswer = verify
+        }
+        if let rate: Float = decode(Float.self, "speech.rate") {
+            speechRate = rate
+        }
+        if let pitch: Float = decode(Float.self, "speech.pitch") {
+            speechPitch = pitch
+        }
+        if let voice: String = decode(String.self, "speech.voiceIdentifier") {
+            speechVoiceIdentifier = voice
         }
     }
 
@@ -464,6 +477,21 @@ final class SettingsCenter: ObservableObject {
     func setVerifyFinalAnswer(_ value: Bool) async {
         verifyFinalAnswer = value
         await persist(value, forKey: AppSettingsKey.verifyFinalAnswer)
+    }
+
+    func setSpeechRate(_ value: Float) async {
+        speechRate = value
+        await persist(value, forKey: "speech.rate")
+    }
+
+    func setSpeechPitch(_ value: Float) async {
+        speechPitch = value
+        await persist(value, forKey: "speech.pitch")
+    }
+
+    func setSpeechVoiceIdentifier(_ value: String?) async {
+        speechVoiceIdentifier = value
+        await persist(value, forKey: "speech.voiceIdentifier")
     }
 
     func setDefaultStartPage(_ page: StartPage) async {

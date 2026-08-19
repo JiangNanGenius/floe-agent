@@ -220,6 +220,8 @@ private struct AuxiliaryModelEditorView: View {
     @State private var supportsVision = false
     @State private var isSaving = false
     @State private var errorMessage: String?
+    @State private var discoveredModels: [ModelProfile] = []
+    @State private var isDiscovering = false
     private let adapterFactory = ImageProviderAdapterFactory()
 
     private var compatibleProviders: [ProviderProfile] { center.providers }
@@ -247,7 +249,15 @@ private struct AuxiliaryModelEditorView: View {
                     }
                 }
                 Section("auxiliary.image_model") {
-                    TextField("model.remote_id", text: $remoteModelID).textInputAutocapitalization(.never)
+                    if !discoveredModels.isEmpty {
+                        Picker("model.remote_id", selection: $remoteModelID) {
+                            ForEach(discoveredModels) { model in
+                                Text(model.remoteModelID).tag(model.remoteModelID)
+                            }
+                        }
+                    } else {
+                        TextField("model.remote_id", text: $remoteModelID).textInputAutocapitalization(.never)
+                    }
                     TextField("model.display_name", text: $displayName)
                     Toggle("auxiliary.generation", isOn: $supportsGeneration)
                         .disabled(!supportedOperations.contains(.generate))
@@ -256,6 +266,11 @@ private struct AuxiliaryModelEditorView: View {
                     Toggle("model.capability.vision", isOn: $supportsVision)
                     if !supportedOperations.contains(.edit) {
                         Text("auxiliary.editing.unavailable")
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(.secondary)
+                    }
+                    if supportedOperations.isEmpty {
+                        Text("auxiliary.vision.auto_enabled")
                             .font(FloeTheme.Typography.metadata)
                             .foregroundStyle(.secondary)
                     }
@@ -278,8 +293,12 @@ private struct AuxiliaryModelEditorView: View {
             .task {
                 if providerID == nil { providerID = compatibleProviders.first?.id }
                 applySupportedOperations()
+                await discoverModels()
             }
-            .onChange(of: providerID) { _, _ in applySupportedOperations() }
+            .onChange(of: providerID) { _, _ in
+                applySupportedOperations()
+                Task { await discoverModels() }
+            }
         }
     }
 
@@ -327,6 +346,27 @@ private struct AuxiliaryModelEditorView: View {
         supportsGeneration = supportedOperations.contains(.generate)
         supportsEditing = supportedOperations.contains(.edit)
         if supportedOperations.isEmpty { supportsVision = true }
+    }
+
+    /// Discovers models from the selected provider so the user can pick from
+    /// a list instead of typing a raw model ID.
+    private func discoverModels() async {
+        guard let providerID,
+              let provider = center.providers.first(where: { $0.id == providerID }) else { return }
+        isDiscovering = true
+        defer { isDiscovering = false }
+        do {
+            let credentials = center.resolveCredentials(for: provider)
+            let adapter = ProviderAdapterFactory().adapter(for: provider)
+            let models = try await adapter.listModels(provider: provider, credentials: credentials)
+            discoveredModels = models.filter {
+                $0.capabilities.contains(.imageGeneration)
+                    || $0.capabilities.contains(.imageEditing)
+                    || $0.capabilities.contains(.vision)
+            }
+        } catch {
+            discoveredModels = []
+        }
     }
 }
 #endif

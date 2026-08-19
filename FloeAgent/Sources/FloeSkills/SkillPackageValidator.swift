@@ -29,8 +29,8 @@ public struct SkillPackageValidator: Sendable {
 
         let skillURL = root.appendingPathComponent("SKILL.md", isDirectory: false)
         let manifestURL = root.appendingPathComponent("floe.json", isDirectory: false)
-        let skillData = try Data(contentsOf: skillURL, options: [.mappedIfSafe])
-        let manifestData = try Data(contentsOf: manifestURL, options: [.mappedIfSafe])
+        let skillData = try Data(floeContentsOf: skillURL, options: [.mappedIfSafe])
+        let manifestData = try Data(floeContentsOf: manifestURL, options: [.mappedIfSafe])
         guard skillData.count <= limits.maximumSkillMarkdownBytes else {
             throw SkillValidationError.fileTooLarge(path: "SKILL.md", limit: limits.maximumSkillMarkdownBytes)
         }
@@ -128,7 +128,7 @@ public struct SkillPackageValidator: Sendable {
             if let fileSize = values.fileSize {
                 byteCount = fileSize
             } else {
-                byteCount = try Data(contentsOf: url, options: [.mappedIfSafe]).count
+                byteCount = try Data(floeContentsOf: url, options: [.mappedIfSafe]).count
             }
             guard byteCount <= limits.maximumFileBytes else {
                 throw SkillValidationError.fileTooLarge(path: relativePath, limit: limits.maximumFileBytes)
@@ -319,7 +319,7 @@ public struct SkillPackageValidator: Sendable {
             var length = UInt64(pathBytes.count).bigEndian
             withUnsafeBytes(of: &length) { hasher.update(data: Data($0)) }
             hasher.update(data: pathBytes)
-            let data = try Data(contentsOf: root.appendingPathComponent(file.relativePath), options: [.mappedIfSafe])
+            let data = try Data(floeContentsOf: root.appendingPathComponent(file.relativePath), options: [.mappedIfSafe])
             var dataLength = UInt64(data.count).bigEndian
             withUnsafeBytes(of: &dataLength) { hasher.update(data: Data($0)) }
             hasher.update(data: data)

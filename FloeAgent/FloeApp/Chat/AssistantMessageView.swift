@@ -25,13 +25,29 @@ struct AssistantMessageView: View {
         VStack(alignment: .leading, spacing: 6) {
             MarkdownRendererView(source: text, isStreaming: isStreaming)
             if !isStreaming, !text.isEmpty {
-                readAloudButton
+                HStack(spacing: 12) {
+                    readAloudButton
+                    copyButton
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(String(localized: "thread.role.assistant"))
         .accessibilityIdentifier("thread.assistant_message")
+    }
+
+    private var copyButton: some View {
+        Button {
+            UIPasteboard.general.string = text
+        } label: {
+            Label("复制", systemImage: "doc.on.doc")
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: FloeTheme.minimumTarget)
+        .accessibilityLabel("复制")
     }
 
     private var readAloudButton: some View {

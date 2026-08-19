@@ -43,6 +43,14 @@ static BOOL FloeEnsurePython(NSError **error) {
         return NO;
     }
 
+    // Workspace packages directory: pip --target installs go here so the
+    // agent can install and import pure-Python packages. Created on first use.
+    NSString *packagesDir = [home stringByAppendingPathComponent:@"../Documents/PythonPackages"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:packagesDir
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
+
     PyPreConfig preconfig;
     PyConfig config;
     PyPreConfig_InitIsolatedConfig(&preconfig);
@@ -51,7 +59,7 @@ static BOOL FloeEnsurePython(NSError **error) {
     config.buffered_stdio = 0;
     config.write_bytecode = 0;
     config.install_signal_handlers = 0;
-    config.site_import = 0;
+    config.site_import = 1;  // Allow site-packages so pip --target works
     config.user_site_directory = 0;
     config.use_environment = 0;
 
@@ -86,6 +94,19 @@ static BOOL FloeEnsurePython(NSError **error) {
         return NO;
     }
     PyConfig_Clear(&config);
+
+    // Add the workspace packages directory to sys.path so pip --target
+    // installs are importable.
+    PyGILState_STATE gil = PyGILState_Ensure();
+    PyObject *sysPath = PySys_GetObject("path");
+    if (sysPath && PyList_Check(sysPath)) {
+        PyObject *packagesPath = PyUnicode_FromString(packagesDir.UTF8String);
+        if (packagesPath) {
+            PyList_Append(sysPath, packagesPath);
+            Py_DECREF(packagesPath);
+        }
+    }
+    PyGILState_Release(gil);
     // Initialization owns the GIL. Release it so later actor hops may safely
     // enter through PyGILState_Ensure on any cooperative thread.
     PyEval_SaveThread();

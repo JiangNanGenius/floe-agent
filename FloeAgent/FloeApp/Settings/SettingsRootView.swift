@@ -13,7 +13,7 @@ import FloeCore
 
 /// One settings category in the settings center.
 enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case general, personalization, providers, auxiliary, permissions, privacy, execution, backgroundExecution, files, sync, remote, diagnostics
+    case general, personalization, providers, auxiliary, permissions, privacy, execution, backgroundExecution, files, sync, remote, usage, diagnostics
 
     var id: String { rawValue }
 
@@ -30,6 +30,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .files: "settings.section.files"
         case .sync: "settings.section.sync"
         case .remote: "settings.section.remote"
+        case .usage: "settings.section.usage"
         case .diagnostics: "settings.section.diagnostics"
         }
     }
@@ -47,6 +48,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .files: "folder"
         case .sync: "icloud"
         case .remote: "server.rack"
+        case .usage: "chart.bar"
         case .diagnostics: "stethoscope"
         }
     }
@@ -76,7 +78,12 @@ struct SettingsRootView: View {
                     }
                 }
             } detail: {
-                detailView(for: selection ?? .general)
+                // Wrap the detail column in a NavigationStack so NavigationLink
+                // inside detail views (e.g. MemoryView's 用户画像/SOUL.md) can
+                // push. Without this the links are silently dropped on iPad.
+                NavigationStack {
+                    detailView(for: selection ?? .general)
+                }
             }
         } else {
             // iPhone: the More tab already hosts a NavigationStack, so the
@@ -125,6 +132,8 @@ struct SettingsRootView: View {
             SyncSettingsView(center: environment.settingsCenter)
         case .remote:
             RemoteSettingsView(center: environment.settingsCenter)
+        case .usage:
+            UsageStatisticsView()
         case .diagnostics:
             DiagnosticsAboutView(center: environment.settingsCenter)
         }

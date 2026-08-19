@@ -72,6 +72,11 @@ final class HomeLaunchpadViewModel: ObservableObject {
         self.environment = center.environment
         self.taskStarter = taskStarter
         self.selectedProjectID = selectedProjectID
+        // Default the draft policy to the user's global default agent mode so
+        // "自动审批" actually takes effect on new tasks started from Home.
+        if environment.settingsCenter.defaultAgentMode == .approvalModel {
+            draftPolicy = DraftTaskPolicy(approvalMode: .automatic)
+        }
     }
 
     var pendingApprovals: [PendingApproval] { center.pendingApprovals }

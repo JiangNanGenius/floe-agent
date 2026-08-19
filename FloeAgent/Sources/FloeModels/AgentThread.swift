@@ -125,6 +125,8 @@ public struct RunEventRecord: Sendable, Codable, Hashable, Identifiable {
         case usage
         case checkpoint
         case status
+        /// A tool call that was automatically approved by policy (no human).
+        case autoApproved
     }
 
     public var id: UUID

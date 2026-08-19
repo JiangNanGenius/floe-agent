@@ -82,7 +82,14 @@ final class FilesCenter: ObservableObject {
     /// into the app-owned staging directory so it stays readable after the
     /// security-scoped access window closes. Non-image files are copied into
     /// the task workspace when the run starts; images are sent inline.
-    func registerPickedDocument(url: URL, displayName: String) async throws -> AttachmentRef {
+    /// Images are compressed (JPEG, ≤1MB) before staging so the model gets a
+    /// usable size without silent drops. Pass `compressImage: false` when the
+    /// model explicitly asks for the original/large version.
+    func registerPickedDocument(
+        url: URL,
+        displayName: String,
+        compressImage: Bool = true
+    ) async throws -> AttachmentRef {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
 
@@ -90,10 +97,31 @@ final class FilesCenter: ObservableObject {
         let contentType = values?.contentType
         let requestedName = displayName.isEmpty ? url.lastPathComponent : displayName
         let finalName = (requestedName as NSString).lastPathComponent
+        let kind = Self.attachmentKind(for: contentType)
 
         // Copy into staging with a collision-safe name.
         let stagedName = "\(UUID().uuidString)-\(finalName)"
         let stagedURL = attachmentsStagingDirectory.appendingPathComponent(stagedName)
+
+        // Compress images before staging so the model gets a usable size.
+        // Skip when the model explicitly asks for the original/large version.
+        if compressImage, kind == .image,
+           let image = UIImage(contentsOfFile: url.path),
+           let compressed = Self.compressImage(image, maxBytes: 1_024 * 1_024) {
+            try compressed.write(to: stagedURL)
+            let attachment = AttachmentRef(
+                id: UUID(),
+                kind: kind,
+                displayName: finalName,
+                uti: values?.contentType?.identifier ?? "",
+                byteCount: compressed.count,
+                storage: .applicationSupport,
+                relativePath: stagedName
+            )
+            recentFiles.insert(attachment, at: 0)
+            return attachment
+        }
+
         do {
             try FileManager.default.copyItem(at: url, to: stagedURL)
         } catch {
@@ -106,7 +134,7 @@ final class FilesCenter: ObservableObject {
             )
             let attachment = AttachmentRef(
                 id: UUID(),
-                kind: Self.attachmentKind(for: contentType),
+                kind: kind,
                 displayName: finalName,
                 uti: values?.contentType?.identifier ?? "",
                 byteCount: values?.fileSize ?? 0,
@@ -119,7 +147,7 @@ final class FilesCenter: ObservableObject {
 
         let attachment = AttachmentRef(
             id: UUID(),
-            kind: Self.attachmentKind(for: contentType),
+            kind: kind,
             displayName: finalName,
             uti: values?.contentType?.identifier ?? "",
             byteCount: values?.fileSize ?? 0,
@@ -128,6 +156,31 @@ final class FilesCenter: ObservableObject {
         )
         recentFiles.insert(attachment, at: 0)
         return attachment
+    }
+
+    /// Compresses an image to fit under maxBytes by progressively lowering
+    /// JPEG quality and scaling down. Returns nil if compression fails.
+    private static func compressImage(_ image: UIImage, maxBytes: Int) -> Data? {
+        var quality: CGFloat = 0.8
+        var scale: CGFloat = 1.0
+        var data = image.jpegData(compressionQuality: quality)
+        while (data?.count ?? 0) > maxBytes, quality > 0.1 {
+            quality -= 0.1
+            data = image.jpegData(compressionQuality: quality)
+        }
+        while (data?.count ?? 0) > maxBytes, scale > 0.2 {
+            scale -= 0.2
+            let newSize = CGSize(
+                width: image.size.width * scale,
+                height: image.size.height * scale
+            )
+            let renderer = UIGraphicsImageRenderer(size: newSize)
+            let scaled = renderer.image { _ in
+                image.draw(in: CGRect(origin: .zero, size: newSize))
+            }
+            data = scaled.jpegData(compressionQuality: quality)
+        }
+        return data
     }
 
     private static func attachmentKind(for contentType: UTType?) -> AttachmentRef.Kind {
@@ -202,7 +255,7 @@ final class FilesCenter: ObservableObject {
             let url = try resolveURL(for: source)
             let accessing = url.startAccessingSecurityScopedResource()
             defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-            let data = try Data(contentsOf: url)
+            let data = try Data(floeContentsOf: url)
             guard data.count <= 12 * 1_024 * 1_024 else {
                 throw FloeError.validationFailed("Source image exceeds 12 MiB")
             }
@@ -299,7 +352,7 @@ final class FilesCenter: ObservableObject {
         let url = try resolveURL(for: attachment)
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        let data = try Data(contentsOf: url)
+        let data = try Data(floeContentsOf: url)
         guard let source = UIImage(data: data)?.cgImage else {
             throw FloeError.validationFailed("Not a readable image")
         }

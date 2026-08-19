@@ -44,14 +44,22 @@ public enum HTTPRequestError: Error, Sendable, LocalizedError {
 /// revalidated and cross-origin credentials are stripped.
 public struct HTTPRequestService: Sendable {
     private let session: URLSession
+    /// Whether private/local network targets are allowed. When true, the
+    /// agent can reach LAN devices (smart home, HA, local servers). Requests
+    /// to private IPs trigger iOS's local-network permission prompt on first
+    /// use. When false (default), only public Internet targets are allowed.
+    public var allowsPrivateNetwork: Bool
 
-    public init(configuration: URLSessionConfiguration = .ephemeral) {
-        let delegate = PublicRedirectDelegate()
+    public init(configuration: URLSessionConfiguration = .ephemeral, allowsPrivateNetwork: Bool = false) {
+        let delegate: URLSessionTaskDelegate = allowsPrivateNetwork
+            ? PrivateRedirectDelegate()
+            : PublicRedirectDelegate()
         self.session = URLSession(
             configuration: configuration,
             delegate: delegate,
             delegateQueue: nil
         )
+        self.allowsPrivateNetwork = allowsPrivateNetwork
     }
 
     public func send(
@@ -65,7 +73,11 @@ public struct HTTPRequestService: Sendable {
         guard ["GET", "POST", "PUT", "DELETE", "HEAD"].contains(method.uppercased()) else {
             throw HTTPRequestError.invalidMethod(method)
         }
-        try PublicNetworkTargetPolicy.validate(url)
+        if allowsPrivateNetwork {
+            try PrivateNetworkTargetPolicy.validate(url)
+        } else {
+            try PublicNetworkTargetPolicy.validate(url)
+        }
 
         var request = URLRequest(url: url)
         request.httpMethod = method.uppercased()
@@ -209,6 +221,181 @@ private final class PublicRedirectDelegate: NSObject, URLSessionTaskDelegate, @u
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
         guard let url = request.url, (try? PublicNetworkTargetPolicy.validate(url)) != nil else {
+            completionHandler(nil)
+            return
+        }
+        var next = request
+        if Self.origin(task.currentRequest?.url) != Self.origin(url) {
+            next.setValue(nil, forHTTPHeaderField: "Authorization")
+            next.setValue(nil, forHTTPHeaderField: "Cookie")
+            next.setValue(nil, forHTTPHeaderField: "Proxy-Authorization")
+        }
+        completionHandler(next)
+    }
+
+    private static func origin(_ url: URL?) -> String? {
+        guard let url, let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased() else {
+            return nil
+        }
+        return "\(scheme)://\(host):\(url.port ?? 443)"
+    }
+}
+
+/// Allows private/local network targets (LAN devices, smart home, local
+/// servers). Requests to private IPs trigger iOS's local-network permission
+/// prompt on first use. Redirects are revalidated and cross-origin
+/// credentials are stripped.
+enum PrivateNetworkTargetPolicy {
+    static func validate(_ url: URL) throws {
+        guard let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              url.user == nil,
+              url.password == nil,
+              let host = url.host?.lowercased(),
+              !host.isEmpty else {
+            throw HTTPRequestError.invalidURL(url.absoluteString)
+        }
+        // Allow .local/.lan/.internal/.home mDNS names and private IPs.
+        let allowedSuffixes = [".local", ".lan", ".internal", ".home", ".localhost"]
+        if allowedSuffixes.contains(where: { host.hasSuffix($0) }) {
+            return
+        }
+        // Validate IP ranges directly for numeric hosts.
+        if let ip = IPAddress(host) {
+            if ip.isPrivate || ip.isLoopback || ip.isLinkLocal {
+                return
+            }
+        }
+        // For DNS names, resolve and check all addresses.
+        var hints = addrinfo(
+            ai_flags: AI_ADDRCONFIG,
+            ai_family: AF_UNSPEC,
+            ai_socktype: SOCK_STREAM,
+            ai_protocol: IPPROTO_TCP,
+            ai_addrlen: 0,
+            ai_canonname: nil,
+            ai_addr: nil,
+            ai_next: nil
+        )
+        var result: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, nil, &hints, &result) == 0, let first = result else {
+            throw HTTPRequestError.invalidURL(url.absoluteString)
+        }
+        defer { freeaddrinfo(first) }
+        var cursor: UnsafeMutablePointer<addrinfo>? = first
+        var foundAddress = false
+        while let current = cursor {
+            guard let address = current.pointee.ai_addr else {
+                cursor = current.pointee.ai_next
+                continue
+            }
+            foundAddress = true
+            if !isPrivateOrLocal(address) {
+                throw HTTPRequestError.privateNetworkTarget(host)
+            }
+            cursor = current.pointee.ai_next
+        }
+        guard foundAddress else { throw HTTPRequestError.invalidURL(url.absoluteString) }
+    }
+
+    static func isAllowedHeader(_ name: String) -> Bool {
+        PublicNetworkTargetPolicy.isAllowedHeader(name)
+    }
+
+    private static func isPrivateOrLocal(_ address: UnsafePointer<sockaddr>) -> Bool {
+        switch Int32(address.pointee.sa_family) {
+        case AF_INET:
+            let ipv4 = address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+                UInt32(bigEndian: $0.pointee.sin_addr.s_addr)
+            }
+            let first = UInt8((ipv4 >> 24) & 0xff)
+            let second = UInt8((ipv4 >> 16) & 0xff)
+            if first == 10 { return true }
+            if first == 172 && (16...31).contains(second) { return true }
+            if first == 192 && second == 168 { return true }
+            if first == 169 && second == 254 { return true } // link-local
+            if first == 127 { return true } // loopback
+            return false
+        case AF_INET6:
+            let bytes = address.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) {
+                withUnsafeBytes(of: $0.pointee.sin6_addr) { Array($0) }
+            }
+            guard bytes.count == 16 else { return false }
+            if bytes.allSatisfy({ $0 == 0 }) { return false }
+            if bytes.dropLast().allSatisfy({ $0 == 0 }) && bytes.last == 1 { return true } // loopback
+            if bytes[0] & 0xfe == 0xfc { return true } // unique local fc00::/7
+            if bytes[0] == 0xfe && bytes[1] & 0xc0 == 0x80 { return true } // link local
+            return false
+        default:
+            return false
+        }
+    }
+}
+
+private struct IPAddress {
+    let bytes: [UInt8]
+    let isIPv6: Bool
+
+    init?(_ string: String) {
+        if string.contains(":") {
+            isIPv6 = true
+            var addr = in6_addr()
+            guard string.withCString({ inet_pton(AF_INET6, $0, &addr) }) == 1 else { return nil }
+            bytes = withUnsafeBytes(of: &addr) { Array($0) }
+        } else {
+            isIPv6 = false
+            var addr = in_addr()
+            guard string.withCString({ inet_pton(AF_INET, $0, &addr) }) == 1 else { return nil }
+            bytes = withUnsafeBytes(of: &addr) { Array($0) }
+        }
+    }
+
+    var isPrivate: Bool {
+        if isIPv6 {
+            guard bytes.count == 16 else { return false }
+            if bytes[0] & 0xfe == 0xfc { return true } // fc00::/7
+            return false
+        } else {
+            guard bytes.count == 4 else { return false }
+            let first = bytes[0]
+            let second = bytes[1]
+            if first == 10 { return true }
+            if first == 172 && (16...31).contains(second) { return true }
+            if first == 192 && second == 168 { return true }
+            return false
+        }
+    }
+
+    var isLoopback: Bool {
+        if isIPv6 {
+            guard bytes.count == 16 else { return false }
+            return bytes.dropLast().allSatisfy({ $0 == 0 }) && bytes.last == 1
+        } else {
+            guard bytes.count == 4 else { return false }
+            return bytes[0] == 127
+        }
+    }
+
+    var isLinkLocal: Bool {
+        if isIPv6 {
+            guard bytes.count == 16 else { return false }
+            return bytes[0] == 0xfe && bytes[1] & 0xc0 == 0x80
+        } else {
+            guard bytes.count == 4 else { return false }
+            return bytes[0] == 169 && bytes[1] == 254
+        }
+    }
+}
+
+private final class PrivateRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let url = request.url, (try? PrivateNetworkTargetPolicy.validate(url)) != nil else {
             completionHandler(nil)
             return
         }

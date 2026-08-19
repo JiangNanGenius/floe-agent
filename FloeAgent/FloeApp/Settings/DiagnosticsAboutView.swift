@@ -19,6 +19,7 @@ struct DiagnosticsAboutView: View {
     @State private var isExporting = false
     @State private var errorMessage: String?
     @State private var presentsFeedback = false
+    @State private var includeDeviceInfo = false
 
     var body: some View {
         Form {
@@ -36,6 +37,13 @@ struct DiagnosticsAboutView: View {
                         .foregroundStyle(.secondary)
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
+                if includeDeviceInfo {
+                    LabeledContent("settings.diagnostics.device") {
+                        Text(deviceInfo).foregroundStyle(.secondary)
+                    }
+                    .frame(minHeight: FloeTheme.minimumTarget)
+                }
+                Toggle("settings.diagnostics.include_device_info", isOn: $includeDeviceInfo)
             }
 
             Section("settings.diagnostics.capabilities") {
@@ -162,6 +170,12 @@ struct DiagnosticsAboutView: View {
     private var appBuild: String {
         Bundle.main.infoDictionary?["CFBundleVersion"] as? String
             ?? String(localized: "settings.diagnostics.unknown")
+    }
+
+    /// Device info for diagnostics (optional, off by default).
+    private var deviceInfo: String {
+        let device = UIDevice.current
+        return "\(device.model) (\(device.systemName) \(device.systemVersion))"
     }
 
     /// The third-party license document shipped in the repository. Linked

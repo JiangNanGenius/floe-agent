@@ -208,6 +208,10 @@ public struct JavaScriptExecutionService: ScriptExecutionService {
             context.setObject(object, forKeyedSubscript: "input" as NSString)
         }
 
+        // Inject pre-installed pure-JS packages (lodash, dayjs, marked,
+        // uuid, zod) so the agent can use them without network access.
+        JSPackages.inject(into: context)
+
         context.evaluateScript(script)
 
         resultLock.lock()
