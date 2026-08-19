@@ -31,7 +31,7 @@ public struct SSHExecTool: AgentTool {
 
     public static let name = "ssh.execute"
     public static let toolDescription =
-        "Run a shell command on a paired SSH host (ls, grep, git, npm, etc.). Non-zero exit codes are returned as results, not errors. Requires a configured host; the call passes the catastrophic gate and approval policy because it runs commands remotely."
+        "Run a shell command on a paired SSH host (ls, grep, git, npm, python3, etc.). Non-zero exit codes are returned as results, not errors. Requires a configured host; the call passes the catastrophic gate and approval policy because it runs commands remotely. To run Python, use `python3 -c \"...\"` or pipe a script via stdin: `python3 - <<'EOF'\\n...\\nEOF`."
     public static let parametersJSON = #"""
     {
       "type": "object",

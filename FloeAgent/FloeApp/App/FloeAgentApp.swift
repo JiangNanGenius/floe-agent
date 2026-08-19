@@ -725,7 +725,9 @@ private struct MoreDestinationView: View {
         case .skills:
             SkillsView(center: environment.skillsCenter)
         case .memory:
-            MemoryView(center: environment.memoryCenter)
+            NavigationStack {
+                MemoryView(center: environment.memoryCenter)
+            }
         case .settings:
             SettingsRootView()
         case .diagnostics:

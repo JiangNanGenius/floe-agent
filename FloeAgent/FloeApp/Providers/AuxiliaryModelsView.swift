@@ -274,6 +274,10 @@ private struct AuxiliaryModelEditorView: View {
                             .font(FloeTheme.Typography.metadata)
                             .foregroundStyle(.secondary)
                     }
+                    // Clarify: generation/editing produce images; vision reads them.
+                    Text("auxiliary.model_kind_hint")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
                 }
                 if let errorMessage {
                     Section { Text(errorMessage).foregroundStyle(FloeTheme.destructive) }

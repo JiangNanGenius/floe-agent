@@ -9,22 +9,22 @@ import FloeTools
 
 /// Registers the compiled execution tools. Local JavaScript remains opt-in;
 /// local Python is registered only when the app has supplied the bundled
-/// CPython service.
+/// CPython service. Remote Python is intentionally absent — `ssh.execute`
+/// covers it (run `python3 -c "..."` or pipe a script via stdin).
 ///
 /// - Parameters:
 ///   - registry: Runner registry to register into (defaults to the shared
 ///     process-wide registry used by `CatalogToolExecutor`).
 ///   - service: The JS execution backend (defaults to the real
 ///     JavaScriptCore service; tests inject fakes).
-///   - pythonService: The remote Python backend. Nil leaves
-///     `exec.remotePython` unregistered (honest absence: no runner).
 ///   - localPythonService: Bundled on-device CPython. Nil leaves
 ///     `exec.localPython` honestly absent from the catalog.
+///   - sshCommandService: SSH command execution backend. Nil leaves
+///     `ssh.execute` unregistered.
 @discardableResult
 public func registerExecutionTools(
     registry: ToolRunnerRegistry = .shared,
     service: any ScriptExecutionService = JavaScriptExecutionService(),
-    pythonService: RemotePythonService? = nil,
     localPythonService: LocalPythonService? = nil,
     sshCommandService: SSHCommandService? = nil,
     httpRequestService: HTTPRequestService = HTTPRequestService(),
@@ -33,9 +33,6 @@ public func registerExecutionTools(
     // Compile-time catalog descriptors.
     if includeOnDeviceJavaScript {
         ToolCatalog.register(JavaScriptExecutionTool.self)
-    }
-    if pythonService != nil {
-        ToolCatalog.register(RemotePythonTool.self)
     }
     if localPythonService != nil {
         ToolCatalog.register(LocalPythonTool.self)
@@ -50,9 +47,6 @@ public func registerExecutionTools(
     // Runtime runners.
     if includeOnDeviceJavaScript {
         registry.register(JavaScriptExecutionTool(service: service))
-    }
-    if let pythonService {
-        registry.register(RemotePythonTool(service: pythonService))
     }
     if let localPythonService {
         registry.register(LocalPythonTool(service: localPythonService))

@@ -167,17 +167,6 @@ final class AppEnvironment: ObservableObject {
         self.previewCenter = LocalPreviewCoordinator(browser: self.browserCenter)
         self.voiceInput = VoiceInputController.live()
 
-        // T04/T05: register the nine workspace file tools (catalog
-        // descriptors + runtime runners). The root provider reads the
-        // currently opened workspace root maintained by WorkspaceCenter;
-        // with no workspace open the tools fail with a structured "no
-        // workspace" result instead of crashing.
-        registerWorkspaceTools(rootProvider: WorkspaceCenter.toolRootProvider)
-        // Local value-only OOXML spreadsheet reading for the document surface.
-        registerDocumentTools(rootProvider: WorkspaceCenter.toolRootProvider)
-        // Local image processing (Core Image) for the image surface.
-        registerImageTools(rootProvider: WorkspaceCenter.toolRootProvider)
-
         // Register both execution locations. Local CPython is a stripped,
         // fixed app resource and always asks before executing; remote Python
         // continues to resolve credentials at the call site only.
@@ -194,23 +183,43 @@ final class AppEnvironment: ObservableObject {
 
         // All stored properties are initialized above. Registrations below
         // may now safely resolve lazy centers that retain this environment.
-        registerExecutionTools(
-            pythonService: pythonService,
+        // Unified tool registration: every tool the model can see is
+        // registered here in one place, in a deterministic order.
+        registerAllAgentTools(
             localPythonService: localPythonService,
             sshCommandService: sshCommandService
         )
+    }
+
+    /// Registers every tool the agent can see, in one place and in a
+    /// deterministic order. This is the single source of truth for the
+    /// model's tool catalog.
+    private func registerAllAgentTools(
+        localPythonService: LocalPythonService?,
+        sshCommandService: SSHCommandService?
+    ) {
+        // Workspace file tools (T04/T05).
+        registerWorkspaceTools(rootProvider: WorkspaceCenter.toolRootProvider)
+        // Document tools (OOXML spreadsheet reading).
+        registerDocumentTools(rootProvider: WorkspaceCenter.toolRootProvider)
+        // Image tools (Core Image processing).
+        registerImageTools(rootProvider: WorkspaceCenter.toolRootProvider)
+        // Execution tools (JS, local Python, SSH, HTTP, LAN scan, OCR, barcode).
+        registerExecutionTools(
+            localPythonService: localPythonService,
+            sshCommandService: sshCommandService
+        )
+        // Browser automation.
         registerBrowserTools(center: browserCenter)
+        // Local preview server.
         registerPreviewTools(environment: previewCenter)
-        // The agent can author skills through the same reviewed pipeline as
-        // the on-device UI.
+        // Skill authoring.
         registerSkillTools(creator: LocalSkillCreator(center: skillsCenter))
-        // Durable memory: the agent records and recalls across runs.
+        // Durable memory.
         registerMemoryTools(store: intelligenceStore)
-        // Supervisor-Worker delegation is strictly read-only. Each run binds
-        // its selected provider/model into this registry before execution.
+        // Supervisor-Worker delegation.
         registerDelegateTool(runners: subagentRunnerRegistry)
-        // VNC remote-desktop driving: the agent clicks/types into the user's
-        // open VNC session.
+        // VNC remote-desktop driving.
         registerVNCTools { [weak remoteSessionCenter] in
             await remoteSessionCenter?.activeVNCSession()
         }

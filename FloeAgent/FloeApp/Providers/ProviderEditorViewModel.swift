@@ -179,17 +179,10 @@ final class ProviderEditorViewModel: ObservableObject {
             let credentials: ProviderCredentials
             if !enteredKey.isEmpty {
                 credentials = ProviderCredentials(apiKey: enteredKey)
-            } else if profile.secretRef != nil {
-                // Read through the sync-aware store so refresh still works if
-                // the user has just changed the iCloud Keychain toggle. The
-                // store deliberately falls back across local/synchronized
-                // namespaces during that transition.
-                let secret = try await secretStore.readSecret(scope: .provider(providerID))
-                credentials = ProviderCredentials(
-                    apiKey: String(data: secret, encoding: .utf8)
-                )
             } else {
-                credentials = ProviderCredentials()
+                // Use the same Keychain resolution as ConversationCenter so
+                // the editor and runtime agree on which namespace to read.
+                credentials = center.resolveCredentials(for: profile)
             }
             let adapter = adapterFactory.adapter(for: profile)
             if testConnectivity {
