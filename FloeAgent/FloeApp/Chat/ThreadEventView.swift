@@ -255,6 +255,7 @@ struct ThreadEventView: View {
         case .terminal: "thread.kind.terminal"
         case .file: "thread.kind.file"
         case .approval: "thread.kind.approval"
+        case .autoApproved: "thread.kind.auto_approved"
         case .error: "thread.kind.error"
         case .usage: "thread.kind.usage"
         case .checkpoint: "thread.kind.checkpoint"
