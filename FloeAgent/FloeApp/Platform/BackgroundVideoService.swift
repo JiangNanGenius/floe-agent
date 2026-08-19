@@ -133,11 +133,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
 
     /// Releases playback state after the user or system closes PiP without
     /// asking AVKit to stop the already-stopped controller a second time.
-    private func handlePiPStopped(_ controller: AVPictureInPictureController) {
-        guard pipController === controller else {
-            isPiPActive = false
-            return
-        }
+    private func handlePiPStopped(controllerID: ObjectIdentifier) {
+        guard let pipController,
+              ObjectIdentifier(pipController) == controllerID else { return }
         refreshTask?.cancel()
         refreshTask = nil
         startGeneration &+= 1
@@ -289,7 +287,8 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
     nonisolated func pictureInPictureControllerDidStopPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
     ) {
-        Task { @MainActor in self.handlePiPStopped(pictureInPictureController) }
+        let controllerID = ObjectIdentifier(pictureInPictureController)
+        Task { @MainActor in self.handlePiPStopped(controllerID: controllerID) }
     }
 
     nonisolated func pictureInPictureController(
