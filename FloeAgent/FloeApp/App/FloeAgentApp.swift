@@ -12,6 +12,7 @@
 import SwiftUI
 import UIKit
 import AVFoundation
+import FloeCore
 import FloeModels
 import FloePersistence
 
