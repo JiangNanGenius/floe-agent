@@ -355,10 +355,10 @@ private struct AuxiliaryModelEditorView: View {
                     // Seedream endpoint differs from the chat provider).
                     let provider = ProviderProfile(
                         kind: .custom,
-                        displayName: dedicatedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            ? remoteModelID : dedicatedName,
+                        wireProtocol: .openAIChatCompletions,
                         baseURL: URL(string: dedicatedBaseURL.trimmingCharacters(in: .whitespacesAndNewlines))!,
-                        wireProtocol: .openAIChatCompletions
+                        displayName: dedicatedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? remoteModelID : dedicatedName
                     )
                     try await center.saveProvider(provider)
                     // Store the API key in Keychain under the provider's ref.
