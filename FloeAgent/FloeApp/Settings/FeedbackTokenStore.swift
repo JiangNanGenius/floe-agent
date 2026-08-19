@@ -7,7 +7,7 @@
 
 import Foundation
 import FloeCore
-import FloeSync
+import FloeSecurity
 
 enum FeedbackTokenStore {
     private static let service = "org.floeagent.ios.secrets"
