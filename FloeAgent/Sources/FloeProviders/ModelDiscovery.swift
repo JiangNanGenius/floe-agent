@@ -107,14 +107,18 @@ enum ModelDiscovery {
 
     /// Throws a normalized provider error for non-2xx responses. The body is
     /// truncated and never includes credentials (the request carries them,
-    /// not the response).
+    /// not the response). Auth failures (401/403) surface the provider's own
+    /// message so the user knows the key is invalid, not just "HTTP 401".
     private static func ensureSuccess(_ response: URLResponse, data: Data, secret: String?) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
-            let body = SecretRedactor.redact(
-                String(decoding: data.prefix(512), as: UTF8.self),
-                secret: secret
-            )
+            let rawBody = String(decoding: data.prefix(1024), as: UTF8.self)
+            let body = SecretRedactor.redact(rawBody, secret: secret)
+            // Auth failures: surface the provider's message directly so the
+            // user sees "api key invalid" instead of a bare HTTP status.
+            if http.statusCode == 401 || http.statusCode == 403 {
+                throw FloeError.validationFailed("API key 无效或已过期：\(body)")
+            }
             throw FloeError.internalError("Model discovery failed (HTTP \(http.statusCode)): \(body)")
         }
     }
