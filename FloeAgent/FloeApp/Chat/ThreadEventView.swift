@@ -141,6 +141,15 @@ struct ThreadEventView: View {
                     ?? event.kind.rawValue,
                 evidence: event.payloadJSON
             )
+
+        case .autoApproved:
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.shield")
+                    .foregroundStyle(FloeTheme.success)
+                Text("已自动批准：\(payload["tool"] ?? "")")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -200,7 +209,7 @@ struct ThreadEventView: View {
     private var isFoldable: Bool {
         switch event.kind {
         case .assistantText, .approval, .error, .usage, .reasoning,
-             .toolRequest, .toolResult, .status:
+             .toolRequest, .toolResult, .status, .autoApproved:
             // These kinds carry their own folding affordance
             // (DisclosureGroup / card chevron); no outer fold.
             return false
@@ -218,6 +227,7 @@ struct ThreadEventView: View {
         case .terminal: "terminal"
         case .file: "doc"
         case .approval: "exclamationmark.shield"
+        case .autoApproved: "checkmark.shield"
         case .error: "xmark.octagon"
         case .usage: "chart.bar"
         case .checkpoint: "bookmark"
