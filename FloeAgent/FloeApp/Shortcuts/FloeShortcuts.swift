@@ -11,7 +11,9 @@ import Foundation
 /// Sends text to the agent for processing (e.g. summarization).
 struct SendToFloeIntent: AppIntent {
     static var title: LocalizedStringResource { "发送给 Floe 处理" }
-    static var description = IntentDescription("把文字发给 Floe Agent 处理（总结、分析等）")
+    static var description: IntentDescription {
+        IntentDescription("把文字发给 Floe Agent 处理（总结、分析等）")
+    }
 
     @Parameter(title: "文字内容")
     var text: String
@@ -35,7 +37,9 @@ struct SendToFloeIntent: AppIntent {
 /// Creates a new task in Floe Agent.
 struct CreateFloeTaskIntent: AppIntent {
     static var title: LocalizedStringResource { "新建 Floe 任务" }
-    static var description = IntentDescription("在 Floe Agent 中新建一个任务")
+    static var description: IntentDescription {
+        IntentDescription("在 Floe Agent 中新建一个任务")
+    }
 
     @Parameter(title: "任务描述")
     var taskDescription: String

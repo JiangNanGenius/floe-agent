@@ -9,6 +9,7 @@ import SwiftUI
 import FloeCore
 import FloeModels
 import FloePersistence
+import FloeAgentRuntime
 
 struct ConversationSearchView: View {
     @EnvironmentObject private var environment: AppEnvironment
