@@ -1982,13 +1982,27 @@ final class ConversationCenter: ObservableObject {
     /// Resolves a provider's API key from Keychain at the call site only.
     /// Uses KeychainSecretStore so the read path matches the write path
     /// (ProviderEditorViewModel writes through KeychainSecretStore).
+    /// Synchronous: Keychain reads are fast enough for the call site.
     func resolveCredentials(for provider: ProviderProfile) -> ProviderCredentials {
-        guard provider.secretRef != nil else { return ProviderCredentials() }
+        guard let secretRef = provider.secretRef else { return ProviderCredentials() }
+        // Read through KeychainSecretStore so the read path matches the write
+        // path (ProviderEditorViewModel writes through it). KeychainSecretStore
+        // is a struct with async methods, but we can use the underlying
+        // KeychainStore directly for a synchronous read with the same
+        // namespace fallback.
         let store = KeychainSecretStore()
-        guard let data = try? await store.readSecret(scope: .provider(provider.id)) else {
-            return ProviderCredentials()
+        // KeychainSecretStore doesn't expose a synchronous read; use its
+        // underlying stores directly with the same fallback logic.
+        for synchronizable in [secretRef.synchronizable, !secretRef.synchronizable] {
+            let keychain = KeychainStore(
+                service: "org.floeagent.ios.secrets",
+                synchronizable: synchronizable
+            )
+            if let data = try? keychain.read(account: secretRef.keychainAccount) {
+                return ProviderCredentials(apiKey: String(data: data, encoding: .utf8))
+            }
         }
-        return ProviderCredentials(apiKey: String(data: data, encoding: .utf8))
+        return ProviderCredentials()
     }
 
     private func resolveProviderAndModel() async throws -> (ProviderProfile, ModelProfile) {
