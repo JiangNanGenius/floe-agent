@@ -4015,6 +4015,40 @@
         }
       }
     },
+    "providers.tool_name_compatibility": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tool name compatibility mode"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工具名兼容模式"
+          }
+        }
+      }
+    },
+    "providers.tool_name_compatibility.hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Convert tool names with dots (e.g. workspace.createFile) to underscores for providers like DeepSeek that enforce ^[a-zA-Z0-9_-]+$."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将带点号的工具名（如 workspace.createFile）转换为下划线格式，用于 DeepSeek 等要求 ^[a-zA-Z0-9_-]+$ 的供应商。"
+          }
+        }
+      }
+    },
     "reasoning.title": {
       "extractionState": "manual",
       "localizations": {

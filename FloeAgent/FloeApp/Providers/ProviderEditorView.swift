@@ -32,6 +32,7 @@ struct ProviderEditorView: View {
             protocolSection
             endpointSection
             credentialsSection
+            compatibilitySection
             syncSection
             testSection
             modelsSection
@@ -160,6 +161,19 @@ struct ProviderEditorView: View {
             Text("providers.credentials")
         } footer: {
             Text("providers.api_key.hint")
+        }
+    }
+
+    // MARK: - Compatibility
+
+    /// Some providers (DeepSeek, certain gateways) reject tool names with
+    /// dots (`workspace.createFile`). This toggle converts tool names to
+    /// underscores (`workspace_createFile`) for this provider only.
+    private var compatibilitySection: some View {
+        Section {
+            Toggle("providers.tool_name_compatibility", isOn: $viewModel.toolNameCompatibility)
+        } footer: {
+            Text("providers.tool_name_compatibility.hint")
         }
     }
 

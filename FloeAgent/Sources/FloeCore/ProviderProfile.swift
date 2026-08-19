@@ -47,6 +47,10 @@ public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
     /// `true` only after the user has acknowledged the risk of plain HTTP
     /// to a localhost or private-network endpoint.
     public var allowsPlainHTTP: Bool
+    /// When true, tool names sent to this provider have dots replaced with
+    /// underscores (e.g. `workspace.createFile` → `workspace_createFile`).
+    /// Needed for providers like DeepSeek that enforce `^[a-zA-Z0-9_-]+$`.
+    public var toolNameCompatibility: Bool
     public var createdAt: Date
     public var updatedAt: Date
     /// CloudKit optimistic-locking revision, incremented per sync.
@@ -63,6 +67,7 @@ public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
         nonSecretHeaders: [String: String] = [:],
         isEnabled: Bool = true,
         allowsPlainHTTP: Bool = false,
+        toolNameCompatibility: Bool = false,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         syncRevision: Int64 = 0
@@ -77,6 +82,7 @@ public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
         self.nonSecretHeaders = nonSecretHeaders
         self.isEnabled = isEnabled
         self.allowsPlainHTTP = allowsPlainHTTP
+        self.toolNameCompatibility = toolNameCompatibility
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.syncRevision = syncRevision

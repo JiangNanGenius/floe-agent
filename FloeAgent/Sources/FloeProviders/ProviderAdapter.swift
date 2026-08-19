@@ -510,8 +510,14 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             ))
         }
         let tools = request.toolSchemas.map {
-            ChatRequest.ToolDefinition(
-                name: $0.name,
+            // DeepSeek and some gateways reject dots in tool names
+            // (^[a-zA-Z0-9_-]+$). When the provider has toolNameCompatibility
+            // enabled, convert dots to underscores for the wire only.
+            let wireName = request.provider.toolNameCompatibility
+                ? $0.name.replacingOccurrences(of: ".", with: "_")
+                : $0.name
+            return ChatRequest.ToolDefinition(
+                name: wireName,
                 description: $0.description,
                 parameters: $0.parametersJSON
             )

@@ -43,6 +43,10 @@ final class ProviderEditorViewModel: ObservableObject {
     @Published var nonSecretHeadersText: String = ""
     @Published var allowsPlainHTTP = false
     @Published var syncEnabled = true
+    /// When true, tool names sent to this provider have dots replaced with
+    /// underscores (e.g. `workspace.createFile` → `workspace_createFile`).
+    /// Needed for providers like DeepSeek that enforce `^[a-zA-Z0-9_-]+$`.
+    @Published var toolNameCompatibility = false
     /// Discovered, existing and manually added candidates. Only IDs in
     /// selectedModelIDs are persisted by this editing session.
     @Published var candidateModels: [ModelProfile] = []
@@ -76,6 +80,7 @@ final class ProviderEditorViewModel: ObservableObject {
             self.displayName = existing.displayName ?? ProviderPreset.preset(for: existing.kind).displayName
             self.baseURLString = existing.baseURL.absoluteString
             self.allowsPlainHTTP = existing.allowsPlainHTTP
+            self.toolNameCompatibility = existing.toolNameCompatibility
             self.nonSecretHeadersText = Self.headersText(from: existing.nonSecretHeaders)
         } else {
             self.providerID = UUID()
@@ -151,6 +156,7 @@ final class ProviderEditorViewModel: ObservableObject {
             nonSecretHeaders: Self.parseHeaders(nonSecretHeadersText),
             isEnabled: true,
             allowsPlainHTTP: allowsPlainHTTP,
+            toolNameCompatibility: toolNameCompatibility,
             createdAt: existing?.createdAt ?? Date(),
             updatedAt: Date(),
             syncRevision: (existing?.syncRevision ?? 0)
