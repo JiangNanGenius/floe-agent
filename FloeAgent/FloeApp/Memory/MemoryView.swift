@@ -180,8 +180,17 @@ struct MemoryView: View {
     @ViewBuilder private var memorySection: some View {
         Section("长期记忆") {
             if center.entries.isEmpty {
-                ContentUnavailableView("还没有记忆", systemImage: "brain",
-                    description: Text("明确保存的内容和审核通过的候选会出现在这里。"))
+                VStack(alignment: .leading, spacing: 10) {
+                    ContentUnavailableView("还没有记忆", systemImage: "brain",
+                        description: Text("记忆让助手跨对话记住你的偏好。点下方添加第一条，或在对话中让它「记住…」。"))
+                    Button {
+                        presentedSheet = .add
+                    } label: {
+                        Label("添加第一条记忆", systemImage: "plus.circle.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .frame(maxWidth: .infinity)
+                }
             } else {
                 ForEach(center.entries) { entry in
                     VStack(alignment: .leading, spacing: 5) {

@@ -292,7 +292,8 @@ final class ConversationCenter: ObservableObject {
         workspaceID: UUID? = nil,
         memoryQuery: String = "",
         conversationHistory: [ConversationMessage] = [],
-        currentUserImages: [ConversationImagePart] = []
+        currentUserImages: [ConversationImagePart] = [],
+        currentUserAttachments: [AttachmentRef] = []
     ) async -> ConversationRunService {
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
         let canonicalWorkspaceID: UUID?
@@ -317,6 +318,9 @@ final class ConversationCenter: ObservableObject {
         } else {
             nil
         }
+        let workspaceAttachmentPaths = taskRootLease.map {
+            importRunAttachments(currentUserAttachments, into: $0.url)
+        } ?? []
         let taskPolicy = (try? await workspaceStore.taskPolicy(conversationID: conversationID))
             ?? TaskPolicy(conversationID: conversationID)
         let skills = await environment.skillsCenter.runtimeSelection()
@@ -378,7 +382,8 @@ final class ConversationCenter: ObservableObject {
             allowedToolNames: allowedToolNames,
             workspaceRootURL: taskRootLease?.url,
             allowedWorkspacePaths: taskPolicy.filePaths,
-            toolsEnabled: executionMode.toolsEnabled
+            toolsEnabled: executionMode.toolsEnabled,
+            verifyFinalAnswer: environment.settingsCenter.verifyFinalAnswer
         )
         await environment.subagentRunnerRegistry.register(
             SubagentRunner(
@@ -414,7 +419,8 @@ final class ConversationCenter: ObservableObject {
                 soulContext: personalization.soul,
                 userProfileContext: personalization.profile,
                 activePlan: activePlan,
-                activeGoal: activeGoal
+                activeGoal: activeGoal,
+                workspaceAttachmentPaths: workspaceAttachmentPaths
             ),
             resourceAccessCleanup: taskRootLease?.release
         )
@@ -508,7 +514,8 @@ final class ConversationCenter: ObservableObject {
             workspaceID: workspaceID,
             memoryQuery: trimmed,
             conversationHistory: history,
-            currentUserImages: visual.images
+            currentUserImages: visual.images,
+            currentUserAttachments: attachments
         )
         guard launchFence.isValid(launchToken),
               !isClearingHistory,
@@ -583,7 +590,8 @@ final class ConversationCenter: ObservableObject {
             workspaceID: prepared.workspace.id,
             memoryQuery: trimmed,
             conversationHistory: visual.context,
-            currentUserImages: visual.images
+            currentUserImages: visual.images,
+            currentUserAttachments: attachments
         )
         guard launchFence.isValid(launchToken), !isClearingHistory else {
             throw FloeError.validationFailed("Conversation history was cleared during launch")
@@ -598,6 +606,44 @@ final class ConversationCenter: ObservableObject {
         )
         await reload()
         return StartedConversationTask(conversationID: prepared.conversation.id, run: run)
+    }
+
+    /// Makes non-image uploads reachable through the ordinary workspace tools.
+    /// Each original basename stays intact in its own UUID directory so the
+    /// workspace guard can still recognize and reject secret names such as
+    /// `.env` or private-key files.
+    private func importRunAttachments(_ attachments: [AttachmentRef], into root: URL) -> [String] {
+        let root = root.standardizedFileURL.resolvingSymlinksInPath()
+        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        var imported: [String] = []
+
+        for attachment in attachments where attachment.kind != .image {
+            guard let source = try? environment.filesCenter.resolveURL(for: attachment) else { continue }
+            let accessing = source.startAccessingSecurityScopedResource()
+            defer { if accessing { source.stopAccessingSecurityScopedResource() } }
+
+            let basename = (attachment.displayName as NSString).lastPathComponent
+            guard !basename.isEmpty, basename != ".", basename != ".." else { continue }
+            let relativePath = "Attachments/\(attachment.id.uuidString)/\(basename)"
+            let destination = root.appendingPathComponent(relativePath).standardizedFileURL
+            guard destination.path.hasPrefix(rootPrefix) else { continue }
+
+            do {
+                try FileManager.default.createDirectory(
+                    at: destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                if !FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.copyItem(at: source, to: destination)
+                }
+                imported.append(relativePath)
+            } catch {
+                FloeLogger(category: .app).warning(
+                    "attachmentImportFailed attachment=\(attachment.id.uuidString) error=\(error.localizedDescription)"
+                )
+            }
+        }
+        return imported
     }
 
     /// Injects a small, explicitly data-only memory projection. Secrets are
@@ -1671,7 +1717,10 @@ final class ConversationCenter: ObservableObject {
 
     func screenAnalysisDestinationName() -> String? {
         guard let (provider, model) = auxiliaryVisionProviderAndModel() else { return nil }
-        let providerName = provider.baseURL.host ?? provider.kind.rawValue
+        let customName = provider.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let providerName = customName.flatMap { $0.isEmpty ? nil : $0 }
+            ?? provider.baseURL.host
+            ?? provider.kind.rawValue
         return "\(model.displayName)（\(providerName)）"
     }
 
@@ -1884,6 +1933,22 @@ final class ConversationCenter: ObservableObject {
             goal: existing?.goal ?? "",
             startedAt: existing?.startedAt ?? Date(),
             endedAt: snapshot.isTerminal ? (existing?.endedAt ?? Date()) : nil
+        )
+        let progress: (stage: String, value: Int64) = switch snapshot.stateName {
+        case "preparing": ("正在准备", 8)
+        case "streamingModel": ("模型正在处理", 30)
+        case "executingTool": ("正在调用工具", 50)
+        case "waitingApproval": ("等待你的审批", 60)
+        case "compacting": ("正在整理上下文", 72)
+        case "verifying": ("正在复核答案", 88)
+        case "completed": ("已完成", 100)
+        case "failed": ("运行失败", 100)
+        default: ("正在运行", 20)
+        }
+        environment.backgroundRunCoordinator.didUpdateProgress(
+            runID: snapshot.runID,
+            stage: progress.stage,
+            progress: progress.value
         )
         if let waiting = snapshot.pendingApproval {
             let descriptor = ToolCatalog.descriptor(named: waiting.toolCall.toolName)

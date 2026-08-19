@@ -8,7 +8,8 @@ struct V14PlanGoalControlsTests {
     func schema() async throws {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
-        #expect(try await database.userVersion() == 14)
+        #expect(try await database.userVersion() == DatabaseManager.currentSchemaVersion)
+        #expect(DatabaseManager.currentSchemaVersion >= 14)
         let planColumns = try await database.reader { db in
             Set(try Row.fetchAll(db, sql: "PRAGMA table_info(plan_drafts)")
                 .map { $0["name"] as String })

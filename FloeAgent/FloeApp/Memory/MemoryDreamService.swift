@@ -34,7 +34,10 @@ final class MemoryDreamService {
     /// Minimum wall-clock interval between dream passes (seconds).
     static let minimumDreamInterval: TimeInterval = 6 * 60 * 60
     /// Minimum completed runs that must accumulate before the next dream.
-    static let minimumPendingRuns: Int = 3
+    /// Lowered from 3 → 1 so the first dream (and the first memory
+    /// candidates) surface after a single completed task instead of looking
+    /// permanently empty to new users.
+    static let minimumPendingRuns: Int = 1
     private static let lastDreamKey = "org.floeagent.memory.lastDreamAt"
     private static let pendingRunsKey = "org.floeagent.memory.pendingRuns"
 

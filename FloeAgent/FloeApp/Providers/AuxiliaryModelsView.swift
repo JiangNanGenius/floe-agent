@@ -191,7 +191,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
 
     func label(for model: ModelProfile) -> String {
         let provider = center.providers.first(where: { $0.id == model.providerID })
-        return "\(model.displayName) · \(provider.map { providerName($0.kind) } ?? String(localized: "auxiliary.provider"))"
+        return "\(model.displayName) · \(provider.map(providerName) ?? String(localized: "auxiliary.provider"))"
     }
 
     private func supports(_ operation: RemoteImageOperation, model: ModelProfile) -> Bool {
@@ -200,8 +200,10 @@ final class AuxiliaryModelsViewModel: ObservableObject {
         return adapter.supports(operation, for: provider)
     }
 
-    private func providerName(_ kind: ProviderKind) -> String {
-        ProviderPreset.preset(for: kind).displayName
+    private func providerName(_ provider: ProviderProfile) -> String {
+        let custom = provider.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return custom.flatMap { $0.isEmpty ? nil : $0 }
+            ?? ProviderPreset.preset(for: provider.kind).displayName
     }
 }
 
@@ -235,7 +237,7 @@ private struct AuxiliaryModelEditorView: View {
                 Section("auxiliary.provider") {
                     Picker("auxiliary.provider", selection: $providerID) {
                         ForEach(compatibleProviders) { provider in
-                            Text(ProviderPreset.preset(for: provider.kind).displayName)
+                            Text(providerName(provider))
                                 .tag(Optional(provider.id))
                         }
                     }
@@ -279,6 +281,12 @@ private struct AuxiliaryModelEditorView: View {
             }
             .onChange(of: providerID) { _, _ in applySupportedOperations() }
         }
+    }
+
+    private func providerName(_ provider: ProviderProfile) -> String {
+        let custom = provider.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return custom.flatMap { $0.isEmpty ? nil : $0 }
+            ?? ProviderPreset.preset(for: provider.kind).displayName
     }
 
     private var isValid: Bool {

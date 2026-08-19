@@ -68,23 +68,48 @@ public struct ConversationHistoryAssembler: Sendable {
 
     /// Resolves staged image attachments for a runtime steer. Non-images,
     /// oversized files and inaccessible bookmarks are omitted safely.
-    public static func inlineImages(_ attachments: [AttachmentRef]) -> [ConversationImagePart] {
-        attachments.compactMap(Self.inlineImage)
+    public static func inlineImages(
+        _ attachments: [AttachmentRef],
+        applicationSupportRoot: URL? = nil
+    ) -> [ConversationImagePart] {
+        attachments.compactMap {
+            Self.inlineImage($0, applicationSupportRoot: applicationSupportRoot)
+        }
     }
 
-    private static func inlineImage(_ attachment: AttachmentRef) -> ConversationImagePart? {
+    private static func inlineImage(
+        _ attachment: AttachmentRef,
+        applicationSupportRoot: URL? = nil
+    ) -> ConversationImagePart? {
         #if canImport(UniformTypeIdentifiers)
         guard attachment.kind == .image,
-              attachment.byteCount <= 8 * 1_024 * 1_024,
-              let bookmark = attachment.urlBookmark else { return nil }
-        var stale = false
-        guard let url = try? URL(
-            resolvingBookmarkData: bookmark,
-            options: [],
-            relativeTo: nil,
-            bookmarkDataIsStale: &stale
-        ) else { return nil }
-        let accessing = url.startAccessingSecurityScopedResource()
+              attachment.byteCount <= 8 * 1_024 * 1_024 else { return nil }
+
+        let url: URL
+        let accessing: Bool
+        switch attachment.storage {
+        case .applicationSupport:
+            guard let relativePath = attachment.relativePath,
+                  let resolved = applicationSupportAttachmentURL(
+                    relativePath: relativePath,
+                    rootOverride: applicationSupportRoot
+                  ) else { return nil }
+            url = resolved
+            accessing = false
+        case .securityScopedBookmark:
+            guard let bookmark = attachment.urlBookmark else { return nil }
+            var stale = false
+            guard let resolved = try? URL(
+                resolvingBookmarkData: bookmark,
+                options: [],
+                relativeTo: nil,
+                bookmarkDataIsStale: &stale
+            ) else { return nil }
+            url = resolved
+            accessing = url.startAccessingSecurityScopedResource()
+        case .none:
+            return nil
+        }
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         guard let data = try? Data(contentsOf: url), data.count <= 8 * 1_024 * 1_024 else { return nil }
         let mime = UTType(attachment.uti)?.preferredMIMEType
@@ -97,6 +122,38 @@ public struct ConversationHistoryAssembler: Sendable {
         return nil
         #endif
     }
+
+    #if canImport(UniformTypeIdentifiers)
+    /// Resolves only the two app-owned attachment directories. Standardizing
+    /// and checking the prefix prevents a malformed persisted relative path
+    /// from escaping the Floe Agent container subtree.
+    private static func applicationSupportAttachmentURL(
+        relativePath: String,
+        rootOverride: URL?
+    ) -> URL? {
+        guard !relativePath.isEmpty else { return nil }
+        let root: URL
+        if let rootOverride {
+            root = rootOverride
+        } else {
+            guard let support = FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first else { return nil }
+            root = support.appendingPathComponent("FloeAgent", isDirectory: true)
+        }
+        for directory in ["Attachments", "GeneratedImages"] {
+            let allowedRoot = root.appendingPathComponent(directory, isDirectory: true)
+                .standardizedFileURL
+            let candidate = allowedRoot.appendingPathComponent(relativePath)
+                .standardizedFileURL
+            let prefix = allowedRoot.path.hasSuffix("/") ? allowedRoot.path : allowedRoot.path + "/"
+            guard candidate.path.hasPrefix(prefix) else { continue }
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return nil
+    }
+    #endif
 
     private static func historicalSummary(_ messages: [PersistedMessage]) -> String {
         let identifiers = messages.map { $0.id.uuidString }

@@ -151,6 +151,7 @@ public enum AppSettingsKey {
     public static let idleDisconnectMinutes = "remote.idleDisconnectMinutes"
     public static let runningInputMode = "agent.runningInputMode"
     public static let backgroundExecution = "agent.backgroundExecution"
+    public static let verifyFinalAnswer = "agent.verifyFinalAnswer"
 }
 
 /// Counts returned by destructive clear operations so the UI can echo

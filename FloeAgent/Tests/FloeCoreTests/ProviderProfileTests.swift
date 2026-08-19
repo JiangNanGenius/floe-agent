@@ -75,6 +75,21 @@ struct ProviderProfileTests {
         }
     }
 
+    @Test("Provider display names are bounded single-line metadata")
+    func displayNameValidation() throws {
+        var valid = profile(url: "https://example.com")
+        valid.displayName = "Company Gateway"
+        try valid.validate()
+
+        var multiline = valid
+        multiline.displayName = "Company\nGateway"
+        #expect(throws: FloeError.self) { try multiline.validate() }
+
+        var oversized = valid
+        oversized.displayName = String(repeating: "a", count: 257)
+        #expect(throws: FloeError.self) { try oversized.validate() }
+    }
+
     @Test("Secret-shaped non-secret headers are rejected case-insensitively")
     func secretHeadersRejected() {
         for name in ["Authorization", "x-api-key", "Cookie", "Proxy-Authorization"] {

@@ -43,13 +43,23 @@ public struct FloeLogger: Sendable {
         private var pendingWrite: DispatchWorkItem?
         private let persistedURL: URL?
 
-        public init(capacity: Int = 500, persists: Bool = false) {
+        public convenience init(capacity: Int = 500, persists: Bool = false) {
+            self.init(
+                capacity: capacity,
+                persistedURL: persists ? Self.makePersistedURL() : nil
+            )
+        }
+
+        init(capacity: Int, persistedURL: URL?) {
             self.capacity = max(1, capacity)
-            self.persistedURL = persists ? Self.makePersistedURL() : nil
+            self.persistedURL = persistedURL
             if let persistedURL,
-               let data = try? Data(contentsOf: persistedURL),
-               let restored = try? JSONDecoder().decode([Entry].self, from: data) {
-                self.entries = Array(restored.suffix(self.capacity))
+               let data = try? Data(contentsOf: persistedURL) {
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                if let restored = try? decoder.decode([Entry].self, from: data) {
+                    self.entries = Array(restored.suffix(self.capacity))
+                }
             }
         }
 
@@ -59,9 +69,15 @@ public struct FloeLogger: Sendable {
             if entries.count > capacity {
                 entries.removeFirst(entries.count - capacity)
             }
-            let snapshot = entries
             lock.unlock()
-            schedulePersistence(snapshot)
+            // Errors and warnings persist synchronously so a crash or a fast
+            // relaunch cannot lose the evidence. Routine info/debug lines keep
+            // the debounced background write.
+            if entry.level == "error" || entry.level == "warning" {
+                writeImmediately()
+            } else {
+                schedulePersistence()
+            }
         }
 
         /// Most recent entries, oldest first.
@@ -82,28 +98,50 @@ public struct FloeLogger: Sendable {
                 .joined(separator: "\n")
         }
 
-        private func schedulePersistence(_ snapshot: [Entry]) {
+        /// Synchronously writes the current buffer to disk. Called from scene
+        /// transitions so a backgrounding or imminent suspension never strands
+        /// the most recent diagnostics.
+        public func flush() {
+            writeImmediately()
+        }
+
+        private func writeImmediately() {
+            guard let persistedURL else { return }
+            persistenceQueue.sync {
+                pendingWrite?.cancel()
+                pendingWrite = nil
+                let snapshot = recentEntries
+                Self.write(snapshot, to: persistedURL)
+            }
+        }
+
+        private func schedulePersistence() {
             guard let persistedURL else { return }
             persistenceQueue.async { [weak self] in
                 guard let self else { return }
                 self.pendingWrite?.cancel()
-                let item = DispatchWorkItem {
-                    do {
-                        try FileManager.default.createDirectory(
-                            at: persistedURL.deletingLastPathComponent(),
-                            withIntermediateDirectories: true
-                        )
-                        let encoder = JSONEncoder()
-                        encoder.dateEncodingStrategy = .iso8601
-                        try encoder.encode(snapshot).write(to: persistedURL, options: .atomic)
-                    } catch {
-                        // Logging must never crash or recursively log a
-                        // persistence failure. The in-memory copy remains.
-                    }
+                let item = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    let snapshot = self.recentEntries
+                    Self.write(snapshot, to: persistedURL)
                 }
                 self.pendingWrite = item
                 self.persistenceQueue.asyncAfter(deadline: .now() + 0.75, execute: item)
             }
+        }
+
+        /// The actual write. Failure is intentionally swallowed — logging must
+        /// never crash or recursively log a persistence failure.
+        private static func write(_ snapshot: [Entry], to url: URL) {
+            do {
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                let encoder = JSONEncoder()
+                encoder.dateEncodingStrategy = .iso8601
+                try encoder.encode(snapshot).write(to: url, options: .atomic)
+            } catch {}
         }
 
         private static func makePersistedURL() -> URL? {

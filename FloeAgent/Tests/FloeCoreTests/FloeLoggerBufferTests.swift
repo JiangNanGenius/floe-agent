@@ -57,4 +57,44 @@ struct FloeLoggerBufferTests {
         #expect(FloeLogger.buffer.recentEntries.last?.message == "diagnostics probe entry")
         #expect(FloeLogger.buffer.recentEntries.last?.category == "app")
     }
+
+    @Test("Persisted ISO-8601 entries restore after relaunch")
+    func persistedEntriesRestore() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-log-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("diagnostics.json")
+        let buffer = FloeLogger.RingBuffer(capacity: 5, persistedURL: url)
+        let timestamp = Date(timeIntervalSince1970: 1_725_000_000)
+        buffer.append(.init(
+            timestamp: timestamp,
+            category: "runtime",
+            level: "warning",
+            message: "persist me"
+        ))
+
+        let restored = FloeLogger.RingBuffer(capacity: 5, persistedURL: url)
+        #expect(restored.recentEntries.map(\.message) == ["persist me"])
+        #expect(abs((restored.recentEntries.first?.timestamp ?? .distantPast)
+            .timeIntervalSince(timestamp)) < 0.001)
+    }
+
+    @Test("A delayed info write cannot overwrite a newer urgent snapshot")
+    func urgentSnapshotWinsOverPendingDebounce() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-log-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("diagnostics.json")
+        let buffer = FloeLogger.RingBuffer(capacity: 5, persistedURL: url)
+        buffer.append(.init(
+            timestamp: Date(), category: "app", level: "info", message: "older"
+        ))
+        buffer.append(.init(
+            timestamp: Date(), category: "app", level: "error", message: "newer"
+        ))
+        try await Task.sleep(for: .seconds(1))
+
+        let restored = FloeLogger.RingBuffer(capacity: 5, persistedURL: url)
+        #expect(restored.recentEntries.map(\.message) == ["older", "newer"])
+    }
 }

@@ -86,7 +86,10 @@ struct ProviderEditorView: View {
     // MARK: - Preset
 
     private var presetSection: some View {
-        Section("providers.preset") {
+        Section {
+            TextField("providers.display_name", text: $viewModel.displayName)
+                .textInputAutocapitalization(.words)
+                .accessibilityIdentifier("providers.display_name")
             Picker("providers.preset", selection: Binding(
                 get: { viewModel.selectedPreset },
                 set: { viewModel.applyPreset($0) }

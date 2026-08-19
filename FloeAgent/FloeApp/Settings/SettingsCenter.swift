@@ -53,6 +53,8 @@ final class SettingsCenter: ObservableObject {
     @Published private(set) var idleDisconnectMinutes: Int = 15
     @Published private(set) var runningInputMode: RunningInputMode = .queue
     @Published private(set) var backgroundExecution: BackgroundExecutionPreference = .standard
+    /// Self-critique pass on the final answer before the run completes.
+    @Published private(set) var verifyFinalAnswer: Bool = false
 
     // MARK: - Agent 与权限
 
@@ -239,6 +241,9 @@ final class SettingsCenter: ObservableObject {
             BackgroundExecutionPreference.self, AppSettingsKey.backgroundExecution
         ) {
             backgroundExecution = preference
+        }
+        if let verify: Bool = decode(Bool.self, AppSettingsKey.verifyFinalAnswer) {
+            verifyFinalAnswer = verify
         }
     }
 
@@ -454,6 +459,11 @@ final class SettingsCenter: ObservableObject {
     func setBackgroundExecution(_ preference: BackgroundExecutionPreference) async {
         backgroundExecution = preference
         await persist(preference, forKey: AppSettingsKey.backgroundExecution)
+    }
+
+    func setVerifyFinalAnswer(_ value: Bool) async {
+        verifyFinalAnswer = value
+        await persist(value, forKey: AppSettingsKey.verifyFinalAnswer)
     }
 
     func setDefaultStartPage(_ page: StartPage) async {

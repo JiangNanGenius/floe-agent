@@ -21,8 +21,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     private var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
     private var currentTitle = ""
-    private var currentProgress = ""
-    private var frameTimer: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
     private var startGeneration: UInt64 = 0
     private var currentAssetURL: URL?
 
@@ -32,47 +31,92 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         startGeneration &+= 1
         let generation = startGeneration
         currentTitle = title
-        currentProgress = initialProgress
         stopPiPInternal()
+        // PiP with a playing video requires the audio background mode. Set the
+        // session active so the system registers that capability at task start
+        // instead of suspending the app the moment it backgrounds.
+        configureAudioSession()
         guard let assetURL = await synthesizeProgressVideo(
             title: title,
             progress: initialProgress
-        ) else { return }
+        ) else {
+            deactivateAudioSession()
+            return
+        }
         guard !Task.isCancelled, generation == startGeneration else {
             try? FileManager.default.removeItem(at: assetURL)
+            deactivateAudioSession()
+            return
+        }
+        guard AVPictureInPictureController.isPictureInPictureSupported() else {
+            try? FileManager.default.removeItem(at: assetURL)
+            deactivateAudioSession()
+            return
+        }
+        let item = AVPlayerItem(url: assetURL)
+        let queue = AVQueuePlayer(playerItem: item)
+        let layer = AVPlayerLayer(player: queue)
+        guard let controller = AVPictureInPictureController(playerLayer: layer) else {
+            try? FileManager.default.removeItem(at: assetURL)
+            deactivateAudioSession()
             return
         }
         currentAssetURL = assetURL
-        let item = AVPlayerItem(url: assetURL)
-        let queue = AVQueuePlayer(playerItem: item)
-        self.player = queue
-        let layer = AVPlayerLayer(player: queue)
-        self.playerLayer = layer
-        self.looper = AVPlayerLooper(player: queue, templateItem: item)
+        player = queue
+        playerLayer = layer
+        looper = AVPlayerLooper(player: queue, templateItem: item)
+        controller.delegate = self
+        pipController = controller
         queue.play()
-        if AVPictureInPictureController.isPictureInPictureSupported(),
-           let controller = AVPictureInPictureController(playerLayer: layer) {
-            controller.delegate = self
-            self.pipController = controller
-            controller.startPictureInPicture()
-            isPiPActive = true
-        }
-        startFrameTimer(generation: generation)
+        controller.startPictureInPicture()
+        isPiPActive = true
     }
 
-    /// Updates the progress text rendered into the next frame.
+    /// Updates the progress text and re-renders the looping video so the PiP
+    /// actually reflects the latest state instead of a frozen first frame.
     func update(progress: String) {
-        currentProgress = progress
+        let generation = startGeneration
+        refreshTask?.cancel()
+        refreshTask = Task { @MainActor [weak self] in
+            guard let self, generation == self.startGeneration else { return }
+            await self.refreshVideo(
+                title: self.currentTitle,
+                progress: progress,
+                generation: generation
+            )
+        }
+    }
+
+    /// Re-synthesizes the progress asset and hot-swaps the player item so the
+    /// floating PiP shows the latest title/progress without restarting PiP.
+    private func refreshVideo(title: String, progress: String, generation: UInt64) async {
+        guard isPiPActive, let player else { return }
+        guard let assetURL = await synthesizeProgressVideo(title: title, progress: progress) else { return }
+        guard !Task.isCancelled, generation == startGeneration, isPiPActive else {
+            try? FileManager.default.removeItem(at: assetURL)
+            return
+        }
+        let item = AVPlayerItem(url: assetURL)
+        looper?.disableLooping()
+        player.removeAllItems()
+        looper = AVPlayerLooper(player: player, templateItem: item)
+        player.play()
+        if let old = currentAssetURL {
+            try? FileManager.default.removeItem(at: old)
+        }
+        currentAssetURL = assetURL
     }
 
     func stop() {
+        refreshTask?.cancel()
+        refreshTask = nil
         startGeneration &+= 1
         stopPiPInternal()
     }
 
     private func stopPiPInternal() {
-        frameTimer?.cancel()
-        frameTimer = nil
+        refreshTask?.cancel()
+        refreshTask = nil
         pipController?.stopPictureInPicture()
         pipController = nil
         looper = nil
@@ -84,25 +128,48 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             self.currentAssetURL = nil
         }
         isPiPActive = false
+        deactivateAudioSession()
     }
 
-    /// Renders a fresh frame each second so a real implementation could
-    /// re-synthesize the asset; the scaffold keeps the timer honest without
-    /// constantly rewriting the file mid-playback.
-    private func startFrameTimer(generation: UInt64) {
-        frameTimer?.cancel()
-        frameTimer = Task { @MainActor [weak self] in
-            guard let self else { return }
-            while !Task.isCancelled {
-                guard generation == self.startGeneration else { return }
-                _ = self.renderProgressFrame(title: self.currentTitle, progress: self.currentProgress)
-                do {
-                    try await Task.sleep(for: .seconds(1))
-                } catch {
-                    return
-                }
-            }
+    /// Releases playback state after the user or system closes PiP without
+    /// asking AVKit to stop the already-stopped controller a second time.
+    private func handlePiPStopped(_ controller: AVPictureInPictureController) {
+        guard pipController === controller else {
+            isPiPActive = false
+            return
         }
+        refreshTask?.cancel()
+        refreshTask = nil
+        startGeneration &+= 1
+        pipController = nil
+        looper = nil
+        player?.pause()
+        player = nil
+        playerLayer = nil
+        if let currentAssetURL {
+            try? FileManager.default.removeItem(at: currentAssetURL)
+            self.currentAssetURL = nil
+        }
+        isPiPActive = false
+        deactivateAudioSession()
+    }
+
+    /// Configures the audio session for background playback so the PiP video
+    /// keeps the app alive. Without this the app suspends the moment it
+    /// backgrounds even while the PiP floats. Failure never breaks the run.
+    private func configureAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+            try session.setActive(true)
+        } catch {}
+    }
+
+    private func deactivateAudioSession() {
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
     }
 
     private func renderProgressFrame(title: String, progress: String) -> UIImage? {
@@ -222,7 +289,14 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
     nonisolated func pictureInPictureControllerDidStopPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
     ) {
-        Task { @MainActor in self.isPiPActive = false }
+        Task { @MainActor in self.handlePiPStopped(pictureInPictureController) }
+    }
+
+    nonisolated func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        failedToStartPictureInPictureWithError _: Error
+    ) {
+        Task { @MainActor in self.stop() }
     }
 }
 #endif

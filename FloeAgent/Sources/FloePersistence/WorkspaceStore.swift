@@ -619,20 +619,27 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
     }
 
     private static func taskPolicy(from row: Row) throws -> TaskPolicy {
-        guard let conversationID = UUID(uuidString: row["conversation_id"]),
-              let recovery = TaskRecoveryPolicy(rawValue: row["recovery_policy"]),
-              let notifications = TaskNotificationPolicy(rawValue: row["notification_policy"])
-        else { throw FloeError.storageCorrupted("Invalid task policy") }
+        // Read every column NULL-safely. A legacy row written before a column
+        // existed (or a partially-migrated row) must surface as a defaulted
+        // policy, never crash the inspector on open/save.
+        guard let conversationID = UUID(uuidString: row["conversation_id"]) else {
+            throw FloeError.storageCorrupted("Invalid task policy conversation id")
+        }
+        let recoveryRaw: String? = row["recovery_policy"]
+        let notificationsRaw: String? = row["notification_policy"]
+        let recovery = recoveryRaw.flatMap(TaskRecoveryPolicy.init(rawValue:)) ?? .safePoint
+        let notifications = notificationsRaw.flatMap(TaskNotificationPolicy.init(rawValue:)) ?? .stages
         let toolsJSON: String? = row["allowed_tool_names_json"]
         let tools = try toolsJSON.map {
             Set(try JSONDecoder().decode([String].self, from: Data($0.utf8)))
         }
-        let pathsJSON: String = row["file_paths_json"]
+        let pathsJSON: String = row["file_paths_json"] ?? "[]"
+        let filePaths = (try? JSONDecoder().decode([String].self, from: Data(pathsJSON.utf8))) ?? []
         return TaskPolicy(
             conversationID: conversationID,
             approvalMode: row["approval_mode"],
             allowedToolNames: tools,
-            filePaths: try JSONDecoder().decode([String].self, from: Data(pathsJSON.utf8)),
+            filePaths: filePaths,
             networkAllowed: row["network_allowed"],
             browserControlAllowed: row["browser_control_allowed"],
             uploadAllowed: row["upload_allowed"],
@@ -640,7 +647,7 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
             remoteExecutionAllowed: row["remote_execution_allowed"],
             recoveryPolicy: recovery,
             notificationPolicy: notifications,
-            updatedAt: try PersistenceCodec.decodeDate(row["updated_at"])
+            updatedAt: (try? PersistenceCodec.decodeDate(row["updated_at"])) ?? Date()
         )
     }
 

@@ -223,6 +223,7 @@ private enum ConfigurationCodec {
             kind: kind,
             wireProtocol: wireProtocol,
             baseURL: baseURL,
+            displayName: row["display_name"],
             secretRef: secretRef,
             region: row["region"],
             nonSecretHeaders: headers,
@@ -239,15 +240,16 @@ private enum ConfigurationCodec {
         try db.execute(
             sql: """
                 INSERT INTO providers (
-                    id, kind, wire_protocol, base_url, secret_ref_account,
+                    id, kind, wire_protocol, base_url, display_name, secret_ref_account,
                     secret_ref_synchronizable, region, non_secret_headers_json,
                     is_enabled, allows_plain_http, created_at, updated_at,
                     sync_revision
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     kind = excluded.kind,
                     wire_protocol = excluded.wire_protocol,
                     base_url = excluded.base_url,
+                    display_name = excluded.display_name,
                     secret_ref_account = excluded.secret_ref_account,
                     secret_ref_synchronizable = excluded.secret_ref_synchronizable,
                     region = excluded.region,
@@ -261,6 +263,7 @@ private enum ConfigurationCodec {
             arguments: [
                 provider.id.uuidString, provider.kind.rawValue,
                 provider.wireProtocol.rawValue, provider.baseURL.absoluteString,
+                provider.displayName,
                 provider.secretRef?.keychainAccount,
                 provider.secretRef.map { $0.synchronizable }, provider.region,
                 headersJSON, provider.isEnabled, provider.allowsPlainHTTP,

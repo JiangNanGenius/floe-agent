@@ -88,6 +88,9 @@ struct RootView: View {
             router.handleScenePhase(newPhase, environment: environment)
             if newPhase != .active {
                 environment.voiceInput.handleInterruption(reason: .interrupted)
+                // Persist the diagnostics ring buffer before suspension so a
+                // crash or relaunch never loses the most recent evidence.
+                FloeLogger.buffer.flush()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) {

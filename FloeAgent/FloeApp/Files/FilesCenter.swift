@@ -53,6 +53,16 @@ final class FilesCenter: ObservableObject {
         generatedImageDirectory = support
             .appendingPathComponent("FloeAgent", isDirectory: true)
             .appendingPathComponent("GeneratedImages", isDirectory: true)
+        // Staging area for picked/uploaded attachments. Files are copied here
+        // at pick time so the run does not depend on a provider bookmark still
+        // resolving after the document-picker access window closes.
+        attachmentsStagingDirectory = support
+            .appendingPathComponent("FloeAgent", isDirectory: true)
+            .appendingPathComponent("Attachments", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: attachmentsStagingDirectory,
+            withIntermediateDirectories: true
+        )
         // The workspace root lives in a temp/work area; throws only if the
         // directory cannot be created, which cannot happen for temp.
         self.workspace = (try? SecurityScopedDocumentWorkspace())
@@ -63,29 +73,58 @@ final class FilesCenter: ObservableObject {
             ))
     }
 
+    /// Where picked/uploaded files are copied so they persist for the model.
+    private let attachmentsStagingDirectory: URL
+
     // MARK: - Picking & recents
 
-    /// Records a picked document as a recent attachment with a
-    /// security-scoped bookmark. Called by the document picker.
+    /// Records a picked document as a recent attachment. The file is COPIED
+    /// into the app-owned staging directory so it stays readable after the
+    /// security-scoped access window closes. Non-image files are copied into
+    /// the task workspace when the run starts; images are sent inline.
     func registerPickedDocument(url: URL, displayName: String) async throws -> AttachmentRef {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
 
-        let bookmark = try url.bookmarkData(
-            options: [],
-            includingResourceValuesForKeys: nil,
-            relativeTo: nil
-        )
         let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
         let contentType = values?.contentType
+        let requestedName = displayName.isEmpty ? url.lastPathComponent : displayName
+        let finalName = (requestedName as NSString).lastPathComponent
+
+        // Copy into staging with a collision-safe name.
+        let stagedName = "\(UUID().uuidString)-\(finalName)"
+        let stagedURL = attachmentsStagingDirectory.appendingPathComponent(stagedName)
+        do {
+            try FileManager.default.copyItem(at: url, to: stagedURL)
+        } catch {
+            // Fall back to the bookmark path if the copy fails (e.g. the
+            // source is a network volume that can't be read right now).
+            let bookmark = try url.bookmarkData(
+                options: [],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            let attachment = AttachmentRef(
+                id: UUID(),
+                kind: Self.attachmentKind(for: contentType),
+                displayName: finalName,
+                uti: values?.contentType?.identifier ?? "",
+                byteCount: values?.fileSize ?? 0,
+                storage: .securityScopedBookmark,
+                urlBookmark: bookmark
+            )
+            recentFiles.insert(attachment, at: 0)
+            return attachment
+        }
+
         let attachment = AttachmentRef(
             id: UUID(),
             kind: Self.attachmentKind(for: contentType),
-            displayName: displayName.isEmpty ? url.lastPathComponent : displayName,
+            displayName: finalName,
             uti: values?.contentType?.identifier ?? "",
             byteCount: values?.fileSize ?? 0,
-            storage: .securityScopedBookmark,
-            urlBookmark: bookmark
+            storage: .applicationSupport,
+            relativePath: stagedName
         )
         recentFiles.insert(attachment, at: 0)
         return attachment
@@ -101,14 +140,21 @@ final class FilesCenter: ObservableObject {
         return .other
     }
 
-    /// Resolves a stored security-scoped bookmark back to a URL.
+    /// Resolves an attachment back to a readable URL. Staged uploads live in
+    /// the Attachments directory; generated images live in GeneratedImages;
+    /// legacy bookmarks fall back to security-scoped resolution.
     func resolveURL(for attachment: AttachmentRef) throws -> URL {
         if attachment.storage == .applicationSupport, let relativePath = attachment.relativePath {
-            let url = generatedImageDirectory.appendingPathComponent(relativePath)
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                throw FloeError.notFound("generated image \(relativePath)")
+            // Staged uploads and generated images share the applicationSupport
+            // storage kind; resolve against whichever directory holds the file.
+            for root in [attachmentsStagingDirectory, generatedImageDirectory] {
+                let allowedRoot = root.standardizedFileURL
+                let url = allowedRoot.appendingPathComponent(relativePath).standardizedFileURL
+                let prefix = allowedRoot.path.hasSuffix("/") ? allowedRoot.path : allowedRoot.path + "/"
+                guard url.path.hasPrefix(prefix) else { continue }
+                if FileManager.default.fileExists(atPath: url.path) { return url }
             }
-            return url
+            throw FloeError.notFound("attachment \(relativePath)")
         }
         guard let bookmark = attachment.urlBookmark else {
             throw FloeError.notFound("bookmark for \(attachment.displayName)")

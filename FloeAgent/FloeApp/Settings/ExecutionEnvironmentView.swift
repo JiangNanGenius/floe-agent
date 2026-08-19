@@ -51,39 +51,9 @@ struct ExecutionEnvironmentView: View {
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
 
-                Stepper(
-                    "settings.exec.timeout \(center.execution.timeoutSeconds)",
-                    value: Binding(
-                        get: { center.execution.timeoutSeconds },
-                        set: { newValue in
-                            Task { await center.setExecutionTimeout(seconds: newValue) }
-                        }
-                    ),
-                    in: 30...3600,
-                    step: 30
-                )
-                .frame(minHeight: FloeTheme.minimumTarget)
-
-                Picker("settings.exec.max_output", selection: Binding(
-                    get: { center.execution.maxOutputBytes },
-                    set: { newValue in
-                        Task { await center.setMaxOutputBytes(newValue) }
-                    }
-                )) {
-                    Text("32 KB").tag(32 * 1024)
-                    Text("64 KB").tag(64 * 1024)
-                    Text("128 KB").tag(128 * 1024)
-                    Text("256 KB").tag(256 * 1024)
-                }
-                .frame(minHeight: FloeTheme.minimumTarget)
-
-                Toggle("settings.exec.save_artifacts", isOn: Binding(
-                    get: { center.execution.savesArtifacts },
-                    set: { newValue in
-                        Task { await center.setSavesArtifacts(newValue) }
-                    }
-                ))
-                .frame(minHeight: FloeTheme.minimumTarget)
+                // Hidden: timeout / maxOutputBytes / savesArtifacts are
+                // persisted but not yet consumed by any execution path, so
+                // the controls are removed until they take real effect.
             }
         }
         .navigationTitle("settings.section.execution")

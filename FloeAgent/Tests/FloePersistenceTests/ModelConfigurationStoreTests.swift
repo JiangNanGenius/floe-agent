@@ -19,6 +19,7 @@ struct ModelConfigurationStoreTests {
             kind: .openAI,
             wireProtocol: .openAIResponses,
             baseURL: try #require(URL(string: "https://api.openai.com/v1")),
+            displayName: "Primary OpenAI",
             secretRef: SecretReference(
                 keychainAccount: "provider-test-account",
                 synchronizable: true

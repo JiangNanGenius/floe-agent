@@ -16,7 +16,12 @@ extension Notification.Name {
 @MainActor
 final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate {
     private unowned let environment: AppEnvironment
-    private var activeRuns: [UUID: UUID] = [:]
+    private struct ActiveRun {
+        let conversationID: UUID
+        let title: String
+    }
+    private var activeRuns: [UUID: ActiveRun] = [:]
+    private var surfacedRunID: UUID?
     private var notifiedApprovalRuns: Set<UUID> = []
     private var lease: BackgroundExecutionLease?
     private var refreshWork: Task<Void, Never>?
@@ -44,16 +49,33 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     }
 
     func didStart(conversationID: UUID, runID: UUID, title: String) {
-        activeRuns[runID] = conversationID
+        activeRuns[runID] = ActiveRun(conversationID: conversationID, title: title)
         if #available(iOS 26.0, *) {
             updateContinuedTask(title: title, stage: "正在运行", progress: 5)
         }
         BackgroundPolicyRegistry.shared.requestContinuedProcessing()
-        applyBackgroundExecutionPreference(runTitle: title)
+        applyBackgroundExecutionPreference(
+            runID: runID,
+            conversationID: conversationID,
+            runTitle: title
+        )
+    }
+
+    /// Pushes a progress stage update to the active background surface (the
+    /// continued task's Live Activity subtitle, and the PiP progress video).
+    func didUpdateProgress(runID: UUID, stage: String, progress: Int64) {
+        guard activeRuns[runID] != nil else { return }
+        if #available(iOS 26.0, *) {
+            updateContinuedTask(title: "Floe Agent", stage: stage, progress: progress)
+        }
+        if surfacedRunID == runID {
+            environment.backgroundVideoService.update(progress: stage)
+        }
     }
 
     func didFinish(runID: UUID, succeeded: Bool, message: String?) {
-        guard let conversationID = activeRuns.removeValue(forKey: runID) else { return }
+        guard let finished = activeRuns.removeValue(forKey: runID) else { return }
+        let conversationID = finished.conversationID
         notifiedApprovalRuns.remove(runID)
         Task { [weak self] in
             guard let self else { return }
@@ -75,6 +97,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if #available(iOS 26.0, *), activeRuns.isEmpty {
             finishContinuedTask(success: succeeded)
         }
+        if surfacedRunID == runID {
+            surfacedRunID = nil
+            resumeBackgroundSurfaceIfNeeded()
+        }
         if activeRuns.isEmpty {
             tearDownBackgroundExecutionPreference()
         }
@@ -84,30 +110,73 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// `standard` relies on the 30s lease + continued task (no extra UI);
     /// `pictureInPicture` starts the progress video; `screenShare` expects the
     /// user to have started broadcasting from the thread's share entry.
-    private func applyBackgroundExecutionPreference(runTitle: String) {
+    /// When the chosen surface needs a system permission the user hasn't
+    /// granted yet, this surfaces a local notification asking them to grant
+    /// it, so starting any task prompts instead of silently doing nothing.
+    private func applyBackgroundExecutionPreference(
+        runID: UUID,
+        conversationID: UUID,
+        runTitle: String
+    ) {
         switch environment.settingsCenter.backgroundExecution {
         case .standard:
             break
         case .pictureInPicture:
+            surfacedRunID = runID
+            if environment.backgroundVideoService.isPiPActive {
+                environment.backgroundVideoService.stop()
+            }
             Task { [weak self] in
-                await self?.environment.backgroundVideoService.begin(
+                guard let self else { return }
+                await self.environment.backgroundVideoService.begin(
                     title: runTitle,
                     initialProgress: "正在运行"
                 )
             }
         case .screenShare:
-            break
+            // Screen sharing is started by the user from the thread's share
+            // entry. When it isn't active but the preference selected it,
+            // notify so the user can start it (and grant the broadcast
+            // permission) instead of the task running with no keep-alive.
+            if !environment.screenShareCenter.isSharing {
+                postNotification(
+                    identifier: "background.screenshare.\(UUID().uuidString)",
+                    conversationID: conversationID,
+                    title: "需要开启屏幕共享",
+                    body: "后台执行已选「屏幕共享引导」。请回到任务里点「共享屏幕」以在后台保持运行。"
+                )
+            }
         }
     }
 
     private func tearDownBackgroundExecutionPreference() {
+        surfacedRunID = nil
         environment.backgroundVideoService.stop()
+    }
+
+    /// If the run currently represented by PiP finishes while another run is
+    /// still active, move the surface to a real remaining run instead of
+    /// leaving the completed title frozen indefinitely.
+    private func resumeBackgroundSurfaceIfNeeded() {
+        guard environment.settingsCenter.backgroundExecution == .pictureInPicture,
+              let (runID, run) = activeRuns.first else { return }
+        surfacedRunID = runID
+        Task { [weak self] in
+            guard let self else { return }
+            await self.environment.backgroundVideoService.begin(
+                title: run.title,
+                initialProgress: "正在运行"
+            )
+        }
     }
 
     func didRequireApproval(conversationID: UUID, runID: UUID, toolName: String) {
         guard notifiedApprovalRuns.insert(runID).inserted else { return }
         if #available(iOS 26.0, *) {
             updateContinuedTask(title: "Floe Agent", stage: "等待你的审批", progress: 60)
+        }
+        if surfacedRunID == runID {
+            environment.backgroundVideoService.update(progress: "等待你的审批")
         }
         Task { [weak self] in
             guard let self else { return }

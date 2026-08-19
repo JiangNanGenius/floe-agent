@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import FloeAgentRuntime
 @testable import FloePersistence
+@testable import FloeModels
 
 @Suite("FloeAgentRuntime.ConversationHistoryAssembler")
 struct ConversationHistoryAssemblerTests {
@@ -58,5 +59,59 @@ struct ConversationHistoryAssemblerTests {
         #expect(history[0].content.contains("sourceMessageIDs="))
         #expect(history[0].content.contains("sourceDigest="))
         #expect(history[1].content == "message-4")
+    }
+
+    @Test("App-owned staged images are inlined after the picker scope closes")
+    func inlinesApplicationSupportImage() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-history-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let attachments = root.appendingPathComponent("Attachments", isDirectory: true)
+        try FileManager.default.createDirectory(at: attachments, withIntermediateDirectories: true)
+        let bytes = Data("staged-image".utf8)
+        try bytes.write(to: attachments.appendingPathComponent("picked.png"))
+        let attachment = AttachmentRef(
+            kind: .image,
+            displayName: "picked.png",
+            uti: "public.png",
+            byteCount: bytes.count,
+            storage: .applicationSupport,
+            relativePath: "picked.png"
+        )
+
+        let images = ConversationHistoryAssembler.inlineImages(
+            [attachment],
+            applicationSupportRoot: root
+        )
+
+        #expect(images.count == 1)
+        #expect(images[0].base64 == bytes.base64EncodedString())
+        #expect(images[0].mimeType == "image/png")
+    }
+
+    @Test("A staged-image relative path cannot escape its app-owned directory")
+    func rejectsApplicationSupportTraversal() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-history-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("Attachments", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let outside = root.appendingPathComponent("outside.png")
+        try Data("outside".utf8).write(to: outside)
+        let attachment = AttachmentRef(
+            kind: .image,
+            displayName: "outside.png",
+            uti: "public.png",
+            byteCount: 7,
+            storage: .applicationSupport,
+            relativePath: "../outside.png"
+        )
+
+        #expect(ConversationHistoryAssembler.inlineImages(
+            [attachment],
+            applicationSupportRoot: root
+        ).isEmpty)
     }
 }

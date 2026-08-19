@@ -31,6 +31,8 @@ final class ProviderEditorViewModel: ObservableObject {
 
     @Published var selectedPreset: ProviderPreset
     @Published var selectedProtocol: ModelProtocol
+    /// User-facing provider name (editable; falls back to the preset label).
+    @Published var displayName: String
     @Published var baseURLString: String
     @Published var apiKey: String = ""
     @Published var nonSecretHeadersText: String = ""
@@ -66,6 +68,7 @@ final class ProviderEditorViewModel: ObservableObject {
             self.providerID = existing.id
             self.selectedPreset = ProviderPreset.preset(for: existing.kind)
             self.selectedProtocol = existing.wireProtocol
+            self.displayName = existing.displayName ?? ProviderPreset.preset(for: existing.kind).displayName
             self.baseURLString = existing.baseURL.absoluteString
             self.allowsPlainHTTP = existing.allowsPlainHTTP
             self.nonSecretHeadersText = Self.headersText(from: existing.nonSecretHeaders)
@@ -73,13 +76,23 @@ final class ProviderEditorViewModel: ObservableObject {
             self.providerID = UUID()
             self.selectedPreset = ProviderPreset.all[0]
             self.selectedProtocol = ProviderPreset.all[0].defaultProtocol
+            self.displayName = ProviderPreset.all[0].displayName
             self.baseURLString = ProviderPreset.all[0].defaultBaseURL.absoluteString
         }
     }
 
     /// Applies a preset's defaults to the editable fields.
     func applyPreset(_ preset: ProviderPreset) {
+        let previousPresetName = selectedPreset.displayName
+        let shouldReplaceDisplayName = displayName
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || displayName == previousPresetName
         selectedPreset = preset
+        // Only auto-fill the name when the user hasn't customized it, so a
+        // typed "DeepSeek" survives switching protocols/presets.
+        if shouldReplaceDisplayName {
+            displayName = preset.displayName
+        }
         baseURLString = preset.defaultBaseURL.absoluteString
         selectedProtocol = preset.defaultProtocol
     }
@@ -122,11 +135,13 @@ final class ProviderEditorViewModel: ObservableObject {
                 ?? "provider.\(providerID.uuidString)",
             synchronizable: syncEnabled
         ) : nil
+        let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         let profile = ProviderProfile(
             id: providerID,
             kind: selectedPreset.kind,
             wireProtocol: selectedProtocol,
             baseURL: url,
+            displayName: trimmedName.isEmpty ? nil : trimmedName,
             secretRef: secretRef,
             nonSecretHeaders: Self.parseHeaders(nonSecretHeadersText),
             isEnabled: true,

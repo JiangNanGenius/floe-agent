@@ -3420,6 +3420,23 @@
         }
       }
     },
+    "providers.display_name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名称"
+          }
+        }
+      }
+    },
     "providers.credentials": {
       "extractionState": "manual",
       "localizations": {

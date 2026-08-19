@@ -143,7 +143,7 @@ private struct ProviderRow: View {
     }
 
     private var presetName: String {
-        ProviderPreset.preset(for: provider.kind).displayName
+        provider.displayName ?? ProviderPreset.preset(for: provider.kind).displayName
     }
 }
 #endif

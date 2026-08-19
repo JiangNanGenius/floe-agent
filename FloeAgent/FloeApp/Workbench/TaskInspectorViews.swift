@@ -2,6 +2,7 @@
 import SwiftUI
 import GRDB
 import LocalAuthentication
+import FloeCore
 import FloeModels
 import FloePersistence
 
@@ -219,11 +220,17 @@ struct TaskPermissionsInspectorView: View {
         isSaving = true
         defer { isSaving = false }
         policy.updatedAt = Date()
+        // Defensive: a save that fails (e.g. the conversation row vanished
+        // mid-edit, or the DB is momentarily locked) surfaces as an inline
+        // error instead of crashing the inspector.
         do {
             try await conversationCenter.updateTaskPolicy(policy)
             self.policy = policy
             errorMessage = nil
-        } catch { errorMessage = error.localizedDescription }
+        } catch {
+            errorMessage = error.localizedDescription
+            FloeLogger(category: .app).error("taskPolicySaveFailed conversation=\(policy.conversationID.uuidString) error=\(error.localizedDescription)")
+        }
     }
 }
 #endif

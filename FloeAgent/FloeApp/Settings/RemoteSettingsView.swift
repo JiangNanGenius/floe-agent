@@ -47,24 +47,6 @@ struct RemoteSettingsView: View {
             }
 
             Section {
-                Stepper(
-                    "settings.remote.idle_disconnect \(center.idleDisconnectMinutes)",
-                    value: Binding(
-                        get: { center.idleDisconnectMinutes },
-                        set: { newValue in
-                            Task { await center.setIdleDisconnectMinutes(newValue) }
-                        }
-                    ),
-                    in: 1...240
-                )
-                .frame(minHeight: FloeTheme.minimumTarget)
-            } header: {
-                Text("settings.remote.session")
-            } footer: {
-                Text("settings.remote.idle_disconnect.footer")
-            }
-
-            Section {
                 if center.remoteHostCount == 0 {
                     Text("settings.remote.hosts.empty")
                         .foregroundStyle(.secondary)

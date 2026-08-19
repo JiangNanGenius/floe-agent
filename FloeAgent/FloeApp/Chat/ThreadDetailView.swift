@@ -26,6 +26,7 @@ struct ThreadDetailView: View {
     @State private var showingScreenShare = false
     @State private var showingScreenShareGuide = false
     @State private var confirmingScreenTransmission = false
+    @State private var showingPermissionsSheet = false
 
     init(conversationID: UUID, center: ConversationCenter) {
         _viewModel = StateObject(
@@ -71,6 +72,17 @@ struct ThreadDetailView: View {
                 }
             }
         }
+        .sheet(isPresented: $showingPermissionsSheet) {
+            NavigationStack {
+                TaskPermissionsInspectorView(conversationID: viewModel.conversationID)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("action.done") { showingPermissionsSheet = false }
+                        }
+                    }
+            }
+            .presentationDetents([.medium, .large])
+        }
         .sheet(isPresented: $showingScreenShare) {
             BroadcastPickerView(center: environment.screenShareCenter)
                 .ignoresSafeArea()
@@ -78,7 +90,9 @@ struct ThreadDetailView: View {
         .sheet(isPresented: $showingScreenShareGuide) {
             ScreenShareGuideView(
                 center: environment.screenShareCenter,
-                userGoal: viewModel.draft
+                userGoal: viewModel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? viewModel.taskTitle
+                    : viewModel.draft
             )
         }
         .alert("发送当前屏幕画面？", isPresented: $confirmingScreenTransmission) {
@@ -405,7 +419,7 @@ struct ThreadDetailView: View {
                     attachments: $viewModel.attachments,
                     onSend: { Task { await viewModel.send() } },
                     onStop: { Task { await viewModel.cancel() } },
-                    onPermissions: { router.showInspector(.permissions) },
+                    onPermissions: { showingPermissionsSheet = true },
                     approvalMode: viewModel.taskPolicy.resolvedApprovalMode
                 )
             }

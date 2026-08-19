@@ -351,6 +351,7 @@ public actor FloeAgentRuntime {
              ("streamingModel", "executingTool"),
              ("streamingModel", "waitingApproval"),
              ("streamingModel", "compacting"),
+             ("streamingModel", "verifying"),
              ("streamingModel", "paused"),
              ("streamingModel", "cancelling"),
              ("streamingModel", "completed"),
@@ -366,6 +367,10 @@ public actor FloeAgentRuntime {
              ("waitingApproval", "failed"),
              ("compacting", "streamingModel"),
              ("compacting", "failed"),
+             ("verifying", "streamingModel"),
+             ("verifying", "cancelling"),
+             ("verifying", "checkpointed"),
+             ("verifying", "failed"),
              ("paused", "preparing"),
              ("paused", "cancelling"),
              ("paused", "checkpointed"),
@@ -812,7 +817,17 @@ public actor FloeAgentRuntime {
             return
         }
 
-        await emit(event)
+        // Verification output is private harness work. Buffer it in
+        // `streamText`, but do not stream a bare "CONFIRM" (or an unfinished
+        // correction) into the user-visible answer. A corrected answer is
+        // emitted atomically at the verification boundary below.
+        let shouldPublishEvent: Bool
+        if case .textDelta = event, didVerifyFinalAnswer, isFinalizingWithoutTools {
+            shouldPublishEvent = false
+        } else {
+            shouldPublishEvent = true
+        }
+        if shouldPublishEvent { await emit(event) }
         switch event {
         case .textDelta(let delta):
             let nextBytes = delta.text.utf8.count
@@ -924,6 +939,12 @@ public actor FloeAgentRuntime {
                !streamText.isEmpty {
                 await beginFinalAnswerVerification(stopReason: stopReason)
                 return
+            }
+            if didVerifyFinalAnswer, isFinalizingWithoutTools {
+                let verification = streamText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !verification.isEmpty, verification.uppercased() != "CONFIRM" {
+                    await emit(.textDelta(.init(text: streamText)))
+                }
             }
             await emit(.completed(.init(stopReason: stopReason)))
             await completeRun(stopReason: stopReason)

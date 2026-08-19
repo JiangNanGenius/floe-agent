@@ -158,14 +158,16 @@ struct AgentRuntimeTests {
         policy: any ApprovalPolicy = HumanApprovalPolicy(),
         audit: MockAuditSink = MockAuditSink(),
         store: MockCheckpointStore = MockCheckpointStore(),
-        sink: MockSink = MockSink()
+        sink: MockSink = MockSink(),
+        verifyFinalAnswer: Bool = false
     ) -> FloeAgentRuntime {
         let provider = TestFixtures.localhostProvider()
         return FloeAgentRuntime(
             configuration: FloeAgentRuntime.Configuration(
                 provider: provider,
                 model: model ?? TestFixtures.testModel(providerID: provider.id),
-                pauseTimeout: 0.1
+                pauseTimeout: 0.1,
+                verifyFinalAnswer: verifyFinalAnswer
             ),
             adapter: adapter,
             policy: policy,
@@ -203,6 +205,68 @@ struct AgentRuntimeTests {
         }
         #expect(info.stopReason == .endTurn)
         #expect(sink.transitions == ["preparing", "streamingModel", "completed"])
+    }
+
+    @Test("Final-answer verification hides a bare confirmation")
+    func verificationConfirmationIsNotUserVisible() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [
+            [
+                .textDelta(.init(text: "Complete answer")),
+                .completed(.init(stopReason: .endTurn))
+            ],
+            [
+                .textDelta(.init(text: "CONFIRM")),
+                .completed(.init(stopReason: .endTurn))
+            ]
+        ]
+        let sink = MockSink()
+        let runtime = makeRuntime(
+            adapter: adapter,
+            sink: sink,
+            verifyFinalAnswer: true
+        )
+
+        try await runtime.start(goal: "answer carefully")
+
+        let visibleText = sink.events.compactMap { event -> String? in
+            guard case .textDelta(let delta) = event else { return nil }
+            return delta.text
+        }
+        #expect(visibleText == ["Complete answer"])
+        #expect(sink.transitions.contains("verifying"))
+        #expect(adapter.requests.count == 2)
+        #expect(adapter.requests[1].toolSchemas.isEmpty)
+    }
+
+    @Test("Final-answer verification publishes a correction atomically")
+    func verificationCorrectionReplacesConfirmation() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [
+            [
+                .textDelta(.init(text: "Draft answer")),
+                .completed(.init(stopReason: .endTurn))
+            ],
+            [
+                .textDelta(.init(text: "Corrected ")),
+                .textDelta(.init(text: "answer")),
+                .completed(.init(stopReason: .endTurn))
+            ]
+        ]
+        let sink = MockSink()
+        let runtime = makeRuntime(
+            adapter: adapter,
+            sink: sink,
+            verifyFinalAnswer: true
+        )
+
+        try await runtime.start(goal: "answer carefully")
+
+        let visibleText = sink.events.compactMap { event -> String? in
+            guard case .textDelta(let delta) = event else { return nil }
+            return delta.text
+        }
+        #expect(visibleText == ["Draft answer", "Corrected answer"])
     }
 
     @Test("A text-only model is never offered tool schemas")

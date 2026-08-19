@@ -64,14 +64,21 @@ final class ScreenShareCenter: NSObject, ObservableObject {
     }
 
     /// Asks the vision model to describe the current screen, then derive
-    /// guide hints (what to tap) from the frame content.
+    /// guide hints (what to tap, where) from structured model output.
     func analyzeScreenAndGuide(userGoal: String) async {
         guard let snapshot = latestFrameSnapshot(),
               analysisConsentSessionID == snapshot.state.sessionID else { return }
         latestFrame = snapshot.image
-        let description = await describeScreen(image: snapshot.image, prompt:
-            "Describe the visible UI elements and what the user should tap to: \(userGoal). Return concise hints.")
-        guideHints = Self.guideHints(from: description, frame: snapshot.image)
+        // Ask for structured hints: the model returns one JSON array whose
+        // entries carry the element label and a normalized tap point, so the
+        // guide can render a real highlight instead of a text blob.
+        let description = await describeScreen(image: snapshot.image, prompt: """
+            Identify the on-screen elements the user should tap to accomplish: \(userGoal). \
+            Respond with ONLY a JSON array. Each element: {"label": "element name", \
+            "instruction": "what to do", "x": 0.0-1.0, "y": 0.0-1.0} where x,y are \
+            the normalized center of the tappable element. No prose outside the JSON.
+            """)
+        guideHints = Self.guideHints(from: description)
     }
 
     var analysisDestinationName: String {
@@ -95,15 +102,38 @@ final class ScreenShareCenter: NSObject, ObservableObject {
     struct GuideHint: Identifiable, Sendable {
         let id = UUID()
         let elementText: String
+        let instruction: String
         let tapPoint: CGPoint  // normalized 0-1
     }
 
-    private static func guideHints(from description: String?, frame: UIImage) -> [GuideHint] {
+    /// Parses the model's structured JSON hints. Falls back to a single
+    /// centered text hint when the model returns prose instead of JSON, so
+    /// the guide surface still shows something honest.
+    private static func guideHints(from description: String?) -> [GuideHint] {
         guard let description, !description.isEmpty else { return [] }
-        // Placeholder parsing: in a full build the vision model returns
-        // structured element rects; this scaffold shows the description as
-        // one centered hint so the guide surface is honest, not fake.
-        return [GuideHint(elementText: description, tapPoint: CGPoint(x: 0.5, y: 0.5))]
+        if let data = Self.extractJSON(from: description),
+           let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            let hints = array.compactMap { item -> GuideHint? in
+                guard let label = item["label"] as? String,
+                      let x = (item["x"] as? NSNumber)?.doubleValue,
+                      let y = (item["y"] as? NSNumber)?.doubleValue else { return nil }
+                return GuideHint(
+                    elementText: label,
+                    instruction: (item["instruction"] as? String) ?? label,
+                    tapPoint: CGPoint(x: min(max(x, 0), 1), y: min(max(y, 0), 1))
+                )
+            }
+            if !hints.isEmpty { return hints }
+        }
+        return [GuideHint(elementText: description, instruction: description, tapPoint: CGPoint(x: 0.5, y: 0.5))]
+    }
+
+    /// Extracts the first JSON array from model output (tolerant of prose
+    /// around it, markdown fences, etc.).
+    private static func extractJSON(from text: String) -> Data? {
+        guard let start = text.firstIndex(of: "["),
+              let end = text.lastIndex(of: "]") else { return nil }
+        return String(text[start...end]).data(using: .utf8)
     }
 
     /// Presents the system picker that lets the user start (or stop) screen sharing.

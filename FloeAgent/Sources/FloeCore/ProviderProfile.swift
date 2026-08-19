@@ -34,6 +34,9 @@ public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
     /// OpenAI-compatible third-party gateways.
     public var wireProtocol: ModelProtocol
     public var baseURL: URL
+    /// User-facing display name (e.g. "DeepSeek", "公司网关"). Defaults to the
+    /// preset/kind label when unset; never sent on the wire.
+    public var displayName: String?
     /// Reference to the API key in Keychain. `nil` means unauthenticated
     /// endpoint (e.g. local inference).
     public var secretRef: SecretReference?
@@ -54,6 +57,7 @@ public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
         kind: ProviderKind,
         wireProtocol: ModelProtocol,
         baseURL: URL,
+        displayName: String? = nil,
         secretRef: SecretReference? = nil,
         region: String? = nil,
         nonSecretHeaders: [String: String] = [:],
@@ -67,6 +71,7 @@ public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
         self.kind = kind
         self.wireProtocol = wireProtocol
         self.baseURL = baseURL
+        self.displayName = displayName
         self.secretRef = secretRef
         self.region = region
         self.nonSecretHeaders = nonSecretHeaders
@@ -80,6 +85,17 @@ public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
     /// Validates invariants enforced by the security model.
     /// - Throws: `FloeError.invalidConfiguration` on violation.
     public func validate() throws {
+        if let displayName {
+            let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  trimmed.utf8.count <= 256,
+                  !trimmed.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+            else {
+                throw FloeError.invalidConfiguration(
+                    "Provider display name must be 1...256 bytes without control characters"
+                )
+            }
+        }
         guard baseURL.user == nil, baseURL.password == nil else {
             throw FloeError.invalidConfiguration(
                 "Endpoint credentials belong in Keychain, not in the URL"

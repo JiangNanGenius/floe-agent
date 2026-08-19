@@ -66,6 +66,16 @@ struct GeneralSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("回答质量") {
+                Toggle("完成前复核最终答案", isOn: Binding(
+                    get: { center.verifyFinalAnswer },
+                    set: { value in Task { await center.setVerifyFinalAnswer(value) } }
+                ))
+                Text("开启后会额外进行一次不调用工具的自检；确认无误时不会显示 CONFIRM，发现问题时会追加修正版。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("settings.general.accessibility") {
                 Picker("settings.general.reduce_motion", selection: Binding(
                     get: { center.reduceMotionOverride },
@@ -77,21 +87,9 @@ struct GeneralSettingsView: View {
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
 
-                Toggle("settings.general.haptics", isOn: Binding(
-                    get: { center.hapticsEnabled },
-                    set: { center.setHapticsEnabled($0) }
-                ))
-                .frame(minHeight: FloeTheme.minimumTarget)
-
-                Picker("settings.general.datetime_style", selection: Binding(
-                    get: { center.dateTimeStyle },
-                    set: { center.setDateTimeStyle($0) }
-                )) {
-                    ForEach(DateTimeDisplayStyle.allCases, id: \.self) { style in
-                        Text(title(for: style)).tag(style)
-                    }
-                }
-                .frame(minHeight: FloeTheme.minimumTarget)
+                // Hidden: hapticsEnabled and dateTimeStyle are persisted but
+                // nothing consumes them yet, so the controls are removed until
+                // they take real effect.
             }
 
         }

@@ -145,7 +145,9 @@ public extension ProviderPreset {
         defaultProtocol: .openAIChatCompletions,
         supportedProtocols: [.openAIResponses, .openAIChatCompletions, .anthropicMessages],
         defaultBaseURL: URL(string: "https://example.com/v1")!,
-        supportsModelDiscovery: false,
+        // OpenAI-compatible endpoints (DeepSeek, Grok, vLLM, …) expose
+        // GET /models, so discovery and a real connection probe both work.
+        supportsModelDiscovery: true,
         authStyle: .bearer
     )
 
