@@ -17,6 +17,7 @@ import FloeAgentRuntime
 import FloePersistence
 import FloeProviders
 import FloeSecurity
+import FloeSync
 import FloeTools
 #if canImport(NaturalLanguage)
 import NaturalLanguage
