@@ -129,9 +129,28 @@ struct ProviderEditorView: View {
 
     private var credentialsSection: some View {
         Section {
-            SecureField("providers.api_key", text: $viewModel.apiKey)
-                .textInputAutocapitalization(.never)
-                .accessibilityIdentifier("providers.api_key")
+            HStack {
+                if viewModel.showingAPIKey {
+                    TextField("providers.api_key", text: $viewModel.apiKey)
+                        .textInputAutocapitalization(.never)
+                        .accessibilityIdentifier("providers.api_key")
+                } else {
+                    SecureField("providers.api_key", text: $viewModel.apiKey)
+                        .textInputAutocapitalization(.never)
+                        .accessibilityIdentifier("providers.api_key")
+                }
+                Button {
+                    if viewModel.showingAPIKey {
+                        viewModel.showingAPIKey = false
+                    } else {
+                        Task { await viewModel.revealAPIKey() }
+                    }
+                } label: {
+                    Image(systemName: viewModel.showingAPIKey ? "eye.slash" : "eye")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(viewModel.showingAPIKey ? "隐藏 API key" : "显示 API key")
+            }
             if viewModel.secretStatus == .waitingForSecret {
                 Label("providers.waiting_secret.hint", systemImage: "key.fill")
                     .font(FloeTheme.Typography.metadata)

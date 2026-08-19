@@ -36,6 +36,10 @@ final class ProviderEditorViewModel: ObservableObject {
     @Published var displayName: String
     @Published var baseURLString: String
     @Published var apiKey: String = ""
+    /// Whether the API key field is currently revealed (plain text). Toggled
+    /// by the eye button; revealing reads from Keychain and shows the stored
+    /// key so the user can verify what's actually saved.
+    @Published var showingAPIKey = false
     @Published var nonSecretHeadersText: String = ""
     @Published var allowsPlainHTTP = false
     @Published var syncEnabled = true
@@ -228,6 +232,31 @@ final class ProviderEditorViewModel: ObservableObject {
             }
         }
         return results.joined(separator: "\n")
+    }
+
+    /// Reveals the stored API key by reading from Keychain and populating
+    /// the field. Requires biometric/device passcode authentication via
+    /// Keychain's access control. The key stays in memory only while
+    /// `showingAPIKey` is true.
+    func revealAPIKey() async {
+        guard let existing, let secretRef = existing.secretRef else {
+            errorMessage = "未配置 API key"
+            return
+        }
+        // Try both namespaces; the first hit wins.
+        for sync in [secretRef.synchronizable, !secretRef.synchronizable] {
+            let store = KeychainStore(
+                service: "org.floeagent.ios.secrets",
+                synchronizable: sync
+            )
+            if let data = try? store.read(account: secretRef.keychainAccount),
+               let key = String(data: data, encoding: .utf8) {
+                apiKey = key
+                showingAPIKey = true
+                return
+            }
+        }
+        errorMessage = "Keychain 中没有找到 API key"
     }
 
     // MARK: - Models

@@ -256,6 +256,8 @@ public enum WireTranslator {
     // MARK: - HTTP status normalization
 
     /// Maps a non-2xx HTTP status onto a normalized error event.
+    /// Auth failures (401/403) surface the provider's original message so the
+    /// user sees "api key invalid" instead of a bare HTTP status.
     public static func httpError(status: Int, body: String) -> AgentEvent {
         let kind: AgentEvent.NormalizedError.Kind
         switch status {
@@ -268,7 +270,16 @@ public enum WireTranslator {
         default:
             kind = status >= 500 ? .server : .malformed
         }
-        let message = SecretRedactor.redact(String(body.prefix(512)))
+        let rawBody = String(body.prefix(512))
+        // For auth failures, surface the provider's message directly (e.g.
+        // "Authentication Fails, Your api key: ****xxxx is invalid") so the
+        // user knows to regenerate the key. Redact only actual key material.
+        let message: String
+        if status == 401 || status == 403 {
+            message = rawBody.isEmpty ? "API key 无效或已过期" : rawBody
+        } else {
+            message = SecretRedactor.redact(rawBody)
+        }
         return .error(AgentEvent.NormalizedError(
             kind: kind,
             providerMessage: message.isEmpty ? "HTTP \(status)" : message,
