@@ -367,9 +367,9 @@ private struct AuxiliaryModelEditorView: View {
                             service: "org.floeagent.ios.secrets",
                             synchronizable: secretRef.synchronizable
                         )
-                        try store.write(
+                        try store.store(
                             account: secretRef.keychainAccount,
-                            data: Data(dedicatedAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).utf8)
+                            secret: Data(dedicatedAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).utf8)
                         )
                     }
                     resolvedProviderID = provider.id
