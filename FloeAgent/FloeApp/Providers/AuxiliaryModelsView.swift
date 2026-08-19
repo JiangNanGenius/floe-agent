@@ -4,6 +4,7 @@
 import SwiftUI
 import FloeCore
 import FloeProviders
+import FloeSecurity
 
 struct AuxiliaryModelsView: View {
     @StateObject private var viewModel: AuxiliaryModelsViewModel
@@ -222,6 +223,14 @@ private struct AuxiliaryModelEditorView: View {
     @State private var errorMessage: String?
     @State private var discoveredModels: [ModelProfile] = []
     @State private var isDiscovering = false
+    /// When true, a dedicated endpoint (base URL + API key) is created for
+    /// this image model instead of reusing an existing chat provider. Image
+    /// services (e.g. Doubao Seedream, DALL-E) often live on a different
+    /// endpoint than the chat provider.
+    @State private var useDedicatedEndpoint = false
+    @State private var dedicatedBaseURL = ""
+    @State private var dedicatedAPIKey = ""
+    @State private var dedicatedName = ""
     private let adapterFactory = ImageProviderAdapterFactory()
 
     private var compatibleProviders: [ProviderProfile] { center.providers }
@@ -237,15 +246,25 @@ private struct AuxiliaryModelEditorView: View {
         NavigationStack {
             Form {
                 Section("auxiliary.provider") {
-                    Picker("auxiliary.provider", selection: $providerID) {
-                        ForEach(compatibleProviders) { provider in
-                            Text(providerName(provider))
-                                .tag(Optional(provider.id))
+                    Toggle("auxiliary.dedicated_endpoint", isOn: $useDedicatedEndpoint)
+                    if useDedicatedEndpoint {
+                        TextField("providers.display_name", text: $dedicatedName)
+                        TextField("providers.base_url", text: $dedicatedBaseURL)
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.URL)
+                        SecureField("providers.api_key", text: $dedicatedAPIKey)
+                            .textInputAutocapitalization(.never)
+                    } else {
+                        Picker("auxiliary.provider", selection: $providerID) {
+                            ForEach(compatibleProviders) { provider in
+                                Text(providerName(provider))
+                                    .tag(Optional(provider.id))
+                            }
                         }
-                    }
-                    if compatibleProviders.isEmpty {
-                        Label("auxiliary.adapter.none", systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.secondary)
+                        if compatibleProviders.isEmpty {
+                            Label("auxiliary.adapter.none", systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 Section("auxiliary.image_model") {
@@ -313,30 +332,65 @@ private struct AuxiliaryModelEditorView: View {
     }
 
     private var isValid: Bool {
-        providerID != nil
+        if useDedicatedEndpoint {
+            return !dedicatedBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !dedicatedAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !remoteModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && (supportsGeneration || supportsEditing || supportsVision)
+        }
+        return providerID != nil
             && !remoteModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && (supportsGeneration || supportsEditing || supportsVision)
     }
 
     private func save() {
-        guard let providerID else { return }
         Task {
             isSaving = true
             defer { isSaving = false }
-            var capabilities: ModelCapabilities = []
-            if supportsGeneration { capabilities.insert(.imageGeneration) }
-            if supportsEditing { capabilities.insert(.imageEditing) }
-            if supportsVision { capabilities.insert(.vision) }
-            let remoteID = remoteModelID.trimmingCharacters(in: .whitespacesAndNewlines)
-            let model = ModelProfile(
-                providerID: providerID,
-                remoteModelID: remoteID,
-                displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? remoteID : displayName,
-                limits: ModelLimits(contextTokens: 1, maxOutputTokens: 1),
-                capabilities: capabilities
-            )
             do {
+                let resolvedProviderID: UUID
+                if useDedicatedEndpoint {
+                    // Create a dedicated provider for this image service so
+                    // it carries its own base URL + API key (e.g. Doubao
+                    // Seedream endpoint differs from the chat provider).
+                    let provider = ProviderProfile(
+                        kind: .custom,
+                        displayName: dedicatedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? remoteModelID : dedicatedName,
+                        baseURL: URL(string: dedicatedBaseURL.trimmingCharacters(in: .whitespacesAndNewlines))!,
+                        wireProtocol: .openAIChatCompletions
+                    )
+                    try await center.saveProvider(provider)
+                    // Store the API key in Keychain under the provider's ref.
+                    if let secretRef = provider.secretRef {
+                        let store = KeychainStore(
+                            service: "org.floeagent.ios.secrets",
+                            synchronizable: secretRef.synchronizable
+                        )
+                        try store.write(
+                            account: secretRef.keychainAccount,
+                            data: Data(dedicatedAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).utf8)
+                        )
+                    }
+                    resolvedProviderID = provider.id
+                } else {
+                    guard let providerID else { return }
+                    resolvedProviderID = providerID
+                }
+
+                var capabilities: ModelCapabilities = []
+                if supportsGeneration { capabilities.insert(.imageGeneration) }
+                if supportsEditing { capabilities.insert(.imageEditing) }
+                if supportsVision { capabilities.insert(.vision) }
+                let remoteID = remoteModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+                let model = ModelProfile(
+                    providerID: resolvedProviderID,
+                    remoteModelID: remoteID,
+                    displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? remoteID : displayName,
+                    limits: ModelLimits(contextTokens: 1, maxOutputTokens: 1),
+                    capabilities: capabilities
+                )
                 try await center.saveModel(model)
                 await onSaved(model)
                 dismiss()

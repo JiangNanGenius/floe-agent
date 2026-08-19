@@ -15,6 +15,7 @@ import FloeCore
 import FloeProviders
 import FloeSync
 import FloeSyncCore
+import FloeSecurity
 
 /// View model for adding or editing one provider.
 @MainActor
@@ -203,6 +204,30 @@ final class ProviderEditorViewModel: ObservableObject {
             testState = .failed(message)
             errorMessage = message
         }
+    }
+
+    /// Diagnostic: reads the provider's Keychain entry directly and reports
+    /// whether a key was found (and in which namespace). This helps debug
+    /// "provider unavailable" issues without exposing the key itself.
+    func diagnoseKeychain() -> String {
+        guard let existing, let secretRef = existing.secretRef else {
+            return "未配置 API key（secretRef 为空）"
+        }
+        var results: [String] = []
+        for sync in [secretRef.synchronizable, !secretRef.synchronizable] {
+            let store = KeychainStore(
+                service: "org.floeagent.ios.secrets",
+                synchronizable: sync
+            )
+            if let data = try? store.read(account: secretRef.keychainAccount) {
+                let namespace = sync ? "iCloud" : "本地"
+                results.append("\(namespace) Keychain: 找到 key（\(data.count) 字节）")
+            } else {
+                let namespace = sync ? "iCloud" : "本地"
+                results.append("\(namespace) Keychain: 未找到")
+            }
+        }
+        return results.joined(separator: "\n")
     }
 
     // MARK: - Models

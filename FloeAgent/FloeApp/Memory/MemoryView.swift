@@ -130,33 +130,38 @@ struct MemoryView: View {
     @State private var query = ""
 
     var body: some View {
-        List {
-            Section("个性化") {
-                NavigationLink { PersonalizationDocumentView(center: center, kind: .userProfile) } label: {
-                    personalizationRow("用户画像", icon: "person.text.rectangle", revision: center.profile?.revision)
-                }
-                NavigationLink { PersonalizationDocumentView(center: center, kind: .soul) } label: {
-                    personalizationRow("SOUL.md", icon: "sparkles", revision: center.soul?.revision)
-                }
-                if !center.pendingCandidates.isEmpty {
-                    NavigationLink { PendingMemoryReviewView(center: center) } label: {
-                        Label("待确认记忆（\(center.pendingCandidates.count)）", systemImage: "tray.full")
+        // NavigationStack here (not only in the caller) so the 用户画像/SOUL.md
+        // NavigationLinks work regardless of whether MemoryView is hosted in
+        // a sheet, a NavigationSplitView detail column, or a pushed screen.
+        NavigationStack {
+            List {
+                Section("个性化") {
+                    NavigationLink { PersonalizationDocumentView(center: center, kind: .userProfile) } label: {
+                        personalizationRow("用户画像", icon: "person.text.rectangle", revision: center.profile?.revision)
+                    }
+                    NavigationLink { PersonalizationDocumentView(center: center, kind: .soul) } label: {
+                        personalizationRow("SOUL.md", icon: "sparkles", revision: center.soul?.revision)
+                    }
+                    if !center.pendingCandidates.isEmpty {
+                        NavigationLink { PendingMemoryReviewView(center: center) } label: {
+                            Label("待确认记忆（\(center.pendingCandidates.count)）", systemImage: "tray.full")
+                        }
                     }
                 }
+                if !query.isEmpty { searchSection } else { memorySection }
+                if let error = center.errorMessage { Section { Text(error).foregroundStyle(.red).font(.footnote) } }
             }
-            if !query.isEmpty { searchSection } else { memorySection }
-            if let error = center.errorMessage { Section { Text(error).foregroundStyle(.red).font(.footnote) } }
+            .navigationTitle("记忆与个性化")
+            .searchable(text: $query, prompt: "搜索记忆")
+            .task(id: query) {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                await center.search(query)
+            }
+            .toolbar { Button("添加记忆", systemImage: "plus") { presentedSheet = .add } }
+            .task { await center.load() }
+            .sheet(item: $presentedSheet) { _ in AddMemorySheet(center: center) }
         }
-        .navigationTitle("记忆与个性化")
-        .searchable(text: $query, prompt: "搜索记忆")
-        .task(id: query) {
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            await center.search(query)
-        }
-        .toolbar { Button("添加记忆", systemImage: "plus") { presentedSheet = .add } }
-        .task { await center.load() }
-        .sheet(item: $presentedSheet) { _ in AddMemorySheet(center: center) }
     }
 
     @ViewBuilder private var searchSection: some View {
