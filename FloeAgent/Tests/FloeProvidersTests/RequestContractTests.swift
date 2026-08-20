@@ -38,6 +38,35 @@ struct RequestContractTests {
         #expect(anthropicJSON[0]["input_schema"] is [String: Any])
     }
 
+    @Test("Provider tool schemas preserve numeric zero separately from false")
+    func toolSchemaNumericZeroIsNotBoolean() throws {
+        let boundedNumberSchema = #"{"type":"object","properties":{"x":{"type":"number","minimum":0,"maximum":10000}},"additionalProperties":false}"#
+        let body = ChatRequest(
+            model: "deepseek-chat",
+            messages: [],
+            tools: [.init(
+                name: "browser_clickPoint",
+                description: "Click viewport coordinates",
+                parameters: boundedNumberSchema
+            )]
+        )
+
+        let encoded = try JSONEncoder().encode(body)
+        let encodedText = String(decoding: encoded, as: UTF8.self)
+        #expect(encodedText.contains(#""minimum":0"#))
+        #expect(!encodedText.contains(#""minimum":false"#))
+
+        let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let tools = try #require(object["tools"] as? [[String: Any]])
+        let function = try #require(tools.first?["function"] as? [String: Any])
+        let parameters = try #require(function["parameters"] as? [String: Any])
+        let properties = try #require(parameters["properties"] as? [String: Any])
+        let x = try #require(properties["x"] as? [String: Any])
+        let minimum = try #require(x["minimum"] as? NSNumber)
+        #expect(String(cString: minimum.objCType) != "c")
+        #expect((parameters["additionalProperties"] as? NSNumber)?.boolValue == false)
+    }
+
     @Test("Chat tools are omitted when tool calling is disabled")
     func chatOmitsUnusedTools() throws {
         let body = ChatRequest(
@@ -83,7 +112,7 @@ struct RequestContractTests {
             id: providerID,
             kind: .custom,
             wireProtocol: .openAIChatCompletions,
-            baseURL: URL(string: "https://example.invalid/v1")!
+            baseURL: URL(string: "https://api.deepseek.com")!
         )
         let model = ModelProfile(
             providerID: providerID,
@@ -102,12 +131,17 @@ struct RequestContractTests {
             model: model,
             messages: [(role: "user", content: "where")],
             toolResults: [(callID: call.id, output: "/tmp")],
-            pendingToolCalls: [call]
+            pendingToolCalls: [call],
+            pendingAssistantReasoning: "I should inspect the working directory."
         )
 
         let chatObject = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: request))
         let chatMessages = try #require(chatObject["messages"] as? [[String: Any]])
         #expect(chatMessages.contains { $0["role"] as? String == "assistant" && $0["tool_calls"] != nil })
+        #expect(chatMessages.contains {
+            $0["role"] as? String == "assistant"
+                && $0["reasoning_content"] as? String == "I should inspect the working directory."
+        })
         #expect(chatMessages.contains { $0["role"] as? String == "tool" && $0["tool_call_id"] as? String == call.id })
         let responsesObject = try jsonObject(OpenAIResponsesAdapter().buildBody(from: request))
         let input = try #require(responsesObject["input"] as? [[String: Any]])
@@ -151,6 +185,121 @@ struct RequestContractTests {
         let tools = try #require(object["tools"] as? [[String: Any]])
         #expect((tools.first?["function"] as? [String: Any])?["name"] as? String == "workspace.listDirectory")
         #expect(object["model"] as? String == "ep-test")
+    }
+
+    @Test("Reasoning depth maps to each provider's native contract")
+    func providerSpecificReasoningContracts() throws {
+        let deepSeekID = UUID()
+        let deepSeek = ProviderProfile(
+            id: deepSeekID,
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://api.deepseek.com"))
+        )
+        let deepSeekModel = ModelProfile(
+            providerID: deepSeekID,
+            remoteModelID: "deepseek-v4-flash",
+            displayName: "DeepSeek V4 Flash",
+            limits: ModelLimits(contextTokens: 1_048_576, maxOutputTokens: 65_536),
+            reasoningEffort: .maximum
+        )
+        let deepSeekBody = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: .init(
+            provider: deepSeek,
+            model: deepSeekModel,
+            messages: [(role: "user", content: "hello")]
+        )))
+        #expect((deepSeekBody["thinking"] as? [String: Any])?["type"] as? String == "enabled")
+        #expect(deepSeekBody["reasoning_effort"] as? String == "max")
+
+        let arkID = UUID()
+        let ark = ProviderProfile(
+            id: arkID,
+            kind: .volcengineArk,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://ark.cn-beijing.volces.com/api/v3"))
+        )
+        let arkModel = ModelProfile(
+            providerID: arkID,
+            remoteModelID: "doubao-thinking",
+            displayName: "Doubao Thinking",
+            limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 8_192),
+            reasoningEffort: .medium
+        )
+        let arkBody = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: .init(
+            provider: ark,
+            model: arkModel,
+            messages: [(role: "user", content: "hello")]
+        )))
+        #expect((arkBody["thinking"] as? [String: Any])?["type"] as? String == "enabled")
+        #expect(arkBody["reasoning_effort"] as? String == "medium")
+
+        let openAIID = UUID()
+        let openAI = ProviderProfile(
+            id: openAIID,
+            kind: .openAI,
+            wireProtocol: .openAIResponses,
+            baseURL: try #require(URL(string: "https://api.openai.com/v1"))
+        )
+        let openAIModel = ModelProfile(
+            providerID: openAIID,
+            remoteModelID: "gpt-5.6-codex",
+            displayName: "GPT-5.6 Codex",
+            limits: ModelLimits(contextTokens: 400_000, maxOutputTokens: 32_768),
+            reasoningEffort: .maximum
+        )
+        let openAIBody = try jsonObject(OpenAIResponsesAdapter().buildBody(from: .init(
+            provider: openAI,
+            model: openAIModel,
+            messages: [(role: "user", content: "hello")]
+        )))
+        #expect((openAIBody["reasoning"] as? [String: Any])?["effort"] as? String == "xhigh")
+
+        let anthropicID = UUID()
+        let anthropic = ProviderProfile(
+            id: anthropicID,
+            kind: .anthropic,
+            wireProtocol: .anthropicMessages,
+            baseURL: try #require(URL(string: "https://api.anthropic.com"))
+        )
+        let anthropicModel = ModelProfile(
+            providerID: anthropicID,
+            remoteModelID: "claude-sonnet-4-6",
+            displayName: "Claude Sonnet 4.6",
+            limits: ModelLimits(contextTokens: 200_000, maxOutputTokens: 32_768),
+            reasoningEffort: .high
+        )
+        let anthropicBody = try jsonObject(AnthropicMessagesAdapter().buildBody(from: .init(
+            provider: anthropic,
+            model: anthropicModel,
+            messages: [(role: "user", content: "hello")]
+        )))
+        #expect(anthropicBody["thinking"] == nil)
+        #expect((anthropicBody["output_config"] as? [String: Any])?["effort"] as? String == "high")
+    }
+
+    @Test("Unknown custom gateways omit reasoning fields")
+    func unknownGatewayOmitsReasoningFields() throws {
+        let providerID = UUID()
+        let provider = ProviderProfile(
+            id: providerID,
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://gateway.example/v1"))
+        )
+        let model = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "private-model",
+            displayName: "Private Model",
+            limits: ModelLimits(contextTokens: 32_000, maxOutputTokens: 4_096),
+            reasoningEffort: .maximum
+        )
+        let body = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: .init(
+            provider: provider,
+            model: model,
+            messages: [(role: "user", content: "hello")]
+        )))
+        #expect(body["thinking"] == nil)
+        #expect(body["reasoning_effort"] == nil)
     }
 
     @Test("Vision content maps to every provider wire format")

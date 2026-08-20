@@ -25,6 +25,7 @@ struct V16ProviderCompatibilityAndPackageReviewTests {
                 .map { $0["name"] as String })
         }
         #expect(columns.contains("package_review_model_id"))
-        #expect(try await database.userVersion() == 16)
+        #expect(try await database.userVersion() == DatabaseManager.currentSchemaVersion)
+        #expect(DatabaseManager.currentSchemaVersion >= 16)
     }
 }

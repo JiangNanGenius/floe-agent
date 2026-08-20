@@ -22,7 +22,7 @@ public actor DatabaseManager {
     private var migrator = DatabaseMigrator()
 
     /// Schema version tracked in `user_version`-aligned migrations.
-    public static let currentSchemaVersion = 16
+    public static let currentSchemaVersion = 17
 
     public init(path: URL) throws {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())
@@ -55,6 +55,7 @@ public actor DatabaseManager {
         V14PlanGoalControls.register(into: &migrator)
         V15ProviderDisplayName.register(into: &migrator)
         V16ProviderCompatibilityAndPackageReview.register(into: &migrator)
+        V17ModelReasoningEffort.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {

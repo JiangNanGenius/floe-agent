@@ -92,6 +92,27 @@ struct ModelConfigurationStoreTests {
         #expect(try await store.model(id: model.id) == nil)
     }
 
+    @Test("Per-model reasoning effort round-trips")
+    func reasoningEffortRoundTrip() async throws {
+        let store = try await makeStore()
+        let provider = ProviderProfile(
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://api.deepseek.com"))
+        )
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "deepseek-v4-flash",
+            displayName: "DeepSeek V4 Flash",
+            limits: ModelLimits(contextTokens: 1_048_576, maxOutputTokens: 65_536),
+            reasoningEffort: .maximum
+        )
+        try await store.saveProvider(provider)
+        try await store.saveModel(model)
+
+        #expect(try await store.model(id: model.id)?.reasoningEffort == .maximum)
+    }
+
     @Test("Rejects unsafe provider URLs and invalid model limits")
     func rejectsInvalidConfigurations() async throws {
         let store = try await makeStore()

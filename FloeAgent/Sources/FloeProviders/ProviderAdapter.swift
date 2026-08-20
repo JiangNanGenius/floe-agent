@@ -71,6 +71,9 @@ public struct ProviderStreamRequest: Sendable {
     public var toolResults: [(callID: String, output: String)]
     /// Pending assistant tool calls awaiting results (for context).
     public var pendingToolCalls: [ToolCall]
+    /// Provider reasoning emitted immediately before pending tool calls.
+    /// DeepSeek requires this exact field on the follow-up request.
+    public var pendingAssistantReasoning: String?
     /// Tools offered to the model, as wire-neutral schema descriptors.
     public var toolSchemas: [ToolSchemaDescriptor]
 
@@ -81,6 +84,7 @@ public struct ProviderStreamRequest: Sendable {
         contentMessages: [ProviderMessage] = [],
         toolResults: [(callID: String, output: String)] = [],
         pendingToolCalls: [ToolCall] = [],
+        pendingAssistantReasoning: String? = nil,
         toolSchemas: [ToolSchemaDescriptor] = []
     ) {
         self.provider = provider
@@ -89,6 +93,7 @@ public struct ProviderStreamRequest: Sendable {
         self.contentMessages = contentMessages
         self.toolResults = toolResults
         self.pendingToolCalls = pendingToolCalls
+        self.pendingAssistantReasoning = pendingAssistantReasoning
         self.toolSchemas = toolSchemas
     }
 
@@ -390,6 +395,10 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
             input: input,
             tools: tools,
             maxOutputTokens: request.model.limits.configuredMaxOutputTokens,
+            reasoning: ReasoningCompatibility.responsesEffort(
+                provider: request.provider,
+                model: request.model
+            ).map(ResponsesRequest.Reasoning.init(effort:)),
             stream: true
         )
     }
@@ -499,7 +508,11 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                             arguments: String(decoding: call.argumentsJSON, as: UTF8.self)
                         )
                     )
-                }
+                },
+                reasoningContent: ReasoningCompatibility.requiresAssistantReasoningReplay(
+                    provider: request.provider,
+                    model: request.model
+                ) ? request.pendingAssistantReasoning : nil
             ))
         }
         for result in request.toolResults {
@@ -522,11 +535,17 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                 parameters: $0.parametersJSON
             )
         }
+        let reasoning = ReasoningCompatibility.chatOptions(
+            provider: request.provider,
+            model: request.model
+        )
         return ChatRequest(
             model: request.model.remoteModelID,
             messages: messages,
             tools: tools.isEmpty ? nil : tools,
             maxTokens: request.model.limits.configuredMaxOutputTokens,
+            thinking: reasoning.thinkingType.map(ChatRequest.Thinking.init(type:)),
+            reasoningEffort: reasoning.reasoningEffort,
             stream: true,
             streamOptions: .init(includeUsage: true)
         )
@@ -658,6 +677,10 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
                 inputSchema: $0.parametersJSON
             )
         }
+        let reasoning = ReasoningCompatibility.anthropicOptions(
+            provider: request.provider,
+            model: request.model
+        )
         return AnthropicRequest(
             model: request.model.remoteModelID,
             // Anthropic requires max_tokens. A blank UI value therefore
@@ -668,6 +691,10 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
             messages: messages,
             system: system.isEmpty ? nil : system,
             tools: tools,
+            thinking: reasoning.thinkingType.map {
+                AnthropicRequest.Thinking(type: $0, budgetTokens: reasoning.budgetTokens)
+            },
+            outputConfig: reasoning.effort.map(AnthropicRequest.OutputConfig.init(effort:)),
             stream: true
         )
     }

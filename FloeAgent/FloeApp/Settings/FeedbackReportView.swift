@@ -4,6 +4,8 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import PhotosUI
+import UIKit
 import FloeCore
 
 struct FeedbackReportView: View {
@@ -15,6 +17,9 @@ struct FeedbackReportView: View {
     @State private var errorMessage: String?
     @State private var submittedID: String?
     @State private var pendingPackageURL: URL?
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @State private var imageAttachments: [FeedbackImageAttachment] = []
+    @State private var isLoadingImages = false
 
     private var trimmedProblem: String {
         problem.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -62,6 +67,58 @@ struct FeedbackReportView: View {
                 Text("feedback.logs.footer")
             }
 
+            Section {
+                PhotosPicker(
+                    selection: $selectedPhotoItems,
+                    maxSelectionCount: FeedbackUploadService.maximumImageCount,
+                    matching: .images
+                ) {
+                    Label("feedback.images.add", systemImage: "photo.badge.plus")
+                }
+                .disabled(isSubmitting || isLoadingImages)
+                .accessibilityIdentifier("feedback.add_images")
+
+                ForEach(imageAttachments) { attachment in
+                    HStack(spacing: 12) {
+                        if let image = UIImage(data: attachment.data) {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 56, height: 56)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(attachment.filename)
+                                .lineLimit(1)
+                            Text(ByteCountFormatter.string(
+                                fromByteCount: Int64(attachment.data.count),
+                                countStyle: .file
+                            ))
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button(role: .destructive) {
+                            imageAttachments.removeAll { $0.id == attachment.id }
+                            selectedPhotoItems = []
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .accessibilityLabel("feedback.images.remove")
+                    }
+                }
+                if isLoadingImages {
+                    HStack {
+                        ProgressView()
+                        Text("feedback.images.processing")
+                    }
+                }
+            } header: {
+                Text("feedback.images.title")
+            } footer: {
+                Text("feedback.images.footer")
+            }
+
             if let errorMessage {
                 Section {
                     Label(errorMessage, systemImage: "exclamationmark.triangle")
@@ -96,6 +153,7 @@ struct FeedbackReportView: View {
                     isSubmitting
                         || trimmedProblem.isEmpty
                         || problem.count > FeedbackUploadService.maximumProblemCharacters
+                        || isLoadingImages
                 )
                 .accessibilityIdentifier("feedback.submit")
             }
@@ -109,6 +167,9 @@ struct FeedbackReportView: View {
                     String(submittedID.prefix(12))
                 ))
             }
+        }
+        .onChange(of: selectedPhotoItems) { _, items in
+            Task { await loadImages(items) }
         }
     }
 
@@ -134,7 +195,8 @@ struct FeedbackReportView: View {
 
         let submission = FeedbackSubmission(
             problem: trimmedProblem,
-            diagnostics: diagnostics
+            diagnostics: diagnostics,
+            imageAttachments: imageAttachments
         )
         do {
             let receipt = try await FeedbackUploadService.upload(submission)
@@ -143,6 +205,32 @@ struct FeedbackReportView: View {
         } catch {
             errorMessage = error.localizedDescription
             pendingPackageURL = try? PendingFeedbackReportStore.save(submission)
+        }
+    }
+
+    @MainActor
+    private func loadImages(_ items: [PhotosPickerItem]) async {
+        guard !items.isEmpty else { return }
+        isLoadingImages = true
+        errorMessage = nil
+        defer { isLoadingImages = false }
+        do {
+            var processed: [FeedbackImageAttachment] = []
+            for (index, item) in items.prefix(FeedbackUploadService.maximumImageCount).enumerated() {
+                guard let data = try await item.loadTransferable(type: Data.self) else {
+                    throw FeedbackUploadError.invalidImage
+                }
+                processed.append(try FeedbackImageProcessor.makeAttachment(data: data, index: index))
+            }
+            guard processed.reduce(0, { $0 + $1.data.count })
+                    <= FeedbackUploadService.maximumTotalImageBytes else {
+                throw FeedbackUploadError.imageTooLarge
+            }
+            imageAttachments = processed
+        } catch {
+            imageAttachments = []
+            selectedPhotoItems = []
+            errorMessage = error.localizedDescription
         }
     }
 }

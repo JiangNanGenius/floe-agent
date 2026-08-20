@@ -325,6 +325,7 @@ struct ThreadComposerView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 modelPicker
+                reasoningPicker
                 projectPicker
                 targetPicker
                 modePicker
@@ -415,6 +416,56 @@ struct ThreadComposerView: View {
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(FloeTheme.pending)
             }
+        }
+    }
+
+    /// WorkBuddy-style quick control kept beside the model selector. The
+    /// persisted value is still model-scoped so every provider adapter can
+    /// translate it to its own supported wire fields.
+    @ViewBuilder
+    private var reasoningPicker: some View {
+        if let model = models.first(where: { $0.id == selectedModelID }) {
+            Menu {
+                ForEach(ModelReasoningEffort.allCases) { effort in
+                    Button {
+                        Task { await updateReasoningEffort(effort, for: model) }
+                    } label: {
+                        if model.effectiveReasoningEffort == effort {
+                            Label(reasoningTitle(effort), systemImage: "checkmark")
+                        } else {
+                            Text(reasoningTitle(effort))
+                        }
+                    }
+                }
+            } label: {
+                composerChip(
+                    title: reasoningTitle(model.effectiveReasoningEffort),
+                    systemImage: "brain.head.profile"
+                )
+            }
+            .accessibilityLabel("model.reasoning.effort")
+            .accessibilityIdentifier("composer.reasoning_effort")
+        }
+    }
+
+    @MainActor
+    private func updateReasoningEffort(_ effort: ModelReasoningEffort, for model: ModelProfile) async {
+        var updated = model
+        updated.reasoningEffort = effort == .automatic ? nil : effort
+        do {
+            try await environment.conversationCenter.saveModel(updated)
+        } catch {
+            attachmentError = error.localizedDescription
+        }
+    }
+
+    private func reasoningTitle(_ effort: ModelReasoningEffort) -> String {
+        switch effort {
+        case .automatic: String(localized: "model.reasoning.automatic")
+        case .low: String(localized: "model.reasoning.low")
+        case .medium: String(localized: "model.reasoning.medium")
+        case .high: String(localized: "model.reasoning.high")
+        case .maximum: String(localized: "model.reasoning.maximum")
         }
     }
 

@@ -313,8 +313,8 @@ private enum ConfigurationCodec {
                 INSERT INTO models (
                     id, provider_id, remote_model_id, display_name,
                     context_tokens, max_output_tokens, pricing_json,
-                    capabilities, is_enabled
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    capabilities, reasoning_effort, is_enabled
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     provider_id = excluded.provider_id,
                     remote_model_id = excluded.remote_model_id,
@@ -323,13 +323,15 @@ private enum ConfigurationCodec {
                     max_output_tokens = excluded.max_output_tokens,
                     pricing_json = excluded.pricing_json,
                     capabilities = excluded.capabilities,
+                    reasoning_effort = excluded.reasoning_effort,
                     is_enabled = excluded.is_enabled
                 """,
             arguments: [
                 canonical.id.uuidString, canonical.providerID.uuidString,
                 canonical.remoteModelID, canonical.displayName,
                 canonical.limits.contextTokens, canonical.limits.maxOutputTokens,
-                pricingJSON, canonical.capabilities.rawValue, canonical.isEnabled
+                pricingJSON, canonical.capabilities.rawValue,
+                canonical.reasoningEffort?.rawValue, canonical.isEnabled
             ]
         )
         return canonical
@@ -361,6 +363,7 @@ private enum ConfigurationCodec {
             ),
             pricing: pricing,
             capabilities: ModelCapabilities(rawValue: row["capabilities"]),
+            reasoningEffort: (row["reasoning_effort"] as String?).flatMap(ModelReasoningEffort.init(rawValue:)),
             isEnabled: row["is_enabled"]
         )
     }

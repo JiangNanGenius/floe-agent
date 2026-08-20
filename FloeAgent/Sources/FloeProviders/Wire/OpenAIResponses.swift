@@ -13,6 +13,7 @@ public struct ResponsesRequest: Sendable, Codable, Hashable {
     public var input: [InputItem]
     public var tools: [ToolDefinition]
     public var maxOutputTokens: Int?
+    public var reasoning: Reasoning?
     public var stream: Bool
 
     public init(
@@ -20,13 +21,23 @@ public struct ResponsesRequest: Sendable, Codable, Hashable {
         input: [InputItem],
         tools: [ToolDefinition] = [],
         maxOutputTokens: Int? = nil,
+        reasoning: Reasoning? = nil,
         stream: Bool = true
     ) {
         self.model = model
         self.input = input
         self.tools = tools
         self.maxOutputTokens = maxOutputTokens
+        self.reasoning = reasoning
         self.stream = stream
+    }
+
+    public struct Reasoning: Sendable, Codable, Hashable {
+        public var effort: String
+
+        public init(effort: String) {
+            self.effort = effort
+        }
     }
 
     public enum InputItem: Sendable, Hashable {
@@ -153,7 +164,7 @@ public struct ResponsesRequest: Sendable, Codable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case model, input, tools, stream
+        case model, input, tools, reasoning, stream
         case maxOutputTokens = "max_output_tokens"
     }
 }

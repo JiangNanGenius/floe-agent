@@ -104,7 +104,7 @@ struct ImageAdapterTests {
 
         let alibaba = AlibabaImageAdapter()
         #expect(alibaba.supportedOperations(for: provider(kind: .alibabaStudio)).contains(.generate))
-        #expect(!alibaba.supportedOperations(for: provider(kind: .alibabaStudio)).contains(.edit))
+        #expect(alibaba.supportedOperations(for: provider(kind: .alibabaStudio)).contains(.edit))
     }
 
     @Test("Unsupported operations throw unsupportedOperation, never fabricate")
@@ -122,8 +122,51 @@ struct ImageAdapterTests {
         let adapter = AlibabaImageAdapter()
         let alibabaProvider = provider(kind: .alibabaStudio)
         #expect(adapter.supports(.generate, for: alibabaProvider))
-        #expect(!adapter.supports(.edit, for: alibabaProvider))
+        #expect(adapter.supports(.edit, for: alibabaProvider))
         #expect(!adapter.supports(.removeBackground, for: alibabaProvider))
+    }
+
+    @Test("DashScope current image models use multimodal generation for editing")
+    func dashScopeMultimodalEditingContract() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ImageAdapterURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        ImageAdapterURLProtocol.prepare([
+            .init(statusCode: 200, body: Data(#"{"output":{"choices":[{"message":{"content":[]}}]}}"#.utf8))
+        ])
+
+        let adapter = AlibabaImageAdapter(session: session)
+        let profile = ProviderProfile(
+            kind: .alibabaStudio,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")!
+        )
+        await #expect(throws: RemoteImageError.self) {
+            _ = try await adapter.perform(
+                RemoteImageRequest(
+                    operation: .edit,
+                    prompt: "make it warmer",
+                    sourceImages: [Data([0x89, 0x50, 0x4E, 0x47, 0x01])],
+                    modelRemoteID: "wan2.7-image"
+                ),
+                provider: profile,
+                credentials: ProviderCredentials(apiKey: "test-key")
+            )
+        }
+
+        let request = try #require(ImageAdapterURLProtocol.snapshotRequests().first)
+        #expect(request.url?.path == "/api/v1/services/aigc/multimodal-generation/generation")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+        #expect(request.value(forHTTPHeaderField: "X-DashScope-Async") == nil)
+        let body = try #require(request.httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["model"] as? String == "wan2.7-image")
+        let input = try #require(json["input"] as? [String: Any])
+        let messages = try #require(input["messages"] as? [[String: Any]])
+        let content = try #require(messages.first?["content"] as? [[String: Any]])
+        #expect(content.first?["text"] as? String == "make it warmer")
+        #expect((content.dropFirst().first?["image"] as? String)?.hasPrefix("data:image/png;base64,") == true)
     }
 
     @Test("Alibaba legacy image models use the image-synthesis protocol")

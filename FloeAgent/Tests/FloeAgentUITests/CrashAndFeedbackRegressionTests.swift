@@ -56,6 +56,51 @@ struct CrashAndFeedbackRegressionTests {
         #expect(!body.contains("eyJhbGciOiJ9.payload"))
     }
 
+    @Test("Feedback images are bounded multipart attachments")
+    func feedbackImagesAreMultipartAttachments() throws {
+        let jpeg = Data([0xFF, 0xD8, 0x01, 0x02, 0xFF, 0xD9])
+        let attachment = FeedbackImageAttachment(
+            id: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
+            filename: "screen\r\nshot.jpg",
+            data: jpeg
+        )
+        let request = try FeedbackUploadService.makeRequest(
+            FeedbackSubmission(
+                problem: "The model request failed",
+                diagnostics: "provider error",
+                imageAttachments: [attachment]
+            ),
+            boundary: "ImageBoundary"
+        )
+        let body = try #require(request.httpBody)
+        let headers = String(decoding: body, as: UTF8.self)
+
+        #expect(headers.contains("name=\"attachments\""))
+        #expect(headers.contains("filename=\"screen__shot.jpg\""))
+        #expect(headers.contains("Content-Type: image/jpeg"))
+        #expect(headers.contains("X-Floe-Attachment-ID: AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
+        #expect(body.range(of: jpeg) != nil)
+        #expect(headers.contains("\"image_attachment_count\":\"1\""))
+    }
+
+    @Test("Feedback rejects more than three images")
+    func feedbackRejectsTooManyImages() {
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xD9])
+        let attachments = (0..<4).map {
+            FeedbackImageAttachment(filename: "image-\($0).jpg", data: jpeg)
+        }
+        #expect(throws: FeedbackUploadError.tooManyImages) {
+            _ = try FeedbackUploadService.makeRequest(
+                FeedbackSubmission(
+                    problem: "Too many screenshots",
+                    diagnostics: nil,
+                    imageAttachments: attachments
+                ),
+                boundary: "ImageBoundary"
+            )
+        }
+    }
+
     @Test("Feedback requires a user-written problem")
     func feedbackRequiresProblem() {
         #expect(throws: FeedbackUploadError.emptyProblem) {

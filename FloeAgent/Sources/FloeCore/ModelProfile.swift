@@ -71,6 +71,19 @@ public struct PricingMetadata: Sendable, Codable, Hashable {
     }
 }
 
+/// Provider-neutral user intent for how much reasoning work a model should
+/// perform. Adapters translate this value to their native protocol and omit it
+/// when the selected endpoint/model family is not known to support the field.
+public enum ModelReasoningEffort: String, Sendable, Codable, CaseIterable, Hashable, Identifiable {
+    case automatic
+    case low
+    case medium
+    case high
+    case maximum
+
+    public var id: String { rawValue }
+}
+
 /// One selectable model exposed by a provider.
 public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
     public var id: UUID
@@ -81,6 +94,9 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
     public var limits: ModelLimits
     public var pricing: PricingMetadata?
     public var capabilities: ModelCapabilities
+    /// Optional keeps older CloudKit/config payloads source-compatible;
+    /// `nil` has the same meaning as `.automatic`.
+    public var reasoningEffort: ModelReasoningEffort?
     public var isEnabled: Bool
 
     public init(
@@ -91,6 +107,7 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
         limits: ModelLimits,
         pricing: PricingMetadata? = nil,
         capabilities: ModelCapabilities = [.text],
+        reasoningEffort: ModelReasoningEffort? = nil,
         isEnabled: Bool = true
     ) {
         self.id = id
@@ -100,6 +117,11 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
         self.limits = limits
         self.pricing = pricing
         self.capabilities = capabilities
+        self.reasoningEffort = reasoningEffort
         self.isEnabled = isEnabled
+    }
+
+    public var effectiveReasoningEffort: ModelReasoningEffort {
+        reasoningEffort ?? .automatic
     }
 }

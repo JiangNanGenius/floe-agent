@@ -47,6 +47,18 @@ struct ModelEditorView: View {
                     capabilityToggle("model.capability.approval", capability: .approval)
                 }
                 Section {
+                    Picker("model.reasoning.effort", selection: reasoningEffort) {
+                        ForEach(ModelReasoningEffort.allCases) { effort in
+                            Text(effort.localizedTitle).tag(effort)
+                        }
+                    }
+                    .accessibilityIdentifier("model.reasoning_effort")
+                } header: {
+                    Text("model.section.reasoning")
+                } footer: {
+                    Text("model.reasoning.hint")
+                }
+                Section {
                     TokenLimitPicker(
                         title: "model.context_tokens",
                         value: $model.limits.contextTokens,
@@ -95,6 +107,25 @@ struct ModelEditorView: View {
                 else { model.capabilities.remove(capability) }
             }
         ))
+    }
+
+    private var reasoningEffort: Binding<ModelReasoningEffort> {
+        Binding(
+            get: { model.effectiveReasoningEffort },
+            set: { model.reasoningEffort = $0 == .automatic ? nil : $0 }
+        )
+    }
+}
+
+private extension ModelReasoningEffort {
+    var localizedTitle: LocalizedStringKey {
+        switch self {
+        case .automatic: "model.reasoning.automatic"
+        case .low: "model.reasoning.low"
+        case .medium: "model.reasoning.medium"
+        case .high: "model.reasoning.high"
+        case .maximum: "model.reasoning.maximum"
+        }
     }
 }
 

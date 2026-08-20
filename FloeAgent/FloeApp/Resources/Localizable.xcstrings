@@ -2876,6 +2876,55 @@
         }
       }
     },
+    "model.reasoning.automatic": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Automatic" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "自动" } }
+      }
+    },
+    "model.reasoning.effort": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Thinking depth" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "思考深度" } }
+      }
+    },
+    "model.reasoning.high": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Deep" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "深入" } }
+      }
+    },
+    "model.reasoning.hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Floe maps this setting to each provider's native reasoning controls. Automatic preserves the provider default; unsupported fields are omitted." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Floe 会按供应商协议转换该设置。自动会保留供应商默认行为；不支持的参数不会发送。" } }
+      }
+    },
+    "model.reasoning.low": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Fast" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "快速" } }
+      }
+    },
+    "model.reasoning.maximum": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Maximum" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "最大" } }
+      }
+    },
+    "model.reasoning.medium": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Balanced" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "标准" } }
+      }
+    },
     "model.section.capabilities": {
       "extractionState": "manual",
       "localizations": {
@@ -2925,6 +2974,13 @@
             "value": "Token 限制"
           }
         }
+      }
+    },
+    "model.section.reasoning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Reasoning" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "推理设置" } }
       }
     },
     "model.set_default": {
@@ -4318,6 +4374,20 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "提交前请先描述你遇到的问题。" } }
       }
     },
+    "feedback.error.image_too_large": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The selected images are too large to upload." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "所选图片过大，无法上传。" } }
+      }
+    },
+    "feedback.error.invalid_image": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "One of the selected files is not a supported image." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "所选文件中包含不支持的图片。" } }
+      }
+    },
     "feedback.error.invalid_response": {
       "extractionState": "manual",
       "localizations": {
@@ -4330,6 +4400,48 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "The feedback service rejected the report (HTTP %d)." } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "反馈服务拒绝了报告（HTTP %d）。" } }
+      }
+    },
+    "feedback.error.too_many_images": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Attach no more than three images." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "最多只能附加三张图片。" } }
+      }
+    },
+    "feedback.images.add": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Add Screenshots" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "添加截图" } }
+      }
+    },
+    "feedback.images.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Up to three images. Floe resizes them and removes location and camera metadata before upload." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "最多三张。上传前会缩放图片并移除位置、相机等元数据。" } }
+      }
+    },
+    "feedback.images.processing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Preparing images…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在处理图片…" } }
+      }
+    },
+    "feedback.images.remove": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Remove image" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "移除图片" } }
+      }
+    },
+    "feedback.images.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Screenshots" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "问题截图" } }
       }
     },
     "feedback.logs.footer": {

@@ -4,17 +4,45 @@
 
 #if canImport(UIKit)
 import Foundation
+import ImageIO
+import UIKit
 import FloeCore
+
+struct FeedbackImageAttachment: Sendable, Equatable, Codable, Identifiable {
+    let id: UUID
+    let filename: String
+    let mimeType: String
+    let data: Data
+
+    init(
+        id: UUID = UUID(),
+        filename: String,
+        mimeType: String = "image/jpeg",
+        data: Data
+    ) {
+        self.id = id
+        self.filename = filename
+        self.mimeType = mimeType
+        self.data = data
+    }
+}
 
 struct FeedbackSubmission: Sendable, Equatable, Codable {
     let id: UUID
     let problem: String
     let diagnostics: String?
+    let imageAttachments: [FeedbackImageAttachment]
 
-    init(id: UUID = UUID(), problem: String, diagnostics: String?) {
+    init(
+        id: UUID = UUID(),
+        problem: String,
+        diagnostics: String?,
+        imageAttachments: [FeedbackImageAttachment] = []
+    ) {
         self.id = id
         self.problem = problem.trimmingCharacters(in: .whitespacesAndNewlines)
         self.diagnostics = diagnostics
+        self.imageAttachments = imageAttachments
     }
 }
 
@@ -24,6 +52,9 @@ struct FeedbackUploadReceipt: Sendable, Equatable {
 
 enum FeedbackUploadError: LocalizedError, Equatable {
     case emptyProblem
+    case invalidImage
+    case imageTooLarge
+    case tooManyImages
     case invalidResponse
     case rejected(statusCode: Int)
 
@@ -31,6 +62,12 @@ enum FeedbackUploadError: LocalizedError, Equatable {
         switch self {
         case .emptyProblem:
             String(localized: "feedback.error.empty")
+        case .invalidImage:
+            String(localized: "feedback.error.invalid_image")
+        case .imageTooLarge:
+            String(localized: "feedback.error.image_too_large")
+        case .tooManyImages:
+            String(localized: "feedback.error.too_many_images")
         case .invalidResponse:
             String(localized: "feedback.error.invalid_response")
         case .rejected(let statusCode):
@@ -42,6 +79,9 @@ enum FeedbackUploadError: LocalizedError, Equatable {
 enum FeedbackUploadService {
     static let endpoint = URL(string: "https://www.floe-agent.com/api/v1/public/reports")!
     static let maximumProblemCharacters = 8_000
+    static let maximumImageCount = 3
+    static let maximumImageBytes = 2 * 1_024 * 1_024
+    static let maximumTotalImageBytes = 6 * 1_024 * 1_024
     // The service accepts at most twenty 8 KiB events. Reserve one event for
     // the report summary and keep every diagnostics chunk comfortably below
     // the server's UTF-8 byte limit.
@@ -76,6 +116,17 @@ enum FeedbackUploadService {
         guard !submission.problem.isEmpty else {
             throw FeedbackUploadError.emptyProblem
         }
+        guard submission.imageAttachments.count <= maximumImageCount else {
+            throw FeedbackUploadError.tooManyImages
+        }
+        guard submission.imageAttachments.allSatisfy({
+            $0.mimeType == "image/jpeg" && isJPEG($0.data) && $0.data.count <= maximumImageBytes
+        }) else {
+            throw FeedbackUploadError.invalidImage
+        }
+        guard submission.imageAttachments.reduce(0, { $0 + $1.data.count }) <= maximumTotalImageBytes else {
+            throw FeedbackUploadError.imageTooLarge
+        }
 
         let redactedProblem = SecretRedactor.redact(
             String(submission.problem.prefix(maximumProblemCharacters))
@@ -99,7 +150,10 @@ enum FeedbackUploadService {
             osVersion: os,
             deviceModel: deviceModel,
             sessionID: submission.id.uuidString,
-            metadata: ["diagnostics_included": diagnostics == nil ? "false" : "true"]
+            metadata: [
+                "diagnostics_included": diagnostics == nil ? "false" : "true",
+                "image_attachment_count": String(submission.imageAttachments.count)
+            ]
         )]
         if let diagnostics {
             for (index, chunk) in utf8Chunks(diagnostics, maximumBytes: diagnosticsChunkBytes).prefix(19).enumerated() {
@@ -131,11 +185,21 @@ enum FeedbackUploadService {
         body.appendUTF8("Content-Type: application/json; charset=utf-8\r\n\r\n")
         body.appendUTF8(manifestString)
         body.appendUTF8("\r\n")
+        for attachment in submission.imageAttachments {
+            body.appendUTF8("--\(boundary)\r\n")
+            body.appendUTF8(
+                "Content-Disposition: form-data; name=\"attachments\"; filename=\"\(safeFilename(attachment.filename))\"\r\n"
+            )
+            body.appendUTF8("Content-Type: image/jpeg\r\n")
+            body.appendUTF8("X-Floe-Attachment-ID: \(attachment.id.uuidString)\r\n\r\n")
+            body.append(attachment.data)
+            body.appendUTF8("\r\n")
+        }
         body.appendUTF8("--\(boundary)--\r\n")
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.timeoutInterval = 30
+        request.timeoutInterval = 60
         request.setValue(
             "multipart/form-data; boundary=\(boundary)",
             forHTTPHeaderField: "Content-Type"
@@ -156,6 +220,21 @@ enum FeedbackUploadService {
         return withUnsafePointer(to: &system.machine) {
             $0.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) }
         }
+    }
+
+    private static func safeFilename(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        let scalars = value.unicodeScalars.map { allowed.contains($0) ? Character(String($0)) : "_" }
+        let sanitized = String(scalars).prefix(96)
+        return sanitized.isEmpty ? "feedback-image.jpg" : String(sanitized)
+    }
+
+    private static func isJPEG(_ data: Data) -> Bool {
+        data.count >= 4
+            && data[data.startIndex] == 0xFF
+            && data[data.index(after: data.startIndex)] == 0xD8
+            && data[data.index(data.endIndex, offsetBy: -2)] == 0xFF
+            && data[data.index(before: data.endIndex)] == 0xD9
     }
 
     private static func utf8Chunks(_ value: String, maximumBytes: Int) -> [String] {
@@ -212,7 +291,8 @@ enum PendingFeedbackReportStore {
         let safe = FeedbackSubmission(
             id: submission.id,
             problem: SecretRedactor.redact(submission.problem),
-            diagnostics: submission.diagnostics.map { SecretRedactor.redact($0) }
+            diagnostics: submission.diagnostics.map { SecretRedactor.redact($0) },
+            imageAttachments: submission.imageAttachments
         )
         let url = root.appendingPathComponent("report-\(submission.id.uuidString).json")
         try JSONEncoder().encode(safe).write(to: url, options: [.atomic, .completeFileProtection])
@@ -229,6 +309,37 @@ enum PendingFeedbackReportStore {
         try? FileManager.default.removeItem(
             at: root.appendingPathComponent("FloeAgent/PendingFeedback/report-\(id.uuidString).json")
         )
+    }
+}
+
+/// Converts a Photos picker result into a bounded JPEG before upload. The
+/// re-encode strips EXIF/location metadata while preserving a useful screenshot
+/// resolution and keeps the report within the server's multipart limits.
+enum FeedbackImageProcessor {
+    static func makeAttachment(data: Data, index: Int) throws -> FeedbackImageAttachment {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            throw FeedbackUploadError.invalidImage
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 2_048,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            throw FeedbackUploadError.invalidImage
+        }
+        let image = UIImage(cgImage: thumbnail)
+        for quality in [0.82, 0.68, 0.52, 0.38] {
+            guard let encoded = image.jpegData(compressionQuality: quality) else { continue }
+            if encoded.count <= FeedbackUploadService.maximumImageBytes {
+                return FeedbackImageAttachment(
+                    filename: "feedback-image-\(index + 1).jpg",
+                    data: encoded
+                )
+            }
+        }
+        throw FeedbackUploadError.imageTooLarge
     }
 }
 

@@ -130,7 +130,11 @@ public extension ProviderPreset {
     static let alibabaStudio = ProviderPreset(
         id: .alibabaStudio,
         kind: .alibabaStudio,
-        displayName: "Alibaba Model Studio",
+        // DashScope is the public API/SDK name users encounter when creating
+        // keys and reading the image API documentation. Keep the persisted
+        // enum case for database compatibility, but use the recognizable API
+        // product name in the UI.
+        displayName: "DashScope（阿里云百炼）",
         defaultProtocol: .openAIChatCompletions,
         supportedProtocols: [.openAIChatCompletions],
         defaultBaseURL: URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")!,

@@ -324,12 +324,11 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
     }
 }
 
-// MARK: - Alibaba Model Studio
+// MARK: - DashScope (Alibaba Cloud Model Studio)
 
-/// Alibaba Model Studio (DashScope) image endpoints. Text-to-image generation
-/// runs through DashScope's asynchronous task API: submit an `image-synthesis`
-/// job, poll `/tasks/{id}` until it succeeds, then download the results.
-/// Editing is not exposed by this adapter.
+/// DashScope image endpoints. Current Wan image models use the multimodal
+/// generation endpoint for both generation and editing; older text-to-image
+/// models continue through the asynchronous task API.
 public struct AlibabaImageAdapter: ImageProviderAdapter {
     private let session: URLSession
 
@@ -346,7 +345,7 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
     private static let maximumImageBytes = 12 * 1_024 * 1_024
 
     public func supportedOperations(for provider: ProviderProfile) -> Set<RemoteImageOperation> {
-        [.generate]
+        [.generate, .edit]
     }
 
     public func perform(
@@ -354,14 +353,28 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
         provider: ProviderProfile,
         credentials: ProviderCredentials
     ) async throws -> RemoteImageResult {
-        guard supports(request.operation, for: provider), request.operation == .generate else {
-            throw RemoteImageError.unsupportedOperation(request.operation, provider: "Alibaba Model Studio")
+        guard supports(request.operation, for: provider) else {
+            throw RemoteImageError.unsupportedOperation(request.operation, provider: "DashScope")
         }
         guard let model = request.modelRemoteID, !model.isEmpty else {
-            throw RemoteImageError.requestFailed("Alibaba image model ID is required")
+            throw RemoteImageError.requestFailed("DashScope image model ID is required")
         }
 
         let root = Self.dashScopeRoot(from: provider.baseURL)
+        if Self.usesMultimodalImageProtocol(model) {
+            return try await performMultimodal(
+                request,
+                model: model,
+                root: root,
+                provider: provider,
+                credentials: credentials
+            )
+        }
+        guard request.operation == .generate else {
+            throw RemoteImageError.requestFailed(
+                "DashScope model \(model) does not expose image editing; use wan2.6-image or newer"
+            )
+        }
         let taskID = try await submitTask(
             request,
             model: model,
@@ -377,7 +390,89 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
         )
         let images = try await downloadImages(imageURLs, providerHost: root.host)
         guard !images.isEmpty else {
-            throw RemoteImageError.invalidResponse("Alibaba returned no images")
+            throw RemoteImageError.invalidResponse("DashScope returned no images")
+        }
+        return RemoteImageResult(images: images, metadata: ["model": model])
+    }
+
+    // MARK: - Current multimodal generation/editing
+
+    private struct MultimodalBody: Encodable {
+        struct Input: Encodable {
+            struct Message: Encodable {
+                struct Content: Encodable {
+                    var text: String?
+                    var image: String?
+                }
+                var role: String
+                var content: [Content]
+            }
+            var messages: [Message]
+        }
+        struct Parameters: Encodable {
+            var prompt_extend: Bool
+            var watermark: Bool
+            var n: Int
+            var enable_interleave: Bool
+            var size: String
+        }
+
+        var model: String
+        var input: Input
+        var parameters: Parameters
+    }
+
+    private func performMultimodal(
+        _ request: RemoteImageRequest,
+        model: String,
+        root: URL,
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws -> RemoteImageResult {
+        if request.operation == .edit, request.sourceImages.isEmpty {
+            throw RemoteImageError.requestFailed("DashScope image editing requires a source image")
+        }
+        var content = [MultimodalBody.Input.Message.Content(
+            text: request.prompt,
+            image: nil
+        )]
+        content.append(contentsOf: request.sourceImages.prefix(4).map {
+            .init(text: nil, image: Self.imageDataURL($0))
+        })
+        let body = MultimodalBody(
+            model: model,
+            input: .init(messages: [.init(role: "user", content: content)]),
+            parameters: .init(
+                prompt_extend: true,
+                watermark: false,
+                n: max(1, min(request.count, 4)),
+                enable_interleave: false,
+                size: Self.normalizedSize(request.sizeHint, defaultValue: "2K")
+            )
+        )
+        let apiURL = root
+            .appendingPathComponent("api").appendingPathComponent("v1")
+            .appendingPathComponent("services").appendingPathComponent("aigc")
+            .appendingPathComponent("multimodal-generation").appendingPathComponent("generation")
+        let urlRequest = try RemoteImageHTTP.post(
+            url: apiURL,
+            apiKey: credentials.apiKey,
+            authHeader: "Authorization",
+            extraHeaders: provider.nonSecretHeaders,
+            body: body
+        )
+        let (data, response) = try await BoundedHTTP.data(
+            for: urlRequest,
+            session: session,
+            maxBytes: 2 * 1_024 * 1_024
+        )
+        try RemoteImageHTTP.validate(
+            response, data: data, provider: "DashScope", apiKey: credentials.apiKey
+        )
+        let urls = try Self.multimodalImageURLs(from: data)
+        let images = try await downloadImages(urls, providerHost: root.host)
+        guard !images.isEmpty else {
+            throw RemoteImageError.invalidResponse("DashScope returned no images")
         }
         return RemoteImageResult(images: images, metadata: ["model": model])
     }
@@ -483,12 +578,12 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             maxBytes: 1_048_576
         )
         try RemoteImageHTTP.validate(
-            response, data: data, provider: "Alibaba Model Studio", apiKey: credentials.apiKey
+            response, data: data, provider: "DashScope", apiKey: credentials.apiKey
         )
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         guard let output = object?["output"] as? [String: Any],
               let taskID = output["task_id"] as? String, !taskID.isEmpty else {
-            throw RemoteImageError.invalidResponse("Alibaba task submission returned no task ID")
+            throw RemoteImageError.invalidResponse("DashScope task submission returned no task ID")
         }
         return taskID
     }
@@ -521,7 +616,7 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
                 maxBytes: 1_048_576
             )
             try RemoteImageHTTP.validate(
-                response, data: data, provider: "Alibaba Model Studio", apiKey: credentials.apiKey
+                response, data: data, provider: "DashScope", apiKey: credentials.apiKey
             )
             let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             let output = object?["output"] as? [String: Any]
@@ -533,12 +628,12 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
                     ($0["url"] as? String).flatMap(URL.init(string:))
                 }
             case "FAILED", "CANCELED", "CANCELLED":
-                throw RemoteImageError.requestFailed("Alibaba image task \(status)")
+                throw RemoteImageError.requestFailed("DashScope image task \(status)")
             default:
                 try await Task.sleep(nanoseconds: Self.pollIntervalNanoseconds)
             }
         }
-        throw RemoteImageError.requestFailed("Alibaba image task timed out")
+        throw RemoteImageError.requestFailed("DashScope image task timed out")
     }
 
     // MARK: - Download
@@ -548,7 +643,7 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
         for url in urls.prefix(4) {
             try Task.checkCancellation()
             guard Self.isAllowedResultURL(url, providerHost: providerHost) else {
-                throw RemoteImageError.invalidResponse("Alibaba returned an unsafe image URL")
+                throw RemoteImageError.invalidResponse("DashScope returned an unsafe image URL")
             }
             let request = URLRequest(url: url)
             let delegate = SafeImageRedirectDelegate(
@@ -563,7 +658,7 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode),
                   http.mimeType?.lowercased().hasPrefix("image/") == true else {
-                throw RemoteImageError.invalidResponse("Alibaba image download returned a non-image response")
+                throw RemoteImageError.invalidResponse("DashScope image download returned a non-image response")
             }
             images.append(imageData)
         }
@@ -586,6 +681,31 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
     /// `1024x1024` spelling so a user-entered hint still parses.
     private static func usesWan26Protocol(_ model: String) -> Bool {
         model.lowercased().hasPrefix("wan2.6-t2i")
+    }
+
+    private static func usesMultimodalImageProtocol(_ model: String) -> Bool {
+        let normalized = model.lowercased()
+        return normalized.hasPrefix("wan2.6-image")
+            || normalized.hasPrefix("wan2.7-image")
+            || normalized.hasPrefix("qwen-image-3")
+    }
+
+    private static func imageDataURL(_ data: Data) -> String {
+        let mime = data.starts(with: [0x89, 0x50, 0x4E, 0x47]) ? "image/png" : "image/jpeg"
+        return "data:\(mime);base64,\(data.base64EncodedString())"
+    }
+
+    private static func multimodalImageURLs(from data: Data) throws -> [URL] {
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let output = object?["output"] as? [String: Any]
+        let choices = output?["choices"] as? [[String: Any]] ?? []
+        return choices.flatMap { choice -> [URL] in
+            let message = choice["message"] as? [String: Any]
+            let content = message?["content"] as? [[String: Any]] ?? []
+            return content.compactMap { item in
+                (item["image"] as? String).flatMap(URL.init(string:))
+            }
+        }
     }
 
     private static func isAllowedResultURL(_ url: URL, providerHost: String?) -> Bool {

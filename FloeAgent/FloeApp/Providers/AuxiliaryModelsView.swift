@@ -250,7 +250,9 @@ private struct AuxiliaryModelEditorView: View {
     @State private var dedicatedKind: ProviderKind = .volcengineArk
     private let adapterFactory = ImageProviderAdapterFactory()
 
-    private var compatibleProviders: [ProviderProfile] { center.providers }
+    private var compatibleProviders: [ProviderProfile] {
+        center.providers.filter { adapterFactory.adapter(for: $0) != nil }
+    }
 
     private var supportedOperations: Set<RemoteImageOperation> {
         if useDedicatedEndpoint,
@@ -271,10 +273,14 @@ private struct AuxiliaryModelEditorView: View {
                     Toggle("使用独立端点", isOn: $useDedicatedEndpoint)
                     if useDedicatedEndpoint {
                         Picker("服务商", selection: $dedicatedKind) {
-                            Text("OpenAI").tag(ProviderKind.openAI)
-                            Text("Volcengine Ark").tag(ProviderKind.volcengineArk)
-                            Text("Alibaba Model Studio").tag(ProviderKind.alibabaStudio)
+                            ForEach(Self.imageProviderKinds, id: \.self) { kind in
+                                Text(Self.imageProviderName(kind)).tag(kind)
+                            }
                         }
+                        .pickerStyle(.segmented)
+                        Text(Self.imageProviderHint(dedicatedKind))
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(.secondary)
                         TextField("providers.display_name", text: $dedicatedName)
                         TextField("providers.base_url", text: $dedicatedBaseURL)
                             .textInputAutocapitalization(.never)
@@ -357,12 +363,12 @@ private struct AuxiliaryModelEditorView: View {
             }
             .onChange(of: useDedicatedEndpoint) { _, enabled in
                 if enabled && dedicatedBaseURL.isEmpty {
-                    dedicatedBaseURL = ProviderPreset.preset(for: dedicatedKind).defaultBaseURL.absoluteString
+                    applyDedicatedPreset(for: dedicatedKind, replacesModel: remoteModelID.isEmpty)
                 }
                 applySupportedOperations()
             }
             .onChange(of: dedicatedKind) { _, kind in
-                dedicatedBaseURL = ProviderPreset.preset(for: kind).defaultBaseURL.absoluteString
+                applyDedicatedPreset(for: kind, replacesModel: true)
                 applySupportedOperations()
             }
         }
@@ -467,6 +473,45 @@ private struct AuxiliaryModelEditorView: View {
         supportsGeneration = supportedOperations.contains(.generate)
         supportsEditing = supportedOperations.contains(.edit)
         if supportedOperations.isEmpty { supportsVision = true }
+    }
+
+    private func applyDedicatedPreset(for kind: ProviderKind, replacesModel: Bool) {
+        dedicatedBaseURL = ProviderPreset.preset(for: kind).defaultBaseURL.absoluteString
+        dedicatedName = Self.imageProviderName(kind)
+        guard replacesModel else { return }
+        remoteModelID = Self.defaultImageModel(for: kind)
+        displayName = remoteModelID
+    }
+
+    private static let imageProviderKinds: [ProviderKind] = [
+        .openAI, .volcengineArk, .alibabaStudio
+    ]
+
+    private static func imageProviderName(_ kind: ProviderKind) -> String {
+        switch kind {
+        case .openAI: "OpenAI"
+        case .volcengineArk: "火山方舟"
+        case .alibabaStudio: "DashScope"
+        case .anthropic, .custom: ProviderPreset.preset(for: kind).displayName
+        }
+    }
+
+    private static func defaultImageModel(for kind: ProviderKind) -> String {
+        switch kind {
+        case .openAI: "gpt-image-2"
+        case .volcengineArk: "doubao-seedream-5-0-260128"
+        case .alibabaStudio: "wan2.7-image"
+        case .anthropic, .custom: ""
+        }
+    }
+
+    private static func imageProviderHint(_ kind: ProviderKind) -> String {
+        switch kind {
+        case .openAI: "OpenAI Images API，支持图片生成与编辑。"
+        case .volcengineArk: "火山方舟 Seedream，使用 Ark API Key。"
+        case .alibabaStudio: "DashScope（阿里云百炼）图像 API，API Key 与地域端点需匹配。"
+        case .anthropic, .custom: ""
+        }
     }
 
     /// Discovers models from the selected provider so the user can pick from

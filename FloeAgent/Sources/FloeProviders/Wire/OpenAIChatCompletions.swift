@@ -13,6 +13,8 @@ public struct ChatRequest: Sendable, Codable, Hashable {
     /// Omitted entirely when the selected model has tool calling disabled.
     public var tools: [ToolDefinition]?
     public var maxTokens: Int?
+    public var thinking: Thinking?
+    public var reasoningEffort: String?
     public var stream: Bool
     /// OpenAI-compatible providers only include usage in streamed responses
     /// when explicitly requested.
@@ -23,6 +25,8 @@ public struct ChatRequest: Sendable, Codable, Hashable {
         messages: [Message],
         tools: [ToolDefinition]? = nil,
         maxTokens: Int? = nil,
+        thinking: Thinking? = nil,
+        reasoningEffort: String? = nil,
         stream: Bool = true,
         streamOptions: StreamOptions? = StreamOptions(includeUsage: true)
     ) {
@@ -30,6 +34,8 @@ public struct ChatRequest: Sendable, Codable, Hashable {
         self.messages = messages
         self.tools = tools
         self.maxTokens = maxTokens
+        self.thinking = thinking
+        self.reasoningEffort = reasoningEffort
         self.stream = stream
         self.streamOptions = streamOptions
     }
@@ -40,11 +46,18 @@ public struct ChatRequest: Sendable, Codable, Hashable {
         enum CodingKeys: String, CodingKey { case includeUsage = "include_usage" }
     }
 
+    public struct Thinking: Sendable, Codable, Hashable {
+        public var type: String
+        public init(type: String) { self.type = type }
+    }
+
     public struct Message: Sendable, Codable, Hashable {
         public var role: String
         public var content: Content?
         /// Present on assistant messages that requested tools.
         public var toolCalls: [ToolCall]?
+        /// DeepSeek thinking-mode continuity for assistant tool-call turns.
+        public var reasoningContent: String?
         /// Present on tool-result messages.
         public var toolCallID: String?
 
@@ -52,11 +65,13 @@ public struct ChatRequest: Sendable, Codable, Hashable {
             role: String,
             content: String? = nil,
             toolCalls: [ToolCall]? = nil,
+            reasoningContent: String? = nil,
             toolCallID: String? = nil
         ) {
             self.role = role
             self.content = content.map(Content.text)
             self.toolCalls = toolCalls
+            self.reasoningContent = reasoningContent
             self.toolCallID = toolCallID
         }
 
@@ -64,11 +79,13 @@ public struct ChatRequest: Sendable, Codable, Hashable {
             role: String,
             contentParts: [ContentPart],
             toolCalls: [ToolCall]? = nil,
+            reasoningContent: String? = nil,
             toolCallID: String? = nil
         ) {
             self.role = role
             self.content = .parts(contentParts)
             self.toolCalls = toolCalls
+            self.reasoningContent = reasoningContent
             self.toolCallID = toolCallID
         }
 
@@ -146,6 +163,7 @@ public struct ChatRequest: Sendable, Codable, Hashable {
         enum CodingKeys: String, CodingKey {
             case role, content
             case toolCalls = "tool_calls"
+            case reasoningContent = "reasoning_content"
             case toolCallID = "tool_call_id"
         }
     }
@@ -191,8 +209,9 @@ public struct ChatRequest: Sendable, Codable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case model, messages, tools, stream
+        case model, messages, tools, thinking, stream
         case maxTokens = "max_tokens"
+        case reasoningEffort = "reasoning_effort"
         case streamOptions = "stream_options"
     }
 }

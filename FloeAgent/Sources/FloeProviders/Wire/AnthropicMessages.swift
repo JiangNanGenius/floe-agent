@@ -13,6 +13,8 @@ public struct AnthropicRequest: Sendable, Codable, Hashable {
     public var messages: [Message]
     public var system: String?
     public var tools: [ToolDefinition]
+    public var thinking: Thinking?
+    public var outputConfig: OutputConfig?
     public var stream: Bool
 
     public init(
@@ -21,6 +23,8 @@ public struct AnthropicRequest: Sendable, Codable, Hashable {
         messages: [Message],
         system: String? = nil,
         tools: [ToolDefinition] = [],
+        thinking: Thinking? = nil,
+        outputConfig: OutputConfig? = nil,
         stream: Bool = true
     ) {
         self.model = model
@@ -28,7 +32,29 @@ public struct AnthropicRequest: Sendable, Codable, Hashable {
         self.messages = messages
         self.system = system
         self.tools = tools
+        self.thinking = thinking
+        self.outputConfig = outputConfig
         self.stream = stream
+    }
+
+    public struct Thinking: Sendable, Codable, Hashable {
+        public var type: String
+        public var budgetTokens: Int?
+
+        public init(type: String, budgetTokens: Int? = nil) {
+            self.type = type
+            self.budgetTokens = budgetTokens
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case budgetTokens = "budget_tokens"
+        }
+    }
+
+    public struct OutputConfig: Sendable, Codable, Hashable {
+        public var effort: String
+        public init(effort: String) { self.effort = effort }
     }
 
     public struct Message: Sendable, Codable, Hashable {
@@ -74,8 +100,9 @@ public struct AnthropicRequest: Sendable, Codable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case model, messages, system, tools, stream
+        case model, messages, system, tools, thinking, stream
         case maxTokens = "max_tokens"
+        case outputConfig = "output_config"
     }
 }
 
@@ -201,10 +228,20 @@ enum JSONTree: Codable {
         switch foundationObject {
         case is NSNull:
             self = .null
+        case let value as NSNumber:
+            // JSONSerialization bridges both JSON booleans and numbers through
+            // NSNumber. A numeric zero also satisfies `as Bool` on Apple
+            // platforms, which previously rewrote schema constraints such as
+            // `"minimum": 0` to `"minimum": false`. objCType is `c` for the
+            // CFBoolean instances emitted by JSONSerialization; JSON numbers
+            // retain their numeric type encoding (`q`, `d`, ...).
+            if String(cString: value.objCType) == "c" {
+                self = .bool(value.boolValue)
+            } else {
+                self = .number(value.doubleValue)
+            }
         case let value as Bool:
             self = .bool(value)
-        case let value as NSNumber:
-            self = .number(value.doubleValue)
         case let value as String:
             self = .string(value)
         case let value as [Any]:

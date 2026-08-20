@@ -258,6 +258,7 @@ public actor FloeAgentRuntime {
     private var totalInputTokens = 0
     private var totalOutputTokens = 0
     private var streamText = ""
+    private var responseReasoning = ""
     private var streamTextByteCount = 0
     private var providerEventCount = 0
     private var providerPayloadBytes = 0
@@ -706,6 +707,8 @@ public actor FloeAgentRuntime {
                 (callID: $0.callID, output: $0.outputSummary)
             },
             pendingToolCalls: supportsTools ? pendingToolCalls : [],
+            pendingAssistantReasoning: pendingToolCalls.isEmpty || responseReasoning.isEmpty
+                ? nil : responseReasoning,
             toolSchemas: supportsTools ? catalogDescriptors.map {
                 ToolSchemaDescriptor(
                     name: $0.name,
@@ -722,6 +725,7 @@ public actor FloeAgentRuntime {
         )
         pendingToolResults.removeAll(keepingCapacity: true)
         pendingToolCalls.removeAll(keepingCapacity: true)
+        responseReasoning = ""
 
         let stream = adapter.stream(request: request, credentials: credentials)
         streamTask = Task { [weak self] in
@@ -844,8 +848,8 @@ public actor FloeAgentRuntime {
             info.textSoFar = streamText
             state = .streamingModel(info)
 
-        case .reasoningSummary:
-            break
+        case .reasoningSummary(let summary):
+            responseReasoning += summary.text
 
         case .usage(let report):
             totalInputTokens = report.inputTokens
