@@ -190,7 +190,11 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     }
 
     /// Synthesizes a short looping MP4 whose frames carry the run title and
-    /// progress. Real, visible content — the surface review expects.
+    /// progress. Real, visible content — the surface review expects. The asset
+    /// also carries a silent audio track: iOS keeps the app alive in the
+    /// background via the `audio` background mode only while audio is actually
+    /// playing, so a video-only PiP still gets suspended the moment it
+    /// backgrounds. The silent track satisfies that requirement.
     private func synthesizeProgressVideo(title: String, progress: String) async -> URL? {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("floe-progress-\(UUID().uuidString).mp4")
@@ -199,12 +203,12 @@ final class BackgroundVideoService: NSObject, ObservableObject {
               let cgImage = frame.cgImage else { return nil }
         do {
             let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
-            let settings: [String: Any] = [
+            let videoSettings: [String: Any] = [
                 AVVideoCodecKey: AVVideoCodecType.h264,
                 AVVideoWidthKey: Int(size.width),
                 AVVideoHeightKey: Int(size.height)
             ]
-            let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
+            let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
             let adaptor = AVAssetWriterInputPixelBufferAdaptor(
                 assetWriterInput: input,
                 sourcePixelBufferAttributes: [
@@ -213,8 +217,17 @@ final class BackgroundVideoService: NSObject, ObservableObject {
                     kCVPixelBufferHeightKey as String: Int(size.height)
                 ]
             )
-            guard writer.canAdd(input) else { return nil }
+            let audioSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 44_100,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: 64_000
+            ]
+            let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+            audioInput.expectsMediaDataInRealTime = false
+            guard writer.canAdd(input), writer.canAdd(audioInput) else { return nil }
             writer.add(input)
+            writer.add(audioInput)
             guard writer.startWriting() else { return nil }
             writer.startSession(atSourceTime: .zero)
             // 5 seconds at 2 fps = 10 frames of the same progress image.
@@ -238,12 +251,90 @@ final class BackgroundVideoService: NSObject, ObservableObject {
                     }
                 }
             }
+            // Append a silent 5s audio track so the audio background mode keeps
+            // the process alive while the PiP floats.
+            if let silent = Self.silentAudioSampleBuffer(duration: 5.0) {
+                let audioDeadline = Date().addingTimeInterval(2)
+                while !audioInput.isReadyForMoreMediaData {
+                    try Task.checkCancellation()
+                    guard writer.status == .writing, Date() < audioDeadline else {
+                        writer.cancelWriting()
+                        return nil
+                    }
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                guard audioInput.append(silent) else {
+                    writer.cancelWriting()
+                    return nil
+                }
+            }
             input.markAsFinished()
+            audioInput.markAsFinished()
             await writer.finishWriting()
             return writer.status == .completed ? url : nil
         } catch {
             return nil
         }
+    }
+
+    /// Builds a silent mono 16-bit PCM sample buffer of the given duration.
+    /// Used so the synthesized PiP video carries an audio track.
+    private static func silentAudioSampleBuffer(duration: Double, sampleRate: Double = 44_100) -> CMSampleBuffer? {
+        let sampleCount = Int(duration * sampleRate)
+        var asbd = AudioStreamBasicDescription(
+            mSampleRate: sampleRate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: 2,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 2,
+            mChannelsPerFrame: 1,
+            mBitsPerChannel: 16,
+            mReserved: 0
+        )
+        var format: CMAudioFormatDescription?
+        CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: &asbd,
+            layoutSize: 0,
+            layout: nil,
+            magicCookieSize: 0,
+            magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &format
+        )
+        guard let format else { return nil }
+        let dataSize = sampleCount * 2
+        var blockBuffer: CMBlockBuffer?
+        CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault,
+            memoryBlock: nil,
+            blockLength: dataSize,
+            blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: dataSize,
+            flags: 0,
+            blockBufferOut: &blockBuffer
+        )
+        guard let blockBuffer else { return nil }
+        // Explicitly zero the samples so the track is genuinely silent.
+        var pointer: UnsafeMutablePointer<Int8>?
+        CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: nil, dataPointerOut: &pointer)
+        if let pointer {
+            memset(pointer, 0, dataSize)
+        }
+        var sampleBuffer: CMSampleBuffer?
+        CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: blockBuffer,
+            formatDescription: format,
+            sampleCount: sampleCount,
+            presentationTimeStamp: .zero,
+            packetDescriptions: nil,
+            sampleBufferOut: &sampleBuffer
+        )
+        return sampleBuffer
     }
 
     private static func pixelBuffer(from cgImage: CGImage, size: CGSize) -> CVPixelBuffer? {

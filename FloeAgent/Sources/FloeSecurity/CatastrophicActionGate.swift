@@ -45,7 +45,7 @@ public struct CatastrophicActionGate: Sendable {
         guard let url = resolvedBundle.url(forResource: "catastrophic-patterns", withExtension: "json") else {
             throw FloeError.internalError("catastrophic-patterns.json missing from bundle")
         }
-        let data = try Data(contentsOf: url)
+        let data = try Data(floeContentsOf: url)
         struct Corpus: Codable {
             var patterns: [Pattern]
         }

@@ -7,6 +7,7 @@
 
 import Foundation
 import Crypto
+import FloeCore
 import FloeTools
 
 /// One entry in a directory listing.
@@ -242,7 +243,7 @@ public struct WorkspaceFileService: Sendable {
         }
         try guardResolver.assertReadableSize(url)
 
-        let data = try Data(contentsOf: url)
+        let data = try Data(floeContentsOf: url)
         let clampedOffset = max(0, min(byteOffset, data.count))
         let end = min(clampedOffset + Self.readChunkBytes, data.count)
         let slice = data[clampedOffset..<end]
@@ -407,7 +408,7 @@ public struct WorkspaceFileService: Sendable {
         try guardResolver.assertReadableSize(url)
 
         let hunks = try Self.parseUnifiedDiff(patch)
-        let originalData = try Data(contentsOf: url)
+        let originalData = try Data(floeContentsOf: url)
         let original = String(decoding: originalData, as: UTF8.self)
         var lines = original.components(separatedBy: "\n")
 

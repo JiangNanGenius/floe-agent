@@ -1042,6 +1042,12 @@ public actor FloeAgentRuntime {
         if !descriptor.isSideEffecting {
             decision = .allow(scope: Self.approvalScope(for: call), expiresAt: nil)
         } else {
+            // Surface "approval model is deciding" to the UI while the model
+            // takes up to its timeout to classify the action. Without this the
+            // run silently sits in streamingModel with no visible feedback.
+            if policy.policyName == "approval-model" {
+                await emit(.reasoningSummary(.init(text: "正在请审批模型判断此操作…")))
+            }
             do {
                 decision = try await policy.decide(action)
             } catch {
@@ -1603,7 +1609,12 @@ public actor FloeAgentRuntime {
         guard scope.toolName == call.toolName else { return false }
         switch call.scope {
         case .local:
-            return scope.hostID == nil && scope.paths.isEmpty
+            // Local tools have no host/path scope — path confinement is enforced
+            // by WorkspacePathGuard, not ApprovalScope. The approval card's
+            // "project" choice carries workspace paths as bookkeeping only, so it
+            // must not reject a local grant (otherwise approving a local tool
+            // "for this project" fails with a scope mismatch).
+            return scope.hostID == nil
         case .host(let hostID):
             return scope.hostID == hostID && scope.paths.isEmpty
         case .hostPath(let hostID, let path):

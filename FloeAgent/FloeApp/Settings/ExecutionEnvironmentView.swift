@@ -26,10 +26,6 @@ struct ExecutionEnvironmentView: View {
                     name: String(localized: "settings.exec.python_local"),
                     state: center.localPythonCapability
                 )
-                capabilityRow(
-                    name: String(localized: "settings.exec.python_remote"),
-                    state: center.remotePythonCapability
-                )
                 LabeledContent("settings.exec.remote_terminal") {
                     Text("settings.exec.remote_terminal.value \(center.remoteHostCount) \(center.activeRemoteSessionCount)")
                         .foregroundStyle(.secondary)
