@@ -27,7 +27,10 @@ make_framework() {
     local source="$2"
     local destination="$3"
     local origin="$4"
-    local identifier_module="${module//_/-}"
+    local supported_platform="$5"
+    local minimum_os_version="$6"
+    local identifier_module="${module#_}"
+    identifier_module="${identifier_module//_/-}"
     mkdir -p "$destination"
     cp "$source" "$destination/$module"
     install_name_tool -id "@rpath/$module.framework/$module" "$destination/$module"
@@ -38,7 +41,10 @@ make_framework() {
     /usr/libexec/PlistBuddy -c "Add :CFBundleName string $module" "$destination/Info.plist"
     /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string FMWK" "$destination/Info.plist"
     /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 3.13" "$destination/Info.plist"
+    /usr/libexec/PlistBuddy -c "Add :CFBundleSupportedPlatforms array" "$destination/Info.plist"
+    /usr/libexec/PlistBuddy -c "Add :CFBundleSupportedPlatforms:0 string $supported_platform" "$destination/Info.plist"
     /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 3.13" "$destination/Info.plist"
+    /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string $minimum_os_version" "$destination/Info.plist"
     printf '%s' "$origin" > "$destination/$module.origin"
 }
 
@@ -56,14 +62,22 @@ for module in "${modules[@]}"; do
     device_marker="$module.cpython-313-iphoneos.fwork"
     sim_marker="$module.cpython-313-iphonesimulator.fwork"
     make_framework "$module" "$device_source" "$device_framework" \
-        "python/lib/python3.13/lib-dynload/$device_marker"
+        "python/lib/python3.13/lib-dynload/$device_marker" \
+        "iPhoneOS" "13.0"
     make_framework "$module" "$sim_source" "$sim_framework" \
-        "python/lib/python3.13/lib-dynload/$sim_marker"
+        "python/lib/python3.13/lib-dynload/$sim_marker" \
+        "iPhoneSimulator" "14.0"
 
     xcodebuild -create-xcframework \
         -framework "$device_framework" \
         -framework "$sim_framework" \
         -output "$output_root/$module.xcframework" >/dev/null
+    device_plist="$output_root/$module.xcframework/ios-arm64/$module.framework/Info.plist"
+    if [ "$(plutil -extract MinimumOSVersion raw -o - "$device_plist")" != "13.0" ] || \
+       [ "$(plutil -extract CFBundleSupportedPlatforms.0 raw -o - "$device_plist")" != "iPhoneOS" ]; then
+        echo "error: invalid App Store metadata for $module.framework" >&2
+        exit 1
+    fi
     printf 'Frameworks/%s.framework/%s' "$module" "$module" > "$stdlib_dynload/$device_marker"
     printf 'Frameworks/%s.framework/%s' "$module" "$module" > "$stdlib_dynload/$sim_marker"
     rm -rf "$work_dir"
