@@ -119,7 +119,7 @@ final class LocalPreviewServer: @unchecked Sendable {
               let attributes = try? FileManager.default.attributesOfItem(atPath: candidate.path),
               let fileSize = attributes[.size] as? NSNumber,
               fileSize.intValue <= 20 * 1024 * 1024,
-              let data = try? Data(contentsOf: candidate, options: [.mappedIfSafe]) else {
+              let data = try? Data(floeContentsOf: candidate, options: [.mappedIfSafe]) else {
             return http(status: "404 Not Found", body: Data())
         }
         return http(

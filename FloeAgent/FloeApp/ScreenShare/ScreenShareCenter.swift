@@ -191,10 +191,10 @@ final class ScreenShareCenter: NSObject, ObservableObject {
 
     private func latestFrameSnapshot() -> (state: ScreenShareSessionState, image: UIImage)? {
         guard let container = containerURL,
-              let stateData = try? Data(contentsOf: container.appendingPathComponent(Self.sessionStateName)),
+              let stateData = try? Data(floeContentsOf: container.appendingPathComponent(Self.sessionStateName)),
               let state = try? JSONDecoder().decode(ScreenShareSessionState.self, from: stateData),
               state.isFresh(),
-              let frameData = try? Data(contentsOf: container.appendingPathComponent(Self.latestFrameName)),
+              let frameData = try? Data(floeContentsOf: container.appendingPathComponent(Self.latestFrameName)),
               let image = UIImage(data: frameData) else {
             return nil
         }

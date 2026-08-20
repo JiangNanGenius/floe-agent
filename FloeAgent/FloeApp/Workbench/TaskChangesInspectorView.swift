@@ -86,7 +86,7 @@ private final class TaskChangesInspectorModel: ObservableObject {
         let url = support
             .appendingPathComponent("FloeAgent", isDirectory: true)
             .appendingPathComponent(artifact.relativePath, isDirectory: false)
-        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        let data = try Data(floeContentsOf: url, options: [.mappedIfSafe])
         guard data.count == artifact.byteCount else { return nil }
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         guard digest == artifact.sha256.lowercased() else { return nil }
