@@ -128,7 +128,18 @@ struct ApprovalCardView: View {
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(isGateStopped ? FloeTheme.destructive : .secondary)
             }
+            if isSkillCreation {
+                Text("此操作会创建一个技能并保存到技能库，之后对所有任务可用。批准即确认保存。")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(FloeTheme.pending)
+            }
         }
+    }
+
+    /// `skill.create` installs a reusable skill into the shared library, so
+    /// the approval card spells out that "approve" means "save for all tasks".
+    private var isSkillCreation: Bool {
+        approval.toolCall.toolName == "skill.create"
     }
 
     // MARK: - Risk labels
