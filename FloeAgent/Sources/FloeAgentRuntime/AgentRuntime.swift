@@ -1607,7 +1607,11 @@ public actor FloeAgentRuntime {
         case .host(let hostID):
             return scope.hostID == hostID && scope.paths.isEmpty
         case .hostPath(let hostID, let path):
-            return scope.hostID == hostID && scope.paths.contains(path)
+            // An empty `paths` list means "no path constraint" (see
+            // ApprovalScope). FullControlPolicy relies on that to authorize
+            // every path on the granted host, so an empty list must pass here
+            // rather than be rejected as a scope mismatch.
+            return scope.hostID == hostID && (scope.paths.isEmpty || scope.paths.contains(path))
         }
     }
 

@@ -452,6 +452,40 @@ struct AgentRuntimeTests {
         #expect(await runtime.state.name == "completed")
     }
 
+    @Test("HostPath call with an empty-paths scope executes (no path constraint)")
+    func hostPathWithUnconstrainedScopeExecutes() async throws {
+        let adapter = MockAdapter()
+        let hostID = UUID()
+        let call = try ToolCall(
+            id: "call_hostpath",
+            toolName: "test.echo",
+            argumentsJSON: Data("{}".utf8),
+            scope: .hostPath(hostID: hostID, path: "/var/log/app.log")
+        )
+        adapter.script = [
+            [.toolRequest(call)],
+            [.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor, sideEffecting: true)
+        let audit = MockAuditSink()
+        let runtime = makeRuntime(adapter: adapter, executor: executor, audit: audit)
+
+        let startTask = Task { try await runtime.start(goal: "run on a host path") }
+        try await waitForState("waitingApproval", in: runtime)
+        // Empty paths means "no path constraint", which is exactly what
+        // FullControlPolicy emits for a fully-controlled host.
+        await runtime.resolveApproval(.allow(
+            scope: ApprovalScope(toolName: "test.echo", hostID: hostID),
+            expiresAt: nil
+        ))
+        try await startTask.value
+
+        #expect(executor.executedCalls.count == 1)
+        #expect(audit.entries.allSatisfy { $0.decision != "deny:scope-mismatch-or-expired" })
+        #expect(await runtime.state.name == "completed")
+    }
+
     @Test("Deny routes tool result back into the model (waitingApproval → streamingModel)")
     func waitingApprovalDeny() async throws {
         let adapter = MockAdapter()
