@@ -1,0 +1,62 @@
+// FloeExecution — Execution tool registration entry point.
+// See docs/ARCHITECTURE_EXECUTION.md §4/§10: same dual-registration seam
+// as the workspace tools — the compile-time Descriptor goes to
+// ToolCatalog, the runtime runner to ToolRunnerRegistry. Both are required
+// for a call to execute; the runtime module never imports FloeExecution.
+
+import Foundation
+import FloeTools
+
+/// Registers the compiled execution tools. Local JavaScript remains opt-in;
+/// local Python is registered only when the app has supplied the bundled
+/// CPython service. Remote Python is intentionally absent — `ssh.execute`
+/// covers it (run `python3 -c "..."` or pipe a script via stdin).
+///
+/// - Parameters:
+///   - registry: Runner registry to register into (defaults to the shared
+///     process-wide registry used by `CatalogToolExecutor`).
+///   - service: The JS execution backend (defaults to the real
+///     JavaScriptCore service; tests inject fakes).
+///   - localPythonService: Bundled on-device CPython. Nil leaves
+///     `exec.localPython` honestly absent from the catalog.
+///   - sshCommandService: SSH command execution backend. Nil leaves
+///     `ssh.execute` unregistered.
+@discardableResult
+public func registerExecutionTools(
+    registry: ToolRunnerRegistry = .shared,
+    service: any ScriptExecutionService = JavaScriptExecutionService(),
+    localPythonService: LocalPythonService? = nil,
+    sshCommandService: SSHCommandService? = nil,
+    httpRequestService: HTTPRequestService = HTTPRequestService(),
+    includeOnDeviceJavaScript: Bool = false
+) -> any ScriptExecutionService {
+    // Compile-time catalog descriptors.
+    if includeOnDeviceJavaScript {
+        ToolCatalog.register(JavaScriptExecutionTool.self)
+    }
+    if localPythonService != nil {
+        ToolCatalog.register(LocalPythonTool.self)
+    }
+    if sshCommandService != nil {
+        ToolCatalog.register(SSHExecTool.self)
+    }
+    ToolCatalog.register(HTTPRequestTool.self)
+    ToolCatalog.register(NetworkScanLANTool.self)
+    ToolCatalog.register(OCRTool.self)
+    ToolCatalog.register(BarcodeScanTool.self)
+    // Runtime runners.
+    if includeOnDeviceJavaScript {
+        registry.register(JavaScriptExecutionTool(service: service))
+    }
+    if let localPythonService {
+        registry.register(LocalPythonTool(service: localPythonService))
+    }
+    if let sshCommandService {
+        registry.register(SSHExecTool(service: sshCommandService))
+    }
+    registry.register(HTTPRequestTool(service: httpRequestService))
+    registry.register(NetworkScanLANTool(service: LANDiscoveryService()))
+    registry.register(OCRTool())
+    registry.register(BarcodeScanTool())
+    return service
+}

@@ -1,0 +1,107 @@
+// FloeApp — Text-to-speech for assistant answers.
+//
+// SPDX-License-Identifier: MPL-2.0
+//
+// Wraps AVSpeechSynthesizer so assistant answers can be read aloud. One
+// utterance at a time; tapping speak again stops the current utterance.
+
+#if canImport(SwiftUI) && canImport(UIKit)
+import Foundation
+import AVFoundation
+import SwiftUI
+
+@MainActor
+final class SpeechService: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
+    private let synthesizer = AVSpeechSynthesizer()
+    private var activeUtterance: AVSpeechUtterance?
+    private var activeUtteranceIdentifier: ObjectIdentifier?
+
+    @Published private(set) var isSpeaking = false
+    @Published private(set) var speakingText: String?
+    /// Speech rate (0.0–1.0, default AVSpeechUtteranceDefaultSpeechRate).
+    @Published var rate: Float = AVSpeechUtteranceDefaultSpeechRate
+    /// Pitch multiplier (0.5–2.0, default 1.0).
+    @Published var pitch: Float = 1.0
+    /// Selected voice identifier (nil = auto by language).
+    @Published var voiceIdentifier: String?
+
+    override init() {
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    /// Starts speaking `text`, or stops if the same text is already playing.
+    func speak(_ text: String) {
+        if isSpeaking {
+            if speakingText == text {
+                stop()
+                return
+            }
+            stop()
+        }
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.rate = rate
+        utterance.pitchMultiplier = pitch
+        if let identifier = voiceIdentifier,
+           let voice = AVSpeechSynthesisVoice(identifier: identifier) {
+            utterance.voice = voice
+        } else {
+            utterance.voice = AVSpeechSynthesisVoice(language: Self.preferredLanguage(for: text))
+                ?? AVSpeechSynthesisVoice(language: "en-US")
+        }
+        activeUtterance = utterance
+        activeUtteranceIdentifier = ObjectIdentifier(utterance)
+        synthesizer.speak(utterance)
+        isSpeaking = true
+        speakingText = text
+    }
+
+    func stop() {
+        activeUtterance = nil
+        activeUtteranceIdentifier = nil
+        if synthesizer.isSpeaking {
+            synthesizer.stopSpeaking(at: .immediate)
+        }
+        isSpeaking = false
+        speakingText = nil
+    }
+
+    private static func preferredLanguage(for text: String) -> String {
+        let cjk = text.unicodeScalars.filter {
+            (0x3400...0x9FFF).contains(Int($0.value))
+        }.count
+        let latin = text.unicodeScalars.filter {
+            (0x41...0x5A).contains(Int($0.value)) || (0x61...0x7A).contains(Int($0.value))
+        }.count
+        return cjk >= latin ? "zh-CN" : "en-US"
+    }
+
+    nonisolated func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
+        didFinish utterance: AVSpeechUtterance
+    ) {
+        let identifier = ObjectIdentifier(utterance)
+        Task { @MainActor in
+            guard self.activeUtteranceIdentifier == identifier else { return }
+            self.activeUtterance = nil
+            self.activeUtteranceIdentifier = nil
+            self.isSpeaking = false
+            self.speakingText = nil
+        }
+    }
+
+    nonisolated func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
+        didCancel utterance: AVSpeechUtterance
+    ) {
+        let identifier = ObjectIdentifier(utterance)
+        Task { @MainActor in
+            guard self.activeUtteranceIdentifier == identifier else { return }
+            self.activeUtterance = nil
+            self.activeUtteranceIdentifier = nil
+            self.isSpeaking = false
+            self.speakingText = nil
+        }
+    }
+}
+#endif

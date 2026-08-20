@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>destination</key>
+    <string>upload</string>
+    <key>manageAppVersionAndBuildNumber</key>
+    <false/>
+    <key>method</key>
+    <string>app-store-connect</string>
+    <key>signingStyle</key>
+    <string>manual</string>
+    <key>signingCertificate</key>
+    <string>Apple Distribution</string>
+    <key>provisioningProfiles</key>
+    <dict>
+        <key>org.floeagent.ios</key>
+        <string>Floe TestFlight AppGroup 2026</string>
+        <key>org.floeagent.ios.screenshare</key>
+        <string>Floe Screen Share TestFlight AppGroup 2026</string>
+    </dict>
+    <key>stripSwiftSymbols</key>
+    <true/>
+    <key>teamID</key>
+    <string>QYL72C43K6</string>
+    <key>uploadSymbols</key>
+    <true/>
+</dict>
+</plist>

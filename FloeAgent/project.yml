@@ -1,0 +1,371 @@
+# XcodeGen project for Floe Agent.
+# See blazing-aurora-darwin.md §12: single target, single binary; iPhone/
+# iPad differentiation happens at runtime via PlatformBackgroundPolicy and
+# adaptive SwiftUI, NOT in project.yml branches.
+#
+# Regenerate with: scripts/gen_project.sh (xcodegen must be installed).
+# The generated .xcodeproj is git-ignored.
+
+name: FloeAgent
+options:
+  bundleIdPrefix: org.floeagent
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+packages:
+  FloeAgentPackages:
+    path: .  # Local Swift package (root Package.swift)
+
+targets:
+  FloeAgent:
+    type: application
+    productName: Floe Agent
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: FloeApp
+        excludes:
+          - Resources/python
+      - path: FloeApp/Resources/python
+        type: folder
+        buildPhase: resources
+    info:
+      path: FloeApp/Resources/Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        NSMicrophoneUsageDescription: Floe uses the microphone only while you dictate a message.
+        NSSpeechRecognitionUsageDescription: Floe converts your speech into text for the message composer.
+        BGTaskSchedulerPermittedIdentifiers:
+          - org.floeagent.ios.refresh
+          - org.floeagent.ios.processing
+          - org.floeagent.ios.continued.*
+        UIBackgroundModes:
+          - fetch
+          - processing
+          - audio
+        UIRequiredDeviceCapabilities:
+          - arm64
+          - metal
+          - iphone-performance-gaming-tier
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    entitlements:
+      path: FloeApp/Entitlements/Floe.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.org.floeagent.ios
+        com.apple.developer.icloud-services:
+          - CloudKit
+        com.apple.developer.user-fonts:
+          - app-usage
+        com.apple.security.application-groups:
+          - group.org.floeagent.ios
+    dependencies:
+      - framework: Vendor/Python.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_blake2.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_csv.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_datetime.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_decimal.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_hashlib.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_json.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_random.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_sha2.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_sha3.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_socket.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_ssl.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_statistics.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_struct.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/array.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/binascii.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/math.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/select.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/unicodedata.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/zlib.xcframework
+        embed: true
+      - package: FloeAgentPackages
+        product: FloeCore
+      - package: FloeAgentPackages
+        product: FloeModels
+      - package: FloeAgentPackages
+        product: FloeProviders
+      - package: FloeAgentPackages
+        product: FloeAgentRuntime
+      - package: FloeAgentPackages
+        product: FloeTools
+      - package: FloeAgentPackages
+        product: FloeSkills
+      - package: FloeAgentPackages
+        product: FloePersistence
+      - package: FloeAgentPackages
+        product: FloeSecurity
+      - package: FloeAgentPackages
+        product: FloeSync
+      - package: FloeAgentPackages
+        product: FloeSyncCore
+      - package: FloeAgentPackages
+        product: FloeDocuments
+      - package: FloeAgentPackages
+        product: FloeImages
+      - package: FloeAgentPackages
+        product: FloeSSH
+      - package: FloeAgentPackages
+        product: FloeVNC
+      - package: FloeAgentPackages
+        product: FloeMarkdown
+      - package: FloeAgentPackages
+        product: FloeWorkspace
+      - package: FloeAgentPackages
+        product: FloeExecution
+      - target: FloeScreenShare
+        embed: true
+    settings:
+      base:
+        DEVELOPMENT_TEAM: QYL72C43K6
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios
+        PRODUCT_NAME: Floe Agent
+        PRODUCT_MODULE_NAME: FloeApp
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "6.0"
+        SWIFT_OBJC_BRIDGING_HEADER: FloeApp/Execution/FloeApp-Bridging-Header.h
+        SWIFT_STRICT_CONCURRENCY: complete
+        MARKETING_VERSION: "1.4.1"
+        CURRENT_PROJECT_VERSION: "32"
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+        ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+        Release:
+          SWIFT_COMPILATION_MODE: wholemodule
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
+          PROVISIONING_PROFILE_SPECIFIER: Floe TestFlight AppGroup 2026
+
+  FloeScreenShare:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: FloeScreenShare
+    info:
+      path: FloeScreenShare/Info.plist
+      properties:
+        CFBundleDisplayName: Floe Screen Share
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.broadcast-services-upload
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).SampleHandler
+          RPBroadcastProcessMode: RPBroadcastProcessModeSampleBuffer
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+    entitlements:
+      path: FloeScreenShare/FloeScreenShare.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.org.floeagent.ios
+    dependencies:
+      - package: FloeAgentPackages
+        product: FloeCore
+    settings:
+      base:
+        DEVELOPMENT_TEAM: QYL72C43K6
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios.screenshare
+        PRODUCT_NAME: Floe Screen Share
+        PRODUCT_MODULE_NAME: FloeScreenShare
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "6.0"
+        MARKETING_VERSION: "1.4.1"
+        CURRENT_PROJECT_VERSION: "32"
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
+          PROVISIONING_PROFILE_SPECIFIER: Floe Screen Share TestFlight AppGroup 2026
+
+  FloeShare:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: FloeShare
+    info:
+      path: FloeShare/Info.plist
+      properties:
+        CFBundleDisplayName: Floe Share
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionActivationRule:
+            NSExtensionActivationSupportsText: true
+            NSExtensionActivationSupportsWebURLWithMaxCount: 1
+            NSExtensionActivationSupportsImageWithMaxCount: 1
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+    entitlements:
+      path: FloeShare/FloeShare.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.org.floeagent.ios
+    dependencies:
+      - package: FloeAgentPackages
+        product: FloeCore
+    settings:
+      base:
+        DEVELOPMENT_TEAM: QYL72C43K6
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios.share
+        PRODUCT_NAME: Floe Share
+        PRODUCT_MODULE_NAME: FloeShare
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "6.0"
+        MARKETING_VERSION: "1.4.1"
+        CURRENT_PROJECT_VERSION: "32"
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
+          PROVISIONING_PROFILE_SPECIFIER: Floe Share TestFlight AppGroup 2026
+
+  FloeWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: FloeWidgets
+    info:
+      path: FloeWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Floe Widgets
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+    entitlements:
+      path: FloeWidgets/FloeWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.org.floeagent.ios
+    dependencies:
+      - package: FloeAgentPackages
+        product: FloeCore
+    settings:
+      base:
+        DEVELOPMENT_TEAM: QYL72C43K6
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios.widgets
+        PRODUCT_NAME: Floe Widgets
+        PRODUCT_MODULE_NAME: FloeWidgets
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "6.0"
+        MARKETING_VERSION: "1.4.1"
+        CURRENT_PROJECT_VERSION: "32"
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
+          PROVISIONING_PROFILE_SPECIFIER: Floe Widgets TestFlight AppGroup 2026
+
+  FloeAgentUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Tests/FloeAgentUITests
+        excludes:
+          - HomeChatSeparationTests.swift
+          - BrowserProtocolTests.swift
+          - ThreadTimelineTests.swift
+          - VoiceInputControllerTests.swift
+          - CrashAndFeedbackRegressionTests.swift
+          - LocalPythonRuntimeTests.swift
+    dependencies:
+      - target: FloeAgent
+    settings:
+      base:
+        DEVELOPMENT_TEAM: QYL72C43K6
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "6.0"
+        TEST_TARGET_NAME: FloeAgent
+
+  FloeAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Tests/FloeAgentUITests/HomeChatSeparationTests.swift
+      - path: Tests/FloeAgentUITests/ThreadTimelineTests.swift
+      - path: Tests/FloeAgentUITests/VoiceInputControllerTests.swift
+      - path: Tests/FloeAgentUITests/BrowserProtocolTests.swift
+      - path: Tests/FloeAgentUITests/CrashAndFeedbackRegressionTests.swift
+      - path: Tests/FloeAgentUITests/LocalPythonRuntimeTests.swift
+    dependencies:
+      - target: FloeAgent
+    settings:
+      base:
+        DEVELOPMENT_TEAM: QYL72C43K6
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios.tests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "6.0"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Floe Agent.app/Floe Agent"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  FloeAgent:
+    build:
+      targets:
+        FloeAgent: all
+        FloeAppTests: [test]
+        FloeAgentUITests: [test]
+    test:
+      targets:
+        - FloeAppTests
+        - FloeAgentUITests
+    run:
+      config: Debug
+    archive:
+      config: Release
+  FloeAppTests:
+    build:
+      targets:
+        FloeAgent: all
+        FloeAppTests: [test]
+    test:
+      targets:
+        - FloeAppTests

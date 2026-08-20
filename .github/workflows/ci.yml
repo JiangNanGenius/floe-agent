@@ -1,0 +1,122 @@
+# Floe Agent CI.
+# Two jobs:
+#   build-test (macos-26, full Xcode): SPM build/test + xcodegen +
+#     xcodebuild for the iOS app, secret scan, SBOM, license inventory.
+#   spm-linux-build (ubuntu-latest, Swift 6.2): cross-platform compile only —
+#     SSE parser, catastrophic gate, canonical JSON, audit chain, GRDB
+#     schema remain portable. Tests run on the Apple job because Debian's
+#     system SQLite omits GRDB's SQLITE_ENABLE_SNAPSHOT linker symbols.
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: macos-26
+    defaults:
+      run:
+        working-directory: FloeAgent
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          scripts/bootstrap_python_runtime.sh
+          scripts/gen_project.sh
+
+      - name: Resolve and pin-check dependencies
+        run: |
+          swift package resolve
+          scripts/pin_check.sh
+
+      - name: xcodebuild iPhone Simulator
+        run: |
+          xcodebuild \
+            -scheme FloeAgent \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+            -resultBundlePath FloeAgent-iPhone.xcresult \
+            build
+
+      - name: xcodebuild iPad mini (A17 Pro) Simulator
+        run: |
+          xcodebuild \
+            -scheme FloeAgent \
+            -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
+            -resultBundlePath FloeAgent-iPad.xcresult \
+            build
+
+      - name: SPM build (cross-platform targets)
+        run: swift build
+
+      - name: SPM test (cross-platform targets)
+        run: |
+          # JavaScriptCore cannot terminate an evaluated infinite loop. Run its
+          # deadline tests in a separate process so abandoned VM threads cannot
+          # starve unrelated actor/state-machine tests on shared CI runners.
+          swift test --skip 'FloeExecutionTests.JavaScriptEngineTests'
+          swift test --filter 'FloeExecutionTests.JavaScriptEngineTests'
+
+      - name: Secret scan
+        run: |
+          brew install gitleaks
+          scripts/secret_scan.sh
+
+      - name: SBOM
+        run: |
+          brew install syft
+          scripts/sbom.sh
+
+      - name: License inventory
+        run: scripts/license_inventory.sh
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-artifacts
+          path: |
+            FloeAgent/sbom.spdx.json
+            FloeAgent/LICENSES-THIRD-PARTY.md
+            FloeAgent/.gitleaks-report.json
+            FloeAgent/FloeAgent-iPhone.xcresult
+            FloeAgent/FloeAgent-iPad.xcresult
+          if-no-files-found: ignore
+
+  spm-linux-build:
+    runs-on: ubuntu-latest
+    container: swift:6.2
+    defaults:
+      run:
+        working-directory: FloeAgent
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends libsqlite3-dev
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Build cross-platform targets
+        run: |
+          for target in \
+            FloeCore \
+            FloeModels \
+            FloeProviders \
+            FloeAgentRuntime \
+            FloeTools \
+            FloePersistence \
+            FloeSecurity \
+            FloeSyncCore
+          do
+            swift build --target "$target"
+          done

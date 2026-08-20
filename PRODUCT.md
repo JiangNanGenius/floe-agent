@@ -39,6 +39,6 @@ iOS may suspend background work. Floe Agent must report that honestly and must n
 - Distribution: free and open source.
 - Backend: no Floe-operated account, model proxy, or remote relay.
 - Telemetry: no advertising or third-party behavioral analytics SDKs.
-- Status: pre-release Alpha; no supported public binary.
+- Status: prerelease; releases may be available for testing but are not supported for production use.
 
 Detailed architecture, milestones, verification criteria, and release gates are in the [development plan](docs/DEVELOPMENT_PLAN.md).

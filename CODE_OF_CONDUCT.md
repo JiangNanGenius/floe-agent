@@ -1,5 +1,7 @@
 # Community Code of Conduct
 
+[简体中文](CODE_OF_CONDUCT.zh-CN.md)
+
 Floe Agent welcomes people who collaborate with care, technical honesty, and respect.
 
 ## Expected behavior

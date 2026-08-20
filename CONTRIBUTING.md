@@ -1,6 +1,6 @@
 # Contributing to Floe Agent
 
-Thank you for helping build Floe Agent. The project is pre-release, its interfaces are moving, and changes involving credentials or remote control require especially careful review.
+Thank you for helping build Floe Agent. The project ships prerelease builds, its interfaces are still moving, and changes involving credentials, browser control, files, or remote computers require especially careful review. [简体中文贡献指南](CONTRIBUTING.zh-CN.md)
 
 ## Before you start
 
@@ -13,21 +13,21 @@ Do not open a public issue for a vulnerability. Follow the private process in [S
 
 ## Development checkout
 
-The active implementation is currently reviewed on the `agent/alpha-daily` branch and draft PR #4. Until that work is accepted into `main`, use:
+The active implementation is maintained on `main`. Use:
 
 ```bash
 git clone https://github.com/JiangNanGenius/floe-agent.git
 cd floe-agent
-git switch agent/alpha-daily
 cd FloeAgent
 scripts/local_build.sh
 ```
 
-Requirements are a full Xcode installation with Swift 6.2 and the iOS 26 SDK. The package can also be checked with:
+Requirements are a full Xcode installation with Swift 6.2 and the iOS 26 SDK or newer. Regenerate the committed Xcode project after changing `project.yml`:
 
 ```bash
 swift build
 swift test
+xcodegen generate
 ```
 
 Some iOS-only targets require Xcode rather than a command-line Swift toolchain.
@@ -39,6 +39,7 @@ Some iOS-only targets require Xcode rather than a command-line Swift toolchain.
 - Keep credentials, hostnames, personal paths, device identifiers, and private fixtures out of commits.
 - Update README or architecture documentation when public behavior or setup changes.
 - Preserve English and Simplified Chinese localization coverage for user-facing text.
+- Update both English and Simplified Chinese README/user-guide sections when public behavior changes.
 - Describe any new network destination, entitlement, dependency, persistence, approval, or privacy behavior.
 - Keep generated files and unrelated formatting out of the pull request.
 

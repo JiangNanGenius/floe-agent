@@ -1,0 +1,223 @@
+// FloeCore — Logging facade.
+//
+// Uses os.Logger on platforms that have it; falls back to a no-op otherwise
+// so cross-platform targets build everywhere.
+
+import Foundation
+
+#if canImport(os)
+import os
+#endif
+
+/// Category-tagged logger. Never log secrets: providers redact credentials
+/// before constructing log messages.
+public struct FloeLogger: Sendable {
+    public enum Category: String, Sendable {
+        case core, providers, runtime, tools, persistence, security, sync, ssh, vnc, app
+    }
+
+    /// One buffered log entry for the diagnostics view / export.
+    public struct Entry: Sendable, Hashable, Codable {
+        public var timestamp: Date
+        public var category: String
+        public var level: String
+        public var message: String
+
+        public init(timestamp: Date, category: String, level: String, message: String) {
+            self.timestamp = timestamp
+            self.category = category
+            self.level = level
+            self.message = message
+        }
+    }
+
+    /// Fixed-capacity ring buffer of the most recent entries. A redacted
+    /// snapshot is also written to the app's caches directory so a crash does
+    /// not erase the evidence needed for the next-launch diagnostics export.
+    /// No transcript, API key, document body, or audio is accepted here.
+    public final class RingBuffer: @unchecked Sendable {
+        private var entries: [Entry] = []
+        private let capacity: Int
+        private let lock = NSLock()
+        private let persistenceQueue = DispatchQueue(label: "org.floeagent.log-persistence", qos: .utility)
+        private var pendingWrite: DispatchWorkItem?
+        private let persistedURL: URL?
+
+        public convenience init(capacity: Int = 500, persists: Bool = false) {
+            self.init(
+                capacity: capacity,
+                persistedURL: persists ? Self.makePersistedURL() : nil
+            )
+        }
+
+        init(capacity: Int, persistedURL: URL?) {
+            self.capacity = max(1, capacity)
+            self.persistedURL = persistedURL
+            if let persistedURL,
+               let data = try? Data(contentsOf: persistedURL) {
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                if let restored = try? decoder.decode([Entry].self, from: data) {
+                    self.entries = Array(restored.suffix(self.capacity))
+                }
+            }
+        }
+
+        func append(_ entry: Entry) {
+            lock.lock()
+            entries.append(entry)
+            if entries.count > capacity {
+                entries.removeFirst(entries.count - capacity)
+            }
+            lock.unlock()
+            // Errors and warnings persist synchronously so a crash or a fast
+            // relaunch cannot lose the evidence. Routine info/debug lines keep
+            // the debounced background write.
+            if entry.level == "error" || entry.level == "warning" {
+                writeImmediately()
+            } else {
+                schedulePersistence()
+            }
+        }
+
+        /// Most recent entries, oldest first.
+        public var recentEntries: [Entry] {
+            lock.lock()
+            defer { lock.unlock() }
+            return entries
+        }
+
+        /// Renders the buffer as redacted plain text for export.
+        public func renderedText() -> String {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return recentEntries
+                .map { entry in
+                    "[\(formatter.string(from: entry.timestamp))] [\(entry.category)] [\(entry.level)] \(entry.message)"
+                }
+                .joined(separator: "\n")
+        }
+
+        /// Synchronously writes the current buffer to disk. Called from scene
+        /// transitions so a backgrounding or imminent suspension never strands
+        /// the most recent diagnostics.
+        public func flush() {
+            writeImmediately()
+        }
+
+        private func writeImmediately() {
+            guard let persistedURL else { return }
+            persistenceQueue.sync {
+                pendingWrite?.cancel()
+                pendingWrite = nil
+                let snapshot = recentEntries
+                Self.write(snapshot, to: persistedURL)
+            }
+        }
+
+        private func schedulePersistence() {
+            guard let persistedURL else { return }
+            persistenceQueue.async { [weak self] in
+                guard let self else { return }
+                self.pendingWrite?.cancel()
+                let item = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    let snapshot = self.recentEntries
+                    Self.write(snapshot, to: persistedURL)
+                }
+                self.pendingWrite = item
+                self.persistenceQueue.asyncAfter(deadline: .now() + 0.75, execute: item)
+            }
+        }
+
+        /// The actual write. Failure is intentionally swallowed — logging must
+        /// never crash or recursively log a persistence failure.
+        private static func write(_ snapshot: [Entry], to url: URL) {
+            do {
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                let encoder = JSONEncoder()
+                encoder.dateEncodingStrategy = .iso8601
+                try encoder.encode(snapshot).write(to: url, options: .atomic)
+            } catch {}
+        }
+
+        private static func makePersistedURL() -> URL? {
+            guard let caches = try? FileManager.default.url(
+                for: .cachesDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            ) else { return nil }
+            return caches
+                .appendingPathComponent("FloeAgent", isDirectory: true)
+                .appendingPathComponent("diagnostics-log.json")
+        }
+    }
+
+    /// Process-wide buffer shared by every logger instance.
+    public static let buffer = RingBuffer(persists: true)
+
+    private let category: Category
+
+    #if canImport(os)
+    private let underlying: os.Logger
+    #endif
+
+    public init(category: Category) {
+        self.category = category
+        #if canImport(os)
+        self.underlying = os.Logger(subsystem: "org.floeagent.ios", category: category.rawValue)
+        #endif
+    }
+
+    public func debug(_ message: @autoclosure () -> String) {
+        let resolved = message()
+        let redacted = SecretRedactor.redact(resolved)
+        Self.buffer.append(Entry(
+            timestamp: Date(), category: category.rawValue, level: "debug",
+            message: redacted
+        ))
+        #if canImport(os)
+        underlying.debug("\(redacted, privacy: .public)")
+        #endif
+    }
+
+    public func info(_ message: @autoclosure () -> String) {
+        let resolved = message()
+        let redacted = SecretRedactor.redact(resolved)
+        Self.buffer.append(Entry(
+            timestamp: Date(), category: category.rawValue, level: "info",
+            message: redacted
+        ))
+        #if canImport(os)
+        underlying.info("\(redacted, privacy: .public)")
+        #endif
+    }
+
+    public func warning(_ message: @autoclosure () -> String) {
+        let resolved = message()
+        let redacted = SecretRedactor.redact(resolved)
+        Self.buffer.append(Entry(
+            timestamp: Date(), category: category.rawValue, level: "warning",
+            message: redacted
+        ))
+        #if canImport(os)
+        underlying.warning("\(redacted, privacy: .public)")
+        #endif
+    }
+
+    public func error(_ message: @autoclosure () -> String) {
+        let resolved = message()
+        let redacted = SecretRedactor.redact(resolved)
+        Self.buffer.append(Entry(
+            timestamp: Date(), category: category.rawValue, level: "error",
+            message: redacted
+        ))
+        #if canImport(os)
+        underlying.error("\(redacted, privacy: .public)")
+        #endif
+    }
+}

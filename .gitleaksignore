@@ -1,0 +1,5 @@
+# Historical test fixtures that intentionally exercised SecretRedactor.
+# Each entry is pinned to the exact commit, path, rule, and line; future
+# credentials in these files remain reportable.
+784eff8a0382f0792089acd6054e89ba31bb68cd:FloeAgent/Tests/FloeCoreTests/FloeLoggerBufferTests.swift:generic-api-key:34
+784eff8a0382f0792089acd6054e89ba31bb68cd:FloeAgent/Tests/FloePersistenceTests/SettingsFlowTests.swift:generic-api-key:86

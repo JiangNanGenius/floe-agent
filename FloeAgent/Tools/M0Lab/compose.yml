@@ -1,0 +1,42 @@
+services:
+  jump:
+    build:
+      context: .
+      dockerfile: Dockerfile.ssh
+    environment:
+      FLOE_SSH_PASSWORD: ${FLOE_JUMP_PASSWORD:-floe-jump-m0}
+    ports:
+      - "${FLOE_JUMP_BIND:-0.0.0.0}:${FLOE_JUMP_PORT:-2222}:22"
+    networks: [ingress, private]
+    healthcheck:
+      test: ["CMD-SHELL", "ss -lnt | grep -q ':22 '"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  target:
+    build:
+      context: .
+      dockerfile: Dockerfile.ssh
+    environment:
+      FLOE_SSH_PASSWORD: ${FLOE_TARGET_PASSWORD:-floe-target-m0}
+    networks: [private]
+    healthcheck:
+      test: ["CMD-SHELL", "ss -lnt | grep -q ':22 '"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  vnc:
+    build:
+      context: .
+      dockerfile: Dockerfile.vnc
+    environment:
+      FLOE_VNC_PASSWORD: ${FLOE_VNC_PASSWORD:-floe-vnc-m0}
+    networks: [private]
+    shm_size: 256mb
+
+networks:
+  ingress: {}
+  private:
+    internal: true

@@ -1,0 +1,14 @@
+FROM debian:bookworm-slim@sha256:362e64223cc0da95422b3b13c045186fc0a81250e765d31c025fbddf257f6143
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssh-server iproute2 ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /bin/bash floe \
+    && mkdir -p /run/sshd
+
+COPY sshd_config /etc/ssh/sshd_config
+COPY ssh-entrypoint.sh /usr/local/bin/ssh-entrypoint
+RUN chmod 0755 /usr/local/bin/ssh-entrypoint
+
+EXPOSE 22
+ENTRYPOINT ["/usr/local/bin/ssh-entrypoint"]

@@ -1,0 +1,308 @@
+name: TestFlight and Unsigned IPA Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing SemVer tag to validate and build
+        required: true
+        type: string
+      publish:
+        description: Publish the draft prerelease after validation
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: floe-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-verify-release:
+    runs-on: macos-26
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        working-directory: FloeAgent
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      build: ${{ steps.release.outputs.build }}
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Install release tooling
+        run: |
+          brew install xcodegen gitleaks syft
+          scripts/bootstrap_python_runtime.sh
+
+      - name: Generate project and validate tag
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          scripts/gen_project.sh
+          scripts/release_preflight.sh "$RELEASE_TAG"
+
+      - name: Resolve dependencies and run Swift tests
+        run: |
+          swift package resolve
+          scripts/pin_check.sh
+          swift build
+          # Isolate JavaScriptCore deadline tests: timed-out infinite loops are
+          # abandoned by design and must not consume CPU during other suites.
+          swift test --skip 'FloeExecutionTests.JavaScriptEngineTests'
+          swift test --filter 'FloeExecutionTests.JavaScriptEngineTests'
+
+      - name: Build iOS simulator release gate
+        run: |
+          xcodebuild \
+            -project FloeAgent.xcodeproj \
+            -scheme FloeAgent \
+            -configuration Release \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/FloeSimulatorDerivedData" \
+            build
+
+      - name: Scan source and generate compliance artifacts
+        run: |
+          scripts/secret_scan.sh
+          scripts/sbom.sh
+          scripts/license_inventory.sh
+
+      - name: Build unsigned device application
+        run: |
+          xcodebuild \
+            -project FloeAgent.xcodeproj \
+            -scheme FloeAgent \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/FloeDeviceDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            DEVELOPMENT_TEAM='' \
+            build
+
+      - name: Package and verify unsigned IPA
+        id: package
+        env:
+          ASSET_NAME: ${{ steps.release.outputs.asset_name }}
+        run: |
+          APP_PATH="$(find "$RUNNER_TEMP/FloeDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          scripts/package_unsigned_ipa.sh "$APP_PATH" release-assets "$ASSET_NAME"
+
+      - name: Verify artifact metadata and scan built application
+        run: |
+          test "${{ steps.package.outputs.bundle_id }}" = "${{ steps.release.outputs.bundle_id }}"
+          test "${{ steps.package.outputs.version }}" = "${{ steps.release.outputs.version }}"
+          test "${{ steps.package.outputs.build }}" = "${{ steps.release.outputs.build }}"
+          APP_PATH="$(find "$RUNNER_TEMP/FloeDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          gitleaks dir "$APP_PATH" \
+            --redact \
+            --report-path release-assets/app-gitleaks-report.json
+          cp sbom.spdx.json release-assets/
+          cp LICENSES-THIRD-PARTY.md release-assets/
+          cp .gitleaks-report.json release-assets/source-gitleaks-report.json
+          {
+            echo "tag=${{ steps.release.outputs.tag }}"
+            echo "version=${{ steps.release.outputs.version }}"
+            echo "build=${{ steps.release.outputs.build }}"
+            echo "bundle=${{ steps.package.outputs.bundle_id }}"
+            echo "minimum_iOS=${{ steps.package.outputs.minimum_os }}"
+            echo "swift_tests=passed"
+            echo "simulator_release_build=passed"
+            echo "unsigned_device_build=passed"
+          } > release-assets/TEST-SUMMARY.txt
+
+      - name: Attest unsigned IPA provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ steps.package.outputs.ipa_path }}
+
+      - name: Upload verified build artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: unsigned-ipa-${{ steps.release.outputs.version }}-build${{ steps.release.outputs.build }}
+          path: FloeAgent/release-assets/
+          if-no-files-found: error
+
+  testflight:
+    name: Archive and upload the same commit to TestFlight
+    needs: build-verify-release
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    defaults:
+      run:
+        working-directory: FloeAgent
+    steps:
+      - name: Check out the exact release tag
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.build-verify-release.outputs.tag }}
+
+      - name: Generate and validate the identical release project
+        run: |
+          brew install xcodegen
+          scripts/bootstrap_python_runtime.sh
+          scripts/gen_project.sh
+          scripts/release_preflight.sh "${{ needs.build-verify-release.outputs.tag }}"
+
+      - name: Install distribution identity and profiles
+        env:
+          DISTRIBUTION_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          HOST_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          SCREENSHARE_PROVISIONING_PROFILE: ${{ secrets.APPLE_SCREENSHARE_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          test -n "$DISTRIBUTION_CERTIFICATE"
+          test -n "$HOST_PROVISIONING_PROFILE"
+          test -n "$SCREENSHARE_PROVISIONING_PROFILE"
+          KEYCHAIN="$RUNNER_TEMP/floe-release.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)$(uuidgen)"
+          echo "$DISTRIBUTION_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/distribution.p12"
+          echo "$HOST_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/Floe.mobileprovision"
+          echo "$SCREENSHARE_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/FloeScreenShare.mobileprovision"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/distribution.p12" -P "$DISTRIBUTION_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          install_profile() {
+            PROFILE_PATH="$1"
+            EXPECTED_APP_ID="$2"
+            EXPECTED_NAME="$3"
+            PROFILE_PLIST="$RUNNER_TEMP/$(basename "$PROFILE_PATH").plist"
+            security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
+            test "$(plutil -extract Name raw -o - "$PROFILE_PLIST")" = "$EXPECTED_NAME"
+            test "$(plutil -extract Entitlements.application-identifier raw -o - "$PROFILE_PLIST")" = "$EXPECTED_APP_ID"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups:0' "$PROFILE_PLIST")" = "group.org.floeagent.ios"
+            PROFILE_UUID="$(plutil -extract UUID raw -o - "$PROFILE_PLIST")"
+            for PROFILE_DIRECTORY in \
+              "$HOME/Library/MobileDevice/Provisioning Profiles" \
+              "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+            do
+              mkdir -p "$PROFILE_DIRECTORY"
+              cp "$PROFILE_PATH" "$PROFILE_DIRECTORY/$PROFILE_UUID.mobileprovision"
+            done
+          }
+          install_profile \
+            "$RUNNER_TEMP/Floe.mobileprovision" \
+            "QYL72C43K6.org.floeagent.ios" \
+            "Floe TestFlight AppGroup 2026"
+          install_profile \
+            "$RUNNER_TEMP/FloeScreenShare.mobileprovision" \
+            "QYL72C43K6.org.floeagent.ios.screenshare" \
+            "Floe Screen Share TestFlight AppGroup 2026"
+
+      - name: Install App Store Connect API key
+        env:
+          ASC_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        run: |
+          test -n "$ASC_API_PRIVATE_KEY_BASE64"
+          test -n "$ASC_KEY_ID"
+          echo "$ASC_API_PRIVATE_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+
+      - name: Archive signed build
+        run: |
+          xcodebuild \
+            -project FloeAgent.xcodeproj \
+            -scheme FloeAgent \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/FloeAgent.xcarchive" \
+            archive
+
+      - name: Export and upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/TestFlightExport"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/FloeAgent.xcarchive" \
+            -exportPath "$RUNNER_TEMP/TestFlightExport" \
+            -exportOptionsPlist Config/ExportOptions-TestFlight.plist \
+            -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          {
+            echo "tag=${{ needs.build-verify-release.outputs.tag }}"
+            echo "version=${{ needs.build-verify-release.outputs.version }}"
+            echo "build=${{ needs.build-verify-release.outputs.build }}"
+            echo "commit=$GITHUB_SHA"
+            echo "testflight_upload=accepted_by_transport"
+          } > "$RUNNER_TEMP/TestFlightExport/TESTFLIGHT-SUMMARY.txt"
+
+      - name: Upload TestFlight evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: testflight-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
+          path: ${{ runner.temp }}/TestFlightExport/
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub assets only after TestFlight succeeds
+    if: github.event_name == 'push' || inputs.publish
+    needs: [build-verify-release, testflight]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.build-verify-release.outputs.tag }}
+      VERSION: ${{ needs.build-verify-release.outputs.version }}
+      BUILD: ${{ needs.build-verify-release.outputs.build }}
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: unsigned-ipa-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
+          path: release-assets
+      - name: Publish the complete paired release
+        run: |
+          cat > release-notes.md <<EOF
+          ## Floe Agent $VERSION (build $BUILD)
+
+          This commit passed the shared Swift and simulator release gates, was uploaded to TestFlight, and produced the accompanying unsigned IPA.
+
+          > [!WARNING]
+          > The GitHub IPA is unsigned and cannot be installed directly. Inspect it, verify its SHA-256, then sign it with your own certificate. It is not the App Store package.
+
+          The release includes an SPDX SBOM, third-party licenses, secret-scan reports, a test summary, and GitHub build provenance.
+          EOF
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+            gh release edit "$RELEASE_TAG" --notes-file release-notes.md --draft=false --prerelease
+          else
+            gh release create "$RELEASE_TAG" release-assets/* \
+              --verify-tag --prerelease \
+              --title "Floe Agent $VERSION (build $BUILD)" \
+              --notes-file release-notes.md
+          fi

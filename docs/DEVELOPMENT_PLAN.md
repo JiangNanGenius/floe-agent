@@ -1,5 +1,8 @@
 # Floe Agent v1.0 Development Plan
 
+> [!NOTE]
+> This is the original long-range milestone plan. Floe Agent 1.2.x has since adopted the continuous Task/Run model, v8 workspace ownership, visible browser, Skills, Plan/Goal/Memory, task permissions, and the unified workbench described in [Architecture Overview](ARCHITECTURE_OVERVIEW.md). Keep this file for roadmap traceability; do not use its old navigation or milestone status as current product documentation.
+
 Status: Approved product and architecture baseline
 Last updated: 2026-08-13
 
