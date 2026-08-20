@@ -16,6 +16,10 @@ public struct RunRecord: Sendable, Hashable, Identifiable {
     public var startedAt: Date
     public var endedAt: Date?
     public var goalID: UUID?
+    public var providerID: UUID?
+    public var modelID: UUID?
+    public var providerName: String?
+    public var modelName: String?
 
     public init(
         id: UUID,
@@ -24,7 +28,11 @@ public struct RunRecord: Sendable, Hashable, Identifiable {
         goal: String,
         startedAt: Date,
         endedAt: Date? = nil,
-        goalID: UUID? = nil
+        goalID: UUID? = nil,
+        providerID: UUID? = nil,
+        modelID: UUID? = nil,
+        providerName: String? = nil,
+        modelName: String? = nil
     ) {
         self.id = id
         self.conversationID = conversationID
@@ -33,6 +41,10 @@ public struct RunRecord: Sendable, Hashable, Identifiable {
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.goalID = goalID
+        self.providerID = providerID
+        self.modelID = modelID
+        self.providerName = providerName
+        self.modelName = modelName
     }
 }
 
@@ -71,14 +83,47 @@ public struct UsageStatistics: Sendable, Codable, Hashable {
     public var totalTokens: Int
     public var totalRuns: Int
     public var byDay: [DailyUsage]
+    public var byConversation: [UsageBreakdown]
+    public var byModel: [UsageBreakdown]
+    public var byProvider: [UsageBreakdown]
 
-    public init(totalInputTokens: Int, totalOutputTokens: Int, totalTokens: Int, totalRuns: Int, byDay: [DailyUsage]) {
+    public init(
+        totalInputTokens: Int,
+        totalOutputTokens: Int,
+        totalTokens: Int,
+        totalRuns: Int,
+        byDay: [DailyUsage],
+        byConversation: [UsageBreakdown] = [],
+        byModel: [UsageBreakdown] = [],
+        byProvider: [UsageBreakdown] = []
+    ) {
         self.totalInputTokens = totalInputTokens
         self.totalOutputTokens = totalOutputTokens
         self.totalTokens = totalTokens
         self.totalRuns = totalRuns
         self.byDay = byDay
+        self.byConversation = byConversation
+        self.byModel = byModel
+        self.byProvider = byProvider
     }
+}
+
+public struct UsageBreakdown: Sendable, Codable, Hashable, Identifiable {
+    public var id: String
+    public var label: String
+    public var inputTokens: Int
+    public var outputTokens: Int
+    public var runs: Int
+
+    public init(id: String, label: String, inputTokens: Int, outputTokens: Int, runs: Int) {
+        self.id = id
+        self.label = label
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.runs = runs
+    }
+
+    public var totalTokens: Int { inputTokens + outputTokens }
 }
 
 public struct DailyUsage: Sendable, Codable, Hashable, Identifiable {
@@ -108,12 +153,22 @@ public actor SQLiteRunStore: RunStore {
         try await database.writer { db in
             try db.execute(
                 sql: """
-                    INSERT INTO runs (id, conversation_id, state, goal, started_at, ended_at, goal_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO runs (
+                        id, conversation_id, state, goal, started_at, ended_at, goal_id,
+                        provider_id, model_id, provider_name_snapshot, model_name_snapshot
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         state = excluded.state,
                         goal = excluded.goal,
-                        ended_at = excluded.ended_at
+                        ended_at = excluded.ended_at,
+                        provider_id = COALESCE(excluded.provider_id, runs.provider_id),
+                        model_id = COALESCE(excluded.model_id, runs.model_id),
+                        provider_name_snapshot = COALESCE(
+                            excluded.provider_name_snapshot, runs.provider_name_snapshot
+                        ),
+                        model_name_snapshot = COALESCE(
+                            excluded.model_name_snapshot, runs.model_name_snapshot
+                        )
                     """,
                 arguments: [
                     run.id.uuidString,
@@ -122,7 +177,11 @@ public actor SQLiteRunStore: RunStore {
                     run.goal,
                     PersistenceCodec.encode(run.startedAt),
                     run.endedAt.map(PersistenceCodec.encode),
-                    run.goalID?.uuidString
+                    run.goalID?.uuidString,
+                    run.providerID?.uuidString,
+                    run.modelID?.uuidString,
+                    run.providerName,
+                    run.modelName
                 ]
             )
         }
@@ -325,7 +384,11 @@ public actor SQLiteRunStore: RunStore {
             goal: row["goal"],
             startedAt: try PersistenceCodec.decodeDate(row["started_at"]),
             endedAt: endedAt,
-            goalID: (row["goal_id"] as String?).flatMap(UUID.init(uuidString:))
+            goalID: (row["goal_id"] as String?).flatMap(UUID.init(uuidString:)),
+            providerID: (row["provider_id"] as String?).flatMap(UUID.init(uuidString:)),
+            modelID: (row["model_id"] as String?).flatMap(UUID.init(uuidString:)),
+            providerName: row["provider_name_snapshot"],
+            modelName: row["model_name_snapshot"]
         )
     }
 
@@ -415,13 +478,70 @@ public actor SQLiteRunStore: RunStore {
                 )
             }
 
+            let conversationRows = try Row.fetchAll(db, sql: """
+                SELECT
+                    r.conversation_id AS group_id,
+                    COALESCE(NULLIF(c.title, ''), '未命名会话') AS label,
+                    COALESCE(SUM(u.input_tokens), 0) AS input,
+                    COALESCE(SUM(u.output_tokens), 0) AS output,
+                    COUNT(DISTINCT r.id) AS runs
+                FROM run_usage u
+                JOIN runs r ON r.id = u.run_id
+                JOIN conversations c ON c.id = r.conversation_id
+                GROUP BY r.conversation_id, c.title
+                ORDER BY (SUM(u.input_tokens) + SUM(u.output_tokens)) DESC, label
+                """)
+            let modelRows = try Row.fetchAll(db, sql: """
+                SELECT
+                    COALESCE(r.model_id, 'legacy-model') AS group_id,
+                    COALESCE(
+                        MAX(NULLIF(r.model_name_snapshot, '')),
+                        '历史任务（模型未记录）'
+                    ) AS label,
+                    COALESCE(SUM(u.input_tokens), 0) AS input,
+                    COALESCE(SUM(u.output_tokens), 0) AS output,
+                    COUNT(DISTINCT r.id) AS runs
+                FROM run_usage u
+                JOIN runs r ON r.id = u.run_id
+                GROUP BY COALESCE(r.model_id, 'legacy-model')
+                ORDER BY (SUM(u.input_tokens) + SUM(u.output_tokens)) DESC, label
+                """)
+            let providerRows = try Row.fetchAll(db, sql: """
+                SELECT
+                    COALESCE(r.provider_id, 'legacy-provider') AS group_id,
+                    COALESCE(
+                        MAX(NULLIF(r.provider_name_snapshot, '')),
+                        '历史任务（供应商未记录）'
+                    ) AS label,
+                    COALESCE(SUM(u.input_tokens), 0) AS input,
+                    COALESCE(SUM(u.output_tokens), 0) AS output,
+                    COUNT(DISTINCT r.id) AS runs
+                FROM run_usage u
+                JOIN runs r ON r.id = u.run_id
+                GROUP BY COALESCE(r.provider_id, 'legacy-provider')
+                ORDER BY (SUM(u.input_tokens) + SUM(u.output_tokens)) DESC, label
+                """)
+
             return UsageStatistics(
                 totalInputTokens: totalInput,
                 totalOutputTokens: totalOutput,
                 totalTokens: totalInput + totalOutput,
                 totalRuns: totalRuns,
-                byDay: byDay
+                byDay: byDay,
+                byConversation: conversationRows.map(Self.usageBreakdown(from:)),
+                byModel: modelRows.map(Self.usageBreakdown(from:)),
+                byProvider: providerRows.map(Self.usageBreakdown(from:))
             )
         }
+    }
+
+    private static func usageBreakdown(from row: Row) -> UsageBreakdown {
+        UsageBreakdown(
+            id: row["group_id"],
+            label: row["label"],
+            inputTokens: row["input"],
+            outputTokens: row["output"],
+            runs: row["runs"]
+        )
     }
 }

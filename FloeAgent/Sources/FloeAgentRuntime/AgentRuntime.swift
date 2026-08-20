@@ -1033,6 +1033,7 @@ public actor FloeAgentRuntime {
             toolCall: call,
             riskLabels: Set(descriptor.riskLabels.map(\.rawValue)),
             userGoal: messages.last(where: { $0.role == "user" })?.content ?? "",
+            recentContext: Self.approvalContext(from: messages),
             hostAndPathScope: call.scope
         )
         // Catastrophic gate runs before every policy.
@@ -1044,7 +1045,7 @@ public actor FloeAgentRuntime {
             }
         }
         let decision: ApprovalDecision
-        if !descriptor.isSideEffecting {
+        if !descriptor.isSideEffecting, policy.policyName != "approval-model" {
             decision = .allow(scope: Self.approvalScope(for: call), expiresAt: nil)
         } else {
             // Surface "approval model is deciding" to the UI while the model
@@ -1087,6 +1088,16 @@ public actor FloeAgentRuntime {
         case .stopped(let gateReason):
             return .stopped(reason: gateReason)
         }
+    }
+
+    /// Recent conversational evidence supplied to the approval classifier.
+    /// Tool output and user text are deliberately bounded so one decision
+    /// cannot expand the provider request without limit.
+    private static func approvalContext(from messages: [ConversationMessage]) -> String {
+        let projected = messages.suffix(12).map { message in
+            "\(message.role): \(String(message.content.prefix(1200)))"
+        }.joined(separator: "\n")
+        return String(projected.suffix(8192))
     }
 
     /// Resolves the run-scoped plan hand-off without registering it in the

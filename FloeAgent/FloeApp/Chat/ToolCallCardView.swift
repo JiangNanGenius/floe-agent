@@ -9,6 +9,9 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import CryptoKit
+import FloeCore
+import FloeModels
 
 /// Presentation model for one tool call card. `status` accepts the
 /// producer's raw vocabulary (`ok` / `failed` / `pending`) plus the
@@ -24,6 +27,9 @@ struct ToolCallCardView: View {
     var resultSummary: String? = nil
     /// Wall-clock duration when known.
     var duration: TimeInterval? = nil
+    /// Digest-addressed files returned by the tool. Image artifacts render
+    /// directly in the conversation and expose the system save/share sheet.
+    var artifacts: [ToolArtifactReference] = []
 
     @State private var isExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -31,6 +37,9 @@ struct ToolCallCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
+            if !imageArtifacts.isEmpty {
+                ArtifactImageGallery(artifacts: imageArtifacts)
+            }
             if isExpanded {
                 detail
             }
@@ -119,6 +128,10 @@ struct ToolCallCardView: View {
         (inputSummary?.isEmpty == false) || (resultSummary?.isEmpty == false)
     }
 
+    private var imageArtifacts: [ToolArtifactReference] {
+        artifacts.filter { $0.mimeType == "image/png" || $0.mimeType == "image/jpeg" }
+    }
+
     private var statusIcon: String {
         switch status {
         case "ok", "completed": "checkmark.circle"
@@ -153,6 +166,87 @@ struct ToolCallCardView: View {
             )
         }
         return String(format: String(localized: "tool.duration.s"), seconds)
+    }
+}
+
+private struct ArtifactImageGallery: View {
+    let artifacts: [ToolArtifactReference]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(artifacts) { artifact in
+                ArtifactImageView(artifact: artifact)
+            }
+        }
+    }
+}
+
+private struct ArtifactImageView: View {
+    let artifact: ToolArtifactReference
+    @State private var image: UIImage?
+    @State private var fileURL: URL?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let image, let fileURL {
+                VStack(alignment: .leading, spacing: 8) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .accessibilityLabel("生成的图片")
+                    ShareLink(item: fileURL) {
+                        Label("保存或共享图片", systemImage: "square.and.arrow.up")
+                    }
+                    .font(FloeTheme.Typography.metadata)
+                }
+            } else if failed {
+                Label("生成图片已返回，但本地文件校验失败", systemImage: "exclamationmark.triangle")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(FloeTheme.destructive)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .task(id: artifact.id) { loadVerifiedImage() }
+    }
+
+    private func loadVerifiedImage() {
+        guard artifact.byteCount > 0,
+              artifact.byteCount <= 12 * 1_024 * 1_024,
+              !artifact.relativePath.hasPrefix("/"),
+              !artifact.relativePath.split(separator: "/").contains(".."),
+              artifact.relativePath.hasPrefix("GeneratedImages/") ||
+                artifact.relativePath.hasPrefix("BrowserArtifacts/"),
+              let support = FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+              ).first else {
+            failed = true
+            return
+        }
+        let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
+            .standardizedFileURL
+        let candidate = root.appendingPathComponent(artifact.relativePath)
+            .standardizedFileURL
+        let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        guard candidate.path.hasPrefix(prefix),
+              let data = try? Data(floeContentsOf: candidate, options: [.mappedIfSafe]),
+              data.count == artifact.byteCount else {
+            failed = true
+            return
+        }
+        let digest = SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }.joined()
+        guard digest == artifact.sha256.lowercased(), let decoded = UIImage(data: data) else {
+            failed = true
+            return
+        }
+        image = decoded
+        fileURL = candidate
     }
 }
 #endif

@@ -14,15 +14,27 @@ import AVFoundation
 
 @MainActor
 final class BackgroundVideoService: NSObject, ObservableObject {
+    struct GuidanceHint: Sendable {
+        var label: String
+        var instruction: String
+        var point: CGPoint
+    }
+
     @Published private(set) var isPiPActive = false
     @Published private(set) var isPreparingPiP = false
     @Published private(set) var lastError: String?
+    /// Called only when AVKit/system closes PiP while Floe still owns the
+    /// controller. Programmatic run teardown clears ownership first.
+    var onUserStopped: (() -> Void)?
 
     private var pipController: AVPictureInPictureController?
     private var playerLayer: AVPlayerLayer?
     private var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
     private var currentTitle = ""
+    private var currentProgress = ""
+    private var guidanceImage: UIImage?
+    private var guidanceHints: [GuidanceHint] = []
     private var refreshTask: Task<Void, Never>?
     private var startGeneration: UInt64 = 0
     private var currentAssetURL: URL?
@@ -36,6 +48,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         startGeneration &+= 1
         let generation = startGeneration
         currentTitle = title
+        currentProgress = initialProgress
+        guidanceImage = nil
+        guidanceHints = []
         stopPiPInternal()
         isPreparingPiP = true
         lastError = nil
@@ -46,7 +61,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         configureAudioSession()
         guard let assetURL = await synthesizeProgressVideo(
             title: title,
-            progress: initialProgress
+            progress: initialProgress,
+            guidanceImage: nil,
+            guidanceHints: []
         ) else {
             lastError = "无法创建画中画进度视频"
             deactivateAudioSession()
@@ -107,13 +124,40 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     /// Updates the progress text and re-renders the looping video so the PiP
     /// actually reflects the latest state instead of a frozen first frame.
     func update(progress: String) {
+        update(title: currentTitle, progress: progress)
+    }
+
+    func update(title: String, progress: String) {
+        currentTitle = title
+        currentProgress = progress
+        let generation = startGeneration
+        refreshTask?.cancel()
+        refreshTask = Task { @MainActor [weak self] in
+            guard let self, generation == self.startGeneration else { return }
+            await self.refreshVideo(
+                title: title,
+                progress: progress,
+                guidanceImage: self.guidanceImage,
+                guidanceHints: self.guidanceHints,
+                generation: generation
+            )
+        }
+    }
+
+    /// Replaces task progress with the latest operation guide while a real
+    /// shared frame and hints exist. Clearing guidance returns PiP to progress.
+    func updateGuidance(image: UIImage?, hints: [GuidanceHint]) {
+        guidanceImage = image
+        guidanceHints = hints
         let generation = startGeneration
         refreshTask?.cancel()
         refreshTask = Task { @MainActor [weak self] in
             guard let self, generation == self.startGeneration else { return }
             await self.refreshVideo(
                 title: self.currentTitle,
-                progress: progress,
+                progress: self.currentProgress,
+                guidanceImage: image,
+                guidanceHints: hints,
                 generation: generation
             )
         }
@@ -121,9 +165,20 @@ final class BackgroundVideoService: NSObject, ObservableObject {
 
     /// Re-synthesizes the progress asset and hot-swaps the player item so the
     /// floating PiP shows the latest title/progress without restarting PiP.
-    private func refreshVideo(title: String, progress: String, generation: UInt64) async {
+    private func refreshVideo(
+        title: String,
+        progress: String,
+        guidanceImage: UIImage?,
+        guidanceHints: [GuidanceHint],
+        generation: UInt64
+    ) async {
         guard isPiPActive, let player else { return }
-        guard let assetURL = await synthesizeProgressVideo(title: title, progress: progress) else { return }
+        guard let assetURL = await synthesizeProgressVideo(
+            title: title,
+            progress: progress,
+            guidanceImage: guidanceImage,
+            guidanceHints: guidanceHints
+        ) else { return }
         guard !Task.isCancelled, generation == startGeneration, isPiPActive else {
             try? FileManager.default.removeItem(at: assetURL)
             return
@@ -155,6 +210,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         player?.pause()
         player = nil
         playerLayer = nil
+        guidanceImage = nil
+        guidanceHints = []
         removeInlinePreview()
         if let currentAssetURL {
             try? FileManager.default.removeItem(at: currentAssetURL)
@@ -178,6 +235,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         player?.pause()
         player = nil
         playerLayer = nil
+        guidanceImage = nil
+        guidanceHints = []
         removeInlinePreview()
         if let currentAssetURL {
             try? FileManager.default.removeItem(at: currentAssetURL)
@@ -185,6 +244,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         }
         isPiPActive = false
         deactivateAudioSession()
+        onUserStopped?()
     }
 
     /// Configures the audio session for background playback so the PiP video
@@ -234,12 +294,63 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         inlinePreview = nil
     }
 
-    private func renderProgressFrame(title: String, progress: String) -> UIImage? {
+    private func renderProgressFrame(
+        title: String,
+        progress: String,
+        guidanceImage: UIImage?,
+        guidanceHints: [GuidanceHint]
+    ) -> UIImage? {
         let size = CGSize(width: 640, height: 360)
         let renderer = UIGraphicsImageRenderer(size: size)
         return renderer.image { context in
             UIColor.black.setFill()
             context.fill(CGRect(origin: .zero, size: size))
+            if let guidanceImage, !guidanceHints.isEmpty {
+                let sourceSize = guidanceImage.size
+                let scale = min(size.width / max(1, sourceSize.width), size.height / max(1, sourceSize.height))
+                let fitted = CGSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
+                let imageRect = CGRect(
+                    x: (size.width - fitted.width) / 2,
+                    y: (size.height - fitted.height) / 2,
+                    width: fitted.width,
+                    height: fitted.height
+                )
+                guidanceImage.draw(in: imageRect)
+                for (index, hint) in guidanceHints.prefix(4).enumerated() {
+                    let center = CGPoint(
+                        x: imageRect.minX + min(max(hint.point.x, 0), 1) * imageRect.width,
+                        y: imageRect.minY + min(max(hint.point.y, 0), 1) * imageRect.height
+                    )
+                    let marker = CGRect(x: center.x - 18, y: center.y - 18, width: 36, height: 36)
+                    UIColor.systemYellow.withAlphaComponent(0.3).setFill()
+                    context.cgContext.fillEllipse(in: marker)
+                    UIColor.systemYellow.setStroke()
+                    context.cgContext.setLineWidth(3)
+                    context.cgContext.strokeEllipse(in: marker)
+                    let number = "\(index + 1)" as NSString
+                    number.draw(
+                        at: CGPoint(x: center.x - 6, y: center.y - 10),
+                        withAttributes: [
+                            .font: UIFont.systemFont(ofSize: 17, weight: .bold),
+                            .foregroundColor: UIColor.systemYellow
+                        ]
+                    )
+                }
+                let instruction = guidanceHints.prefix(2).enumerated().map {
+                    "\($0.offset + 1). \($0.element.instruction)"
+                }.joined(separator: "   ")
+                let overlay = CGRect(x: 0, y: size.height - 66, width: size.width, height: 66)
+                UIColor.black.withAlphaComponent(0.78).setFill()
+                context.fill(overlay)
+                (instruction as NSString).draw(
+                    in: overlay.insetBy(dx: 18, dy: 12),
+                    withAttributes: [
+                        .font: UIFont.systemFont(ofSize: 17, weight: .semibold),
+                        .foregroundColor: UIColor.white
+                    ]
+                )
+                return
+            }
             let titleAttributes: [NSAttributedString.Key: Any] = [
                 .font: UIFont.systemFont(ofSize: 24, weight: .semibold),
                 .foregroundColor: UIColor.white
@@ -259,11 +370,21 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     /// background via the `audio` background mode only while audio is actually
     /// playing, so a video-only PiP still gets suspended the moment it
     /// backgrounds. The silent track satisfies that requirement.
-    private func synthesizeProgressVideo(title: String, progress: String) async -> URL? {
+    private func synthesizeProgressVideo(
+        title: String,
+        progress: String,
+        guidanceImage: UIImage?,
+        guidanceHints: [GuidanceHint]
+    ) async -> URL? {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("floe-progress-\(UUID().uuidString).mp4")
         let size = CGSize(width: 640, height: 360)
-        guard let frame = renderProgressFrame(title: title, progress: progress),
+        guard let frame = renderProgressFrame(
+            title: title,
+            progress: progress,
+            guidanceImage: guidanceImage,
+            guidanceHints: guidanceHints
+        ),
               let cgImage = frame.cgImage else { return nil }
         do {
             let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)

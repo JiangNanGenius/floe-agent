@@ -119,7 +119,7 @@ struct AgentPermissionsView: View {
                 Task { await authenticateFullAccess() }
             }
         } message: {
-            Text("该设置只影响以后新建的任务。普通操作可自动执行；删除、凭据和上传仍会询问，灾难性命令始终阻止。")
+            Text("该设置只影响以后新建的任务。任务内工具会自动执行；灾难性命令始终阻止，软件包安装仍需源码审查。")
         }
     }
 

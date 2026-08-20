@@ -20,6 +20,11 @@ final class ScreenShareCenter: NSObject, ObservableObject {
     @Published private(set) var latestFrame: UIImage?
     /// Detected guide hints from frame analysis (element text + tap point).
     @Published private(set) var guideHints: [GuideHint] = []
+    /// A task-start request waiting for the matching thread to present the
+    /// system ReplayKit picker. ReplayKit still owns the final consent tap.
+    @Published private(set) var requestedConversationID: UUID?
+
+    var onGuidanceChanged: ((UIImage?, [GuideHint]) -> Void)?
 
     static let appGroupID = "group.org.floeagent.ios"
     static let screenShareExtensionID = "org.floeagent.ios.screenshare"
@@ -61,6 +66,17 @@ final class ScreenShareCenter: NSObject, ObservableObject {
         }
     }
 
+    func requestBroadcast(for conversationID: UUID) {
+        requestedConversationID = conversationID
+        startSharing()
+    }
+
+    func consumeBroadcastRequest(for conversationID: UUID) -> Bool {
+        guard requestedConversationID == conversationID else { return false }
+        requestedConversationID = nil
+        return true
+    }
+
     func stopSharing() {
         isSharing = false
         isWaitingForBroadcast = false
@@ -69,6 +85,7 @@ final class ScreenShareCenter: NSObject, ObservableObject {
         framePollTask = nil
         latestFrame = nil
         guideHints = []
+        onGuidanceChanged?(nil, [])
         activeSessionID = nil
         analysisConsentSessionID = nil
         removeSharedFrame()
@@ -90,6 +107,7 @@ final class ScreenShareCenter: NSObject, ObservableObject {
             the normalized center of the tappable element. No prose outside the JSON.
             """)
         guideHints = Self.guideHints(from: description)
+        onGuidanceChanged?(snapshot.image, guideHints)
     }
 
     var analysisDestinationName: String {
@@ -184,16 +202,19 @@ final class ScreenShareCenter: NSObject, ObservableObject {
 
     private func refreshSharedFrame() {
         guard let snapshot = latestFrameSnapshot() else {
+            let hadGuidance = !guideHints.isEmpty
             isSharing = false
             latestFrame = nil
             activeSessionID = nil
             analysisConsentSessionID = nil
             guideHints = []
+            if hadGuidance { onGuidanceChanged?(nil, []) }
             return
         }
         if activeSessionID != snapshot.state.sessionID {
             analysisConsentSessionID = nil
             guideHints = []
+            onGuidanceChanged?(nil, [])
         }
         activeSessionID = snapshot.state.sessionID
         isSharing = true

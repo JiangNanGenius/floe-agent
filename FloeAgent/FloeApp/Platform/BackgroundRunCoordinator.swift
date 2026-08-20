@@ -106,13 +106,17 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
     }
 
+    /// A manual/system PiP close is respected for the current active batch.
+    /// A later newly-started task will call `didStart` and request PiP again.
+    func didClosePictureInPicture() {
+        surfacedRunID = nil
+    }
+
     /// Applies the user's background-execution choice when a run starts.
     /// `standard` relies on the 30s lease + continued task (no extra UI);
-    /// `pictureInPicture` starts the progress video; `screenShare` expects the
-    /// user to have started broadcasting from the thread's share entry.
-    /// When the chosen surface needs a system permission the user hasn't
-    /// granted yet, this surfaces a local notification asking them to grant
-    /// it, so starting any task prompts instead of silently doing nothing.
+    /// Both visual modes start a real task-progress PiP. Screen-share mode
+    /// additionally asks the matching thread to present ReplayKit's system
+    /// consent flow as soon as the task starts.
     private func applyBackgroundExecutionPreference(
         runID: UUID,
         conversationID: UUID,
@@ -124,27 +128,38 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         case .pictureInPicture:
             surfacedRunID = runID
             if environment.backgroundVideoService.isPiPActive {
-                environment.backgroundVideoService.stop()
-            }
-            Task { [weak self] in
-                guard let self else { return }
-                await self.environment.backgroundVideoService.begin(
+                environment.backgroundVideoService.update(
                     title: runTitle,
-                    initialProgress: "正在运行"
+                    progress: "正在运行"
                 )
+            } else {
+                Task { [weak self] in
+                    guard let self else { return }
+                    await self.environment.backgroundVideoService.begin(
+                        title: runTitle,
+                        initialProgress: "正在运行"
+                    )
+                }
             }
         case .screenShare:
-            // Screen sharing is started by the user from the thread's share
-            // entry. When it isn't active but the preference selected it,
-            // notify so the user can start it (and grant the broadcast
-            // permission) instead of the task running with no keep-alive.
-            if !environment.screenShareCenter.isSharing {
-                postNotification(
-                    identifier: "background.screenshare.\(UUID().uuidString)",
-                    conversationID: conversationID,
-                    title: "需要开启屏幕共享",
-                    body: "后台执行已选「屏幕共享引导」。请回到任务里点「共享屏幕」以在后台保持运行。"
+            surfacedRunID = runID
+            if environment.backgroundVideoService.isPiPActive {
+                environment.backgroundVideoService.update(
+                    title: runTitle,
+                    progress: environment.screenShareCenter.isSharing
+                        ? "正在共享屏幕" : "等待屏幕共享授权"
                 )
+            } else {
+                Task { [weak self] in
+                    guard let self else { return }
+                    await self.environment.backgroundVideoService.begin(
+                        title: runTitle,
+                        initialProgress: "等待屏幕共享授权"
+                    )
+                }
+            }
+            if !environment.screenShareCenter.isSharing {
+                environment.screenShareCenter.requestBroadcast(for: conversationID)
             }
         }
     }
@@ -158,9 +173,16 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// still active, move the surface to a real remaining run instead of
     /// leaving the completed title frozen indefinitely.
     private func resumeBackgroundSurfaceIfNeeded() {
-        guard environment.settingsCenter.backgroundExecution == .pictureInPicture,
+        guard environment.settingsCenter.backgroundExecution != .standard,
               let (runID, run) = activeRuns.first else { return }
         surfacedRunID = runID
+        if environment.backgroundVideoService.isPiPActive {
+            environment.backgroundVideoService.update(
+                title: run.title,
+                progress: "正在运行"
+            )
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             await self.environment.backgroundVideoService.begin(

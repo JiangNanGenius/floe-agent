@@ -53,6 +53,20 @@ struct ThreadDetailView: View {
         .task {
             viewModel.selectedRunID = router.selectedRunID
             await viewModel.load()
+            presentRequestedScreenShareIfNeeded()
+        }
+        .onReceive(environment.screenShareCenter.$requestedConversationID) { _ in
+            presentRequestedScreenShareIfNeeded()
+        }
+        .onReceive(environment.screenShareCenter.$isSharing) { isSharing in
+            guard isSharing,
+                  environment.settingsCenter.backgroundExecution == .screenShare else { return }
+            showingScreenShare = false
+            if environment.screenShareCenter.hasScreenAnalysisConsent {
+                showingScreenShareGuide = true
+            } else {
+                confirmingScreenTransmission = true
+            }
         }
         .onDisappear { viewModel.stopLiveUpdates() }
         .sheet(item: $editingPendingInput) { input in
@@ -314,19 +328,6 @@ struct ThreadDetailView: View {
                     }
                 }
                 Divider()
-                Button("共享屏幕", systemImage: "rectangle.on.rectangle") {
-                    showingScreenShare = true
-                }
-                if environment.screenShareCenter.isSharing {
-                    Button("操作引导", systemImage: "hand.tap") {
-                        if environment.screenShareCenter.hasScreenAnalysisConsent {
-                            showingScreenShareGuide = true
-                        } else {
-                            confirmingScreenTransmission = true
-                        }
-                    }
-                }
-                Divider()
                 inspectorButton("变更", icon: "arrow.triangle.2.circlepath", content: .changes)
                 inspectorButton("文件", icon: "folder", content: .workspaceFiles)
                 inspectorButton("浏览器", icon: "safari", content: .browser)
@@ -373,6 +374,13 @@ struct ThreadDetailView: View {
                     .accessibilityIdentifier("thread.run_state.\(state)")
             }
         }
+    }
+
+    private func presentRequestedScreenShareIfNeeded() {
+        guard environment.screenShareCenter.consumeBroadcastRequest(
+            for: viewModel.conversationID
+        ) else { return }
+        showingScreenShare = true
     }
 
     private func inspectorButton(

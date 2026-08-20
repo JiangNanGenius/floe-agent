@@ -104,6 +104,14 @@ struct ThreadEventView: View {
 
         case .toolResult:
             let status = payload["status"] ?? "ok"
+            let artifacts: [ToolArtifactReference] = {
+                guard let encoded = payload["artifactRefsJSON"],
+                      let data = encoded.data(using: .utf8) else { return [] }
+                return (try? JSONDecoder().decode(
+                    [ToolArtifactReference].self,
+                    from: data
+                )) ?? []
+            }()
             ToolCallCardView(
                 name: payload["tool"]
                     ?? String(localized: "tool.result"),
@@ -111,7 +119,8 @@ struct ThreadEventView: View {
                 inputSummary: payload["input"],
                 resultSummary: payload["summary"],
                 duration: payload["durationMs"].flatMap(Double.init)
-                    .map { $0 / 1000 }
+                    .map { $0 / 1000 },
+                artifacts: artifacts
             )
 
         case .approval:

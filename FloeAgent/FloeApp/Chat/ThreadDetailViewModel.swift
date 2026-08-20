@@ -206,12 +206,10 @@ final class ThreadDetailViewModel: ObservableObject {
         // reply in stored sequence order (before terminal).
         events = try await center.environment.runStore.events(runID: runID)
         eventsByRun[runID] = events
-        let errors = try await center.environment.runStore.errors(runID: runID)
-        if selectedRun?.state == "failed", let latest = errors.last {
-            actionError = latest.message
-        } else {
-            actionError = nil
-        }
+        // Historical run failures already live in the selected run's ordered
+        // timeline. Never resurrect one as a new composer error when the user
+        // opens the task or starts a later run.
+        actionError = nil
     }
 
     private func loadAllEvents() async throws {
@@ -221,12 +219,6 @@ final class ThreadDetailViewModel: ObservableObject {
         }
         eventsByRun = loaded
         events = selectedRun.flatMap { loaded[$0.id] } ?? []
-        if selectedRun?.state == "failed", let runID = selectedRun?.id {
-            let errors = try await center.environment.runStore.errors(runID: runID)
-            actionError = errors.last?.message
-        } else {
-            actionError = nil
-        }
     }
 
     func dismissActionError() {
@@ -624,11 +616,15 @@ final class ThreadDetailViewModel: ObservableObject {
                     self.hasProviderActivity = true
                 case .toolLifecycle(.requested):
                     // Tool boundary: the answer segment is durable now. Clear
-                    // the live tail so the persisted assistant row — not a
-                    // duplicate — takes over.
+                    // both live buffers so their persisted rows — not a
+                    // duplicate live reasoning block — take over.
                     if !answerTarget.isEmpty {
                         answerTarget = ""
                         self.animator.reset()
+                    }
+                    if !reasoningTarget.isEmpty {
+                        reasoningTarget = ""
+                        self.reasoningAnimator.reset()
                     }
                     self.hasProviderActivity = true
                 case .userInputConsumed:

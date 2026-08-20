@@ -189,7 +189,7 @@ struct ApprovalPolicyTests {
         #expect(decision.permitsExecution)
     }
 
-    @Test("Full access still asks before irreversible or persistent sensitive actions")
+    @Test("Full access permits task actions after the catastrophic gate")
     func taskFullAccessSensitiveBoundary() async throws {
         let policy = TaskFullAccessPolicy()
         #expect(try await policy.decide(action()).permitsExecution)
@@ -197,12 +197,7 @@ struct ApprovalPolicyTests {
             "deletesFiles", "accessesCredentials", "sendsDataToProvider",
             "persistsPersonalData", "changesAgentBehavior"
         ] {
-            guard case .escalateToHuman = try await policy.decide(
-                action(riskLabels: [risk])
-            ) else {
-                Issue.record("\(risk) must require a user decision")
-                return
-            }
+            #expect(try await policy.decide(action(riskLabels: [risk])).permitsExecution)
         }
     }
 

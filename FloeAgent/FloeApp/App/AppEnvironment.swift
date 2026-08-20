@@ -106,8 +106,33 @@ final class AppEnvironment: ObservableObject {
     var skillDreamService: SkillDreamService { _skillDreamService }
     var speechService: SpeechService { _speechService }
     var backgroundRunCoordinator: BackgroundRunCoordinator { _backgroundRunCoordinator }
-    var screenShareCenter: ScreenShareCenter { _screenShareCenter }
-    var backgroundVideoService: BackgroundVideoService { _backgroundVideoService }
+    var screenShareCenter: ScreenShareCenter {
+        let center = _screenShareCenter
+        if center.onGuidanceChanged == nil {
+            center.onGuidanceChanged = { [weak self] image, hints in
+                self?.backgroundVideoService.updateGuidance(
+                    image: image,
+                    hints: hints.map {
+                        BackgroundVideoService.GuidanceHint(
+                            label: $0.elementText,
+                            instruction: $0.instruction,
+                            point: $0.tapPoint
+                        )
+                    }
+                )
+            }
+        }
+        return center
+    }
+    var backgroundVideoService: BackgroundVideoService {
+        let service = _backgroundVideoService
+        if service.onUserStopped == nil {
+            service.onUserStopped = { [weak self] in
+                self?.backgroundRunCoordinator.didClosePictureInPicture()
+            }
+        }
+        return service
+    }
 
     // MARK: State
 

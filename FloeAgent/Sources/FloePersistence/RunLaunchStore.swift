@@ -26,6 +26,10 @@ public struct RunLaunchRequest: Sendable, Hashable {
     /// `goalContinuation` is an internal cycle prompt. It is durable for
     /// audit/recovery, but is not rendered as a user-authored chat message.
     public var messageRole: String
+    public var providerID: UUID?
+    public var modelID: UUID?
+    public var providerName: String?
+    public var modelName: String?
 
     public init(
         conversationID: UUID? = nil,
@@ -38,6 +42,10 @@ public struct RunLaunchRequest: Sendable, Hashable {
         conversationMode: String = "chat",
         initialPolicy: DraftTaskPolicy = DraftTaskPolicy(),
         messageRole: String = "user",
+        providerID: UUID? = nil,
+        modelID: UUID? = nil,
+        providerName: String? = nil,
+        modelName: String? = nil,
         startedAt: Date = Date()
     ) {
         self.conversationID = conversationID
@@ -50,6 +58,10 @@ public struct RunLaunchRequest: Sendable, Hashable {
         self.conversationMode = conversationMode
         self.initialPolicy = initialPolicy
         self.messageRole = messageRole
+        self.providerID = providerID
+        self.modelID = modelID
+        self.providerName = providerName
+        self.modelName = modelName
         self.startedAt = startedAt
     }
 }
@@ -237,19 +249,29 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 conversationID: conversation.id,
                 state: request.initialState,
                 goal: goal,
-                startedAt: now
+                startedAt: now,
+                providerID: request.providerID,
+                modelID: request.modelID,
+                providerName: request.providerName,
+                modelName: request.modelName
             )
             try db.execute(
                 sql: """
-                    INSERT INTO runs (id, conversation_id, state, goal, started_at, ended_at, goal_id)
-                    VALUES (?, ?, ?, ?, ?, NULL, NULL)
+                    INSERT INTO runs (
+                        id, conversation_id, state, goal, started_at, ended_at, goal_id,
+                        provider_id, model_id, provider_name_snapshot, model_name_snapshot
+                    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
                     """,
                 arguments: [
                     run.id.uuidString,
                     run.conversationID.uuidString,
                     run.state,
                     run.goal,
-                    PersistenceCodec.encode(run.startedAt)
+                    PersistenceCodec.encode(run.startedAt),
+                    run.providerID?.uuidString,
+                    run.modelID?.uuidString,
+                    run.providerName,
+                    run.modelName
                 ]
             )
 

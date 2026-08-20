@@ -34,7 +34,7 @@ public extension BackgroundExecutionPreference {
         switch self {
         case .standard: return "30 秒完成窗口 + 动态岛进度 + 检查点恢复"
         case .pictureInPicture: return "浮窗播任务进度视频，切后台不断流"
-        case .screenShare: return "共享屏幕画面 + 操作引导，扩展后台保活"
+        case .screenShare: return "任务开始时自动打开系统共享授权；画中画显示任务进度或操作引导"
         }
     }
 }

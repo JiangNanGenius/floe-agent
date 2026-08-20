@@ -12,12 +12,22 @@ public struct ProposedAction: Sendable, Codable {
     public var riskLabels: Set<String>
     /// The user's original goal, truncated to 2 KiB.
     public var userGoal: String
+    /// A bounded, plain-text projection of the most recent conversation.
+    /// This is context for the classifier only; it never becomes authority.
+    public var recentContext: String
     public var hostAndPathScope: ToolScope
 
-    public init(toolCall: ToolCall, riskLabels: Set<String>, userGoal: String, hostAndPathScope: ToolScope) {
+    public init(
+        toolCall: ToolCall,
+        riskLabels: Set<String>,
+        userGoal: String,
+        recentContext: String = "",
+        hostAndPathScope: ToolScope
+    ) {
         self.toolCall = toolCall
         self.riskLabels = riskLabels
         self.userGoal = String(userGoal.prefix(2048))
+        self.recentContext = String(recentContext.prefix(8192))
         self.hostAndPathScope = hostAndPathScope
     }
 }
@@ -74,9 +84,12 @@ public struct ModelApprovalPolicy: ApprovalPolicy {
 /// be bypassed. Without a model, safe local mutations remain deterministic
 /// while sensitive actions fail closed to the user.
 public struct AutomaticApprovalPolicy: ApprovalPolicy {
-    public let policyName = "automatic"
     private let backend: (any ModelApprovalPolicy.DecisionBackend)?
     private let packageReviewBackend: (any ModelApprovalPolicy.DecisionBackend)?
+
+    /// The runtime uses this identity to route every tool call (including
+    /// read-only calls) through the configured classifier exactly once.
+    public var policyName: String { backend == nil ? "automatic" : "approval-model" }
 
     public init(
         backend: (any ModelApprovalPolicy.DecisionBackend)? = nil,
@@ -142,9 +155,9 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy {
     }
 }
 
-/// Per-task full access removes ordinary prompts, but does not turn deletion,
-/// credential access or data upload into ambient authority. Those categories
-/// remain explicit single-action decisions in every user-facing mode.
+/// Per-task full access removes ordinary prompts for this task. The
+/// catastrophic command gate still runs before this policy, and managed
+/// Python package requests still receive their dedicated source review.
 public struct TaskFullAccessPolicy: ApprovalPolicy {
     public let policyName = "full-access"
 
@@ -165,18 +178,6 @@ public struct TaskFullAccessPolicy: ApprovalPolicy {
             }
         }
 
-        let alwaysAsk: Set<String> = [
-            "deletesFiles",
-            "accessesCredentials",
-            "sendsDataToProvider",
-            "executesLocalCode",
-            "persistsPersonalData",
-            "changesAgentBehavior"
-        ]
-        if !action.riskLabels.isDisjoint(with: alwaysAsk),
-           action.toolCall.toolName != "exec.localPython" {
-            return .escalateToHuman(reason: "This sensitive action always requires explicit approval")
-        }
         return .allow(
             scope: AutomaticApprovalPolicyScope.scope(for: action.toolCall),
             expiresAt: nil

@@ -54,6 +54,9 @@ struct UsageStatisticsView: View {
                         }
                     }
                 }
+                usageSection("按会话", rows: stats.byConversation)
+                usageSection("按模型", rows: stats.byModel)
+                usageSection("按供应商", rows: stats.byProvider)
             } else if isLoading {
                 ProgressView()
             } else {
@@ -65,6 +68,29 @@ struct UsageStatisticsView: View {
         }
         .navigationTitle("用量统计")
         .task { await load() }
+    }
+
+    @ViewBuilder
+    private func usageSection(_ title: String, rows: [UsageBreakdown]) -> some View {
+        Section(title) {
+            if rows.isEmpty {
+                Text("暂无数据")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(rows) { row in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(row.label)
+                        HStack {
+                            Text("输入 \(row.inputTokens) · 输出 \(row.outputTokens)")
+                            Spacer()
+                            Text("\(row.totalTokens) token · \(row.runs) 任务")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
     }
 
     private func load() async {

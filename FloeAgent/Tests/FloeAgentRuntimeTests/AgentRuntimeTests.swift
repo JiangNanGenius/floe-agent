@@ -132,6 +132,19 @@ final class MockCheckpointStore: CheckpointStore, @unchecked Sendable {
     }
 }
 
+final class RecordingApprovalBackend: ModelApprovalPolicy.DecisionBackend, @unchecked Sendable {
+    private let storage = AsyncLock<[ProposedAction]>([])
+    var actions: [ProposedAction] { storage.withLock { $0 } }
+
+    func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+        storage.withLock { $0.append(action) }
+        return .allow(
+            scope: ApprovalScope(toolName: action.toolCall.toolName, singleUse: true),
+            expiresAt: nil
+        )
+    }
+}
+
 final class MockSink: AgentEventSink, @unchecked Sendable {
     private let storage = AsyncLock<(transitions: [String], events: [AgentEvent])>(([], []))
     var transitions: [String] { storage.withLock { $0.transitions } }
@@ -150,6 +163,34 @@ final class MockSink: AgentEventSink, @unchecked Sendable {
 
 @Suite("FloeAgentRuntime.StateMachine")
 struct AgentRuntimeTests {
+
+    @Test("Automatic approval model reviews a read-only tool exactly once with context")
+    func approvalModelReviewsEveryToolExactlyOnce() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(try TestFixtures.toolCall(id: "review-read"))],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors["test.echo"] = ToolCatalog.Descriptor(
+            name: "test.echo",
+            riskLabels: [.readsFiles],
+            isSideEffecting: false
+        )
+        let backend = RecordingApprovalBackend()
+        let runtime = makeRuntime(
+            adapter: adapter,
+            executor: executor,
+            policy: AutomaticApprovalPolicy(backend: backend)
+        )
+
+        try await runtime.start(goal: "inspect the current files")
+
+        #expect(backend.actions.count == 1)
+        #expect(backend.actions.first?.toolCall.toolName == "test.echo")
+        #expect(backend.actions.first?.recentContext.contains("inspect the current files") == true)
+        #expect(executor.executedCalls.count == 1)
+    }
 
     private func makeRuntime(
         adapter: MockAdapter,

@@ -161,7 +161,7 @@ struct TaskPermissionsInspectorView: View {
                 Task { await authenticateFullAccess() }
             }
         } message: {
-            Text("启用后，普通文件写入、远程命令和网页操作会在任务范围内自动执行；删除、凭据和上传仍会逐次询问，灾难性命令始终阻止。")
+            Text("启用后，本任务内的文件、网络、凭据、远程命令和网页操作会自动执行；灾难性命令仍始终阻止，软件包安装仍需源码审查。")
         }
     }
 
@@ -182,7 +182,7 @@ struct TaskPermissionsInspectorView: View {
         switch policy?.resolvedApprovalMode ?? .ask {
         case .ask: "读取自动运行，副作用操作会先询问。"
         case .automatic: "低风险与沙箱内 Python 自动批准；软件包安装交由审查模型，浏览器、远程执行和高风险操作仍会询问。"
-        case .fullAccess: "普通操作与沙箱内 Python 自动执行；软件包安装仍需模型审查，删除、凭据和上传仍询问。"
+        case .fullAccess: "本任务工具自动执行；灾难性命令始终阻止，软件包安装仍需模型审查。"
         }
     }
 
