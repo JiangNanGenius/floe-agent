@@ -136,6 +136,7 @@ public struct ConversationHistoryAssembler: Sendable {
     /// payloads. Detect the bytes instead of trusting legacy filename/UTI
     /// metadata, and rasterize formats such as SVG before making a data URL.
     private static func normalizedImage(_ data: Data) -> (data: Data, mimeType: String)? {
+        #if canImport(ImageIO) && canImport(UniformTypeIdentifiers)
         if data.count >= 3, data.starts(with: [0xFF, 0xD8, 0xFF]) {
             return (data, "image/jpeg")
         }
@@ -169,6 +170,12 @@ public struct ConversationHistoryAssembler: Sendable {
         ] as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return (output as Data, "image/jpeg")
+        #else
+        // ImageIO is unavailable on Linux. Attachment bytes are intentionally
+        // omitted there; provider image payloads are assembled on Apple hosts.
+        _ = data
+        return nil
+        #endif
     }
 
     #if canImport(UniformTypeIdentifiers)
