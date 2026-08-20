@@ -112,11 +112,16 @@ struct FileTreeView: View {
 
     private var treeList: some View {
         List {
-            OutlineGroup(viewModel.rootNodes, children: \.children) { node in
-                FileTreeRow(node: node) {
-                    if !node.isDirectory {
-                        onSelectFile(node.relativePath)
-                    }
+            ForEach(viewModel.visibleNodes) { visible in
+                let node = visible.node
+                FileTreeRow(
+                    node: node,
+                    depth: visible.depth,
+                    isExpanded: viewModel.expandedDirectoryPaths.contains(node.relativePath)
+                ) {
+                    if node.isDirectory {
+                        Task { await viewModel.toggleDirectory(node) }
+                    } else { onSelectFile(node.relativePath) }
                 }
                 .contextMenu { rowMenu(for: node) }
             }
@@ -227,18 +232,30 @@ struct FileTreeView: View {
 /// selects it.
 private struct FileTreeRow: View {
     let node: FileTreeNode
+    let depth: Int
+    let isExpanded: Bool
     let onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
-            Label {
+            HStack(spacing: 8) {
+                if node.isDirectory {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)
+                } else {
+                    Color.clear.frame(width: 12, height: 1)
+                }
+                Image(systemName: node.isDirectory
+                    ? (isExpanded ? "folder.fill" : "folder")
+                    : "doc.text")
+                    .foregroundStyle(node.isDirectory ? FloeTheme.primary : Color.secondary)
                 Text(node.name)
                     .font(FloeTheme.Typography.body)
                     .lineLimit(1)
-            } icon: {
-                Image(systemName: node.isDirectory ? "folder" : "doc.text")
-                    .foregroundStyle(node.isDirectory ? FloeTheme.primary : Color.secondary)
             }
+            .padding(.leading, CGFloat(depth) * 18)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }

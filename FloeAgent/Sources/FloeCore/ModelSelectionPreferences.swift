@@ -20,6 +20,9 @@ public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
     public var defaultAgentModelID: UUID?
     public var visionModelID: UUID?
     public var approvalModelID: UUID?
+    /// Tool-free model used for managed Python package review. On-device
+    /// format and sandbox checks remain authoritative.
+    public var packageReviewModelID: UUID?
     public var auxiliaryImageMode: AuxiliaryImageMode
     public var sharedImageModelID: UUID?
     public var imageGenerationModelID: UUID?
@@ -32,6 +35,7 @@ public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
         defaultAgentModelID: UUID? = nil,
         visionModelID: UUID? = nil,
         approvalModelID: UUID? = nil,
+        packageReviewModelID: UUID? = nil,
         auxiliaryImageMode: AuxiliaryImageMode = .shared,
         sharedImageModelID: UUID? = nil,
         imageGenerationModelID: UUID? = nil,
@@ -43,6 +47,7 @@ public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
         self.defaultAgentModelID = defaultAgentModelID
         self.visionModelID = visionModelID
         self.approvalModelID = approvalModelID
+        self.packageReviewModelID = packageReviewModelID
         self.auxiliaryImageMode = auxiliaryImageMode
         self.sharedImageModelID = sharedImageModelID
         self.imageGenerationModelID = imageGenerationModelID

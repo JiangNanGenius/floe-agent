@@ -9,6 +9,54 @@
 
 static NSString * const FloePythonErrorDomain = @"org.floeagent.python";
 
+#if FLOE_HAS_CPYTHON
+// The hook is registered in native code and cannot be removed by an
+// agent-authored Python script. Only the bridge's private managed-install
+// phase may import pip/ensurepip; installed application packages remain
+// importable during ordinary runs.
+static _Thread_local int FloeAllowsPackageInstaller = 0;
+static int FloeAuditHookInstalled = 0;
+
+static int FloePythonAuditHook(const char *event, PyObject *args, void *userData) {
+    (void)userData;
+    if (FloeAllowsPackageInstaller || strcmp(event, "import") != 0 || !PyTuple_Check(args)) {
+        return 0;
+    }
+    PyObject *nameObject = PyTuple_GetItem(args, 0); // borrowed
+    if (!nameObject || !PyUnicode_Check(nameObject)) { return 0; }
+    const char *name = PyUnicode_AsUTF8(nameObject);
+    if (!name) { return -1; }
+    BOOL isPip = strcmp(name, "pip") == 0 || strncmp(name, "pip.", 4) == 0;
+    BOOL isEnsurePip = strcmp(name, "ensurepip") == 0 || strncmp(name, "ensurepip.", 10) == 0;
+    if (isPip || isEnsurePip) {
+        PyErr_SetString(PyExc_PermissionError,
+            "pip is available only through Floe's reviewed packages argument");
+        return -1;
+    }
+    return 0;
+}
+
+static void FloeRemoveInstallerModules(void) {
+    PyObject *modules = PyImport_GetModuleDict(); // borrowed
+    if (!modules || !PyDict_Check(modules)) { return; }
+    PyObject *keys = PyDict_Keys(modules);
+    if (!keys) { PyErr_Clear(); return; }
+    Py_ssize_t count = PyList_Size(keys);
+    for (Py_ssize_t index = 0; index < count; index++) {
+        PyObject *key = PyList_GetItem(keys, index); // borrowed
+        if (!key || !PyUnicode_Check(key)) { continue; }
+        const char *name = PyUnicode_AsUTF8(key);
+        if (!name) { PyErr_Clear(); continue; }
+        BOOL isPip = strcmp(name, "pip") == 0 || strncmp(name, "pip.", 4) == 0;
+        BOOL isEnsurePip = strcmp(name, "ensurepip") == 0 || strncmp(name, "ensurepip.", 10) == 0;
+        if ((isPip || isEnsurePip) && PyDict_DelItem(modules, key) < 0) {
+            PyErr_Clear();
+        }
+    }
+    Py_DECREF(keys);
+}
+#endif
+
 @implementation FloeCPythonBridge
 
 static NSError *FloePythonError(NSInteger code, NSString *message) {
@@ -26,12 +74,21 @@ static NSLock *FloePythonInitLock(void) {
 }
 
 static BOOL FloeEnsurePython(NSError **error) {
-    if (Py_IsInitialized()) { return YES; }
+    if (Py_IsInitialized()) {
+        if (!FloeAuditHookInstalled && error) {
+            *error = FloePythonError(4, @"Managed-package audit hook is unavailable");
+        }
+        return FloeAuditHookInstalled != 0;
+    }
     NSLock *lock = FloePythonInitLock();
     [lock lock];
     if (Py_IsInitialized()) {
+        BOOL ready = FloeAuditHookInstalled != 0;
+        if (!ready && error) {
+            *error = FloePythonError(4, @"Managed-package audit hook is unavailable");
+        }
         [lock unlock];
-        return YES;
+        return ready;
     }
 
     NSString *home = [[[NSBundle mainBundle] resourceURL]
@@ -95,6 +152,14 @@ static BOOL FloeEnsurePython(NSError **error) {
     }
     PyConfig_Clear(&config);
 
+    if (PySys_AddAuditHook(FloePythonAuditHook, NULL) < 0) {
+        if (error) *error = FloePythonError(4, @"Could not install the managed-package audit hook");
+        PyErr_Clear();
+        [lock unlock];
+        return NO;
+    }
+    FloeAuditHookInstalled = 1;
+
     // Add the workspace packages directory to sys.path so pip --target
     // installs are importable.
     PyGILState_STATE gil = PyGILState_Ensure();
@@ -128,7 +193,8 @@ static BOOL FloeEnsurePython(NSError **error) {
 + (NSDictionary<NSString *,id> *)runScript:(NSString *)script
                                   inputJSON:(NSString *)inputJSON
                                      timeout:(NSTimeInterval)timeout
-                              maxOutputBytes:(NSInteger)maxOutputBytes {
+                              maxOutputBytes:(NSInteger)maxOutputBytes
+                       allowPackageInstaller:(BOOL)allowPackageInstaller {
 #if !FLOE_HAS_CPYTHON
     return @{ @"status": @"exception", @"error": @"Python.xcframework is not linked", @"stdout": @"" };
 #else
@@ -141,6 +207,7 @@ static BOOL FloeEnsurePython(NSError **error) {
 
     CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
     PyGILState_STATE gil = PyGILState_Ensure();
+    FloeAllowsPackageInstaller = allowPackageInstaller ? 1 : 0;
     PyObject *globals = PyDict_New();
     PyDict_SetItemString(globals, "__builtins__", PyEval_GetBuiltins());
     PyObject *source = PyUnicode_FromString(script.UTF8String);
@@ -182,6 +249,8 @@ static BOOL FloeEnsurePython(NSError **error) {
         "_floe_result=_json.dumps({'status':_floe_status,'error':_floe_error,'stdout':_floe_out.value(),'stderr':_floe_err.value(),'truncated':_floe_out.truncated,'stderrTruncated':_floe_err.truncated},ensure_ascii=False)\n";
 
     PyObject *execution = PyRun_String(runner, Py_file_input, globals, globals);
+    FloeAllowsPackageInstaller = 0;
+    FloeRemoveInstallerModules();
     NSDictionary *result = nil;
     if (execution) {
         Py_DECREF(execution);

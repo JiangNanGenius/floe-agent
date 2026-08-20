@@ -527,7 +527,8 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             messages: messages,
             tools: tools.isEmpty ? nil : tools,
             maxTokens: request.model.limits.configuredMaxOutputTokens,
-            stream: true
+            stream: true,
+            streamOptions: .init(includeUsage: true)
         )
     }
 }

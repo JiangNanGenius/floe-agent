@@ -83,6 +83,21 @@ struct ProviderListView: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button {
+                        presentedEditor = .existing(provider)
+                    } label: {
+                        Label("编辑", systemImage: "pencil")
+                    }
+                    .tint(.blue)
+                    Button(role: .destructive) {
+                        Task { await viewModel.delete(provider) }
+                    } label: {
+                        Label("删除", systemImage: "trash")
+                    }
+                }
             }
             .onDelete { offsets in
                 let targets = offsets.map { viewModel.providers[$0] }
@@ -140,6 +155,8 @@ private struct ProviderRow: View {
         }
         .padding(.vertical, 2)
         .frame(minHeight: FloeTheme.minimumTarget)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 
     private var presetName: String {

@@ -52,6 +52,17 @@ rsync -a --delete \
     --exclude 'venv/' \
     "$stdlib_source/" "$stdlib_target/"
 
+# Bundle the pinned pure-Python pip implementation so the app can offer a
+# managed installer without spawning processes. The tool constrains installs
+# to platform-independent wheels and routes every request through package
+# review; pip itself is not exposed as a shell command.
+pip_wheel="$stdlib_source/ensurepip/_bundled/pip-25.1.1-py3-none-any.whl"
+if [ ! -f "$pip_wheel" ]; then
+    echo "error: pinned pip wheel is missing from the CPython support archive" >&2
+    exit 1
+fi
+python3 -m zipfile -e "$pip_wheel" "$stdlib_target"
+
 # project.yml embeds `python` as a folder reference, preserving CPython's
 # canonical PYTHONHOME layout without flattening duplicate __init__.py files.
 # Keep the pure-Python tree unpacked because iOS getpath initialization uses

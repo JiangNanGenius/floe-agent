@@ -19,7 +19,8 @@ struct DiagnosticsAboutView: View {
     @State private var isExporting = false
     @State private var errorMessage: String?
     @State private var presentsFeedback = false
-    @State private var includeDeviceInfo = false
+    @AppStorage("diagnostics.includeDeviceInfo") private var includeDeviceInfo = false
+    @State private var presentsFullLog = false
 
     var body: some View {
         Form {
@@ -95,6 +96,12 @@ struct DiagnosticsAboutView: View {
                         Label("action.copy", systemImage: "doc.on.doc")
                     }
                     .disabled(logText.isEmpty)
+                    Button {
+                        presentsFullLog = true
+                    } label: {
+                        Label("全屏", systemImage: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .disabled(logText.isEmpty)
                 }
             } header: {
                 Text("settings.diagnostics.logs")
@@ -157,6 +164,31 @@ struct DiagnosticsAboutView: View {
                 FeedbackReportView(center: center)
             }
             .presentationSizing(.page)
+        }
+        .fullScreenCover(isPresented: $presentsFullLog) {
+            NavigationStack {
+                ScrollView([.horizontal, .vertical]) {
+                    Text(logText)
+                        .font(FloeTheme.Typography.evidence)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                }
+                .navigationTitle("诊断日志")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("完成") { presentsFullLog = false }
+                    }
+                    ToolbarItemGroup(placement: .primaryAction) {
+                        Button("刷新", systemImage: "arrow.clockwise") {
+                            logText = FloeLogger.buffer.renderedText()
+                        }
+                        Button("复制", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = logText
+                        }
+                    }
+                }
+            }
         }
     }
 

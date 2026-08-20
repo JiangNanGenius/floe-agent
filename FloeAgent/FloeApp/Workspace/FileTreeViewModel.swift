@@ -25,6 +25,12 @@ struct FileTreeNode: Identifiable, Hashable, Sendable {
     var id: String { relativePath }
 }
 
+struct VisibleFileTreeNode: Identifiable, Sendable {
+    let node: FileTreeNode
+    let depth: Int
+    var id: String { node.id }
+}
+
 /// Drives the inspector's directory tree: lazy page loading plus a
 /// debounced search that switches the tree into a flat hit list.
 @MainActor
@@ -40,6 +46,7 @@ final class FileTreeViewModel: ObservableObject {
     }
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
+    @Published private(set) var expandedDirectoryPaths: Set<String> = []
 
     private let center: WorkspaceCenter
     private var searchTask: Task<Void, Never>?
@@ -50,6 +57,20 @@ final class FileTreeViewModel: ObservableObject {
 
     var isSearching: Bool {
         !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var visibleNodes: [VisibleFileTreeNode] {
+        func append(_ nodes: [FileTreeNode], depth: Int, into result: inout [VisibleFileTreeNode]) {
+            for node in nodes {
+                result.append(VisibleFileTreeNode(node: node, depth: depth))
+                if expandedDirectoryPaths.contains(node.relativePath), let children = node.children {
+                    append(children, depth: depth + 1, into: &result)
+                }
+            }
+        }
+        var result: [VisibleFileTreeNode] = []
+        append(rootNodes, depth: 0, into: &result)
+        return result
     }
 
     // MARK: - Loading
@@ -65,6 +86,7 @@ final class FileTreeViewModel: ObservableObject {
         do {
             let page = try service.listDirectory(".", pageToken: nil)
             rootNodes = page.entries.map(Self.node(from:))
+            expandedDirectoryPaths = []
             errorMessage = nil
         } catch {
             rootNodes = []
@@ -82,6 +104,40 @@ final class FileTreeViewModel: ObservableObject {
             errorMessage = error.localizedDescription
             return []
         }
+    }
+
+    func toggleDirectory(_ node: FileTreeNode) async {
+        guard node.isDirectory else { return }
+        if expandedDirectoryPaths.contains(node.relativePath) {
+            expandedDirectoryPaths.remove(node.relativePath)
+            return
+        }
+        if node.children == nil {
+            let children = await loadChildren(of: node)
+            replaceNode(at: node.relativePath) { value in value.children = children }
+        }
+        expandedDirectoryPaths.insert(node.relativePath)
+    }
+
+    private func replaceNode(
+        at path: String,
+        transform: (inout FileTreeNode) -> Void
+    ) {
+        func replace(in nodes: inout [FileTreeNode]) -> Bool {
+            for index in nodes.indices {
+                if nodes[index].relativePath == path {
+                    transform(&nodes[index])
+                    return true
+                }
+                if var children = nodes[index].children,
+                   replace(in: &children) {
+                    nodes[index].children = children
+                    return true
+                }
+            }
+            return false
+        }
+        _ = replace(in: &rootNodes)
     }
 
     private static func node(from node: FileNode) -> FileTreeNode {

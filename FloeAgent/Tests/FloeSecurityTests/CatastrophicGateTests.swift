@@ -193,6 +193,41 @@ struct ApprovalPolicyTests {
         }
     }
 
+    @Test("Sandbox Python runs automatically but package installs require review")
+    func localPythonReviewBoundary() async throws {
+        struct AllowBackend: ModelApprovalPolicy.DecisionBackend {
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+                .allow(scope: ApprovalScope(toolName: action.toolCall.toolName), expiresAt: nil)
+            }
+        }
+        func pythonAction(_ arguments: String) throws -> ProposedAction {
+            let call = try ToolCall(
+                id: "python",
+                toolName: "exec.localPython",
+                argumentsJSON: Data(arguments.utf8),
+                scope: .local
+            )
+            return ProposedAction(
+                toolCall: call,
+                riskLabels: ["executesLocalCode"],
+                userGoal: "analyze data",
+                hostAndPathScope: .local
+            )
+        }
+        #expect(try await AutomaticApprovalPolicy().decide(
+            pythonAction(#"{"script":"print(1)"}"#)
+        ).permitsExecution)
+        guard case .escalateToHuman = try await AutomaticApprovalPolicy().decide(
+            pythonAction(#"{"script":"import requests","packages":["requests==2.32.4"]}"#)
+        ) else {
+            Issue.record("Package install without a review model must escalate")
+            return
+        }
+        #expect(try await AutomaticApprovalPolicy(packageReviewBackend: AllowBackend()).decide(
+            pythonAction(#"{"script":"import requests","packages":["requests==2.32.4"]}"#)
+        ).permitsExecution)
+    }
+
     @Test("HumanApprovalPolicy always escalates")
     func humanPolicy() async throws {
         let policy = HumanApprovalPolicy()

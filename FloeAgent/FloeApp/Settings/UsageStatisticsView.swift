@@ -14,6 +14,7 @@ struct UsageStatisticsView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @State private var stats: UsageStatistics?
     @State private var isLoading = false
+    @State private var errorMessage: String?
 
     var body: some View {
         List {
@@ -33,14 +34,19 @@ struct UsageStatisticsView: View {
                     }
                 }
                 Section("近 30 天") {
-                    Chart(stats.byDay) { day in
-                        BarMark(
-                            x: .value("日期", day.date),
-                            y: .value("token", day.inputTokens + day.outputTokens)
-                        )
-                        .foregroundStyle(FloeTheme.primary)
+                    if stats.byDay.isEmpty {
+                        ContentUnavailableView("还没有可统计的任务", systemImage: "chart.bar",
+                            description: Text("新任务完成后会在这里显示提供商返回的 token 用量。"))
+                    } else {
+                        Chart(stats.byDay) { day in
+                            BarMark(
+                                x: .value("日期", day.date),
+                                y: .value("token", day.inputTokens + day.outputTokens)
+                            )
+                            .foregroundStyle(FloeTheme.primary)
+                        }
+                        .frame(height: 200)
                     }
-                    .frame(height: 200)
                     ForEach(stats.byDay) { day in
                         LabeledContent(day.date) {
                             Text("\(day.inputTokens + day.outputTokens) token · \(day.runs) 任务")
@@ -53,6 +59,9 @@ struct UsageStatisticsView: View {
             } else {
                 ContentUnavailableView("暂无用量数据", systemImage: "chart.bar")
             }
+            if let errorMessage {
+                Text(errorMessage).foregroundStyle(FloeTheme.destructive)
+            }
         }
         .navigationTitle("用量统计")
         .task { await load() }
@@ -61,7 +70,13 @@ struct UsageStatisticsView: View {
     private func load() async {
         isLoading = true
         defer { isLoading = false }
-        stats = try? await environment.runStore.usageStatistics()
+        do {
+            stats = try await environment.runStore.usageStatistics()
+            errorMessage = nil
+        } catch {
+            stats = nil
+            errorMessage = error.localizedDescription
+        }
     }
 }
 #endif

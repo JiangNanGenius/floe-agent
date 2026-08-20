@@ -1715,13 +1715,13 @@ private struct ToolLoopGuard {
             idempotentNoProgressCount = 1
         }
 
-        if exactFailureCount >= 5 {
+        if exactFailureCount >= 3 {
             return ToolLoopGuardrailDecision(
                 shouldStop: true,
-                message: "The same tool call failed five times with the same result."
+                message: "The same tool call failed three times with the same result; stop retrying and choose a different approach."
             )
         }
-        if sameToolFailureCount >= 8 {
+        if sameToolFailureCount >= 4 {
             return ToolLoopGuardrailDecision(
                 shouldStop: true,
                 message: "The same tool continued failing without a successful alternative."

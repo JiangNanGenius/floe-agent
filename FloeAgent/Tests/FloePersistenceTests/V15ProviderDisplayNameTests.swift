@@ -16,6 +16,6 @@ struct V15ProviderDisplayNameTests {
         }
         #expect(try #require(displayNameNotNull) == 0)
         #expect(try await database.userVersion() == DatabaseManager.currentSchemaVersion)
-        #expect(DatabaseManager.currentSchemaVersion == 15)
+        #expect(DatabaseManager.currentSchemaVersion >= 15)
     }
 }

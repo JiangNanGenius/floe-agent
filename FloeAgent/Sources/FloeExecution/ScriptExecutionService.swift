@@ -17,17 +17,22 @@ public struct ScriptExecutionRequest: Sendable {
     public var timeout: TimeInterval
     /// Maximum captured console output in bytes; excess is truncated.
     public var maxOutputBytes: Int
+    /// Internal capability used only by Floe's managed package installer.
+    /// Ordinary agent-authored Python must leave this false.
+    public var allowsManagedPackageInstaller: Bool
 
     public init(
         script: String,
         inputJSON: String? = nil,
         timeout: TimeInterval = 10,
-        maxOutputBytes: Int = 64 * 1024
+        maxOutputBytes: Int = 64 * 1024,
+        allowsManagedPackageInstaller: Bool = false
     ) {
         self.script = script
         self.inputJSON = inputJSON
         self.timeout = timeout
         self.maxOutputBytes = maxOutputBytes
+        self.allowsManagedPackageInstaller = allowsManagedPackageInstaller
     }
 }
 

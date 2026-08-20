@@ -218,7 +218,9 @@ struct RequestContractTests {
         )
 
         #expect(try jsonObject(OpenAIResponsesAdapter().buildBody(from: request))["max_output_tokens"] == nil)
-        #expect(try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: request))["max_tokens"] == nil)
+        let chat = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: request))
+        #expect(chat["max_tokens"] == nil)
+        #expect((chat["stream_options"] as? [String: Any])?["include_usage"] as? Bool == true)
         #expect(AnthropicMessagesAdapter().buildBody(from: request).maxTokens == 8_192)
     }
 

@@ -110,6 +110,7 @@ struct TaskPermissionsInspectorView: View {
     @State private var isSaving = false
     @State private var errorMessage: String?
     @State private var isConfirmingFullAccess = false
+    @State private var didSave = false
 
     var body: some View {
         Form {
@@ -138,7 +139,11 @@ struct TaskPermissionsInspectorView: View {
                     }
                 }
                 Section {
-                    Button("保存任务权限") { Task { await save() } }
+                    Button { Task { await save() } } label: {
+                        if isSaving { ProgressView() }
+                        else if didSave { Label("已保存", systemImage: "checkmark.circle.fill") }
+                        else { Text("保存任务权限") }
+                    }
                         .disabled(isSaving)
                 } footer: {
                     Text("任务仍受工作区和工具范围限制；灾难性命令始终阻止。")
@@ -176,8 +181,8 @@ struct TaskPermissionsInspectorView: View {
     private var modeExplanation: String {
         switch policy?.resolvedApprovalMode ?? .ask {
         case .ask: "读取自动运行，副作用操作会先询问。"
-        case .automatic: "低风险自动批准；浏览器、远程执行和高风险操作仍会询问。"
-        case .fullAccess: "普通操作自动执行；删除、凭据和上传仍询问，灾难性命令始终阻止。"
+        case .automatic: "低风险与沙箱内 Python 自动批准；软件包安装交由审查模型，浏览器、远程执行和高风险操作仍会询问。"
+        case .fullAccess: "普通操作与沙箱内 Python 自动执行；软件包安装仍需模型审查，删除、凭据和上传仍询问。"
         }
     }
 
@@ -227,6 +232,9 @@ struct TaskPermissionsInspectorView: View {
             try await conversationCenter.updateTaskPolicy(policy)
             self.policy = policy
             errorMessage = nil
+            didSave = true
+            try? await Task.sleep(for: .seconds(2))
+            didSave = false
         } catch {
             errorMessage = error.localizedDescription
             FloeLogger(category: .app).error("taskPolicySaveFailed conversation=\(policy.conversationID.uuidString) error=\(error.localizedDescription)")

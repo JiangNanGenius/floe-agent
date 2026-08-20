@@ -74,13 +74,28 @@ public struct ModelApprovalPolicy: ApprovalPolicy {
 public struct AutomaticApprovalPolicy: ApprovalPolicy {
     public let policyName = "automatic"
     private let backend: (any ModelApprovalPolicy.DecisionBackend)?
+    private let packageReviewBackend: (any ModelApprovalPolicy.DecisionBackend)?
 
-    public init(backend: (any ModelApprovalPolicy.DecisionBackend)? = nil) {
+    public init(
+        backend: (any ModelApprovalPolicy.DecisionBackend)? = nil,
+        packageReviewBackend: (any ModelApprovalPolicy.DecisionBackend)? = nil
+    ) {
         self.backend = backend
+        self.packageReviewBackend = packageReviewBackend
     }
 
     public func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
         let risks = action.riskLabels
+        if action.isManagedPythonPackageRequest {
+            guard let packageReviewBackend else {
+                return .escalateToHuman(reason: "No software package review model is configured")
+            }
+            do { return try await packageReviewBackend.decide(action) }
+            catch {
+                return .escalateToHuman(reason: "Software package review failed: \(error.localizedDescription)")
+            }
+        }
+
         let alwaysAsk: Set<String> = [
             "deletesFiles",
             "accessesCredentials",
@@ -89,7 +104,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy {
             "persistsPersonalData",
             "changesAgentBehavior"
         ]
-        if !risks.isDisjoint(with: alwaysAsk) {
+        if !risks.isDisjoint(with: alwaysAsk), action.toolCall.toolName != "exec.localPython" {
             return .escalateToHuman(reason: "Sensitive action requires explicit approval")
         }
 
@@ -137,9 +152,23 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy {
 public struct TaskFullAccessPolicy: ApprovalPolicy {
     public let policyName = "full-access"
 
-    public init() {}
+    private let packageReviewBackend: (any ModelApprovalPolicy.DecisionBackend)?
+
+    public init(packageReviewBackend: (any ModelApprovalPolicy.DecisionBackend)? = nil) {
+        self.packageReviewBackend = packageReviewBackend
+    }
 
     public func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+        if action.isManagedPythonPackageRequest {
+            guard let packageReviewBackend else {
+                return .escalateToHuman(reason: "No software package review model is configured")
+            }
+            do { return try await packageReviewBackend.decide(action) }
+            catch {
+                return .escalateToHuman(reason: "Software package review failed: \(error.localizedDescription)")
+            }
+        }
+
         let alwaysAsk: Set<String> = [
             "deletesFiles",
             "accessesCredentials",
@@ -148,13 +177,24 @@ public struct TaskFullAccessPolicy: ApprovalPolicy {
             "persistsPersonalData",
             "changesAgentBehavior"
         ]
-        if !action.riskLabels.isDisjoint(with: alwaysAsk) {
+        if !action.riskLabels.isDisjoint(with: alwaysAsk),
+           action.toolCall.toolName != "exec.localPython" {
             return .escalateToHuman(reason: "This sensitive action always requires explicit approval")
         }
         return .allow(
             scope: AutomaticApprovalPolicyScope.scope(for: action.toolCall),
             expiresAt: nil
         )
+    }
+}
+
+private extension ProposedAction {
+    var isManagedPythonPackageRequest: Bool {
+        guard toolCall.toolName == "exec.localPython",
+              let object = try? JSONSerialization.jsonObject(with: toolCall.argumentsJSON) as? [String: Any],
+              let packages = object["packages"] as? [Any]
+        else { return false }
+        return !packages.isEmpty
     }
 }
 

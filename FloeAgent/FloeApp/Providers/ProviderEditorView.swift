@@ -143,6 +143,8 @@ struct ProviderEditorView: View {
                 Button {
                     if viewModel.showingAPIKey {
                         viewModel.showingAPIKey = false
+                    } else if !viewModel.apiKey.isEmpty || viewModel.existing?.secretRef == nil {
+                        viewModel.showingAPIKey = true
                     } else {
                         Task { await viewModel.revealAPIKey() }
                     }

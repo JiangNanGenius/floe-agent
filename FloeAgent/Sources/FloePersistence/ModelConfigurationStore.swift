@@ -138,16 +138,17 @@ public actor ModelConfigurationStore {
                 sql: """
                     INSERT INTO model_preferences (
                         id, onboarding_status, default_agent_model_id,
-                        vision_model_id, approval_model_id,
+                        vision_model_id, approval_model_id, package_review_model_id,
                         auxiliary_image_mode, shared_image_model_id,
                         image_generation_model_id, image_editing_model_id,
                         updated_at, sync_revision
-                    ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         onboarding_status = excluded.onboarding_status,
                         default_agent_model_id = excluded.default_agent_model_id,
                         vision_model_id = excluded.vision_model_id,
                         approval_model_id = excluded.approval_model_id,
+                        package_review_model_id = excluded.package_review_model_id,
                         auxiliary_image_mode = excluded.auxiliary_image_mode,
                         shared_image_model_id = excluded.shared_image_model_id,
                         image_generation_model_id = excluded.image_generation_model_id,
@@ -160,6 +161,7 @@ public actor ModelConfigurationStore {
                     preferences.defaultAgentModelID?.uuidString,
                     preferences.visionModelID?.uuidString,
                     preferences.approvalModelID?.uuidString,
+                    preferences.packageReviewModelID?.uuidString,
                     preferences.auxiliaryImageMode.rawValue,
                     preferences.sharedImageModelID?.uuidString,
                     preferences.imageGenerationModelID?.uuidString,
@@ -229,6 +231,7 @@ private enum ConfigurationCodec {
             nonSecretHeaders: headers,
             isEnabled: row["is_enabled"],
             allowsPlainHTTP: row["allows_plain_http"],
+            toolNameCompatibility: row["tool_name_compatibility"],
             createdAt: try decodeDate(row["created_at"]),
             updatedAt: try decodeDate(row["updated_at"]),
             syncRevision: row["sync_revision"]
@@ -242,9 +245,9 @@ private enum ConfigurationCodec {
                 INSERT INTO providers (
                     id, kind, wire_protocol, base_url, display_name, secret_ref_account,
                     secret_ref_synchronizable, region, non_secret_headers_json,
-                    is_enabled, allows_plain_http, created_at, updated_at,
-                    sync_revision
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    is_enabled, allows_plain_http, tool_name_compatibility,
+                    created_at, updated_at, sync_revision
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     kind = excluded.kind,
                     wire_protocol = excluded.wire_protocol,
@@ -256,6 +259,7 @@ private enum ConfigurationCodec {
                     non_secret_headers_json = excluded.non_secret_headers_json,
                     is_enabled = excluded.is_enabled,
                     allows_plain_http = excluded.allows_plain_http,
+                    tool_name_compatibility = excluded.tool_name_compatibility,
                     created_at = excluded.created_at,
                     updated_at = excluded.updated_at,
                     sync_revision = excluded.sync_revision
@@ -267,6 +271,7 @@ private enum ConfigurationCodec {
                 provider.secretRef?.keychainAccount,
                 provider.secretRef.map { $0.synchronizable }, provider.region,
                 headersJSON, provider.isEnabled, provider.allowsPlainHTTP,
+                provider.toolNameCompatibility,
                 encode(provider.createdAt), encode(provider.updatedAt),
                 provider.syncRevision
             ]
@@ -376,6 +381,7 @@ private enum ConfigurationCodec {
             defaultAgentModelID: uuid("default_agent_model_id"),
             visionModelID: uuid("vision_model_id"),
             approvalModelID: uuid("approval_model_id"),
+            packageReviewModelID: uuid("package_review_model_id"),
             auxiliaryImageMode: imageMode,
             sharedImageModelID: uuid("shared_image_model_id"),
             imageGenerationModelID: uuid("image_generation_model_id"),
@@ -406,6 +412,10 @@ private enum ConfigurationCodec {
         if let capabilities = try capabilities(for: preferences.approvalModelID),
            !capabilities.contains(.text) {
             throw FloeError.invalidConfiguration("Approval model must support text")
+        }
+        if let capabilities = try capabilities(for: preferences.packageReviewModelID),
+           !capabilities.contains(.text) {
+            throw FloeError.invalidConfiguration("Package review model must support text")
         }
         if let capabilities = try capabilities(for: preferences.sharedImageModelID),
            !(capabilities.contains(.imageGeneration) && capabilities.contains(.imageEditing)) {

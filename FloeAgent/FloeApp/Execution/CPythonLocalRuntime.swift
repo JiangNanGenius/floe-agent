@@ -69,7 +69,8 @@ actor CPythonLocalRuntime {
                 request.script,
                 inputJSON: request.inputJSON,
                 timeout: timeout,
-                maxOutputBytes: request.maxOutputBytes
+                maxOutputBytes: request.maxOutputBytes,
+                allowPackageInstaller: request.allowsManagedPackageInstaller
             )
             await gate.resolve(.response(CPythonBridgeResponse(raw)))
         }

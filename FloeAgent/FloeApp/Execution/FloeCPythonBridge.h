@@ -11,7 +11,8 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSDictionary<NSString *, id> *)runScript:(NSString *)script
                                    inputJSON:(nullable NSString *)inputJSON
                                       timeout:(NSTimeInterval)timeout
-                               maxOutputBytes:(NSInteger)maxOutputBytes;
+                               maxOutputBytes:(NSInteger)maxOutputBytes
+                        allowPackageInstaller:(BOOL)allowPackageInstaller;
 
 @end
 

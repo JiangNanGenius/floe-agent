@@ -13,6 +13,23 @@ struct LocalPythonToolTests {
         #expect(LocalPythonTool.riskLabels == [.executesLocalCode])
         #expect(LocalPythonTool.parametersJSON.contains("maxOutputBytes"))
         #expect(LocalPythonTool.parametersJSON.contains("inputJSON"))
+        #expect(LocalPythonTool.parametersJSON.contains("packages"))
+        #expect(LocalPythonTool.toolDescription.contains("Software Package Review Model"))
+    }
+
+    @Test("managed package specs reject direct URLs and script-level pip")
+    func managedPackageValidation() async {
+        let service = LocalPythonService(version: "CPython 3.13") { _, _ in .cancelled }
+        let tool = LocalPythonTool(service: service)
+        #expect(throws: FloeError.self) {
+            try tool.validate(.init(script: "pass", packages: ["https://example.com/a.whl"]))
+        }
+        #expect(throws: FloeError.self) {
+            try tool.validate(.init(script: "import pip"))
+        }
+        #expect(throws: Never.self) {
+            try tool.validate(.init(script: "import requests", packages: ["requests==2.32.4"]))
+        }
     }
 
     @Test("service result is mapped to a tool result")

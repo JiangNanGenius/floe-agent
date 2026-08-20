@@ -14,19 +14,30 @@ public struct ChatRequest: Sendable, Codable, Hashable {
     public var tools: [ToolDefinition]?
     public var maxTokens: Int?
     public var stream: Bool
+    /// OpenAI-compatible providers only include usage in streamed responses
+    /// when explicitly requested.
+    public var streamOptions: StreamOptions?
 
     public init(
         model: String,
         messages: [Message],
         tools: [ToolDefinition]? = nil,
         maxTokens: Int? = nil,
-        stream: Bool = true
+        stream: Bool = true,
+        streamOptions: StreamOptions? = StreamOptions(includeUsage: true)
     ) {
         self.model = model
         self.messages = messages
         self.tools = tools
         self.maxTokens = maxTokens
         self.stream = stream
+        self.streamOptions = streamOptions
+    }
+
+    public struct StreamOptions: Sendable, Codable, Hashable {
+        public var includeUsage: Bool
+        public init(includeUsage: Bool) { self.includeUsage = includeUsage }
+        enum CodingKeys: String, CodingKey { case includeUsage = "include_usage" }
     }
 
     public struct Message: Sendable, Codable, Hashable {
@@ -182,6 +193,7 @@ public struct ChatRequest: Sendable, Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case model, messages, tools, stream
         case maxTokens = "max_tokens"
+        case streamOptions = "stream_options"
     }
 }
 

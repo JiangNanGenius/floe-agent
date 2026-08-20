@@ -141,7 +141,10 @@ let package = Package(
 
         .target(
             name: "FloeExecution",
-            dependencies: ["FloeCore", "FloeTools", "FloeSSH"],
+            dependencies: [
+                "FloeCore", "FloeTools", "FloeSSH",
+                .product(name: "ZIPFoundation", package: "ZIPFoundation")
+            ],
             path: "Sources/FloeExecution",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

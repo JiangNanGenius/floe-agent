@@ -941,6 +941,7 @@ public actor ConversationRunService {
                     ? "Available tools: none registered"
                     : "Available tools: \(toolNames.joined(separator: ", "))"
             )
+            lines.append("Tool inventory rule: when asked what tools are available, use only the exact names above and their supplied schemas. Never invent, rename, or imply an unavailable tool; state capability limits directly.")
         } else {
             lines.append("Available tools: none (native tool calling is disabled for this model)")
         }

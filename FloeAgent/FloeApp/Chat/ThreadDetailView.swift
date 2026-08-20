@@ -85,7 +85,6 @@ struct ThreadDetailView: View {
         }
         .sheet(isPresented: $showingScreenShare) {
             BroadcastPickerView(center: environment.screenShareCenter)
-                .ignoresSafeArea()
         }
         .sheet(isPresented: $showingScreenShareGuide) {
             ScreenShareGuideView(

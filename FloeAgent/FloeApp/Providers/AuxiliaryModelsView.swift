@@ -25,6 +25,18 @@ struct AuxiliaryModelsView: View {
             }
 
             Section {
+                modelPicker(
+                    selection: $viewModel.packageReviewModelID,
+                    models: viewModel.packageReviewCandidates
+                )
+                Text("所有受管 Python 包都会由该模型结合插件目录、包版本和任务意图进行审查；原生二进制和越权能力仍由本地规则硬性阻止。")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("软件包审查模型")
+            }
+
+            Section {
                 Toggle("auxiliary.shared.toggle", isOn: Binding(
                     get: { viewModel.mode == .shared },
                     set: { viewModel.setSharedMode($0) }
@@ -99,6 +111,7 @@ struct AuxiliaryModelsView: View {
 final class AuxiliaryModelsViewModel: ObservableObject {
     @Published var mode: AuxiliaryImageMode = .shared
     @Published var visionModelID: UUID?
+    @Published var packageReviewModelID: UUID?
     @Published var sharedModelID: UUID?
     @Published var generationModelID: UUID?
     @Published var editingModelID: UUID?
@@ -111,6 +124,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
     init(center: ConversationCenter) { self.center = center }
 
     var visionCandidates: [ModelProfile] { center.visionModels }
+    var packageReviewCandidates: [ModelProfile] { center.approvalModels }
 
     var generationCandidates: [ModelProfile] {
         center.imageModels.filter {
@@ -134,6 +148,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
         let preferences = center.modelPreferences
         mode = preferences.auxiliaryImageMode
         visionModelID = preferences.visionModelID
+        packageReviewModelID = preferences.packageReviewModelID
         sharedModelID = preferences.sharedImageModelID
         generationModelID = preferences.imageGenerationModelID
         editingModelID = preferences.imageEditingModelID
@@ -163,6 +178,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
         do {
             var preferences = center.modelPreferences
             preferences.visionModelID = visionModelID
+            preferences.packageReviewModelID = packageReviewModelID
             preferences.auxiliaryImageMode = mode
             preferences.sharedImageModelID = mode == .shared ? sharedModelID : nil
             preferences.imageGenerationModelID = mode == .separate ? generationModelID : nil
@@ -231,11 +247,17 @@ private struct AuxiliaryModelEditorView: View {
     @State private var dedicatedBaseURL = ""
     @State private var dedicatedAPIKey = ""
     @State private var dedicatedName = ""
+    @State private var dedicatedKind: ProviderKind = .volcengineArk
     private let adapterFactory = ImageProviderAdapterFactory()
 
     private var compatibleProviders: [ProviderProfile] { center.providers }
 
     private var supportedOperations: Set<RemoteImageOperation> {
+        if useDedicatedEndpoint,
+           let provider = dedicatedProviderPreview,
+           let adapter = adapterFactory.adapter(for: provider) {
+            return adapter.supportedOperations(for: provider)
+        }
         guard let providerID,
               let provider = center.providers.first(where: { $0.id == providerID }),
               let adapter = adapterFactory.adapter(for: provider) else { return [] }
@@ -246,14 +268,22 @@ private struct AuxiliaryModelEditorView: View {
         NavigationStack {
             Form {
                 Section("auxiliary.provider") {
-                    Toggle("auxiliary.dedicated_endpoint", isOn: $useDedicatedEndpoint)
+                    Toggle("使用独立端点", isOn: $useDedicatedEndpoint)
                     if useDedicatedEndpoint {
+                        Picker("服务商", selection: $dedicatedKind) {
+                            Text("OpenAI").tag(ProviderKind.openAI)
+                            Text("Volcengine Ark").tag(ProviderKind.volcengineArk)
+                            Text("Alibaba Model Studio").tag(ProviderKind.alibabaStudio)
+                        }
                         TextField("providers.display_name", text: $dedicatedName)
                         TextField("providers.base_url", text: $dedicatedBaseURL)
                             .textInputAutocapitalization(.never)
                             .keyboardType(.URL)
                         SecureField("providers.api_key", text: $dedicatedAPIKey)
                             .textInputAutocapitalization(.never)
+                        Text("该模型使用独立端点和独立 API Key，不会复用聊天提供商的凭据。")
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(.secondary)
                     } else {
                         Picker("auxiliary.provider", selection: $providerID) {
                             ForEach(compatibleProviders) { provider in
@@ -265,6 +295,9 @@ private struct AuxiliaryModelEditorView: View {
                             Label("auxiliary.adapter.none", systemImage: "exclamationmark.triangle")
                                 .foregroundStyle(.secondary)
                         }
+                        Text("端点和 API Key 复用所选提供商；如需不同凭据，请开启上方独立端点。")
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 Section("auxiliary.image_model") {
@@ -322,6 +355,16 @@ private struct AuxiliaryModelEditorView: View {
                 applySupportedOperations()
                 Task { await discoverModels() }
             }
+            .onChange(of: useDedicatedEndpoint) { _, enabled in
+                if enabled && dedicatedBaseURL.isEmpty {
+                    dedicatedBaseURL = ProviderPreset.preset(for: dedicatedKind).defaultBaseURL.absoluteString
+                }
+                applySupportedOperations()
+            }
+            .onChange(of: dedicatedKind) { _, kind in
+                dedicatedBaseURL = ProviderPreset.preset(for: kind).defaultBaseURL.absoluteString
+                applySupportedOperations()
+            }
         }
     }
 
@@ -343,6 +386,17 @@ private struct AuxiliaryModelEditorView: View {
             && (supportsGeneration || supportsEditing || supportsVision)
     }
 
+    private var dedicatedProviderPreview: ProviderProfile? {
+        let trimmed = dedicatedBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = ProviderPreset.preset(for: dedicatedKind).defaultBaseURL
+        guard let url = trimmed.isEmpty ? fallback : URL(string: trimmed) else { return nil }
+        return ProviderProfile(
+            kind: dedicatedKind,
+            wireProtocol: ProviderPreset.preset(for: dedicatedKind).defaultProtocol,
+            baseURL: url
+        )
+    }
+
     private func save() {
         Task {
             isSaving = true
@@ -353,12 +407,21 @@ private struct AuxiliaryModelEditorView: View {
                     // Create a dedicated provider for this image service so
                     // it carries its own base URL + API key (e.g. Doubao
                     // Seedream endpoint differs from the chat provider).
+                    guard let baseURL = URL(string: dedicatedBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                        throw FloeError.invalidConfiguration("图片模型端点无效")
+                    }
+                    let providerID = UUID()
                     let provider = ProviderProfile(
-                        kind: .custom,
-                        wireProtocol: .openAIChatCompletions,
-                        baseURL: URL(string: dedicatedBaseURL.trimmingCharacters(in: .whitespacesAndNewlines))!,
+                        id: providerID,
+                        kind: dedicatedKind,
+                        wireProtocol: ProviderPreset.preset(for: dedicatedKind).defaultProtocol,
+                        baseURL: baseURL,
                         displayName: dedicatedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            ? remoteModelID : dedicatedName
+                            ? remoteModelID : dedicatedName,
+                        secretRef: SecretReference(
+                            keychainAccount: "provider.\(providerID.uuidString)",
+                            synchronizable: true
+                        )
                     )
                     try await center.saveProvider(provider)
                     // Store the API key in Keychain under the provider's ref.

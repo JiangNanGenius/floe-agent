@@ -431,6 +431,7 @@ final class ConversationCenter: ObservableObject {
     /// Legacy/unknown values resolve to Ask; Full Access is only persisted
     /// after device-owner authentication in the task inspector.
     private func approvalPolicy(for taskPolicy: TaskPolicy) -> any ApprovalPolicy {
+        let packageBackend = reviewBackend(modelID: modelPreferences.packageReviewModelID)
         switch taskPolicy.resolvedApprovalMode {
         case .ask:
             return HumanApprovalPolicy()
@@ -440,17 +441,33 @@ final class ConversationCenter: ObservableObject {
                       $0.id == modelID && $0.isEnabled && $0.capabilities.contains(.text)
                   }),
                   let provider = providers.first(where: { $0.id == model.providerID }) else {
-                return AutomaticApprovalPolicy()
+                return AutomaticApprovalPolicy(packageReviewBackend: packageBackend)
             }
             return AutomaticApprovalPolicy(backend: ApprovalModelBackend(
                 adapter: adapterFactory.adapter(for: provider),
                 provider: provider,
                 model: model,
                 credentials: resolveCredentials(for: provider)
-            ))
+            ), packageReviewBackend: packageBackend)
         case .fullAccess:
-            return TaskFullAccessPolicy()
+            return TaskFullAccessPolicy(packageReviewBackend: packageBackend)
         }
+    }
+
+    private func reviewBackend(modelID: UUID?) -> ApprovalModelBackend? {
+        guard let modelID,
+              let model = modelsByProvider.values.flatMap({ $0 }).first(where: {
+                  $0.id == modelID && $0.isEnabled && $0.capabilities.contains(.text)
+              }),
+              let provider = providers.first(where: { $0.id == model.providerID })
+        else { return nil }
+        return ApprovalModelBackend(
+            adapter: adapterFactory.adapter(for: provider),
+            provider: provider,
+            model: model,
+            credentials: resolveCredentials(for: provider),
+            reviewKind: .softwarePackage
+        )
     }
 
     /// Launches a new run and returns immediately. The task result covers

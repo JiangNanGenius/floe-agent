@@ -24,6 +24,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var startGeneration: UInt64 = 0
     private var currentAssetURL: URL?
+    /// AVKit requires the source layer to be in a visible hierarchy before
+    /// PiP starts. Keep a small inline preview attached while the run is active.
+    private var inlinePreview: UIView?
 
     /// Starts (or updates) the PiP progress video for an active run. The
     /// user keeps the app alive by floating this PiP while in background.
@@ -56,7 +59,13 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         let item = AVPlayerItem(url: assetURL)
         let queue = AVQueuePlayer(playerItem: item)
         let layer = AVPlayerLayer(player: queue)
+        guard attachInlinePreview(layer: layer) else {
+            try? FileManager.default.removeItem(at: assetURL)
+            deactivateAudioSession()
+            return
+        }
         guard let controller = AVPictureInPictureController(playerLayer: layer) else {
+            removeInlinePreview()
             try? FileManager.default.removeItem(at: assetURL)
             deactivateAudioSession()
             return
@@ -66,10 +75,12 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         playerLayer = layer
         looper = AVPlayerLooper(player: queue, templateItem: item)
         controller.delegate = self
+        controller.canStartPictureInPictureAutomaticallyFromInline = true
         pipController = controller
         queue.play()
+        try? await Task.sleep(for: .milliseconds(350))
+        guard generation == startGeneration else { return }
         controller.startPictureInPicture()
-        isPiPActive = true
     }
 
     /// Updates the progress text and re-renders the looping video so the PiP
@@ -123,6 +134,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         player?.pause()
         player = nil
         playerLayer = nil
+        removeInlinePreview()
         if let currentAssetURL {
             try? FileManager.default.removeItem(at: currentAssetURL)
             self.currentAssetURL = nil
@@ -144,6 +156,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         player?.pause()
         player = nil
         playerLayer = nil
+        removeInlinePreview()
         if let currentAssetURL {
             try? FileManager.default.removeItem(at: currentAssetURL)
             self.currentAssetURL = nil
@@ -168,6 +181,35 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             false,
             options: .notifyOthersOnDeactivation
         )
+    }
+
+    private func attachInlinePreview(layer: AVPlayerLayer) -> Bool {
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive }),
+              let window = scene.windows.first(where: \.isKeyWindow) else { return false }
+        removeInlinePreview()
+        let width: CGFloat = 176
+        let view = UIView(frame: CGRect(
+            x: window.bounds.width - width - 16,
+            y: window.safeAreaInsets.top + 12,
+            width: width,
+            height: width * 9 / 16
+        ))
+        view.backgroundColor = .black
+        view.layer.cornerRadius = 12
+        view.layer.masksToBounds = true
+        layer.frame = view.bounds
+        layer.videoGravity = .resizeAspectFill
+        view.layer.addSublayer(layer)
+        window.addSubview(view)
+        inlinePreview = view
+        return true
+    }
+
+    private func removeInlinePreview() {
+        inlinePreview?.removeFromSuperview()
+        inlinePreview = nil
     }
 
     private func renderProgressFrame(title: String, progress: String) -> UIImage? {
