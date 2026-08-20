@@ -394,6 +394,14 @@ struct ThreadDetailView: View {
                 .font(FloeTheme.Typography.metadata)
                 .foregroundStyle(FloeTheme.destructive)
             Spacer()
+            Button {
+                viewModel.dismissActionError()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(FloeTheme.destructive)
+            .accessibilityLabel("关闭错误")
         }
         .padding(.horizontal)
         .padding(.vertical, 8)

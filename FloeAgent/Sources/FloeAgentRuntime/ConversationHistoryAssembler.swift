@@ -1,6 +1,7 @@
 import Foundation
 #if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
+import ImageIO
 #endif
 import FloeModels
 import FloePersistence
@@ -118,15 +119,56 @@ public struct ConversationHistoryAssembler: Sendable {
         }
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         guard let data = try? Data(floeContentsOf: url), data.count <= 8 * 1_024 * 1_024 else { return nil }
-        let mime = UTType(attachment.uti)?.preferredMIMEType
-            ?? (url.pathExtension.lowercased() == "png" ? "image/png" : "image/jpeg")
-        return ConversationImagePart(mimeType: mime, base64: data.base64EncodedString())
+        guard let normalized = normalizedImage(data) else { return nil }
+        return ConversationImagePart(
+            mimeType: normalized.mimeType,
+            base64: normalized.data.base64EncodedString()
+        )
         #else
         // Security-scoped bookmarks and UTType are Apple-platform APIs.
         // Linux builds retain text history and safely omit local image bytes.
         _ = attachment
         return nil
         #endif
+    }
+
+    /// Provider image APIs accept raster formats, not arbitrary `public.image`
+    /// payloads. Detect the bytes instead of trusting legacy filename/UTI
+    /// metadata, and rasterize formats such as SVG before making a data URL.
+    private static func normalizedImage(_ data: Data) -> (data: Data, mimeType: String)? {
+        if data.count >= 3, data.starts(with: [0xFF, 0xD8, 0xFF]) {
+            return (data, "image/jpeg")
+        }
+        if data.count >= 8, data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+            return (data, "image/png")
+        }
+        if data.count >= 6,
+           data.starts(with: Array("GIF8".utf8)) {
+            return (data, "image/gif")
+        }
+        if data.count >= 12,
+           data.prefix(4) == Data("RIFF".utf8),
+           data.dropFirst(8).prefix(4) == Data("WEBP".utf8) {
+            return (data, "image/webp")
+        }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: 2_048,
+                kCGImageSourceCreateThumbnailWithTransform: true
+              ] as CFDictionary) else { return nil }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            output,
+            UTType.jpeg.identifier as CFString,
+            1,
+            nil
+        ) else { return nil }
+        CGImageDestinationAddImage(destination, image, [
+            kCGImageDestinationLossyCompressionQuality: 0.82
+        ] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return (output as Data, "image/jpeg")
     }
 
     #if canImport(UniformTypeIdentifiers)

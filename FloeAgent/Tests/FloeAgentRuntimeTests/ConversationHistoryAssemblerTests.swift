@@ -68,7 +68,9 @@ struct ConversationHistoryAssemblerTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let attachments = root.appendingPathComponent("Attachments", isDirectory: true)
         try FileManager.default.createDirectory(at: attachments, withIntermediateDirectories: true)
-        let bytes = Data("staged-image".utf8)
+        let bytes = Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )!
         try bytes.write(to: attachments.appendingPathComponent("picked.png"))
         let attachment = AttachmentRef(
             kind: .image,
@@ -87,6 +89,31 @@ struct ConversationHistoryAssemblerTests {
         #expect(images.count == 1)
         #expect(images[0].base64 == bytes.base64EncodedString())
         #expect(images[0].mimeType == "image/png")
+    }
+
+    @Test("Image MIME follows real bytes instead of stale attachment metadata")
+    func detectsImageBytes() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-history-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let attachments = root.appendingPathComponent("Attachments", isDirectory: true)
+        try FileManager.default.createDirectory(at: attachments, withIntermediateDirectories: true)
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xD9])
+        try jpeg.write(to: attachments.appendingPathComponent("legacy.svg"))
+        let attachment = AttachmentRef(
+            kind: .image,
+            displayName: "legacy.svg",
+            uti: "public.svg-image",
+            byteCount: jpeg.count,
+            storage: .applicationSupport,
+            relativePath: "legacy.svg"
+        )
+
+        let images = ConversationHistoryAssembler.inlineImages(
+            [attachment], applicationSupportRoot: root
+        )
+        #expect(images.first?.mimeType == "image/jpeg")
+        #expect(images.first?.base64 == jpeg.base64EncodedString())
     }
 
     @Test("A staged-image relative path cannot escape its app-owned directory")

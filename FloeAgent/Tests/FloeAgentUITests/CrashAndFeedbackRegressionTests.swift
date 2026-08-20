@@ -120,5 +120,16 @@ struct CrashAndFeedbackRegressionTests {
             from: Data(#"{"accepted":[]}"#.utf8)
         ) == nil)
     }
+
+    @Test("Feedback honors the server retry window after HTTP 429")
+    func feedbackRetryAfterContract() throws {
+        let response = try #require(HTTPURLResponse(
+            url: FeedbackUploadService.endpoint,
+            statusCode: 429,
+            httpVersion: "HTTP/2",
+            headerFields: ["Retry-After": "17"]
+        ))
+        #expect(FeedbackUploadService.retryAfterSeconds(from: response) == 17)
+    }
 }
 #endif

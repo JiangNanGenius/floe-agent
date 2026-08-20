@@ -68,9 +68,11 @@ public struct ModelApprovalPolicy: ApprovalPolicy {
     }
 }
 
-/// Three-tier automatic mode: deterministic low-risk actions are allowed,
-/// sensitive actions always return to the user, and only the ambiguous
-/// middle tier may be delegated to a configured, tool-free approval model.
+/// Automatic mode: managed packages use their source-review model; when an
+/// action-review model is configured, every other side-effecting action is
+/// reviewed by that model. The catastrophic gate still runs first and cannot
+/// be bypassed. Without a model, safe local mutations remain deterministic
+/// while sensitive actions fail closed to the user.
 public struct AutomaticApprovalPolicy: ApprovalPolicy {
     public let policyName = "automatic"
     private let backend: (any ModelApprovalPolicy.DecisionBackend)?
@@ -96,32 +98,26 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy {
             }
         }
 
-        let alwaysAsk: Set<String> = [
+        if let backend {
+            do { return try await backend.decide(action) }
+            catch {
+                return .escalateToHuman(reason: "Approval model unavailable: \(error.localizedDescription)")
+            }
+        }
+
+        let requiresReview: Set<String> = [
             "deletesFiles",
             "accessesCredentials",
             "modifiesRemoteSystem",
             "executesLocalCode",
             "persistsPersonalData",
-            "changesAgentBehavior"
-        ]
-        if !risks.isDisjoint(with: alwaysAsk), action.toolCall.toolName != "exec.localPython" {
-            return .escalateToHuman(reason: "Sensitive action requires explicit approval")
-        }
-
-        let ambiguous: Set<String> = [
+            "changesAgentBehavior",
             "controlsGUI",
             "sendsDataToProvider",
             "executesRemoteCommand"
         ]
-        if !risks.isDisjoint(with: ambiguous) {
-            guard let backend else {
-                return .escalateToHuman(reason: "No approval model is configured for this medium-risk action")
-            }
-            do {
-                return try await backend.decide(action)
-            } catch {
-                return .escalateToHuman(reason: "Approval model unavailable: \(error.localizedDescription)")
-            }
+        if !risks.isDisjoint(with: requiresReview), action.toolCall.toolName != "exec.localPython" {
+            return .escalateToHuman(reason: "No approval model is configured for this sensitive action")
         }
         return .allow(
             scope: Self.scope(for: action.toolCall),

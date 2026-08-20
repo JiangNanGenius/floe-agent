@@ -35,7 +35,8 @@ rsync -a --delete "$extract_dir/Python.xcframework/" Vendor/Python.xcframework/
 # The Python source library is architecture independent. Keep the pure-Python
 # standard library and omit tests, package installers, GUI stacks, virtualenv,
 # and native .so modules (iOS requires native modules to be separately signed
-# frameworks). There is intentionally no pip or dynamic download path.
+# frameworks). Floe's managed installer later admits reviewed `py3-none-any`
+# wheels only; arbitrary native extension downloads remain unavailable.
 stdlib_source="$extract_dir/Python.xcframework/ios-arm64/lib/python3.13"
 stdlib_target="FloeApp/Resources/python/lib/python3.13"
 mkdir -p "$stdlib_target"
@@ -68,5 +69,9 @@ python3 -m zipfile -e "$pip_wheel" "$stdlib_target"
 # Keep the pure-Python tree unpacked because iOS getpath initialization uses
 # lib/python3.13 as its standard-library landmark.
 rm -f "FloeApp/Resources/python/lib/python313.zip"
+
+# CPython's iOS AppleFrameworkLoader requires every native standard-library
+# module to be a separately embedded/signed framework with `.fwork` markers.
+scripts/package_python_extensions.sh
 
 echo "Installed CPython 3.13-b10 runtime in Vendor/ and FloeApp/Resources/python"

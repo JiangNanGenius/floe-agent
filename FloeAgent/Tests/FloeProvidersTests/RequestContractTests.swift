@@ -158,6 +158,49 @@ struct RequestContractTests {
         #expect(userContent?.contains { $0["type"] as? String == "tool_result" && $0["tool_use_id"] as? String == call.id } == true)
     }
 
+    @Test("Compatible tool names round-trip between wire and canonical catalogs")
+    func compatibleToolNamesRoundTrip() throws {
+        let providerID = UUID()
+        let provider = ProviderProfile(
+            id: providerID,
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://api.deepseek.com")),
+            toolNameCompatibility: true
+        )
+        let model = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "deepseek-v4-flash",
+            displayName: "DeepSeek",
+            limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 8_192)
+        )
+        let call = try ToolCall(
+            id: "call-list",
+            toolName: "workspace.listDirectory",
+            argumentsJSON: Data(#"{"path":"."}"#.utf8),
+            scope: .local
+        )
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            pendingToolCalls: [call],
+            toolSchemas: [.init(name: "workspace.listDirectory", description: "List")]
+        )
+        let adapter = OpenAIChatCompletionsAdapter()
+        let body = try jsonObject(adapter.buildBody(from: request))
+        let tools = try #require(body["tools"] as? [[String: Any]])
+        #expect((tools[0]["function"] as? [String: Any])?["name"] as? String
+            == "workspace_listDirectory")
+        let messages = try #require(body["messages"] as? [[String: Any]])
+        let replay = try #require(messages.first?["tool_calls"] as? [[String: Any]])
+        #expect((replay[0]["function"] as? [String: Any])?["name"] as? String
+            == "workspace_listDirectory")
+        #expect(adapter.canonicalToolName("workspace_listDirectory", for: request)
+            == "workspace.listDirectory")
+        #expect(adapter.canonicalToolName("workspace.listDirectory", for: request)
+            == "workspace.listDirectory")
+    }
+
     @Test("Volcengine Ark uses native Chat Completions tool contracts")
     func arkNativeToolContract() throws {
         let providerID = UUID()

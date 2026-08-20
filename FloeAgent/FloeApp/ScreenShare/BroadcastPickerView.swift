@@ -27,6 +27,13 @@ struct BroadcastPickerView: View {
                     systemImage: center.isSharing ? "checkmark.circle.fill" : "hourglass"
                 )
                 .foregroundStyle(center.isSharing ? .green : .secondary)
+                if let error = center.sharingError {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                }
                 Spacer()
             }
             .padding(.top, 36)
@@ -35,12 +42,12 @@ struct BroadcastPickerView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("完成") {
-                        center.startSharing()
                         dismiss()
                     }
                 }
             }
         }
+        .task { center.startSharing() }
         .presentationDetents([.medium, .large])
     }
 }

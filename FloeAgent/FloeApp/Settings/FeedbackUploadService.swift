@@ -56,6 +56,7 @@ enum FeedbackUploadError: LocalizedError, Equatable {
     case imageTooLarge
     case tooManyImages
     case invalidResponse
+    case rateLimited(retryAfterSeconds: Int?)
     case rejected(statusCode: Int)
 
     var errorDescription: String? {
@@ -70,6 +71,12 @@ enum FeedbackUploadError: LocalizedError, Equatable {
             String(localized: "feedback.error.too_many_images")
         case .invalidResponse:
             String(localized: "feedback.error.invalid_response")
+        case .rateLimited(let seconds):
+            if let seconds {
+                "反馈服务请求过于频繁，请在 \(seconds) 秒后重试。报告已保存在本机。"
+            } else {
+                "反馈服务请求过于频繁，请稍后重试。报告已保存在本机。"
+            }
         case .rejected(let statusCode):
             String(format: String(localized: "feedback.error.rejected"), statusCode)
         }
@@ -100,6 +107,11 @@ enum FeedbackUploadService {
         guard let http = response as? HTTPURLResponse else {
             throw FeedbackUploadError.invalidResponse
         }
+        if http.statusCode == 429 {
+            throw FeedbackUploadError.rateLimited(
+                retryAfterSeconds: retryAfterSeconds(from: http)
+            )
+        }
         guard (200...299).contains(http.statusCode) else {
             throw FeedbackUploadError.rejected(statusCode: http.statusCode)
         }
@@ -107,6 +119,19 @@ enum FeedbackUploadService {
             throw FeedbackUploadError.invalidResponse
         }
         return FeedbackUploadReceipt(reportID: reportID)
+    }
+
+    static func retryAfterSeconds(from response: HTTPURLResponse) -> Int? {
+        guard let value = response.value(forHTTPHeaderField: "Retry-After")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        if let seconds = Int(value) { return max(1, seconds) }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE',' dd MMM yyyy HH':'mm':'ss z"
+        guard let date = formatter.date(from: value) else { return nil }
+        return max(1, Int(ceil(date.timeIntervalSinceNow)))
     }
 
     static func makeRequest(

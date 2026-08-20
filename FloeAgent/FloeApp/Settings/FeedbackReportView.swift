@@ -20,6 +20,10 @@ struct FeedbackReportView: View {
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var imageAttachments: [FeedbackImageAttachment] = []
     @State private var isLoadingImages = false
+    /// Reuse one client id across retries so the server can de-duplicate the
+    /// same report instead of treating every tap as a new upload.
+    @State private var submissionID = UUID()
+    @State private var retryAvailableAt: Date?
 
     private var trimmedProblem: String {
         problem.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -154,6 +158,7 @@ struct FeedbackReportView: View {
                         || trimmedProblem.isEmpty
                         || problem.count > FeedbackUploadService.maximumProblemCharacters
                         || isLoadingImages
+                        || retryAvailableAt.map { Date() < $0 } == true
                 )
                 .accessibilityIdentifier("feedback.submit")
             }
@@ -194,6 +199,7 @@ struct FeedbackReportView: View {
         }
 
         let submission = FeedbackSubmission(
+            id: submissionID,
             problem: trimmedProblem,
             diagnostics: diagnostics,
             imageAttachments: imageAttachments
@@ -204,6 +210,15 @@ struct FeedbackReportView: View {
             submittedID = receipt.reportID
         } catch {
             errorMessage = error.localizedDescription
+            if let uploadError = error as? FeedbackUploadError,
+               case .rateLimited(let seconds) = uploadError,
+               let seconds {
+                retryAvailableAt = Date().addingTimeInterval(TimeInterval(seconds))
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(seconds))
+                    retryAvailableAt = nil
+                }
+            }
             pendingPackageURL = try? PendingFeedbackReportStore.save(submission)
         }
     }

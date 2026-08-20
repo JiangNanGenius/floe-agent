@@ -15,6 +15,8 @@ import AVFoundation
 @MainActor
 final class BackgroundVideoService: NSObject, ObservableObject {
     @Published private(set) var isPiPActive = false
+    @Published private(set) var isPreparingPiP = false
+    @Published private(set) var lastError: String?
 
     private var pipController: AVPictureInPictureController?
     private var playerLayer: AVPlayerLayer?
@@ -35,6 +37,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         let generation = startGeneration
         currentTitle = title
         stopPiPInternal()
+        isPreparingPiP = true
+        lastError = nil
+        defer { isPreparingPiP = false }
         // PiP with a playing video requires the audio background mode. Set the
         // session active so the system registers that capability at task start
         // instead of suspending the app the moment it backgrounds.
@@ -43,6 +48,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             title: title,
             progress: initialProgress
         ) else {
+            lastError = "无法创建画中画进度视频"
             deactivateAudioSession()
             return
         }
@@ -52,6 +58,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             return
         }
         guard AVPictureInPictureController.isPictureInPictureSupported() else {
+            lastError = "当前设备不支持画中画"
             try? FileManager.default.removeItem(at: assetURL)
             deactivateAudioSession()
             return
@@ -60,11 +67,13 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         let queue = AVQueuePlayer(playerItem: item)
         let layer = AVPlayerLayer(player: queue)
         guard attachInlinePreview(layer: layer) else {
+            lastError = "画中画需要应用处于前台并显示预览"
             try? FileManager.default.removeItem(at: assetURL)
             deactivateAudioSession()
             return
         }
         guard let controller = AVPictureInPictureController(playerLayer: layer) else {
+            lastError = "无法初始化画中画控制器"
             removeInlinePreview()
             try? FileManager.default.removeItem(at: assetURL)
             deactivateAudioSession()
@@ -78,8 +87,20 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         controller.canStartPictureInPictureAutomaticallyFromInline = true
         pipController = controller
         queue.play()
-        try? await Task.sleep(for: .milliseconds(350))
+        // AVKit readiness is asynchronous and varies by device. Starting at
+        // a fixed delay silently fails on slower iPads, so wait for the real
+        // capability signal with a bounded timeout.
+        let deadline = Date().addingTimeInterval(6)
+        while !controller.isPictureInPicturePossible && Date() < deadline {
+            guard generation == startGeneration, !Task.isCancelled else { return }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
         guard generation == startGeneration else { return }
+        guard controller.isPictureInPicturePossible else {
+            lastError = "画中画尚未就绪，请保持应用在前台后重试"
+            stopPiPInternal()
+            return
+        }
         controller.startPictureInPicture()
     }
 
@@ -140,6 +161,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             self.currentAssetURL = nil
         }
         isPiPActive = false
+        isPreparingPiP = false
         deactivateAudioSession()
     }
 
@@ -414,7 +436,11 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
     nonisolated func pictureInPictureControllerDidStartPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
     ) {
-        Task { @MainActor in self.isPiPActive = true }
+        Task { @MainActor in
+            self.isPiPActive = true
+            self.isPreparingPiP = false
+            self.lastError = nil
+        }
     }
 
     nonisolated func pictureInPictureControllerDidStopPictureInPicture(
@@ -426,9 +452,12 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
 
     nonisolated func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController,
-        failedToStartPictureInPictureWithError _: Error
+        failedToStartPictureInPictureWithError error: Error
     ) {
-        Task { @MainActor in self.stop() }
+        Task { @MainActor in
+            self.lastError = "画中画启动失败：\(error.localizedDescription)"
+            self.stop()
+        }
     }
 }
 #endif

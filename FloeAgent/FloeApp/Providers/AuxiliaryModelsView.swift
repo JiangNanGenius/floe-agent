@@ -229,7 +229,6 @@ private struct AuxiliaryModelEditorView: View {
     let center: ConversationCenter
     let onSaved: (ModelProfile) async -> Void
 
-    @State private var providerID: UUID?
     @State private var remoteModelID = ""
     @State private var displayName = ""
     @State private var supportsGeneration = true
@@ -237,85 +236,45 @@ private struct AuxiliaryModelEditorView: View {
     @State private var supportsVision = false
     @State private var isSaving = false
     @State private var errorMessage: String?
-    @State private var discoveredModels: [ModelProfile] = []
-    @State private var isDiscovering = false
-    /// When true, a dedicated endpoint (base URL + API key) is created for
-    /// this image model instead of reusing an existing chat provider. Image
-    /// services (e.g. Doubao Seedream, DALL-E) often live on a different
-    /// endpoint than the chat provider.
-    @State private var useDedicatedEndpoint = false
     @State private var dedicatedBaseURL = ""
     @State private var dedicatedAPIKey = ""
     @State private var dedicatedName = ""
     @State private var dedicatedKind: ProviderKind = .volcengineArk
     private let adapterFactory = ImageProviderAdapterFactory()
 
-    private var compatibleProviders: [ProviderProfile] {
-        center.providers.filter { adapterFactory.adapter(for: $0) != nil }
-    }
-
     private var supportedOperations: Set<RemoteImageOperation> {
-        if useDedicatedEndpoint,
-           let provider = dedicatedProviderPreview,
+        if let provider = dedicatedProviderPreview,
            let adapter = adapterFactory.adapter(for: provider) {
             return adapter.supportedOperations(for: provider)
         }
-        guard let providerID,
-              let provider = center.providers.first(where: { $0.id == providerID }),
-              let adapter = adapterFactory.adapter(for: provider) else { return [] }
-        return adapter.supportedOperations(for: provider)
+        return []
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("auxiliary.provider") {
-                    Toggle("使用独立端点", isOn: $useDedicatedEndpoint)
-                    if useDedicatedEndpoint {
-                        Picker("服务商", selection: $dedicatedKind) {
-                            ForEach(Self.imageProviderKinds, id: \.self) { kind in
-                                Text(Self.imageProviderName(kind)).tag(kind)
-                            }
+                    Picker("服务商", selection: $dedicatedKind) {
+                        ForEach(Self.imageProviderKinds, id: \.self) { kind in
+                            Text(Self.imageProviderName(kind)).tag(kind)
                         }
-                        .pickerStyle(.segmented)
-                        Text(Self.imageProviderHint(dedicatedKind))
-                            .font(FloeTheme.Typography.metadata)
-                            .foregroundStyle(.secondary)
-                        TextField("providers.display_name", text: $dedicatedName)
-                        TextField("providers.base_url", text: $dedicatedBaseURL)
-                            .textInputAutocapitalization(.never)
-                            .keyboardType(.URL)
-                        SecureField("providers.api_key", text: $dedicatedAPIKey)
-                            .textInputAutocapitalization(.never)
-                        Text("该模型使用独立端点和独立 API Key，不会复用聊天提供商的凭据。")
-                            .font(FloeTheme.Typography.metadata)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Picker("auxiliary.provider", selection: $providerID) {
-                            ForEach(compatibleProviders) { provider in
-                                Text(providerName(provider))
-                                    .tag(Optional(provider.id))
-                            }
-                        }
-                        if compatibleProviders.isEmpty {
-                            Label("auxiliary.adapter.none", systemImage: "exclamationmark.triangle")
-                                .foregroundStyle(.secondary)
-                        }
-                        Text("端点和 API Key 复用所选提供商；如需不同凭据，请开启上方独立端点。")
-                            .font(FloeTheme.Typography.metadata)
-                            .foregroundStyle(.secondary)
                     }
+                    .pickerStyle(.segmented)
+                    Text(Self.imageProviderHint(dedicatedKind))
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                    TextField("providers.display_name", text: $dedicatedName)
+                    TextField("providers.base_url", text: $dedicatedBaseURL)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                    SecureField("providers.api_key", text: $dedicatedAPIKey)
+                        .textInputAutocapitalization(.never)
+                    Text("图片模型始终使用独立端点和独立 API Key，不复用聊天提供商凭据。")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
                 }
                 Section("auxiliary.image_model") {
-                    if !discoveredModels.isEmpty {
-                        Picker("model.remote_id", selection: $remoteModelID) {
-                            ForEach(discoveredModels) { model in
-                                Text(model.remoteModelID).tag(model.remoteModelID)
-                            }
-                        }
-                    } else {
-                        TextField("model.remote_id", text: $remoteModelID).textInputAutocapitalization(.never)
-                    }
+                    TextField("model.remote_id", text: $remoteModelID).textInputAutocapitalization(.never)
                     TextField("model.display_name", text: $displayName)
                     Toggle("auxiliary.generation", isOn: $supportsGeneration)
                         .disabled(!supportedOperations.contains(.generate))
@@ -353,16 +312,7 @@ private struct AuxiliaryModelEditorView: View {
                 }
             }
             .task {
-                if providerID == nil { providerID = compatibleProviders.first?.id }
-                applySupportedOperations()
-                await discoverModels()
-            }
-            .onChange(of: providerID) { _, _ in
-                applySupportedOperations()
-                Task { await discoverModels() }
-            }
-            .onChange(of: useDedicatedEndpoint) { _, enabled in
-                if enabled && dedicatedBaseURL.isEmpty {
+                if dedicatedBaseURL.isEmpty {
                     applyDedicatedPreset(for: dedicatedKind, replacesModel: remoteModelID.isEmpty)
                 }
                 applySupportedOperations()
@@ -374,20 +324,9 @@ private struct AuxiliaryModelEditorView: View {
         }
     }
 
-    private func providerName(_ provider: ProviderProfile) -> String {
-        let custom = provider.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return custom.flatMap { $0.isEmpty ? nil : $0 }
-            ?? ProviderPreset.preset(for: provider.kind).displayName
-    }
-
     private var isValid: Bool {
-        if useDedicatedEndpoint {
-            return !dedicatedBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && !dedicatedAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && !remoteModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && (supportsGeneration || supportsEditing || supportsVision)
-        }
-        return providerID != nil
+        return !dedicatedBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !dedicatedAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !remoteModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && (supportsGeneration || supportsEditing || supportsVision)
     }
@@ -409,10 +348,9 @@ private struct AuxiliaryModelEditorView: View {
             defer { isSaving = false }
             do {
                 let resolvedProviderID: UUID
-                if useDedicatedEndpoint {
-                    // Create a dedicated provider for this image service so
-                    // it carries its own base URL + API key (e.g. Doubao
-                    // Seedream endpoint differs from the chat provider).
+                do {
+                    // Every image model owns its provider endpoint and key;
+                    // image APIs are not assumed to share chat credentials.
                     guard let baseURL = URL(string: dedicatedBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
                         throw FloeError.invalidConfiguration("图片模型端点无效")
                     }
@@ -442,9 +380,6 @@ private struct AuxiliaryModelEditorView: View {
                         )
                     }
                     resolvedProviderID = provider.id
-                } else {
-                    guard let providerID else { return }
-                    resolvedProviderID = providerID
                 }
 
                 var capabilities: ModelCapabilities = []
@@ -511,27 +446,6 @@ private struct AuxiliaryModelEditorView: View {
         case .volcengineArk: "火山方舟 Seedream，使用 Ark API Key。"
         case .alibabaStudio: "DashScope（阿里云百炼）图像 API，API Key 与地域端点需匹配。"
         case .anthropic, .custom: ""
-        }
-    }
-
-    /// Discovers models from the selected provider so the user can pick from
-    /// a list instead of typing a raw model ID.
-    private func discoverModels() async {
-        guard let providerID,
-              let provider = center.providers.first(where: { $0.id == providerID }) else { return }
-        isDiscovering = true
-        defer { isDiscovering = false }
-        do {
-            let credentials = center.resolveCredentials(for: provider)
-            let adapter = ProviderAdapterFactory().adapter(for: provider)
-            let models = try await adapter.listModels(provider: provider, credentials: credentials)
-            discoveredModels = models.filter {
-                $0.capabilities.contains(.imageGeneration)
-                    || $0.capabilities.contains(.imageEditing)
-                    || $0.capabilities.contains(.vision)
-            }
-        } catch {
-            discoveredModels = []
         }
     }
 }

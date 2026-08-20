@@ -9,6 +9,7 @@ import FloeCore
 /// progress video, or screen sharing with an operation guide.
 struct BackgroundExecutionSettingsView: View {
     @ObservedObject var center: SettingsCenter
+    @ObservedObject var videoService: BackgroundVideoService
 
     var body: some View {
         Form {
@@ -30,6 +31,20 @@ struct BackgroundExecutionSettingsView: View {
                 Text(center.backgroundExecution.subtitle)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+            if center.backgroundExecution == .pictureInPicture {
+                Section("画中画状态") {
+                    Label(
+                        videoService.isPiPActive ? "正在显示" :
+                            (videoService.isPreparingPiP ? "正在准备" : "等待任务启动"),
+                        systemImage: videoService.isPiPActive ? "pip.fill" : "pip"
+                    )
+                    if let error = videoService.lastError {
+                        Text(error)
+                            .foregroundStyle(FloeTheme.destructive)
+                            .font(.footnote)
+                    }
+                }
             }
         }
         .navigationTitle("后台执行")

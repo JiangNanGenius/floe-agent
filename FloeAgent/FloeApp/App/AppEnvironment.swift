@@ -204,6 +204,9 @@ final class AppEnvironment: ObservableObject {
         registerDocumentTools(rootProvider: WorkspaceCenter.toolRootProvider)
         // Image tools (Core Image processing).
         registerImageTools(rootProvider: WorkspaceCenter.toolRootProvider)
+        // Provider-backed generation through the independently configured
+        // image model. This must be in the agent catalog, not UI-only.
+        registerRemoteImageTools(center: filesCenter)
         // Execution tools (JS, local Python, SSH, HTTP, LAN scan, OCR, barcode).
         registerExecutionTools(
             localPythonService: localPythonService,

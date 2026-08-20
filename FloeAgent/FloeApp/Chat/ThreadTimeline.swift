@@ -151,7 +151,6 @@ enum ThreadTimelineBuilder {
         //    (multi-turn text before tool calls) render in place.
         let sortedEvents = events.sorted { $0.sequence < $1.sequence }
         let terminalEvent = sortedEvents.last(where: { $0.kind == .terminal })
-        let finalTextEvent = sortedEvents.last(where: { $0.kind == .assistantText })
         let nonTerminalEvents = sortedEvents.filter {
             $0.kind != .terminal && !isTerminalStatusEvent($0)
         }
@@ -165,7 +164,11 @@ enum ThreadTimelineBuilder {
 
         var finalReplyRendered = false
         var currentStepGroup: [RunEventRecord] = []
-        var stepGroups: [([RunEventRecord], Bool)] = []  // (events, isLatest)
+        func flushStepGroup() {
+            guard !currentStepGroup.isEmpty else { return }
+            items.append(.stepGroup(events: currentStepGroup, isLatest: false))
+            currentStepGroup = []
+        }
         for event in nonTerminalEvents {
             // Render every assistantText event in place (sequence order),
             // not just the last one. The old "final text only" rule inverted
@@ -173,10 +176,7 @@ enum ThreadTimelineBuilder {
             if event.kind == .assistantText {
                 let text = decodePayload(event.payloadJSON)["text"] ?? ""
                 if !text.isEmpty {
-                    if !currentStepGroup.isEmpty {
-                        stepGroups.append((currentStepGroup, false))
-                        currentStepGroup = []
-                    }
+                    flushStepGroup()
                     items.append(.assistantMessage(
                         text: text,
                         idSuffix: event.id.uuidString
@@ -196,18 +196,16 @@ enum ThreadTimelineBuilder {
                 currentStepGroup.append(event)
                 continue
             }
-            if !currentStepGroup.isEmpty {
-                stepGroups.append((currentStepGroup, false))
-                currentStepGroup = []
-            }
+            flushStepGroup()
             items.append(.event(event))
         }
-        if !currentStepGroup.isEmpty {
-            stepGroups.append((currentStepGroup, true))
-        }
-        // Render step groups: only the latest is expanded by default.
-        for (index, (groupEvents, isLatest)) in stepGroups.enumerated() {
-            items.append(.stepGroup(events: groupEvents, isLatest: isLatest && index == stepGroups.count - 1))
+        flushStepGroup()
+        // Preserve the true sequence while expanding only the newest group.
+        if let latestIndex = items.indices.last(where: {
+            if case .stepGroup = items[$0] { return true }
+            return false
+        }), case .stepGroup(let groupEvents, _) = items[latestIndex] {
+            items[latestIndex] = .stepGroup(events: groupEvents, isLatest: true)
         }
 
         // 3. Legacy fallback: the run completed and persisted a final

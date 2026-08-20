@@ -434,7 +434,12 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                         do {
                             let chunk = try decoder.decode(ChatChunk.self, from: Data(sseEvent.data.utf8))
                             for event in WireTranslator.translate(chunk, aggregator: &aggregator) {
-                                continuation.yield(event)
+                                if case .toolRequest(var call) = event {
+                                    call.toolName = canonicalToolName(call.toolName, for: request)
+                                    continuation.yield(.toolRequest(call))
+                                } else {
+                                    continuation.yield(event)
+                                }
                             }
                         } catch {
                             logger.warning("Chat chunk decode failed: \(error.localizedDescription)")
@@ -504,7 +509,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                     ChatRequest.Message.ToolCall(
                         id: call.id,
                         function: .init(
-                            name: call.toolName,
+                            name: wireToolName(call.toolName, for: request.provider),
                             arguments: String(decoding: call.argumentsJSON, as: UTF8.self)
                         )
                     )
@@ -526,9 +531,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             // DeepSeek and some gateways reject dots in tool names
             // (^[a-zA-Z0-9_-]+$). When the provider has toolNameCompatibility
             // enabled, convert dots to underscores for the wire only.
-            let wireName = request.provider.toolNameCompatibility
-                ? $0.name.replacingOccurrences(of: ".", with: "_")
-                : $0.name
+            let wireName = wireToolName($0.name, for: request.provider)
             return ChatRequest.ToolDefinition(
                 name: wireName,
                 description: $0.description,
@@ -549,6 +552,24 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             stream: true,
             streamOptions: .init(includeUsage: true)
         )
+    }
+
+    /// Converts only names actually advertised on this request. A model may
+    /// still return a canonical dotted name, and underscore collisions remain
+    /// untouched unless the mapping is unique.
+    func canonicalToolName(_ wireName: String, for request: ProviderStreamRequest) -> String {
+        guard request.provider.toolNameCompatibility else { return wireName }
+        if request.toolSchemas.contains(where: { $0.name == wireName }) { return wireName }
+        let matches = request.toolSchemas.filter {
+            wireToolName($0.name, for: request.provider) == wireName
+        }
+        return matches.count == 1 ? matches[0].name : wireName
+    }
+
+    func wireToolName(_ canonicalName: String, for provider: ProviderProfile) -> String {
+        provider.toolNameCompatibility
+            ? canonicalName.replacingOccurrences(of: ".", with: "_")
+            : canonicalName
     }
 }
 

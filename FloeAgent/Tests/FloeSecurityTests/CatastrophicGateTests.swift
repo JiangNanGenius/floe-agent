@@ -176,6 +176,19 @@ struct ApprovalPolicyTests {
         }
     }
 
+    @Test("Configured approval model reviews sensitive automatic actions")
+    func automaticPolicyUsesModelForSensitiveActions() async throws {
+        struct AllowBackend: ModelApprovalPolicy.DecisionBackend {
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+                .allow(scope: ApprovalScope(toolName: action.toolCall.toolName), expiresAt: nil)
+            }
+        }
+        let decision = try await AutomaticApprovalPolicy(backend: AllowBackend()).decide(
+            action(riskLabels: ["deletesFiles"])
+        )
+        #expect(decision.permitsExecution)
+    }
+
     @Test("Full access still asks before irreversible or persistent sensitive actions")
     func taskFullAccessSensitiveBoundary() async throws {
         let policy = TaskFullAccessPolicy()

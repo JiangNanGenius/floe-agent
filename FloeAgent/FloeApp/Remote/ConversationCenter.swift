@@ -626,7 +626,10 @@ final class ConversationCenter: ObservableObject {
         return StartedConversationTask(conversationID: prepared.conversation.id, run: run)
     }
 
-    /// Makes non-image uploads reachable through the ordinary workspace tools.
+    /// Makes every upload reachable through the ordinary workspace tools.
+    /// Vision-capable models also receive image bytes inline, while text-only
+    /// models need the workspace path so they can use image.ocr/process rather
+    /// than incorrectly claiming that no image was attached.
     /// Each original basename stays intact in its own UUID directory so the
     /// workspace guard can still recognize and reject secret names such as
     /// `.env` or private-key files.
@@ -635,7 +638,7 @@ final class ConversationCenter: ObservableObject {
         let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
         var imported: [String] = []
 
-        for attachment in attachments where attachment.kind != .image {
+        for attachment in attachments {
             guard let source = try? environment.filesCenter.resolveURL(for: attachment) else { continue }
             let accessing = source.startAccessingSecurityScopedResource()
             defer { if accessing { source.stopAccessingSecurityScopedResource() } }

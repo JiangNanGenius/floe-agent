@@ -91,6 +91,29 @@ struct ThreadTimelineTests {
         #expect(replyCount == 1)
     }
 
+    @Test("A final reply stays below the tool group that produced it")
+    func finalReplyAfterToolGroup() {
+        let conversationID = UUID()
+        let run = makeRun(state: "completed", conversationID: conversationID)
+        let events = [
+            makeEvent(runID: run.id, sequence: 1, kind: .toolResult,
+                      payload: ["tool": "workspace.listDirectory", "id": "call-1", "status": "ok"]),
+            makeEvent(runID: run.id, sequence: 2, kind: .assistantText,
+                      payload: ["text": "工具调用后的最终回复"]),
+            makeEvent(runID: run.id, sequence: 3, kind: .terminal,
+                      payload: ["stopReason": "endTurn"])
+        ]
+        let items = ThreadTimelineBuilder.build(
+            messages: [], events: events, run: run,
+            isRunning: false, liveStreamedText: "", liveReasoningText: "",
+            pendingApprovals: []
+        )
+        let group = items.firstIndex { if case .stepGroup = $0 { true } else { false } }
+        let reply = items.firstIndex { if case .assistantMessage = $0 { true } else { false } }
+        #expect(group != nil && reply != nil)
+        if let group, let reply { #expect(group < reply) }
+    }
+
     @Test("Legacy runs without assistantText fall back to the persisted message before terminal")
     func legacyFallbackBeforeTerminal() {
         let conversationID = UUID()
@@ -202,9 +225,12 @@ struct ThreadTimelineTests {
             isRunning: true, liveStreamedText: "", liveReasoningText: "x",
             pendingApprovals: []
         )
-        let eventIDs = items.compactMap { item -> Int? in
-            if case .event(let record) = item { return record.sequence }
-            return nil
+        let eventIDs = items.flatMap { item -> [Int] in
+            switch item {
+            case .event(let record): [record.sequence]
+            case .stepGroup(let events, _): events.map(\.sequence)
+            default: []
+            }
         }
         #expect(eventIDs == [1, 2])
     }

@@ -141,6 +141,7 @@ final class ThreadDetailViewModel: ObservableObject {
     /// Loads persisted state, then subscribes to the selected run's bounded
     /// push stream while it is non-terminal.
     func load() async {
+        actionError = nil
         do {
             await center.reload()
             await center.environment.settingsCenter.loadRunningInputMode()
@@ -208,6 +209,8 @@ final class ThreadDetailViewModel: ObservableObject {
         let errors = try await center.environment.runStore.errors(runID: runID)
         if selectedRun?.state == "failed", let latest = errors.last {
             actionError = latest.message
+        } else {
+            actionError = nil
         }
     }
 
@@ -221,7 +224,13 @@ final class ThreadDetailViewModel: ObservableObject {
         if selectedRun?.state == "failed", let runID = selectedRun?.id {
             let errors = try await center.environment.runStore.errors(runID: runID)
             actionError = errors.last?.message
+        } else {
+            actionError = nil
         }
+    }
+
+    func dismissActionError() {
+        actionError = nil
     }
 
     /// The unified, sequence-ordered timeline for the selected run.

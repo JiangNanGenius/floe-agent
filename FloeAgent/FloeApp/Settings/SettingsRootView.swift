@@ -125,7 +125,10 @@ struct SettingsRootView: View {
         case .execution:
             ExecutionEnvironmentView(center: environment.settingsCenter)
         case .backgroundExecution:
-            BackgroundExecutionSettingsView(center: environment.settingsCenter)
+            BackgroundExecutionSettingsView(
+                center: environment.settingsCenter,
+                videoService: environment.backgroundVideoService
+            )
         case .files:
             FilesSettingsView(center: environment.settingsCenter)
         case .sync:

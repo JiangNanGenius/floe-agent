@@ -12,6 +12,7 @@
 import Foundation
 import UIKit
 import UniformTypeIdentifiers
+import QuickLookThumbnailing
 import CryptoKit
 import FloeCore
 import FloeDocuments
@@ -106,17 +107,20 @@ final class FilesCenter: ObservableObject {
         // Compress images before staging so the model gets a usable size.
         // Skip when the model explicitly asks for the original/large version.
         if compressImage, kind == .image,
-           let image = UIImage(contentsOfFile: url.path),
+           let image = await Self.rasterImage(at: url),
            let compressed = Self.compressImage(image, maxBytes: 1_024 * 1_024) {
-            try compressed.write(to: stagedURL)
+            let jpegDisplayName = "\((finalName as NSString).deletingPathExtension).jpg"
+            let jpegStagedName = "\(UUID().uuidString)-\(jpegDisplayName)"
+            let jpegURL = attachmentsStagingDirectory.appendingPathComponent(jpegStagedName)
+            try compressed.write(to: jpegURL, options: .atomic)
             let attachment = AttachmentRef(
                 id: UUID(),
                 kind: kind,
-                displayName: finalName,
-                uti: values?.contentType?.identifier ?? "",
+                displayName: jpegDisplayName,
+                uti: UTType.jpeg.identifier,
                 byteCount: compressed.count,
                 storage: .applicationSupport,
-                relativePath: stagedName
+                relativePath: jpegStagedName
             )
             recentFiles.insert(attachment, at: 0)
             return attachment
@@ -156,6 +160,31 @@ final class FilesCenter: ObservableObject {
         )
         recentFiles.insert(attachment, at: 0)
         return attachment
+    }
+
+    /// Loads every system-supported image as pixels before it is persisted.
+    /// Quick Look is the fallback for vector/container formats (notably SVG)
+    /// that `UIImage(contentsOfFile:)` does not decode consistently.
+    private static func rasterImage(at url: URL) async -> UIImage? {
+        if let image = UIImage(contentsOfFile: url.path) { return image }
+        if let data = try? Data(floeContentsOf: url), let image = UIImage(data: data) {
+            return image
+        }
+        let request = QLThumbnailGenerator.Request(
+            fileAt: url,
+            size: CGSize(width: 2_048, height: 2_048),
+            scale: 1,
+            representationTypes: .thumbnail
+        )
+        return try? await withCheckedThrowingContinuation { continuation in
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { representation, error in
+                if let representation {
+                    continuation.resume(returning: representation.uiImage)
+                } else {
+                    continuation.resume(throwing: error ?? FloeError.validationFailed("Unsupported image format"))
+                }
+            }
+        }
     }
 
     /// Compresses an image to fit under maxBytes by progressively lowering

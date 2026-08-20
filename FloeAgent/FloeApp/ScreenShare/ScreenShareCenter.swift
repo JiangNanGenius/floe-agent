@@ -14,6 +14,8 @@ import FloeCore
 @MainActor
 final class ScreenShareCenter: NSObject, ObservableObject {
     @Published private(set) var isSharing = false
+    @Published private(set) var isWaitingForBroadcast = false
+    @Published private(set) var sharingError: String?
     /// The latest screen frame, refreshed ~1fps while broadcasting.
     @Published private(set) var latestFrame: UIImage?
     /// Detected guide hints from frame analysis (element text + tap point).
@@ -37,12 +39,19 @@ final class ScreenShareCenter: NSObject, ObservableObject {
 
     /// Starts polling the App Group for the extension's key frames.
     func startSharing() {
-        guard !isSharing else { return }
-        isSharing = true
+        guard framePollTask == nil else { return }
+        isWaitingForBroadcast = true
+        sharingError = nil
+        let startedAt = Date()
         framePollTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
                 self.refreshSharedFrame()
+                if !self.isSharing,
+                   Date().timeIntervalSince(startedAt) > 20,
+                   self.sharingError == nil {
+                    self.sharingError = "尚未收到系统广播画面。请确认已在系统列表中选择 Floe Agent 并点“开始直播”。"
+                }
                 do {
                     try await Task.sleep(for: .seconds(1))
                 } catch {
@@ -54,6 +63,8 @@ final class ScreenShareCenter: NSObject, ObservableObject {
 
     func stopSharing() {
         isSharing = false
+        isWaitingForBroadcast = false
+        sharingError = nil
         framePollTask?.cancel()
         framePollTask = nil
         latestFrame = nil
@@ -186,6 +197,8 @@ final class ScreenShareCenter: NSObject, ObservableObject {
         }
         activeSessionID = snapshot.state.sessionID
         isSharing = true
+        isWaitingForBroadcast = false
+        sharingError = nil
         latestFrame = snapshot.image
     }
 

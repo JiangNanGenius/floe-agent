@@ -603,7 +603,25 @@ public actor ConversationRunService {
             await flushAssistantSegment()
             // Per-run token accounting surfaced at completion so diagnostics
             // and the diagnostics page can show real consumption.
-            let usageRecords = (try? await runStore.usage(runID: runID)) ?? []
+            var usageRecords = (try? await runStore.usage(runID: runID)) ?? []
+            // Some OpenAI-compatible providers omit the optional streaming
+            // usage chunk even when `include_usage` was requested. Keep the
+            // statistics page useful with a clearly conservative local
+            // estimate instead of reporting zero runs forever.
+            if usageRecords.isEmpty {
+                let goal = (try? await runStore.run(id: runID))?.goal ?? ""
+                let inputText = (conversationHistory.map(\.content) + [goal])
+                    .joined(separator: "\n")
+                let estimated = RunUsageRecord(
+                    runID: runID,
+                    inputTokens: Self.estimatedTokens(in: inputText),
+                    outputTokens: Self.estimatedTokens(in: streamedText),
+                    costEstimate: nil
+                )
+                try? await runStore.recordUsage(estimated)
+                usageRecords = [estimated]
+                logger.info("runTokensEstimated run=\(runID.uuidString)")
+            }
             if let lastUsage = usageRecords.last {
                 let totalTokens = lastUsage.inputTokens + lastUsage.outputTokens
                 logger.info("runTokens run=\(runID.uuidString) input=\(lastUsage.inputTokens) output=\(lastUsage.outputTokens) total=\(totalTokens)")
@@ -652,6 +670,23 @@ public actor ConversationRunService {
                 await moveGoalToVerification()
             }
         }
+    }
+
+    /// Lightweight fallback only; provider-reported usage always wins.
+    /// CJK scalars are roughly one token while Latin text averages ~4 bytes.
+    private static func estimatedTokens(in text: String) -> Int {
+        guard !text.isEmpty else { return 0 }
+        var cjk = 0
+        var otherUTF8 = 0
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x3400...0x9FFF, 0xF900...0xFAFF, 0x3040...0x30FF, 0xAC00...0xD7AF:
+                cjk += 1
+            default:
+                otherUTF8 += scalar.utf8.count
+            }
+        }
+        return max(1, cjk + Int(ceil(Double(otherUTF8) / 4.0)))
     }
 
     // MARK: - Helpers

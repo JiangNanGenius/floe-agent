@@ -47,4 +47,5 @@ LICENSES-THIRD-PARTY.md
 # archive. The XCFramework and stripped stdlib are reproducible build inputs,
 # not source files.
 Vendor/Python.xcframework/
+Vendor/PythonExtensions/
 FloeApp/Resources/python/

@@ -90,6 +90,40 @@ struct ConversationRunServiceTests {
         #expect(run?.endedAt != nil)
     }
 
+    @Test("A provider that omits streaming usage still records a conservative estimate")
+    func estimatesMissingProviderUsage() async throws {
+        let (conversationStore, runStore) = try await makeStores()
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "Estimated usage", createdAt: Date(), updatedAt: Date()
+        ))
+        let adapter = MockAdapter()
+        adapter.script = [[
+            .textDelta(.init(text: "这是一个可统计的回答。")),
+            .completed(.init(stopReason: .endTurn))
+        ]]
+        let service = ConversationRunService(
+            configuration: .init(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID())
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        try await service.start(goal: "统计这一轮")
+
+        let usage = try await runStore.usage(runID: service.runID)
+        let estimate = try #require(usage.last)
+        #expect(estimate.inputTokens > 0)
+        #expect(estimate.outputTokens > 0)
+        #expect(estimate.costEstimate == nil)
+    }
+
     @Test("A tool turn persists the provider's final assistant reply")
     func toolTurnPersistsFinalReply() async throws {
         let (conversationStore, runStore) = try await makeStores()
