@@ -143,10 +143,8 @@ struct ProviderEditorView: View {
                 Button {
                     if viewModel.showingAPIKey {
                         viewModel.showingAPIKey = false
-                    } else if !viewModel.apiKey.isEmpty || viewModel.existing?.secretRef == nil {
-                        viewModel.showingAPIKey = true
                     } else {
-                        Task { await viewModel.revealAPIKey() }
+                        Task { await viewModel.authenticateAndRevealAPIKey() }
                     }
                 } label: {
                     Image(systemName: viewModel.showingAPIKey ? "eye.slash" : "eye")

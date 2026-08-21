@@ -44,7 +44,6 @@ struct ModelEditorView: View {
                     Label("model.capability.text", systemImage: "text.bubble")
                     capabilityToggle("model.capability.vision", capability: .vision)
                     capabilityToggle("model.capability.tools", capability: .tools)
-                    capabilityToggle("model.capability.approval", capability: .approval)
                 }
                 Section {
                     Picker("model.reasoning.effort", selection: reasoningEffort) {
@@ -85,6 +84,9 @@ struct ModelEditorView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("action.save") {
                         model.capabilities.insert(.text)
+                        // Every text model can be selected as the reviewer.
+                        // Approval behavior itself is controlled per task.
+                        model.capabilities.insert(.approval)
                         if makeDefault && !isDefault { onMakeDefault() }
                         onSave(model)
                         dismiss()

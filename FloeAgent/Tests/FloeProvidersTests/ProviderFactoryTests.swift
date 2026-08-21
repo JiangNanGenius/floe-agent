@@ -178,6 +178,7 @@ struct ModelDiscoveryContractTests {
             let capabilities = ModelCapabilities.defaultTextModel(for: wireProtocol)
             #expect(capabilities.contains(.text))
             #expect(capabilities.contains(.tools))
+            #expect(capabilities.contains(.approval))
         }
     }
 

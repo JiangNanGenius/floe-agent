@@ -85,8 +85,19 @@ private struct SystemBroadcastPicker: UIViewRepresentable {
     ) {
         guard !coordinator.didRequest else { return }
         coordinator.didRequest = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            Self.firstButton(in: picker)?.sendActions(for: .touchUpInside)
+        // The system-owned UIButton is installed only after the picker enters
+        // a window. Retry briefly instead of consuming the one automatic
+        // request while its subview hierarchy is still empty.
+        Task { @MainActor in
+            for _ in 0..<12 {
+                if picker.window != nil, let button = Self.firstButton(in: picker) {
+                    button.sendActions(for: .touchUpInside)
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+            // Leave the visible system button usable when iOS requires a
+            // genuine tap; ReplayKit always owns final consent.
         }
     }
 

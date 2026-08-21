@@ -162,6 +162,36 @@ final class FilesCenter: ObservableObject {
         return attachment
     }
 
+    /// Stages a photo-library image without manufacturing a temporary
+    /// security-scoped URL. PhotosPicker hands the app bytes it is authorized
+    /// to read; normalize them to JPEG exactly like document-picked images.
+    func registerPhotoData(
+        _ data: Data,
+        displayName: String = "Photo.jpg"
+    ) throws -> AttachmentRef {
+        guard let image = UIImage(data: data),
+              let compressed = Self.compressImage(image, maxBytes: 1_024 * 1_024) else {
+            throw FloeError.validationFailed("无法读取所选照片")
+        }
+        let base = ((displayName as NSString).deletingPathExtension as NSString)
+            .lastPathComponent
+        let finalName = "\(base.isEmpty ? "Photo" : base).jpg"
+        let stagedName = "\(UUID().uuidString)-\(finalName)"
+        let stagedURL = attachmentsStagingDirectory.appendingPathComponent(stagedName)
+        try compressed.write(to: stagedURL, options: .atomic)
+        let attachment = AttachmentRef(
+            id: UUID(),
+            kind: .image,
+            displayName: finalName,
+            uti: UTType.jpeg.identifier,
+            byteCount: compressed.count,
+            storage: .applicationSupport,
+            relativePath: stagedName
+        )
+        recentFiles.insert(attachment, at: 0)
+        return attachment
+    }
+
     /// Loads every system-supported image as pixels before it is persisted.
     /// Quick Look is the fallback for vector/container formats (notably SVG)
     /// that `UIImage(contentsOfFile:)` does not decode consistently.

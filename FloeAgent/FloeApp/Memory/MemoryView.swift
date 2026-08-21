@@ -160,11 +160,10 @@ struct MemoryView: View {
     @State private var query = ""
 
     var body: some View {
-        // NavigationStack here (not only in the caller) so the 用户画像/SOUL.md
-        // NavigationLinks work regardless of whether MemoryView is hosted in
-        // a sheet, a NavigationSplitView detail column, or a pushed screen.
-        NavigationStack {
-            List {
+        // Every host supplies the navigation container. Nesting another stack
+        // here makes iPad split-detail NavigationLinks highlight without
+        // actually pushing their destination.
+        List {
                 Section("个性化") {
                     NavigationLink { PersonalizationDocumentView(center: center, kind: .userProfile) } label: {
                         personalizationRow("用户画像", icon: "person.text.rectangle", revision: center.profile?.revision)
@@ -180,26 +179,25 @@ struct MemoryView: View {
                 }
                 if !query.isEmpty { searchSection } else { memorySection }
                 if let error = center.errorMessage { Section { Text(error).foregroundStyle(.red).font(.footnote) } }
-            }
-            .navigationTitle("记忆与个性化")
-            .searchable(text: $query, prompt: "搜索记忆")
-            .task(id: query) {
-                try? await Task.sleep(for: .milliseconds(250))
-                guard !Task.isCancelled else { return }
-                await center.search(query)
-            }
-            .toolbar {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Button("快速整理", systemImage: "wand.and.stars") {
-                        Task { await center.quickOrganize() }
-                    }
-                    .disabled(center.isWorking)
-                    Button("添加记忆", systemImage: "plus") { presentedSheet = .add }
-                }
-            }
-            .task { await center.load() }
-            .sheet(item: $presentedSheet) { _ in AddMemorySheet(center: center) }
         }
+        .navigationTitle("记忆与个性化")
+        .searchable(text: $query, prompt: "搜索记忆")
+        .task(id: query) {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            await center.search(query)
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button("快速整理", systemImage: "wand.and.stars") {
+                    Task { await center.quickOrganize() }
+                }
+                .disabled(center.isWorking)
+                Button("添加记忆", systemImage: "plus") { presentedSheet = .add }
+            }
+        }
+        .task { await center.load() }
+        .sheet(item: $presentedSheet) { _ in AddMemorySheet(center: center) }
     }
 
     @ViewBuilder private var searchSection: some View {
@@ -236,14 +234,19 @@ struct MemoryView: View {
                 }
             } else {
                 ForEach(center.entries) { entry in
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(entry.content)
-                        HStack {
-                            Text(scope(entry.scope))
-                            if entry.isPinned { Image(systemName: "pin.fill") }
-                            Text(entry.status.rawValue)
-                        }.font(.caption).foregroundStyle(.secondary)
-                    }.swipeActions {
+                    NavigationLink {
+                        MemoryEntryDetailView(entry: entry, center: center)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(entry.content)
+                            HStack {
+                                Text(scope(entry.scope))
+                                if entry.isPinned { Image(systemName: "pin.fill") }
+                                Text(entry.status.rawValue)
+                            }.font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .swipeActions {
                         Button("删除", role: .destructive) { Task { await center.delete(entry) } }
                     }
                 }
@@ -257,6 +260,46 @@ struct MemoryView: View {
     }
     private func scope(_ scope: MemoryScope) -> String {
         switch scope { case .userProfile: "用户"; case .agentGlobal: "Agent"; case .workspace: "工作区"; case .task: "任务" }
+    }
+}
+
+private struct MemoryEntryDetailView: View {
+    let entry: MemoryEntry
+    @ObservedObject var center: MemoryCenter
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Form {
+            Section("记忆内容") {
+                Text(entry.content)
+                    .textSelection(.enabled)
+            }
+            Section("属性") {
+                LabeledContent("范围", value: scopeTitle)
+                LabeledContent("状态", value: entry.status.rawValue)
+                LabeledContent("重要性", value: entry.importance, format: .percent)
+                LabeledContent("置信度", value: entry.confidence, format: .percent)
+            }
+            Section {
+                Button("删除记忆", role: .destructive) {
+                    Task {
+                        await center.delete(entry)
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .navigationTitle("记忆详情")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var scopeTitle: String {
+        switch entry.scope {
+        case .userProfile: "用户"
+        case .agentGlobal: "Agent"
+        case .workspace: "工作区"
+        case .task: "任务"
+        }
     }
 }
 

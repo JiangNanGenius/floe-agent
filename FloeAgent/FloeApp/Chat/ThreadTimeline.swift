@@ -104,7 +104,10 @@ enum ThreadTimelineBuilder {
                 isRunning: isLive,
                 liveStreamedText: isLive ? liveStreamedText : "",
                 liveReasoningText: isLive ? liveReasoningText : "",
-                pendingApprovals: isLive ? pendingApprovals : []
+                // A run waiting for a human decision may be represented as
+                // suspended rather than "running". Keep its decision card in
+                // the timeline until the runtime consumes the answer.
+                pendingApprovals: pendingApprovals.filter { $0.runID == run.id }
             )
         }
         let represented = Set(sortedRuns.map(\.id))

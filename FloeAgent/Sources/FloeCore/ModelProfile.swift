@@ -3,8 +3,9 @@
 
 import Foundation
 
-/// Capability flags advertised by a remote model. Used to gate features
-/// (e.g. only `.approval` models may serve as the approval model).
+/// Capability flags advertised by a remote model. Approval is a task policy,
+/// not an optional model feature; the legacy bit remains decodable only for
+/// configuration compatibility.
 public struct ModelCapabilities: OptionSet, Sendable, Codable, Hashable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }
@@ -23,7 +24,7 @@ public struct ModelCapabilities: OptionSet, Sendable, Codable, Hashable {
     public static func defaultTextModel(for wireProtocol: ModelProtocol) -> ModelCapabilities {
         switch wireProtocol {
         case .openAIResponses, .openAIChatCompletions, .anthropicMessages:
-            return [.text, .tools]
+            return [.text, .tools, .approval]
         }
     }
 }

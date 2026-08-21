@@ -29,11 +29,35 @@ final class ProviderListViewModel: ObservableObject {
     }
 
     var providers: [ProviderProfile] {
-        center.providers
+        center.providers.filter { provider in
+            let models = center.modelsByProvider[provider.id] ?? []
+            // Keep empty providers visible while they are being configured,
+            // but route dedicated image-only endpoints to Auxiliary Models.
+            return models.isEmpty || models.contains { $0.capabilities.contains(.text) }
+        }
+    }
+
+    var imageOnlyProviders: [ProviderProfile] {
+        center.providers.filter { provider in
+            let models = center.modelsByProvider[provider.id] ?? []
+            return !models.isEmpty
+                && !models.contains { $0.capabilities.contains(.text) }
+                && models.contains {
+                    $0.capabilities.contains(.imageGeneration)
+                        || $0.capabilities.contains(.imageEditing)
+                        || $0.capabilities.contains(.vision)
+                }
+        }
+    }
+
+    func auxiliaryModelCount(for providerID: UUID) -> Int {
+        center.modelsByProvider[providerID]?
+            .filter { !$0.capabilities.contains(.text) }.count ?? 0
     }
 
     func modelCount(for providerID: UUID) -> Int {
-        center.modelsByProvider[providerID]?.count ?? 0
+        center.modelsByProvider[providerID]?
+            .filter { $0.capabilities.contains(.text) }.count ?? 0
     }
 
     func load() async {

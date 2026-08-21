@@ -306,5 +306,43 @@ struct ThreadTimelineTests {
             return false
         })
     }
+
+    @Test("A suspended run keeps its pending approval card actionable")
+    func suspendedRunKeepsApprovalCard() throws {
+        let conversationID = UUID()
+        let run = makeRun(state: "waitingApproval", conversationID: conversationID)
+        let toolCall = try ToolCall(
+            id: "approval-call",
+            toolName: "workspace.writeFile",
+            argumentsJSON: Data(#"{"path":"note.txt","content":"hello"}"#.utf8),
+            scope: .local
+        )
+        let approval = PendingApproval(
+            runID: run.id,
+            conversationID: conversationID,
+            toolCall: toolCall,
+            reason: "Review before writing",
+            riskLabels: ["write"],
+            isSideEffecting: true,
+            requestedAt: Date(),
+            workspaceID: nil
+        )
+
+        let items = ThreadTimelineBuilder.buildConversation(
+            messages: [],
+            runs: [run],
+            eventsByRun: [:],
+            liveRunID: nil,
+            isRunning: false,
+            liveStreamedText: "",
+            liveReasoningText: "",
+            pendingApprovals: [approval]
+        )
+
+        #expect(items.contains { item in
+            if case .approval(let value) = item { return value.id == approval.id }
+            return false
+        })
+    }
 }
 #endif

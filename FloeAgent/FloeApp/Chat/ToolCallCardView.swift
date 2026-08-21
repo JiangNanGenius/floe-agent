@@ -186,6 +186,7 @@ private struct ArtifactImageView: View {
     @State private var image: UIImage?
     @State private var fileURL: URL?
     @State private var failed = false
+    @State private var showingFullScreen = false
 
     var body: some View {
         Group {
@@ -196,7 +197,10 @@ private struct ArtifactImageView: View {
                         .scaledToFit()
                         .frame(maxWidth: .infinity)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { showingFullScreen = true }
                         .accessibilityLabel("生成的图片")
+                        .accessibilityHint("双击全屏查看")
                     ShareLink(item: fileURL) {
                         Label("保存或共享图片", systemImage: "square.and.arrow.up")
                     }
@@ -212,6 +216,11 @@ private struct ArtifactImageView: View {
             }
         }
         .task(id: artifact.id) { loadVerifiedImage() }
+        .fullScreenCover(isPresented: $showingFullScreen) {
+            if let image, let fileURL {
+                FullScreenArtifactImage(image: image, fileURL: fileURL)
+            }
+        }
     }
 
     private func loadVerifiedImage() {
@@ -247,6 +256,51 @@ private struct ArtifactImageView: View {
         }
         image = decoded
         fileURL = candidate
+    }
+}
+
+private struct FullScreenArtifactImage: View {
+    let image: UIImage
+    let fileURL: URL
+    @Environment(\.dismiss) private var dismiss
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .scaleEffect(scale)
+                .gesture(
+                    MagnifyGesture()
+                        .onChanged { value in
+                            scale = min(6, max(1, lastScale * value.magnification))
+                        }
+                        .onEnded { _ in lastScale = scale }
+                )
+                .onTapGesture(count: 2) {
+                    withAnimation(.snappy) {
+                        scale = scale > 1 ? 1 : 2.5
+                        lastScale = scale
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(spacing: 12) {
+                ShareLink(item: fileURL) {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark")
+                }
+            }
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(14)
+            .background(.black.opacity(0.55), in: Capsule())
+            .padding()
+        }
     }
 }
 #endif

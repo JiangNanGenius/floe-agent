@@ -54,7 +54,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Signed builds are distributed through TestFlight when a testing group is available. The current source targets Floe Agent 1.4.1 (build 32); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) for artifacts that actually completed the release gates. TestFlight access may remain limited while the project is in prerelease.
+Signed builds are distributed through TestFlight when a testing group is available. The current source targets Floe Agent 1.4.2 (build 33); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) for artifacts that actually completed the release gates. TestFlight access may remain limited while the project is in prerelease.
 
 ### Unsigned IPA
 

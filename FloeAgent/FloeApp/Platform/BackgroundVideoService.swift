@@ -365,11 +365,10 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     }
 
     /// Synthesizes a short looping MP4 whose frames carry the run title and
-    /// progress. Real, visible content — the surface review expects. The asset
-    /// also carries a silent audio track: iOS keeps the app alive in the
-    /// background via the `audio` background mode only while audio is actually
-    /// playing, so a video-only PiP still gets suspended the moment it
-    /// backgrounds. The silent track satisfies that requirement.
+    /// progress. Real, visible content — the surface review expects. PiP owns
+    /// video playback continuity; avoiding a hand-built compressed audio
+    /// sample also avoids AVAssetWriter rejecting the whole progress asset on
+    /// some devices before PiP can even be requested.
     private func synthesizeProgressVideo(
         title: String,
         progress: String,
@@ -402,17 +401,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
                     kCVPixelBufferHeightKey as String: Int(size.height)
                 ]
             )
-            let audioSettings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 44_100,
-                AVNumberOfChannelsKey: 1,
-                AVEncoderBitRateKey: 64_000
-            ]
-            let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-            audioInput.expectsMediaDataInRealTime = false
-            guard writer.canAdd(input), writer.canAdd(audioInput) else { return nil }
+            guard writer.canAdd(input) else { return nil }
             writer.add(input)
-            writer.add(audioInput)
             guard writer.startWriting() else { return nil }
             writer.startSession(atSourceTime: .zero)
             // 5 seconds at 2 fps = 10 frames of the same progress image.
@@ -436,25 +426,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
                     }
                 }
             }
-            // Append a silent 5s audio track so the audio background mode keeps
-            // the process alive while the PiP floats.
-            if let silent = Self.silentAudioSampleBuffer(duration: 5.0) {
-                let audioDeadline = Date().addingTimeInterval(2)
-                while !audioInput.isReadyForMoreMediaData {
-                    try Task.checkCancellation()
-                    guard writer.status == .writing, Date() < audioDeadline else {
-                        writer.cancelWriting()
-                        return nil
-                    }
-                    try await Task.sleep(for: .milliseconds(10))
-                }
-                guard audioInput.append(silent) else {
-                    writer.cancelWriting()
-                    return nil
-                }
-            }
             input.markAsFinished()
-            audioInput.markAsFinished()
             await writer.finishWriting()
             return writer.status == .completed ? url : nil
         } catch {

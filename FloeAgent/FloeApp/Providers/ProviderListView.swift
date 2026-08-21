@@ -23,7 +23,7 @@ struct ProviderListView: View {
 
     var body: some View {
         Group {
-            if viewModel.providers.isEmpty && !viewModel.isLoading {
+            if viewModel.providers.isEmpty && viewModel.imageOnlyProviders.isEmpty && !viewModel.isLoading {
                 ContentUnavailableView {
                     Label("more.providers", systemImage: "antenna.radiowaves.left.and.right")
                 } description: {
@@ -72,41 +72,56 @@ struct ProviderListView: View {
 
     private var providerList: some View {
         List {
-            ForEach(viewModel.providers) { provider in
-                Button {
-                    presentedEditor = .existing(provider)
-                } label: {
-                    ProviderRow(
-                        provider: provider,
-                        modelCount: viewModel.modelCount(for: provider.id),
-                        status: viewModel.status(for: provider.id)
-                    )
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    Button {
-                        presentedEditor = .existing(provider)
-                    } label: {
-                        Label("编辑", systemImage: "pencil")
-                    }
-                    .tint(.blue)
-                    Button(role: .destructive) {
-                        Task { await viewModel.delete(provider) }
-                    } label: {
-                        Label("删除", systemImage: "trash")
-                    }
+            Section("对话模型服务商") {
+                ForEach(viewModel.providers) { provider in
+                    providerButton(provider, modelCount: viewModel.modelCount(for: provider.id))
                 }
             }
-            .onDelete { offsets in
-                let targets = offsets.map { viewModel.providers[$0] }
-                for provider in targets {
-                    Task { await viewModel.delete(provider) }
+
+            if !viewModel.imageOnlyProviders.isEmpty {
+                Section {
+                    ForEach(viewModel.imageOnlyProviders) { provider in
+                        providerButton(
+                            provider,
+                            modelCount: viewModel.auxiliaryModelCount(for: provider.id)
+                        )
+                    }
+                } header: {
+                    Text("图像模型服务商")
+                } footer: {
+                    Text("这些端点只供读图、图片生成或编辑使用；路由在“辅助模型”中设置。")
                 }
             }
         }
         .listStyle(.insetGrouped)
+    }
+
+    private func providerButton(_ provider: ProviderProfile, modelCount: Int) -> some View {
+        Button {
+            presentedEditor = .existing(provider)
+        } label: {
+            ProviderRow(
+                provider: provider,
+                modelCount: modelCount,
+                status: viewModel.status(for: provider.id)
+            )
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button {
+                presentedEditor = .existing(provider)
+            } label: {
+                Label("编辑", systemImage: "pencil")
+            }
+            .tint(.blue)
+            Button(role: .destructive) {
+                Task { await viewModel.delete(provider) }
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
+        }
     }
 }
 

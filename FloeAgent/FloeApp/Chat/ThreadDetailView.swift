@@ -23,7 +23,6 @@ struct ThreadDetailView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var editingPendingInput: PendingUserInput?
     @State private var showingGoalBuilder = false
-    @State private var showingScreenShare = false
     @State private var showingScreenShareGuide = false
     @State private var confirmingScreenTransmission = false
     @State private var showingPermissionsSheet = false
@@ -53,15 +52,10 @@ struct ThreadDetailView: View {
         .task {
             viewModel.selectedRunID = router.selectedRunID
             await viewModel.load()
-            presentRequestedScreenShareIfNeeded()
-        }
-        .onReceive(environment.screenShareCenter.$requestedConversationID) { _ in
-            presentRequestedScreenShareIfNeeded()
         }
         .onReceive(environment.screenShareCenter.$isSharing) { isSharing in
             guard isSharing,
                   environment.settingsCenter.backgroundExecution == .screenShare else { return }
-            showingScreenShare = false
             if environment.screenShareCenter.hasScreenAnalysisConsent {
                 showingScreenShareGuide = true
             } else {
@@ -96,9 +90,6 @@ struct ThreadDetailView: View {
                     }
             }
             .presentationDetents([.medium, .large])
-        }
-        .sheet(isPresented: $showingScreenShare) {
-            BroadcastPickerView(center: environment.screenShareCenter)
         }
         .sheet(isPresented: $showingScreenShareGuide) {
             ScreenShareGuideView(
@@ -376,13 +367,6 @@ struct ThreadDetailView: View {
         }
     }
 
-    private func presentRequestedScreenShareIfNeeded() {
-        guard environment.screenShareCenter.consumeBroadcastRequest(
-            for: viewModel.conversationID
-        ) else { return }
-        showingScreenShare = true
-    }
-
     private func inspectorButton(
         _ title: String,
         icon: String,
@@ -464,7 +448,8 @@ struct ThreadDetailView: View {
                     onSend: { Task { await viewModel.send() } },
                     onStop: { Task { await viewModel.cancel() } },
                     onPermissions: { showingPermissionsSheet = true },
-                    approvalMode: viewModel.taskPolicy.resolvedApprovalMode
+                    approvalMode: viewModel.taskPolicy.resolvedApprovalMode,
+                    contextID: viewModel.conversationID
                 )
             }
         }

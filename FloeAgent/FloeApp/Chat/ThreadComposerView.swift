@@ -13,6 +13,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import AVFoundation
+import PhotosUI
 import FloeCore
 import FloeModels
 import FloeAgentRuntime
@@ -148,8 +149,12 @@ struct ThreadComposerView: View {
     let onStop: () -> Void
     var onPermissions: () -> Void = {}
     var approvalMode: TaskApprovalMode = .ask
+    /// Changes when the composer is reused for another conversation. Local
+    /// transient errors must not leak into the next task.
+    var contextID: UUID? = nil
 
     @State private var isPickerPresented = false
+    @State private var selectedPhoto: PhotosPickerItem?
     @State private var attachmentError: String?
     @State private var dictationPrefix = ""
     @EnvironmentObject private var voiceInput: VoiceInputController
@@ -183,6 +188,17 @@ struct ThreadComposerView: View {
             DocumentPickerView { url in
                 Task { await registerPicked(url) }
             }
+        }
+        .onChange(of: selectedPhoto) { _, item in
+            guard let item else { return }
+            Task { await registerPickedPhoto(item) }
+        }
+        .onChange(of: attachments.map(\.id)) { _, _ in
+            attachmentError = nil
+        }
+        .onChange(of: contextID) { _, _ in
+            attachmentError = nil
+            selectedPhoto = nil
         }
         .onChange(of: voiceInput.transcript) { _, transcript in
             guard voiceInput.isListening || !transcript.isEmpty else { return }
@@ -241,8 +257,15 @@ struct ThreadComposerView: View {
 
     private var inputRow: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            Button {
-                isPickerPresented = true
+            Menu {
+                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                    Label("从照片中选择", systemImage: "photo.on.rectangle")
+                }
+                Button {
+                    isPickerPresented = true
+                } label: {
+                    Label("从文件中选择", systemImage: "folder")
+                }
             } label: {
                 Image(systemName: "paperclip")
                     .font(.title3)
@@ -636,6 +659,23 @@ struct ThreadComposerView: View {
         do {
             let attachment = try await environment.filesCenter
                 .registerPickedDocument(url: url, displayName: url.lastPathComponent)
+            attachments.append(attachment)
+            attachmentError = nil
+        } catch {
+            attachmentError = error.localizedDescription
+        }
+    }
+
+    private func registerPickedPhoto(_ item: PhotosPickerItem) async {
+        defer { selectedPhoto = nil }
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self) else {
+                throw FloeError.validationFailed("无法读取所选照片")
+            }
+            let attachment = try environment.filesCenter.registerPhotoData(
+                data,
+                displayName: "Photo-\(Int(Date().timeIntervalSince1970)).jpg"
+            )
             attachments.append(attachment)
             attachmentError = nil
         } catch {

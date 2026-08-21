@@ -11,6 +11,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import LocalAuthentication
 import FloeCore
 import FloeProviders
 import FloeSync
@@ -240,11 +241,29 @@ final class ProviderEditorViewModel: ObservableObject {
         return results.joined(separator: "\n")
     }
 
-    /// Reveals the stored API key by reading from Keychain and populating
-    /// the field. Requires biometric/device passcode authentication via
-    /// Keychain's access control. The key stays in memory only while
-    /// `showingAPIKey` is true.
-    func revealAPIKey() async {
+    /// Reveals either the newly typed or stored API key only after explicit
+    /// device-owner authentication. Keychain storage alone does not imply an
+    /// authentication prompt, so the editor enforces it at the reveal action.
+    func authenticateAndRevealAPIKey() async {
+        let context = LAContext()
+        var authError: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &authError) else {
+            errorMessage = authError?.localizedDescription ?? "请先为设备设置密码或生物识别"
+            return
+        }
+        do {
+            try await context.evaluatePolicy(
+                .deviceOwnerAuthentication,
+                localizedReason: "验证身份后显示模型服务 API key"
+            )
+        } catch {
+            errorMessage = "未通过设备所有者验证"
+            return
+        }
+        if !apiKey.isEmpty {
+            showingAPIKey = true
+            return
+        }
         guard let existing, let secretRef = existing.secretRef else {
             errorMessage = "未配置 API key"
             return
@@ -259,6 +278,7 @@ final class ProviderEditorViewModel: ObservableObject {
                let key = String(data: data, encoding: .utf8) {
                 apiKey = key
                 showingAPIKey = true
+                errorMessage = nil
                 return
             }
         }
