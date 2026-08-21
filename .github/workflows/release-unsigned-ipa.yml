@@ -212,6 +212,7 @@ jobs:
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             CODE_SIGN_STYLE=Automatic \
+            CODE_SIGN_IDENTITY='Apple Development' \
             PROVISIONING_PROFILE_SPECIFIER='' \
             archive
 
