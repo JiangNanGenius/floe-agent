@@ -124,15 +124,9 @@ struct AgentPermissionsView: View {
     }
 
     private func authenticateFullAccess() async {
-        let context = LAContext()
         do {
-            guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else {
-                authenticationError = "设备未设置可用的身份验证。"
-                return
-            }
-            guard try await context.evaluatePolicy(
-                .deviceOwnerAuthentication,
-                localizedReason: "确认新任务默认使用完全访问权限"
+            guard try await DeviceOwnerAuthenticator.authenticate(
+                reason: "确认新任务默认使用完全访问权限"
             ) else { return }
             await center.setDefaultAgentMode(.fullControl)
             authenticationError = nil

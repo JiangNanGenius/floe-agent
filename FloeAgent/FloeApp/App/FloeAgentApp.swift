@@ -88,6 +88,12 @@ struct RootView: View {
         }
         .onChange(of: scenePhase, initial: true) { _, newPhase in
             router.handleScenePhase(newPhase, environment: environment)
+            if newPhase == .active, environment.persistenceReady {
+                Task {
+                    try? await environment.configurationSync.synchronize()
+                    await environment.conversationCenter.reload()
+                }
+            }
             if newPhase != .active {
                 environment.voiceInput.handleInterruption(reason: .interrupted)
                 // Persist the diagnostics ring buffer before suspension so a
@@ -117,8 +123,10 @@ struct RootView: View {
         .onReceive(environment.conversationCenter.$conversations) { conversations in
             router.reconcileConversations(Set(conversations.map(\.id)))
         }
-        .onReceive(environment.screenShareCenter.$requestedConversationID) { conversationID in
-            guard let conversationID,
+        .onReceive(NotificationCenter.default.publisher(
+            for: .floeScreenShareAuthorizationRequested
+        )) { notification in
+            guard let conversationID = notification.object as? UUID,
                   environment.screenShareCenter.consumeBroadcastRequest(for: conversationID) else { return }
             FloeLogger(category: .app).info(
                 "screenShareSheetPresentationRequested conversation=\(conversationID.uuidString)"

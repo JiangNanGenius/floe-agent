@@ -66,15 +66,9 @@ struct DraftTaskPermissionsSheet: View {
     }
 
     private func authenticateFullAccess() async {
-        let context = LAContext()
         do {
-            guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else {
-                errorMessage = "设备未设置可用的身份验证。"
-                return
-            }
-            if try await context.evaluatePolicy(
-                .deviceOwnerAuthentication,
-                localizedReason: "确认新任务启用完全访问权限"
+            if try await DeviceOwnerAuthenticator.authenticate(
+                reason: "确认新任务启用完全访问权限"
             ) {
                 policy.approvalMode = .fullAccess
                 errorMessage = nil

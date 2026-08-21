@@ -245,17 +245,10 @@ final class ProviderEditorViewModel: ObservableObject {
     /// device-owner authentication. Keychain storage alone does not imply an
     /// authentication prompt, so the editor enforces it at the reveal action.
     func authenticateAndRevealAPIKey() async {
-        let context = LAContext()
-        var authError: NSError?
-        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &authError) else {
-            errorMessage = authError?.localizedDescription ?? "请先为设备设置密码或生物识别"
-            return
-        }
         do {
-            try await context.evaluatePolicy(
-                .deviceOwnerAuthentication,
-                localizedReason: "验证身份后显示模型服务 API key"
-            )
+            guard try await DeviceOwnerAuthenticator.authenticate(
+                reason: "验证身份后显示模型服务 API key"
+            ) else { return }
         } catch {
             errorMessage = "未通过设备所有者验证"
             return

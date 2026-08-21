@@ -11,6 +11,12 @@ import UIKit
 import ReplayKit
 import FloeCore
 
+extension Notification.Name {
+    static let floeScreenShareAuthorizationRequested = Notification.Name(
+        "org.floeagent.screen-share-authorization-requested"
+    )
+}
+
 @MainActor
 final class ScreenShareCenter: NSObject, ObservableObject {
     @Published private(set) var isSharing = false
@@ -79,6 +85,18 @@ final class ScreenShareCenter: NSObject, ObservableObject {
         )
         requestedConversationID = conversationID
         startSharing()
+        // Publish on the next main-loop turn. A run may start while SwiftUI is
+        // committing navigation; relying only on the @Published edge can lose
+        // the one-shot request before RootView is ready to present ReplayKit.
+        DispatchQueue.main.async {
+            FloeLogger(category: .app).info(
+                "screenShareAuthorizationPublished conversation=\(conversationID.uuidString)"
+            )
+            NotificationCenter.default.post(
+                name: .floeScreenShareAuthorizationRequested,
+                object: conversationID
+            )
+        }
     }
 
     func consumeBroadcastRequest(for conversationID: UUID) -> Bool {

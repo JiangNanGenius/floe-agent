@@ -82,11 +82,24 @@ struct AuxiliaryModelsView: View {
         .navigationTitle("more.auxiliary_models")
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("action.save") { Task { await viewModel.save() } }
-                    .disabled(viewModel.isSaving)
+                if viewModel.isSaving {
+                    ProgressView()
+                        .accessibilityLabel("正在自动保存")
+                } else {
+                    Text("已自动保存")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .task { await viewModel.load() }
+        .onChange(of: viewModel.mode) { _, _ in viewModel.scheduleSave() }
+        .onChange(of: viewModel.visionModelID) { _, _ in viewModel.scheduleSave() }
+        .onChange(of: viewModel.packageReviewModelID) { _, _ in viewModel.scheduleSave() }
+        .onChange(of: viewModel.sharedModelID) { _, _ in viewModel.scheduleSave() }
+        .onChange(of: viewModel.generationModelID) { _, _ in viewModel.scheduleSave() }
+        .onChange(of: viewModel.editingModelID) { _, _ in viewModel.scheduleSave() }
+        .onDisappear { viewModel.flushPendingSave() }
         .sheet(isPresented: $showingAdd) {
             AuxiliaryModelEditorView(center: viewModel.center) { model in
                 await viewModel.modelAdded(model)
@@ -120,6 +133,8 @@ final class AuxiliaryModelsViewModel: ObservableObject {
 
     let center: ConversationCenter
     private let adapterFactory = ImageProviderAdapterFactory()
+    private var hasLoaded = false
+    private var saveTask: Task<Void, Never>?
 
     init(center: ConversationCenter) { self.center = center }
 
@@ -144,6 +159,8 @@ final class AuxiliaryModelsViewModel: ObservableObject {
     }
 
     func load() async {
+        hasLoaded = false
+        saveTask?.cancel()
         await center.reload()
         let preferences = center.modelPreferences
         mode = preferences.auxiliaryImageMode
@@ -152,6 +169,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
         sharedModelID = preferences.sharedImageModelID
         generationModelID = preferences.imageGenerationModelID
         editingModelID = preferences.imageEditingModelID
+        hasLoaded = true
     }
 
     func setSharedMode(_ shared: Bool) {
@@ -189,6 +207,27 @@ final class AuxiliaryModelsViewModel: ObservableObject {
         }
     }
 
+    /// Model routing is a preference, not an editor transaction. Persist it
+    /// shortly after every change so leaving this screen cannot silently lose
+    /// the auxiliary vision selection needed by a text-only model.
+    func scheduleSave() {
+        guard hasLoaded else { return }
+        saveTask?.cancel()
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, let self else { return }
+            await self.save()
+        }
+    }
+
+    func flushPendingSave() {
+        guard hasLoaded else { return }
+        saveTask?.cancel()
+        saveTask = Task { [weak self] in
+            await self?.save()
+        }
+    }
+
     func modelAdded(_ staged: ModelProfile) async {
         await center.reload()
         let candidates = center.imageModels + center.visionModels
@@ -204,6 +243,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
             if canonical.capabilities.contains(.imageGeneration) { generationModelID = canonical.id }
             if canonical.capabilities.contains(.imageEditing) { editingModelID = canonical.id }
         }
+        scheduleSave()
     }
 
     func label(for model: ModelProfile) -> String {

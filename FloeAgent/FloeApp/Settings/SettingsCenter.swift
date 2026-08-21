@@ -205,6 +205,7 @@ final class SettingsCenter: ObservableObject {
     func synchronizeConfiguration() async {
         do {
             try await environment.configurationSync.synchronize()
+            await environment.conversationCenter.reload()
         } catch {
             // ConfigSyncEngine owns the redacted, user-presentable error state.
         }

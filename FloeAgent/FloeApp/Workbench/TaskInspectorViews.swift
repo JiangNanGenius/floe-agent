@@ -187,15 +187,9 @@ struct TaskPermissionsInspectorView: View {
     }
 
     private func authenticateFullAccess() async {
-        let context = LAContext()
         do {
-            guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else {
-                errorMessage = "设备未设置可用的身份验证。"
-                return
-            }
-            let allowed = try await context.evaluatePolicy(
-                .deviceOwnerAuthentication,
-                localizedReason: "确认本任务启用完全访问权限"
+            let allowed = try await DeviceOwnerAuthenticator.authenticate(
+                reason: "确认本任务启用完全访问权限"
             )
             if allowed { policy?.approvalMode = TaskApprovalMode.fullAccess.rawValue }
         } catch {

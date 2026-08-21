@@ -407,7 +407,18 @@ final class AppEnvironment: ObservableObject {
                 // performs a short, bounded second check before presenting
                 // first-run setup, while this pull continues independently.
                 if syncPreferences.overallEnabled && syncPreferences.configurationEnabled {
-                    Task { try? await configurationSync.synchronize() }
+                    Task { [weak self] in
+                        guard let self else { return }
+                        do {
+                            try await self.configurationSync.synchronize()
+                            await self.conversationCenter.reload()
+                        } catch {
+                            let nsError = error as NSError
+                            FloeLogger(category: .sync).warning(
+                                "configurationSyncLaunchFailed domain=\(nsError.domain) code=\(nsError.code)"
+                            )
+                        }
+                    }
                 }
             } catch {
                 // Local setup remains fully usable when iCloud is unavailable.

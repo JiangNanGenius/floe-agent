@@ -9,10 +9,13 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import LocalAuthentication
 import FloeCore
 
 struct PrivacySecurityView: View {
     @ObservedObject var center: SettingsCenter
+    @AppStorage(DeviceOwnerAuthenticator.preferBiometricsKey)
+    private var preferBiometrics = true
 
     @State private var confirmClearHistory = false
     @State private var confirmClearModels = false
@@ -23,6 +26,14 @@ struct PrivacySecurityView: View {
 
     var body: some View {
         Form {
+            Section {
+                Toggle("优先使用 Face ID / Touch ID", isOn: $preferBiometrics)
+            } header: {
+                Text("身份验证")
+            } footer: {
+                Text("开启时优先显示生物识别；设备不支持或关闭后才使用设备密码。")
+            }
+
             Section {
                 LabeledContent("settings.privacy.keychain.state") {
                     capabilityText(center.keychainState)
@@ -181,6 +192,41 @@ struct PrivacySecurityView: View {
         return parts.isEmpty
             ? String(localized: "settings.privacy.report.empty")
             : parts.joined(separator: " · ")
+    }
+}
+
+/// One authentication policy for every sensitive Floe surface. Using
+/// `.deviceOwnerAuthentication` directly lets iOS choose the passcode sheet
+/// even when Face ID is available, which made otherwise identical actions
+/// behave inconsistently across settings screens.
+enum DeviceOwnerAuthenticator {
+    static let preferBiometricsKey = "floe.security.preferBiometrics"
+
+    static func authenticate(reason: String) async throws -> Bool {
+        let context = LAContext()
+        context.localizedCancelTitle = String(localized: "action.cancel")
+        let preferBiometrics = UserDefaults.standard.object(forKey: preferBiometricsKey)
+            .map { ($0 as? Bool) ?? true } ?? true
+        var evaluationError: NSError?
+        if preferBiometrics,
+           context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &evaluationError) {
+            return try await context.evaluatePolicy(
+                .deviceOwnerAuthenticationWithBiometrics,
+                localizedReason: reason
+            )
+        }
+        evaluationError = nil
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &evaluationError) else {
+            throw evaluationError ?? NSError(
+                domain: LAError.errorDomain,
+                code: LAError.authenticationFailed.rawValue,
+                userInfo: [NSLocalizedDescriptionKey: "设备未设置可用的身份验证。"]
+            )
+        }
+        return try await context.evaluatePolicy(
+            .deviceOwnerAuthentication,
+            localizedReason: reason
+        )
     }
 }
 

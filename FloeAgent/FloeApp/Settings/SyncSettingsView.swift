@@ -129,13 +129,10 @@ struct SyncSettingsView: View {
 
     private func changeCredentialSync(to enabled: Bool) async {
         if enabled {
-            let context = LAContext()
             do {
-                guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil),
-                      try await context.evaluatePolicy(
-                        .deviceOwnerAuthentication,
-                        localizedReason: "同步已明确保存的密钥和网页密码"
-                      ) else { return }
+                guard try await DeviceOwnerAuthenticator.authenticate(
+                    reason: "同步已明确保存的密钥和网页密码"
+                ) else { return }
             } catch {
                 credentialAuthenticationError = error.localizedDescription
                 return

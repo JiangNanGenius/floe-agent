@@ -124,7 +124,63 @@ struct ToolLoopHardeningTests {
 
         try await runtime.start(goal: "do not repeat unchanged work")
 
-        #expect(executor.executedCalls.count == 9)
+        // The third unchanged observation is now the hard stop; alternating
+        // unrelated calls no longer lets a repeated route evade the guard.
+        #expect(executor.executedCalls.count == 5)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected completed no-progress finalization")
+            return
+        }
+        #expect(completion.stopReason == .noProgress)
+    }
+
+    @Test("equivalent visual inspection failures stop after three attempts")
+    func equivalentVisualFailuresStop() async throws {
+        let adapter = MockAdapter()
+        let tools = ["image.inspect", "image.ocr", "browser.observe"]
+        let arguments = Data(#"{"path":"Attachments/a.png"}"#.utf8)
+        let calls = try tools.enumerated().map { index, tool in
+            try ToolCall(
+                id: "visual-\(index)",
+                toolName: tool,
+                argumentsJSON: arguments,
+                scope: .local
+            )
+        }
+        adapter.script = calls.map { [.toolRequest($0)] }
+            + [[.completed(.init(stopReason: .endTurn))]]
+
+        let executor = MockExecutor()
+        for tool in tools {
+            executor.descriptors[tool] = ToolCatalog.Descriptor(
+                name: tool,
+                riskLabels: [],
+                isSideEffecting: false
+            )
+        }
+        executor.results = calls.map {
+            ToolResult(
+                callID: $0.id,
+                status: .failed,
+                outputSummary: "could not decode image request 12345",
+                outputDigest: "failure"
+            )
+        }
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 12
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "inspect the attached image")
+
+        #expect(executor.executedCalls.count == 3)
         guard case .completed(let completion) = await runtime.state else {
             Issue.record("expected completed no-progress finalization")
             return
@@ -249,6 +305,17 @@ struct ToolLoopHardeningTests {
         let adapter = LoopingAdapter()
         let executor = MockExecutor()
         registerEcho(in: executor)
+        // Vary the observable output so this fixture reaches the independent
+        // activation-budget boundary instead of the stricter no-progress
+        // boundary exercised by the tests above.
+        executor.results = (1...maxSteps).map { index in
+            ToolResult(
+                callID: "loop-\(index)",
+                status: .ok,
+                outputSummary: "progress \(index)",
+                outputDigest: "digest-\(index)"
+            )
+        }
         let runtime = FloeAgentRuntime(
             configuration: FloeAgentRuntime.Configuration(
                 provider: TestFixtures.localhostProvider(),
@@ -284,6 +351,14 @@ struct ToolLoopHardeningTests {
         let adapter = LoopingAdapter()
         let executor = MockExecutor()
         registerEcho(in: executor)
+        executor.results = (1...maxSteps).map { index in
+            ToolResult(
+                callID: "audit-\(index)",
+                status: .ok,
+                outputSummary: "progress \(index)",
+                outputDigest: "audit-digest-\(index)"
+            )
+        }
         let audit = MockAuditSink()
         let runtime = FloeAgentRuntime(
             configuration: FloeAgentRuntime.Configuration(

@@ -24,6 +24,12 @@ import FloeExecution
 import NaturalLanguage
 #endif
 
+private enum AuxiliaryVisionStreamResult: Sendable {
+    case response(String)
+    case failed(domain: String, code: Int, message: String)
+    case timedOut
+}
+
 /// A human-decision prompt surfaced by a run in `.waitingApproval`. Wraps
 /// the runtime's waiting payload with the tool descriptor's deterministic
 /// risk labels so the approval card can show scope and rationale.
@@ -815,7 +821,7 @@ final class ConversationCenter: ObservableObject {
             return ([], [])
         }
         FloeLogger(category: .app).info(
-            "visualEvidenceStarted count=\(images.count) primaryModel=\(primaryModel.id.uuidString) primaryVision=\(primaryModel.capabilities.contains(.vision))"
+            "visualEvidenceStarted count=\(images.count) encodedCharacters=\(images.reduce(0) { $0 + $1.base64.count }) primaryModel=\(primaryModel.id.uuidString) primaryVision=\(primaryModel.capabilities.contains(.vision))"
         )
         if primaryModel.capabilities.contains(.vision) {
             FloeLogger(category: .app).info(
@@ -861,8 +867,12 @@ final class ConversationCenter: ObservableObject {
         // call inside the task group's @Sendable closures.
         let adapter = adapterFactory.adapter(for: provider)
         let credentials = resolveCredentials(for: provider)
-        description = await withTaskGroup(of: String?.self, returning: String.self) { group in
-            group.addTask { () -> String? in
+        let startedAt = Date()
+        let outcome = await withTaskGroup(
+            of: AuxiliaryVisionStreamResult.self,
+            returning: AuxiliaryVisionStreamResult.self
+        ) { group in
+            group.addTask {
                 var text = ""
                 do {
                     for try await event in adapter.stream(
@@ -875,23 +885,38 @@ final class ConversationCenter: ObservableObject {
                         }
                     }
                 } catch {
-                    FloeLogger(category: .app).warning(
-                        "visualEvidenceAuxiliaryFailed model=\(model.id.uuidString) error=\(error.localizedDescription)"
+                    let nsError = error as NSError
+                    return .failed(
+                        domain: nsError.domain,
+                        code: nsError.code,
+                        message: String(error.localizedDescription.prefix(500))
                     )
-                    text = ""
                 }
-                return text
+                return .response(text)
             }
-            group.addTask { () -> String? in
-                try? await Task.sleep(for: .seconds(20))
-                return nil
+            group.addTask {
+                try? await Task.sleep(for: .seconds(45))
+                return .timedOut
             }
-            let first = await group.next()
+            let first = await group.next() ?? .timedOut
             group.cancelAll()
-            if let first, let result = first {
-                return result
-            }
-            return ""
+            return first
+        }
+        let durationMs = Int(Date().timeIntervalSince(startedAt) * 1_000)
+        switch outcome {
+        case .response(let text):
+            description = text
+            FloeLogger(category: .app).info(
+                "visualEvidenceAuxiliaryFinished model=\(model.id.uuidString) durationMs=\(durationMs) characters=\(text.count)"
+            )
+        case .failed(let domain, let code, let message):
+            FloeLogger(category: .app).warning(
+                "visualEvidenceAuxiliaryFailed model=\(model.id.uuidString) durationMs=\(durationMs) domain=\(domain) code=\(code) message=\(message)"
+            )
+        case .timedOut:
+            FloeLogger(category: .app).warning(
+                "visualEvidenceAuxiliaryTimedOut model=\(model.id.uuidString) timeoutSeconds=45"
+            )
         }
         guard !description.isEmpty else {
             if let ocr = await onDeviceOCRContext(images) {
@@ -1845,16 +1870,24 @@ final class ConversationCenter: ObservableObject {
 
     /// Retries a terminal run by starting a fresh run with the same goal,
     /// provider and model in the same conversation.
-    func retry(runID: UUID) async throws {
+    func retry(runID: UUID) async throws -> StartedConversationRun {
         guard let record = try await environment.runStore.run(id: runID) else {
             throw FloeError.notFound("run \(runID.uuidString)")
         }
-        let (provider, model) = try await resolveProviderAndModel()
-        try await send(
+        let resolvedPair: (ProviderProfile, ModelProfile)
+        if let modelID = record.modelID,
+           let resolved = providerAndModel(modelID: modelID) {
+            resolvedPair = resolved
+        } else {
+            resolvedPair = try await resolveProviderAndModel()
+        }
+        let (provider, model) = resolvedPair
+        return try await startRun(
             goal: record.goal,
             in: record.conversationID,
             provider: provider,
-            model: model
+            model: model,
+            workspaceID: environment.workspaceCenter.workspaceID(for: record.conversationID)
         )
     }
 
@@ -1953,9 +1986,20 @@ final class ConversationCenter: ObservableObject {
     }
 
     func auxiliaryVisionProviderAndModel() -> (ProviderProfile, ModelProfile)? {
-        guard let modelID = modelPreferences.visionModelID,
-              let model = visionModels.first(where: { $0.id == modelID }),
+        let candidates = visionModels
+        let selected = modelPreferences.visionModelID.flatMap { selectedID in
+            candidates.first(where: { $0.id == selectedID })
+        }
+        let defaultVision = modelPreferences.defaultAgentModelID.flatMap { defaultID in
+            candidates.first(where: { $0.id == defaultID })
+        }
+        guard let model = selected ?? defaultVision ?? candidates.first,
               let provider = providers.first(where: { $0.id == model.providerID }) else { return nil }
+        if selected == nil {
+            FloeLogger(category: .app).warning(
+                "auxiliaryVisionSelectionFallback configured=\(modelPreferences.visionModelID?.uuidString ?? "none") selected=\(model.id.uuidString) candidateCount=\(candidates.count)"
+            )
+        }
         return (provider, model)
     }
 
@@ -1973,7 +2017,16 @@ final class ConversationCenter: ObservableObject {
     /// the request produces nothing. Capped by a timeout so a stalled vision
     /// request can never hang the caller.
     func describeImage(base64: String, mimeType: String, prompt: String) async -> String? {
-        guard let (provider, model) = auxiliaryVisionProviderAndModel() else { return nil }
+        guard let (provider, model) = auxiliaryVisionProviderAndModel() else {
+            FloeLogger(category: .app).warning(
+                "imageInspectUnavailable reason=noVisionCandidate mime=\(mimeType) encodedCharacters=\(base64.count)"
+            )
+            return nil
+        }
+        let startedAt = Date()
+        FloeLogger(category: .app).info(
+            "imageInspectStarted provider=\(provider.id.uuidString) model=\(model.id.uuidString) mime=\(mimeType) encodedCharacters=\(base64.count)"
+        )
         let parts: [ProviderContentPart] = [
             .text(prompt),
             .imageData(mimeType: mimeType, base64: base64)
@@ -1987,8 +2040,11 @@ final class ConversationCenter: ObservableObject {
         // task group's @Sendable closures.
         let adapter = adapterFactory.adapter(for: provider)
         let credentials = resolveCredentials(for: provider)
-        let description = await withTaskGroup(of: String?.self, returning: String.self) { group in
-            group.addTask { () -> String? in
+        let outcome = await withTaskGroup(
+            of: AuxiliaryVisionStreamResult.self,
+            returning: AuxiliaryVisionStreamResult.self
+        ) { group in
+            group.addTask {
                 var text = ""
                 do {
                     for try await event in adapter.stream(
@@ -2001,22 +2057,41 @@ final class ConversationCenter: ObservableObject {
                         }
                     }
                 } catch {
-                    text = ""
+                    let nsError = error as NSError
+                    return .failed(
+                        domain: nsError.domain,
+                        code: nsError.code,
+                        message: String(error.localizedDescription.prefix(500))
+                    )
                 }
-                return text
+                return .response(text)
             }
-            group.addTask { () -> String? in
-                try? await Task.sleep(for: .seconds(20))
-                return nil
+            group.addTask {
+                try? await Task.sleep(for: .seconds(45))
+                return .timedOut
             }
-            let first = await group.next()
+            let first = await group.next() ?? .timedOut
             group.cancelAll()
-            if let first, let result = first {
-                return result
-            }
-            return ""
+            return first
         }
-        return description.isEmpty ? nil : description
+        let durationMs = Int(Date().timeIntervalSince(startedAt) * 1_000)
+        switch outcome {
+        case .response(let description):
+            FloeLogger(category: .app).info(
+                "imageInspectFinished model=\(model.id.uuidString) durationMs=\(durationMs) characters=\(description.count)"
+            )
+            return description.isEmpty ? nil : description
+        case .failed(let domain, let code, let message):
+            FloeLogger(category: .app).warning(
+                "imageInspectFailed model=\(model.id.uuidString) durationMs=\(durationMs) domain=\(domain) code=\(code) message=\(message)"
+            )
+            return nil
+        case .timedOut:
+            FloeLogger(category: .app).warning(
+                "imageInspectTimedOut model=\(model.id.uuidString) timeoutSeconds=45"
+            )
+            return nil
+        }
     }
 
     func auxiliaryProviderAndModel(for operation: RemoteImageOperation) -> (ProviderProfile, ModelProfile)? {

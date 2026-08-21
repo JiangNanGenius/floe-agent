@@ -104,12 +104,24 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if #available(iOS 26.0, *), activeRuns.isEmpty {
             finishContinuedTask(success: succeeded)
         }
-        if surfacedRunID == runID {
+        if surfacedRunID == runID, !activeRuns.isEmpty {
             surfacedRunID = nil
             resumeBackgroundSurfaceIfNeeded()
         }
-        if activeRuns.isEmpty {
+        if activeRuns.isEmpty, succeeded {
             tearDownBackgroundExecutionPreference()
+        } else if activeRuns.isEmpty {
+            // A failed/checkpointed task is paused work, not completed work.
+            // Keep the user-owned PiP/screen-share surface alive so reopening
+            // the task offers a recovery path instead of silently disappearing.
+            surfacedRunID = runID
+            environment.backgroundVideoService.update(
+                title: finished.title,
+                progress: "任务已暂停，打开 Floe 可继续"
+            )
+            FloeLogger(category: .app).info(
+                "backgroundSurfaceRetained reason=unfinishedRun run=\(runID.uuidString)"
+            )
         }
     }
 
@@ -166,14 +178,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 environment.backgroundVideoService.update(
                     title: runTitle,
                     progress: environment.screenShareCenter.isSharing
-                        ? "正在共享屏幕" : "等待屏幕共享授权"
+                        ? "正在共享屏幕" : "任务正在运行"
                 )
             } else {
                 Task { [weak self] in
                     guard let self else { return }
                     await self.environment.backgroundVideoService.begin(
                         title: runTitle,
-                        initialProgress: "等待屏幕共享授权"
+                        initialProgress: "任务正在运行"
                     )
                 }
             }
@@ -187,6 +199,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         FloeLogger(category: .app).info("backgroundSurfaceStopped reason=allRunsFinished")
         surfacedRunID = nil
         environment.backgroundVideoService.stop()
+        if environment.screenShareCenter.isSharing
+            || environment.screenShareCenter.isWaitingForBroadcast {
+            environment.screenShareCenter.stopSharing()
+        }
     }
 
     /// If the run currently represented by PiP finishes while another run is

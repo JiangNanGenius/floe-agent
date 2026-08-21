@@ -43,6 +43,9 @@ struct ThreadDetailView: View {
             if let error = viewModel.actionError {
                 errorBanner(error)
             }
+            if viewModel.canContinue {
+                continuationBar
+            }
             composer
         }
         .background(FloeTheme.readingSurface)
@@ -180,6 +183,10 @@ struct ThreadDetailView: View {
                     ForEach(viewModel.timeline) { item in
                         timelineRow(item)
                             .id(item.id)
+                    }
+
+                    if let usage = viewModel.usageSummary {
+                        ThreadUsageFooter(summary: usage)
                     }
 
                     if viewModel.events.isEmpty && viewModel.messages.isEmpty {
@@ -345,12 +352,11 @@ struct ThreadDetailView: View {
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("action.stop")
-            } else if let run = viewModel.selectedRun,
-                      run.state == "failed" || run.state == "interrupted" {
+            } else if viewModel.canContinue {
                 Button {
                     Task { await viewModel.retry() }
                 } label: {
-                    Label("action.retry", systemImage: "arrow.clockwise")
+                    Label("继续", systemImage: "play.fill")
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("action.retry")
@@ -398,6 +404,30 @@ struct ThreadDetailView: View {
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(FloeTheme.destructive.opacity(0.08))
+    }
+
+    private var continuationBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "pause.circle")
+                .foregroundStyle(FloeTheme.pending)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("任务已暂停")
+                    .font(FloeTheme.Typography.metadata.weight(.semibold))
+                Text("从当前会话和已保存证据继续，不重复已完成的步骤。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button {
+                Task { await viewModel.retry() }
+            } label: {
+                Label("继续", systemImage: "play.fill")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(FloeTheme.pending.opacity(0.08))
     }
 
     // MARK: - Composer (glass; reading surfaces stay opaque)
@@ -469,6 +499,45 @@ struct ThreadDetailView: View {
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(FloeTheme.pending.opacity(0.08))
+    }
+}
+
+private struct ThreadUsageFooter: View {
+    let summary: ThreadUsageSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 12) {
+                Label("\(formatted(summary.inputTokens))", systemImage: "arrow.up")
+                Label("\(formatted(summary.outputTokens))", systemImage: "arrow.down")
+                Text("合计 \(formatted(summary.totalTokens)) token")
+                if summary.isEstimatedLive {
+                    Text("实时估算")
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .font(FloeTheme.Typography.metadata)
+            .foregroundStyle(.secondary)
+            if summary.contextWindowTokens > 0 {
+                HStack(spacing: 8) {
+                    ProgressView(value: summary.contextFraction)
+                    Text("上下文 \(formatted(summary.contextTokens)) / \(formatted(summary.contextWindowTokens))")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+        }
+        .padding(10)
+        .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func formatted(_ value: Int) -> String {
+        if value >= 10_000 {
+            return value.formatted(.number.notation(.compactName))
+        }
+        return value.formatted()
     }
 }
 

@@ -207,7 +207,14 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         }
         let item = AVPlayerItem(url: assetURL)
         looper?.disableLooping()
-        player.removeAllItems()
+        // Never empty the active player's queue. Doing so makes AVKit close an
+        // already-running PiP session before the replacement item arrives.
+        // Remove only queued loop copies, then atomically replace the current
+        // item so progress updates cannot tear down the background surface.
+        for queuedItem in player.items().dropFirst() {
+            player.remove(queuedItem)
+        }
+        player.replaceCurrentItem(with: item)
         looper = AVPlayerLooper(player: player, templateItem: item)
         player.play()
         if let old = currentAssetURL {

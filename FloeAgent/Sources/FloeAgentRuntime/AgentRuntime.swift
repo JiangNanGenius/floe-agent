@@ -1705,6 +1705,7 @@ private struct ToolLoopGuard {
     private var idempotentNoProgressCount = 0
     private var globalOutcomeCounts: [String: Int] = [:]
     private var globalFailedCallCounts: [String: Int] = [:]
+    private var globalFailureIntentCounts: [String: Int] = [:]
 
     mutating func record(
         call: ToolCall,
@@ -1721,6 +1722,8 @@ private struct ToolLoopGuard {
         globalOutcomeCounts[exact, default: 0] += 1
         if failed {
             globalFailedCallCounts[callFingerprint, default: 0] += 1
+            let intent = Self.failureIntentFingerprint(call: call, summary: result.outputSummary)
+            globalFailureIntentCounts[intent, default: 0] += 1
         }
 
         if failed, exact == previousExactFingerprint {
@@ -1744,34 +1747,42 @@ private struct ToolLoopGuard {
             idempotentNoProgressCount = 1
         }
 
-        if globalOutcomeCounts[exact, default: 0] >= 5 {
+        let failureIntent = Self.failureIntentFingerprint(call: call, summary: result.outputSummary)
+        if failed, globalFailureIntentCounts[failureIntent, default: 0] >= 3 {
             return ToolLoopGuardrailDecision(
                 shouldStop: true,
-                message: "The same tool call produced the same result five times in this activation; stop retrying and synthesize or choose a genuinely different approach."
+                message: "The same operation target reached the same failure three times, including equivalent tools or cosmetically changed arguments. Stop this route and preserve the failure evidence for continuation."
             )
         }
-        if globalFailedCallCounts[callFingerprint, default: 0] >= 4 || sameToolFailureCount >= 4 {
+        if globalOutcomeCounts[exact, default: 0] >= 3 {
+            return ToolLoopGuardrailDecision(
+                shouldStop: true,
+                message: "The same tool call produced the same result three times in this activation; stop retrying and synthesize or choose a genuinely different approach."
+            )
+        }
+        if globalFailedCallCounts[callFingerprint, default: 0] >= 3 || sameToolFailureCount >= 3 {
             return ToolLoopGuardrailDecision(
                 shouldStop: true,
                 message: "The same tool continued failing without a successful alternative."
             )
         }
-        if idempotentNoProgressCount >= 5 {
+        if idempotentNoProgressCount >= 4 {
             return ToolLoopGuardrailDecision(
                 shouldStop: true,
                 message: "Repeated idempotent calls produced no observable progress."
             )
         }
-        if globalOutcomeCounts[exact, default: 0] == 2 {
+        if globalOutcomeCounts[exact, default: 0] == 2
+            || (failed && globalFailureIntentCounts[failureIntent, default: 0] == 2) {
             return ToolLoopGuardrailDecision(
                 shouldStop: false,
                 message: "This exact call already produced the same result twice in this activation; do not repeat it again."
             )
         }
-        if sameToolFailureCount == 3 {
+        if sameToolFailureCount == 2 {
             return ToolLoopGuardrailDecision(
                 shouldStop: false,
-                message: "This tool has failed three times; inspect the failure and choose a different path."
+                message: "This operation has now failed twice. Read the exact error, preserve what it proves, and switch to a genuinely different route instead of making a cosmetic retry."
             )
         }
         if idempotentNoProgressCount == 2 {
@@ -1792,6 +1803,48 @@ private struct ToolLoopGuard {
             return digest(data)
         }
         return digest(canonical)
+    }
+
+    /// Groups retries by user-visible operation family, stable target, and a
+    /// normalized error. Request IDs, timestamps, counters and regenerated
+    /// call IDs no longer let the same failed intent evade the loop guard.
+    private static func failureIntentFingerprint(call: ToolCall, summary: String) -> String {
+        let family: String
+        if call.toolName.hasPrefix("image.") || call.toolName.hasPrefix("browser.") {
+            family = "visual-read"
+        } else if call.toolName.hasPrefix("workspace.") {
+            family = "workspace"
+        } else if call.toolName.hasPrefix("exec.") {
+            family = "execution"
+        } else {
+            family = call.toolName
+        }
+        let target = stableTarget(from: call.argumentsJSON)
+        let normalizedError = summary.lowercased()
+            .replacingOccurrences(
+                of: #"[0-9a-f]{8}-[0-9a-f-]{27,}"#,
+                with: "<id>",
+                options: .regularExpression
+            )
+            .replacingOccurrences(
+                of: #"\b\d+(?:\.\d+)?\b"#,
+                with: "<n>",
+                options: .regularExpression
+            )
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        return digest(Data("\(family)|\(target)|\(normalizedError)".utf8))
+    }
+
+    private static func stableTarget(from arguments: Data) -> String {
+        guard let object = try? JSONSerialization.jsonObject(with: arguments)
+            as? [String: Any] else { return canonicalDigest(arguments) }
+        let targetKeys = ["path", "url", "query", "file", "filename", "command", "imagePath"]
+        let values = targetKeys.compactMap { key -> String? in
+            guard let value = object[key] else { return nil }
+            return "\(key)=\(String(describing: value).lowercased())"
+        }
+        return values.isEmpty ? canonicalDigest(arguments) : values.joined(separator: "|")
     }
 
     private static func digest(_ data: Data) -> String {

@@ -21,7 +21,9 @@ struct StepGroupView: View {
         self.isLatest = isLatest
         self.isLive = isLive
         self.hasError = hasError
-        self._isExpanded = State(initialValue: isLatest)
+        // Keep the transcript readable while tools stream: the newest group
+        // updates this summary row instead of expanding every event inline.
+        self._isExpanded = State(initialValue: false)
     }
 
     private var summary: String {

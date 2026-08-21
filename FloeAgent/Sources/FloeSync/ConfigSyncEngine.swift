@@ -469,7 +469,26 @@ public actor ConfigSyncEngine {
             case .sentRecordZoneChanges(let sent):
                 for record in sent.savedRecords { try await acknowledge(record) }
                 for recordID in sent.deletedRecordIDs { try await acknowledgeDeletion(recordID) }
-                if let firstFailure = sent.failedRecordSaves.first?.error {
+                var recoveredConflict = false
+                for failedSave in sent.failedRecordSaves {
+                    if let serverRecord = Self.serverRecordChangedRecord(from: failedSave.error) {
+                        // A fresh device may have local `default` preferences
+                        // but no archived CloudKit system fields. CloudKit then
+                        // rejects the attempted insert because another device
+                        // already created that record. Merge the authoritative
+                        // server record, retain newer per-field local values,
+                        // and retry as an update instead of staying wedged.
+                        try await applyRemote(serverRecord)
+                        syncEngine.state.add(pendingRecordZoneChanges: [
+                            .saveRecord(serverRecord.recordID)
+                        ])
+                        recoveredConflict = true
+                    }
+                }
+                if recoveredConflict {
+                    status = .syncing
+                    scheduleSynchronization()
+                } else if let firstFailure = sent.failedRecordSaves.first?.error {
                     status = .error(firstFailure.localizedDescription)
                 } else if let firstFailure = sent.failedRecordDeletes.values.first {
                     status = .error(firstFailure.localizedDescription)
@@ -789,6 +808,20 @@ public actor ConfigSyncEngine {
         } catch {
             return nil
         }
+    }
+
+    private static func serverRecordChangedRecord(from error: Error) -> CKRecord? {
+        let nsError = error as NSError
+        if let record = nsError.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord {
+            return record
+        }
+        if let partials = nsError.userInfo[CKPartialErrorsByItemIDKey]
+            as? [AnyHashable: Error] {
+            for nested in partials.values {
+                if let record = serverRecordChangedRecord(from: nested) { return record }
+            }
+        }
+        return nil
     }
     #endif
 }

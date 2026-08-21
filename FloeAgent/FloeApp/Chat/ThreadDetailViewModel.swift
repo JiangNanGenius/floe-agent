@@ -15,6 +15,20 @@ import FloePersistence
 import FloeSecurity
 import FloeAgentRuntime
 
+struct ThreadUsageSummary: Equatable {
+    var inputTokens: Int
+    var outputTokens: Int
+    var contextTokens: Int
+    var contextWindowTokens: Int
+    var isEstimatedLive: Bool
+
+    var totalTokens: Int { inputTokens + outputTokens }
+    var contextFraction: Double {
+        guard contextWindowTokens > 0 else { return 0 }
+        return min(1, Double(contextTokens) / Double(contextWindowTokens))
+    }
+}
+
 /// View model for the canonical foldable thread of one conversation.
 @MainActor
 final class ThreadDetailViewModel: ObservableObject {
@@ -30,6 +44,9 @@ final class ThreadDetailViewModel: ObservableObject {
     /// Persisted events of the selected run, in sequence order.
     @Published private(set) var events: [RunEventRecord] = []
     @Published private(set) var eventsByRun: [UUID: [RunEventRecord]] = [:]
+    @Published private(set) var usageByRun: [UUID: [RunUsageRecord]] = [:]
+    @Published private(set) var liveUsage = UsageSnapshot()
+    @Published private(set) var latestUsage = UsageSnapshot()
     /// Live snapshot of the selected run, when the center owns it.
     @Published private(set) var liveStateName: String?
     @Published private(set) var liveReasoningText: String = ""
@@ -138,6 +155,40 @@ final class ThreadDetailViewModel: ObservableObject {
         center.providerAndModel(modelID: selectedModelID)?.1.displayName
     }
 
+    var canContinue: Bool {
+        guard !isRunning, let state = selectedRun?.state else { return false }
+        return ["failed", "interrupted", "checkpointed"].contains(state)
+    }
+
+    var usageSummary: ThreadUsageSummary? {
+        guard let run = selectedRun else { return nil }
+        let records = usageByRun[run.id, default: []]
+        let persistedInput = records.reduce(0) { $0 + $1.inputTokens }
+        let persistedOutput = records.reduce(0) { $0 + $1.outputTokens }
+        let streamedEstimate = Self.estimatedTokens(in: liveStreamedText)
+        let currentOutput = max(liveUsage.outputTokens, streamedEstimate)
+        let input = isRunning ? persistedInput + liveUsage.inputTokens : persistedInput
+        let output = isRunning
+            ? persistedOutput + currentOutput
+            : persistedOutput
+        guard input + output > 0 else { return nil }
+        let modelID = run.modelID ?? selectedModelID
+        let window = modelID.flatMap {
+            center.providerAndModel(modelID: $0)?.1.limits.contextTokens
+        } ?? 0
+        let currentContext = max(
+            records.last.map { $0.inputTokens + $0.outputTokens } ?? 0,
+            latestUsage.inputTokens + max(latestUsage.outputTokens, streamedEstimate)
+        )
+        return ThreadUsageSummary(
+            inputTokens: input,
+            outputTokens: output,
+            contextTokens: currentContext,
+            contextWindowTokens: window,
+            isEstimatedLive: isRunning && streamedEstimate > liveUsage.outputTokens
+        )
+    }
+
     // MARK: - Loading
 
     /// Loads persisted state, then subscribes to the selected run's bounded
@@ -191,6 +242,7 @@ final class ThreadDetailViewModel: ObservableObject {
             selectedRunID = runs.first?.id
             stage = "eventLoad"
             try await loadAllEvents()
+            try await loadAllUsage()
             startSessionUpdates()
             startLiveUpdates()
         } catch {
@@ -231,6 +283,14 @@ final class ThreadDetailViewModel: ObservableObject {
         }
         eventsByRun = loaded
         events = selectedRun.flatMap { loaded[$0.id] } ?? []
+    }
+
+    private func loadAllUsage() async throws {
+        var loaded: [UUID: [RunUsageRecord]] = [:]
+        for run in runs {
+            loaded[run.id] = try await center.environment.runStore.usage(runID: run.id)
+        }
+        usageByRun = loaded
     }
 
     func dismissActionError() {
@@ -368,8 +428,12 @@ final class ThreadDetailViewModel: ObservableObject {
         guard let runID = selectedRun?.id else { return }
         actionError = nil
         do {
-            try await center.retry(runID: runID)
-            await load()
+            let started = try await center.retry(runID: runID)
+            runs = try await center.environment.runStore.runs(conversationID: conversationID)
+            selectedRunID = started.runID
+            try await loadAllEvents()
+            try await loadAllUsage()
+            startLiveUpdates()
         } catch {
             actionError = presentableError(error, stage: "retryRun")
         }
@@ -380,12 +444,24 @@ final class ThreadDetailViewModel: ObservableObject {
     /// message instead of the misleading system-wide "format incorrect" text.
     private func presentableError(_ error: Error, stage: String) -> String {
         let nsError = error as NSError
+        let detail = String(
+            error.localizedDescription
+                .replacingOccurrences(of: "\n", with: " ")
+                .prefix(500)
+        )
         logger.error(
-            "threadActionFailed conversation=\(conversationID.uuidString) stage=\(stage) domain=\(nsError.domain) code=\(nsError.code)"
+            "threadActionFailed conversation=\(conversationID.uuidString) stage=\(stage) domain=\(nsError.domain) code=\(nsError.code) detail=\(detail)"
         )
         if nsError.domain == NSCocoaErrorDomain,
            nsError.code == CocoaError.fileReadCorruptFile.rawValue {
             return "读取任务数据失败。请重新选择附件或重新打开任务；诊断日志已记录失败阶段（\(stage)）。"
+        }
+        if let floeError = error as? FloeError,
+           case .syncUnavailable(let reason) = floeError {
+            if reason.localizedCaseInsensitiveContains("approval") {
+                return "自动审批模型暂时不可用或响应超时。安全读操作会按本地规则继续；敏感操作请重试或手动确认。"
+            }
+            return "同步服务暂时不可用，本机数据仍可继续使用。稍后会自动重试。"
         }
         return error.localizedDescription
     }
@@ -586,6 +662,8 @@ final class ThreadDetailViewModel: ObservableObject {
         isDraining = false
         animator.reset()
         reasoningAnimator.reset()
+        liveUsage = UsageSnapshot()
+        latestUsage = UsageSnapshot()
         liveEventTask = Task { [weak self, center] in
             guard let self else { return }
             guard let service = center.service(for: run.id) else {
@@ -663,6 +741,15 @@ final class ThreadDetailViewModel: ObservableObject {
                 case .stateChanged(let state):
                     self.liveStateName = state.rawValue
                     self.isRunning = ![.completed, .cancelled, .failed, .interrupted].contains(state)
+                case .usageChanged(let usage):
+                    self.latestUsage = usage
+                    self.liveUsage.inputTokens += usage.inputTokens
+                    self.liveUsage.outputTokens += usage.outputTokens
+                    self.liveUsage.modelCalls += usage.modelCalls
+                    if let cost = usage.costEstimate {
+                        self.liveUsage.costEstimate = (self.liveUsage.costEstimate ?? 0) + cost
+                    }
+                    self.hasProviderActivity = true
                 case .terminal:
                     await self.finishLiveRun(runID: run.id, center: center)
                     return
@@ -691,6 +778,7 @@ final class ThreadDetailViewModel: ObservableObject {
         // queued follow-up that started while the animator drained is not
         // omitted from the timeline snapshot.
         try? await loadAllEvents()
+        try? await loadAllUsage()
         if selectedRunID == runID {
             liveStateName = runs.first(where: { $0.id == runID })?.state ?? liveStateName
         }
@@ -708,6 +796,15 @@ final class ThreadDetailViewModel: ObservableObject {
         reasoningAnimator.cancel()
         isDraining = false
         isRunning = false
+    }
+
+    private static func estimatedTokens(in text: String) -> Int {
+        guard !text.isEmpty else { return 0 }
+        let scalarCount = text.unicodeScalars.count
+        let cjkCount = text.unicodeScalars.filter {
+            (0x3400...0x9FFF).contains(Int($0.value))
+        }.count
+        return max(1, cjkCount + (scalarCount - cjkCount + 3) / 4)
     }
 }
 
