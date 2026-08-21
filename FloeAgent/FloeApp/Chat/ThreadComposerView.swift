@@ -155,6 +155,7 @@ struct ThreadComposerView: View {
 
     @State private var isPickerPresented = false
     @State private var isPhotoPickerPresented = false
+    @State private var isCameraPresented = false
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var attachmentError: String?
     @State private var dictationPrefix = ""
@@ -195,6 +196,15 @@ struct ThreadComposerView: View {
             selection: $selectedPhoto,
             matching: .images
         )
+        .fullScreenCover(isPresented: $isCameraPresented) {
+            CameraPickerView { image in
+                isCameraPresented = false
+                registerCapturedImage(image)
+            } onCancel: {
+                isCameraPresented = false
+            }
+            .ignoresSafeArea()
+        }
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
             Task { await registerPickedPhoto(item) }
@@ -205,6 +215,9 @@ struct ThreadComposerView: View {
         .onChange(of: contextID) { _, _ in
             attachmentError = nil
             selectedPhoto = nil
+        }
+        .onChange(of: isRunning) { _, running in
+            if running { attachmentError = nil }
         }
         .onChange(of: voiceInput.transcript) { _, transcript in
             guard voiceInput.isListening || !transcript.isEmpty else { return }
@@ -269,6 +282,15 @@ struct ThreadComposerView: View {
                     FloeLogger(category: .app).info("photoPickerRequested")
                 } label: {
                     Label("从照片中选择", systemImage: "photo.on.rectangle")
+                }
+                if AppleCapabilityPreferences.isEnabled(.camera),
+                   UIImagePickerController.isSourceTypeAvailable(.camera) {
+                    Button {
+                        isCameraPresented = true
+                        FloeLogger(category: .app).info("cameraCaptureRequested")
+                    } label: {
+                        Label("拍摄照片", systemImage: "camera")
+                    }
                 }
                 Button {
                     isPickerPresented = true
@@ -487,7 +509,7 @@ struct ThreadComposerView: View {
         do {
             try await environment.conversationCenter.saveModel(updated)
         } catch {
-            attachmentError = error.localizedDescription
+            attachmentError = presentableComposerError(error, operation: "保存模型设置")
         }
     }
 
@@ -553,7 +575,7 @@ struct ThreadComposerView: View {
             try await environment.workspaceCenter.openWorkspace(id: id)
             attachmentError = nil
         } catch {
-            attachmentError = error.localizedDescription
+            attachmentError = presentableComposerError(error, operation: "打开工作区")
         }
     }
 
@@ -671,7 +693,7 @@ struct ThreadComposerView: View {
             attachments.append(attachment)
             attachmentError = nil
         } catch {
-            attachmentError = error.localizedDescription
+            attachmentError = presentableComposerError(error, operation: "导入附件")
         }
     }
 
@@ -702,6 +724,41 @@ struct ThreadComposerView: View {
             )
             attachmentError = "无法从相册读取所选图片，请重新选择，或使用“从文件中选择”。"
         }
+    }
+
+    private func registerCapturedImage(_ image: UIImage) {
+        guard let data = image.jpegData(compressionQuality: 0.9) else {
+            attachmentError = "无法处理拍摄的照片。"
+            return
+        }
+        do {
+            let attachment = try environment.filesCenter.registerPhotoData(
+                data,
+                displayName: "Camera-\(Int(Date().timeIntervalSince1970)).jpg"
+            )
+            attachments.append(attachment)
+            attachmentError = nil
+            FloeLogger(category: .app).info(
+                "cameraCaptureFinished attachment=\(attachment.id.uuidString) bytes=\(attachment.byteCount)"
+            )
+        } catch {
+            attachmentError = presentableComposerError(error, operation: "导入相机照片")
+        }
+    }
+
+    /// Cocoa code 259 is emitted for stale bookmarks and inaccessible files
+    /// as well as genuinely corrupt bytes. Never leak the misleading global
+    /// "format incorrect" message into every subsequent composer.
+    private func presentableComposerError(_ error: Error, operation: String) -> String {
+        let nsError = error as NSError
+        FloeLogger(category: .app).warning(
+            "composerOperationFailed operation=\(operation) domain=\(nsError.domain) code=\(nsError.code)"
+        )
+        if nsError.domain == NSCocoaErrorDomain,
+           nsError.code == CocoaError.fileReadCorruptFile.rawValue {
+            return "\(operation)失败：文件引用已失效或内容不可读，请重新选择该文件。"
+        }
+        return "\(operation)失败：\(error.localizedDescription)"
     }
 
     /// VoiceOver-readable microphone state (never color alone).

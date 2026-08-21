@@ -34,6 +34,19 @@ playground.xcworkspace
 # Local AI assistant workspace state
 .workbuddy/
 
+# Local product planning, audits, validation notes and release handoffs.
+# Public documentation stays limited to the README, user guides, product
+# architecture overview, browser protocol and their published images.
+docs/ALPHA_DAILY_PLAN.md
+docs/DEVELOPMENT_PLAN.md
+docs/FRAMEWORK_AUDIT_*.md
+docs/SPIKE_MYLLM_*.md
+docs/design/reference/
+docs/reviews/
+docs/workbuddy/
+FloeAgent/DELIVERY.md
+FloeAgent/docs/
+
 # CocoaPods
 #
 # We recommend against adding the Pods directory to your .gitignore. However

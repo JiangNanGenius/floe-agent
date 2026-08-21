@@ -2,7 +2,7 @@
 
 [Website](https://www.floe-agent.com/) · [Product README](../README.md) · [中文 README](../README.zh-CN.md) · [Architecture](../docs/ARCHITECTURE_OVERVIEW.md) · [User guide](../docs/USER_GUIDE.md) · [中文使用指南](../docs/USER_GUIDE.zh-CN.md)
 
-This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for Floe Agent 1.2.x. The minimum deployment target is iOS/iPadOS 26.0 and the current database schema is v14.
+This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for Floe Agent 1.4.5. The minimum deployment target is iOS/iPadOS 26.0 and the current database schema is v19.
 
 ## Build prerequisites
 
@@ -90,6 +90,6 @@ The release workflow builds an unsigned device IPA and a signed App Store archiv
 ## Documentation discipline
 
 - Update both English and Simplified Chinese user guidance when behavior, navigation, permissions, installation, or recovery changes.
-- Put current architecture in [`docs/ARCHITECTURE_OVERVIEW.md`](../docs/ARCHITECTURE_OVERVIEW.md) or the detailed architecture documents.
-- Label audit, delivery, validation, and handoff documents as historical evidence with their date or commit.
+- Keep public product architecture in [`docs/ARCHITECTURE_OVERVIEW.md`](../docs/ARCHITECTURE_OVERVIEW.md).
+- Keep internal plans, audits, validation evidence, App Review research and release handoffs outside the public repository.
 - Never copy credentials, personal paths, hostnames, device identifiers, or unredacted diagnostics into fixtures or documentation.

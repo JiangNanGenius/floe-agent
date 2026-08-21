@@ -39,6 +39,13 @@ public protocol ApprovalPolicy: Sendable {
     func decide(_ action: ProposedAction) async throws -> ApprovalDecision
 }
 
+/// Lets the runtime distinguish a real model-review wait from a deterministic
+/// allow. This keeps exempt local tools out of both the model call and the
+/// visible approval spinner.
+public protocol ApprovalReviewRouting: Sendable {
+    func requiresModelReview(_ action: ProposedAction) -> Bool
+}
+
 /// Policy 1: every side-effecting action waits for the user.
 public struct HumanApprovalPolicy: ApprovalPolicy {
     public let policyName = "human"
@@ -54,7 +61,7 @@ public struct HumanApprovalPolicy: ApprovalPolicy {
 /// The approval model receives the goal, structured action, scope, and
 /// deterministic risk labels. It has no tool channel and cannot rewrite
 /// the tool call. Any failure is fail-closed (escalate).
-public struct ModelApprovalPolicy: ApprovalPolicy {
+public struct ModelApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     public let policyName = "approval-model"
 
     /// Abstraction over the approval model call so this type stays
@@ -76,6 +83,8 @@ public struct ModelApprovalPolicy: ApprovalPolicy {
             return .escalateToHuman(reason: "Approval model failed: \(error.localizedDescription)")
         }
     }
+
+    public func requiresModelReview(_ action: ProposedAction) -> Bool { true }
 }
 
 /// Automatic mode: managed packages use their source-review model; when an
@@ -83,7 +92,7 @@ public struct ModelApprovalPolicy: ApprovalPolicy {
 /// reviewed by that model. The catastrophic gate still runs first and cannot
 /// be bypassed. Without a model, safe local mutations remain deterministic
 /// while sensitive actions fail closed to the user.
-public struct AutomaticApprovalPolicy: ApprovalPolicy {
+public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     private let backend: (any ModelApprovalPolicy.DecisionBackend)?
     private let packageReviewBackend: (any ModelApprovalPolicy.DecisionBackend)?
 
@@ -100,6 +109,9 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy {
     }
 
     public func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+        if Self.isDeterministicallyExempt(action) {
+            return .allow(scope: Self.scope(for: action.toolCall), expiresAt: nil)
+        }
         if action.isManagedPythonPackageRequest {
             guard let packageReviewBackend else {
                 return .escalateToHuman(reason: "No software package review model is configured")
@@ -128,6 +140,32 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy {
             for: action,
             unavailableReason: "No approval model is configured for this sensitive action"
         )
+    }
+
+    public func requiresModelReview(_ action: ProposedAction) -> Bool {
+        if Self.isDeterministicallyExempt(action) { return false }
+        if action.isManagedPythonPackageRequest { return packageReviewBackend != nil }
+        return backend != nil
+    }
+
+    /// Built-in, bounded local inspection does not need a second model to
+    /// approve it. Mutating PDF calls only bypass review when they explicitly
+    /// create a new output instead of overwriting their source.
+    private static func isDeterministicallyExempt(_ action: ProposedAction) -> Bool {
+        let alwaysExempt: Set<String> = [
+            "image.inspect", "image.ocr", "image.scanBarcode",
+            "document.pdf.inspect", "document.pdf.render",
+            "workspace.listDirectory", "workspace.readFile",
+            "workspace.inspectMetadata", "workspace.searchFiles",
+            "memory.recall"
+        ]
+        if alwaysExempt.contains(action.toolCall.toolName) { return true }
+        guard ["document.pdf.edit", "document.pdf.save"].contains(action.toolCall.toolName),
+              let object = try? JSONSerialization.jsonObject(
+                  with: action.toolCall.argumentsJSON
+              ) as? [String: Any] else { return false }
+        let overwritesSource = object["overwrite"] as? Bool ?? false
+        return !overwritesSource
     }
 
     private func deterministicDecision(

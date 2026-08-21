@@ -1,6 +1,6 @@
 # Floe Agent Architecture Overview
 
-[README](../README.md) · [简体中文 README](../README.zh-CN.md) · [Detailed workspace architecture](../FloeAgent/docs/ARCHITECTURE_AGENT_WORKSPACE.md)
+[README](../README.md) · [简体中文 README](../README.zh-CN.md) · [User guide](USER_GUIDE.md)
 
 This page is the current 1.2.x map. Older audit and delivery documents are historical evidence and may use superseded schema versions or navigation names.
 
@@ -87,4 +87,3 @@ Provider schema filtering reduces accidental requests; executor-side authorizati
 | `FloeSSH`, `FloeExecution`, `FloeVNC` | Authorized remote execution and visible computer control. |
 | `FloeSkills` | Declarative package validation, compatibility, provenance, and per-run tool ceiling. |
 | `FloeApp` | Native iPhone/iPad interface, browser sessions, voice, notifications, and lifecycle coordination. |
-

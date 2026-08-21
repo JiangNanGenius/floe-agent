@@ -23,6 +23,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
 
     @Published private(set) var isPiPActive = false
     @Published private(set) var isPreparingPiP = false
+    @Published private(set) var isPiPPrepared = false
     @Published private(set) var lastError: String?
     /// Called only when AVKit/system closes PiP while Floe still owns the
     /// controller. Programmatic run teardown clears ownership first.
@@ -42,10 +43,15 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     /// AVKit requires the source layer to be in a visible hierarchy before
     /// PiP starts. Keep a small inline preview attached while the run is active.
     private var inlinePreview: UIView?
+    private var isProgrammaticRetraction = false
 
     /// Starts (or updates) the PiP progress video for an active run. The
     /// user keeps the app alive by floating this PiP while in background.
-    func begin(title: String, initialProgress: String) async {
+    func begin(
+        title: String,
+        initialProgress: String,
+        startImmediately: Bool = true
+    ) async {
         startGeneration &+= 1
         let generation = startGeneration
         currentTitle = title
@@ -137,10 +143,34 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             stopPiPInternal()
             return
         }
+        isPiPPrepared = true
+        guard startImmediately else {
+            FloeLogger(category: .app).info(
+                "pictureInPicturePrepared generation=\(generation)"
+            )
+            return
+        }
+        startPreparedPictureInPicture()
+    }
+
+    func startPreparedPictureInPicture() {
+        guard let controller = pipController,
+              controller.isPictureInPicturePossible,
+              !controller.isPictureInPictureActive else { return }
         FloeLogger(category: .app).info(
-            "pictureInPictureStartRequested generation=\(generation)"
+            "pictureInPictureStartRequested generation=\(startGeneration)"
         )
         controller.startPictureInPicture()
+    }
+
+    /// Returning to Floe retracts the floating surface without destroying
+    /// the prepared player. Leaving the app again can therefore resume PiP
+    /// while the same task batch remains active.
+    func retractForForeground() {
+        guard let controller = pipController, controller.isPictureInPictureActive else { return }
+        isProgrammaticRetraction = true
+        controller.stopPictureInPicture()
+        FloeLogger(category: .app).info("pictureInPictureRetractedForForeground")
     }
 
     /// Updates the progress text and re-renders the looping video so the PiP
@@ -248,6 +278,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         }
         isPiPActive = false
         isPreparingPiP = false
+        isPiPPrepared = false
+        isProgrammaticRetraction = false
         deactivateAudioSession()
     }
 
@@ -256,6 +288,12 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     private func handlePiPStopped(controllerID: ObjectIdentifier) {
         guard let currentController = pipController,
               ObjectIdentifier(currentController) == controllerID else { return }
+        if isProgrammaticRetraction {
+            isProgrammaticRetraction = false
+            isPiPActive = false
+            FloeLogger(category: .app).info("pictureInPictureRetractionCompleted")
+            return
+        }
         refreshTask?.cancel()
         refreshTask = nil
         startGeneration &+= 1
@@ -272,6 +310,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             self.currentAssetURL = nil
         }
         isPiPActive = false
+        isPiPPrepared = false
         deactivateAudioSession()
         onUserStopped?()
     }
@@ -305,15 +344,17 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             .first(where: { $0.activationState == .foregroundActive }),
               let window = scene.windows.first(where: \.isKeyWindow) else { return false }
         removeInlinePreview()
-        let width: CGFloat = 176
+        // AVKit requires the source layer in the active hierarchy while it
+        // prepares automatic PiP. Keep the source present without placing a
+        // distracting black preview over the conversation UI.
+        let width: CGFloat = 2
         let view = UIView(frame: CGRect(
-            x: window.bounds.width - width - 16,
-            y: window.safeAreaInsets.top + 12,
+            x: window.safeAreaInsets.left,
+            y: window.bounds.height - window.safeAreaInsets.bottom - width,
             width: width,
-            height: width * 9 / 16
+            height: width
         ))
-        view.backgroundColor = .black
-        view.layer.cornerRadius = 12
+        view.backgroundColor = .clear
         view.layer.masksToBounds = true
         layer.frame = view.bounds
         layer.videoGravity = .resizeAspectFill

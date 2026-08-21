@@ -33,10 +33,25 @@ public enum AgentEvent: Sendable, Codable, Hashable {
     public struct UsageReport: Sendable, Codable, Hashable {
         public var inputTokens: Int
         public var outputTokens: Int
+        /// Nil means the provider did not report this dimension. It must not
+        /// be rendered as zero or included in a cache-hit denominator.
+        public var cacheReadTokens: Int?
+        public var cacheWriteTokens: Int?
+        public var reasoningTokens: Int?
         public var costEstimate: Decimal?
-        public init(inputTokens: Int, outputTokens: Int, costEstimate: Decimal? = nil) {
+        public init(
+            inputTokens: Int,
+            outputTokens: Int,
+            cacheReadTokens: Int? = nil,
+            cacheWriteTokens: Int? = nil,
+            reasoningTokens: Int? = nil,
+            costEstimate: Decimal? = nil
+        ) {
             self.inputTokens = inputTokens
             self.outputTokens = outputTokens
+            self.cacheReadTokens = cacheReadTokens
+            self.cacheWriteTokens = cacheWriteTokens
+            self.reasoningTokens = reasoningTokens
             self.costEstimate = costEstimate
         }
     }

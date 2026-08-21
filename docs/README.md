@@ -14,17 +14,8 @@
 | Security | [Security](../SECURITY.md) | [安全策略](../SECURITY.zh-CN.md) |
 | Support | [Support](../SUPPORT.md) | [支持](../SUPPORT.zh-CN.md) |
 
-## Protocols and active engineering references
+## Product references
 
 - [Floe Browser Protocol](FLOE_BROWSER_PROTOCOL.md): visible WebKit automation protocol, validation, stale references, and takeover.
-- [Development plan](DEVELOPMENT_PLAN.md): milestone history and release gates. Some milestone language is historical; use the architecture overview for current 1.2.x structure.
-- [Alpha daily plan](ALPHA_DAILY_PLAN.md): short-cycle implementation record.
-- [Agent workspace architecture](../FloeAgent/docs/ARCHITECTURE_AGENT_WORKSPACE.md): detailed runtime/workbench design.
-- [Execution architecture](../FloeAgent/docs/ARCHITECTURE_EXECUTION.md): remote and local execution boundaries.
-- [Settings architecture](../FloeAgent/docs/ARCHITECTURE_SETTINGS.md): provider, model, data, and diagnostic settings.
 
-## Historical evidence
-
-Files whose names contain `AUDIT`, `VALIDATION_REPORT`, `IMPLEMENTATION_REPORT`, `HANDOFF`, or `DELIVERY` capture a specific review or handoff. They are retained for traceability, not as current release documentation. When a historical statement conflicts with the README, user guide, current source, or latest release evidence, the current source and release evidence win.
-
-Reference mockups in [`design/reference`](design/reference/README.md) are historical visual explorations. The App screenshot and bilingual architecture diagrams in [`images`](images/) reflect the current workbench and security model more closely.
+The files in [`images`](images/) are the published product screenshots and diagrams used by the README and user guides. Internal planning, audit, validation and release-handoff documents are intentionally kept outside the public repository.

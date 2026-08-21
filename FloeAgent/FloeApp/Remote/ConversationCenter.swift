@@ -373,6 +373,11 @@ final class ConversationCenter: ObservableObject {
             case (nil, nil): return nil
             }
         }()
+        let appleEnabledTools = AppleCapabilityPreferences.filteredToolNames(
+            from: ToolCatalog.allDescriptors
+        )
+        allowedToolNames = allowedToolNames.map { $0.intersection(appleEnabledTools) }
+            ?? appleEnabledTools
         if taskRootLease == nil {
             let nonWorkspace = Set(ToolCatalog.allDescriptors.lazy
                 .map(\.name)
@@ -422,7 +427,10 @@ final class ConversationCenter: ObservableObject {
                 workspaceName: canonicalWorkspace?.name,
                 executionTarget: canonicalWorkspace?.activeTarget.kindName,
                 availableToolNames: allowedToolNames,
-                skillInstructions: skills.instructions,
+                skillInstructions: [skills.instructions, AppleCapabilityPreferences.skillInstructions()]
+                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n\n"),
                 memoryContext: personalization.memory,
                 soulContext: personalization.soul,
                 userProfileContext: personalization.profile,
@@ -2229,6 +2237,7 @@ final class ConversationCenter: ObservableObject {
                 guard !Task.isCancelled, let self else { break }
                 switch event {
                 case .stateChanged, .toolLifecycle, .approvalRequested,
+                     .approvalReviewChanged,
                      .contextCompacted, .planChanged, .goalChanged,
                      .childRunChanged, .userInputConsumed, .terminal:
                     let snapshot = await service.snapshot()

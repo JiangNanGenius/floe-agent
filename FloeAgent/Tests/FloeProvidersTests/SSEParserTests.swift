@@ -209,6 +209,40 @@ struct WireTranslatorTests {
         }
     }
 
+    @Test("Provider-specific cache and reasoning usage stays distinguishable")
+    func detailedUsageDimensions() throws {
+        let responsesData = Data(#"{"type":"response.completed","response":{"usage":{"input_tokens":120,"output_tokens":30,"input_tokens_details":{"cached_tokens":80},"output_tokens_details":{"reasoning_tokens":12}}}}"#.utf8)
+        let responses = try JSONDecoder().decode(ResponsesStreamEvent.self, from: responsesData)
+        let responseEvents = WireTranslator.translate(responses)
+        guard case .usage(let responseUsage) = responseEvents.first else {
+            Issue.record("Expected Responses usage"); return
+        }
+        #expect(responseUsage.cacheReadTokens == 80)
+        #expect(responseUsage.cacheWriteTokens == nil)
+        #expect(responseUsage.reasoningTokens == 12)
+
+        let chatData = Data(#"{"choices":[],"usage":{"prompt_tokens":90,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":50},"completion_tokens_details":{"reasoning_tokens":7}}}"#.utf8)
+        let chat = try JSONDecoder().decode(ChatChunk.self, from: chatData)
+        var chatAggregator = ToolCallAggregator()
+        let chatEvents = WireTranslator.translate(chat, aggregator: &chatAggregator)
+        guard case .usage(let chatUsage) = chatEvents.first else {
+            Issue.record("Expected Chat usage"); return
+        }
+        #expect(chatUsage.cacheReadTokens == 50)
+        #expect(chatUsage.reasoningTokens == 7)
+
+        let anthropicData = Data(#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":70,"output_tokens":15,"cache_creation_input_tokens":9,"cache_read_input_tokens":40}}"#.utf8)
+        let anthropic = try JSONDecoder().decode(AnthropicStreamEvent.self, from: anthropicData)
+        var anthropicAggregator = WireTranslator.AnthropicAggregator()
+        let anthropicEvents = WireTranslator.translate(anthropic, aggregator: &anthropicAggregator)
+        guard case .usage(let anthropicUsage) = anthropicEvents.first else {
+            Issue.record("Expected Anthropic usage"); return
+        }
+        #expect(anthropicUsage.cacheReadTokens == 40)
+        #expect(anthropicUsage.cacheWriteTokens == 9)
+        #expect(anthropicUsage.reasoningTokens == nil)
+    }
+
     @Test("Unknown Responses event types are ignored")
     func responsesUnknownIgnored() {
         let events = WireTranslator.translate(ResponsesStreamEvent.unknown(type: "response.future_thing"))

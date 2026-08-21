@@ -20,13 +20,19 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private struct ActiveRun {
         let conversationID: UUID
         let title: String
+        var stage: String = "正在运行"
+        var progress: Int64 = 5
     }
     private var activeRuns: [UUID: ActiveRun] = [:]
     private var surfacedRunID: UUID?
+    private var retainedPausedRun: (id: UUID, run: ActiveRun)?
+    private var isAppInBackground = false
+    private var pipSuppressedForCurrentBatch = false
     private var notifiedApprovalRuns: Set<UUID> = []
     private var lease: BackgroundExecutionLease?
     private var refreshWork: Task<Void, Never>?
     private var processingWork: Task<Void, Never>?
+    private var pipCarouselTask: Task<Void, Never>?
     private var activeProcessingTaskID: UUID?
     @available(iOS 26.0, *)
     private var continuedTask: BGContinuedProcessingTask?
@@ -46,10 +52,23 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             self?.acceptProcessingTask(task)
         }
         UNUserNotificationCenter.current().delegate = self
-        Task { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) }
     }
 
     func didStart(conversationID: UUID, runID: UUID, title: String) {
+        // Ask for notification permission in direct response to starting the
+        // first task, never during a cold app launch. This keeps onboarding,
+        // App Intents discovery and settings inspection free of an unrelated
+        // system prompt.
+        if activeRuns.isEmpty {
+            Task {
+                _ = try? await UNUserNotificationCenter.current()
+                    .requestAuthorization(options: [.alert, .sound, .badge])
+            }
+        }
+        // A newly-created task starts a new eligibility window after a user
+        // manually dismissed PiP or stopped the previous broadcast.
+        pipSuppressedForCurrentBatch = false
+        retainedPausedRun = nil
         activeRuns[runID] = ActiveRun(conversationID: conversationID, title: title)
         FloeLogger(category: .app).info(
             "backgroundRunStarted run=\(runID.uuidString) conversation=\(conversationID.uuidString) preference=\(environment.settingsCenter.backgroundExecution.rawValue) activeRuns=\(activeRuns.count)"
@@ -68,7 +87,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// Pushes a progress stage update to the active background surface (the
     /// continued task's Live Activity subtitle, and the PiP progress video).
     func didUpdateProgress(runID: UUID, stage: String, progress: Int64) {
-        guard activeRuns[runID] != nil else { return }
+        guard var active = activeRuns[runID] else { return }
+        active.stage = stage
+        active.progress = progress
+        activeRuns[runID] = active
         if #available(iOS 26.0, *) {
             updateContinuedTask(title: "Floe Agent", stage: stage, progress: progress)
         }
@@ -109,12 +131,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             resumeBackgroundSurfaceIfNeeded()
         }
         if activeRuns.isEmpty, succeeded {
+            retainedPausedRun = nil
             tearDownBackgroundExecutionPreference()
         } else if activeRuns.isEmpty {
             // A failed/checkpointed task is paused work, not completed work.
             // Keep the user-owned PiP/screen-share surface alive so reopening
             // the task offers a recovery path instead of silently disappearing.
             surfacedRunID = runID
+            retainedPausedRun = (runID, finished)
             environment.backgroundVideoService.update(
                 title: finished.title,
                 progress: "任务已暂停，打开 Floe 可继续"
@@ -129,6 +153,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// A later newly-started task will call `didStart` and request PiP again.
     func didClosePictureInPicture() {
         surfacedRunID = nil
+        pipSuppressedForCurrentBatch = true
         FloeLogger(category: .app).info(
             "pictureInPictureClosedByUser activeRuns=\(activeRuns.count)"
         )
@@ -136,7 +161,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     /// Applies the user's background-execution choice when a run starts.
     /// `standard` relies on the 30s lease + continued task (no extra UI);
-    /// Both visual modes start a real task-progress PiP. Screen-share mode
+    /// Both visual modes prepare a real task-progress PiP. It is started only
+    /// after the scene enters background. Screen-share mode
     /// additionally asks the matching thread to present ReplayKit's system
     /// consent flow as soon as the task starts.
     private func applyBackgroundExecutionPreference(
@@ -155,7 +181,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 "backgroundSurfaceRequested run=\(runID.uuidString) mode=pictureInPicture"
             )
             surfacedRunID = runID
-            if environment.backgroundVideoService.isPiPActive {
+            if environment.backgroundVideoService.isPiPPrepared {
                 environment.backgroundVideoService.update(
                     title: runTitle,
                     progress: "正在运行"
@@ -165,7 +191,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     guard let self else { return }
                     await self.environment.backgroundVideoService.begin(
                         title: runTitle,
-                        initialProgress: "正在运行"
+                        initialProgress: "正在运行",
+                        startImmediately: self.isAppInBackground
                     )
                 }
             }
@@ -174,7 +201,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 "backgroundSurfaceRequested run=\(runID.uuidString) mode=screenShare sharing=\(environment.screenShareCenter.isSharing)"
             )
             surfacedRunID = runID
-            if environment.backgroundVideoService.isPiPActive {
+            if environment.backgroundVideoService.isPiPPrepared {
                 environment.backgroundVideoService.update(
                     title: runTitle,
                     progress: environment.screenShareCenter.isSharing
@@ -185,7 +212,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     guard let self else { return }
                     await self.environment.backgroundVideoService.begin(
                         title: runTitle,
-                        initialProgress: "任务正在运行"
+                        initialProgress: "任务正在运行",
+                        startImmediately: self.isAppInBackground
                     )
                 }
             }
@@ -198,6 +226,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private func tearDownBackgroundExecutionPreference() {
         FloeLogger(category: .app).info("backgroundSurfaceStopped reason=allRunsFinished")
         surfacedRunID = nil
+        pipCarouselTask?.cancel()
+        pipCarouselTask = nil
         environment.backgroundVideoService.stop()
         if environment.screenShareCenter.isSharing
             || environment.screenShareCenter.isWaitingForBroadcast {
@@ -209,9 +239,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// still active, move the surface to a real remaining run instead of
     /// leaving the completed title frozen indefinitely.
     private func resumeBackgroundSurfaceIfNeeded() {
-        guard environment.settingsCenter.backgroundExecution != .standard,
-              let (runID, run) = activeRuns.first else { return }
+        guard isAppInBackground,
+              !pipSuppressedForCurrentBatch,
+              environment.settingsCenter.backgroundExecution != .standard else { return }
+        let candidate = activeRuns.first.map { (id: $0.key, run: $0.value) }
+            ?? retainedPausedRun
+        guard let (runID, run) = candidate else { return }
         surfacedRunID = runID
+        startPiPCarousel()
         if environment.backgroundVideoService.isPiPActive {
             environment.backgroundVideoService.update(
                 title: run.title,
@@ -219,12 +254,45 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             )
             return
         }
+        if environment.backgroundVideoService.isPiPPrepared {
+            environment.backgroundVideoService.startPreparedPictureInPicture()
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             await self.environment.backgroundVideoService.begin(
                 title: run.title,
-                initialProgress: "正在运行"
+                initialProgress: "正在运行",
+                startImmediately: true
             )
+        }
+    }
+
+    /// Keep a multi-task PiP useful without cramming several unreadable rows
+    /// into a phone-sized video. Cycle the real active tasks and show the
+    /// current index, stage and progress. A single task remains stable.
+    private func startPiPCarousel() {
+        guard pipCarouselTask == nil else { return }
+        pipCarouselTask = Task { [weak self] in
+            var cursor = 0
+            while !Task.isCancelled {
+                guard let self, self.isAppInBackground else { return }
+                let runs = self.activeRuns.sorted { $0.key.uuidString < $1.key.uuidString }
+                let candidates = runs.isEmpty
+                    ? self.retainedPausedRun.map { [($0.id, $0.run)] } ?? []
+                    : runs
+                guard !candidates.isEmpty else { return }
+                let item = candidates[cursor % candidates.count]
+                self.surfacedRunID = item.0
+                let prefix = candidates.count > 1
+                    ? "\((cursor % candidates.count) + 1)/\(candidates.count) · " : ""
+                self.environment.backgroundVideoService.update(
+                    title: item.1.title,
+                    progress: "\(prefix)\(item.1.stage) · \(item.1.progress)%"
+                )
+                cursor += 1
+                try? await Task.sleep(for: .seconds(candidates.count > 1 ? 4 : 12))
+            }
         }
     }
 
@@ -303,6 +371,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
         case .background:
+            isAppInBackground = true
+            resumeBackgroundSurfaceIfNeeded()
             lease = BackgroundPolicyRegistry.shared.beginShortCompletion(name: "Keep agent run active")
             Task { [weak self] in
                 guard let self else { return }
@@ -320,6 +390,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 }
             }
         case .active:
+            isAppInBackground = false
+            pipCarouselTask?.cancel()
+            pipCarouselTask = nil
+            environment.backgroundVideoService.retractForForeground()
             lease?.release()
             lease = nil
             Task { [weak self] in

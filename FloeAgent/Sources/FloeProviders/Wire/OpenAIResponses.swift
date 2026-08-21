@@ -218,15 +218,36 @@ public enum ResponsesStreamEvent: Sendable, Hashable {
     public struct Usage: Sendable, Codable, Hashable {
         public var inputTokens: Int
         public var outputTokens: Int
+        public var inputTokenDetails: InputTokenDetails?
+        public var outputTokenDetails: OutputTokenDetails?
 
-        public init(inputTokens: Int, outputTokens: Int) {
+        public struct InputTokenDetails: Sendable, Codable, Hashable {
+            public var cachedTokens: Int?
+            enum CodingKeys: String, CodingKey { case cachedTokens = "cached_tokens" }
+        }
+
+        public struct OutputTokenDetails: Sendable, Codable, Hashable {
+            public var reasoningTokens: Int?
+            enum CodingKeys: String, CodingKey { case reasoningTokens = "reasoning_tokens" }
+        }
+
+        public init(
+            inputTokens: Int,
+            outputTokens: Int,
+            inputTokenDetails: InputTokenDetails? = nil,
+            outputTokenDetails: OutputTokenDetails? = nil
+        ) {
             self.inputTokens = inputTokens
             self.outputTokens = outputTokens
+            self.inputTokenDetails = inputTokenDetails
+            self.outputTokenDetails = outputTokenDetails
         }
 
         enum CodingKeys: String, CodingKey {
             case inputTokens = "input_tokens"
             case outputTokens = "output_tokens"
+            case inputTokenDetails = "input_tokens_details"
+            case outputTokenDetails = "output_tokens_details"
         }
     }
 }

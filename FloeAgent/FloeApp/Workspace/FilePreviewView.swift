@@ -27,6 +27,7 @@ struct FilePreviewView: View {
     @State private var isEditing = false
     @State private var quickLookURL: URL?
     @State private var previewError: String?
+    @State private var autoOpenedCodePath: String?
 
     var body: some View {
         Group {
@@ -81,6 +82,11 @@ struct FilePreviewView: View {
     private var isHTML: Bool {
         let ext = (relativePath as NSString).pathExtension.lowercased()
         return ext == "html" || ext == "htm"
+    }
+
+    private var isCode: Bool {
+        let ext = (relativePath as NSString).pathExtension.lowercased()
+        return ["py", "js", "mjs", "cjs"].contains(ext)
     }
 
     private var isTextual: Bool {
@@ -205,6 +211,10 @@ struct FilePreviewView: View {
         do {
             content = try service.readFile(relativePath, byteOffset: 0)
             await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
+            if isCode, autoOpenedCodePath != relativePath {
+                autoOpenedCodePath = relativePath
+                isEditing = true
+            }
         } catch let error as WorkspaceToolError {
             loadError = error.errorDescription ?? error.localizedDescription
         } catch {

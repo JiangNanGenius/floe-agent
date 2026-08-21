@@ -52,21 +52,40 @@ public struct ApprovalRequestSnapshot: Sendable, Codable, Hashable, Identifiable
     }
 }
 
+public struct ApprovalReviewSnapshot: Sendable, Codable, Hashable {
+    public var toolName: String
+    public var isEvaluating: Bool
+
+    public init(toolName: String, isEvaluating: Bool) {
+        self.toolName = toolName
+        self.isEvaluating = isEvaluating
+    }
+}
+
 public struct UsageSnapshot: Sendable, Codable, Hashable {
     public var inputTokens: Int
     public var outputTokens: Int
     public var modelCalls: Int
+    public var cacheReadTokens: Int?
+    public var cacheWriteTokens: Int?
+    public var reasoningTokens: Int?
     public var costEstimate: Decimal?
 
     public init(
         inputTokens: Int = 0,
         outputTokens: Int = 0,
         modelCalls: Int = 0,
+        cacheReadTokens: Int? = nil,
+        cacheWriteTokens: Int? = nil,
+        reasoningTokens: Int? = nil,
         costEstimate: Decimal? = nil
     ) {
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
         self.modelCalls = modelCalls
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheWriteTokens = cacheWriteTokens
+        self.reasoningTokens = reasoningTokens
         self.costEstimate = costEstimate
     }
 }
@@ -161,6 +180,7 @@ public enum HarnessEvent: Sendable, Codable, Hashable {
     case answerDelta(TextDelta)
     case reasoningDelta(TextDelta)
     case toolLifecycle(ToolLifecycleEvent)
+    case approvalReviewChanged(ApprovalReviewSnapshot)
     case approvalRequested(ApprovalRequestSnapshot)
     case contextCompacted(ContextCompactionRecord)
     case planChanged(PlanSnapshot)
@@ -447,6 +467,13 @@ public final class AgentRuntimeHarnessBridge: AgentEventSink, @unchecked Sendabl
         case .completed:
             break
         }
+    }
+
+    public func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didChangeApprovalReview snapshot: ApprovalReviewSnapshot
+    ) async {
+        channel.yield(.approvalReviewChanged(snapshot))
     }
 
     private static func harnessState(for state: AgentState) -> HarnessState {

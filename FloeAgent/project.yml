@@ -39,6 +39,11 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         NSMicrophoneUsageDescription: Floe uses the microphone only while you dictate a message.
         NSSpeechRecognitionUsageDescription: Floe converts your speech into text for the message composer.
+        NSCalendarsFullAccessUsageDescription: Floe accesses calendars only when you ask the agent to read or edit events.
+        NSRemindersFullAccessUsageDescription: Floe accesses reminders only when you ask the agent to read or edit them.
+        NSLocationWhenInUseUsageDescription: Floe uses your location only for a map or location task you request.
+        NSCameraUsageDescription: Floe opens the camera only when you choose to capture an image for a task.
+        NSHomeKitUsageDescription: Floe accesses your Home only when you enable Home tools and request an automation action.
         BGTaskSchedulerPermittedIdentifiers:
           - org.floeagent.ios.refresh
           - org.floeagent.ios.processing
@@ -70,6 +75,7 @@ targets:
           - CloudKit
         com.apple.developer.user-fonts:
           - app-usage
+        com.apple.developer.homekit: true
         com.apple.security.application-groups:
           - group.org.floeagent.ios
     dependencies:
@@ -159,8 +165,8 @@ targets:
         SWIFT_VERSION: "6.0"
         SWIFT_OBJC_BRIDGING_HEADER: FloeApp/Execution/FloeApp-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.4.4"
-        CURRENT_PROJECT_VERSION: "35"
+        MARKETING_VERSION: "1.4.5"
+        CURRENT_PROJECT_VERSION: "36"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
         ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -206,8 +212,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.4"
-        CURRENT_PROJECT_VERSION: "35"
+        MARKETING_VERSION: "1.4.5"
+        CURRENT_PROJECT_VERSION: "36"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -251,8 +257,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.4"
-        CURRENT_PROJECT_VERSION: "35"
+        MARKETING_VERSION: "1.4.5"
+        CURRENT_PROJECT_VERSION: "36"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -291,8 +297,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.4"
-        CURRENT_PROJECT_VERSION: "35"
+        MARKETING_VERSION: "1.4.5"
+        CURRENT_PROJECT_VERSION: "36"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:

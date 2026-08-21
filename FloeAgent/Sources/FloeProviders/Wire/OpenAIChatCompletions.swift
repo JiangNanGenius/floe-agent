@@ -276,15 +276,36 @@ public struct ChatChunk: Sendable, Codable, Hashable {
     public struct Usage: Sendable, Codable, Hashable {
         public var promptTokens: Int
         public var completionTokens: Int
+        public var promptTokenDetails: PromptTokenDetails?
+        public var completionTokenDetails: CompletionTokenDetails?
 
-        public init(promptTokens: Int, completionTokens: Int) {
+        public struct PromptTokenDetails: Sendable, Codable, Hashable {
+            public var cachedTokens: Int?
+            enum CodingKeys: String, CodingKey { case cachedTokens = "cached_tokens" }
+        }
+
+        public struct CompletionTokenDetails: Sendable, Codable, Hashable {
+            public var reasoningTokens: Int?
+            enum CodingKeys: String, CodingKey { case reasoningTokens = "reasoning_tokens" }
+        }
+
+        public init(
+            promptTokens: Int,
+            completionTokens: Int,
+            promptTokenDetails: PromptTokenDetails? = nil,
+            completionTokenDetails: CompletionTokenDetails? = nil
+        ) {
             self.promptTokens = promptTokens
             self.completionTokens = completionTokens
+            self.promptTokenDetails = promptTokenDetails
+            self.completionTokenDetails = completionTokenDetails
         }
 
         enum CodingKeys: String, CodingKey {
             case promptTokens = "prompt_tokens"
             case completionTokens = "completion_tokens"
+            case promptTokenDetails = "prompt_tokens_details"
+            case completionTokenDetails = "completion_tokens_details"
         }
     }
 }

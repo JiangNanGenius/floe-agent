@@ -32,6 +32,9 @@ struct UsageStatisticsView: View {
                     LabeledContent("总任务数") {
                         Text("\(stats.totalRuns)").foregroundStyle(.secondary)
                     }
+                    reportedTokenRow("缓存读取", value: stats.cacheReadTokens)
+                    reportedTokenRow("缓存写入", value: stats.cacheWriteTokens)
+                    reportedTokenRow("推理 token", value: stats.reasoningTokens)
                 }
                 Section("近 30 天") {
                     if stats.byDay.isEmpty {
@@ -87,10 +90,24 @@ struct UsageStatisticsView: View {
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        Text("缓存读取 \(reported(row.cacheReadTokens)) · 缓存写入 \(reported(row.cacheWriteTokens)) · 推理 \(reported(row.reasoningTokens))")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                     }
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func reportedTokenRow(_ label: String, value: Int?) -> some View {
+        LabeledContent(label) {
+            Text(reported(value)).foregroundStyle(.secondary)
+        }
+    }
+
+    private func reported(_ value: Int?) -> String {
+        value.map { "\($0) token" } ?? "未报告"
     }
 
     private func load() async {

@@ -199,10 +199,34 @@ struct PrivacySecurityView: View {
 /// `.deviceOwnerAuthentication` directly lets iOS choose the passcode sheet
 /// even when Face ID is available, which made otherwise identical actions
 /// behave inconsistently across settings screens.
+@MainActor
 enum DeviceOwnerAuthenticator {
     static let preferBiometricsKey = "floe.security.preferBiometrics"
+    private static var activeAuthentication: Task<Bool, Error>?
 
     static func authenticate(reason: String) async throws -> Bool {
+        // Settings sheets and permission inspectors can both observe the same
+        // mode change. Coalesce them into one LAContext evaluation so a second
+        // presentation cannot dismiss the first sheet or race a deallocated
+        // view controller (the source of the full-access Face ID crash).
+        if let activeAuthentication {
+            return try await activeAuthentication.value
+        }
+        let task = Task { @MainActor in
+            try await performAuthentication(reason: reason)
+        }
+        activeAuthentication = task
+        do {
+            let result = try await task.value
+            activeAuthentication = nil
+            return result
+        } catch {
+            activeAuthentication = nil
+            throw error
+        }
+    }
+
+    private static func performAuthentication(reason: String) async throws -> Bool {
         let context = LAContext()
         context.localizedCancelTitle = String(localized: "action.cancel")
         let preferBiometrics = UserDefaults.standard.object(forKey: preferBiometricsKey)

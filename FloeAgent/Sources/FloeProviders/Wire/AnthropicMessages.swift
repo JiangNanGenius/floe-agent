@@ -350,22 +350,33 @@ public enum AnthropicStreamEvent: Sendable, Hashable {
     public struct Usage: Sendable, Codable, Hashable {
         public var inputTokens: Int
         public var outputTokens: Int
+        public var cacheCreationInputTokens: Int?
+        public var cacheReadInputTokens: Int?
 
-        public init(inputTokens: Int, outputTokens: Int) {
+        public init(
+            inputTokens: Int,
+            outputTokens: Int,
+            cacheCreationInputTokens: Int? = nil,
+            cacheReadInputTokens: Int? = nil
+        ) {
             self.inputTokens = inputTokens
             self.outputTokens = outputTokens
+            self.cacheCreationInputTokens = cacheCreationInputTokens
+            self.cacheReadInputTokens = cacheReadInputTokens
         }
 
         enum CodingKeys: String, CodingKey {
             case inputTokens = "input_tokens"
             case outputTokens = "output_tokens"
+            case cacheCreationInputTokens = "cache_creation_input_tokens"
+            case cacheReadInputTokens = "cache_read_input_tokens"
         }
     }
 }
 
 extension AnthropicStreamEvent: Codable {
     private enum CodingKeys: String, CodingKey {
-        case type, index, delta, message, error
+        case type, index, delta, message, error, usage
         case contentBlock = "content_block"
     }
 
@@ -410,13 +421,14 @@ extension AnthropicStreamEvent: Codable {
             case "input_json_delta":
                 self = .inputJSONDelta(index: index, partialJSON: delta.partialJSON ?? "")
             default:
-                self = .unknown(type: "content_block_delta.\(delta.type)")
+                self = .unknown(type: "content_block_delta.\(delta.type ?? "unknown")")
             }
         case "content_block_stop":
             self = .contentBlockStop(index: try container.decode(Int.self, forKey: .index))
         case "message_delta":
             let delta = try container.decodeIfPresent(DeltaPayload.self, forKey: .delta)
-            self = .messageDelta(stopReason: delta?.stopReason, usage: delta?.usage)
+            let usage = try container.decodeIfPresent(Usage.self, forKey: .usage) ?? delta?.usage
+            self = .messageDelta(stopReason: delta?.stopReason, usage: usage)
         case "message_stop":
             self = .messageStop
         case "ping":
@@ -456,7 +468,8 @@ extension AnthropicStreamEvent: Codable {
             try container.encode(index, forKey: .index)
         case .messageDelta(let stopReason, let usage):
             try container.encode("message_delta", forKey: .type)
-            try container.encode(DeltaPayload(type: "", text: nil, thinking: nil, partialJSON: nil, stopReason: stopReason, usage: usage), forKey: .delta)
+            try container.encode(DeltaPayload(type: nil, text: nil, thinking: nil, partialJSON: nil, stopReason: stopReason, usage: nil), forKey: .delta)
+            try container.encodeIfPresent(usage, forKey: .usage)
         case .messageStop:
             try container.encode("message_stop", forKey: .type)
         case .ping:
@@ -480,7 +493,7 @@ extension AnthropicStreamEvent: Codable {
     }
 
     private struct DeltaPayload: Codable {
-        var type: String
+        var type: String?
         var text: String?
         var thinking: String?
         var partialJSON: String?

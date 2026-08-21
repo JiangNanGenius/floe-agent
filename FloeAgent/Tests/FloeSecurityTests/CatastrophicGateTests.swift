@@ -265,6 +265,36 @@ struct ApprovalPolicyTests {
         }
     }
 
+    @Test("Built-in PDF and semantic image inspection bypass the approval model")
+    func builtInInspectionExemptions() async throws {
+        actor Backend: ModelApprovalPolicy.DecisionBackend {
+            private(set) var calls = 0
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+                calls += 1
+                return .deny(reason: "must not be called")
+            }
+        }
+        let backend = Backend()
+        let policy = AutomaticApprovalPolicy(backend: backend)
+        for name in ["image.inspect", "image.ocr", "document.pdf.inspect", "document.pdf.render"] {
+            let call = try ToolCall(
+                id: name,
+                toolName: name,
+                argumentsJSON: Data(#"{"path":"sample.pdf"}"#.utf8),
+                scope: .local
+            )
+            let action = ProposedAction(
+                toolCall: call,
+                riskLabels: ["readsFiles", "sendsDataToProvider"],
+                userGoal: "inspect the attachment",
+                hostAndPathScope: .local
+            )
+            #expect(try await policy.decide(action).permitsExecution)
+            #expect(!policy.requiresModelReview(action))
+        }
+        #expect(await backend.calls == 0)
+    }
+
     @Test("ModelApprovalPolicy fail-closed on backend error")
     func modelPolicyFailClosed() async throws {
         struct FailingBackend: ModelApprovalPolicy.DecisionBackend {

@@ -47,6 +47,8 @@ struct CrashAndFeedbackRegressionTests {
         #expect(request.httpMethod == "POST")
         #expect(request.value(forHTTPHeaderField: "Content-Type")
             == "multipart/form-data; boundary=TestBoundary")
+        #expect(request.value(forHTTPHeaderField: "Idempotency-Key")
+            == "11111111-2222-3333-4444-555555555555")
         let body = try #require(request.httpBody.flatMap { String(data: $0, encoding: .utf8) })
         #expect(body.contains("name=\"manifest\""))
         #expect(body.contains("Voice button crashes"))

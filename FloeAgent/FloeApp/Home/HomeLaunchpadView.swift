@@ -65,7 +65,13 @@ struct HomeLaunchpadView: View {
         .background(FloeTheme.readingSurface)
         .navigationTitle("新建任务")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await viewModel.load() }
+        .task {
+            await viewModel.load()
+            if AppleCapabilityPreferences.isEnabled(.shortcuts),
+               let pending = FloeShortcutInbox.consume() {
+                viewModel.draft = pending
+            }
+        }
         .refreshable { await viewModel.load() }
         .sheet(isPresented: $showsDraftPermissions) {
             DraftTaskPermissionsSheet(policy: $viewModel.draftPolicy)

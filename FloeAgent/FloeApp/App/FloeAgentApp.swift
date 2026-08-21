@@ -59,7 +59,6 @@ struct RootView: View {
     /// left-swipe on a row (swipe actions) from a left-swipe outside the list
     /// (dismiss the drawer).
     @State private var sidebarListFrame: CGRect = .zero
-    @State private var showingAutomaticScreenShare = false
 
     /// UITest runs pin a deterministic layout: `-ui-testing` forces the
     /// compact (iPhone-style) tab layout; `-ui-testing-ipad` additionally
@@ -123,19 +122,6 @@ struct RootView: View {
         .onReceive(environment.conversationCenter.$conversations) { conversations in
             router.reconcileConversations(Set(conversations.map(\.id)))
         }
-        .onReceive(NotificationCenter.default.publisher(
-            for: .floeScreenShareAuthorizationRequested
-        )) { notification in
-            guard let conversationID = notification.object as? UUID,
-                  environment.screenShareCenter.consumeBroadcastRequest(for: conversationID) else { return }
-            FloeLogger(category: .app).info(
-                "screenShareSheetPresentationRequested conversation=\(conversationID.uuidString)"
-            )
-            showingAutomaticScreenShare = true
-        }
-        .onReceive(environment.screenShareCenter.$isSharing) { isSharing in
-            if isSharing { showingAutomaticScreenShare = false }
-        }
         .onChange(of: environment.browserCenter.presentationRequestID) { _, _ in
             // Browser and preview tools run outside the view hierarchy. Their
             // presentation request is projected through the shared router so
@@ -154,9 +140,6 @@ struct RootView: View {
         .sheet(isPresented: $router.presentedSettings) {
             NavigationStack { SettingsRootView() }
                 .presentationSizing(.page)
-        }
-        .sheet(isPresented: $showingAutomaticScreenShare) {
-            BroadcastPickerView(center: environment.screenShareCenter)
         }
         .sheet(item: $renamingConversation) { conversation in
             TaskRenameSheet(conversation: conversation) { title in

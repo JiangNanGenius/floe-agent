@@ -82,6 +82,9 @@ public struct UsageStatistics: Sendable, Codable, Hashable {
     public var totalOutputTokens: Int
     public var totalTokens: Int
     public var totalRuns: Int
+    public var cacheReadTokens: Int?
+    public var cacheWriteTokens: Int?
+    public var reasoningTokens: Int?
     public var byDay: [DailyUsage]
     public var byConversation: [UsageBreakdown]
     public var byModel: [UsageBreakdown]
@@ -92,6 +95,9 @@ public struct UsageStatistics: Sendable, Codable, Hashable {
         totalOutputTokens: Int,
         totalTokens: Int,
         totalRuns: Int,
+        cacheReadTokens: Int? = nil,
+        cacheWriteTokens: Int? = nil,
+        reasoningTokens: Int? = nil,
         byDay: [DailyUsage],
         byConversation: [UsageBreakdown] = [],
         byModel: [UsageBreakdown] = [],
@@ -101,6 +107,9 @@ public struct UsageStatistics: Sendable, Codable, Hashable {
         self.totalOutputTokens = totalOutputTokens
         self.totalTokens = totalTokens
         self.totalRuns = totalRuns
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheWriteTokens = cacheWriteTokens
+        self.reasoningTokens = reasoningTokens
         self.byDay = byDay
         self.byConversation = byConversation
         self.byModel = byModel
@@ -114,13 +123,28 @@ public struct UsageBreakdown: Sendable, Codable, Hashable, Identifiable {
     public var inputTokens: Int
     public var outputTokens: Int
     public var runs: Int
+    public var cacheReadTokens: Int?
+    public var cacheWriteTokens: Int?
+    public var reasoningTokens: Int?
 
-    public init(id: String, label: String, inputTokens: Int, outputTokens: Int, runs: Int) {
+    public init(
+        id: String,
+        label: String,
+        inputTokens: Int,
+        outputTokens: Int,
+        runs: Int,
+        cacheReadTokens: Int? = nil,
+        cacheWriteTokens: Int? = nil,
+        reasoningTokens: Int? = nil
+    ) {
         self.id = id
         self.label = label
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
         self.runs = runs
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheWriteTokens = cacheWriteTokens
+        self.reasoningTokens = reasoningTokens
     }
 
     public var totalTokens: Int { inputTokens + outputTokens }
@@ -272,8 +296,10 @@ public actor SQLiteRunStore: RunStore {
         try await database.writer { db in
             try db.execute(
                 sql: """
-                    INSERT INTO run_usage (id, run_id, input_tokens, output_tokens, cost_estimate, recorded_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO run_usage (
+                        id, run_id, input_tokens, output_tokens, cost_estimate, recorded_at,
+                        cache_read_tokens, cache_write_tokens, reasoning_tokens, is_estimated
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     usage.id.uuidString,
@@ -281,7 +307,11 @@ public actor SQLiteRunStore: RunStore {
                     usage.inputTokens,
                     usage.outputTokens,
                     usage.costEstimate,
-                    PersistenceCodec.encode(usage.recordedAt)
+                    PersistenceCodec.encode(usage.recordedAt),
+                    usage.cacheReadTokens,
+                    usage.cacheWriteTokens,
+                    usage.reasoningTokens,
+                    usage.isEstimated
                 ]
             )
         }
@@ -422,6 +452,10 @@ public actor SQLiteRunStore: RunStore {
             runID: runID,
             inputTokens: row["input_tokens"],
             outputTokens: row["output_tokens"],
+            cacheReadTokens: row["cache_read_tokens"],
+            cacheWriteTokens: row["cache_write_tokens"],
+            reasoningTokens: row["reasoning_tokens"],
+            isEstimated: row["is_estimated"],
             costEstimate: row["cost_estimate"],
             recordedAt: try PersistenceCodec.decodeDate(row["recorded_at"])
         )
@@ -451,12 +485,18 @@ public actor SQLiteRunStore: RunStore {
                 SELECT
                     COALESCE(SUM(input_tokens), 0) AS total_input,
                     COALESCE(SUM(output_tokens), 0) AS total_output,
+                    SUM(cache_read_tokens) AS cache_read,
+                    SUM(cache_write_tokens) AS cache_write,
+                    SUM(reasoning_tokens) AS reasoning,
                     COUNT(DISTINCT run_id) AS total_runs
                 FROM run_usage
                 """)
             let totalInput: Int = totalRow?["total_input"] ?? 0
             let totalOutput: Int = totalRow?["total_output"] ?? 0
             let totalRuns: Int = totalRow?["total_runs"] ?? 0
+            let cacheRead: Int? = totalRow?["cache_read"]
+            let cacheWrite: Int? = totalRow?["cache_write"]
+            let reasoning: Int? = totalRow?["reasoning"]
 
             let dailyRows = try Row.fetchAll(db, sql: """
                 SELECT
@@ -484,6 +524,9 @@ public actor SQLiteRunStore: RunStore {
                     COALESCE(NULLIF(c.title, ''), '未命名会话') AS label,
                     COALESCE(SUM(u.input_tokens), 0) AS input,
                     COALESCE(SUM(u.output_tokens), 0) AS output,
+                    SUM(u.cache_read_tokens) AS cache_read,
+                    SUM(u.cache_write_tokens) AS cache_write,
+                    SUM(u.reasoning_tokens) AS reasoning,
                     COUNT(DISTINCT r.id) AS runs
                 FROM run_usage u
                 JOIN runs r ON r.id = u.run_id
@@ -500,6 +543,9 @@ public actor SQLiteRunStore: RunStore {
                     ) AS label,
                     COALESCE(SUM(u.input_tokens), 0) AS input,
                     COALESCE(SUM(u.output_tokens), 0) AS output,
+                    SUM(u.cache_read_tokens) AS cache_read,
+                    SUM(u.cache_write_tokens) AS cache_write,
+                    SUM(u.reasoning_tokens) AS reasoning,
                     COUNT(DISTINCT r.id) AS runs
                 FROM run_usage u
                 JOIN runs r ON r.id = u.run_id
@@ -515,6 +561,9 @@ public actor SQLiteRunStore: RunStore {
                     ) AS label,
                     COALESCE(SUM(u.input_tokens), 0) AS input,
                     COALESCE(SUM(u.output_tokens), 0) AS output,
+                    SUM(u.cache_read_tokens) AS cache_read,
+                    SUM(u.cache_write_tokens) AS cache_write,
+                    SUM(u.reasoning_tokens) AS reasoning,
                     COUNT(DISTINCT r.id) AS runs
                 FROM run_usage u
                 JOIN runs r ON r.id = u.run_id
@@ -527,6 +576,9 @@ public actor SQLiteRunStore: RunStore {
                 totalOutputTokens: totalOutput,
                 totalTokens: totalInput + totalOutput,
                 totalRuns: totalRuns,
+                cacheReadTokens: cacheRead,
+                cacheWriteTokens: cacheWrite,
+                reasoningTokens: reasoning,
                 byDay: byDay,
                 byConversation: conversationRows.map(Self.usageBreakdown(from:)),
                 byModel: modelRows.map(Self.usageBreakdown(from:)),
@@ -541,7 +593,10 @@ public actor SQLiteRunStore: RunStore {
             label: row["label"],
             inputTokens: row["input"],
             outputTokens: row["output"],
-            runs: row["runs"]
+            runs: row["runs"],
+            cacheReadTokens: row["cache_read"],
+            cacheWriteTokens: row["cache_write"],
+            reasoningTokens: row["reasoning"]
         )
     }
 }

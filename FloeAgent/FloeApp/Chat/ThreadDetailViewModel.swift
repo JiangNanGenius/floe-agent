@@ -21,6 +21,9 @@ struct ThreadUsageSummary: Equatable {
     var contextTokens: Int
     var contextWindowTokens: Int
     var isEstimatedLive: Bool
+    var cacheReadTokens: Int?
+    var cacheWriteTokens: Int?
+    var reasoningTokens: Int?
 
     var totalTokens: Int { inputTokens + outputTokens }
     var contextFraction: Double {
@@ -165,6 +168,9 @@ final class ThreadDetailViewModel: ObservableObject {
         let records = usageByRun[run.id, default: []]
         let persistedInput = records.reduce(0) { $0 + $1.inputTokens }
         let persistedOutput = records.reduce(0) { $0 + $1.outputTokens }
+        let persistedCacheRead = Self.sumReported(records.map(\.cacheReadTokens))
+        let persistedCacheWrite = Self.sumReported(records.map(\.cacheWriteTokens))
+        let persistedReasoning = Self.sumReported(records.map(\.reasoningTokens))
         let streamedEstimate = Self.estimatedTokens(in: liveStreamedText)
         let currentOutput = max(liveUsage.outputTokens, streamedEstimate)
         let input = isRunning ? persistedInput + liveUsage.inputTokens : persistedInput
@@ -185,8 +191,21 @@ final class ThreadDetailViewModel: ObservableObject {
             outputTokens: output,
             contextTokens: currentContext,
             contextWindowTokens: window,
-            isEstimatedLive: isRunning && streamedEstimate > liveUsage.outputTokens
+            isEstimatedLive: isRunning && streamedEstimate > liveUsage.outputTokens,
+            cacheReadTokens: Self.addReported(persistedCacheRead, isRunning ? liveUsage.cacheReadTokens : nil),
+            cacheWriteTokens: Self.addReported(persistedCacheWrite, isRunning ? liveUsage.cacheWriteTokens : nil),
+            reasoningTokens: Self.addReported(persistedReasoning, isRunning ? liveUsage.reasoningTokens : nil)
         )
+    }
+
+    private static func sumReported(_ values: [Int?]) -> Int? {
+        let reported = values.compactMap { $0 }
+        return reported.isEmpty ? nil : reported.reduce(0, +)
+    }
+
+    private static func addReported(_ lhs: Int?, _ rhs: Int?) -> Int? {
+        guard lhs != nil || rhs != nil else { return nil }
+        return (lhs ?? 0) + (rhs ?? 0)
     }
 
     // MARK: - Loading
@@ -741,11 +760,25 @@ final class ThreadDetailViewModel: ObservableObject {
                 case .stateChanged(let state):
                     self.liveStateName = state.rawValue
                     self.isRunning = ![.completed, .cancelled, .failed, .interrupted].contains(state)
+                case .approvalReviewChanged(let snapshot):
+                    self.liveStateName = snapshot.isEvaluating
+                        ? "reviewingApproval"
+                        : "streamingModel"
+                    self.hasProviderActivity = true
                 case .usageChanged(let usage):
                     self.latestUsage = usage
                     self.liveUsage.inputTokens += usage.inputTokens
                     self.liveUsage.outputTokens += usage.outputTokens
                     self.liveUsage.modelCalls += usage.modelCalls
+                    self.liveUsage.cacheReadTokens = Self.addReported(
+                        self.liveUsage.cacheReadTokens, usage.cacheReadTokens
+                    )
+                    self.liveUsage.cacheWriteTokens = Self.addReported(
+                        self.liveUsage.cacheWriteTokens, usage.cacheWriteTokens
+                    )
+                    self.liveUsage.reasoningTokens = Self.addReported(
+                        self.liveUsage.reasoningTokens, usage.reasoningTokens
+                    )
                     if let cost = usage.costEstimate {
                         self.liveUsage.costEstimate = (self.liveUsage.costEstimate ?? 0) + cost
                     }

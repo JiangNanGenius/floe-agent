@@ -31,6 +31,7 @@ Floe Agent turns a model conversation into a durable task. Each message continue
 - **Approve consequential actions.** Task policies narrow file, network, browser, upload, credential, and remote-execution authority. Sensitive actions still require explicit confirmation.
 - **Resume honestly.** Checkpoints, notifications, and background coordination preserve safe progress. iOS suspension and uncertain side effects are reported instead of hidden.
 - **Extend declaratively.** Skill Creator and Skill Finder install validated instruction and knowledge packages. Skills cannot dynamically load native code or silently grant tools.
+- **Automate with Apple platforms.** App Intents expose immediate and scheduled Floe tasks to Shortcuts, while device-local controls govern Calendar, Reminders, Home, Maps, vision, documents, camera, location, and related integrations.
 
 ## The task model
 
@@ -54,7 +55,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Signed builds are distributed through TestFlight when a testing group is available. The current source targets Floe Agent 1.4.3 (build 34); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) for artifacts that actually completed the release gates. TestFlight access may remain limited while the project is in prerelease.
+Signed builds are distributed through TestFlight when a testing group is available. The current source targets Floe Agent 1.4.5 (build 36); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) for artifacts that actually completed the release gates. TestFlight access may remain limited while the project is in prerelease.
 
 ### Unsigned IPA
 
@@ -141,7 +142,7 @@ Floe Agent does **not** provide a hosted model proxy, Floe account, remote relay
 | Support | [Support](SUPPORT.md) | [支持](SUPPORT.zh-CN.md) |
 | Design | [Design direction](DESIGN.md) | Key terms include Chinese equivalents |
 
-Implementation reports and historical audits are indexed in [`docs/README.md`](docs/README.md). Historical reports describe the state at their recorded commit; they are not current release claims.
+Internal plans, audits, validation notes and release handoffs are intentionally not published in this repository.
 
 ## Project principles
 

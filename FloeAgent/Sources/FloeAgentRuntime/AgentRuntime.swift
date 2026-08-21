@@ -34,12 +34,20 @@ public protocol AgentEventSink: Sendable {
     /// Called after the context engine compacts the conversation, so the UI
     /// can reflect the token reduction.
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompact record: ContextCompactionRecord) async
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didChangeApprovalReview snapshot: ApprovalReviewSnapshot
+    ) async
 }
 
 public extension AgentEventSink {
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompleteAssistantStep text: String) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didConsumeSteer input: RuntimeSteerInput) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompact record: ContextCompactionRecord) async {}
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didChangeApprovalReview snapshot: ApprovalReviewSnapshot
+    ) async {}
 }
 
 /// Input accepted for delivery at a safe model/tool step boundary.
@@ -1050,19 +1058,27 @@ public actor FloeAgentRuntime {
             }
         }
         let decision: ApprovalDecision
-        if !descriptor.isSideEffecting, policy.policyName != "approval-model" {
+        let requiresModelReview = (policy as? any ApprovalReviewRouting)?
+            .requiresModelReview(action) ?? (policy.policyName == "approval-model")
+        if !descriptor.isSideEffecting, !requiresModelReview {
             decision = .allow(scope: Self.approvalScope(for: call), expiresAt: nil)
         } else {
-            // Surface "approval model is deciding" to the UI while the model
-            // takes up to its timeout to classify the action. Without this the
-            // run silently sits in streamingModel with no visible feedback.
-            if policy.policyName == "approval-model" {
-                await emit(.reasoningSummary(.init(text: "正在请审批模型判断此操作…")))
+            if requiresModelReview {
+                await sink?.agentRuntime(
+                    self,
+                    didChangeApprovalReview: .init(toolName: call.toolName, isEvaluating: true)
+                )
             }
             do {
                 decision = try await policy.decide(action)
             } catch {
                 decision = .escalateToHuman(reason: "Policy error: \(error.localizedDescription)")
+            }
+            if requiresModelReview {
+                await sink?.agentRuntime(
+                    self,
+                    didChangeApprovalReview: .init(toolName: call.toolName, isEvaluating: false)
+                )
             }
         }
         logger.info("toolDecision run=\(runID.uuidString) tool=\(call.toolName) policy=\(policy.policyName) decision=\(decision.logLabel)")

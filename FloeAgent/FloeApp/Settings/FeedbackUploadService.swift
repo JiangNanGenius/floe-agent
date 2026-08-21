@@ -100,25 +100,38 @@ enum FeedbackUploadService {
     /// secret in the IPA.
     static func upload(
         _ submission: FeedbackSubmission,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        maximumAttempts: Int = 3
     ) async throws -> FeedbackUploadReceipt {
         let request = try makeRequest(submission)
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw FeedbackUploadError.invalidResponse
+        let attemptLimit = min(max(1, maximumAttempts), 3)
+        for attempt in 0..<attemptLimit {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw FeedbackUploadError.invalidResponse
+            }
+            if http.statusCode == 429 {
+                let serverDelay = retryAfterSeconds(from: http)
+                guard attempt + 1 < attemptLimit else {
+                    throw FeedbackUploadError.rateLimited(retryAfterSeconds: serverDelay)
+                }
+                // Respect a bounded server window. When the header is absent,
+                // use a short exponential delay. Reusing the request preserves
+                // the submission idempotency key, so a lost success response
+                // cannot create duplicate reports.
+                let delay = min(serverDelay ?? (1 << attempt), 30)
+                try await Task.sleep(for: .seconds(delay))
+                continue
+            }
+            guard (200...299).contains(http.statusCode) else {
+                throw FeedbackUploadError.rejected(statusCode: http.statusCode)
+            }
+            guard let reportID = reportID(from: data), !reportID.isEmpty else {
+                throw FeedbackUploadError.invalidResponse
+            }
+            return FeedbackUploadReceipt(reportID: reportID)
         }
-        if http.statusCode == 429 {
-            throw FeedbackUploadError.rateLimited(
-                retryAfterSeconds: retryAfterSeconds(from: http)
-            )
-        }
-        guard (200...299).contains(http.statusCode) else {
-            throw FeedbackUploadError.rejected(statusCode: http.statusCode)
-        }
-        guard let reportID = reportID(from: data), !reportID.isEmpty else {
-            throw FeedbackUploadError.invalidResponse
-        }
-        return FeedbackUploadReceipt(reportID: reportID)
+        throw FeedbackUploadError.invalidResponse
     }
 
     static func retryAfterSeconds(from response: HTTPURLResponse) -> Int? {
@@ -230,6 +243,7 @@ enum FeedbackUploadService {
             forHTTPHeaderField: "Content-Type"
         )
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(submission.id.uuidString, forHTTPHeaderField: "Idempotency-Key")
         // Attach the write token from Keychain so the server accepts the
         // upload. The token is entered once in Settings and never hardcoded.
         if let token = FeedbackTokenStore.readToken() {

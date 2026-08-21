@@ -520,13 +520,28 @@ private struct ThreadUsageFooter: View {
             .foregroundStyle(.secondary)
             if summary.contextWindowTokens > 0 {
                 HStack(spacing: 8) {
-                    ProgressView(value: summary.contextFraction)
+                    Gauge(value: summary.contextFraction) {
+                        Text("上下文")
+                    } currentValueLabel: {
+                        Text("\(Int(summary.contextFraction * 100))%")
+                            .font(.caption2.monospacedDigit())
+                    }
+                    .gaugeStyle(.accessoryCircularCapacity)
+                    .tint(summary.contextFraction > 0.85 ? FloeTheme.pending : FloeTheme.primary)
+                    .frame(width: 34, height: 34)
                     Text("上下文 \(formatted(summary.contextTokens)) / \(formatted(summary.contextWindowTokens))")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
             }
+            HStack(spacing: 12) {
+                Text("缓存读取 \(reported(summary.cacheReadTokens))")
+                Text("缓存写入 \(reported(summary.cacheWriteTokens))")
+                Text("推理 \(reported(summary.reasoningTokens))")
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
         }
         .padding(10)
         .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 10))
@@ -538,6 +553,10 @@ private struct ThreadUsageFooter: View {
             return value.formatted(.number.notation(.compactName))
         }
         return value.formatted()
+    }
+
+    private func reported(_ value: Int?) -> String {
+        value.map(formatted) ?? "未报告"
     }
 }
 

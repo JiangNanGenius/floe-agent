@@ -11,12 +11,6 @@ import UIKit
 import ReplayKit
 import FloeCore
 
-extension Notification.Name {
-    static let floeScreenShareAuthorizationRequested = Notification.Name(
-        "org.floeagent.screen-share-authorization-requested"
-    )
-}
-
 @MainActor
 final class ScreenShareCenter: NSObject, ObservableObject {
     @Published private(set) var isSharing = false
@@ -39,6 +33,11 @@ final class ScreenShareCenter: NSObject, ObservableObject {
     private var framePollTask: Task<Void, Never>?
     private var activeSessionID: UUID?
     private var analysisConsentSessionID: UUID?
+    /// ReplayKit only exposes its system-owned picker view. Keep a tiny host
+    /// in the foreground window long enough to invoke that button directly;
+    /// Floe must not interpose a second instructional sheet before the real
+    /// system confirmation.
+    private var broadcastPickerHost: RPSystemBroadcastPickerView?
 
     private static let latestFrameName = "ScreenFrames/latest.jpg"
     private static let sessionStateName = "ScreenFrames/session.json"
@@ -85,27 +84,7 @@ final class ScreenShareCenter: NSObject, ObservableObject {
         )
         requestedConversationID = conversationID
         startSharing()
-        // Publish on the next main-loop turn. A run may start while SwiftUI is
-        // committing navigation; relying only on the @Published edge can lose
-        // the one-shot request before RootView is ready to present ReplayKit.
-        DispatchQueue.main.async {
-            FloeLogger(category: .app).info(
-                "screenShareAuthorizationPublished conversation=\(conversationID.uuidString)"
-            )
-            NotificationCenter.default.post(
-                name: .floeScreenShareAuthorizationRequested,
-                object: conversationID
-            )
-        }
-    }
-
-    func consumeBroadcastRequest(for conversationID: UUID) -> Bool {
-        guard requestedConversationID == conversationID else { return false }
-        requestedConversationID = nil
-        FloeLogger(category: .app).info(
-            "screenShareAuthorizationPresented conversation=\(conversationID.uuidString)"
-        )
-        return true
+        presentSystemBroadcastConfirmation(conversationID: conversationID)
     }
 
     func stopSharing() {
@@ -120,7 +99,70 @@ final class ScreenShareCenter: NSObject, ObservableObject {
         onGuidanceChanged?(nil, [])
         activeSessionID = nil
         analysisConsentSessionID = nil
+        broadcastPickerHost?.removeFromSuperview()
+        broadcastPickerHost = nil
         removeSharedFrame()
+    }
+
+    /// Opens ReplayKit's real confirmation directly. The request originates
+    /// from the same user action that starts the task; the final broadcast
+    /// decision remains entirely system-owned. If navigation is still being
+    /// committed, wait briefly for a foreground key window instead of showing
+    /// a Floe-owned waiting page that can become stuck.
+    private func presentSystemBroadcastConfirmation(conversationID: UUID) {
+        broadcastPickerHost?.removeFromSuperview()
+        broadcastPickerHost = nil
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            for attempt in 0..<40 {
+                guard self.requestedConversationID == conversationID else { return }
+                if let window = Self.foregroundKeyWindow() {
+                    let picker = RPSystemBroadcastPickerView(frame: CGRect(x: -4, y: -4, width: 2, height: 2))
+                    picker.preferredExtension = Self.screenShareExtensionID
+                    picker.showsMicrophoneButton = false
+                    picker.alpha = 0.01
+                    window.addSubview(picker)
+                    self.broadcastPickerHost = picker
+                    await Task.yield()
+                    if let button = Self.firstButton(in: picker) {
+                        self.requestedConversationID = nil
+                        FloeLogger(category: .app).info(
+                            "screenShareSystemConfirmationTriggered conversation=\(conversationID.uuidString) attempt=\(attempt + 1)"
+                        )
+                        button.sendActions(for: .touchUpInside)
+                        try? await Task.sleep(for: .seconds(1))
+                        picker.removeFromSuperview()
+                        if self.broadcastPickerHost === picker {
+                            self.broadcastPickerHost = nil
+                        }
+                        return
+                    }
+                    picker.removeFromSuperview()
+                    self.broadcastPickerHost = nil
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            self.sharingError = "无法发起系统屏幕共享确认，请重新开始任务后再试。"
+            FloeLogger(category: .app).warning(
+                "screenShareSystemConfirmationUnavailable conversation=\(conversationID.uuidString) attempts=40"
+            )
+        }
+    }
+
+    private static func foregroundKeyWindow() -> UIWindow? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .filter { $0.activationState == .foregroundActive }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)
+    }
+
+    private static func firstButton(in view: UIView) -> UIButton? {
+        if let button = view as? UIButton { return button }
+        for child in view.subviews {
+            if let button = firstButton(in: child) { return button }
+        }
+        return nil
     }
 
     /// Asks the vision model to describe the current screen, then derive

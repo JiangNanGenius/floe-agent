@@ -36,7 +36,7 @@ public struct LocalPythonTool: AgentTool {
 
     public static let name = "exec.localPython"
     public static let toolDescription =
-        "Execute bundled Python 3.13 in Floe's on-device sandbox. To install packages, put PyPI package specs in `packages`; every request is reviewed by the configured Software Package Review Model, then the managed installer accepts only pure-Python platform-independent wheels. Never invoke pip, ensurepip, subprocess, or shell installers inside `script`. Native wheels, .so/.dylib files, URLs, local paths, VCS specs, and install scripts are rejected. Installed packages remain in Floe's sandbox. For quick computation prefer exec.javascript; for a configured SSH host use ssh.execute with python3. Output and time are bounded."
+        "Execute bundled Python 3.13 in Floe's on-device sandbox. To install packages, put top-level PyPI package specs in `packages`; every request first passes the configured Software Package Review Model, then Floe resolves transitive dependencies together in a quarantined staging directory. The atomic managed installer accepts only pure-Python platform-independent wheels, scans every resolved artifact, and rolls back the whole call on failure. Never invoke pip, ensurepip, subprocess, or shell installers inside `script`. Native wheels, .so/.dylib files, URLs, local paths, VCS specs, and install scripts are rejected. Installed packages and verified downloads remain in Floe's sandbox cache. For quick computation prefer exec.javascript; for a configured SSH host use ssh.execute with python3. Output and time are bounded."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -47,7 +47,7 @@ public struct LocalPythonTool: AgentTool {
         "maxOutputBytes": {"type": "integer", "description": "Combined output cap (default 65536, max 262144)"}
         ,"packages": {
           "type": "array",
-          "maxItems": 8,
+          "maxItems": 16,
           "items": {"type": "string", "description": "PyPI name or exact name==version; no URLs, paths, VCS, or native wheels"},
           "description": "Managed pure-Python package installs. All entries are reviewed, including trusted-catalog packages."
         }
@@ -100,8 +100,8 @@ public struct LocalPythonTool: AgentTool {
             )
         }
         let packages = args.packages ?? []
-        guard packages.count <= 8 else {
-            throw FloeError.validationFailed("packages accepts at most 8 entries per call")
+        guard packages.count <= 16 else {
+            throw FloeError.validationFailed("packages accepts at most 16 top-level entries per call")
         }
         let packagePattern = #"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9_,.-]+\])?(?:==[A-Za-z0-9][A-Za-z0-9.*+!_-]*)?$"#
         let expression = try NSRegularExpression(pattern: packagePattern)
@@ -122,19 +122,57 @@ public struct LocalPythonTool: AgentTool {
             let encoded = try JSONEncoder().encode(packages)
             let packageJSON = String(decoding: encoded, as: UTF8.self)
             let installer = """
-                import json, sys
+                import json, sys, os, shutil, tempfile
                 from pip._internal.cli.main import main as _floe_pip
                 _target = next((p for p in sys.path if p.endswith('PythonPackages')), None)
                 if not _target:
                     raise RuntimeError('Managed package directory is unavailable')
                 _specs = json.loads(\(String(reflecting: packageJSON)))
-                _args = ['install', '--disable-pip-version-check', '--no-input', '--no-deps',
+                _parent = os.path.dirname(_target)
+                _stage = tempfile.mkdtemp(prefix='floe-pip-stage-', dir=_parent)
+                _backup = tempfile.mkdtemp(prefix='floe-pip-backup-', dir=_parent)
+                _cache = os.path.join(_parent, 'PythonPackageCache')
+                os.makedirs(_cache, exist_ok=True)
+                _args = ['install', '--disable-pip-version-check', '--no-input',
                          '--only-binary=:all:', '--platform=any', '--implementation=py',
-                         '--abi=none', '--target', _target] + _specs
-                _code = _floe_pip(_args)
-                if _code != 0:
-                    raise RuntimeError(f'Managed package install failed with exit code {_code}')
-                print('managedPackages=' + ','.join(_specs))
+                         '--abi=none', '--cache-dir', _cache, '--target', _stage] + _specs
+                try:
+                    _code = _floe_pip(_args)
+                    if _code != 0:
+                        raise RuntimeError(f'Managed package install failed with exit code {_code}')
+                    _native = []
+                    for _root, _dirs, _files in os.walk(_stage):
+                        for _file in _files:
+                            if _file.lower().endswith(('.so', '.dylib', '.a', '.framework', '.bundle')):
+                                _native.append(os.path.join(_root, _file))
+                    if _native:
+                        raise RuntimeError('Managed package contains prohibited native artifacts')
+                    _installed = []
+                    try:
+                        for _name in os.listdir(_stage):
+                            _source = os.path.join(_stage, _name)
+                            _destination = os.path.join(_target, _name)
+                            if os.path.lexists(_destination):
+                                shutil.move(_destination, os.path.join(_backup, _name))
+                            shutil.move(_source, _destination)
+                            _installed.append(_name)
+                    except BaseException:
+                        for _name in _installed:
+                            _destination = os.path.join(_target, _name)
+                            if os.path.isdir(_destination): shutil.rmtree(_destination, ignore_errors=True)
+                            elif os.path.lexists(_destination): os.remove(_destination)
+                        for _name in os.listdir(_backup):
+                            shutil.move(os.path.join(_backup, _name), os.path.join(_target, _name))
+                        raise
+                    _distributions = sorted(
+                        _name[:-10] for _name in os.listdir(_stage)
+                        if _name.lower().endswith('.dist-info')
+                    )
+                    print('managedPackages=' + ','.join(_specs))
+                    print('resolvedDistributions=' + ','.join(_distributions))
+                finally:
+                    shutil.rmtree(_stage, ignore_errors=True)
+                    shutil.rmtree(_backup, ignore_errors=True)
                 """
             let installRequest = ScriptExecutionRequest(
                 script: installer,

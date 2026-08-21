@@ -12,6 +12,7 @@ import SwiftUI
 import UIKit
 import FloeWorkspace
 import FloeMarkdown
+import FloeTools
 
 /// Edits one workspace text file. Save goes through the guarded service
 /// with optimistic-concurrency checks. Markdown files gain a live preview
@@ -34,11 +35,21 @@ struct TextFileEditorView: View {
     @State private var isSaving = false
     @State private var isPreviewing = false
     @State private var selectedRange = NSRange(location: 0, length: 0)
+    @State private var showsFind = false
+    @State private var findText = ""
+    @State private var replacementText = ""
+    @State private var editorCommand = CodeEditorCommand()
+    @State private var runOutput: CodeRunOutput?
+    @State private var isRunning = false
 
     /// Whether this file is Markdown and should offer preview + formatting.
     private var isMarkdown: Bool {
         let ext = (relativePath as NSString).pathExtension.lowercased()
         return ext == "md" || ext == "markdown"
+    }
+
+    private var codeLanguage: CodeLanguage? {
+        CodeLanguage(relativePath: relativePath)
     }
 
     var body: some View {
@@ -58,16 +69,33 @@ struct TextFileEditorView: View {
                     }
                     .background(FloeTheme.readingSurface)
                 } else {
-                    MarkdownAwareTextView(
-                        text: $text,
-                        selectedRange: $selectedRange
-                    )
+                    Group {
+                        if let codeLanguage {
+                            StructuredCodeTextView(
+                                text: $text,
+                                selectedRange: $selectedRange,
+                                language: codeLanguage,
+                                command: $editorCommand
+                            )
+                        } else {
+                            MarkdownAwareTextView(
+                                text: $text,
+                                selectedRange: $selectedRange
+                            )
+                        }
+                    }
                     .background(FloeTheme.readingSurface)
                     .padding(.horizontal, 8)
                 }
             }
+            if codeLanguage != nil, showsFind {
+                findReplaceBar
+            }
             if isMarkdown, !isPreviewing {
                 formatToolbar
+            }
+            if let language = codeLanguage {
+                codeStatusBar(language)
             }
         }
         .background(FloeTheme.readingSurface)
@@ -86,6 +114,39 @@ struct TextFileEditorView: View {
                 Button("inspector.editor.cancel") { dismiss() }
                     .frame(minHeight: FloeTheme.minimumTarget)
             }
+            if let language = codeLanguage {
+                ToolbarItemGroup(placement: .topBarLeading) {
+                    Button {
+                        showsFind.toggle()
+                    } label: {
+                        Label("查找替换", systemImage: "magnifyingglass")
+                    }
+                    Menu {
+                        ForEach(codeSymbols(language), id: \.offset) { symbol in
+                            Button(symbol.label) { select(offset: symbol.offset) }
+                        }
+                    } label: {
+                        Label("符号", systemImage: "list.bullet.indent")
+                    }
+                    .disabled(codeSymbols(language).isEmpty)
+                    Button {
+                        editorCommand.send(.undo)
+                    } label: {
+                        Label("撤销", systemImage: "arrow.uturn.backward")
+                    }
+                    Button {
+                        editorCommand.send(.redo)
+                    } label: {
+                        Label("重做", systemImage: "arrow.uturn.forward")
+                    }
+                    Button {
+                        Task { await run(language) }
+                    } label: {
+                        if isRunning { ProgressView() } else { Label("运行", systemImage: "play.fill") }
+                    }
+                    .disabled(isRunning || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
             ToolbarItem(placement: .confirmationAction) {
                 Button {
                     Task { await save() }
@@ -99,6 +160,24 @@ struct TextFileEditorView: View {
                 .disabled(!isDirty || isSaving)
                 .frame(minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("inspector.editor.save")
+            }
+        }
+        .sheet(item: $runOutput) { output in
+            NavigationStack {
+                ScrollView {
+                    Text(output.text)
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                }
+                .navigationTitle(output.title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("完成") { runOutput = nil }
+                    }
+                }
             }
         }
         .task { await load() }
@@ -119,6 +198,123 @@ struct TextFileEditorView: View {
             Button("action.done", role: .cancel) { saveError = nil }
         } message: { message in
             Text(message)
+        }
+    }
+
+    private var findReplaceBar: some View {
+        VStack(spacing: 6) {
+            HStack {
+                TextField("查找", text: $findText)
+                    .textFieldStyle(.roundedBorder)
+                Button("上一个") { find(backwards: true) }.disabled(findText.isEmpty)
+                Button("下一个") { find(backwards: false) }.disabled(findText.isEmpty)
+            }
+            HStack {
+                TextField("替换为", text: $replacementText)
+                    .textFieldStyle(.roundedBorder)
+                Button("替换") { replaceCurrent() }.disabled(findText.isEmpty)
+                Button("全部替换") { replaceAll() }.disabled(findText.isEmpty)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(FloeTheme.chromeMaterial)
+    }
+
+    private func codeStatusBar(_ language: CodeLanguage) -> some View {
+        HStack(spacing: 12) {
+            Label(language.displayName, systemImage: language.icon)
+            Text(cursorDescription)
+            Spacer()
+            if isDirty {
+                Label("未保存", systemImage: "circle.fill")
+                    .foregroundStyle(FloeTheme.pending)
+            } else {
+                Label("已保存", systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(FloeTheme.Typography.metadata)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(FloeTheme.chromeMaterial)
+    }
+
+    private var cursorDescription: String {
+        let prefix = (text as NSString).substring(to: min(selectedRange.location, (text as NSString).length))
+        let lines = prefix.components(separatedBy: "\n")
+        return "行 \(lines.count)，列 \((lines.last?.utf16.count ?? 0) + 1)"
+    }
+
+    private func select(offset: Int) {
+        selectedRange = NSRange(location: min(offset, (text as NSString).length), length: 0)
+        editorCommand.send(.select(selectedRange))
+    }
+
+    private func find(backwards: Bool) {
+        guard !findText.isEmpty else { return }
+        let nsText = text as NSString
+        let start = backwards ? 0 : min(NSMaxRange(selectedRange), nsText.length)
+        let length = backwards ? min(selectedRange.location, nsText.length) : nsText.length - start
+        var options: NSString.CompareOptions = [.caseInsensitive]
+        if backwards { options.insert(.backwards) }
+        var range = nsText.range(of: findText, options: options, range: NSRange(location: start, length: length))
+        if range.location == NSNotFound {
+            range = nsText.range(of: findText, options: options, range: NSRange(location: 0, length: nsText.length))
+        }
+        guard range.location != NSNotFound else { return }
+        selectedRange = range
+        editorCommand.send(.select(range))
+    }
+
+    private func replaceCurrent() {
+        let nsText = text as NSString
+        if selectedRange.length > 0,
+           nsText.substring(with: selectedRange).localizedCaseInsensitiveCompare(findText) == .orderedSame {
+            replaceRange(selectedRange, with: replacementText)
+            selectedRange = NSRange(location: selectedRange.location + (replacementText as NSString).length, length: 0)
+        } else {
+            find(backwards: false)
+        }
+    }
+
+    private func replaceAll() {
+        guard !findText.isEmpty else { return }
+        text = text.replacingOccurrences(of: findText, with: replacementText, options: .caseInsensitive)
+    }
+
+    private func codeSymbols(_ language: CodeLanguage) -> [(offset: Int, label: String)] {
+        language.symbols(in: text)
+    }
+
+    private func run(_ language: CodeLanguage) async {
+        isRunning = true
+        defer { isRunning = false }
+        let toolName = language == .python ? "exec.localPython" : "exec.javascript"
+        guard let runner = ToolRunnerRegistry.shared.runner(named: toolName) else {
+            runOutput = CodeRunOutput(title: "无法运行", text: "此构建未包含 \(language.displayName) 运行时。")
+            return
+        }
+        do {
+            let arguments = try JSONSerialization.data(withJSONObject: [
+                "script": text,
+                "timeout": 30,
+                "maxOutputBytes": 262_144
+            ])
+            let context = ToolContext(
+                runID: UUID(),
+                approvalGrantID: UUID(),
+                scope: .local,
+                workspaceRootURL: center.currentRootURL,
+                cancellation: CancellationToken()
+            )
+            let output = try await runner.execute(argumentsJSON: arguments, context: context)
+            runOutput = CodeRunOutput(
+                title: output.exitStatus == 0 ? "运行完成" : "运行失败",
+                text: output.summary
+            )
+        } catch {
+            runOutput = CodeRunOutput(title: "运行失败", text: error.localizedDescription)
         }
     }
 
@@ -295,6 +491,229 @@ private struct MarkdownAwareTextView: UIViewRepresentable {
         func textViewDidChangeSelection(_ textView: UITextView) {
             parent.selectedRange = textView.selectedRange
         }
+    }
+}
+
+private enum CodeLanguage: Equatable {
+    case python
+    case javascript
+
+    init?(relativePath: String) {
+        switch (relativePath as NSString).pathExtension.lowercased() {
+        case "py": self = .python
+        case "js", "mjs", "cjs": self = .javascript
+        default: return nil
+        }
+    }
+
+    var displayName: String { self == .python ? "Python" : "JavaScript" }
+    var icon: String { self == .python ? "chevron.left.forwardslash.chevron.right" : "curlybraces" }
+
+    var keywords: [String] {
+        switch self {
+        case .python:
+            return ["and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "False", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True", "try", "while", "with", "yield"]
+        case .javascript:
+            return ["async", "await", "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete", "do", "else", "export", "extends", "false", "finally", "for", "from", "function", "if", "import", "in", "instanceof", "let", "new", "null", "of", "return", "static", "super", "switch", "this", "throw", "true", "try", "typeof", "undefined", "var", "void", "while", "with", "yield"]
+        }
+    }
+
+    func symbols(in source: String) -> [(offset: Int, label: String)] {
+        let pattern: String
+        switch self {
+        case .python:
+            pattern = #"(?m)^\s*(?:async\s+)?(class|def)\s+([A-Za-z_][A-Za-z0-9_]*)"#
+        case .javascript:
+            pattern = #"(?m)^\s*(?:(?:export\s+)?(?:async\s+)?(class|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)|(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:\([^\n]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>)"#
+        }
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let nsSource = source as NSString
+        return expression.matches(in: source, range: NSRange(location: 0, length: nsSource.length)).compactMap { match in
+            let kindRange = match.range(at: 1)
+            let namedRange = match.range(at: 2).location != NSNotFound ? match.range(at: 2) : match.range(at: 3)
+            guard namedRange.location != NSNotFound else { return nil }
+            let name = nsSource.substring(with: namedRange)
+            let kind = kindRange.location == NSNotFound ? "function" : nsSource.substring(with: kindRange)
+            return (match.range.location, "\(kind) \(name)")
+        }
+    }
+}
+
+private struct CodeRunOutput: Identifiable {
+    let id = UUID()
+    var title: String
+    var text: String
+}
+
+private struct CodeEditorCommand: Equatable {
+    enum Kind: Equatable {
+        case none
+        case undo
+        case redo
+        case select(NSRange)
+    }
+    var revision = 0
+    var kind: Kind = .none
+
+    mutating func send(_ kind: Kind) {
+        revision += 1
+        self.kind = kind
+    }
+}
+
+/// UIKit-backed code editor with a TextKit line-number gutter and bounded
+/// syntax highlighting. Editing remains native, so keyboard selection,
+/// hardware-keyboard shortcuts and the undo manager keep standard behavior.
+private struct StructuredCodeTextView: UIViewRepresentable {
+    @Binding var text: String
+    @Binding var selectedRange: NSRange
+    let language: CodeLanguage
+    @Binding var command: CodeEditorCommand
+
+    func makeUIView(context: Context) -> LineNumberTextView {
+        let view = LineNumberTextView()
+        view.backgroundColor = .clear
+        view.font = .monospacedSystemFont(ofSize: 15, weight: .regular)
+        view.autocorrectionType = .no
+        view.autocapitalizationType = .none
+        view.smartDashesType = .no
+        view.smartQuotesType = .no
+        view.smartInsertDeleteType = .no
+        view.isEditable = true
+        view.isScrollEnabled = true
+        view.alwaysBounceVertical = true
+        view.delegate = context.coordinator
+        view.text = text
+        context.coordinator.highlight(view)
+        return view
+    }
+
+    func updateUIView(_ view: LineNumberTextView, context: Context) {
+        if view.text != text {
+            let selection = view.selectedRange
+            view.text = text
+            context.coordinator.highlight(view)
+            view.selectedRange = NSRange(location: min(selection.location, (text as NSString).length), length: 0)
+        }
+        if context.coordinator.lastCommandRevision != command.revision {
+            context.coordinator.lastCommandRevision = command.revision
+            switch command.kind {
+            case .none: break
+            case .undo: view.undoManager?.undo()
+            case .redo: view.undoManager?.redo()
+            case .select(let range):
+                view.selectedRange = range
+                view.scrollRangeToVisible(range)
+                view.becomeFirstResponder()
+            }
+        }
+        view.setNeedsDisplay()
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: StructuredCodeTextView
+        var isHighlighting = false
+        var lastCommandRevision = 0
+
+        init(_ parent: StructuredCodeTextView) { self.parent = parent }
+
+        func textViewDidChange(_ textView: UITextView) {
+            guard !isHighlighting else { return }
+            parent.text = textView.text
+            parent.selectedRange = textView.selectedRange
+            if let view = textView as? LineNumberTextView { highlight(view) }
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            parent.selectedRange = textView.selectedRange
+        }
+
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            (scrollView as? LineNumberTextView)?.setNeedsDisplay()
+        }
+
+        func highlight(_ view: LineNumberTextView) {
+            guard !isHighlighting else { return }
+            isHighlighting = true
+            defer { isHighlighting = false }
+            let source = view.text ?? ""
+            let selection = view.selectedRange
+            let full = NSRange(location: 0, length: (source as NSString).length)
+            let attributed = NSMutableAttributedString(
+                string: source,
+                attributes: [
+                    .font: UIFont.monospacedSystemFont(ofSize: 15, weight: .regular),
+                    .foregroundColor: UIColor.label
+                ]
+            )
+            func apply(_ pattern: String, color: UIColor, options: NSRegularExpression.Options = []) {
+                guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return }
+                regex.enumerateMatches(in: source, range: full) { match, _, _ in
+                    if let range = match?.range { attributed.addAttribute(.foregroundColor, value: color, range: range) }
+                }
+            }
+            let words = parent.language.keywords.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
+            apply("\\b(?:\(words))\\b", color: .systemPurple)
+            apply(#"\b(?:0[xX][0-9a-fA-F]+|\d+(?:\.\d+)?)\b"#, color: .systemBlue)
+            apply(#"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'"#, color: .systemRed)
+            if parent.language == .python {
+                apply(#"(?m)#.*$"#, color: .systemGreen)
+            } else {
+                apply(#"(?m)//.*$|/\*[\s\S]*?\*/"#, color: .systemGreen)
+            }
+            view.attributedText = attributed
+            view.selectedRange = selection
+            view.setNeedsDisplay()
+        }
+    }
+}
+
+private final class LineNumberTextView: UITextView {
+    private let gutterWidth: CGFloat = 44
+
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        super.init(frame: frame, textContainer: textContainer)
+        textContainerInset = UIEdgeInsets(top: 12, left: gutterWidth + 8, bottom: 12, right: 12)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        textContainerInset = UIEdgeInsets(top: 12, left: gutterWidth + 8, bottom: 12, right: 12)
+    }
+
+    override func draw(_ rect: CGRect) {
+        super.draw(rect)
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        context.saveGState()
+        UIColor.secondarySystemBackground.setFill()
+        context.fill(CGRect(x: contentOffset.x, y: rect.minY, width: gutterWidth, height: rect.height))
+
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: bounds, in: textContainer)
+        var glyphIndex = glyphRange.location
+        while glyphIndex < NSMaxRange(glyphRange) {
+            var lineGlyphRange = NSRange()
+            let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &lineGlyphRange)
+            let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
+            let prefix = (text as NSString).substring(to: min(charIndex, (text as NSString).length))
+            let line = prefix.reduce(1) { $1 == "\n" ? $0 + 1 : $0 }
+            let value = "\(line)" as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: UIColor.secondaryLabel
+            ]
+            let size = value.size(withAttributes: attributes)
+            value.draw(
+                at: CGPoint(
+                    x: contentOffset.x + gutterWidth - size.width - 7,
+                    y: fragment.minY + textContainerInset.top
+                ),
+                withAttributes: attributes
+            )
+            glyphIndex = NSMaxRange(lineGlyphRange)
+        }
+        context.restoreGState()
     }
 }
 #endif

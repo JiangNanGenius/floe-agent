@@ -26,8 +26,18 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Floe accesses calendars only when you ask the agent to read or edit events.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Floe opens the camera only when you choose to capture an image for a task.</string>
+	<key>NSHomeKitUsageDescription</key>
+	<string>Floe accesses your Home only when you enable Home tools and request an automation action.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Floe uses your location only for a map or location task you request.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Floe uses the microphone only while you dictate a message.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Floe accesses reminders only when you ask the agent to read or edit them.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Floe converts your speech into text for the message composer.</string>
 	<key>UIBackgroundModes</key>

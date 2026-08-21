@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide describes Floe Agent 1.2.x. Labels may vary slightly with the system language and the configured provider.
+This guide describes Floe Agent 1.4.5. Labels may vary slightly with the system language and the configured provider.
 
 ## 1. Install safely
 
@@ -97,26 +97,38 @@ Leaving a task screen does not cancel its Run. Floe records checkpoints at model
 
 iOS scheduling and background execution are best effort. A notification or Live Activity opens its target task; ordinary cold launch still opens New Task. Do not assume an SSH, VNC, browser, or model stream stayed connected while iOS suspended the app.
 
-## 11. Install and create Skills
+## 11. Apple capabilities, Shortcuts and automation
+
+Open **Settings → Apple Capabilities** to decide which compiled integrations Floe may advertise to the Agent. Calendar, Reminders, Home, Maps, Web, Watch status, vision, mail composition, documents/PDF, camera, location, Shortcuts and automatic tasks are independently switchable. These device-local switches do not grant OS permission; iOS still asks on first real use, and denial must not block the rest of a task.
+
+Floe publishes **Run Floe Task** and **Schedule Floe Task** App Intents. Add **Run Floe Task** to a Shortcuts personal automation for a system time, Focus, arrival or other exact Shortcuts trigger. Floe's own schedule is durable but uses best-effort iOS background refresh, so its wake time is not guaranteed. The immediate intent starts a normal durable task with the default Agent model without opening Floe.
+
+## 12. Local Python, packages and code editing
+
+Signed builds include bounded CPython 3.13. The managed package interface may download dependencies into quarantine, but activates only pure-Python `py3-none-any` wheels after hash verification, static inspection and package review. Native extensions, Mach-O/ELF payloads, dynamic libraries, subprocess execution and sandbox escape remain unavailable. Repeated direct `pip`, shell or `subprocess` attempts are rejected with a machine-readable explanation.
+
+Open Python, JavaScript, MJS or CJS files from the workspace to use the structured editor with line numbers, syntax highlighting, search/replace, symbols, undo/redo and bounded local execution where supported.
+
+## 13. Install and create Skills
 
 - **Skill Creator** builds a local declarative instruction package.
 - **Skill Finder** downloads an HTTPS candidate, uses a selected model to normalize it for iOS, then runs deterministic validation and compatibility checks.
 
 Only instruction-only or read-only low-risk packages can install automatically. Scripts, network/browser access, writes, remote execution, credentials, uploads, capability expansion, and replacements require user confirmation. Scripts are visible source recipes; the App Store build does not dynamically execute them as local plugins.
 
-## 12. Troubleshoot
+## 14. Troubleshoot
 
 - **Model not configured:** add a provider and select a default Agent model.
 - **Vision unavailable:** select a provider/model that advertises and implements image input.
 - **Task interrupted after backgrounding:** reopen the task and use the offered safe recovery action.
 - **Browser says `stale`:** observe the page again before interacting.
 - **Remote tool unavailable:** confirm the host, SSH authorization, task permission, and network path.
-- **Remote Python unavailable:** select a trusted SSH host with `python3`; on-device Python is intentionally disabled in the App Store build.
+- **A Python package will not activate:** confirm it is a pure-Python universal wheel. Packages containing native extensions remain download-and-inspect only; use a trusted SSH host for native dependencies.
 - **Voice fails or exits:** check microphone and speech-recognition permissions, audio route, and whether another app owns the input session.
 
 Export a redacted diagnostics report from **Settings → Privacy & Security** when filing a reproducible bug. See [Support](../SUPPORT.md) for the report checklist and [Security](../SECURITY.md) for private vulnerability reporting.
 
-## 13. Archive tasks and sync credentials
+## 15. Archive tasks and sync credentials
 
 Swipe a task to archive it. Deletion never runs as a full-swipe action and requires confirmation. Use **Task Center → Archived** to restore multiple tasks or delete selected archived tasks.
 

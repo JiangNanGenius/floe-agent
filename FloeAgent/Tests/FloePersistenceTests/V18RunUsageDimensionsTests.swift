@@ -87,7 +87,10 @@ struct V18RunUsageDimensionsTests {
         try await runStore.recordUsage(RunUsageRecord(
             runID: first.run.id,
             inputTokens: 100,
-            outputTokens: 30
+            outputTokens: 30,
+            cacheReadTokens: 40,
+            cacheWriteTokens: 10,
+            reasoningTokens: 5
         ))
         try await runStore.recordUsage(RunUsageRecord(
             runID: second.run.id,
@@ -98,26 +101,38 @@ struct V18RunUsageDimensionsTests {
         let stats = try await runStore.usageStatistics()
         #expect(stats.totalTokens == 200)
         #expect(stats.totalRuns == 2)
+        #expect(stats.cacheReadTokens == 40)
+        #expect(stats.cacheWriteTokens == 10)
+        #expect(stats.reasoningTokens == 5)
         #expect(stats.byConversation == [UsageBreakdown(
             id: first.conversation.id.uuidString,
             label: "图片任务",
             inputTokens: 150,
             outputTokens: 50,
-            runs: 2
+            runs: 2,
+            cacheReadTokens: 40,
+            cacheWriteTokens: 10,
+            reasoningTokens: 5
         )])
         #expect(stats.byModel == [UsageBreakdown(
             id: modelID.uuidString,
             label: "qwen-vl",
             inputTokens: 150,
             outputTokens: 50,
-            runs: 2
+            runs: 2,
+            cacheReadTokens: 40,
+            cacheWriteTokens: 10,
+            reasoningTokens: 5
         )])
         #expect(stats.byProvider == [UsageBreakdown(
             id: providerID.uuidString,
             label: "DashScope",
             inputTokens: 150,
             outputTokens: 50,
-            runs: 2
+            runs: 2,
+            cacheReadTokens: 40,
+            cacheWriteTokens: 10,
+            reasoningTokens: 5
         )])
     }
 }

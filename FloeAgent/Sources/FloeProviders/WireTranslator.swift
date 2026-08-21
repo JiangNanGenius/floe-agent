@@ -84,7 +84,9 @@ public enum WireTranslator {
             if let usage {
                 events.append(.usage(AgentEvent.UsageReport(
                     inputTokens: usage.inputTokens,
-                    outputTokens: usage.outputTokens
+                    outputTokens: usage.outputTokens,
+                    cacheReadTokens: usage.inputTokenDetails?.cachedTokens,
+                    reasoningTokens: usage.outputTokenDetails?.reasoningTokens
                 )))
             }
             events.append(.completed(AgentEvent.CompletionInfo(stopReason: .endTurn)))
@@ -148,7 +150,9 @@ public enum WireTranslator {
         if let usage = chunk.usage {
             events.append(.usage(AgentEvent.UsageReport(
                 inputTokens: usage.promptTokens,
-                outputTokens: usage.completionTokens
+                outputTokens: usage.completionTokens,
+                cacheReadTokens: usage.promptTokenDetails?.cachedTokens,
+                reasoningTokens: usage.completionTokenDetails?.reasoningTokens
             )))
         }
 
@@ -224,7 +228,9 @@ public enum WireTranslator {
             if let usage {
                 events.append(.usage(AgentEvent.UsageReport(
                     inputTokens: usage.inputTokens,
-                    outputTokens: usage.outputTokens
+                    outputTokens: usage.outputTokens,
+                    cacheReadTokens: usage.cacheReadInputTokens,
+                    cacheWriteTokens: usage.cacheCreationInputTokens
                 )))
             }
             if let stopReason {

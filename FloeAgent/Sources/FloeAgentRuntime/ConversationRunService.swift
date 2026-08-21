@@ -99,6 +99,7 @@ public actor ConversationRunService {
     private var recoveryPointTask: Task<Void, Never>?
     private var hasProviderActivity = false
     private var latestState: AgentState = .idle
+    private var isReviewingApproval = false
     /// Execution start times keyed by tool call ID, captured from the
     /// `executingTool` transition (`ExecutingInfo.startedAt`) so the
     /// mirrored toolResult event can carry a `durationMs` payload without
@@ -235,6 +236,9 @@ public actor ConversationRunService {
         forwarder.onCompaction = { [weak self] record in
             await self?.handleCompaction(record)
         }
+        forwarder.onApprovalReview = { [weak self] snapshot in
+            await self?.handleApprovalReview(snapshot)
+        }
     }
 
     /// Current live snapshot for the UI.
@@ -248,7 +252,7 @@ public actor ConversationRunService {
         return Snapshot(
             runID: runID,
             conversationID: conversationID,
-            stateName: latestState.name,
+            stateName: isReviewingApproval ? "reviewingApproval" : latestState.name,
             streamedText: streamedText,
             reasoningText: reasoningText,
             hasProviderActivity: hasProviderActivity,
@@ -415,6 +419,14 @@ public actor ConversationRunService {
         eventChannel.yield(.contextCompacted(record))
     }
 
+    private func handleApprovalReview(_ snapshot: ApprovalReviewSnapshot) async {
+        isReviewingApproval = snapshot.isEvaluating
+        eventChannel.yield(.approvalReviewChanged(snapshot))
+        logger.info(
+            "approvalReviewState run=\(runID.uuidString) tool=\(snapshot.toolName) evaluating=\(snapshot.isEvaluating)"
+        )
+    }
+
     private func handleTransition(_ state: AgentState) async {
         latestState = state
         if case .verifying = state {
@@ -559,12 +571,18 @@ public actor ConversationRunService {
                 inputTokens: report.inputTokens,
                 outputTokens: report.outputTokens,
                 modelCalls: 1,
+                cacheReadTokens: report.cacheReadTokens,
+                cacheWriteTokens: report.cacheWriteTokens,
+                reasoningTokens: report.reasoningTokens,
                 costEstimate: report.costEstimate
             )))
             try? await runStore.recordUsage(RunUsageRecord(
                 runID: runID,
                 inputTokens: report.inputTokens,
                 outputTokens: report.outputTokens,
+                cacheReadTokens: report.cacheReadTokens,
+                cacheWriteTokens: report.cacheWriteTokens,
+                reasoningTokens: report.reasoningTokens,
                 costEstimate: report.costEstimate.map { "\($0)" }
             ))
         case .error(let error):
@@ -595,6 +613,7 @@ public actor ConversationRunService {
                     runID: runID,
                     inputTokens: Self.estimatedTokens(in: inputText),
                     outputTokens: Self.estimatedTokens(in: streamedText),
+                    isEstimated: true,
                     costEstimate: nil
                 )
                 try? await runStore.recordUsage(estimated)
@@ -1041,6 +1060,7 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
     var onAssistantStep: (@Sendable (String) async -> Void)?
     var onSteerConsumed: (@Sendable (RuntimeSteerInput) async -> Void)?
     var onCompaction: (@Sendable (ContextCompactionRecord) async -> Void)?
+    var onApprovalReview: (@Sendable (ApprovalReviewSnapshot) async -> Void)?
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {
         await onTransition?(state)
@@ -1060,5 +1080,12 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompact record: ContextCompactionRecord) async {
         await onCompaction?(record)
+    }
+
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didChangeApprovalReview snapshot: ApprovalReviewSnapshot
+    ) async {
+        await onApprovalReview?(snapshot)
     }
 }

@@ -22,6 +22,7 @@ enum RunStateLocalizer {
         switch stateName {
         case "preparing", "idle": "state.preparing"
         case "streamingModel": "state.streaming"
+        case "reviewingApproval": "审批模型正在审核…"
         case "verifying": "state.verifying"
         case "executingTool": "state.executing_tool"
         case "waitingApproval": "state.waiting_approval"
@@ -36,7 +37,7 @@ enum RunStateLocalizer {
     /// Semantic color for a machine state name (§6.2 mapping table).
     static func color(for stateName: String) -> Color {
         switch stateName {
-        case "preparing", "idle", "streamingModel", "executingTool", "verifying":
+        case "preparing", "idle", "streamingModel", "reviewingApproval", "executingTool", "verifying":
             FloeTheme.primary
         case "waitingApproval", "compacting", "checkpointed", "paused", "interrupted":
             FloeTheme.pending
@@ -57,7 +58,7 @@ enum RunStateLocalizer {
     static func isLoading(stateName: String, hasError: Bool) -> Bool {
         if hasError { return false }
         switch stateName {
-        case "preparing", "streamingModel", "executingTool", "cancelling":
+        case "preparing", "streamingModel", "reviewingApproval", "executingTool", "cancelling":
             return true
         default:
             return false

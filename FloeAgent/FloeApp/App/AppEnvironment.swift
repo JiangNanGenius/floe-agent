@@ -214,6 +214,7 @@ final class AppEnvironment: ObservableObject {
             localPythonService: localPythonService,
             sshCommandService: sshCommandService
         )
+        FloeShortcutsRuntime.shared.install(environment: self)
     }
 
     /// Registers every tool the agent can see, in one place and in a
@@ -233,10 +234,14 @@ final class AppEnvironment: ObservableObject {
         // the independently configured auxiliary models. These must be in
         // the agent catalog, not UI-only.
         registerRemoteImageTools(center: filesCenter)
+        // Public Apple-framework integrations. Device-local settings filter
+        // these descriptors before each provider request.
+        registerAppleSystemTools(database: database)
         // Execution tools (JS, local Python, SSH, HTTP, LAN scan, OCR, barcode).
         registerExecutionTools(
             localPythonService: localPythonService,
-            sshCommandService: sshCommandService
+            sshCommandService: sshCommandService,
+            includeOnDeviceJavaScript: true
         )
         // Browser automation.
         registerBrowserTools(center: browserCenter)
