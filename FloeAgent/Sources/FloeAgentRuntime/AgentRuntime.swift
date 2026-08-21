@@ -267,6 +267,7 @@ public actor FloeAgentRuntime {
     private var toolStepCount = 0
     private var contextOverflowRecoveryCount = 0
     private var loopGuard = ToolLoopGuard()
+    private var executionLedger = HarnessExecutionLedger()
     private var forcedStopReason: AgentEvent.StopReason?
     private var isFinalizingWithoutTools = false
     /// Structured logging for run diagnostics (state transitions, approval
@@ -687,6 +688,10 @@ public actor FloeAgentRuntime {
         if let pressure {
             legacyMessages.append((role: "system", content: pressure))
             contentMessages.append(ProviderMessage(role: "system", content: [.text(pressure)]))
+        }
+        if let ledger = executionLedger.promptBlock() {
+            legacyMessages.append((role: "system", content: ledger))
+            contentMessages.append(ProviderMessage(role: "system", content: [.text(ledger)]))
         }
         if configuration.model.capabilities.contains(.vision) {
             let evidence = pendingToolResults.flatMap(\.artifacts)
@@ -1432,6 +1437,7 @@ public actor FloeAgentRuntime {
     /// model turn.
     private func resumeStream(with result: ToolResult, after call: ToolCall) async {
         pendingToolResults.append(result)
+        executionLedger.record(call: call, result: result)
         if let guardrail = loopGuard.record(call: call, result: result) {
             if guardrail.shouldStop {
                 await beginForcedFinalization(with: nil, stopReason: .noProgress)
@@ -1697,6 +1703,8 @@ private struct ToolLoopGuard {
     private var sameToolFailureCount = 0
     private var previousProgressFingerprint: String?
     private var idempotentNoProgressCount = 0
+    private var globalOutcomeCounts: [String: Int] = [:]
+    private var globalFailedCallCounts: [String: Int] = [:]
 
     mutating func record(
         call: ToolCall,
@@ -1709,6 +1717,11 @@ private struct ToolLoopGuard {
         let exact = "\(call.toolName)|\(arguments)|\(result.status.rawValue)|\(observableOutput)"
         let progress = "\(call.toolName)|\(arguments)|\(observableOutput)"
         let failed = result.status != .ok
+        let callFingerprint = "\(call.toolName)|\(arguments)"
+        globalOutcomeCounts[exact, default: 0] += 1
+        if failed {
+            globalFailedCallCounts[callFingerprint, default: 0] += 1
+        }
 
         if failed, exact == previousExactFingerprint {
             exactFailureCount += 1
@@ -1731,13 +1744,13 @@ private struct ToolLoopGuard {
             idempotentNoProgressCount = 1
         }
 
-        if exactFailureCount >= 3 {
+        if globalOutcomeCounts[exact, default: 0] >= 5 {
             return ToolLoopGuardrailDecision(
                 shouldStop: true,
-                message: "The same tool call failed three times with the same result; stop retrying and choose a different approach."
+                message: "The same tool call produced the same result five times in this activation; stop retrying and synthesize or choose a genuinely different approach."
             )
         }
-        if sameToolFailureCount >= 4 {
+        if globalFailedCallCounts[callFingerprint, default: 0] >= 4 || sameToolFailureCount >= 4 {
             return ToolLoopGuardrailDecision(
                 shouldStop: true,
                 message: "The same tool continued failing without a successful alternative."
@@ -1749,10 +1762,10 @@ private struct ToolLoopGuard {
                 message: "Repeated idempotent calls produced no observable progress."
             )
         }
-        if exactFailureCount == 2 {
+        if globalOutcomeCounts[exact, default: 0] == 2 {
             return ToolLoopGuardrailDecision(
                 shouldStop: false,
-                message: "This exact call already failed twice; change the approach instead of retrying it."
+                message: "This exact call already produced the same result twice in this activation; do not repeat it again."
             )
         }
         if sameToolFailureCount == 3 {

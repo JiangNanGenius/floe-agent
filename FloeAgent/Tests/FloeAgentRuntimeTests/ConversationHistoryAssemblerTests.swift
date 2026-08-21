@@ -58,6 +58,8 @@ struct ConversationHistoryAssemblerTests {
         #expect(history[0].role == "system")
         #expect(history[0].content.contains("sourceMessageIDs="))
         #expect(history[0].content.contains("sourceDigest="))
+        #expect(history[0].content.contains("User requests and corrections"))
+        #expect(history[0].content.contains("resume the latest unfinished request directly"))
         #expect(history[1].content == "message-4")
     }
 

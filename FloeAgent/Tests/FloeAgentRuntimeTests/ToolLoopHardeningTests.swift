@@ -53,6 +53,85 @@ private final class LoopingAdapter: ProviderAdapter, @unchecked Sendable {
 @Suite("FloeAgentRuntime.ToolLoopHardening")
 struct ToolLoopHardeningTests {
 
+    @Test("subsequent model turns receive a compact activation ledger")
+    func activationLedgerInjected() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(try TestFixtures.toolCall(id: "ledger_call"))],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id)
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "inspect once and continue")
+
+        let second = try #require(adapter.requests.dropFirst().first)
+        #expect(second.messages.contains {
+            $0.role == "system"
+                && $0.content.contains("# Activation ledger")
+                && $0.content.contains("test.echo [ok]")
+                && $0.content.contains("Do not repeat a successful observation")
+        })
+    }
+
+    @Test("non-consecutive identical outcomes still trip no-progress guard")
+    func nonConsecutiveNoProgressStops() async throws {
+        let adapter = MockAdapter()
+        let calls = try [
+            ToolCall(id: "echo-1", toolName: "test.echo", argumentsJSON: Data("{}".utf8), scope: .local),
+            ToolCall(id: "other-1", toolName: "test.other1", argumentsJSON: Data("{}".utf8), scope: .local),
+            ToolCall(id: "echo-2", toolName: "test.echo", argumentsJSON: Data("{}".utf8), scope: .local),
+            ToolCall(id: "other-2", toolName: "test.other2", argumentsJSON: Data("{}".utf8), scope: .local),
+            ToolCall(id: "echo-3", toolName: "test.echo", argumentsJSON: Data("{}".utf8), scope: .local),
+            ToolCall(id: "other-3", toolName: "test.other3", argumentsJSON: Data("{}".utf8), scope: .local),
+            ToolCall(id: "echo-4", toolName: "test.echo", argumentsJSON: Data("{}".utf8), scope: .local),
+            ToolCall(id: "other-4", toolName: "test.other4", argumentsJSON: Data("{}".utf8), scope: .local),
+            ToolCall(id: "echo-5", toolName: "test.echo", argumentsJSON: Data("{}".utf8), scope: .local)
+        ]
+        adapter.script = calls.map { [.toolRequest($0)] }
+            + [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        for index in 1...4 {
+            let name = "test.other\(index)"
+            executor.descriptors[name] = ToolCatalog.Descriptor(
+                name: name,
+                riskLabels: [],
+                isSideEffecting: false
+            )
+        }
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "do not repeat unchanged work")
+
+        #expect(executor.executedCalls.count == 9)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected completed no-progress finalization")
+            return
+        }
+        #expect(completion.stopReason == .noProgress)
+    }
+
     @Test("Pseudo function-call text is rendered but never executed")
     func pseudoFunctionCallTextNeverExecutes() async throws {
         let adapter = MockAdapter()
