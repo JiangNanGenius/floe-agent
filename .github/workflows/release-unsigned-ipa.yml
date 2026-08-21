@@ -263,8 +263,8 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/TestFlightExport"
           cp Config/ExportOptions-TestFlight.plist "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
-          /usr/libexec/PlistBuddy -c "Set :provisioningProfiles:org.floeagent.ios 'iOS Team Store Provisioning Profile: org.floeagent.ios'" "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
-          /usr/libexec/PlistBuddy -c "Set :provisioningProfiles:org.floeagent.ios.screenshare 'iOS Team Store Provisioning Profile: org.floeagent.ios.screenshare'" "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
+          /usr/libexec/PlistBuddy -c "Set :signingStyle automatic" "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
+          /usr/libexec/PlistBuddy -c "Delete :provisioningProfiles" "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/FloeAgent.xcarchive" \
             -exportPath "$RUNNER_TEMP/TestFlightExport" \
