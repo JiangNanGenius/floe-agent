@@ -180,21 +180,60 @@ jobs:
           echo "$ASC_API_PRIVATE_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
           chmod 600 "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
 
-      - name: Install distribution identity
+      - name: Install distribution identity and App Store profiles
         env:
           DISTRIBUTION_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
           DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          HOST_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          SCREENSHARE_PROVISIONING_PROFILE: ${{ secrets.APPLE_SCREENSHARE_PROVISIONING_PROFILE_BASE64 }}
         run: |
           test -n "$DISTRIBUTION_CERTIFICATE"
+          test -n "$HOST_PROVISIONING_PROFILE"
+          test -n "$SCREENSHARE_PROVISIONING_PROFILE"
           KEYCHAIN="$RUNNER_TEMP/floe-release.keychain-db"
           KEYCHAIN_PASSWORD="$(uuidgen)$(uuidgen)"
           echo "$DISTRIBUTION_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/distribution.p12"
+          echo "$HOST_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/Floe.mobileprovision"
+          echo "$SCREENSHARE_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/FloeScreenShare.mobileprovision"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security import "$RUNNER_TEMP/distribution.p12" -P "$DISTRIBUTION_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          install_profile() {
+            PROFILE_PATH="$1"
+            EXPECTED_APP_ID="$2"
+            EXPECTED_NAME="$3"
+            EXPECTED_HOMEKIT="${4:-false}"
+            PROFILE_PLIST="$RUNNER_TEMP/$(basename "$PROFILE_PATH").plist"
+            security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PROFILE_PLIST")" = "$EXPECTED_NAME"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST")" = "$EXPECTED_APP_ID"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:get-task-allow' "$PROFILE_PLIST")" = false
+            test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:beta-reports-active' "$PROFILE_PLIST")" = true
+            test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups:0' "$PROFILE_PLIST")" = group.org.floeagent.ios
+            if test "$EXPECTED_HOMEKIT" = true; then
+              test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.homekit' "$PROFILE_PLIST")" = true
+            fi
+            PROFILE_UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")"
+            for PROFILE_DIRECTORY in \
+              "$HOME/Library/MobileDevice/Provisioning Profiles" \
+              "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+            do
+              mkdir -p "$PROFILE_DIRECTORY"
+              cp "$PROFILE_PATH" "$PROFILE_DIRECTORY/$PROFILE_UUID.mobileprovision"
+            done
+          }
+          install_profile \
+            "$RUNNER_TEMP/Floe.mobileprovision" \
+            QYL72C43K6.org.floeagent.ios \
+            'iOS Team Store Provisioning Profile: org.floeagent.ios' \
+            true
+          install_profile \
+            "$RUNNER_TEMP/FloeScreenShare.mobileprovision" \
+            QYL72C43K6.org.floeagent.ios.screenshare \
+            'iOS Team Store Provisioning Profile: org.floeagent.ios.screenshare'
 
       - name: Archive signed build
         env:
@@ -224,13 +263,12 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/TestFlightExport"
           cp Config/ExportOptions-TestFlight.plist "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
-          /usr/libexec/PlistBuddy -c 'Set :signingStyle automatic' "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
-          /usr/libexec/PlistBuddy -c 'Delete :provisioningProfiles' "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
+          /usr/libexec/PlistBuddy -c "Set :provisioningProfiles:org.floeagent.ios 'iOS Team Store Provisioning Profile: org.floeagent.ios'" "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
+          /usr/libexec/PlistBuddy -c "Set :provisioningProfiles:org.floeagent.ios.screenshare 'iOS Team Store Provisioning Profile: org.floeagent.ios.screenshare'" "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/FloeAgent.xcarchive" \
             -exportPath "$RUNNER_TEMP/TestFlightExport" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions-TestFlight.plist" \
-            -allowProvisioningUpdates \
             -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8" \
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
