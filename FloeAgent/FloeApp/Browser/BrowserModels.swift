@@ -47,6 +47,11 @@ struct BrowserCommand: Sendable, Codable, Hashable {
     var tabID: UUID?
     var expectedDocumentID: String?
     var timeoutMilliseconds: Int = 15_000
+    /// Required only for coordinate fallback. It must identify a fresh
+    /// screenshot captured from the same tab and document.
+    var visualEvidenceSHA256: String?
+    /// Why semantic DOM observation was not sufficient for this action.
+    var visualFallbackReason: String?
     var action: BrowserAction
 }
 
@@ -111,6 +116,8 @@ struct FloeBrowserProtocolCommand: Sendable, Codable, Hashable {
     var ref: String?
     var x: Double?
     var y: Double?
+    var screenshotSHA256: String?
+    var fallbackReason: String?
     var text: String?
     var submit: Bool?
     var timeoutMilliseconds: Int?
@@ -127,6 +134,8 @@ struct FloeBrowserProtocolCommand: Sendable, Codable, Hashable {
         ref: String? = nil,
         x: Double? = nil,
         y: Double? = nil,
+        screenshotSHA256: String? = nil,
+        fallbackReason: String? = nil,
         text: String? = nil,
         submit: Bool? = nil,
         timeoutMilliseconds: Int? = nil,
@@ -142,6 +151,8 @@ struct FloeBrowserProtocolCommand: Sendable, Codable, Hashable {
         self.ref = ref
         self.x = x
         self.y = y
+        self.screenshotSHA256 = screenshotSHA256
+        self.fallbackReason = fallbackReason
         self.text = text
         self.submit = submit
         self.timeoutMilliseconds = timeoutMilliseconds

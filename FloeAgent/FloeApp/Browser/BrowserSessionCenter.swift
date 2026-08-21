@@ -15,6 +15,11 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         case failed(String)
         case needsUser(String)
     }
+    struct VisualFallbackEvidence {
+        var documentID: String
+        var sha256: String
+        var capturedAt: Date
+    }
     struct Tab: Identifiable {
         let id: UUID
         let webView: WKWebView
@@ -22,6 +27,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         var revision: Int
         var nextEventSequence: Int
         var events: [BrowserProtocolEvent]
+        var visualFallbackEvidence: VisualFallbackEvidence?
     }
 
     @Published private(set) var sessionID = UUID()
@@ -141,7 +147,8 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             documentID: UUID().uuidString,
             revision: 0,
             nextEventSequence: 1,
-            events: []
+            events: [],
+            visualFallbackEvidence: nil
         ))
         activeTabID = id
         appendEvent(tabID: id, method: "Target.targetCreated")
@@ -247,14 +254,38 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
                 let artifact = try await saveSnapshot(of: tab.webView)
                 var result = await observeResult(command, tabID: tabID, cursor: nil)
                 result.page?.screenshotArtifact = artifact
+                if let currentIndex = tabs.firstIndex(where: { $0.id == tabID }) {
+                    tabs[currentIndex].visualFallbackEvidence = VisualFallbackEvidence(
+                        documentID: tabs[currentIndex].documentID,
+                        sha256: artifact.sha256.lowercased(),
+                        capturedAt: Date()
+                    )
+                }
                 return result
             case .click(let target):
-                try await perform(target: target, in: tab, operation: "click", text: nil, submit: false)
+                if case .point = target {
+                    try validateVisualFallback(command, in: tab)
+                }
+                try await perform(
+                    target: target,
+                    in: tab,
+                    operation: "click",
+                    text: nil,
+                    submit: false,
+                    visualFallbackReason: command.visualFallbackReason
+                )
             case .type(let target, let text, let submit):
                 guard text.utf8.count <= 16 * 1024 else {
                     throw BrowserPolicyError.blocked("Browser input exceeds 16 KiB")
                 }
-                try await perform(target: target, in: tab, operation: "type", text: text, submit: submit)
+                try await perform(
+                    target: target,
+                    in: tab,
+                    operation: "type",
+                    text: text,
+                    submit: submit,
+                    visualFallbackReason: nil
+                )
             case .scroll(let x, let y):
                 _ = try await tab.webView.callAsyncJavaScript(
                     "window.scrollBy(dx, dy); return true;",
@@ -330,10 +361,12 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             if let ref = request.ref, let documentID {
                 action = .click(.element(ref: ref, documentID: documentID))
             } else if let x = request.x, let y = request.y,
-                      x.isFinite, y.isFinite, x >= 0, y >= 0 {
+                      x.isFinite, y.isFinite, x >= 0, y >= 0,
+                      request.screenshotSHA256?.isEmpty == false,
+                      request.fallbackReason?.isEmpty == false {
                 action = .click(.point(x: x, y: y))
             } else {
-                return protocolFailure(request, "Input.dispatchMouseEvent requires a current ref/documentID or bounded coordinates")
+                return protocolFailure(request, "Coordinate Input.dispatchMouseEvent requires documentID, a fresh screenshotSHA256, and fallbackReason")
             }
         case .insertText:
             guard let ref = request.ref, !ref.isEmpty,
@@ -358,6 +391,8 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             tabID: request.targetID,
             expectedDocumentID: documentID,
             timeoutMilliseconds: min(30_000, max(250, request.timeoutMilliseconds ?? 15_000)),
+            visualEvidenceSHA256: request.screenshotSHA256,
+            visualFallbackReason: request.fallbackReason,
             action: action
         )
         return FloeBrowserProtocolResponse(
@@ -389,12 +424,13 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         in tab: Tab,
         operation: String,
         text: String?,
-        submit: Bool
+        submit: Bool,
+        visualFallbackReason: String?
     ) async throws {
         let script = """
         const protocol = globalThis.__floeProtocol;
         if (!protocol) return {status:'stale'};
-        return protocol.perform(operation, target, documentID, text, submit);
+        return protocol.perform(operation, target, documentID, text, submit, visualFallbackReason);
         """
         let targetObject: [String: Any]
         switch target {
@@ -410,7 +446,8 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
                 "target": targetObject,
                 "documentID": tab.documentID,
                 "text": text ?? "",
-                "submit": submit
+                "submit": submit,
+                "visualFallbackReason": visualFallbackReason ?? ""
             ],
             in: nil,
             contentWorld: contentWorld
@@ -418,11 +455,37 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         let status = (value as? [String: Any])?["status"] as? String
         if status == "needsUser" { throw BrowserInteractionError.needsUser("Sensitive input requires user takeover") }
         if status == "stale" { throw BrowserInteractionError.stale("The target is stale; observe the page again") }
+        if status == "structured" {
+            let ref = (value as? [String: Any])?["ref"] as? String ?? "unknown"
+            throw BrowserPolicyError.blocked(
+                "A structured target (\(ref)) is available at these coordinates; use browser.click"
+            )
+        }
         if status != "ok" { throw BrowserPolicyError.blocked("The target cannot accept this action") }
         appendEvent(
             tabID: tab.id,
             method: operation == "click" ? "Input.dispatchMouseEvent" : "Input.insertText"
         )
+    }
+
+    private func validateVisualFallback(_ command: BrowserCommand, in tab: Tab) throws {
+        guard let reason = command.visualFallbackReason,
+              ["noStructuredTarget", "insufficientStructuredInformation"].contains(reason) else {
+            throw BrowserPolicyError.blocked(
+                "Coordinate fallback requires a reason that structured information is absent or insufficient"
+            )
+        }
+        guard let expectedDigest = command.visualEvidenceSHA256?.lowercased(),
+              expectedDigest.count == 64,
+              expectedDigest.allSatisfy(\.isHexDigit),
+              let evidence = tab.visualFallbackEvidence,
+              evidence.documentID == tab.documentID,
+              evidence.sha256 == expectedDigest,
+              Date().timeIntervalSince(evidence.capturedAt) <= 120 else {
+            throw BrowserPolicyError.blocked(
+                "Coordinate fallback requires a fresh screenshot from the current page"
+            )
+        }
     }
 
     private func observeResult(_ command: BrowserCommand, tabID: UUID?, cursor: Int?) async -> BrowserResult {
@@ -666,7 +729,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
       const references = new WeakMap();
       const nodesByRef = new Map();
       const events = [];
-      const selector = 'a,button,input,textarea,select,[role],[contenteditable="true"],h1,h2,h3,p';
+      const selector = 'a,button,input,textarea,select,[role],[contenteditable="true"],[onclick],summary,label,h1,h2,h3,p';
 
       const push = (method, detail = null) => {
         events.push({method, detail, revision});
@@ -755,7 +818,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
           nextCursor: end < nodes.length ? end : null
         };
       };
-      const perform = (operation, target, expectedDocumentID, text, submit) => {
+      const perform = (operation, target, expectedDocumentID, text, submit, visualFallbackReason) => {
         setDocument(expectedDocumentID);
         if (target.kind === 'element' && target.documentID !== documentID) return {status:'stale'};
         const el = target.kind === 'element'
@@ -763,6 +826,13 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
           : document.elementFromPoint(Number(target.x), Number(target.y));
         if (!el || !el.isConnected) return {status:'stale'};
         if (operation === 'click') {
+          if (target.kind === 'point' && visualFallbackReason === 'noStructuredTarget') {
+            let structured = null;
+            try { structured = el.closest(selector); } catch (_) {}
+            if (structured && visible(structured)) {
+              return {status:'structured', ref:ensureRef(structured)};
+            }
+          }
           el.scrollIntoView({block:'center', inline:'center'});
           const rect = el.getBoundingClientRect();
           const x = target.kind === 'point' ? Number(target.x) : rect.x + rect.width / 2;
@@ -946,6 +1016,7 @@ extension BrowserSessionCenter: WKNavigationDelegate, WKUIDelegate {
         guard let index = tabs.firstIndex(where: { $0.webView === webView }) else { return }
         tabs[index].documentID = UUID().uuidString
         tabs[index].revision = 0
+        tabs[index].visualFallbackEvidence = nil
         appendEvent(
             tabID: tabs[index].id,
             method: "Page.frameNavigated"

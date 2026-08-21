@@ -114,6 +114,74 @@ struct BrowserProtocolTests {
         #expect(events.events.contains(where: { $0.method == "DOM.documentUpdated" }))
     }
 
+    @Test("Coordinate fallback requires fresh visual evidence and yields to structured refs")
+    @MainActor
+    func coordinateFallbackIsEvidenceGated() async throws {
+        let center = BrowserSessionCenter()
+        center.bind(to: UUID())
+        let tabID = try #require(center.activeTabID)
+        let webView = try #require(center.activeWebView)
+        webView.loadHTMLString(
+            """
+            <!doctype html><html><body style="margin:0">
+              <button id="go" style="width:160px;height:80px">Go</button>
+              <canvas id="surface" width="300" height="180" style="display:block"></canvas>
+            </body></html>
+            """,
+            baseURL: URL(string: "https://example.com")!
+        )
+        let waited = await center.execute(BrowserCommand(
+            sessionID: center.sessionID,
+            tabID: tabID,
+            timeoutMilliseconds: 5_000,
+            action: .wait(.load)
+        ))
+        #expect(waited.status == .ok)
+
+        let screenshot = await center.execute(BrowserCommand(
+            sessionID: center.sessionID,
+            tabID: tabID,
+            action: .screenshot
+        ))
+        let page = try #require(screenshot.page)
+        let artifact = try #require(page.screenshotArtifact)
+        let button = try #require(page.nodes.first(where: { $0.role == "button" }))
+
+        let structuredPoint = await center.execute(BrowserCommand(
+            sessionID: center.sessionID,
+            tabID: tabID,
+            expectedDocumentID: page.documentID,
+            visualEvidenceSHA256: artifact.sha256,
+            visualFallbackReason: "noStructuredTarget",
+            action: .click(.point(
+                x: button.bounds.x + button.bounds.width / 2,
+                y: button.bounds.y + button.bounds.height / 2
+            ))
+        ))
+        #expect(structuredPoint.status == .blocked)
+        #expect(structuredPoint.message?.contains("use browser.click") == true)
+
+        let missingEvidence = await center.execute(BrowserCommand(
+            sessionID: center.sessionID,
+            tabID: tabID,
+            expectedDocumentID: page.documentID,
+            visualFallbackReason: "noStructuredTarget",
+            action: .click(.point(x: 20, y: 120))
+        ))
+        #expect(missingEvidence.status == .blocked)
+        #expect(missingEvidence.message?.contains("fresh screenshot") == true)
+
+        let canvasFallback = await center.execute(BrowserCommand(
+            sessionID: center.sessionID,
+            tabID: tabID,
+            expectedDocumentID: page.documentID,
+            visualEvidenceSHA256: artifact.sha256,
+            visualFallbackReason: "noStructuredTarget",
+            action: .click(.point(x: 20, y: 120))
+        ))
+        #expect(canvasFallback.status == .ok)
+    }
+
     @Test("CDP-shaped dispatch is allowlisted and reports protocol version")
     @MainActor
     func protocolDispatch() async throws {

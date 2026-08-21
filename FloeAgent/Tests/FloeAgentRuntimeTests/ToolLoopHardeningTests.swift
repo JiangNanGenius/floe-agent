@@ -372,6 +372,34 @@ struct ToolLoopHardeningTests {
         #expect(!message.contains("workspace.listDirectory"))
         #expect(!message.contains("exec.localPython"))
     }
+
+    @Test("Uploaded visual files route to semantic inspection instead of OCR")
+    func uploadedVisualFilesPreferSemanticInspection() {
+        let message = ConversationRunService.buildContextMessage(
+            .init(
+                availableToolNames: ["image.inspect", "image.ocr"],
+                workspaceAttachmentPaths: ["Attachments/example.pdf"]
+            )
+        )
+
+        #expect(message.contains("call image.inspect"))
+        #expect(message.contains("PDF page"))
+        #expect(message.contains("image.ocr only for exact text transcription"))
+    }
+
+    @Test("Browser context requires structured access before visual fallback")
+    func browserContextPrefersStructuredAccess() {
+        let message = ConversationRunService.buildContextMessage(
+            .init(availableToolNames: [
+                "browser.observe", "browser.click", "browser.screenshot",
+                "browser.clickPoint", "image.inspect"
+            ])
+        )
+
+        #expect(message.contains("browser.observe plus stable element refs first"))
+        #expect(message.contains("only when structured information is unavailable or insufficient"))
+        #expect(message.contains("fresh evidence from the current page"))
+    }
 }
 
 /// Catalog-registered probe tool used to prove the injected system message

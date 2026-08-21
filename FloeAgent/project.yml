@@ -314,6 +314,7 @@ targets:
           - VoiceInputControllerTests.swift
           - CrashAndFeedbackRegressionTests.swift
           - LocalPythonRuntimeTests.swift
+          - RemoteImageInspectToolTests.swift
     dependencies:
       - target: FloeAgent
     settings:
@@ -335,6 +336,7 @@ targets:
       - path: Tests/FloeAgentUITests/BrowserProtocolTests.swift
       - path: Tests/FloeAgentUITests/CrashAndFeedbackRegressionTests.swift
       - path: Tests/FloeAgentUITests/LocalPythonRuntimeTests.swift
+      - path: Tests/FloeAgentUITests/RemoteImageInspectToolTests.swift
     dependencies:
       - target: FloeAgent
     settings:

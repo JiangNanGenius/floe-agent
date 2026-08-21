@@ -18,6 +18,8 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         action: BrowserAction,
         tabID: UUID? = nil,
         documentID: String? = nil,
+        visualEvidenceSHA256: String? = nil,
+        visualFallbackReason: String? = nil,
         timeoutMilliseconds: Int = 15_000
     ) async throws -> ToolExecutionOutput {
         guard let center else { throw FloeError.invalidConfiguration("The visible browser is unavailable") }
@@ -26,6 +28,8 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
             tabID: tabID,
             expectedDocumentID: documentID,
             timeoutMilliseconds: timeoutMilliseconds,
+            visualEvidenceSHA256: visualEvidenceSHA256,
+            visualFallbackReason: visualFallbackReason,
             action: action
         )
         let result = await center.execute(command)
@@ -138,7 +142,7 @@ private struct BrowserNavigateTool: AgentTool {
 private struct BrowserObserveTool: AgentTool {
     struct Arguments: Decodable, Sendable { let tabID: UUID?; let cursor: Int? }
     static let name = "browser.observe"
-    static let toolDescription = "Read a bounded semantic DOM snapshot from Floe's visible browser"
+    static let toolDescription = "FIRST choice for reading a page: return a bounded semantic DOM snapshot with stable element refs, text, values, state, and bounds. Continue pagination before concluding that structured information is missing."
     static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string"},"cursor":{"type":"integer","minimum":0}},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = []
     static let isSideEffecting = false
@@ -155,7 +159,7 @@ private struct BrowserObserveTool: AgentTool {
 private struct BrowserScreenshotTool: AgentTool {
     struct Arguments: Decodable, Sendable { let tabID: UUID? }
     static let name = "browser.screenshot"
-    static let toolDescription = "Capture the current visible browser viewport as a bounded artifact"
+    static let toolDescription = "Capture the current viewport when visual meaning is requested or browser.observe is unavailable or semantically insufficient. Text-only models should pass the returned BrowserArtifacts path and sha256 to image.inspect. A fresh screenshot digest is mandatory before browser.clickPoint fallback."
     static let riskLabels: Set<RiskLabel> = [.sendsDataToProvider]
     static let isSideEffecting = false
     static let toolEffect: ToolEffect = .readOnly
@@ -169,7 +173,7 @@ private struct BrowserScreenshotTool: AgentTool {
 private struct BrowserClickTool: AgentTool {
     struct Arguments: Decodable, Sendable { let tabID: UUID?; let ref: String; let documentID: String }
     static let name = "browser.click"
-    static let toolDescription = "Click an observed element in Floe's visible browser"
+    static let toolDescription = "Preferred browser action: click a stable element ref returned by browser.observe. Use this before any coordinate fallback."
     static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string"},"ref":{"type":"string"},"documentID":{"type":"string"}},"required":["ref","documentID"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.controlsGUI]
     static let isSideEffecting = true
@@ -196,10 +200,12 @@ private struct BrowserClickPointTool: AgentTool {
         let documentID: String
         let x: Double
         let y: Double
+        let screenshotSHA256: String
+        let fallbackReason: String
     }
     static let name = "browser.clickPoint"
-    static let toolDescription = "Click viewport coordinates in Floe's visible browser after observing the current document"
-    static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string"},"documentID":{"type":"string"},"x":{"type":"number","minimum":0,"maximum":10000},"y":{"type":"number","minimum":0,"maximum":10000}},"required":["documentID","x","y"],"additionalProperties":false}"#
+    static let toolDescription = "LAST-RESORT visual fallback after browser.observe: click viewport coordinates only when structured information is absent or insufficient. Capture a fresh browser.screenshot, inspect it when needed, then provide its sha256 and the exact fallback reason. Ordinary DOM controls with stable refs are rejected here and must use browser.click."
+    static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string"},"documentID":{"type":"string"},"x":{"type":"number","minimum":0,"maximum":10000},"y":{"type":"number","minimum":0,"maximum":10000},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"},"fallbackReason":{"type":"string","enum":["noStructuredTarget","insufficientStructuredInformation"]}},"required":["documentID","x","y","screenshotSHA256","fallbackReason"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.controlsGUI]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .mutating
@@ -209,12 +215,22 @@ private struct BrowserClickPointTool: AgentTool {
               (0...10_000).contains(args.x), (0...10_000).contains(args.y) else {
             throw FloeError.validationFailed("documentID and bounded viewport coordinates are required")
         }
+        guard args.screenshotSHA256.count == 64,
+              args.screenshotSHA256.allSatisfy(\.isHexDigit) else {
+            throw FloeError.validationFailed("a fresh browser screenshot sha256 is required")
+        }
+        guard ["noStructuredTarget", "insufficientStructuredInformation"]
+            .contains(args.fallbackReason) else {
+            throw FloeError.validationFailed("fallbackReason must explain why structured access is insufficient")
+        }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try await environment.run(
             action: .click(.point(x: args.x, y: args.y)),
             tabID: args.tabID,
-            documentID: args.documentID
+            documentID: args.documentID,
+            visualEvidenceSHA256: args.screenshotSHA256,
+            visualFallbackReason: args.fallbackReason
         )
     }
 }
