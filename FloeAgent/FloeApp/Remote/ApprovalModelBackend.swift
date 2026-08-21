@@ -22,17 +22,31 @@ struct ApprovalModelBackend: ModelApprovalPolicy.DecisionBackend {
     var reviewKind: ReviewKind = .action
 
     func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
-        let timeout: Duration = reviewKind == .softwarePackage ? .seconds(45) : .seconds(15)
+        // Reasoning models commonly need more than 15 seconds before their
+        // first answer token. Keep this bounded, but do not turn a healthy
+        // DeepSeek/Responses request into a false human escalation.
+        let timeout: Duration = reviewKind == .softwarePackage ? .seconds(60) : .seconds(45)
+        let started = ContinuousClock.now
+        FloeLogger(category: .security).info(
+            "approvalReviewStarted kind=\(reviewKind.logName) model=\(model.id.uuidString) tool=\(action.toolCall.toolName) timeoutSeconds=\(reviewKind == .softwarePackage ? 60 : 45)"
+        )
         return try await withThrowingTaskGroup(of: ApprovalDecision.self) { group in
             group.addTask { try await requestDecision(action) }
             group.addTask {
                 try await Task.sleep(for: timeout)
+                FloeLogger(category: .security).warning(
+                    "approvalReviewTimedOut kind=\(reviewKind.logName) model=\(model.id.uuidString) tool=\(action.toolCall.toolName)"
+                )
                 throw FloeError.syncUnavailable("Approval model timed out")
             }
             guard let first = try await group.next() else {
                 throw FloeError.syncUnavailable("Approval model returned no decision")
             }
             group.cancelAll()
+            let elapsed = started.duration(to: .now)
+            FloeLogger(category: .security).info(
+                "approvalReviewFinished kind=\(reviewKind.logName) model=\(model.id.uuidString) tool=\(action.toolCall.toolName) elapsed=\(elapsed)"
+            )
             return first
         }
     }
@@ -63,24 +77,58 @@ struct ApprovalModelBackend: ModelApprovalPolicy.DecisionBackend {
             \(sourceInspection)
             Proposed action: \(actionJSON)
             """
+        // Classification is a small bounded task. Do not inherit the chat
+        // profile's deep-reasoning setting. `.automatic` deliberately omits
+        // provider-specific thinking fields (DeepSeek maps `low` to `high`).
+        var reviewModel = model
+        reviewModel.reasoningEffort = .automatic
+        reviewModel.limits.maxOutputTokens = min(
+            reviewModel.limits.configuredMaxOutputTokens ?? 512,
+            512
+        )
         let request = ProviderStreamRequest(
             provider: provider,
-            model: model,
+            model: reviewModel,
             messages: [(role: "user", content: prompt)],
             toolSchemas: []
         )
         var text = ""
+        var sawProviderOutput = false
         for try await event in adapter.stream(request: request, credentials: credentials) {
-            if case .textDelta(let delta) = event {
+            switch event {
+            case .textDelta(let delta):
+                if !sawProviderOutput {
+                    sawProviderOutput = true
+                    FloeLogger(category: .security).info(
+                        "approvalReviewFirstOutput kind=\(reviewKind.logName) model=\(model.id.uuidString)"
+                    )
+                }
                 text += delta.text
                 guard text.utf8.count <= 4_096 else {
                     throw FloeError.validationFailed("Approval response exceeded limit")
                 }
+            case .reasoningSummary:
+                if !sawProviderOutput {
+                    sawProviderOutput = true
+                    FloeLogger(category: .security).info(
+                        "approvalReviewFirstOutput kind=\(reviewKind.logName) model=\(model.id.uuidString) channel=reasoning"
+                    )
+                }
+            case .error(let error):
+                throw FloeError.syncUnavailable(
+                    "Approval provider error (\(error.kind.rawValue), HTTP \(error.httpStatus.map(String.init) ?? "none"))"
+                )
+            default:
+                break
             }
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.first == "{", trimmed.last == "}",
-              let data = trimmed.data(using: .utf8) else {
+        // Some reasoning endpoints wrap the requested object in a code fence
+        // or a short preface despite the instruction. Extract one bounded
+        // object, then still require the exact typed decision schema.
+        guard let start = trimmed.firstIndex(of: "{"),
+              let end = trimmed.lastIndex(of: "}"), start <= end,
+              let data = String(trimmed[start...end]).data(using: .utf8) else {
             throw FloeError.validationFailed("Approval response was not strict JSON")
         }
         let decision = try JSONDecoder().decode(WireDecision.self, from: data)
@@ -97,6 +145,15 @@ struct ApprovalModelBackend: ModelApprovalPolicy.DecisionBackend {
         case .local: ApprovalScope(toolName: call.toolName, singleUse: true)
         case .host(let id): ApprovalScope(toolName: call.toolName, hostID: id, singleUse: true)
         case .hostPath(let id, let path): ApprovalScope(toolName: call.toolName, hostID: id, paths: [path], singleUse: true)
+        }
+    }
+}
+
+private extension ApprovalModelBackend.ReviewKind {
+    var logName: String {
+        switch self {
+        case .action: "action"
+        case .softwarePackage: "softwarePackage"
         }
     }
 }

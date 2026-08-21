@@ -189,6 +189,25 @@ struct ApprovalPolicyTests {
         #expect(decision.permitsExecution)
     }
 
+    @Test("Automatic mode falls back for harmless reads when model is unavailable")
+    func automaticPolicySafeUnavailableFallback() async throws {
+        struct FailingBackend: ModelApprovalPolicy.DecisionBackend {
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+                throw FloeError.syncUnavailable("timeout")
+            }
+        }
+        let safe = try action(riskLabels: [])
+        #expect(try await AutomaticApprovalPolicy(backend: FailingBackend()).decide(safe).permitsExecution)
+
+        let sensitive = try action(riskLabels: ["accessesCredentials"])
+        guard case .escalateToHuman = try await AutomaticApprovalPolicy(
+            backend: FailingBackend()
+        ).decide(sensitive) else {
+            Issue.record("Sensitive fallback must remain a human decision")
+            return
+        }
+    }
+
     @Test("Full access permits task actions after the catastrophic gate")
     func taskFullAccessSensitiveBoundary() async throws {
         let policy = TaskFullAccessPolicy()

@@ -596,11 +596,11 @@ final class ConversationCenter: ObservableObject {
         return StartedConversationTask(conversationID: prepared.conversation.id, run: run)
     }
 
-    /// Makes non-image uploads reachable through ordinary workspace tools.
-    /// Images are understood before the primary run: vision-capable models get
-    /// bytes inline, while text-only models get a trusted-boundary description
-    /// from the configured auxiliary vision model. Re-importing those images
-    /// would encourage the primary model to waste turns on OCR/browser loops.
+    /// Makes every upload reachable through ordinary workspace tools. Images
+    /// are still understood automatically before the primary run, but keeping
+    /// the original file in `Attachments/` gives a text-only model an exact
+    /// path for the semantic `image.inspect` fallback (and supports later PDF
+    /// page/image work) instead of forcing OCR or browser guessing.
     /// Each original basename stays intact in its own UUID directory so the
     /// workspace guard can still recognize and reject secret names such as
     /// `.env` or private-key files.
@@ -609,8 +609,20 @@ final class ConversationCenter: ObservableObject {
         let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
         var imported: [String] = []
 
+        FloeLogger(category: .app).info(
+            "attachmentImportStarted count=\(attachments.count)"
+        )
+
         for attachment in attachments {
-            guard let source = try? environment.filesCenter.resolveURL(for: attachment) else { continue }
+            let source: URL
+            do {
+                source = try environment.filesCenter.resolveURL(for: attachment)
+            } catch {
+                FloeLogger(category: .app).warning(
+                    "attachmentResolveFailed attachment=\(attachment.id.uuidString) kind=\(attachment.kind.rawValue) error=\(error.localizedDescription)"
+                )
+                continue
+            }
             let accessing = source.startAccessingSecurityScopedResource()
             defer { if accessing { source.stopAccessingSecurityScopedResource() } }
 
@@ -629,6 +641,9 @@ final class ConversationCenter: ObservableObject {
                     try FileManager.default.copyItem(at: source, to: destination)
                 }
                 imported.append(relativePath)
+                FloeLogger(category: .app).info(
+                    "attachmentImported attachment=\(attachment.id.uuidString) kind=\(attachment.kind.rawValue) bytes=\(attachment.byteCount)"
+                )
             } catch {
                 FloeLogger(category: .app).warning(
                     "attachmentImportFailed attachment=\(attachment.id.uuidString) error=\(error.localizedDescription)"
@@ -793,17 +808,37 @@ final class ConversationCenter: ObservableObject {
         userRequest: String,
         primaryModel: ModelProfile
     ) async -> (images: [ConversationImagePart], context: [ConversationMessage]) {
-        guard !images.isEmpty else { return ([], []) }
-        if primaryModel.capabilities.contains(.vision) { return (images, []) }
+        guard !images.isEmpty else {
+            FloeLogger(category: .app).info(
+                "visualEvidenceSkipped reason=noImages primaryModel=\(primaryModel.id.uuidString)"
+            )
+            return ([], [])
+        }
+        FloeLogger(category: .app).info(
+            "visualEvidenceStarted count=\(images.count) primaryModel=\(primaryModel.id.uuidString) primaryVision=\(primaryModel.capabilities.contains(.vision))"
+        )
+        if primaryModel.capabilities.contains(.vision) {
+            FloeLogger(category: .app).info(
+                "visualEvidenceReady route=primaryInline count=\(images.count)"
+            )
+            return (images, [])
+        }
         guard let (provider, model) = auxiliaryVisionProviderAndModel() else {
             if let ocr = await onDeviceOCRContext(images) {
+                FloeLogger(category: .app).info("visualEvidenceReady route=onDeviceOCR")
                 return ([], [ConversationMessage(role: "system", content: ocr)])
             }
+            FloeLogger(category: .app).warning(
+                "visualEvidenceUnavailable reason=noAuxiliaryVision count=\(images.count)"
+            )
             return ([], [ConversationMessage(
                 role: "system",
-                content: "The user attached image evidence, but no compatible vision model is configured and on-device inspection produced no usable evidence. Do not claim to have inspected it, and do not call OCR, browser, Python, or workspace tools merely to rediscover the attachment. Tell the user that a visual-analysis model must be configured."
+                content: "The user attached image evidence, but no compatible automatic visual-analysis model is configured and on-device OCR produced no usable evidence. The original image is available at the exact path listed in the workspace attachment context. If semantic inspection is needed, call image.inspect with that path; do not use browser, Python, or directory-search loops to rediscover it."
             )])
         }
+        FloeLogger(category: .app).info(
+            "visualEvidenceRoute route=auxiliary provider=\(provider.id.uuidString) model=\(model.id.uuidString) count=\(images.count)"
+        )
         var parts: [ProviderContentPart] = [
             .text("""
                 You are the visual preprocessor for another agent. Inspect every attached image and describe what it contains in the direction most useful for this user request:
@@ -840,6 +875,9 @@ final class ConversationCenter: ObservableObject {
                         }
                     }
                 } catch {
+                    FloeLogger(category: .app).warning(
+                        "visualEvidenceAuxiliaryFailed model=\(model.id.uuidString) error=\(error.localizedDescription)"
+                    )
                     text = ""
                 }
                 return text
@@ -857,13 +895,20 @@ final class ConversationCenter: ObservableObject {
         }
         guard !description.isEmpty else {
             if let ocr = await onDeviceOCRContext(images) {
+                FloeLogger(category: .app).info("visualEvidenceReady route=onDeviceOCRAfterAuxiliary")
                 return ([], [ConversationMessage(role: "system", content: ocr)])
             }
+            FloeLogger(category: .app).warning(
+                "visualEvidenceUnavailable reason=auxiliaryEmpty model=\(model.id.uuidString)"
+            )
             return ([], [ConversationMessage(
                 role: "system",
-                content: "The configured auxiliary vision model could not inspect the user's images and on-device inspection produced no usable evidence. Do not infer their contents, and do not call OCR, browser, Python, or workspace tools merely to rediscover the attachment. Report the visual-analysis failure directly."
+                content: "The automatic auxiliary visual-analysis request returned no usable evidence and on-device OCR also found nothing. The original image is available at the exact path listed in the workspace attachment context. Call image.inspect with that path for one semantic retry; do not use browser, Python, or directory-search loops to rediscover it."
             )])
         }
+        FloeLogger(category: .app).info(
+            "visualEvidenceReady route=auxiliary model=\(model.id.uuidString) characters=\(description.count)"
+        )
         return ([], [ConversationMessage(
             role: "system",
             content: """
@@ -1109,6 +1154,9 @@ final class ConversationCenter: ObservableObject {
             let images = persistedImages.isEmpty
                 ? ConversationHistoryAssembler.inlineImages(prepared.attachments)
                 : persistedImages
+            FloeLogger(category: .app).info(
+                "deferredRunAttachments run=\(runID.uuidString) refs=\(prepared.attachments.count) persistedImages=\(persistedImages.count) resolvedImages=\(images.count)"
+            )
             if !images.isEmpty {
                 self.environment.backgroundRunCoordinator.didUpdateProgress(
                     runID: runID,
@@ -1146,9 +1194,7 @@ final class ConversationCenter: ObservableObject {
                 conversationHistory: assembled.filter { $0.id != prepared.userMessage.id }
                     + visual.context,
                 currentUserImages: visual.images,
-                currentUserAttachments: model.capabilities.contains(.vision)
-                    ? prepared.attachments
-                    : prepared.attachments.filter { $0.kind != .image }
+                currentUserAttachments: prepared.attachments
             )
             self.runServices[runID] = service
             self.track(service)

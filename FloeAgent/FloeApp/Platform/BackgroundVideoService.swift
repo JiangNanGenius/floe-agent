@@ -11,6 +11,7 @@ import Foundation
 import UIKit
 import AVKit
 import AVFoundation
+import FloeCore
 
 @MainActor
 final class BackgroundVideoService: NSObject, ObservableObject {
@@ -54,6 +55,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         stopPiPInternal()
         isPreparingPiP = true
         lastError = nil
+        FloeLogger(category: .app).info(
+            "pictureInPicturePrepareStarted generation=\(generation)"
+        )
         defer { isPreparingPiP = false }
         // PiP with a playing video requires the audio background mode. Set the
         // session active so the system registers that capability at task start
@@ -66,6 +70,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             guidanceHints: []
         ) else {
             lastError = "无法创建画中画进度视频"
+            FloeLogger(category: .app).error(
+                "pictureInPicturePrepareFailed stage=videoSynthesis generation=\(generation)"
+            )
             deactivateAudioSession()
             return
         }
@@ -76,6 +83,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         }
         guard AVPictureInPictureController.isPictureInPictureSupported() else {
             lastError = "当前设备不支持画中画"
+            FloeLogger(category: .app).warning(
+                "pictureInPicturePrepareFailed stage=unsupported generation=\(generation)"
+            )
             try? FileManager.default.removeItem(at: assetURL)
             deactivateAudioSession()
             return
@@ -85,12 +95,18 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         let layer = AVPlayerLayer(player: queue)
         guard attachInlinePreview(layer: layer) else {
             lastError = "画中画需要应用处于前台并显示预览"
+            FloeLogger(category: .app).warning(
+                "pictureInPicturePrepareFailed stage=inlinePreview generation=\(generation)"
+            )
             try? FileManager.default.removeItem(at: assetURL)
             deactivateAudioSession()
             return
         }
         guard let controller = AVPictureInPictureController(playerLayer: layer) else {
             lastError = "无法初始化画中画控制器"
+            FloeLogger(category: .app).error(
+                "pictureInPicturePrepareFailed stage=controller generation=\(generation)"
+            )
             removeInlinePreview()
             try? FileManager.default.removeItem(at: assetURL)
             deactivateAudioSession()
@@ -115,9 +131,15 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         guard generation == startGeneration else { return }
         guard controller.isPictureInPicturePossible else {
             lastError = "画中画尚未就绪，请保持应用在前台后重试"
+            FloeLogger(category: .app).warning(
+                "pictureInPicturePrepareFailed stage=readinessTimeout generation=\(generation)"
+            )
             stopPiPInternal()
             return
         }
+        FloeLogger(category: .app).info(
+            "pictureInPictureStartRequested generation=\(generation)"
+        )
         controller.startPictureInPicture()
     }
 
@@ -255,7 +277,12 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         do {
             try session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
             try session.setActive(true)
-        } catch {}
+        } catch {
+            let nsError = error as NSError
+            FloeLogger(category: .app).warning(
+                "pictureInPictureAudioSessionFailed domain=\(nsError.domain) code=\(nsError.code)"
+            )
+        }
     }
 
     private func deactivateAudioSession() {
@@ -533,6 +560,7 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
             self.isPiPActive = true
             self.isPreparingPiP = false
             self.lastError = nil
+            FloeLogger(category: .app).info("pictureInPictureDidStart")
         }
     }
 
@@ -540,7 +568,10 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
         _ pictureInPictureController: AVPictureInPictureController
     ) {
         let controllerID = ObjectIdentifier(pictureInPictureController)
-        Task { @MainActor in self.handlePiPStopped(controllerID: controllerID) }
+        Task { @MainActor in
+            FloeLogger(category: .app).info("pictureInPictureDidStop")
+            self.handlePiPStopped(controllerID: controllerID)
+        }
     }
 
     nonisolated func pictureInPictureController(
@@ -548,6 +579,10 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
         failedToStartPictureInPictureWithError error: Error
     ) {
         Task { @MainActor in
+            let nsError = error as NSError
+            FloeLogger(category: .app).error(
+                "pictureInPictureStartFailed domain=\(nsError.domain) code=\(nsError.code)"
+            )
             self.lastError = "画中画启动失败：\(error.localizedDescription)"
             self.stop()
         }

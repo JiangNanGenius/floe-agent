@@ -134,10 +134,23 @@ final class SettingsCenter: ObservableObject {
 
     // MARK: - Loading
 
+    /// Restores the launch-critical preferences before the workbench becomes
+    /// interactive. The full `load()` below also runs capability probes, but
+    /// task approval and background execution must never temporarily fall
+    /// back to their in-memory defaults after a cold launch.
+    func loadLaunchPreferences() async {
+        loadUserDefaults()
+        let values = (try? await settingsStore.allValues()) ?? [:]
+        applyStoredValues(values)
+        FloeLogger(category: .app).info(
+            "launchPreferencesLoaded agentMode=\(defaultAgentMode.rawValue) background=\(backgroundExecution.rawValue)"
+        )
+    }
+
     /// Loads every settings source in parallel and refreshes the snapshot.
     /// Probe results are recomputed on every load (never persisted).
     func load() async {
-        loadUserDefaults()
+        await loadLaunchPreferences()
 
         async let values = (try? settingsStore.allValues()) ?? [:]
         async let grants = (try? workspaceStore.allGrants()) ?? []

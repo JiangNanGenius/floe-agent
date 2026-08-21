@@ -103,6 +103,9 @@ struct RootView: View {
         }
         .task(id: environment.persistenceReady) {
             guard environment.persistenceReady else { return }
+            // Refresh the complete settings snapshot (including probes) after
+            // the launch-critical values were restored during bootstrap.
+            await environment.settingsCenter.load()
             router.reconcileOnLaunch(environment: environment)
             await environment.conversationCenter.reload()
             await environment.conversationCenter.reconcileInterruptedRunsOnLaunch()
@@ -117,6 +120,9 @@ struct RootView: View {
         .onReceive(environment.screenShareCenter.$requestedConversationID) { conversationID in
             guard let conversationID,
                   environment.screenShareCenter.consumeBroadcastRequest(for: conversationID) else { return }
+            FloeLogger(category: .app).info(
+                "screenShareSheetPresentationRequested conversation=\(conversationID.uuidString)"
+            )
             showingAutomaticScreenShare = true
         }
         .onReceive(environment.screenShareCenter.$isSharing) { isSharing in

@@ -154,6 +154,7 @@ struct ThreadComposerView: View {
     var contextID: UUID? = nil
 
     @State private var isPickerPresented = false
+    @State private var isPhotoPickerPresented = false
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var attachmentError: String?
     @State private var dictationPrefix = ""
@@ -189,6 +190,11 @@ struct ThreadComposerView: View {
                 Task { await registerPicked(url) }
             }
         }
+        .photosPicker(
+            isPresented: $isPhotoPickerPresented,
+            selection: $selectedPhoto,
+            matching: .images
+        )
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
             Task { await registerPickedPhoto(item) }
@@ -258,7 +264,10 @@ struct ThreadComposerView: View {
     private var inputRow: some View {
         HStack(alignment: .bottom, spacing: 8) {
             Menu {
-                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                Button {
+                    isPhotoPickerPresented = true
+                    FloeLogger(category: .app).info("photoPickerRequested")
+                } label: {
                     Label("从照片中选择", systemImage: "photo.on.rectangle")
                 }
                 Button {
@@ -669,6 +678,11 @@ struct ThreadComposerView: View {
     private func registerPickedPhoto(_ item: PhotosPickerItem) async {
         defer { selectedPhoto = nil }
         do {
+            let advertisedTypes = item.supportedContentTypes
+                .map(\.identifier).prefix(8).joined(separator: ",")
+            FloeLogger(category: .app).info(
+                "photoPickerTransferStarted types=\(advertisedTypes)"
+            )
             guard let data = try await item.loadTransferable(type: Data.self) else {
                 throw FloeError.validationFailed("无法读取所选照片")
             }
@@ -678,8 +692,15 @@ struct ThreadComposerView: View {
             )
             attachments.append(attachment)
             attachmentError = nil
+            FloeLogger(category: .app).info(
+                "photoPickerTransferFinished attachment=\(attachment.id.uuidString) bytes=\(attachment.byteCount)"
+            )
         } catch {
-            attachmentError = error.localizedDescription
+            let nsError = error as NSError
+            FloeLogger(category: .app).warning(
+                "photoPickerTransferFailed domain=\(nsError.domain) code=\(nsError.code)"
+            )
+            attachmentError = "无法从相册读取所选图片，请重新选择，或使用“从文件中选择”。"
         }
     }
 

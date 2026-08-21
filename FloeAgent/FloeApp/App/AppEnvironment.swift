@@ -376,6 +376,10 @@ final class AppEnvironment: ObservableObject {
         do {
             try await database.migrate()
             try await runningInputStore.recoverTransientInputs()
+            // Approval/background choices affect the very first task created
+            // after launch. Restore them before `persistenceReady` exposes the
+            // composer; settings-screen visitation must never be required.
+            await settingsCenter.loadLaunchPreferences()
             await configurationSync.setCredentialStore(credentialStore)
             await credentialVault.drainDeletionQueue()
             #if DEBUG

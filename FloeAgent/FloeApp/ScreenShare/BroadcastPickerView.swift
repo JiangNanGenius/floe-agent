@@ -3,6 +3,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import ReplayKit
+import FloeCore
 
 struct BroadcastPickerView: View {
     @ObservedObject var center: ScreenShareCenter
@@ -48,6 +49,9 @@ struct BroadcastPickerView: View {
             }
         }
         .task { center.startSharing() }
+        .onAppear {
+            FloeLogger(category: .app).info("screenShareSheetAppeared")
+        }
         .presentationDetents([.medium, .large])
     }
 }
@@ -89,15 +93,21 @@ private struct SystemBroadcastPicker: UIViewRepresentable {
         // a window. Retry briefly instead of consuming the one automatic
         // request while its subview hierarchy is still empty.
         Task { @MainActor in
-            for _ in 0..<12 {
+            for attempt in 0..<30 {
                 if picker.window != nil, let button = Self.firstButton(in: picker) {
+                    FloeLogger(category: .app).info(
+                        "screenShareSystemConfirmationTriggered attempt=\(attempt + 1)"
+                    )
                     button.sendActions(for: .touchUpInside)
                     return
                 }
-                try? await Task.sleep(for: .milliseconds(150))
+                try? await Task.sleep(for: .milliseconds(100))
             }
             // Leave the visible system button usable when iOS requires a
             // genuine tap; ReplayKit always owns final consent.
+            FloeLogger(category: .app).warning(
+                "screenShareSystemButtonUnavailable attempts=30"
+            )
         }
     }
 

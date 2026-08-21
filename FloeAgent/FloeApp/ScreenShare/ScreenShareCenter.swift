@@ -44,7 +44,11 @@ final class ScreenShareCenter: NSObject, ObservableObject {
 
     /// Starts polling the App Group for the extension's key frames.
     func startSharing() {
-        guard framePollTask == nil else { return }
+        guard framePollTask == nil else {
+            FloeLogger(category: .app).debug("screenSharePollingAlreadyActive")
+            return
+        }
+        FloeLogger(category: .app).info("screenSharePollingStarted")
         isWaitingForBroadcast = true
         sharingError = nil
         let startedAt = Date()
@@ -56,6 +60,9 @@ final class ScreenShareCenter: NSObject, ObservableObject {
                    Date().timeIntervalSince(startedAt) > 20,
                    self.sharingError == nil {
                     self.sharingError = "尚未收到系统广播画面。请确认已在系统列表中选择 Floe Agent 并点“开始直播”。"
+                    FloeLogger(category: .app).warning(
+                        "screenShareFrameTimeout seconds=20"
+                    )
                 }
                 do {
                     try await Task.sleep(for: .seconds(1))
@@ -67,6 +74,9 @@ final class ScreenShareCenter: NSObject, ObservableObject {
     }
 
     func requestBroadcast(for conversationID: UUID) {
+        FloeLogger(category: .app).info(
+            "screenShareAuthorizationRequested conversation=\(conversationID.uuidString)"
+        )
         requestedConversationID = conversationID
         startSharing()
     }
@@ -74,10 +84,14 @@ final class ScreenShareCenter: NSObject, ObservableObject {
     func consumeBroadcastRequest(for conversationID: UUID) -> Bool {
         guard requestedConversationID == conversationID else { return false }
         requestedConversationID = nil
+        FloeLogger(category: .app).info(
+            "screenShareAuthorizationPresented conversation=\(conversationID.uuidString)"
+        )
         return true
     }
 
     func stopSharing() {
+        FloeLogger(category: .app).info("screenShareStopped")
         isSharing = false
         isWaitingForBroadcast = false
         sharingError = nil
@@ -217,6 +231,11 @@ final class ScreenShareCenter: NSObject, ObservableObject {
             onGuidanceChanged?(nil, [])
         }
         activeSessionID = snapshot.state.sessionID
+        if !isSharing {
+            FloeLogger(category: .app).info(
+                "screenShareFirstFrameReceived session=\(snapshot.state.sessionID.uuidString)"
+            )
+        }
         isSharing = true
         isWaitingForBroadcast = false
         sharingError = nil
@@ -252,8 +271,13 @@ extension ScreenShareCenter: RPBroadcastActivityViewControllerDelegate {
         let didStartBroadcasting = broadcastController?.isBroadcasting == true
         Task { @MainActor in
             if didStartBroadcasting {
+                FloeLogger(category: .app).info("screenShareBroadcastControllerStarted")
                 self.startSharing()
             } else {
+                let nsError = error as NSError?
+                FloeLogger(category: .app).warning(
+                    "screenShareBroadcastControllerCancelled domain=\(nsError?.domain ?? "none") code=\(nsError?.code ?? 0)"
+                )
                 self.stopSharing()
             }
         }

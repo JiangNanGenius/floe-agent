@@ -4,6 +4,7 @@ import SwiftUI
 import UIKit
 import UserNotifications
 import BackgroundTasks
+import FloeCore
 import FloePersistence
 
 extension Notification.Name {
@@ -50,6 +51,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     func didStart(conversationID: UUID, runID: UUID, title: String) {
         activeRuns[runID] = ActiveRun(conversationID: conversationID, title: title)
+        FloeLogger(category: .app).info(
+            "backgroundRunStarted run=\(runID.uuidString) conversation=\(conversationID.uuidString) preference=\(environment.settingsCenter.backgroundExecution.rawValue) activeRuns=\(activeRuns.count)"
+        )
         if #available(iOS 26.0, *) {
             updateContinuedTask(title: title, stage: "正在运行", progress: 5)
         }
@@ -75,6 +79,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     func didFinish(runID: UUID, succeeded: Bool, message: String?) {
         guard let finished = activeRuns.removeValue(forKey: runID) else { return }
+        FloeLogger(category: .app).info(
+            "backgroundRunFinished run=\(runID.uuidString) succeeded=\(succeeded) remainingRuns=\(activeRuns.count)"
+        )
         let conversationID = finished.conversationID
         notifiedApprovalRuns.remove(runID)
         Task { [weak self] in
@@ -110,6 +117,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// A later newly-started task will call `didStart` and request PiP again.
     func didClosePictureInPicture() {
         surfacedRunID = nil
+        FloeLogger(category: .app).info(
+            "pictureInPictureClosedByUser activeRuns=\(activeRuns.count)"
+        )
     }
 
     /// Applies the user's background-execution choice when a run starts.
@@ -124,8 +134,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     ) {
         switch environment.settingsCenter.backgroundExecution {
         case .standard:
+            FloeLogger(category: .app).info(
+                "backgroundSurfaceSkipped run=\(runID.uuidString) reason=standardPreference"
+            )
             break
         case .pictureInPicture:
+            FloeLogger(category: .app).info(
+                "backgroundSurfaceRequested run=\(runID.uuidString) mode=pictureInPicture"
+            )
             surfacedRunID = runID
             if environment.backgroundVideoService.isPiPActive {
                 environment.backgroundVideoService.update(
@@ -142,6 +158,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 }
             }
         case .screenShare:
+            FloeLogger(category: .app).info(
+                "backgroundSurfaceRequested run=\(runID.uuidString) mode=screenShare sharing=\(environment.screenShareCenter.isSharing)"
+            )
             surfacedRunID = runID
             if environment.backgroundVideoService.isPiPActive {
                 environment.backgroundVideoService.update(
@@ -165,6 +184,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     }
 
     private func tearDownBackgroundExecutionPreference() {
+        FloeLogger(category: .app).info("backgroundSurfaceStopped reason=allRunsFinished")
         surfacedRunID = nil
         environment.backgroundVideoService.stop()
     }

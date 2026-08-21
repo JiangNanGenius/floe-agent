@@ -100,7 +100,6 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy {
     }
 
     public func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
-        let risks = action.riskLabels
         if action.isManagedPythonPackageRequest {
             guard let packageReviewBackend else {
                 return .escalateToHuman(reason: "No software package review model is configured")
@@ -114,10 +113,28 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy {
         if let backend {
             do { return try await backend.decide(action) }
             catch {
-                return .escalateToHuman(reason: "Approval model unavailable: \(error.localizedDescription)")
+                // A provider outage must not make harmless reads unusable.
+                // Fall back to the same deterministic local boundary used
+                // when no classifier is configured; genuinely sensitive
+                // actions still fail closed to the user.
+                return deterministicDecision(
+                    for: action,
+                    unavailableReason: "Approval model unavailable: \(error.localizedDescription)"
+                )
             }
         }
 
+        return deterministicDecision(
+            for: action,
+            unavailableReason: "No approval model is configured for this sensitive action"
+        )
+    }
+
+    private func deterministicDecision(
+        for action: ProposedAction,
+        unavailableReason: String
+    ) -> ApprovalDecision {
+        let risks = action.riskLabels
         let requiresReview: Set<String> = [
             "deletesFiles",
             "accessesCredentials",
@@ -130,7 +147,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy {
             "executesRemoteCommand"
         ]
         if !risks.isDisjoint(with: requiresReview), action.toolCall.toolName != "exec.localPython" {
-            return .escalateToHuman(reason: "No approval model is configured for this sensitive action")
+            return .escalateToHuman(reason: unavailableReason)
         }
         return .allow(
             scope: Self.scope(for: action.toolCall),

@@ -19,6 +19,8 @@ import FloeAgentRuntime
 @MainActor
 final class ThreadDetailViewModel: ObservableObject {
 
+    private let logger = FloeLogger(category: .app)
+
     // MARK: - Published presentation state
 
     /// The conversation's runs, newest first.
@@ -142,11 +144,15 @@ final class ThreadDetailViewModel: ObservableObject {
     /// push stream while it is non-terminal.
     func load() async {
         actionError = nil
+        var stage = "centerReload"
         do {
             await center.reload()
+            stage = "runningInputPreferences"
             await center.environment.settingsCenter.loadRunningInputMode()
             runningInputMode = center.environment.settingsCenter.runningInputMode
+            stage = "workspaceReload"
             await center.environment.workspaceCenter.reload()
+            stage = "conversationRead"
             guard let conversation = try await center.environment.conversationStore
                 .conversation(id: conversationID) else {
                 isConversationMissing = true
@@ -161,9 +167,12 @@ final class ThreadDetailViewModel: ObservableObject {
             center.environment.browserCenter.bind(to: conversationID)
             selectedProjectID = center.environment.workspaceCenter.workspaceID(for: conversationID)
             if selectedModelID == nil { selectedModelID = center.modelPreferences.defaultAgentModelID }
+            stage = "runList"
             runs = try await center.environment.runStore.runs(conversationID: conversationID)
+            stage = "messageList"
             messages = try await center.environment.conversationStore
                 .messages(conversationID: conversationID)
+            stage = "planLoad"
             latestPlan = try await center.environment.intelligenceStore
                 .latestPlan(conversationID: conversationID)
             // Restore Plan mode while an unfinished plan is still awaiting
@@ -173,16 +182,19 @@ final class ThreadDetailViewModel: ObservableObject {
                plan.status == .awaitingInput || plan.status == .ready {
                 agentMode = .plan
             }
+            stage = "goalLoad"
             activeGoal = try await center.environment.intelligenceStore
                 .goals(conversationID: conversationID).first
+            stage = "pendingInputLoad"
             pendingInputs = try await center.environment.runningInputStore
                 .pending(conversationID: conversationID)
             selectedRunID = runs.first?.id
+            stage = "eventLoad"
             try await loadAllEvents()
             startSessionUpdates()
             startLiveUpdates()
         } catch {
-            actionError = error.localizedDescription
+            actionError = presentableError(error, stage: stage)
         }
     }
 
@@ -192,7 +204,7 @@ final class ThreadDetailViewModel: ObservableObject {
         do {
             try await loadEvents()
         } catch {
-            actionError = error.localizedDescription
+            actionError = presentableError(error, stage: "selectRunEvents")
         }
         startLiveUpdates()
     }
@@ -271,7 +283,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 pendingInputs = try await center.environment.runningInputStore
                     .pending(conversationID: conversationID)
             } catch {
-                actionError = error.localizedDescription
+                actionError = presentableError(error, stage: "submitRunningInput")
             }
             return
         }
@@ -304,7 +316,7 @@ final class ThreadDetailViewModel: ObservableObject {
         } catch {
             if draft.isEmpty { draft = goal }
             if attachments.isEmpty { attachments = stagedAttachments }
-            actionError = error.localizedDescription
+            actionError = presentableError(error, stage: "startOrCompleteRun")
         }
     }
 
@@ -359,8 +371,23 @@ final class ThreadDetailViewModel: ObservableObject {
             try await center.retry(runID: runID)
             await load()
         } catch {
-            actionError = error.localizedDescription
+            actionError = presentableError(error, stage: "retryRun")
         }
+    }
+
+    /// Records the exact failing phase without leaking task text or file
+    /// contents. Cocoa's generic code 259 is replaced with an actionable app
+    /// message instead of the misleading system-wide "format incorrect" text.
+    private func presentableError(_ error: Error, stage: String) -> String {
+        let nsError = error as NSError
+        logger.error(
+            "threadActionFailed conversation=\(conversationID.uuidString) stage=\(stage) domain=\(nsError.domain) code=\(nsError.code)"
+        )
+        if nsError.domain == NSCocoaErrorDomain,
+           nsError.code == CocoaError.fileReadCorruptFile.rawValue {
+            return "读取任务数据失败。请重新选择附件或重新打开任务；诊断日志已记录失败阶段（\(stage)）。"
+        }
+        return error.localizedDescription
     }
 
     /// Resolves a pending approval on this thread.
