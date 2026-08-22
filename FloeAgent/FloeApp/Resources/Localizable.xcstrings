@@ -805,6 +805,41 @@
         }
       }
     },
+    "composer.attachment.camera": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Take Photo" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "拍摄照片" } }
+      }
+    },
+    "composer.attachment.files": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Choose from Files" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "从文件中选择" } }
+      }
+    },
+    "composer.attachment.photo_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The selected photo could not be imported. Choose it again or use Files." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法从相册读取所选图片，请重新选择，或使用“从文件中选择”。" } }
+      }
+    },
+    "composer.attachment.photo_library": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Choose from Photos" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "从照片中选择" } }
+      }
+    },
+    "composer.attachment.photo_unreadable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The selected photo could not be read." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法读取所选照片" } }
+      }
+    },
     "composer.mode.agent": {
       "extractionState": "manual",
       "localizations": {
@@ -9303,6 +9338,90 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Only in this workspace" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "仅用于当前工作空间" } }
+      }
+    },
+    "localmodels.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "On-device Models" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本地模型" } }
+      }
+    },
+    "localmodels.download": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Download" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "下载" } }
+      }
+    },
+    "localmodels.remove": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Remove" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "移除" } }
+      }
+    },
+    "localmodels.vision": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Vision" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "视觉" } }
+      }
+    },
+    "localmodels.reasoning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Reasoning" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "推理" } }
+      }
+    },
+    "localmodels.tools": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tools" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "工具" } }
+      }
+    },
+    "localmodels.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Model weights are not bundled. Downloads are user initiated, stored only on this device, validated as GGUF, and run with llama.cpp and Metal." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "应用不内置模型权重。下载由用户主动发起，仅保存在本机，校验 GGUF 格式后通过 llama.cpp 与 Metal 运行。" } }
+      }
+    },
+    "websearch.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Web Search" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "联网搜索" } }
+      }
+    },
+    "websearch.providers": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Search providers" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "搜索供应商" } }
+      }
+    },
+    "websearch.providers.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Search uses the first available provider and can query several providers concurrently in Deep mode. Keys are stored in Keychain; provider preferences sync through iCloud." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "搜索会优先使用可用供应商，深度模式可并发查询多个供应商。密钥存入钥匙串，供应商偏好通过 iCloud 同步。" } }
+      }
+    },
+    "websearch.display_name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Display name" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "显示名称" } }
+      }
+    },
+    "websearch.endpoint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Custom endpoint (optional)" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "自定义端点（可选）" } }
       }
     },
     "state.stopped": {

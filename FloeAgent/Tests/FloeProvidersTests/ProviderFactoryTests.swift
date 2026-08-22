@@ -53,12 +53,16 @@ struct ProviderFactoryTests {
         }
     }
 
-    @Test("All launch presets are present and use HTTPS public endpoints")
+    @Test("Remote launch presets use HTTPS and the local preset is loopback-only")
     func presetsAreCompleteAndSecure() throws {
         let kinds = Set(ProviderPreset.all.map(\.kind))
-        #expect(kinds.isSuperset(of: [.openAI, .anthropic, .volcengineArk, .alibabaStudio, .custom]))
+        #expect(kinds.isSuperset(of: [.openAI, .anthropic, .volcengineArk, .alibabaStudio, .custom, .local]))
         for preset in ProviderPreset.all {
-            #expect(preset.defaultBaseURL.scheme == "https", "\(preset.displayName) must default to HTTPS")
+            if preset.kind == .local {
+                #expect(preset.defaultBaseURL.host == "127.0.0.1")
+            } else {
+                #expect(preset.defaultBaseURL.scheme == "https", "\(preset.displayName) must default to HTTPS")
+            }
             // Presets never carry credentials.
             try preset.defaultBaseURL.absoluteString.withContiguousStorageIfAvailable { _ in }
         }

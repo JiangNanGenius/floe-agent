@@ -359,6 +359,7 @@ struct OnboardingView: View {
         case .anthropic: "a.circle"
         case .volcengineArk: "flame"
         case .alibabaStudio: "cloud"
+        case .local: "iphone"
         case .custom: "slider.horizontal.3"
         }
     }

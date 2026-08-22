@@ -9,6 +9,7 @@ public enum ProviderKind: String, Sendable, Codable, CaseIterable, Hashable {
     case anthropic
     case volcengineArk
     case alibabaStudio
+    case local
     case custom
 }
 

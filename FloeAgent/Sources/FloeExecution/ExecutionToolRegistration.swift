@@ -6,6 +6,7 @@
 
 import Foundation
 import FloeTools
+import FloePersistence
 
 /// Registers the compiled execution tools. Local JavaScript remains opt-in;
 /// local Python is registered only when the app has supplied the bundled
@@ -27,7 +28,9 @@ public func registerExecutionTools(
     service: any ScriptExecutionService = JavaScriptExecutionService(),
     localPythonService: LocalPythonService? = nil,
     sshCommandService: SSHCommandService? = nil,
+    remoteHostStore: RemoteHostStore? = nil,
     httpRequestService: HTTPRequestService = HTTPRequestService(),
+    webSearchService: WebSearchService = WebSearchService(),
     includeOnDeviceJavaScript: Bool = false
 ) -> any ScriptExecutionService {
     // Compile-time catalog descriptors.
@@ -42,7 +45,13 @@ public func registerExecutionTools(
         ToolCatalog.register(SSHInspectTargetTool.self)
         ToolCatalog.register(SSHBootstrapExecutionHostTool.self)
     }
+    if remoteHostStore != nil {
+        ToolCatalog.register(SSHListHostsTool.self)
+        ToolCatalog.register(SSHUpdateHostTool.self)
+    }
     ToolCatalog.register(HTTPRequestTool.self)
+    ToolCatalog.register(WebSearchTool.self)
+    ToolCatalog.register(WebFetchTool.self)
     ToolCatalog.register(NetworkScanLANTool.self)
     ToolCatalog.register(OCRTool.self)
     ToolCatalog.register(BarcodeScanTool.self)
@@ -61,7 +70,13 @@ public func registerExecutionTools(
         registry.register(SSHInspectTargetTool(service: sshCommandService))
         registry.register(SSHBootstrapExecutionHostTool(service: sshCommandService))
     }
+    if let remoteHostStore {
+        registry.register(SSHListHostsTool(store: remoteHostStore))
+        registry.register(SSHUpdateHostTool(store: remoteHostStore))
+    }
     registry.register(HTTPRequestTool(service: httpRequestService))
+    registry.register(WebSearchTool(service: webSearchService))
+    registry.register(WebFetchTool(service: httpRequestService))
     registry.register(NetworkScanLANTool(service: LANDiscoveryService()))
     registry.register(OCRTool())
     registry.register(BarcodeScanTool())

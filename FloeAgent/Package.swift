@@ -25,7 +25,9 @@ let package = Package(
         .library(name: "FloeVNC", targets: ["FloeVNC"]),
         .library(name: "FloeMarkdown", targets: ["FloeMarkdown"]),
         .library(name: "FloeWorkspace", targets: ["FloeWorkspace"]),
-        .library(name: "FloeExecution", targets: ["FloeExecution"])
+        .library(name: "FloeExecution", targets: ["FloeExecution"]),
+        .library(name: "FloeLocalModelCatalog", targets: ["FloeLocalModelCatalog"]),
+        .library(name: "FloeLocalModels", targets: ["FloeLocalModels"])
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.8.0"),
@@ -54,6 +56,15 @@ let package = Package(
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20")
     ],
     targets: [
+        .binaryTarget(
+            name: "LlamaFramework",
+            // Official b10581 device/macOS frameworks plus the unmodified
+            // llama-ios v1.0.0 (upstream b9754) simulator slice. Device uses
+            // b10581 MTMD vision; Simulator is intentionally text-only.
+            // The release notes record provenance and both MIT licenses.
+            url: "https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip",
+            checksum: "95e359c6a93b3bc791c5671970ca37f7bdbc9bfae62b55551750186380cea284"
+        ),
         // MARK: - Cross-platform targets (buildable on macOS host without iOS SDK)
 
         .target(
@@ -92,6 +103,28 @@ let package = Package(
                 .enableExperimentalFeature("StrictConcurrency"),
                 .enableUpcomingFeature("InferSendableFromCaptures"),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault")
+            ]
+        ),
+
+        .target(
+            name: "FloeLlamaVisionShim",
+            dependencies: [],
+            path: "Sources/FloeLlamaVisionShim",
+            publicHeadersPath: "include"
+        ),
+        .target(
+            name: "FloeLocalModelCatalog",
+            dependencies: [],
+            path: "Sources/FloeLocalModelCatalog",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "FloeLocalModels",
+            dependencies: ["FloeCore", "FloeModels", "FloeProviders", "FloeLocalModelCatalog", "LlamaFramework", "FloeLlamaVisionShim"],
+            path: "Sources/FloeLocalModels",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
 
@@ -143,7 +176,8 @@ let package = Package(
             name: "FloeExecution",
             dependencies: [
                 "FloeCore", "FloeTools", "FloeSSH",
-                .product(name: "ZIPFoundation", package: "ZIPFoundation")
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+                .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeExecution",
             swiftSettings: [
@@ -482,6 +516,15 @@ let package = Package(
                 "FloeAgentRuntime", "FloeSSH", "FloePersistence", "FloeTestSupport"
             ],
             path: "Tests/FloeExecutionTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+        .testTarget(
+            name: "FloeLocalModelsTests",
+            dependencies: ["FloeLocalModelCatalog"],
+            path: "Tests/FloeLocalModelsTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency")

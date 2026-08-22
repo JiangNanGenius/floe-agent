@@ -22,6 +22,7 @@ import FloeDocuments
 import FloeImages
 import FloeProviders
 import FloeAgentRuntime
+import FloeLocalModels
 import CloudKit
 
 /// Owns the app's long-lived services and stores. Created once at launch and
@@ -50,6 +51,9 @@ final class AppEnvironment: ObservableObject {
     let credentialStore: CredentialStore
     let credentialVault: CredentialVaultService
     let remoteSessionRegistry: any RemoteSessionRegistry
+    let localModelStore: LocalModelStore
+    let localModelRuntime: LocalModelRuntime
+    let localModelsCenter: LocalModelsCenter
 
     // MARK: Security
 
@@ -92,6 +96,7 @@ final class AppEnvironment: ObservableObject {
     private lazy var _backgroundRunCoordinator = BackgroundRunCoordinator(environment: self)
     private lazy var _screenShareCenter = ScreenShareCenter(conversationCenter: _conversationCenter)
     private lazy var _backgroundVideoService = BackgroundVideoService()
+    private lazy var _webSearchSettingsCenter = WebSearchSettingsCenter()
 
     var conversationCenter: ConversationCenter { _conversationCenter }
     var remoteSessionCenter: RemoteSessionCenter { _remoteSessionCenter }
@@ -133,6 +138,7 @@ final class AppEnvironment: ObservableObject {
         }
         return service
     }
+    var webSearchSettingsCenter: WebSearchSettingsCenter { _webSearchSettingsCenter }
 
     // MARK: State
 
@@ -184,6 +190,10 @@ final class AppEnvironment: ObservableObject {
         self.credentialStore = CredentialStore(database: database)
         self.credentialVault = CredentialVaultService(records: self.credentialStore)
         self.remoteSessionRegistry = remoteSessionRegistry
+        let localModelStore = LocalModelStore()
+        self.localModelStore = localModelStore
+        self.localModelRuntime = LocalModelRuntime(store: localModelStore)
+        self.localModelsCenter = LocalModelsCenter(store: localModelStore)
         self.keychain = keychain
         self.catastrophicGate = catastrophicGate
         self.subagentRunnerRegistry = SubagentRunnerRegistry()
@@ -205,6 +215,11 @@ final class AppEnvironment: ObservableObject {
         self.localPythonProbe = FloeExecution.LocalPythonCapabilityProbe(
             service: localPythonService
         )
+
+        self.localModelsCenter.onCatalogChanged = { [weak self] in
+            await self?.localModelRuntime.unload(modelID: nil)
+            await self?.conversationCenter.reload()
+        }
 
         // All stored properties are initialized above. Registrations below
         // may now safely resolve lazy centers that retain this environment.
@@ -241,6 +256,8 @@ final class AppEnvironment: ObservableObject {
         registerExecutionTools(
             localPythonService: localPythonService,
             sshCommandService: sshCommandService,
+            remoteHostStore: remoteHostStore,
+            webSearchService: WebSearchService(configurations: WebSearchSettingsCenter.resolvedConfigurations),
             includeOnDeviceJavaScript: true
         )
         // Browser automation.

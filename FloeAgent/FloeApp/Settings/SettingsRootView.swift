@@ -13,7 +13,7 @@ import FloeCore
 
 /// One settings category in the settings center.
 enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case general, personalization, providers, auxiliary, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sync, remote, usage, diagnostics
+    case general, personalization, providers, auxiliary, localModels, webSearch, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sync, remote, usage, diagnostics
 
     var id: String { rawValue }
 
@@ -23,6 +23,8 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .personalization: "记忆与个性化"
         case .providers: "settings.section.providers"
         case .auxiliary: "settings.section.auxiliary"
+        case .webSearch: "websearch.title"
+        case .localModels: "localmodels.title"
         case .permissions: "settings.section.permissions"
         case .appleCapabilities: "Apple 能力"
         case .privacy: "settings.section.privacy"
@@ -42,6 +44,8 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .personalization: "person.crop.circle.badge.checkmark"
         case .providers: "antenna.radiowaves.left.and.right"
         case .auxiliary: "photo.badge.plus"
+        case .webSearch: "magnifyingglass"
+        case .localModels: "cpu"
         case .permissions: "checkmark.shield"
         case .appleCapabilities: "apple.logo"
         case .privacy: "hand.raised"
@@ -120,6 +124,10 @@ struct SettingsRootView: View {
             ProvidersSettingsView(center: environment.conversationCenter)
         case .auxiliary:
             AuxiliarySettingsView(center: environment.conversationCenter)
+        case .webSearch:
+            WebSearchSettingsView(center: environment.webSearchSettingsCenter)
+        case .localModels:
+            LocalModelsSettingsView(center: environment.localModelsCenter)
         case .permissions:
             AgentPermissionsView(center: environment.settingsCenter)
         case .appleCapabilities:

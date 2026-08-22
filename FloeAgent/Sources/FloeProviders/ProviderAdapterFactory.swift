@@ -42,6 +42,7 @@ public enum ProviderTemplateID: String, Sendable, Codable, CaseIterable, Hashabl
     case anthropic
     case volcengineArk
     case alibabaStudio
+    case local
     case custom
 }
 
@@ -155,12 +156,24 @@ public extension ProviderPreset {
         authStyle: .bearer
     )
 
+    static let local = ProviderPreset(
+        id: .local,
+        kind: .local,
+        displayName: "On-device models",
+        defaultProtocol: .openAIChatCompletions,
+        supportedProtocols: [.openAIChatCompletions],
+        defaultBaseURL: URL(string: "http://127.0.0.1")!,
+        supportsModelDiscovery: true,
+        authStyle: .none
+    )
+
     /// All launch presets in display order.
     static let all: [ProviderPreset] = [
         .openAIResponses,
         .anthropic,
         .volcengineArk,
         .alibabaStudio,
+        .local,
         .custom
     ]
 

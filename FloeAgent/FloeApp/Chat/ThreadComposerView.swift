@@ -154,6 +154,7 @@ struct ThreadComposerView: View {
     var contextID: UUID? = nil
 
     @State private var isPickerPresented = false
+    @State private var isPhotoPickerPresented = false
     @State private var isCameraPresented = false
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var isAttachmentProcessing = false
@@ -191,6 +192,12 @@ struct ThreadComposerView: View {
                 Task { await registerPicked(url) }
             }
         }
+        .photosPicker(
+            isPresented: $isPhotoPickerPresented,
+            selection: $selectedPhoto,
+            matching: .images,
+            photoLibrary: .shared()
+        )
         .fullScreenCover(isPresented: $isCameraPresented) {
             CameraPickerView { image in
                 isCameraPresented = false
@@ -210,6 +217,7 @@ struct ThreadComposerView: View {
         .onChange(of: contextID) { _, _ in
             attachmentError = nil
             selectedPhoto = nil
+            isPhotoPickerPresented = false
         }
         .onChange(of: isRunning) { _, running in
             if running { attachmentError = nil }
@@ -272,8 +280,15 @@ struct ThreadComposerView: View {
     private var inputRow: some View {
         HStack(alignment: .bottom, spacing: 8) {
             Menu {
-                PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                    Label("从照片中选择", systemImage: "photo.on.rectangle")
+                Button {
+                    // Present PhotosPicker from the stable composer view. A
+                    // PhotosPicker nested directly inside Menu can lose its
+                    // presentation anchor when the menu dismisses, producing
+                    // the observed no-op on iPad and Mac Catalyst.
+                    isPhotoPickerPresented = true
+                    FloeLogger(category: .app).info("photoPickerPresentationRequested")
+                } label: {
+                    Label("composer.attachment.photo_library", systemImage: "photo.on.rectangle")
                 }
                 if AppleCapabilityPreferences.isEnabled(.camera),
                    UIImagePickerController.isSourceTypeAvailable(.camera) {
@@ -281,13 +296,13 @@ struct ThreadComposerView: View {
                         isCameraPresented = true
                         FloeLogger(category: .app).info("cameraCaptureRequested")
                     } label: {
-                        Label("拍摄照片", systemImage: "camera")
+                        Label("composer.attachment.camera", systemImage: "camera")
                     }
                 }
                 Button {
                     isPickerPresented = true
                 } label: {
-                    Label("从文件中选择", systemImage: "folder")
+                    Label("composer.attachment.files", systemImage: "folder")
                 }
             } label: {
                 Image(systemName: "paperclip")
@@ -705,7 +720,7 @@ struct ThreadComposerView: View {
                 "photoPickerTransferStarted types=\(advertisedTypes)"
             )
             guard let data = try await item.loadTransferable(type: Data.self) else {
-                throw FloeError.validationFailed("无法读取所选照片")
+                throw FloeError.validationFailed(String(localized: "composer.attachment.photo_unreadable"))
             }
             let attachment = try environment.filesCenter.registerPhotoData(
                 data,
@@ -721,7 +736,7 @@ struct ThreadComposerView: View {
             FloeLogger(category: .app).warning(
                 "photoPickerTransferFailed domain=\(nsError.domain) code=\(nsError.code)"
             )
-            attachmentError = "无法从相册读取所选图片，请重新选择，或使用“从文件中选择”。"
+            attachmentError = String(localized: "composer.attachment.photo_failed")
         }
     }
 

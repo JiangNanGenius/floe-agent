@@ -14,6 +14,7 @@ import Foundation
 import FloeCore
 import FloeModels
 import FloeAgentRuntime
+import FloeLocalModels
 import FloePersistence
 import FloeProviders
 import FloeSecurity
@@ -146,6 +147,16 @@ final class ConversationCenter: ObservableObject {
     private var attemptedForegroundRecovery: Set<UUID> = []
     private let adapterFactory = ProviderAdapterFactory()
 
+    private func providerAdapter(for provider: ProviderProfile) -> any ProviderAdapter {
+        if provider.kind == .local {
+            return LocalProviderAdapter(
+                runtime: environment.localModelRuntime,
+                store: environment.localModelStore
+            )
+        }
+        return adapterFactory.adapter(for: provider)
+    }
+
     init(environment: AppEnvironment) {
         self.environment = environment
     }
@@ -162,7 +173,22 @@ final class ConversationCenter: ObservableObject {
             conversations = try await loadedConversations
                 .sorted { $0.updatedAt > $1.updatedAt }
             providers = try await loadedProviders.filter(\.isEnabled)
-            let models = try await loadedModels
+            var models = try await loadedModels
+            let localProvider = LocalProviderAdapter.providerProfile
+            let localAdapter = LocalProviderAdapter(
+                runtime: environment.localModelRuntime,
+                store: environment.localModelStore
+            )
+            let localModels = (try? await localAdapter.listModels(
+                provider: localProvider,
+                credentials: ProviderCredentials()
+            )) ?? []
+            if !localModels.isEmpty {
+                providers.removeAll { $0.id == localProvider.id }
+                providers.append(localProvider)
+                models.removeAll { $0.providerID == localProvider.id }
+                models.append(contentsOf: localModels)
+            }
             modelsByProvider = Dictionary(grouping: models, by: \.providerID)
             modelPreferences = try await loadedPreferences
         } catch {
@@ -402,7 +428,7 @@ final class ConversationCenter: ObservableObject {
             SubagentRunner(
                 provider: provider,
                 model: model,
-                adapter: adapterFactory.adapter(for: provider),
+                adapter: providerAdapter(for: provider),
                 credentials: credentials,
                 executor: CatalogToolExecutor()
             ),
@@ -410,7 +436,7 @@ final class ConversationCenter: ObservableObject {
         )
         return ConversationRunService(
             configuration: configuration,
-            adapter: adapterFactory.adapter(for: provider),
+            adapter: providerAdapter(for: provider),
             policy: approvalPolicy(for: taskPolicy),
             executor: CatalogToolExecutor(),
             credentials: credentials,
@@ -459,7 +485,7 @@ final class ConversationCenter: ObservableObject {
                 return AutomaticApprovalPolicy(packageReviewBackend: packageBackend)
             }
             return AutomaticApprovalPolicy(backend: ApprovalModelBackend(
-                adapter: adapterFactory.adapter(for: provider),
+                adapter: providerAdapter(for: provider),
                 provider: provider,
                 model: model,
                 credentials: resolveCredentials(for: provider)
@@ -477,7 +503,7 @@ final class ConversationCenter: ObservableObject {
               let provider = providers.first(where: { $0.id == model.providerID })
         else { return nil }
         return ApprovalModelBackend(
-            adapter: adapterFactory.adapter(for: provider),
+            adapter: providerAdapter(for: provider),
             provider: provider,
             model: model,
             credentials: resolveCredentials(for: provider),
@@ -1557,7 +1583,7 @@ final class ConversationCenter: ObservableObject {
         )
         var output = ""
         do {
-            for try await event in adapterFactory.adapter(for: provider).stream(
+            for try await event in providerAdapter(for: provider).stream(
                 request: request,
                 credentials: resolveCredentials(for: provider)
             ) {
@@ -1622,7 +1648,7 @@ final class ConversationCenter: ObservableObject {
             ]
         )
         do {
-            for try await event in adapterFactory.adapter(for: provider).stream(
+            for try await event in providerAdapter(for: provider).stream(
                 request: request,
                 credentials: resolveCredentials(for: provider)
             ) {
@@ -1977,8 +2003,15 @@ final class ConversationCenter: ObservableObject {
 
     func auxiliaryVisionProviderAndModel() -> (ProviderProfile, ModelProfile)? {
         let candidates = visionModels
+        // An explicit auxiliary selection is authoritative. Older synced
+        // model rows can predate the vision-capability flag; rejecting that
+        // selected row made Settings show a model while image.inspect claimed
+        // none was configured. Capability filtering remains the fallback for
+        // automatic selection.
         let selected = modelPreferences.visionModelID.flatMap { selectedID in
-            candidates.first(where: { $0.id == selectedID })
+            modelsByProvider.values.flatMap { $0 }.first(where: {
+                $0.id == selectedID && $0.isEnabled
+            })
         }
         let defaultVision = modelPreferences.defaultAgentModelID.flatMap { defaultID in
             candidates.first(where: { $0.id == defaultID })
@@ -2060,7 +2093,7 @@ final class ConversationCenter: ObservableObject {
         )
         // Resolve adapter + credentials on the main actor before entering the
         // task group's @Sendable closures.
-        let adapter = adapterFactory.adapter(for: provider)
+        let adapter = providerAdapter(for: provider)
         let credentials = resolveCredentials(for: provider)
         let outcome = await withTaskGroup(
             of: AuxiliaryVisionStreamResult.self,

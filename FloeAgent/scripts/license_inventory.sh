@@ -11,7 +11,7 @@ OUTPUT="LICENSES-THIRD-PARTY.md"
 python3 - <<'PY'
 import json, subprocess, sys
 
-ALLOWED = {"MIT", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "MPL-2.0", "ISC", "0BSD"}
+ALLOWED = {"MIT", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "MPL-2.0", "ISC", "0BSD", "Zlib"}
 GPL_FAMILY = {"GPL-2.0", "GPL-3.0", "LGPL-2.1", "LGPL-3.0", "AGPL-3.0"}
 
 with open("Package.resolved") as f:
@@ -39,6 +39,8 @@ for pin in sorted(pins, key=lambda p: p["identity"]):
                     license_name = "MIT"
                 elif "redistribution and use in source and binary forms" in head:
                     license_name = "BSD-3-Clause"
+                elif "software is provided 'as-is'" in head and "origin of this software must not be misrepresented" in head:
+                    license_name = "Zlib"
                 elif "gnu general public license" in head:
                     license_name = "GPL-3.0"
                 break
@@ -51,6 +53,14 @@ for pin in sorted(pins, key=lambda p: p["identity"]):
         violations.append(f"{identity}: GPL-family license {license_name}")
     elif license_name == "UNKNOWN":
         print(f"warning: {identity}: license undetected, manual review required", file=sys.stderr)
+
+# Binary targets do not appear as pins in Package.resolved. Keep their source
+# and redistribution wrapper explicit so an App Store build cannot silently
+# omit them from the license inventory.
+rows.extend([
+    ("llama.cpp", "b10581", "MIT", "https://github.com/ggml-org/llama.cpp"),
+    ("llama-ios-xcframework", "1.0.0", "MIT", "https://github.com/saitawngpha/llama-ios"),
+])
 
 with open("LICENSES-THIRD-PARTY.md", "w") as out:
     out.write("# Third-Party Licenses\n\n")

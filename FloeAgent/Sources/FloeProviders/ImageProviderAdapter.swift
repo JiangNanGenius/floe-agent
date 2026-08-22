@@ -118,7 +118,7 @@ public struct ImageProviderAdapterFactory: Sendable {
             return VolcengineImageAdapter()
         case .alibabaStudio:
             return AlibabaImageAdapter()
-        case .anthropic, .custom:
+        case .anthropic, .local, .custom:
             // Anthropic has no image-generation endpoint; custom endpoints are
             // not assumed to support image operations.
             return nil

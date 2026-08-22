@@ -467,7 +467,7 @@ private struct AuxiliaryModelEditorView: View {
         case .openAI: "OpenAI"
         case .volcengineArk: "火山方舟"
         case .alibabaStudio: "DashScope"
-        case .anthropic, .custom: ProviderPreset.preset(for: kind).displayName
+        case .anthropic, .local, .custom: ProviderPreset.preset(for: kind).displayName
         }
     }
 
@@ -476,7 +476,7 @@ private struct AuxiliaryModelEditorView: View {
         case .openAI: "gpt-image-2"
         case .volcengineArk: "doubao-seedream-5-0-260128"
         case .alibabaStudio: "wan2.7-image"
-        case .anthropic, .custom: ""
+        case .anthropic, .local, .custom: ""
         }
     }
 
@@ -485,7 +485,7 @@ private struct AuxiliaryModelEditorView: View {
         case .openAI: "OpenAI Images API，支持图片生成与编辑。"
         case .volcengineArk: "火山方舟 Seedream，使用 Ark API Key。"
         case .alibabaStudio: "DashScope（阿里云百炼）图像 API，API Key 与地域端点需匹配。"
-        case .anthropic, .custom: ""
+        case .anthropic, .local, .custom: ""
         }
     }
 }
