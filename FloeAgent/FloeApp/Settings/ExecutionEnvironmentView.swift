@@ -27,7 +27,11 @@ struct ExecutionEnvironmentView: View {
                     state: center.localPythonCapability
                 )
                 LabeledContent("settings.exec.remote_terminal") {
-                    Text("settings.exec.remote_terminal.value \(center.remoteHostCount) \(center.activeRemoteSessionCount)")
+                    Text(String.localizedStringWithFormat(
+                        String(localized: "settings.exec.remote_terminal.value"),
+                        center.remoteHostCount,
+                        center.activeRemoteSessionCount
+                    ))
                         .foregroundStyle(.secondary)
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)

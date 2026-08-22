@@ -9,11 +9,13 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeCore
+import FloeModels
 
 struct FilesSettingsView: View {
     @ObservedObject var center: SettingsCenter
     @State private var clearedBytes: Int64?
     @State private var isClearing = false
+    @State private var workspacePendingDeletion: WorkspaceRecord?
 
     var body: some View {
         Form {
@@ -22,7 +24,7 @@ struct FilesSettingsView: View {
                     Text("settings.files.workspaces.empty")
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(center.workspaces) { workspace in
+                    ForEach(center.workspaces.filter { $0.kind == .project }) { workspace in
                         HStack {
                             Text(workspace.name.isEmpty
                                  ? String(localized: "settings.files.workspace.untitled")
@@ -42,6 +44,20 @@ struct FilesSettingsView: View {
                         .accessibilityAddTraits(
                             workspace.id == center.defaultWorkspaceID ? .isSelected : []
                         )
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                workspacePendingDeletion = workspace
+                            } label: {
+                                Label("移除", systemImage: "trash")
+                            }
+                        }
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                workspacePendingDeletion = workspace
+                            } label: {
+                                Label("移除工作区", systemImage: "trash")
+                            }
+                        }
                     }
                     if center.defaultWorkspaceID != nil {
                         Button("settings.files.workspace.clear_default") {
@@ -76,6 +92,26 @@ struct FilesSettingsView: View {
         }
         .navigationTitle("settings.section.files")
         .task { await center.load() }
+        .confirmationDialog(
+            "移除工作区？",
+            isPresented: Binding(
+                get: { workspacePendingDeletion != nil },
+                set: { if !$0 { workspacePendingDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("移除", role: .destructive) {
+                guard let workspace = workspacePendingDeletion else { return }
+                workspacePendingDeletion = nil
+                Task {
+                    try? await center.environment.workspaceCenter.deleteWorkspace(id: workspace.id)
+                    await center.load()
+                }
+            }
+            Button("取消", role: .cancel) { workspacePendingDeletion = nil }
+        } message: {
+            Text("只移除工作区记录，不会删除外部文件夹或其中内容。")
+        }
     }
 
     // MARK: - Helpers

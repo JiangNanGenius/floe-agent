@@ -30,6 +30,7 @@ final class ProviderListViewModel: ObservableObject {
 
     var providers: [ProviderProfile] {
         center.providers.filter { provider in
+            guard provider.kind != .local else { return false }
             let models = center.modelsByProvider[provider.id] ?? []
             // Keep empty providers visible while they are being configured,
             // but route dedicated image-only endpoints to Auxiliary Models.
@@ -39,6 +40,7 @@ final class ProviderListViewModel: ObservableObject {
 
     var imageOnlyProviders: [ProviderProfile] {
         center.providers.filter { provider in
+            guard provider.kind != .local else { return false }
             let models = center.modelsByProvider[provider.id] ?? []
             return !models.isEmpty
                 && !models.contains { $0.capabilities.contains(.text) }

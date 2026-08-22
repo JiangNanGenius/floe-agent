@@ -67,6 +67,7 @@ struct RootView: View {
     @State private var expandedWorkspaceIDs: Set<UUID> = []
     @State private var renamingConversation: ConversationRecord?
     @State private var deletingConversation: ConversationRecord?
+    @State private var deletingWorkspace: WorkspaceRecord?
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
     @State private var isPhoneSidebarOpen = false
     @GestureState private var phoneDrawerTranslation: CGFloat = 0
@@ -178,6 +179,23 @@ struct RootView: View {
             }
         } message: {
             Text("任务、私有工作区和临时凭据将被删除，此操作不可撤销。")
+        }
+        .confirmationDialog(
+            "移除工作区？",
+            isPresented: Binding(
+                get: { deletingWorkspace != nil },
+                set: { if !$0 { deletingWorkspace = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("移除", role: .destructive) {
+                guard let target = deletingWorkspace else { return }
+                deletingWorkspace = nil
+                Task { try? await environment.workspaceCenter.deleteWorkspace(id: target.id) }
+            }
+            Button("取消", role: .cancel) { deletingWorkspace = nil }
+        } message: {
+            Text("只移除 Floe 中的项目入口，不会删除原文件夹。")
         }
         .preferredColorScheme(resolvedColorScheme)
         .environment(\.locale, resolvedLocale)
@@ -434,6 +452,13 @@ struct RootView: View {
                                 .buttonStyle(.plain)
                             }
                             .accessibilityIdentifier("sidebar.workspace.\(workspace.id.uuidString)")
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    deletingWorkspace = workspace
+                                } label: {
+                                    Label("移除工作区", systemImage: "trash")
+                                }
+                            }
                         }
                     }
                 }
@@ -529,14 +554,17 @@ struct RootView: View {
             } label: {
                 Label("删除任务", systemImage: "trash")
             }
+            Button {
+                Task { try? await environment.conversationCenter.archiveConversation(id: conversation.id) }
+            } label: {
+                Label("归档任务", systemImage: "archivebox")
+            }
         }
-        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button {
                 Task { try? await environment.conversationCenter.archiveConversation(id: conversation.id) }
             } label: { Label("归档", systemImage: "archivebox") }
             .tint(.orange)
-        }
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) { deletingConversation = conversation } label: {
                 Label("删除", systemImage: "trash")
             }

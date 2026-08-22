@@ -313,7 +313,6 @@ final class ConversationCenter: ObservableObject {
     /// tool. Once any tool was requested, replaying the whole prompt could
     /// duplicate an external side effect and therefore remains manual.
     func resumeSafeRunsAfterForeground() async {
-        guard let (provider, model) = defaultProviderAndModel() else { return }
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
         for conversation in conversations {
             guard let loadedRuns = try? await environment.runStore.runs(conversationID: conversation.id),
@@ -327,12 +326,10 @@ final class ConversationCenter: ObservableObject {
             let policy = (try? await workspaceStore.taskPolicy(conversationID: conversation.id))
                 ?? TaskPolicy(conversationID: conversation.id)
             guard policy.recoveryPolicy == .safePoint || policy.recoveryPolicy == .alwaysRetry else { continue }
-            _ = try? await startRun(
-                goal: run.goal,
-                in: conversation.id,
-                provider: provider,
-                model: model
-            )
+            // Resume the existing durable run with its recorded provider and
+            // model. Creating a fresh run here duplicated the user turn and
+            // made every foreground transition look like another task.
+            _ = try? await retry(runID: run.id)
         }
     }
 
@@ -1280,6 +1277,26 @@ final class ConversationCenter: ObservableObject {
                 userRequest: goal,
                 primaryModel: model
             )
+            if provider.kind == .local {
+                self.environment.backgroundRunCoordinator.didUpdateProgress(
+                    runID: runID,
+                    stage: "正在加载本地模型",
+                    progress: 24
+                )
+                do {
+                    try await self.environment.localModelsCenter.prepareForTask(
+                        modelID: model.remoteModelID,
+                        includesVisionProjector: !visual.images.isEmpty
+                    )
+                } catch {
+                    await self.finishDeferredLaunchFailure(
+                        runID: runID,
+                        conversationID: conversationID,
+                        error: error
+                    )
+                    return .failure(error)
+                }
+            }
             guard !Task.isCancelled,
                   self.launchFence.isValid(launchToken),
                   !self.isClearingHistory,
@@ -1308,6 +1325,9 @@ final class ConversationCenter: ObservableObject {
                 currentUserAttachments: prepared.attachments
             )
             self.runServices[runID] = service
+            FloeLogger(category: .runtime).info(
+                "deferredRunServiceReady run=\(runID.uuidString) conversation=\(conversationID.uuidString) provider=\(provider.id.uuidString) model=\(model.id.uuidString)"
+            )
             self.track(service)
             self.publishSession(conversationID)
             return await self.performPreparedService(
@@ -1420,6 +1440,8 @@ final class ConversationCenter: ObservableObject {
                 )
             }
         } catch {
+            await persistServiceFailure(service, error: error, stage: "performPreparedService")
+            terminalState = "failed"
             outcome = .failure(error)
         }
         switch outcome {
@@ -1438,6 +1460,38 @@ final class ConversationCenter: ObservableObject {
         }
         await environment.subagentRunnerRegistry.remove(runID: runID)
         return outcome
+    }
+
+    private func persistServiceFailure(
+        _ service: ConversationRunService,
+        error: Error,
+        stage: String
+    ) async {
+        let snapshot = await service.snapshot()
+        guard !snapshot.isTerminal else { return }
+        let nsError = error as NSError
+        let message = String(error.localizedDescription.prefix(500))
+        FloeLogger(category: .runtime).error(
+            "runServiceFailed run=\(service.runID.uuidString) conversation=\(service.conversationID.uuidString) stage=\(stage) runtimeState=\(snapshot.stateName) domain=\(nsError.domain) code=\(nsError.code) message=\(message)"
+        )
+        try? await environment.runStore.updateRunState(
+            id: service.runID,
+            state: "failed",
+            endedAt: Date()
+        )
+        try? await environment.runStore.recordError(RunErrorRecord(
+            runID: service.runID,
+            kind: stage,
+            message: message,
+            recoverable: !(error is CancellationError)
+        ))
+        _ = try? await environment.runStore.appendEvent(
+            runID: service.runID,
+            kind: .status,
+            payloadJSON: #"{"state":"failed"}"#
+        )
+        activeRuns[service.runID] = nil
+        publishSession(service.conversationID)
     }
 
     /// Advances the deliberately low-frequency SOUL/profile cadence and
@@ -1968,13 +2022,104 @@ final class ConversationCenter: ObservableObject {
             resolvedPair = try await resolveProviderAndModel()
         }
         let (provider, model) = resolvedPair
-        return try await startRun(
-            goal: record.goal,
-            in: record.conversationID,
+        // Continue the original durable run. The old implementation called
+        // startRun(), duplicating the user's message and creating another
+        // preparing row every time Continue was tapped.
+        return try await resumeExistingRun(record, provider: provider, model: model)
+    }
+
+    /// True while this process still owns either preprocessing or a concrete
+    /// runtime service for the run. UI projections use this to distinguish
+    /// the atomic-launch gap from a genuinely parked run.
+    func hasLiveOwner(runID: UUID?) -> Bool {
+        guard let runID else { return false }
+        return runTasks[runID] != nil || runServices[runID] != nil || activeRuns[runID] != nil
+    }
+
+    private func resumeExistingRun(
+        _ record: RunRecord,
+        provider: ProviderProfile,
+        model: ModelProfile
+    ) async throws -> StartedConversationRun {
+        if runTasks[record.id] != nil {
+            throw FloeError.validationFailed("This task is already resuming")
+        }
+        let checkpoint = try await environment.checkpointStore.load(runID: record.id)
+        let assembled = try await ConversationHistoryAssembler(
+            store: environment.conversationStore
+        ).build(conversationID: record.conversationID)
+        let current = assembled.last(where: { $0.role == "user" })
+        let history = current.map { item in assembled.filter { $0.id != item.id } } ?? assembled
+        let mode: AgentExecutionMode = switch checkpoint?.conversationMode {
+        case .plan: .plan
+        case .goal: .goal
+        case .chat, nil: .agent
+        }
+        let service = await runService(
+            for: record.conversationID,
             provider: provider,
             model: model,
-            workspaceID: environment.workspaceCenter.workspaceID(for: record.conversationID)
+            runID: record.id,
+            executionMode: mode,
+            workspaceID: environment.workspaceCenter.workspaceID(for: record.conversationID),
+            memoryQuery: record.goal,
+            conversationHistory: history,
+            currentUserImages: checkpoint == nil ? (current?.images ?? []) : []
         )
+        try await environment.runStore.updateRunState(id: record.id, state: "preparing", endedAt: nil)
+        _ = try? await environment.runStore.appendEvent(
+            runID: record.id,
+            kind: .status,
+            payloadJSON: #"{"state":"preparing","resumed":true}"#
+        )
+        runServices[record.id] = service
+        registerPreparingRun(
+            runID: record.id,
+            conversationID: record.conversationID,
+            goal: record.goal
+        )
+        track(service)
+        publishSession(record.conversationID)
+        let task = Task<Result<Void, Error>, Never> { [weak self, service] in
+            guard let self else {
+                return .failure(FloeError.internalError("Conversation center was released"))
+            }
+            do {
+                if let checkpoint {
+                    try await service.resumePrepared(from: checkpoint)
+                } else {
+                    try await service.startPrepared(goal: record.goal)
+                }
+                return await self.finishResumedService(service)
+            } catch {
+                await self.persistServiceFailure(service, error: error, stage: "resume")
+                self.runTasks[record.id] = nil
+                self.environment.backgroundRunCoordinator.didFinish(
+                    runID: record.id,
+                    succeeded: false,
+                    message: error.localizedDescription
+                )
+                self.publishSession(record.conversationID)
+                return .failure(error)
+            }
+        }
+        runTasks[record.id] = task
+        return StartedConversationRun(runID: record.id, result: task)
+    }
+
+    private func finishResumedService(_ service: ConversationRunService) async -> Result<Void, Error> {
+        let snapshot = await service.snapshot()
+        runTasks[service.runID] = nil
+        let succeeded = snapshot.stateName == "completed"
+        environment.backgroundRunCoordinator.didFinish(
+            runID: service.runID,
+            succeeded: succeeded,
+            message: succeeded ? nil : "Run ended in \(snapshot.stateName)"
+        )
+        publishSession(service.conversationID)
+        return succeeded
+            ? .success(())
+            : .failure(FloeError.internalError("Run ended in \(snapshot.stateName)"))
     }
 
     /// Starts the follow-up run of a conversation with a different model.

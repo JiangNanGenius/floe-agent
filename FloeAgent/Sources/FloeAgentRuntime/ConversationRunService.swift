@@ -319,6 +319,14 @@ public actor ConversationRunService {
         try await runtime.start(goal: goal, images: currentUserImages)
     }
 
+    /// Restores the exact original run without appending another user turn.
+    /// Checkpoint messages already include their system/run context, so they
+    /// are not seeded or injected a second time here.
+    public func resumePrepared(from checkpoint: AgentCheckpoint) async throws {
+        logger.info("Run \(runID.uuidString) resuming from checkpoint")
+        try await runtime.resume(from: checkpoint)
+    }
+
     /// Cancels the run. The runtime owns the terminal transition; persistence
     /// of the checkpoint happens via the runtime's checkpoint store.
     public func cancel() async {

@@ -459,12 +459,13 @@ struct ThreadDetailView: View {
 
     private var continuationBar: some View {
         HStack(spacing: 10) {
-            Image(systemName: "pause.circle")
+            Image(systemName: viewModel.selectedRun?.state == "failed"
+                  ? "exclamationmark.circle" : "pause.circle")
                 .foregroundStyle(FloeTheme.pending)
             VStack(alignment: .leading, spacing: 2) {
-                Text("任务已暂停")
+                Text(viewModel.continuationTitle)
                     .font(FloeTheme.Typography.metadata.weight(.semibold))
-                Text("从当前会话和已保存证据继续，不重复已完成的步骤。")
+                Text(viewModel.continuationDetail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

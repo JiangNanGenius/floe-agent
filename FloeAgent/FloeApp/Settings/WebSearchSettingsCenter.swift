@@ -79,6 +79,13 @@ final class WebSearchSettingsCenter: ObservableObject {
         persist()
     }
 
+    func credential(for configuration: WebSearchProviderConfiguration) -> WebSearchCredential? {
+        guard let data = try? keychain.read(account: configuration.credentialAccount) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(WebSearchCredential.self, from: data)
+    }
+
     nonisolated static func resolvedConfigurations() async -> [(WebSearchProviderConfiguration, WebSearchCredential)] {
         let defaults = UserDefaults.standard
         guard let data = defaults.data(forKey: defaultsKey),
@@ -166,6 +173,9 @@ private struct WebSearchProviderEditor: View {
     @State private var secretKey = ""
     @State private var engineID = ""
     @State private var errorMessage: String?
+    @State private var revealsAPIKey = false
+    @State private var revealsSecretID = false
+    @State private var revealsSecretKey = false
 
     init(center: WebSearchSettingsCenter, configuration: WebSearchProviderConfiguration) {
         self.center = center
@@ -179,10 +189,10 @@ private struct WebSearchProviderEditor: View {
                 TextField("websearch.display_name", text: $configuration.displayName)
                 TextField("websearch.endpoint", text: $endpoint).textInputAutocapitalization(.never).keyboardType(.URL)
                 if configuration.kind == .tencentWSA {
-                    SecureField("SecretId", text: $secretID)
-                    SecureField("SecretKey", text: $secretKey)
+                    credentialField("SecretId", value: $secretID, revealed: $revealsSecretID)
+                    credentialField("SecretKey", value: $secretKey, revealed: $revealsSecretKey)
                 } else {
-                    SecureField("API Key", text: $apiKey)
+                    credentialField("API Key", value: $apiKey, revealed: $revealsAPIKey)
                 }
                 if configuration.kind == .googleProgrammable { TextField("Search Engine ID", text: $engineID) }
                 if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
@@ -192,7 +202,41 @@ private struct WebSearchProviderEditor: View {
                 ToolbarItem(placement: .cancellationAction) { Button("action.cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("action.save") { save() } }
             }
+            .task { loadCredential() }
         }
+    }
+
+    private func credentialField(
+        _ title: String,
+        value: Binding<String>,
+        revealed: Binding<Bool>
+    ) -> some View {
+        HStack {
+            if revealed.wrappedValue {
+                TextField(title, text: value)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            } else {
+                SecureField(title, text: value)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+            Button {
+                revealed.wrappedValue.toggle()
+            } label: {
+                Image(systemName: revealed.wrappedValue ? "eye.slash" : "eye")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(revealed.wrappedValue ? "隐藏凭据" : "显示凭据")
+        }
+    }
+
+    private func loadCredential() {
+        guard let values = center.credential(for: configuration)?.values else { return }
+        apiKey = values["apiKey"] ?? ""
+        secretID = values["secretId"] ?? ""
+        secretKey = values["secretKey"] ?? ""
+        engineID = values["engineId"] ?? ""
     }
 
     private func save() {

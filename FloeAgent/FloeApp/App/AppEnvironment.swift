@@ -193,7 +193,10 @@ final class AppEnvironment: ObservableObject {
         let localModelStore = LocalModelStore()
         self.localModelStore = localModelStore
         self.localModelRuntime = LocalModelRuntime(store: localModelStore)
-        self.localModelsCenter = LocalModelsCenter(store: localModelStore)
+        self.localModelsCenter = LocalModelsCenter(
+            store: localModelStore,
+            runtime: self.localModelRuntime
+        )
         self.keychain = keychain
         self.catastrophicGate = catastrophicGate
         self.subagentRunnerRegistry = SubagentRunnerRegistry()

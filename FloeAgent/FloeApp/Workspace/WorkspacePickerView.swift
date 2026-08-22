@@ -19,6 +19,7 @@ struct WorkspacePickerView: View {
     var onOpened: (() -> Void)? = nil
 
     @State private var isPickerPresented = false
+    @State private var workspacePendingDeletion: WorkspaceRecord?
 
     var body: some View {
         List {
@@ -32,7 +33,6 @@ struct WorkspacePickerView: View {
                 ForEach(center.projectWorkspaces) { workspace in
                     workspaceRow(workspace)
                 }
-                .onDelete(perform: delete)
             }
         }
         .navigationTitle("workspace.title")
@@ -62,6 +62,23 @@ struct WorkspacePickerView: View {
             Button("action.done", role: .cancel) { center.actionError = nil }
         } message: { message in
             Text(message)
+        }
+        .confirmationDialog(
+            "移除工作区？",
+            isPresented: Binding(
+                get: { workspacePendingDeletion != nil },
+                set: { if !$0 { workspacePendingDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("移除", role: .destructive) {
+                guard let workspace = workspacePendingDeletion else { return }
+                workspacePendingDeletion = nil
+                Task { await remove(workspace.id) }
+            }
+            Button("取消", role: .cancel) { workspacePendingDeletion = nil }
+        } message: {
+            Text("只会移除 Floe 中的工作区记录，不会删除您选择的文件夹或其中的文件。")
         }
     }
 
@@ -105,6 +122,20 @@ struct WorkspacePickerView: View {
         .buttonStyle(.plain)
         .frame(minHeight: FloeTheme.minimumTarget)
         .accessibilityLabel(workspace.name)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                workspacePendingDeletion = workspace
+            } label: {
+                Label("移除", systemImage: "trash")
+            }
+        }
+        .contextMenu {
+            Button(role: .destructive) {
+                workspacePendingDeletion = workspace
+            } label: {
+                Label("移除工作区", systemImage: "trash")
+            }
+        }
     }
 
     private func add(_ url: URL) async {
@@ -126,24 +157,12 @@ struct WorkspacePickerView: View {
         }
     }
 
-    private func delete(at offsets: IndexSet) {
-        let visibleProjects = center.projectWorkspaces
-        let ids = offsets.compactMap { visibleProjects[safe: $0]?.id }
-        Task {
-            for id in ids {
-                do {
-                    try await center.deleteWorkspace(id: id)
-                } catch {
-                    center.actionError = error.localizedDescription
-                }
-            }
+    private func remove(_ id: UUID) async {
+        do {
+            try await center.deleteWorkspace(id: id)
+        } catch {
+            center.actionError = error.localizedDescription
         }
-    }
-}
-
-private extension Array {
-    subscript(safe index: Index) -> Element? {
-        indices.contains(index) ? self[index] : nil
     }
 }
 #endif

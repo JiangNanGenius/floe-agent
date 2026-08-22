@@ -90,6 +90,71 @@ struct ConversationRunServiceTests {
         #expect(run?.endedAt != nil)
     }
 
+    @Test("Resuming a prepared run keeps the original run and user turn")
+    func preparedResumeDoesNotDuplicateUserTurn() async throws {
+        let (conversationStore, runStore) = try await makeStores()
+        let conversationID = UUID()
+        let runID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "Resume", createdAt: Date(), updatedAt: Date()
+        ))
+        try await runStore.saveRun(RunRecord(
+            id: runID,
+            conversationID: conversationID,
+            state: "checkpointed",
+            goal: "继续原任务",
+            startedAt: Date()
+        ))
+        let userMessageID = UUID()
+        try await conversationStore.appendMessage(PersistedMessage(
+            id: userMessageID,
+            conversationID: conversationID,
+            role: "user",
+            content: "继续原任务",
+            createdAt: Date(),
+            parts: [.init(
+                messageID: userMessageID,
+                partIndex: 0,
+                kind: .text,
+                text: "继续原任务"
+            )],
+            runID: runID
+        ))
+
+        let adapter = MockAdapter()
+        adapter.script = [[
+            .textDelta(.init(text: "已继续。")),
+            .completed(.init(stopReason: .endTurn))
+        ]]
+        let service = ConversationRunService(
+            configuration: .init(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID())
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            conversationStore: conversationStore,
+            runStore: runStore,
+            runID: runID
+        )
+        let checkpoint = AgentCheckpoint(
+            runID: runID,
+            conversationID: conversationID,
+            state: .preparing(.init(goal: "继续原任务")),
+            messages: [.init(role: "user", content: "继续原任务")],
+            createdAt: Date()
+        )
+
+        try await service.resumePrepared(from: checkpoint)
+
+        let messages = try await conversationStore.messages(conversationID: conversationID)
+        #expect(messages.filter { $0.role == "user" }.count == 1)
+        #expect(messages.contains { $0.role == "assistant" && $0.content == "已继续。" })
+        #expect(try await runStore.run(id: runID)?.state == "completed")
+    }
+
     @Test("A provider that omits streaming usage still records a conservative estimate")
     func estimatesMissingProviderUsage() async throws {
         let (conversationStore, runStore) = try await makeStores()

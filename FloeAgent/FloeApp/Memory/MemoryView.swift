@@ -168,24 +168,24 @@ struct MemoryView: View {
         // actually pushing their destination.
         List {
                 Section("个性化") {
-                    Button { presentedSheet = .userProfile } label: {
-                        personalizationRow("用户画像", icon: "person.text.rectangle", revision: center.profile?.revision)
+                    NavigationLink {
+                        PersonalizationDocumentView(center: center, kind: .userProfile)
+                    } label: {
+                        personalizationRow("用户画像", icon: "person.text.rectangle", available: center.profile != nil)
                     }
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
                     .accessibilityIdentifier("memory.user_profile")
-                    Button { presentedSheet = .soul } label: {
-                        personalizationRow("SOUL.md", icon: "sparkles", revision: center.soul?.revision)
+                    NavigationLink {
+                        PersonalizationDocumentView(center: center, kind: .soul)
+                    } label: {
+                        personalizationRow("SOUL.md", icon: "sparkles", available: center.soul != nil)
                     }
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
                     .accessibilityIdentifier("memory.soul")
-                    Button { presentedSheet = .pending } label: {
+                    NavigationLink {
+                        PendingMemoryReviewView(center: center)
+                    } label: {
                         Label("待确认记忆（\(center.pendingCandidates.count)）", systemImage: "tray.full")
                             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                            .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
                     .accessibilityIdentifier("memory.pending")
                 }
                 if !query.isEmpty { searchSection } else { memorySection }
@@ -213,12 +213,8 @@ struct MemoryView: View {
                 switch sheet {
                 case .add:
                     AddMemorySheet(center: center)
-                case .userProfile:
-                    PersonalizationDocumentView(center: center, kind: .userProfile)
-                case .soul:
-                    PersonalizationDocumentView(center: center, kind: .soul)
-                case .pending:
-                    PendingMemoryReviewView(center: center)
+                case .userProfile, .soul, .pending:
+                    EmptyView()
                 }
             }
         }
@@ -278,8 +274,14 @@ struct MemoryView: View {
         }
     }
 
-    private func personalizationRow(_ title: String, icon: String, revision: Int?) -> some View {
-        HStack { Label(title, systemImage: icon); Spacer(); if let revision { Text("v\(revision)").foregroundStyle(.secondary) } }
+    private func personalizationRow(_ title: String, icon: String, available: Bool) -> some View {
+        HStack {
+            Label(title, systemImage: icon)
+            Spacer()
+            Text(available ? "已配置" : "未生成")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
             .frame(minHeight: FloeTheme.minimumTarget)
     }
     private func scope(_ scope: MemoryScope) -> String {

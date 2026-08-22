@@ -5,18 +5,56 @@ import FloeLocalModels
 
 @MainActor
 final class LocalModelsCenter: ObservableObject {
+    enum RuntimeState: Equatable {
+        case unloaded
+        case loading(String)
+        case ready(String)
+        case failed(String, String)
+    }
     @Published private(set) var installedIDs: Set<String> = []
     @Published private(set) var activeDownloads: Set<String> = []
     @Published private(set) var pausedDownloads: Set<String> = []
     @Published private(set) var downloadProgress: [String: LocalModelDownloadProgress] = [:]
+    @Published private(set) var runtimeState: RuntimeState = .unloaded
     @Published var errorMessage: String?
     let store: LocalModelStore
+    let runtime: LocalModelRuntime
     var onCatalogChanged: (@Sendable () async -> Void)?
     private var downloadTasks: [String: Task<Void, Never>] = [:]
 
-    init(store: LocalModelStore) {
+    init(store: LocalModelStore, runtime: LocalModelRuntime) {
         self.store = store
+        self.runtime = runtime
         Task { await refresh() }
+    }
+
+    func prepareForTask(modelID: String, includesVisionProjector: Bool = false) async throws {
+        runtimeState = .loading(modelID)
+        do {
+            try await runtime.preload(
+                modelID: modelID,
+                includesVisionProjector: includesVisionProjector
+            )
+            runtimeState = .ready(modelID)
+        } catch {
+            runtimeState = .failed(modelID, error.localizedDescription)
+            throw error
+        }
+    }
+
+    func load(_ entry: LocalModelCatalogEntry) {
+        guard installedIDs.contains(entry.id) else { return }
+        Task {
+            do { try await prepareForTask(modelID: entry.id) }
+            catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func unload(_ entry: LocalModelCatalogEntry) {
+        Task {
+            await runtime.unload(modelID: entry.id)
+            runtimeState = .unloaded
+        }
     }
 
     func refresh() async {
@@ -119,6 +157,15 @@ struct LocalModelsSettingsView: View {
                                 Button("localmodels.resume") { center.download(entry) }
                                 Button("localmodels.cancel", role: .destructive) { center.cancel(entry) }
                             } else if center.installedIDs.contains(entry.id) {
+                                switch center.runtimeState {
+                                case .loading(let id) where id == entry.id:
+                                    ProgressView().controlSize(.small)
+                                    Text("正在加载…").font(.caption).foregroundStyle(.secondary)
+                                case .ready(let id) where id == entry.id:
+                                    Button("卸载") { center.unload(entry) }
+                                default:
+                                    Button("加载") { center.load(entry) }
+                                }
                                 Button("localmodels.remove", role: .destructive) { center.remove(entry) }
                             } else {
                                 Button("localmodels.download") { center.download(entry) }
@@ -137,6 +184,9 @@ struct LocalModelsSettingsView: View {
                             if entry.supportsReasoning { Label("localmodels.reasoning", systemImage: "brain") }
                             if entry.supportsToolCalling { Label("localmodels.tools", systemImage: "wrench.and.screwdriver") }
                         }.font(.caption).foregroundStyle(.secondary)
+                        if case .failed(let id, let message) = center.runtimeState, id == entry.id {
+                            Text(message).font(.caption).foregroundStyle(.red)
+                        }
                     }.padding(.vertical, 4)
                 }
             } footer: {

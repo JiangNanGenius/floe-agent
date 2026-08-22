@@ -47,21 +47,27 @@ struct RemoteSettingsView: View {
             }
 
             Section {
-                if center.remoteHostCount == 0 {
-                    Text("settings.remote.hosts.empty")
-                        .foregroundStyle(.secondary)
-                } else {
-                    LabeledContent("settings.remote.hosts.count") {
-                        Text("\(center.remoteHostCount)")
-                            .foregroundStyle(.secondary)
+                NavigationLink {
+                    HostListView(center: center.environment.remoteSessionCenter)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("管理主机")
+                            Text(center.remoteHostCount == 0
+                                 ? String(localized: "settings.remote.hosts.empty")
+                                 : "\(center.remoteHostCount) 台已配置")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if center.activeRemoteSessionCount > 0 {
+                            Text("\(center.activeRemoteSessionCount) 个活跃")
+                                .font(FloeTheme.Typography.metadata)
+                                .foregroundStyle(FloeTheme.success)
+                        }
                     }
-                    .frame(minHeight: FloeTheme.minimumTarget)
-                    LabeledContent("settings.remote.sessions.active") {
-                        Text("\(center.activeRemoteSessionCount)")
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(minHeight: FloeTheme.minimumTarget)
                 }
+                .frame(minHeight: FloeTheme.minimumTarget)
             } header: {
                 Text("settings.remote.hosts")
             } footer: {

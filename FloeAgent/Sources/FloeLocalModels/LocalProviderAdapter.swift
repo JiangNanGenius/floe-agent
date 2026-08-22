@@ -6,6 +6,12 @@ import FloeLocalModelCatalog
 
 @available(macOS 15.4, iOS 18.4, *)
 public actor LocalModelRuntime {
+    public enum LoadState: Sendable, Equatable {
+        case unloaded
+        case loading(modelID: String, includesVisionProjector: Bool)
+        case ready(modelID: String, includesVisionProjector: Bool)
+        case failed(modelID: String, message: String)
+    }
     private let store: LocalModelStore
     private struct EngineKey: Equatable {
         let modelID: String
@@ -20,10 +26,26 @@ public actor LocalModelRuntime {
     /// One FIFO slot also prevents actor reentrancy from swapping an engine
     /// while an earlier request is still decoding with it.
     private var activeEngine: ActiveEngine?
+    private var loadState: LoadState = .unloaded
     private var inferenceBusy = false
     private var inferenceWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(store: LocalModelStore = LocalModelStore()) { self.store = store }
+
+    public func currentLoadState() -> LoadState { loadState }
+
+    /// Maps the model into memory without generating tokens. The settings UI
+    /// can invoke this explicitly, while task launch invokes it automatically
+    /// during the visible preparing phase.
+    public func preload(modelID: String, includesVisionProjector: Bool = false) async throws {
+        await acquireInferenceSlot()
+        defer { releaseInferenceSlot() }
+        _ = try await prepareEngine(
+            modelID: modelID,
+            wantsVision: includesVisionProjector,
+            traceID: UUID().uuidString
+        )
+    }
 
     @available(macOS 15.4, iOS 18.4, *)
     public func complete(modelID: String, prompt: String, images: [Data], maxTokens: Int) async throws -> String {
@@ -33,16 +55,50 @@ public actor LocalModelRuntime {
         let traceID = UUID().uuidString
         let startedAt = Date()
         let wantsVision = !images.isEmpty
+        let prepared = try await prepareEngine(
+            modelID: modelID,
+            wantsVision: wantsVision,
+            traceID: traceID
+        )
+        let engine = prepared.engine
+        let profile = prepared.profile
+        FloeLogger(category: .providers).info(
+            "localInferenceStarted trace=\(traceID) model=\(modelID) promptCharacters=\(prompt.count) images=\(images.count) imageBytes=\(images.reduce(0) { $0 + $1.count }) requestedMaxTokens=\(maxTokens) effectiveMaxTokens=\(min(maxTokens, profile.maximumOutputTokens))"
+        )
+        do {
+            let output = try await engine.complete(
+                prompt: prompt,
+                images: images,
+                maxTokens: min(maxTokens, profile.maximumOutputTokens)
+            )
+            FloeLogger(category: .providers).info(
+                "localInferenceFinished trace=\(traceID) model=\(modelID) outputCharacters=\(output.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
+            return output
+        } catch {
+            let nsError = error as NSError
+            FloeLogger(category: .providers).warning(
+                "localInferenceFailed trace=\(traceID) model=\(modelID) domain=\(nsError.domain) code=\(nsError.code) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
+            throw error
+        }
+    }
+
+    private func prepareEngine(
+        modelID: String,
+        wantsVision: Bool,
+        traceID: String
+    ) async throws -> ActiveEngine {
         let key = EngineKey(modelID: modelID, includesVisionProjector: wantsVision)
-        let engine: LlamaTextEngine
-        let profile: LocalInferenceResourceProfile
         if let cached = activeEngine, cached.key == key {
-            engine = cached.engine
-            profile = cached.profile
+            loadState = .ready(modelID: modelID, includesVisionProjector: wantsVision)
             FloeLogger(category: .providers).debug(
                 "localInferenceEngineReused trace=\(traceID) model=\(modelID) vision=\(wantsVision)"
             )
-        } else {
+            return cached
+        }
+        loadState = .loading(modelID: modelID, includesVisionProjector: wantsVision)
+        do {
             guard let modelURL = await store.installedModelURL(id: modelID) else {
                 FloeLogger(category: .providers).warning(
                     "localInferenceUnavailable trace=\(traceID) model=\(modelID) reason=notInstalled"
@@ -74,7 +130,7 @@ public actor LocalModelRuntime {
                     physical: physicalMemory
                 )
             }
-            profile = LocalInferenceResourcePolicy.profile(
+            let profile = LocalInferenceResourcePolicy.profile(
                 mappedBytes: mappedBytes,
                 physicalMemoryBytes: physicalMemory
             )
@@ -103,29 +159,17 @@ public actor LocalModelRuntime {
                 )
                 throw error
             }
-            activeEngine = ActiveEngine(key: key, engine: loaded, profile: profile)
-            engine = loaded
+            let prepared = ActiveEngine(key: key, engine: loaded, profile: profile)
+            activeEngine = prepared
+            loadState = .ready(modelID: modelID, includesVisionProjector: wantsVision)
             FloeLogger(category: .providers).info(
                 "localInferenceEngineLoadFinished trace=\(traceID) model=\(modelID) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
             )
-        }
-        FloeLogger(category: .providers).info(
-            "localInferenceStarted trace=\(traceID) model=\(modelID) promptCharacters=\(prompt.count) images=\(images.count) imageBytes=\(images.reduce(0) { $0 + $1.count }) requestedMaxTokens=\(maxTokens) effectiveMaxTokens=\(min(maxTokens, profile.maximumOutputTokens))"
-        )
-        do {
-            let output = try await engine.complete(
-                prompt: prompt,
-                images: images,
-                maxTokens: min(maxTokens, profile.maximumOutputTokens)
-            )
-            FloeLogger(category: .providers).info(
-                "localInferenceFinished trace=\(traceID) model=\(modelID) outputCharacters=\(output.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
-            )
-            return output
+            return prepared
         } catch {
-            let nsError = error as NSError
-            FloeLogger(category: .providers).warning(
-                "localInferenceFailed trace=\(traceID) model=\(modelID) domain=\(nsError.domain) code=\(nsError.code) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            loadState = .failed(
+                modelID: modelID,
+                message: String(error.localizedDescription.prefix(300))
             )
             throw error
         }
@@ -138,6 +182,7 @@ public actor LocalModelRuntime {
         if modelID == nil || previous?.key.modelID == modelID {
             activeEngine = nil
             if let previous { await previous.engine.shutdown() }
+            loadState = .unloaded
         }
         FloeLogger(category: .providers).info(
             "localInferenceUnloaded requested=\(modelID ?? "all") released=\(previous != nil && (modelID == nil || previous?.key.modelID == modelID))"

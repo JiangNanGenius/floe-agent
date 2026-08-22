@@ -113,6 +113,11 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var isDraining = false
 
     private var liveEventTask: Task<Void, Never>?
+    /// Run whose concrete runtime service is currently being observed. A
+    /// durable run exists before attachment/vision preprocessing finishes,
+    /// so `selectedRunID` alone cannot tell us whether the live subscription
+    /// has actually been attached yet.
+    private var observedServiceRunID: UUID?
     private var sessionEventTask: Task<Void, Never>?
     private var sessionRevision = -1
     private let diagnostics: ThreadStreamingDiagnostics
@@ -213,7 +218,20 @@ final class ThreadDetailViewModel: ObservableObject {
 
     var canContinue: Bool {
         guard !isRunning, let state = selectedRun?.state else { return false }
-        return ["failed", "interrupted", "checkpointed"].contains(state)
+        return !center.hasLiveOwner(runID: selectedRun?.id)
+            && ["failed", "interrupted", "checkpointed"].contains(state)
+    }
+
+    var continuationTitle: String {
+        switch selectedRun?.state {
+        case "failed": "任务失败，可从检查点继续"
+        case "interrupted": "任务被中断"
+        default: "任务已保存检查点"
+        }
+    }
+
+    var continuationDetail: String {
+        "继续原任务和原消息，不会新建重复任务；已经完成的工具步骤会被复用。"
     }
 
     var usageSummary: ThreadUsageSummary? {
@@ -311,7 +329,13 @@ final class ThreadDetailViewModel: ObservableObject {
             stage = "pendingInputLoad"
             pendingInputs = try await center.environment.runningInputStore
                 .pending(conversationID: conversationID)
-            selectedRunID = runs.first?.id
+            // Preserve an explicit router/run selection. `runs` is newest
+            // first, but unconditionally selecting its first item on every
+            // refresh used to detach the UI from a just-launched run or from
+            // the checkpoint the user explicitly opened.
+            if selectedRunID.flatMap({ id in runs.first(where: { $0.id == id }) }) == nil {
+                selectedRunID = runs.first?.id
+            }
             stage = "eventLoad"
             try await loadAllEvents()
             try await loadAllUsage()
@@ -495,7 +519,7 @@ final class ThreadDetailViewModel: ObservableObject {
         } catch { actionError = error.localizedDescription }
     }
 
-    /// Retries the selected run (fresh run, same goal/provider/model).
+    /// Resumes the selected durable run without duplicating its user message.
     func retry() async {
         guard let runID = selectedRun?.id else { return }
         actionError = nil
@@ -706,7 +730,11 @@ final class ThreadDetailViewModel: ObservableObject {
                 self.messages = snapshot.messages
                 self.runs = snapshot.runs
                 self.eventsByRun = snapshot.eventsByRun
-                self.selectedRunID = snapshot.runs.first?.id
+                if self.selectedRunID.flatMap({ id in
+                    snapshot.runs.first(where: { $0.id == id })
+                }) == nil {
+                    self.selectedRunID = snapshot.runs.first?.id
+                }
                 self.events = self.selectedRunID.flatMap { snapshot.eventsByRun[$0] } ?? []
                 self.latestPlan = snapshot.latestPlan
                 // Keep Plan mode in sync when a plan becomes ready or still
@@ -718,7 +746,10 @@ final class ThreadDetailViewModel: ObservableObject {
                 self.activeGoal = snapshot.activeGoal
                 self.taskPolicy = snapshot.taskPolicy
                 self.pendingInputs = snapshot.pendingInputs
-                if previousRunID != self.selectedRunID {
+                let serviceBecameAvailable = self.selectedRunID.flatMap {
+                    center.service(for: $0) != nil && self.observedServiceRunID != $0
+                } ?? false
+                if previousRunID != self.selectedRunID || serviceBecameAvailable {
                     self.startLiveUpdates()
                 }
             }
@@ -727,6 +758,7 @@ final class ThreadDetailViewModel: ObservableObject {
 
     private func startLiveUpdates() {
         liveEventTask?.cancel()
+        observedServiceRunID = nil
         guard let run = selectedRun else { return }
         liveStateName = run.state
         liveReasoningText = ""
@@ -740,10 +772,15 @@ final class ThreadDetailViewModel: ObservableObject {
             guard let self else { return }
             guard let service = center.service(for: run.id) else {
                 self.liveStateName = run.state
-                self.isRunning = false
+                // Atomic launch deliberately persists the run before
+                // attachment/vision preparation creates its runtime service.
+                // That gap is still a live task, not a pause/failure.
+                self.isRunning = center.hasLiveOwner(runID: run.id)
+                    || !RunStateLocalizer.isTerminal(run.state)
                 self.isDraining = false
                 return
             }
+            self.observedServiceRunID = run.id
 
             // Subscribe before reading the snapshot so an event arriving at
             // the boundary is buffered instead of falling between snapshot
@@ -873,6 +910,7 @@ final class ThreadDetailViewModel: ObservableObject {
     func stopLiveUpdates() {
         liveEventTask?.cancel()
         liveEventTask = nil
+        observedServiceRunID = nil
         sessionEventTask?.cancel()
         sessionEventTask = nil
         // Leaving the thread stops the animation immediately; the partial
