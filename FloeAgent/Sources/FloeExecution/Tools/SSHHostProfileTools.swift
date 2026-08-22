@@ -18,10 +18,16 @@ public struct SSHListHostsTool: AgentTool {
     public func validate(_ args: Arguments) throws {}
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        let hosts = try await store.hosts().enumerated().map { index, host in
+        let traceID = UUID().uuidString
+        let startedAt = Date()
+        let storedHosts = try await store.hosts()
+        let hosts = storedHosts.enumerated().map { index, host in
             ["id": host.id.uuidString, "name": host.displayName, "address": host.address,
              "port": String(host.port), "user": host.user, "default": String(index == 0)]
         }
+        FloeLogger(category: .ssh).info(
+            "sshHostListFinished trace=\(traceID) count=\(hosts.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+        )
         let data = try JSONSerialization.data(withJSONObject: ["hosts": hosts], options: [.sortedKeys])
         return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self), fullOutputSHA256: digest(data), exitStatus: 0)
     }
@@ -56,13 +62,36 @@ public struct SSHUpdateHostTool: AgentTool {
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        let traceID = UUID().uuidString
+        let startedAt = Date()
         let id = UUID(uuidString: args.hostID)!
-        guard var host = try await store.host(id: id) else { throw FloeError.validationFailed("paired host not found") }
+        let changedFields = [args.displayName == nil ? nil : "displayName", args.address == nil ? nil : "address",
+                             args.port == nil ? nil : "port", args.user == nil ? nil : "user"].compactMap { $0 }
+        FloeLogger(category: .ssh).info(
+            "sshHostUpdateStarted trace=\(traceID) host=\(id.uuidString) fields=\(changedFields.joined(separator: ","))"
+        )
+        guard var host = try await store.host(id: id) else {
+            FloeLogger(category: .ssh).warning(
+                "sshHostUpdateFailed trace=\(traceID) host=\(id.uuidString) reason=notFound"
+            )
+            throw FloeError.validationFailed("paired host not found")
+        }
         if let value = args.displayName { host.displayName = value.trimmingCharacters(in: .whitespacesAndNewlines) }
         if let value = args.address { host.address = value.trimmingCharacters(in: .whitespacesAndNewlines) }
         if let value = args.port { host.port = value }
         if let value = args.user { host.user = value.trimmingCharacters(in: .whitespacesAndNewlines) }
-        try await store.saveHost(host)
+        do {
+            try await store.saveHost(host)
+        } catch {
+            let nsError = error as NSError
+            FloeLogger(category: .ssh).warning(
+                "sshHostUpdateFailed trace=\(traceID) host=\(id.uuidString) domain=\(nsError.domain) code=\(nsError.code) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
+            throw error
+        }
+        FloeLogger(category: .ssh).info(
+            "sshHostUpdateFinished trace=\(traceID) host=\(id.uuidString) fields=\(changedFields.joined(separator: ",")) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+        )
         let data = try JSONSerialization.data(withJSONObject: ["updated": true, "hostID": id.uuidString], options: [.sortedKeys])
         return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self), fullOutputSHA256: digest(data), exitStatus: 0)
     }

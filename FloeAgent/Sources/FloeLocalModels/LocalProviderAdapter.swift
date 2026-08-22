@@ -13,23 +13,66 @@ public actor LocalModelRuntime {
 
     @available(macOS 15.4, iOS 18.4, *)
     public func complete(modelID: String, prompt: String, images: [Data], maxTokens: Int) async throws -> String {
+        let traceID = UUID().uuidString
+        let startedAt = Date()
         let engine: LlamaTextEngine
         if let cached = engines[modelID] {
             engine = cached
+            FloeLogger(category: .providers).debug(
+                "localInferenceEngineReused trace=\(traceID) model=\(modelID)"
+            )
         } else {
             guard let modelURL = await store.installedModelURL(id: modelID) else {
+                FloeLogger(category: .providers).warning(
+                    "localInferenceUnavailable trace=\(traceID) model=\(modelID) reason=notInstalled"
+                )
                 throw FloeError.notFound("Local model \(modelID) is not installed")
             }
             let projectorURL = await store.installedProjectorURL(id: modelID)
-            let loaded = try LlamaTextEngine(modelURL: modelURL, projectorURL: projectorURL)
+            let loadStartedAt = Date()
+            FloeLogger(category: .providers).info(
+                "localInferenceEngineLoadStarted trace=\(traceID) model=\(modelID) projector=\(projectorURL != nil)"
+            )
+            let loaded: LlamaTextEngine
+            do {
+                loaded = try LlamaTextEngine(modelURL: modelURL, projectorURL: projectorURL)
+            } catch {
+                let nsError = error as NSError
+                FloeLogger(category: .providers).warning(
+                    "localInferenceEngineLoadFailed trace=\(traceID) model=\(modelID) projector=\(projectorURL != nil) domain=\(nsError.domain) code=\(nsError.code) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
+                )
+                throw error
+            }
             engines[modelID] = loaded
             engine = loaded
+            FloeLogger(category: .providers).info(
+                "localInferenceEngineLoadFinished trace=\(traceID) model=\(modelID) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
+            )
         }
-        return try await engine.complete(prompt: prompt, images: images, maxTokens: maxTokens)
+        FloeLogger(category: .providers).info(
+            "localInferenceStarted trace=\(traceID) model=\(modelID) promptCharacters=\(prompt.count) images=\(images.count) imageBytes=\(images.reduce(0) { $0 + $1.count }) maxTokens=\(maxTokens)"
+        )
+        do {
+            let output = try await engine.complete(prompt: prompt, images: images, maxTokens: maxTokens)
+            FloeLogger(category: .providers).info(
+                "localInferenceFinished trace=\(traceID) model=\(modelID) outputCharacters=\(output.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
+            return output
+        } catch {
+            let nsError = error as NSError
+            FloeLogger(category: .providers).warning(
+                "localInferenceFailed trace=\(traceID) model=\(modelID) domain=\(nsError.domain) code=\(nsError.code) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
+            throw error
+        }
     }
 
     public func unload(modelID: String? = nil) {
+        let before = engines.count
         if let modelID { engines[modelID] = nil } else { engines.removeAll() }
+        FloeLogger(category: .providers).info(
+            "localInferenceUnloaded requested=\(modelID ?? "all") before=\(before) after=\(engines.count)"
+        )
     }
 }
 

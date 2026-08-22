@@ -53,10 +53,10 @@ struct FloeLoggerBufferTests {
         let before = FloeLogger.buffer.recentEntries.count
         logger.info("diagnostics probe entry")
         let after = FloeLogger.buffer.recentEntries.count
-        // The process-wide buffer may already be at its fixed 500-entry
+        // The process-wide buffer may already be at its fixed default
         // capacity when the whole suite runs in parallel. Appending must then
         // replace the oldest entry without increasing the count.
-        #expect(after == min(before + 1, 500))
+        #expect(after == min(before + 1, FloeLogger.RingBuffer.defaultCapacity))
         #expect(FloeLogger.buffer.recentEntries.last?.message == "diagnostics probe entry")
         #expect(FloeLogger.buffer.recentEntries.last?.category == "app")
     }

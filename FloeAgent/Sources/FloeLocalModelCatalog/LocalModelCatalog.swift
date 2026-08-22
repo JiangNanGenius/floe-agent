@@ -1,4 +1,5 @@
 import Foundation
+import FloeCore
 
 public struct LocalModelCatalogEntry: Identifiable, Codable, Hashable, Sendable {
     public var id: String
@@ -92,11 +93,21 @@ public actor LocalModelStore {
     }
 
     public func download(_ entry: LocalModelCatalogEntry) async throws -> URL {
+        let traceID = UUID().uuidString
+        let startedAt = Date()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let values = try root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
         let available = values.volumeAvailableCapacityForImportantUsage ?? 0
         let required = max(entry.approximateDownloadBytes * 2, 1_000_000_000)
-        guard available >= required else { throw StoreError.insufficientDiskSpace(required: required, available: available) }
+        guard available >= required else {
+            FloeLogger(category: .providers).warning(
+                "localModelDownloadRejected trace=\(traceID) model=\(entry.id) reason=insufficientDisk requiredBytes=\(required) availableBytes=\(available)"
+            )
+            throw StoreError.insufficientDiskSpace(required: required, available: available)
+        }
+        FloeLogger(category: .providers).info(
+            "localModelDownloadStarted trace=\(traceID) model=\(entry.id) expectedBytes=\(entry.approximateDownloadBytes) availableBytes=\(available) visionProjector=\(entry.visionProjectorFile != nil)"
+        )
 
         let directory = root.appendingPathComponent(entry.id, isDirectory: true)
         let staging = root.appendingPathComponent(".\(entry.id)-\(UUID().uuidString).staging", isDirectory: true)
@@ -104,11 +115,15 @@ public actor LocalModelStore {
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         do {
             let stagedModel = staging.appendingPathComponent(entry.modelFile)
-            try await Self.downloadGGUF(from: entry.modelURL, to: stagedModel)
+            try await Self.downloadGGUF(
+                from: entry.modelURL, to: stagedModel,
+                traceID: traceID, modelID: entry.id, component: "weights"
+            )
             if let projectorURL = entry.visionProjectorURL, let projectorName = entry.visionProjectorFile {
                 try await Self.downloadGGUF(
                     from: projectorURL,
-                    to: staging.appendingPathComponent(projectorName)
+                    to: staging.appendingPathComponent(projectorName),
+                    traceID: traceID, modelID: entry.id, component: "projector"
                 )
             }
 
@@ -123,6 +138,9 @@ public actor LocalModelStore {
                 }
                 throw error
             }
+            FloeLogger(category: .providers).info(
+                "localModelInstallFinished trace=\(traceID) model=\(entry.id) replacedExisting=\(hadPrevious) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
             return directory.appendingPathComponent(entry.modelFile)
         } catch {
             try? FileManager.default.removeItem(at: staging)
@@ -130,6 +148,10 @@ public actor LocalModelStore {
                !FileManager.default.fileExists(atPath: directory.path) {
                 try? FileManager.default.moveItem(at: backup, to: directory)
             }
+            let nsError = error as NSError
+            FloeLogger(category: .providers).warning(
+                "localModelInstallFailed trace=\(traceID) model=\(entry.id) domain=\(nsError.domain) code=\(nsError.code) restoredPrevious=\(FileManager.default.fileExists(atPath: directory.path)) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
             throw error
         }
     }
@@ -145,12 +167,26 @@ public actor LocalModelStore {
         guard try handle.read(upToCount: 4) == Data([0x47, 0x47, 0x55, 0x46]) else { throw StoreError.invalidGGUF }
     }
 
-    private static func downloadGGUF(from source: URL, to destination: URL) async throws {
+    private static func downloadGGUF(
+        from source: URL,
+        to destination: URL,
+        traceID: String,
+        modelID: String,
+        component: String
+    ) async throws {
+        let startedAt = Date()
+        FloeLogger(category: .providers).debug(
+            "localModelComponentDownloadStarted trace=\(traceID) model=\(modelID) component=\(component) host=\(source.host ?? "none")"
+        )
         let (temporary, response) = try await URLSession.shared.download(from: source)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw URLError(.badServerResponse)
         }
         try validateGGUF(temporary)
+        let bytes = (try? temporary.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         try FileManager.default.moveItem(at: temporary, to: destination)
+        FloeLogger(category: .providers).info(
+            "localModelComponentDownloadFinished trace=\(traceID) model=\(modelID) component=\(component) bytes=\(bytes) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+        )
     }
 }

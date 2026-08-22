@@ -848,28 +848,29 @@ final class ConversationCenter: ObservableObject {
         userRequest: String,
         primaryModel: ModelProfile
     ) async -> (images: [ConversationImagePart], context: [ConversationMessage]) {
+        let traceID = UUID().uuidString
         guard !images.isEmpty else {
             FloeLogger(category: .app).info(
-                "visualEvidenceSkipped reason=noImages primaryModel=\(primaryModel.id.uuidString)"
+                "visualEvidenceSkipped trace=\(traceID) reason=noImages primaryModel=\(primaryModel.id.uuidString)"
             )
             return ([], [])
         }
         FloeLogger(category: .app).info(
-            "visualEvidenceStarted count=\(images.count) encodedCharacters=\(images.reduce(0) { $0 + $1.base64.count }) primaryModel=\(primaryModel.id.uuidString) primaryVision=\(primaryModel.capabilities.contains(.vision))"
+            "visualEvidenceStarted trace=\(traceID) count=\(images.count) encodedCharacters=\(images.reduce(0) { $0 + $1.base64.count }) primaryModel=\(primaryModel.id.uuidString) primaryVision=\(primaryModel.capabilities.contains(.vision))"
         )
         if primaryModel.capabilities.contains(.vision) {
             FloeLogger(category: .app).info(
-                "visualEvidenceReady route=primaryInline count=\(images.count)"
+                "visualEvidenceReady trace=\(traceID) route=primaryInline count=\(images.count)"
             )
             return (images, [])
         }
         guard let (provider, model) = auxiliaryVisionProviderAndModel() else {
             if let ocr = await onDeviceOCRContext(images) {
-                FloeLogger(category: .app).info("visualEvidenceReady route=onDeviceOCR")
+                FloeLogger(category: .app).info("visualEvidenceReady trace=\(traceID) route=onDeviceOCR")
                 return ([], [ConversationMessage(role: "system", content: ocr)])
             }
             FloeLogger(category: .app).warning(
-                "visualEvidenceUnavailable reason=noAuxiliaryVision count=\(images.count)"
+                "visualEvidenceUnavailable trace=\(traceID) reason=noAuxiliaryVision count=\(images.count)"
             )
             return ([], [ConversationMessage(
                 role: "system",
@@ -877,7 +878,7 @@ final class ConversationCenter: ObservableObject {
             )])
         }
         FloeLogger(category: .app).info(
-            "visualEvidenceRoute route=auxiliary provider=\(provider.id.uuidString) model=\(model.id.uuidString) count=\(images.count)"
+            "visualEvidenceRoute trace=\(traceID) route=auxiliary provider=\(provider.id.uuidString) model=\(model.id.uuidString) count=\(images.count)"
         )
         let boundedImages = Array(images.prefix(6))
         let startedAt = Date()
@@ -901,7 +902,8 @@ final class ConversationCenter: ObservableObject {
                     return (index, await self.describeImageResult(
                         base64: image.base64,
                         mimeType: image.mimeType,
-                        prompt: prompt
+                        prompt: prompt,
+                        traceID: "\(traceID).\(index + 1)"
                     ))
                 }
             }
@@ -932,15 +934,15 @@ final class ConversationCenter: ObservableObject {
             if case .failure = item.1 { count += 1 }
         }
         FloeLogger(category: .app).info(
-            "visualEvidenceAuxiliaryFinished model=\(model.id.uuidString) durationMs=\(durationMs) succeeded=\(indexedDescriptions.count - failedCount) failed=\(failedCount) characters=\(description.count) concurrency=\(min(3, boundedImages.count))"
+            "visualEvidenceAuxiliaryFinished trace=\(traceID) model=\(model.id.uuidString) durationMs=\(durationMs) succeeded=\(indexedDescriptions.count - failedCount) failed=\(failedCount) characters=\(description.count) concurrency=\(min(3, boundedImages.count))"
         )
         guard !description.isEmpty else {
             if let ocr = await onDeviceOCRContext(images) {
-                FloeLogger(category: .app).info("visualEvidenceReady route=onDeviceOCRAfterAuxiliary")
+                FloeLogger(category: .app).info("visualEvidenceReady trace=\(traceID) route=onDeviceOCRAfterAuxiliary")
                 return ([], [ConversationMessage(role: "system", content: ocr)])
             }
             FloeLogger(category: .app).warning(
-                "visualEvidenceUnavailable reason=auxiliaryEmpty model=\(model.id.uuidString)"
+                "visualEvidenceUnavailable trace=\(traceID) reason=auxiliaryEmpty model=\(model.id.uuidString)"
             )
             return ([], [ConversationMessage(
                 role: "system",
@@ -948,7 +950,7 @@ final class ConversationCenter: ObservableObject {
             )])
         }
         FloeLogger(category: .app).info(
-            "visualEvidenceReady route=auxiliary model=\(model.id.uuidString) characters=\(description.count)"
+            "visualEvidenceReady trace=\(traceID) route=auxiliary model=\(model.id.uuidString) characters=\(description.count)"
         )
         return ([], [ConversationMessage(
             role: "system",
@@ -2068,15 +2070,29 @@ final class ConversationCenter: ObservableObject {
         mimeType: String,
         prompt: String
     ) async -> AuxiliaryVisionResult {
+        await describeImageResult(
+            base64: base64,
+            mimeType: mimeType,
+            prompt: prompt,
+            traceID: UUID().uuidString
+        )
+    }
+
+    private func describeImageResult(
+        base64: String,
+        mimeType: String,
+        prompt: String,
+        traceID: String
+    ) async -> AuxiliaryVisionResult {
         guard let (provider, model) = auxiliaryVisionProviderAndModel() else {
             FloeLogger(category: .app).warning(
-                "imageInspectUnavailable reason=noVisionCandidate mime=\(mimeType) encodedCharacters=\(base64.count)"
+                "imageInspectUnavailable trace=\(traceID) reason=noVisionCandidate mime=\(mimeType) encodedCharacters=\(base64.count)"
             )
             return .failure(.noConfiguredModel)
         }
         let startedAt = Date()
         FloeLogger(category: .app).info(
-            "imageInspectStarted provider=\(provider.id.uuidString) model=\(model.id.uuidString) mime=\(mimeType) encodedCharacters=\(base64.count)"
+            "imageInspectStarted trace=\(traceID) provider=\(provider.id.uuidString) model=\(model.id.uuidString) mime=\(mimeType) encodedCharacters=\(base64.count) reasoning=low timeoutSeconds=30"
         )
         let parts: [ProviderContentPart] = [
             .text(prompt),
@@ -2133,18 +2149,18 @@ final class ConversationCenter: ObservableObject {
         switch outcome {
         case .response(let description):
             FloeLogger(category: .app).info(
-                "imageInspectFinished model=\(model.id.uuidString) durationMs=\(durationMs) characters=\(description.count)"
+                "imageInspectFinished trace=\(traceID) model=\(model.id.uuidString) durationMs=\(durationMs) characters=\(description.count)"
             )
             let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? .failure(.emptyResponse) : .success(trimmed)
         case .failed(let domain, let code, let message):
             FloeLogger(category: .app).warning(
-                "imageInspectFailed model=\(model.id.uuidString) durationMs=\(durationMs) domain=\(domain) code=\(code) message=\(message)"
+                "imageInspectFailed trace=\(traceID) model=\(model.id.uuidString) durationMs=\(durationMs) domain=\(domain) code=\(code) message=\(message)"
             )
             return .failure(.provider(domain: domain, code: code, message: message))
         case .timedOut:
             FloeLogger(category: .app).warning(
-                "imageInspectTimedOut model=\(model.id.uuidString) timeoutSeconds=30"
+                "imageInspectTimedOut trace=\(traceID) model=\(model.id.uuidString) timeoutSeconds=30 durationMs=\(durationMs)"
             )
             return .failure(.timedOut(seconds: 30))
         }

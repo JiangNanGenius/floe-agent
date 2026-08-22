@@ -155,6 +155,7 @@ struct ThreadComposerView: View {
 
     @State private var isPickerPresented = false
     @State private var isPhotoPickerPresented = false
+    @State private var photoPickerTraceID: UUID?
     @State private var isCameraPresented = false
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var isAttachmentProcessing = false
@@ -218,6 +219,7 @@ struct ThreadComposerView: View {
             attachmentError = nil
             selectedPhoto = nil
             isPhotoPickerPresented = false
+            photoPickerTraceID = nil
         }
         .onChange(of: isRunning) { _, running in
             if running { attachmentError = nil }
@@ -285,8 +287,12 @@ struct ThreadComposerView: View {
                     // PhotosPicker nested directly inside Menu can lose its
                     // presentation anchor when the menu dismisses, producing
                     // the observed no-op on iPad and Mac Catalyst.
+                    let traceID = UUID()
+                    photoPickerTraceID = traceID
                     isPhotoPickerPresented = true
-                    FloeLogger(category: .app).info("photoPickerPresentationRequested")
+                    FloeLogger(category: .app).info(
+                        "photoPickerPresentationRequested trace=\(traceID.uuidString) context=\(contextID?.uuidString ?? "none")"
+                    )
                 } label: {
                     Label("composer.attachment.photo_library", systemImage: "photo.on.rectangle")
                 }
@@ -710,14 +716,19 @@ struct ThreadComposerView: View {
     }
 
     private func registerPickedPhoto(_ item: PhotosPickerItem) async {
+        let traceID = photoPickerTraceID ?? UUID()
+        let startedAt = Date()
         isAttachmentProcessing = true
         defer { isAttachmentProcessing = false }
-        defer { selectedPhoto = nil }
+        defer {
+            selectedPhoto = nil
+            photoPickerTraceID = nil
+        }
         do {
             let advertisedTypes = item.supportedContentTypes
                 .map(\.identifier).prefix(8).joined(separator: ",")
             FloeLogger(category: .app).info(
-                "photoPickerTransferStarted types=\(advertisedTypes)"
+                "photoPickerTransferStarted trace=\(traceID.uuidString) types=\(advertisedTypes) typeCount=\(item.supportedContentTypes.count)"
             )
             guard let data = try await item.loadTransferable(type: Data.self) else {
                 throw FloeError.validationFailed(String(localized: "composer.attachment.photo_unreadable"))
@@ -729,12 +740,12 @@ struct ThreadComposerView: View {
             attachments.append(attachment)
             attachmentError = nil
             FloeLogger(category: .app).info(
-                "photoPickerTransferFinished attachment=\(attachment.id.uuidString) bytes=\(attachment.byteCount)"
+                "photoPickerTransferFinished trace=\(traceID.uuidString) attachment=\(attachment.id.uuidString) inputBytes=\(data.count) storedBytes=\(attachment.byteCount) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
             )
         } catch {
             let nsError = error as NSError
             FloeLogger(category: .app).warning(
-                "photoPickerTransferFailed domain=\(nsError.domain) code=\(nsError.code)"
+                "photoPickerTransferFailed trace=\(traceID.uuidString) domain=\(nsError.domain) code=\(nsError.code) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
             )
             attachmentError = String(localized: "composer.attachment.photo_failed")
         }

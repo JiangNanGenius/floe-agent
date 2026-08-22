@@ -1,6 +1,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
 import SwiftUI
+import FloeCore
 import FloeExecution
 import FloeSecurity
 
@@ -22,7 +23,15 @@ final class WebSearchSettingsCenter: ObservableObject {
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
             object: cloud,
             queue: .main
-        ) { [weak self] _ in Task { @MainActor in self?.reload() } }
+        ) { [weak self] notification in
+            let reason = (notification.userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey] as? NSNumber)?.intValue ?? -1
+            Task { @MainActor [weak self, reason] in
+                FloeLogger(category: .sync).info(
+                    "webSearchSettingsExternalChange reason=\(reason)"
+                )
+                self?.reload()
+            }
+        }
         cloud.synchronize()
     }
 
@@ -30,8 +39,12 @@ final class WebSearchSettingsCenter: ObservableObject {
         let data = cloud.data(forKey: Self.defaultsKey) ?? defaults.data(forKey: Self.defaultsKey)
         if let data, let decoded = try? JSONDecoder().decode([WebSearchProviderConfiguration].self, from: data) {
             providers = decoded.sorted { $0.priority < $1.priority }
+            FloeLogger(category: .sync).info(
+                "webSearchSettingsLoaded source=\(cloud.data(forKey: Self.defaultsKey) == nil ? "local" : "cloud") count=\(providers.count) enabled=\(providers.filter(\.enabled).count)"
+            )
         } else {
             providers = Self.presets()
+            FloeLogger(category: .sync).info("webSearchSettingsLoaded source=presets count=\(providers.count)")
             persist()
         }
     }
@@ -47,6 +60,9 @@ final class WebSearchSettingsCenter: ObservableObject {
             let data = try JSONEncoder().encode(credential)
             try keychain.store(account: configuration.credentialAccount, secret: data)
         }
+        FloeLogger(category: .sync).info(
+            "webSearchProviderSaved provider=\(configuration.kind.rawValue) enabled=\(configuration.enabled) endpointHost=\(configuration.endpoint?.host ?? "default") credentialUpdated=\(credential != nil)"
+        )
         persist()
     }
 
@@ -84,6 +100,9 @@ final class WebSearchSettingsCenter: ObservableObject {
         defaults.set(data, forKey: Self.defaultsKey)
         cloud.set(data, forKey: Self.defaultsKey)
         cloud.synchronize()
+        FloeLogger(category: .sync).debug(
+            "webSearchSettingsPersisted bytes=\(data.count) count=\(providers.count) enabled=\(providers.filter(\.enabled).count)"
+        )
     }
 
     private static func presets() -> [WebSearchProviderConfiguration] {

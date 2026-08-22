@@ -114,7 +114,7 @@ let package = Package(
         ),
         .target(
             name: "FloeLocalModelCatalog",
-            dependencies: [],
+            dependencies: ["FloeCore"],
             path: "Sources/FloeLocalModelCatalog",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

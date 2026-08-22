@@ -37,12 +37,26 @@ public struct WebFetchTool: AgentTool {
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         guard let url = URL(string: args.url) else { throw FloeError.validationFailed("invalid URL") }
+        let traceID = UUID().uuidString
+        let startedAt = Date()
         let maxCharacters = max(1_000, min(args.maxCharacters ?? 80_000, 200_000))
-        let response = try await service.send(
-            method: "GET", url: url, headers: ["Accept": "text/html,application/json,text/plain,application/pdf"],
-            body: nil, timeout: args.timeout ?? 30,
-            maxResponseBytes: min(256 * 1_024, maxCharacters * 4)
+        FloeLogger(category: .tools).info(
+            "webFetchStarted trace=\(traceID) host=\(url.host ?? "none") maxCharacters=\(maxCharacters) timeoutSeconds=\(Int(args.timeout ?? 30))"
         )
+        let response: HTTPResponse
+        do {
+            response = try await service.send(
+                method: "GET", url: url, headers: ["Accept": "text/html,application/json,text/plain,application/pdf"],
+                body: nil, timeout: args.timeout ?? 30,
+                maxResponseBytes: min(256 * 1_024, maxCharacters * 4)
+            )
+        } catch {
+            let nsError = error as NSError
+            FloeLogger(category: .tools).warning(
+                "webFetchFailed trace=\(traceID) host=\(url.host ?? "none") domain=\(nsError.domain) code=\(nsError.code) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
+            throw error
+        }
         let extracted = Self.extract(response.body, contentType: response.contentType)
         let lower = extracted.lowercased()
         let isBinary = response.contentType.lowercased().contains("pdf")
@@ -52,6 +66,9 @@ public struct WebFetchTool: AgentTool {
             || lower.contains("enable javascript") || lower.contains("sign in to continue")
             ? "structured_content_unavailable_or_insufficient"
             : nil
+        FloeLogger(category: .tools).info(
+            "webFetchFinished trace=\(traceID) host=\(url.host ?? "none") status=\(response.statusCode) contentType=\(String(response.contentType.prefix(80))) extractedCharacters=\(extracted.count) truncated=\(response.truncated) fallback=\(fallback ?? "none") durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+        )
         let payload: [String: Any] = [
             "url": url.absoluteString, "statusCode": response.statusCode,
             "contentType": response.contentType, "truncated": response.truncated,

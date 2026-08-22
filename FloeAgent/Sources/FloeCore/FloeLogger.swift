@@ -36,6 +36,7 @@ public struct FloeLogger: Sendable {
     /// not erase the evidence needed for the next-launch diagnostics export.
     /// No transcript, API key, document body, or audio is accepted here.
     public final class RingBuffer: @unchecked Sendable {
+        public static let defaultCapacity = 2_000
         private var entries: [Entry] = []
         private let capacity: Int
         private let lock = NSLock()
@@ -43,7 +44,7 @@ public struct FloeLogger: Sendable {
         private var pendingWrite: DispatchWorkItem?
         private let persistedURL: URL?
 
-        public convenience init(capacity: Int = 500, persists: Bool = false) {
+        public convenience init(capacity: Int = RingBuffer.defaultCapacity, persists: Bool = false) {
             self.init(
                 capacity: capacity,
                 persistedURL: persists ? Self.makePersistedURL() : nil

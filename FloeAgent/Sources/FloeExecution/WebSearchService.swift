@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import FloeCore
 
 public actor WebSearchService {
     private let session: URLSession
@@ -14,10 +15,15 @@ public actor WebSearchService {
     }
 
     public func search(_ query: WebSearchQuery) async throws -> WebSearchResponse {
+        let traceID = UUID().uuidString
+        let startedAt = Date()
         let available = await configurations()
             .filter { $0.0.enabled }
             .sorted { $0.0.priority < $1.0.priority }
-        guard !available.isEmpty else { throw WebRetrievalError.noProviderConfigured }
+        guard !available.isEmpty else {
+            FloeLogger(category: .tools).warning("webSearchUnavailable trace=\(traceID) reason=noProviderConfigured")
+            throw WebRetrievalError.noProviderConfigured
+        }
 
         let selected: [(WebSearchProviderConfiguration, WebSearchCredential)]
         if let requested = query.requestedProvider?.lowercased() {
@@ -31,6 +37,9 @@ public actor WebSearchService {
             let count = query.mode == .deep ? min(3, available.count) : 1
             selected = Array(available.prefix(count))
         }
+        FloeLogger(category: .tools).info(
+            "webSearchStarted trace=\(traceID) mode=\(query.mode.rawValue) configured=\(available.count) selected=\(selected.map { $0.0.kind.rawValue }.joined(separator: ",")) maxResults=\(query.maxResults) recencyDays=\(query.recencyDays ?? 0) domainFilters=\(query.domains.count) excludedDomains=\(query.excludedDomains.count)"
+        )
 
         var combined: [WebSearchResult] = []
         var used: [WebSearchProviderKind] = []
@@ -39,7 +48,9 @@ public actor WebSearchService {
         if query.mode == .deep, selected.count > 1 {
             await withTaskGroup(of: ProviderOutcome.self) { group in
                 for item in selected {
-                    group.addTask { [self] in await run(item.0, credential: item.1, query: query) }
+                    group.addTask { [self] in
+                        await run(item.0, credential: item.1, query: query, traceID: traceID)
+                    }
                 }
                 for await outcome in group {
                     switch outcome {
@@ -56,7 +67,7 @@ public actor WebSearchService {
             // configured provider.
             let failoverCandidates = query.requestedProvider == nil ? available : selected
             for item in failoverCandidates {
-                let outcome = await run(item.0, credential: item.1, query: query)
+                let outcome = await run(item.0, credential: item.1, query: query, traceID: traceID)
                 switch outcome {
                 case .success(let kind, let results) where !results.isEmpty:
                     used.append(kind)
@@ -71,7 +82,15 @@ public actor WebSearchService {
         }
 
         let normalized = Self.deduplicate(combined, limit: query.maxResults)
-        guard !normalized.isEmpty else { throw WebRetrievalError.allProvidersFailed(failures) }
+        guard !normalized.isEmpty else {
+            FloeLogger(category: .tools).warning(
+                "webSearchFailed trace=\(traceID) attempts=\(selected.count) failures=\(failures.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
+            throw WebRetrievalError.allProvidersFailed(failures)
+        }
+        FloeLogger(category: .tools).info(
+            "webSearchFinished trace=\(traceID) providers=\(used.map(\.rawValue).joined(separator: ",")) rawResults=\(combined.count) results=\(normalized.count) failures=\(failures.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+        )
         return WebSearchResponse(
             query: query.text,
             results: normalized,
@@ -88,19 +107,34 @@ public actor WebSearchService {
     private func run(
         _ configuration: WebSearchProviderConfiguration,
         credential: WebSearchCredential,
-        query: WebSearchQuery
+        query: WebSearchQuery,
+        traceID: String
     ) async -> ProviderOutcome {
+        let startedAt = Date()
         do {
             let request = try Self.makeRequest(configuration, credential: credential, query: query)
+            FloeLogger(category: .tools).debug(
+                "webSearchProviderStarted trace=\(traceID) provider=\(configuration.kind.rawValue) host=\(request.url?.host ?? "none") method=\(request.httpMethod ?? "GET")"
+            )
             try PublicNetworkTargetPolicy.validate(request.url!)
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                FloeLogger(category: .tools).warning(
+                    "webSearchProviderFailed trace=\(traceID) provider=\(configuration.kind.rawValue) status=\(status) responseBytes=\(data.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+                )
                 return .failure("\(configuration.kind.rawValue): HTTP \(status)")
             }
             let results = try Self.parse(data, provider: configuration.kind, limit: query.maxResults)
+            FloeLogger(category: .tools).info(
+                "webSearchProviderFinished trace=\(traceID) provider=\(configuration.kind.rawValue) status=\(http.statusCode) responseBytes=\(data.count) results=\(results.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
             return .success(configuration.kind, results)
         } catch {
+            let nsError = error as NSError
+            FloeLogger(category: .tools).warning(
+                "webSearchProviderError trace=\(traceID) provider=\(configuration.kind.rawValue) domain=\(nsError.domain) code=\(nsError.code) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+            )
             return .failure("\(configuration.kind.rawValue): \(error.localizedDescription)")
         }
     }

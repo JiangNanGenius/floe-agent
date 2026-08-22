@@ -1,5 +1,6 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import FloeCore
 import FloeLocalModels
 
 @MainActor
@@ -21,31 +22,48 @@ final class LocalModelsCenter: ObservableObject {
             installed.insert(entry.id)
         }
         installedIDs = installed
+        FloeLogger(category: .providers).debug(
+            "localModelCatalogRefreshed installed=\(installed.count) activeDownloads=\(activeDownloads.count)"
+        )
     }
 
     func download(_ entry: LocalModelCatalogEntry) {
         guard !activeDownloads.contains(entry.id) else { return }
         activeDownloads.insert(entry.id)
         errorMessage = nil
+        FloeLogger(category: .providers).info("localModelDownloadRequested model=\(entry.id)")
         Task {
             do {
                 _ = try await store.download(entry)
                 await refresh()
                 await onCatalogChanged?()
             }
-            catch { errorMessage = error.localizedDescription }
+            catch {
+                let nsError = error as NSError
+                FloeLogger(category: .providers).warning(
+                    "localModelDownloadUIFailed model=\(entry.id) domain=\(nsError.domain) code=\(nsError.code)"
+                )
+                errorMessage = error.localizedDescription
+            }
             activeDownloads.remove(entry.id)
         }
     }
 
     func remove(_ entry: LocalModelCatalogEntry) {
+        FloeLogger(category: .providers).info("localModelRemovalRequested model=\(entry.id)")
         Task {
             do {
                 try await store.remove(id: entry.id)
                 await refresh()
                 await onCatalogChanged?()
             }
-            catch { errorMessage = error.localizedDescription }
+            catch {
+                let nsError = error as NSError
+                FloeLogger(category: .providers).warning(
+                    "localModelRemovalFailed model=\(entry.id) domain=\(nsError.domain) code=\(nsError.code)"
+                )
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }
