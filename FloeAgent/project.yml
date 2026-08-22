@@ -167,8 +167,8 @@ targets:
         SWIFT_VERSION: "6.0"
         SWIFT_OBJC_BRIDGING_HEADER: FloeApp/Execution/FloeApp-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.4.6"
-        CURRENT_PROJECT_VERSION: "37"
+        MARKETING_VERSION: "1.4.7"
+        CURRENT_PROJECT_VERSION: "38"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
         ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -214,8 +214,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.6"
-        CURRENT_PROJECT_VERSION: "37"
+        MARKETING_VERSION: "1.4.7"
+        CURRENT_PROJECT_VERSION: "38"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -259,8 +259,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.6"
-        CURRENT_PROJECT_VERSION: "37"
+        MARKETING_VERSION: "1.4.7"
+        CURRENT_PROJECT_VERSION: "38"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -299,8 +299,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.6"
-        CURRENT_PROJECT_VERSION: "37"
+        MARKETING_VERSION: "1.4.7"
+        CURRENT_PROJECT_VERSION: "38"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -323,6 +323,7 @@ targets:
           - CrashAndFeedbackRegressionTests.swift
           - LocalPythonRuntimeTests.swift
           - RemoteImageInspectToolTests.swift
+          - ImportantFileShortcutTests.swift
     dependencies:
       - target: FloeAgent
     settings:
@@ -345,6 +346,7 @@ targets:
       - path: Tests/FloeAgentUITests/CrashAndFeedbackRegressionTests.swift
       - path: Tests/FloeAgentUITests/LocalPythonRuntimeTests.swift
       - path: Tests/FloeAgentUITests/RemoteImageInspectToolTests.swift
+      - path: Tests/FloeAgentUITests/ImportantFileShortcutTests.swift
     dependencies:
       - target: FloeAgent
     settings:

@@ -40,6 +40,9 @@ struct ToolCallCardView: View {
             if !imageArtifacts.isEmpty {
                 ArtifactImageGallery(artifacts: imageArtifacts)
             }
+            if !richArtifacts.isEmpty {
+                RichArtifactGallery(artifacts: richArtifacts)
+            }
             if isExpanded {
                 detail
             }
@@ -130,6 +133,10 @@ struct ToolCallCardView: View {
 
     private var imageArtifacts: [ToolArtifactReference] {
         artifacts.filter { $0.mimeType == "image/png" || $0.mimeType == "image/jpeg" }
+    }
+
+    private var richArtifacts: [ToolArtifactReference] {
+        artifacts.filter { $0.mimeType != "image/png" && $0.mimeType != "image/jpeg" }
     }
 
     private var statusIcon: String {

@@ -14,7 +14,8 @@ struct LocalPythonToolTests {
         #expect(LocalPythonTool.parametersJSON.contains("maxOutputBytes"))
         #expect(LocalPythonTool.parametersJSON.contains("inputJSON"))
         #expect(LocalPythonTool.parametersJSON.contains("packages"))
-        #expect(LocalPythonTool.toolDescription.contains("Software Package Review Model"))
+        #expect(LocalPythonTool.toolDescription.contains("packagePurpose"))
+        #expect(LocalPythonTool.parametersJSON.contains("packageCapabilities"))
     }
 
     @Test("managed package specs reject direct URLs and script-level pip")
@@ -28,7 +29,7 @@ struct LocalPythonToolTests {
             try tool.validate(.init(script: "import pip"))
         }
         #expect(throws: Never.self) {
-            try tool.validate(.init(script: "import requests", packages: ["requests==2.32.4"]))
+            try tool.validate(.init(script: "import requests", packages: ["requests==2.32.4"], packagePurpose: "Fetch the user-requested public dataset", packageCapabilities: ["data.fetch"]))
         }
     }
 

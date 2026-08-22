@@ -157,9 +157,12 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "document.pdf.inspect", "document.pdf.render",
             "workspace.listDirectory", "workspace.readFile",
             "workspace.inspectMetadata", "workspace.searchFiles",
-            "memory.recall"
+            "memory.recall", "exec.localNumerical", "presentation.create"
         ]
         if alwaysExempt.contains(action.toolCall.toolName) { return true }
+        if action.toolCall.toolName == "image.svgDocument",
+           let object = try? JSONSerialization.jsonObject(with: action.toolCall.argumentsJSON) as? [String: Any],
+           object["operation"] as? String == "inspect" { return true }
         guard ["document.pdf.edit", "document.pdf.save"].contains(action.toolCall.toolName),
               let object = try? JSONSerialization.jsonObject(
                   with: action.toolCall.argumentsJSON

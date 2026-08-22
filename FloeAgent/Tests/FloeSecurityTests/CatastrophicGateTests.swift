@@ -265,7 +265,7 @@ struct ApprovalPolicyTests {
         }
     }
 
-    @Test("Built-in PDF and semantic image inspection bypass the approval model")
+    @Test("Bounded local inspection and presentation bypass the approval model")
     func builtInInspectionExemptions() async throws {
         actor Backend: ModelApprovalPolicy.DecisionBackend {
             private(set) var calls = 0
@@ -276,7 +276,10 @@ struct ApprovalPolicyTests {
         }
         let backend = Backend()
         let policy = AutomaticApprovalPolicy(backend: backend)
-        for name in ["image.inspect", "image.ocr", "document.pdf.inspect", "document.pdf.render"] {
+        for name in [
+            "image.inspect", "image.ocr", "document.pdf.inspect", "document.pdf.render",
+            "exec.localNumerical", "presentation.create"
+        ] {
             let call = try ToolCall(
                 id: name,
                 toolName: name,
@@ -292,6 +295,21 @@ struct ApprovalPolicyTests {
             #expect(try await policy.decide(action).permitsExecution)
             #expect(!policy.requiresModelReview(action))
         }
+
+        let svgInspect = try ToolCall(
+            id: "svg-inspect",
+            toolName: "image.svgDocument",
+            argumentsJSON: Data(#"{"operation":"inspect","path":"sample.svg"}"#.utf8),
+            scope: .local
+        )
+        let svgAction = ProposedAction(
+            toolCall: svgInspect,
+            riskLabels: ["readsFiles"],
+            userGoal: "inspect the SVG",
+            hostAndPathScope: .local
+        )
+        #expect(try await policy.decide(svgAction).permitsExecution)
+        #expect(!policy.requiresModelReview(svgAction))
         #expect(await backend.calls == 0)
     }
 

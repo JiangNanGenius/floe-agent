@@ -32,6 +32,12 @@ struct ThreadUsageSummary: Equatable {
     }
 }
 
+struct ImportantFileShortcut: Identifiable, Equatable {
+    var id: String { path }
+    let path: String
+    let action: String
+}
+
 /// View model for the canonical foldable thread of one conversation.
 @MainActor
 final class ThreadDetailViewModel: ObservableObject {
@@ -133,6 +139,53 @@ final class ThreadDetailViewModel: ObservableObject {
             return run
         }
         return runs.first
+    }
+
+    /// Files actually read or changed in the selected run, newest first.
+    /// Directory listings and deleted paths are intentionally excluded: this
+    /// strip is a focused working set, not a second file tree.
+    var importantFiles: [ImportantFileShortcut] {
+        let supportedTools: Set<String> = [
+            "workspace.readFile", "workspace.inspectMetadata",
+            "workspace.createFile", "workspace.writeFile", "workspace.applyPatch"
+        ]
+        var seen: Set<String> = []
+        var result: [ImportantFileShortcut] = []
+        for event in events.reversed() where event.kind == .toolResult {
+            guard let data = event.payloadJSON.data(using: .utf8),
+                  let payload = try? JSONDecoder().decode([String: String].self, from: data),
+                  payload["status"] != "failed", payload["status"] != "error",
+                  let tool = payload["tool"], supportedTools.contains(tool),
+                  let summary = payload["summary"],
+                  let path = Self.importantPath(from: summary),
+                  !path.hasPrefix("/"),
+                  !path.split(separator: "/").contains(".."),
+                  seen.insert(path).inserted else { continue }
+            let action: String
+            if tool == "workspace.readFile" || tool == "workspace.inspectMetadata" { action = "查看" }
+            else if tool == "workspace.createFile" { action = "新建" }
+            else { action = "编辑" }
+            result.append(.init(path: path, action: action))
+            if result.count == 8 { break }
+        }
+        return result
+    }
+
+    static func importantPath(from summary: String) -> String? {
+        let candidates = [
+            ("path=", [" offset=", "\n"]),
+            ("created=", [" bytes=", "\n"]),
+            ("written=", [" bytes=", "\n"]),
+            ("patched=", [" hunks=", "\n"])
+        ]
+        for (marker, terminators) in candidates {
+            guard let range = summary.range(of: marker) else { continue }
+            let tail = summary[range.upperBound...]
+            let end = terminators.compactMap { tail.range(of: $0)?.lowerBound }.min() ?? tail.endIndex
+            let value = tail[..<end].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty { return value }
+        }
+        return nil
     }
 
     /// Pending approvals belonging to the selected run.

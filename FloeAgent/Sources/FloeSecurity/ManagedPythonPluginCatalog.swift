@@ -1,14 +1,13 @@
 import Foundation
 import FloeModels
 
-/// Review-time catalog metadata for pure-Python plugins. Catalog membership
-/// supplies provenance and prior review history; it never bypasses the model
-/// review or the installer's platform/native-code checks.
+/// Review-time purpose metadata for managed Python packages. Package choice is
+/// model-owned; this catalog describes common capability families and is not a
+/// package-name allow/deny list.
 public enum ManagedPythonPluginCatalog {
-    public static let trustedPackageNames: Set<String> = [
-        "beautifulsoup4", "certifi", "click", "feedparser", "httpx", "idna",
-        "markdown", "openpyxl", "pypdf", "requests", "rich", "sqlparse",
-        "tomli", "urllib3"
+    public static let commonCapabilityPrefixes: Set<String> = [
+        "archive", "batch", "data", "document", "html", "image", "markdown",
+        "pdf", "spreadsheet", "svg", "text", "xml"
     ]
 
     public static func reviewContext(for call: ToolCall) -> String? {
@@ -16,19 +15,18 @@ public enum ManagedPythonPluginCatalog {
               let object = try? JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any],
               let packages = object["packages"] as? [String], !packages.isEmpty
         else { return nil }
-        let entries = packages.map { spec -> String in
-            let name = normalizedName(spec)
-            let provenance = trustedPackageNames.contains(name)
-                ? "listed in Floe plugin catalog; still requires review"
-                : "outside Floe plugin catalog; require stronger scrutiny"
-            return "- \(spec): \(provenance)"
+        let purpose = object["packagePurpose"] as? String ?? "(missing)"
+        let capabilities = object["packageCapabilities"] as? [String] ?? []
+        let common = capabilities.filter { capability in
+            guard let prefix = capability.split(separator: ".").first else { return false }
+            return commonCapabilityPrefixes.contains(String(prefix))
         }
-        return entries.joined(separator: "\n")
-    }
-
-    private static func normalizedName(_ spec: String) -> String {
-        let base = spec.split(separator: "=", maxSplits: 1).first.map(String.init) ?? spec
-        let withoutExtras = base.split(separator: "[", maxSplits: 1).first.map(String.init) ?? base
-        return withoutExtras.lowercased().replacingOccurrences(of: "_", with: "-")
+        return """
+            modelSelectedPackages=\(packages.joined(separator: ","))
+            declaredPurpose=\(purpose)
+            declaredCapabilities=\(capabilities.joined(separator: ","))
+            commonLowRiskCapabilityFamilies=\(common.joined(separator: ","))
+            Package name and catalog membership grant no authority. Approve when the purpose is within the user's request, the artifact is locally runnable, and inspected behavior does not exceed declared capabilities.
+            """
     }
 }

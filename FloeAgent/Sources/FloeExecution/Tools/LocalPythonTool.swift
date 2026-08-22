@@ -18,25 +18,36 @@ public struct LocalPythonTool: AgentTool {
         /// Package specs installed through Floe's managed, pure-Python-only
         /// pip path before the script runs.
         public var packages: [String]?
+        /// Why these packages are necessary for the user's requested result.
+        /// This is review evidence, not an authority escalation.
+        public var packagePurpose: String?
+        /// Capabilities the task actually needs (for example pdf.read,
+        /// image.render, data.transform). The package reviewer compares these
+        /// to static source evidence and the user's goal.
+        public var packageCapabilities: [String]?
 
         public init(
             script: String,
             inputJSON: String? = nil,
             timeout: Double? = nil,
             maxOutputBytes: Int? = nil,
-            packages: [String]? = nil
+            packages: [String]? = nil,
+            packagePurpose: String? = nil,
+            packageCapabilities: [String]? = nil
         ) {
             self.script = script
             self.inputJSON = inputJSON
             self.timeout = timeout
             self.maxOutputBytes = maxOutputBytes
             self.packages = packages
+            self.packagePurpose = packagePurpose
+            self.packageCapabilities = packageCapabilities
         }
     }
 
     public static let name = "exec.localPython"
     public static let toolDescription =
-        "Execute bundled Python 3.13 in Floe's on-device sandbox. To install packages, put top-level PyPI package specs in `packages`; every request first passes the configured Software Package Review Model, then Floe resolves transitive dependencies together in a quarantined staging directory. The atomic managed installer accepts only pure-Python platform-independent wheels, scans every resolved artifact, and rolls back the whole call on failure. Never invoke pip, ensurepip, subprocess, or shell installers inside `script`. Native wheels, .so/.dylib files, URLs, local paths, VCS specs, and install scripts are rejected. Installed packages and verified downloads remain in Floe's sandbox cache. For quick computation prefer exec.javascript; for a configured SSH host use ssh.execute with python3. Output and time are bounded."
+        "Execute bundled Python 3.13 in Floe's on-device sandbox. The model chooses packages needed for the user's task; provide `packagePurpose` and the narrow `packageCapabilities` actually required. Floe reviews purpose and source evidence, resolves dependencies in quarantine, and atomically installs only runnable platform-independent pure-Python wheels. Package names are not a permission whitelist. Never invoke pip, ensurepip, subprocess, or shell installers inside `script`. Native wheels and host executables cannot run locally; use a classified SSH task container when configured. Common PDF, image/SVG, document, batch-processing and data-analysis workflows are legitimate when their capabilities stay within the user's request."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -50,7 +61,9 @@ public struct LocalPythonTool: AgentTool {
           "maxItems": 16,
           "items": {"type": "string", "description": "PyPI name or exact name==version; no URLs, paths, VCS, or native wheels"},
           "description": "Managed pure-Python package installs. All entries are reviewed, including trusted-catalog packages."
-        }
+        },
+        "packagePurpose": {"type": "string", "description": "Concrete reason these packages are necessary for the user's requested result"},
+        "packageCapabilities": {"type": "array", "maxItems": 16, "items": {"type": "string"}, "description": "Narrow required capabilities such as pdf.read, image.render, svg.edit or data.transform"}
       },
       "required": ["script"],
       "additionalProperties": false
@@ -111,6 +124,26 @@ public struct LocalPythonTool: AgentTool {
                 throw FloeError.validationFailed(
                     "Package specs must be a PyPI name or exact name==version; URLs, paths, ranges, and VCS sources are rejected"
                 )
+            }
+        }
+        if !packages.isEmpty {
+            guard let purpose = args.packagePurpose?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !purpose.isEmpty else {
+                throw FloeError.validationFailed("packagePurpose is required when packages are requested")
+            }
+            guard purpose.utf8.count <= 1_024 else {
+                throw FloeError.validationFailed("packagePurpose exceeds 1024 bytes")
+            }
+            let capabilities = args.packageCapabilities ?? []
+            guard !capabilities.isEmpty, capabilities.count <= 16 else {
+                throw FloeError.validationFailed("packageCapabilities must declare 1-16 required capabilities")
+            }
+            let capabilityPattern = try NSRegularExpression(pattern: #"^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)+$"#)
+            for capability in capabilities {
+                let range = NSRange(capability.startIndex..<capability.endIndex, in: capability)
+                guard capabilityPattern.firstMatch(in: capability, range: range)?.range == range else {
+                    throw FloeError.validationFailed("packageCapabilities must use dotted lowercase identifiers")
+                }
             }
         }
     }

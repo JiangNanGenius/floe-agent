@@ -39,11 +39,16 @@ public func registerExecutionTools(
     }
     if sshCommandService != nil {
         ToolCatalog.register(SSHExecTool.self)
+        ToolCatalog.register(SSHInspectTargetTool.self)
+        ToolCatalog.register(SSHBootstrapExecutionHostTool.self)
     }
     ToolCatalog.register(HTTPRequestTool.self)
     ToolCatalog.register(NetworkScanLANTool.self)
     ToolCatalog.register(OCRTool.self)
     ToolCatalog.register(BarcodeScanTool.self)
+    ToolCatalog.register(SVGDocumentTool.self)
+    ToolCatalog.register(LocalNumericalCompatibilityTool.self)
+    ToolCatalog.register(PresentationArtifactTool.self)
     // Runtime runners.
     if includeOnDeviceJavaScript {
         registry.register(JavaScriptExecutionTool(service: service))
@@ -53,10 +58,15 @@ public func registerExecutionTools(
     }
     if let sshCommandService {
         registry.register(SSHExecTool(service: sshCommandService))
+        registry.register(SSHInspectTargetTool(service: sshCommandService))
+        registry.register(SSHBootstrapExecutionHostTool(service: sshCommandService))
     }
     registry.register(HTTPRequestTool(service: httpRequestService))
     registry.register(NetworkScanLANTool(service: LANDiscoveryService()))
     registry.register(OCRTool())
     registry.register(BarcodeScanTool())
+    registry.register(SVGDocumentTool())
+    registry.register(LocalNumericalCompatibilityTool())
+    registry.register(PresentationArtifactTool())
     return service
 }

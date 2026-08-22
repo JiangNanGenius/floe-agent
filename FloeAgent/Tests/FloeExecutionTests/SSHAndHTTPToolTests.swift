@@ -27,7 +27,7 @@ struct SSHAndHTTPToolTests {
         )
         let tool = SSHExecTool(service: service)
         let output = try await tool.execute(
-            .init(command: "ls", hostID: hostID.uuidString),
+            .init(command: "ls", hostID: hostID.uuidString, executionMode: .host),
             context: ToolContext(runID: UUID(), cancellation: CancellationToken())
         )
         #expect(output.exitStatus == 0)
@@ -46,9 +46,9 @@ struct SSHAndHTTPToolTests {
             defaultHostProvider: { defaultHostID }
         )
         let tool = SSHExecTool(service: service)
-        try tool.validate(.init(command: "uname -a"))
+        try tool.validate(.init(command: "uname -a", executionMode: .host))
         let output = try await tool.execute(
-            .init(command: "uname -a"),
+            .init(command: "uname -a", executionMode: .host),
             context: ToolContext(runID: UUID(), cancellation: CancellationToken())
         )
         #expect(output.exitStatus == 0)
@@ -65,10 +65,29 @@ struct SSHAndHTTPToolTests {
         )
         let tool = SSHExecTool(service: service)
         let output = try await tool.execute(
-            .init(command: "sleep 100", hostID: hostID.uuidString),
+            .init(command: "sleep 100", hostID: hostID.uuidString, executionMode: .host),
             context: ToolContext(runID: UUID(), cancellation: CancellationToken())
         )
         #expect(output.exitStatus == 124)
+    }
+
+    @Test("target classifier distinguishes common network appliance vendors")
+    func targetClassifierNetworkDevices() {
+        let cisco = RemoteTargetClassifier.classifyNetworkAppliance("Cisco IOS XE Software, Version 17.9")
+        #expect(cisco?.vendor == "Cisco")
+        let huawei = RemoteTargetClassifier.classifyNetworkAppliance("Huawei Versatile Routing Platform Software VRP (R)")
+        #expect(huawei?.vendor == "Huawei")
+        #expect(RemoteTargetClassifier.classifyNetworkAppliance("Linux host") == nil)
+    }
+
+    @Test("unix classifier selects Linux containers and OpenWrt policy")
+    func targetClassifierUnix() {
+        let hostID = UUID()
+        let linux = RemoteTargetClassifier.classifyUnix("Linux\nID=ubuntu\n/usr/bin/docker", hostID: hostID)
+        #expect(linux?.kind == .linux)
+        #expect(linux?.containerRuntime == .docker)
+        let router = RemoteTargetClassifier.classifyUnix("Linux\nID=openwrt", hostID: hostID)
+        #expect(router?.kind == .openWrt)
     }
 
     @Test("ssh.execute rejects an invalid hostID")

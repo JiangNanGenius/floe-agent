@@ -10,6 +10,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import UIKit
 import FloeModels
 import FloePersistence
 import FloeSecurity
@@ -24,6 +25,7 @@ struct ThreadDetailView: View {
     @State private var editingPendingInput: PendingUserInput?
     @State private var showingGoalBuilder = false
     @State private var showingPermissionsSheet = false
+    @State private var selectedImportantFile: ImportantFileShortcut?
 
     init(conversationID: UUID, center: ConversationCenter) {
         _viewModel = StateObject(
@@ -37,6 +39,10 @@ struct ThreadDetailView: View {
                 intelligenceStatus
             }
             Divider()
+            if !viewModel.importantFiles.isEmpty {
+                importantFilesStrip
+                Divider()
+            }
             threadScroll
             if let error = viewModel.actionError {
                 errorBanner(error)
@@ -82,6 +88,79 @@ struct ThreadDetailView: View {
                     }
             }
             .presentationDetents([.medium, .large])
+        }
+        .sheet(item: $selectedImportantFile) { file in
+            NavigationStack {
+                FilePreviewView(
+                    relativePath: file.path,
+                    center: environment.workspaceCenter
+                )
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("完成") { selectedImportantFile = nil }
+                    }
+                }
+            }
+        }
+    }
+
+    private var importantFilesStrip: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Label("本轮重点文件", systemImage: "doc.text.magnifyingglass")
+                    .font(FloeTheme.Typography.metadata.weight(.semibold))
+                Spacer()
+                Button("全部文件") { router.showInspector(.workspaceFiles) }
+                    .font(FloeTheme.Typography.metadata)
+            }
+            .padding(.horizontal, 12)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(viewModel.importantFiles) { file in
+                        Button {
+                            selectedImportantFile = file
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: icon(for: file.path))
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text((file.path as NSString).lastPathComponent)
+                                        .lineLimit(1)
+                                    Text(file.action)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .font(FloeTheme.Typography.metadata)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 9))
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button("打开", systemImage: "doc.text") { selectedImportantFile = file }
+                            Button("复制路径", systemImage: "doc.on.doc") {
+                                UIPasteboard.general.string = file.path
+                            }
+                        }
+                        .accessibilityLabel("\(file.action) \(file.path)")
+                    }
+                }
+                .padding(.horizontal, 12)
+            }
+        }
+        .padding(.vertical, 8)
+        .background(FloeTheme.readingSurface)
+    }
+
+    private func icon(for path: String) -> String {
+        switch (path as NSString).pathExtension.lowercased() {
+        case "py": "chevron.left.forwardslash.chevron.right"
+        case "js", "ts", "mjs", "cjs": "curlybraces"
+        case "html", "htm": "safari"
+        case "csv": "tablecells"
+        case "md", "markdown": "doc.richtext"
+        case "pdf": "doc.fill"
+        default: "doc.text"
         }
     }
 
