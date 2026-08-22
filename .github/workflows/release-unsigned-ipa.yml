@@ -163,14 +163,23 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.build-verify-release.outputs.tag }}
 
-      - name: Generate and validate the identical release project
+      - name: Download the tested and attested unsigned application
+        uses: actions/download-artifact@v5
+        with:
+          name: unsigned-ipa-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
+          path: ${{ runner.temp }}/UnsignedRelease
+
+      - name: Unpack the exact verified application
         run: |
-          brew install xcodegen
-          scripts/bootstrap_python_runtime.sh
-          scripts/gen_project.sh
-          scripts/release_preflight.sh "${{ needs.build-verify-release.outputs.tag }}"
-          test "$(grep -c 'CODE_SIGN_STYLE = Manual;' FloeAgent.xcodeproj/project.pbxproj)" -ge 2
-          test "$(grep -c 'CODE_SIGN_IDENTITY = "Apple Distribution";' FloeAgent.xcodeproj/project.pbxproj)" -ge 2
+          IPA_PATH="$(find "$RUNNER_TEMP/UnsignedRelease" -type f -name '*.ipa' -print -quit)"
+          test -n "$IPA_PATH"
+          mkdir -p "$RUNNER_TEMP/FloeSignedPayload"
+          unzip -q "$IPA_PATH" -d "$RUNNER_TEMP/FloeSignedPayload"
+          APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")" = org.floeagent.ios
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.version }}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.build }}"
 
       - name: Install App Store Connect API key
         env:
@@ -181,42 +190,38 @@ jobs:
           test -n "$ASC_KEY_ID"
           echo "$ASC_API_PRIVATE_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
           chmod 600 "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          cp "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8"
 
-      - name: Install distribution identity and create manual App Store profiles
+      - name: Install distribution identity and existing App Store profiles
         env:
           DISTRIBUTION_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
           DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          ASC_API_KEY_PATH: ${{ runner.temp }}/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
-          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          ASC_PROFILE_NAME_PREFIX: Floe-CI-${{ github.run_id }}-${{ github.run_attempt }}
-          ASC_PROFILE_IDS_FILE: ${{ runner.temp }}/temporary-profile-ids.txt
+          HOST_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          SCREENSHARE_PROVISIONING_PROFILE: ${{ secrets.APPLE_SCREENSHARE_PROVISIONING_PROFILE_BASE64 }}
         run: |
           test -n "$DISTRIBUTION_CERTIFICATE"
+          test -n "$HOST_PROVISIONING_PROFILE"
+          test -n "$SCREENSHARE_PROVISIONING_PROFILE"
           KEYCHAIN="$RUNNER_TEMP/floe-release.keychain-db"
           KEYCHAIN_PASSWORD="$(uuidgen)$(uuidgen)"
           echo "$DISTRIBUTION_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/distribution.p12"
+          echo "$HOST_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/Floe.mobileprovision"
+          echo "$SCREENSHARE_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/FloeScreenShare.mobileprovision"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security import "$RUNNER_TEMP/distribution.p12" -P "$DISTRIBUTION_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          ASC_DISTRIBUTION_CERTIFICATE_SHA256="$(
-            security find-certificate -c "Apple Distribution" -p "$KEYCHAIN" \
-              | openssl x509 -outform DER \
-              | shasum -a 256 \
-              | awk '{print $1}'
-          )"
-          test "${#ASC_DISTRIBUTION_CERTIFICATE_SHA256}" -eq 64
-          export ASC_DISTRIBUTION_CERTIFICATE_SHA256
-          ruby scripts/asc_ci_profiles.rb create \
-            org.floeagent.ios "$RUNNER_TEMP/Floe.mobileprovision" \
-            org.floeagent.ios.screenshare "$RUNNER_TEMP/FloeScreenShare.mobileprovision"
-          install_profile() {
+          SIGN_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk '/Apple Distribution/{print $2; exit}')"
+          test "${#SIGN_IDENTITY}" -eq 40
+          echo "SIGN_IDENTITY=$SIGN_IDENTITY" >> "$GITHUB_ENV"
+          validate_profile() {
             PROFILE_PATH="$1"
             EXPECTED_APP_ID="$2"
-            EXPECTED_HOMEKIT="${3:-false}"
+            ENTITLEMENTS_PATH="$3"
+            EXPECTED_HOMEKIT="${4:-false}"
             PROFILE_PLIST="$RUNNER_TEMP/$(basename "$PROFILE_PATH").plist"
             security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
             test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST")" = "$EXPECTED_APP_ID"
@@ -226,64 +231,65 @@ jobs:
             if test "$EXPECTED_HOMEKIT" = true; then
               test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.homekit' "$PROFILE_PLIST")" = true
             fi
-            PROFILE_UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")"
-            for PROFILE_DIRECTORY in \
-              "$HOME/Library/MobileDevice/Provisioning Profiles" \
-              "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
-            do
-              mkdir -p "$PROFILE_DIRECTORY"
-              cp "$PROFILE_PATH" "$PROFILE_DIRECTORY/$PROFILE_UUID.mobileprovision"
-            done
+            /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' "$PROFILE_PLIST" > "$ENTITLEMENTS_PATH"
+            plutil -lint "$ENTITLEMENTS_PATH"
           }
-          install_profile \
+          validate_profile \
             "$RUNNER_TEMP/Floe.mobileprovision" \
             QYL72C43K6.org.floeagent.ios \
+            "$RUNNER_TEMP/Floe.entitlements" \
             true
-          install_profile \
+          validate_profile \
             "$RUNNER_TEMP/FloeScreenShare.mobileprovision" \
-            QYL72C43K6.org.floeagent.ios.screenshare
-          HOST_PROFILE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/Floe.mobileprovision.plist")"
-          SCREENSHARE_PROFILE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/FloeScreenShare.mobileprovision.plist")"
-          HOST_PROFILE_NAME="$HOST_PROFILE_NAME" SCREENSHARE_PROFILE_NAME="$SCREENSHARE_PROFILE_NAME" ruby -e '
-            path = "FloeAgent.xcodeproj/project.pbxproj"
-            project = File.read(path)
-            project = project.gsub("Floe TestFlight AppGroup 2026", ENV.fetch("HOST_PROFILE_NAME"))
-            project = project.gsub("Floe Screen Share TestFlight AppGroup 2026", ENV.fetch("SCREENSHARE_PROFILE_NAME"))
-            File.write(path, project)
-          '
-          grep -Fq "PROVISIONING_PROFILE_SPECIFIER = \"$HOST_PROFILE_NAME\";" FloeAgent.xcodeproj/project.pbxproj
-          grep -Fq "PROVISIONING_PROFILE_SPECIFIER = \"$SCREENSHARE_PROFILE_NAME\";" FloeAgent.xcodeproj/project.pbxproj
-          {
-            echo "HOST_PROFILE_NAME=$HOST_PROFILE_NAME"
-            echo "SCREENSHARE_PROFILE_NAME=$SCREENSHARE_PROFILE_NAME"
-          } >> "$GITHUB_ENV"
+            QYL72C43K6.org.floeagent.ios.screenshare \
+            "$RUNNER_TEMP/FloeScreenShare.entitlements"
 
-      - name: Archive signed build
-        run: |
-          xcodebuild \
-            -project FloeAgent.xcodeproj \
-            -scheme FloeAgent \
-            -configuration Release \
-            -destination 'generic/platform=iOS' \
-            -archivePath "$RUNNER_TEMP/FloeAgent.xcarchive" \
-            archive
-
-      - name: Export and upload to TestFlight
+      - name: Sign, verify, package, and upload to TestFlight
         env:
           ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           mkdir -p "$RUNNER_TEMP/TestFlightExport"
-          cp Config/ExportOptions-TestFlight.plist "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
-          /usr/libexec/PlistBuddy -c "Set :provisioningProfiles:org.floeagent.ios $HOST_PROFILE_NAME" "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
-          /usr/libexec/PlistBuddy -c "Set :provisioningProfiles:org.floeagent.ios.screenshare $SCREENSHARE_PROFILE_NAME" "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
-          xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/FloeAgent.xcarchive" \
-            -exportPath "$RUNNER_TEMP/TestFlightExport" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions-TestFlight.plist" \
-            -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          APPEX_PATH="$APP_PATH/PlugIns/Floe Screen Share.appex"
+          test -d "$APPEX_PATH"
+
+          cp "$RUNNER_TEMP/FloeScreenShare.mobileprovision" "$APPEX_PATH/embedded.mobileprovision"
+          cp "$RUNNER_TEMP/Floe.mobileprovision" "$APP_PATH/embedded.mobileprovision"
+
+          if test -d "$APP_PATH/Frameworks"; then
+            find "$APP_PATH/Frameworks" -depth \( -name '*.framework' -o -name '*.dylib' \) -print0 \
+              | while IFS= read -r -d '' CODE_PATH; do
+                  codesign --force --sign "$SIGN_IDENTITY" --generate-entitlement-der "$CODE_PATH"
+                done
+          fi
+          codesign --force --sign "$SIGN_IDENTITY" \
+            --entitlements "$RUNNER_TEMP/FloeScreenShare.entitlements" \
+            --generate-entitlement-der "$APPEX_PATH"
+          codesign --force --sign "$SIGN_IDENTITY" \
+            --entitlements "$RUNNER_TEMP/Floe.entitlements" \
+            --generate-entitlement-der "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+          mkdir -p "$RUNNER_TEMP/TestFlightPayload/Payload"
+          ditto "$APP_PATH" "$RUNNER_TEMP/TestFlightPayload/Payload/$(basename "$APP_PATH")"
+          (
+            cd "$RUNNER_TEMP/TestFlightPayload"
+            ditto -c -k --sequesterRsrc --keepParent Payload "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa"
+          )
+          unzip -t "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa"
+          xcrun altool --validate-app \
+            --file "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa" \
+            --type ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+          xcrun altool --upload-app \
+            --file "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa" \
+            --type ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID" \
+            | tee "$RUNNER_TEMP/TestFlightExport/UPLOAD-RECEIPT.txt"
           {
             echo "tag=${{ needs.build-verify-release.outputs.tag }}"
             echo "version=${{ needs.build-verify-release.outputs.version }}"
@@ -298,16 +304,6 @@ jobs:
           name: testflight-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
           path: ${{ runner.temp }}/TestFlightExport/
           if-no-files-found: error
-
-      - name: Delete temporary App Store profiles
-        if: always()
-        continue-on-error: true
-        env:
-          ASC_API_KEY_PATH: ${{ runner.temp }}/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
-          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          ASC_PROFILE_IDS_FILE: ${{ runner.temp }}/temporary-profile-ids.txt
-        run: ruby scripts/asc_ci_profiles.rb delete
 
   publish-release:
     name: Publish GitHub assets only after TestFlight succeeds
