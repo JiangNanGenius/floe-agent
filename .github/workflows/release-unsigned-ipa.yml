@@ -189,8 +189,6 @@ jobs:
           ASC_API_KEY_PATH: ${{ runner.temp }}/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
           ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          ASC_DISTRIBUTION_P12_PATH: ${{ runner.temp }}/distribution.p12
-          ASC_DISTRIBUTION_P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           ASC_PROFILE_NAME_PREFIX: Floe-CI-${{ github.run_id }}-${{ github.run_attempt }}
           ASC_PROFILE_IDS_FILE: ${{ runner.temp }}/temporary-profile-ids.txt
         run: |
@@ -204,6 +202,14 @@ jobs:
           security import "$RUNNER_TEMP/distribution.p12" -P "$DISTRIBUTION_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          ASC_DISTRIBUTION_CERTIFICATE_SHA256="$(
+            security find-certificate -c "Apple Distribution" -p "$KEYCHAIN" \
+              | openssl x509 -outform DER \
+              | shasum -a 256 \
+              | awk '{print $1}'
+          )"
+          test "${#ASC_DISTRIBUTION_CERTIFICATE_SHA256}" -eq 64
+          export ASC_DISTRIBUTION_CERTIFICATE_SHA256
           ruby scripts/asc_ci_profiles.rb create \
             org.floeagent.ios "$RUNNER_TEMP/Floe.mobileprovision" \
             org.floeagent.ios.screenshare "$RUNNER_TEMP/FloeScreenShare.mobileprovision"

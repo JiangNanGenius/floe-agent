@@ -55,11 +55,12 @@ def request(method, path, token, query: nil, body: nil, expected: [200])
 end
 
 def distribution_certificate_id(token)
-  p12 = OpenSSL::PKCS12.new(
-    File.binread(required_env("ASC_DISTRIBUTION_P12_PATH")),
-    required_env("ASC_DISTRIBUTION_P12_PASSWORD")
-  )
-  expected_fingerprint = Digest::SHA256.hexdigest(p12.certificate.to_der)
+  # The signing identity is imported by macOS Security.framework before this
+  # script runs. Match its SHA-256 fingerprint instead of parsing the original
+  # PKCS#12 here: older Apple-exported P12 files may use legacy RC2 encryption
+  # that OpenSSL 3 intentionally does not load in its default provider.
+  expected_fingerprint = required_env("ASC_DISTRIBUTION_CERTIFICATE_SHA256").downcase.delete(":")
+  abort("ASC_DISTRIBUTION_CERTIFICATE_SHA256 must contain 64 hexadecimal characters") unless expected_fingerprint.match?(/\A[0-9a-f]{64}\z/)
   response = request(
     :get,
     "/certificates",
