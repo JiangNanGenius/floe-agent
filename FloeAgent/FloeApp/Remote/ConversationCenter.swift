@@ -552,7 +552,7 @@ final class ConversationCenter: ObservableObject {
         beginLaunch()
         defer { finishLaunch() }
         let runID = UUID()
-        let prepared = try await environment.runLaunchStore.prepare(RunLaunchRequest(
+        let prepared = try await prepareRunLaunch(RunLaunchRequest(
             conversationID: conversationID,
             runID: runID,
             goal: trimmed,
@@ -567,7 +567,9 @@ final class ConversationCenter: ObservableObject {
             providerID: provider.id,
             modelID: model.id,
             providerName: provider.displayName ?? provider.kind.rawValue,
-            modelName: model.displayName
+            modelName: model.displayName,
+            providerProfile: provider,
+            modelProfile: model
         ))
         await recordPersonalizationActivity(userMessages: 1, workspaceID: workspaceID)
         await captureIngressSecrets(ingress.captures, prepared: prepared)
@@ -613,7 +615,7 @@ final class ConversationCenter: ObservableObject {
         beginLaunch()
         defer { finishLaunch() }
         let runID = UUID()
-        let prepared = try await environment.runLaunchStore.prepare(RunLaunchRequest(
+        let prepared = try await prepareRunLaunch(RunLaunchRequest(
             conversationTitle: title,
             runID: runID,
             goal: trimmed,
@@ -627,7 +629,9 @@ final class ConversationCenter: ObservableObject {
             providerID: provider.id,
             modelID: model.id,
             providerName: provider.displayName ?? provider.kind.rawValue,
-            modelName: model.displayName
+            modelName: model.displayName,
+            providerProfile: provider,
+            modelProfile: model
         ))
         await recordPersonalizationActivity(userMessages: 1, workspaceID: workspaceID)
         await captureIngressSecrets(ingress.captures, prepared: prepared)
@@ -649,6 +653,29 @@ final class ConversationCenter: ObservableObject {
             shouldGenerateTitle: true
         )
         return StartedConversationTask(conversationID: prepared.conversation.id, run: run)
+    }
+
+    /// Persists a launch fence before any provider or local-runtime work. Keep
+    /// this diagnostic at the shared boundary so cloud and on-device failures
+    /// can be distinguished from adapter/model-loading failures without ever
+    /// logging the prompt, credentials, or attachment contents.
+    private func prepareRunLaunch(_ request: RunLaunchRequest) async throws -> PreparedRun {
+        let logger = FloeLogger(category: .persistence)
+        logger.info(
+            "runLaunchPrepareStarted run=\(request.runID.uuidString) conversation=\(request.conversationID?.uuidString ?? "new") provider=\(request.providerID?.uuidString ?? "none") model=\(request.modelID?.uuidString ?? "none") workspace=\(request.workspaceID?.uuidString ?? "private") attachments=\(request.attachments.count)"
+        )
+        do {
+            let prepared = try await environment.runLaunchStore.prepare(request)
+            logger.info(
+                "runLaunchPrepareSucceeded run=\(request.runID.uuidString) conversation=\(prepared.conversation.id.uuidString) workspace=\(prepared.workspace.id.uuidString)"
+            )
+            return prepared
+        } catch {
+            logger.error(
+                "runLaunchPrepareFailed run=\(request.runID.uuidString) errorType=\(String(reflecting: type(of: error))) error=\(error.localizedDescription)"
+            )
+            throw error
+        }
     }
 
     /// Makes every upload reachable through ordinary workspace tools. Images
@@ -1731,7 +1758,7 @@ final class ConversationCenter: ObservableObject {
         await waitForLaunches()
         try await stopRunsAndDelete(conversationIDs: [id])
         if ownedWorkspace?.kind == .privateTask, let ownedWorkspaceID {
-            try? await workspaceStore.deleteWorkspace(id: ownedWorkspaceID)
+            try? await environment.workspaceCenter.deleteWorkspace(id: ownedWorkspaceID)
         }
         await environment.credentialVault.drainDeletionQueue()
         environment.browserCenter.discard(conversationID: id)
@@ -1793,7 +1820,7 @@ final class ConversationCenter: ObservableObject {
         }
         try await store.assignConversation(workspaceID: workspaceID, conversationID: id)
         if oldWorkspace?.kind == .privateTask, let oldID, oldID != workspaceID {
-            try? await store.deleteWorkspace(id: oldID)
+            try? await environment.workspaceCenter.deleteWorkspace(id: oldID)
         }
         await environment.workspaceCenter.reload()
     }
@@ -1825,7 +1852,7 @@ final class ConversationCenter: ObservableObject {
         }
         try await stopRunsAndDelete(conversationIDs: ids)
         for workspaceID in privateWorkspaceIDs {
-            try? await workspaceStore.deleteWorkspace(id: workspaceID)
+            try? await environment.workspaceCenter.deleteWorkspace(id: workspaceID)
         }
         await environment.credentialVault.drainDeletionQueue()
         await environment.workspaceCenter.reload()

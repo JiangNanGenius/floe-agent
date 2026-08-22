@@ -30,6 +30,11 @@ public struct RunLaunchRequest: Sendable, Hashable {
     public var modelID: UUID?
     public var providerName: String?
     public var modelName: String?
+    /// Full configuration snapshots let the launch transaction repair a
+    /// missing/stale relational row before inserting the run. Older callers
+    /// may continue to provide only ids.
+    public var providerProfile: ProviderProfile?
+    public var modelProfile: ModelProfile?
 
     public init(
         conversationID: UUID? = nil,
@@ -46,6 +51,8 @@ public struct RunLaunchRequest: Sendable, Hashable {
         modelID: UUID? = nil,
         providerName: String? = nil,
         modelName: String? = nil,
+        providerProfile: ProviderProfile? = nil,
+        modelProfile: ModelProfile? = nil,
         startedAt: Date = Date()
     ) {
         self.conversationID = conversationID
@@ -62,6 +69,8 @@ public struct RunLaunchRequest: Sendable, Hashable {
         self.modelID = modelID
         self.providerName = providerName
         self.modelName = modelName
+        self.providerProfile = providerProfile
+        self.modelProfile = modelProfile
         self.startedAt = startedAt
     }
 }
@@ -124,11 +133,32 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
             let conversation: ConversationRecord
             let createdConversation: Bool
 
+            var resolvedProviderID = request.providerID
+            var resolvedModelID = request.modelID
+
+            // Repair relational configuration in the same transaction as the
+            // run. This is important for device-local models: an older build
+            // or a CloudKit reconciliation may have removed their local-only
+            // rows while the picker still holds a valid installed profile.
+            if let provider = request.providerProfile {
+                try provider.validate()
+                try ConfigurationCodec.write(provider, to: db)
+                resolvedProviderID = provider.id
+            }
+            if let model = request.modelProfile {
+                try ConfigurationCodec.validate(model)
+                guard model.providerID == resolvedProviderID else {
+                    throw FloeError.invalidConfiguration("The selected model belongs to a different provider")
+                }
+                let canonical = try ConfigurationCodec.write(model, to: db)
+                resolvedModelID = canonical.id
+            }
+
             // Resolve relational configuration before creating any durable
             // conversation/run rows. This turns a stale picker selection into
             // an actionable preflight error instead of leaking SQLite's
             // FOREIGN KEY diagnostic into the composer.
-            if let providerID = request.providerID {
+            if let providerID = resolvedProviderID {
                 guard try Bool.fetchOne(
                     db,
                     sql: "SELECT EXISTS(SELECT 1 FROM providers WHERE id = ? AND is_enabled = 1)",
@@ -139,8 +169,8 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                     )
                 }
             }
-            if let modelID = request.modelID {
-                guard let providerID = request.providerID else {
+            if let modelID = resolvedModelID {
+                guard let providerID = resolvedProviderID else {
                     throw FloeError.invalidConfiguration("A selected model requires a provider")
                 }
                 guard try Bool.fetchOne(
@@ -285,8 +315,8 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 state: request.initialState,
                 goal: goal,
                 startedAt: now,
-                providerID: request.providerID,
-                modelID: request.modelID,
+                providerID: resolvedProviderID,
+                modelID: resolvedModelID,
                 providerName: request.providerName,
                 modelName: request.modelName
             )

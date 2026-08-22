@@ -288,7 +288,7 @@ final class ThreadDetailViewModel: ObservableObject {
             isConversationMissing = false
             taskTitle = conversation.title
             center.environment.browserCenter.bind(to: conversationID)
-            selectedProjectID = center.environment.workspaceCenter.workspaceID(for: conversationID)
+            selectedProjectID = center.environment.workspaceCenter.projectWorkspaceID(for: conversationID)
             if selectedModelID == nil { selectedModelID = center.modelPreferences.defaultAgentModelID }
             stage = "runList"
             runs = try await center.environment.runStore.runs(conversationID: conversationID)

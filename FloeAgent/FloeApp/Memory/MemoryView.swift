@@ -152,8 +152,10 @@ final class MemoryCenter: ObservableObject {
     }
 }
 
-private enum MemorySheet: String, Identifiable { case add; var id: String { rawValue } }
-private enum MemoryRoute: Hashable { case userProfile, soul, pending }
+private enum MemorySheet: String, Identifiable {
+    case add, userProfile, soul, pending
+    var id: String { rawValue }
+}
 
 struct MemoryView: View {
     @ObservedObject var center: MemoryCenter
@@ -166,30 +168,30 @@ struct MemoryView: View {
         // actually pushing their destination.
         List {
                 Section("个性化") {
-                    NavigationLink(value: MemoryRoute.userProfile) {
+                    Button { presentedSheet = .userProfile } label: {
                         personalizationRow("用户画像", icon: "person.text.rectangle", revision: center.profile?.revision)
                     }
-                    NavigationLink(value: MemoryRoute.soul) {
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
+                    .accessibilityIdentifier("memory.user_profile")
+                    Button { presentedSheet = .soul } label: {
                         personalizationRow("SOUL.md", icon: "sparkles", revision: center.soul?.revision)
                     }
-                    NavigationLink(value: MemoryRoute.pending) {
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
+                    .accessibilityIdentifier("memory.soul")
+                    Button { presentedSheet = .pending } label: {
                         Label("待确认记忆（\(center.pendingCandidates.count)）", systemImage: "tray.full")
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("memory.pending")
                 }
                 if !query.isEmpty { searchSection } else { memorySection }
                 if let error = center.errorMessage { Section { Text(error).foregroundStyle(.red).font(.footnote) } }
         }
         .navigationTitle("记忆与个性化")
-        .navigationDestination(for: MemoryRoute.self) { route in
-            switch route {
-            case .userProfile:
-                PersonalizationDocumentView(center: center, kind: .userProfile)
-            case .soul:
-                PersonalizationDocumentView(center: center, kind: .soul)
-            case .pending:
-                PendingMemoryReviewView(center: center)
-            }
-        }
         .searchable(text: $query, prompt: "搜索记忆")
         .task(id: query) {
             try? await Task.sleep(for: .milliseconds(250))
@@ -206,7 +208,20 @@ struct MemoryView: View {
             }
         }
         .task { await center.load() }
-        .sheet(item: $presentedSheet) { _ in AddMemorySheet(center: center) }
+        .sheet(item: $presentedSheet) { sheet in
+            NavigationStack {
+                switch sheet {
+                case .add:
+                    AddMemorySheet(center: center)
+                case .userProfile:
+                    PersonalizationDocumentView(center: center, kind: .userProfile)
+                case .soul:
+                    PersonalizationDocumentView(center: center, kind: .soul)
+                case .pending:
+                    PendingMemoryReviewView(center: center)
+                }
+            }
+        }
     }
 
     @ViewBuilder private var searchSection: some View {

@@ -22,14 +22,14 @@ struct WorkspacePickerView: View {
 
     var body: some View {
         List {
-            if center.workspaces.isEmpty {
+            if center.projectWorkspaces.isEmpty {
                 ContentUnavailableView {
                     Label("workspace.empty", systemImage: "folder.badge.plus")
                 } description: {
                     Text("workspace.empty.hint")
                 }
             } else {
-                ForEach(center.workspaces) { workspace in
+                ForEach(center.projectWorkspaces) { workspace in
                     workspaceRow(workspace)
                 }
                 .onDelete(perform: delete)
@@ -127,10 +127,15 @@ struct WorkspacePickerView: View {
     }
 
     private func delete(at offsets: IndexSet) {
-        let ids = offsets.compactMap { center.workspaces[safe: $0]?.id }
+        let visibleProjects = center.projectWorkspaces
+        let ids = offsets.compactMap { visibleProjects[safe: $0]?.id }
         Task {
             for id in ids {
-                try? await center.deleteWorkspace(id: id)
+                do {
+                    try await center.deleteWorkspace(id: id)
+                } catch {
+                    center.actionError = error.localizedDescription
+                }
             }
         }
     }

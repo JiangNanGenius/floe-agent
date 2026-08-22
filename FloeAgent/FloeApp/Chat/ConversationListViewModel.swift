@@ -74,8 +74,16 @@ final class ConversationListViewModel: ObservableObject {
         try? await center.archiveConversation(id: conversation.id)
     }
 
+    func archive(ids: Set<UUID>) async {
+        for id in ids { try? await center.archiveConversation(id: id) }
+    }
+
     func delete(_ conversation: ConversationRecord) async {
         try? await center.deleteConversation(id: conversation.id)
+    }
+
+    func delete(ids: Set<UUID>) async {
+        for id in ids { try? await center.deleteConversation(id: id) }
     }
 
     /// Display title: the stored title, falling back to the latest run's

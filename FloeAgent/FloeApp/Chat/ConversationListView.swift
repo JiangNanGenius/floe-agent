@@ -18,6 +18,9 @@ struct ConversationListView: View {
     @EnvironmentObject private var router: AppRouter
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var pendingDeletion: ConversationRecord?
+    @State private var selectedIDs: Set<UUID> = []
+    @State private var editMode: EditMode = .inactive
+    @State private var presentsArchive = false
 
     init(center: ConversationCenter) {
         _viewModel = StateObject(wrappedValue: ConversationListViewModel(center: center))
@@ -46,6 +49,10 @@ struct ConversationListView: View {
         )
         .navigationDestination(for: UUID.self) { conversationID in
             ThreadDetailView(conversationID: conversationID, center: viewModel.center)
+        }
+        .environment(\.editMode, $editMode)
+        .sheet(isPresented: $presentsArchive) {
+            NavigationStack { ArchivedConversationsView(center: viewModel.center) }
         }
         .alert("删除任务？", isPresented: Binding(
             get: { pendingDeletion != nil },
@@ -94,7 +101,7 @@ struct ConversationListView: View {
     // MARK: - List
 
     private var conversationList: some View {
-        List {
+        List(selection: $selectedIDs) {
             if viewModel.filteredConversations.isEmpty {
                 // A search with no matches is an honest state, not an
                 // empty history list.
@@ -138,6 +145,15 @@ struct ConversationListView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button {
+                presentsArchive = true
+            } label: {
+                Image(systemName: "archivebox")
+            }
+            .accessibilityLabel("归档区")
+        }
+        ToolbarItem(placement: .primaryAction) { EditButton() }
         ToolbarItem(placement: .primaryAction) {
             Button {
                 createAndOpen()
@@ -149,6 +165,24 @@ struct ConversationListView: View {
             .disabled(viewModel.needsProvider)
             .accessibilityIdentifier("chat.new")
         }
+        if editMode.isEditing, !selectedIDs.isEmpty {
+            ToolbarItem(placement: .bottomBar) {
+                Button("归档所选") {
+                    let ids = selectedIDs
+                    selectedIDs.removeAll()
+                    editMode = .inactive
+                    Task { await viewModel.archive(ids: ids) }
+                }
+            }
+            ToolbarItem(placement: .bottomBar) {
+                Button("删除所选", role: .destructive) {
+                    let ids = selectedIDs
+                    selectedIDs.removeAll()
+                    editMode = .inactive
+                    Task { await viewModel.delete(ids: ids) }
+                }
+            }
+        }
     }
 
     private func createAndOpen() {
@@ -157,6 +191,84 @@ struct ConversationListView: View {
                 router.openConversation(conversation.id)
             }
         }
+    }
+}
+
+private struct ArchivedConversationsView: View {
+    let center: ConversationCenter
+    @Environment(\.dismiss) private var dismiss
+    @State private var conversations: [ConversationRecord] = []
+    @State private var selection: Set<UUID> = []
+    @State private var confirmsDelete = false
+    @State private var confirmsDeleteAll = false
+
+    var body: some View {
+        List(conversations, selection: $selection) { conversation in
+            VStack(alignment: .leading, spacing: 4) {
+                Text(conversation.title.isEmpty ? String(localized: "chat.untitled") : conversation.title)
+                if let archivedAt = conversation.archivedAt {
+                    Text(archivedAt, format: .dateTime.month().day().hour().minute())
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(minHeight: FloeTheme.minimumTarget)
+        }
+        .overlay {
+            if conversations.isEmpty {
+                ContentUnavailableView("归档区为空", systemImage: "archivebox")
+            }
+        }
+        .navigationTitle("归档区")
+        .environment(\.editMode, .constant(.active))
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("完成") { dismiss() }
+            }
+            if !selection.isEmpty {
+                ToolbarItem(placement: .bottomBar) {
+                    Button("恢复所选") { Task { await restoreSelection() } }
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    Button("永久删除", role: .destructive) { confirmsDelete = true }
+                }
+            }
+            if !conversations.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("清空", role: .destructive) { confirmsDeleteAll = true }
+                }
+            }
+        }
+        .task { await load() }
+        .alert("永久删除所选任务？", isPresented: $confirmsDelete) {
+            Button("取消", role: .cancel) {}
+            Button("删除", role: .destructive) { Task { await delete(ids: selection) } }
+        } message: { Text("任务、生成内容、私有工作区和附件引用将被永久删除。") }
+        .alert("清空归档区？", isPresented: $confirmsDeleteAll) {
+            Button("取消", role: .cancel) {}
+            Button("全部删除", role: .destructive) {
+                Task { await delete(ids: Set(conversations.map(\.id))) }
+            }
+        } message: { Text("归档区内的所有任务及其私有数据将被永久删除。") }
+    }
+
+    private func load() async {
+        conversations = ((try? await center.environment.conversationStore
+            .conversations(includeArchived: true)) ?? [])
+            .filter { $0.archivedAt != nil }
+            .sorted { ($0.archivedAt ?? $0.updatedAt) > ($1.archivedAt ?? $1.updatedAt) }
+        selection.formIntersection(Set(conversations.map(\.id)))
+    }
+
+    private func restoreSelection() async {
+        for id in selection { try? await center.restoreConversation(id: id) }
+        selection.removeAll()
+        await load()
+    }
+
+    private func delete(ids: Set<UUID>) async {
+        for id in ids { try? await center.deleteConversation(id: id) }
+        selection.removeAll()
+        await load()
     }
 }
 

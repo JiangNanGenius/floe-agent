@@ -206,7 +206,7 @@ public actor ModelConfigurationStore {
     }
 }
 
-private enum ConfigurationCodec {
+enum ConfigurationCodec {
     static func encode<T: Encodable>(_ value: T) throws -> String {
         let data = try JSONEncoder().encode(value)
         guard let string = String(data: data, encoding: .utf8) else {

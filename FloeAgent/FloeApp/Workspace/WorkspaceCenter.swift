@@ -102,6 +102,17 @@ final class WorkspaceCenter: ObservableObject {
         conversationWorkspaceIDs[conversationID]
     }
 
+    /// Only external projects belong in the composer project picker. A task's
+    /// app-owned private workspace has an intentionally empty bookmark and
+    /// must never be opened through the security-scoped project path.
+    func projectWorkspaceID(for conversationID: UUID) -> UUID? {
+        guard let id = conversationWorkspaceIDs[conversationID],
+              workspaces.first(where: { $0.id == id })?.kind == .project else {
+            return nil
+        }
+        return id
+    }
+
     /// Creates a workspace from a picked directory URL (security-scoped).
     /// The URL is bookmarked immediately; only the bookmark enters the
     /// database — never file contents or secrets.
@@ -124,14 +135,39 @@ final class WorkspaceCenter: ObservableObject {
         return record
     }
 
-    /// Deletes a workspace record (the on-disk directory is never touched).
+    /// Deletes a workspace record. User-selected project directories are never
+    /// touched; app-owned private task directories are removed with the record.
     func deleteWorkspace(id: UUID) async throws {
+        let deleting = try await store.workspace(id: id)
         if currentWorkspace?.id == id {
             closeCurrentWorkspace()
         }
         try await store.deleteWorkspace(id: id)
+        if let deleting, deleting.kind == .privateTask {
+            try removePrivateWorkspaceDirectory(deleting)
+        }
         await environment.credentialVault.drainDeletionQueue()
         await reload()
+    }
+
+    private func removePrivateWorkspaceDirectory(_ record: WorkspaceRecord) throws {
+        guard record.kind == .privateTask, let relative = record.internalRelativePath else { return }
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let managedRoot = support.appendingPathComponent("FloeAgent", isDirectory: true)
+            .standardizedFileURL
+        let target = managedRoot.appendingPathComponent(relative, isDirectory: true)
+            .standardizedFileURL
+        guard target.path.hasPrefix(managedRoot.path + "/") else {
+            throw FloeError.validationFailed("Invalid private workspace path")
+        }
+        if FileManager.default.fileExists(atPath: target.path) {
+            try FileManager.default.removeItem(at: target)
+        }
     }
 
     // MARK: - Opening
