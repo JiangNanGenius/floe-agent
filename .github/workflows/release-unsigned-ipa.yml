@@ -236,9 +236,6 @@ jobs:
             'iOS Team Store Provisioning Profile: org.floeagent.ios.screenshare'
 
       - name: Archive signed build
-        env:
-          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           xcodebuild \
             -project FloeAgent.xcodeproj \
@@ -246,14 +243,9 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/FloeAgent.xcarchive" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
-            CODE_SIGN_STYLE=Automatic \
-            CODE_SIGN_IDENTITY='Apple Development' \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY='Apple Distribution' \
             DEVELOPMENT_TEAM=QYL72C43K6 \
-            PROVISIONING_PROFILE_SPECIFIER='' \
             archive
 
       - name: Export and upload to TestFlight
@@ -263,8 +255,6 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/TestFlightExport"
           cp Config/ExportOptions-TestFlight.plist "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
-          /usr/libexec/PlistBuddy -c "Set :signingStyle automatic" "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
-          /usr/libexec/PlistBuddy -c "Delete :provisioningProfiles" "$RUNNER_TEMP/ExportOptions-TestFlight.plist"
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/FloeAgent.xcarchive" \
             -exportPath "$RUNNER_TEMP/TestFlightExport" \
