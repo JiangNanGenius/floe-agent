@@ -82,11 +82,16 @@ struct JavaScriptEngineTests {
 
     // MARK: Timeout
 
-    @Test("while(true){} returns timedOut near the deadline, not a hang")
+    @Test("A long-running script returns timedOut near the deadline, not a hang")
     func timeout() async {
         let started = Date()
         let outcome = await service.run(
-            ScriptExecutionRequest(script: "while (true) {}", timeout: 0.5),
+            // Finite by design: JavaScriptCore exposes no public App Store-safe
+            // termination API, so tests must not leak an immortal worker thread.
+            ScriptExecutionRequest(
+                script: "var stop = Date.now() + 3000; while (Date.now() < stop) {}",
+                timeout: 0.5
+            ),
             cancellation: nil
         )
         let elapsed = Date().timeIntervalSince(started)
@@ -117,7 +122,10 @@ struct JavaScriptEngineTests {
         let token = CancellationToken()
         let task = Task {
             await service.run(
-                ScriptExecutionRequest(script: "while (true) {}", timeout: 30),
+                ScriptExecutionRequest(
+                    script: "var stop = Date.now() + 3000; while (Date.now() < stop) {}",
+                    timeout: 30
+                ),
                 cancellation: token
             )
         }

@@ -57,11 +57,14 @@ jobs:
 
       - name: SPM test (cross-platform targets)
         run: |
-          # JavaScriptCore cannot terminate an evaluated infinite loop. Run its
-          # deadline tests in a separate process so abandoned VM threads cannot
-          # starve unrelated actor/state-machine tests on shared CI runners.
-          swift test --skip 'FloeExecutionTests.JavaScriptEngineTests'
+          # Deadline tests intentionally outlive the caller briefly. Isolate
+          # both JavaScript suites so loaded shared runners cannot make their
+          # wall-clock assertions interfere with unrelated concurrent tests.
+          swift test \
+            --skip 'FloeExecutionTests.JavaScriptEngineTests' \
+            --skip 'FloeExecutionTests.JavaScriptExecutionToolTests'
           swift test --filter 'FloeExecutionTests.JavaScriptEngineTests'
+          swift test --filter 'FloeExecutionTests.JavaScriptExecutionToolTests'
 
       - name: Secret scan
         run: |

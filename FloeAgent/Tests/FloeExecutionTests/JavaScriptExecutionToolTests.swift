@@ -129,7 +129,12 @@ struct JavaScriptExecutionToolTests {
         registerExecutionTools(includeOnDeviceJavaScript: true)
         let executor = CatalogToolExecutor()
         let started = Date()
-        let call = try makeCall(#"{"script":"while (true) {}","timeout":0.5}"#)
+        // JavaScriptCore has no public App Store-safe API for forcibly killing
+        // an evaluation. Keep the workload longer than the deadline but finite
+        // so this regression test cannot leave a permanent CPU-burning thread.
+        let call = try makeCall(
+            #"{"script":"var stop = Date.now() + 3000; while (Date.now() < stop) {}","timeout":0.5}"#
+        )
         let result = try await executor.execute(call, context: makeContext())
         let elapsed = Date().timeIntervalSince(started)
         #expect(result.status == .ok)

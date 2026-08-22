@@ -66,10 +66,13 @@ jobs:
           swift package resolve
           scripts/pin_check.sh
           swift build
-          # Isolate JavaScriptCore deadline tests: timed-out infinite loops are
-          # abandoned by design and must not consume CPU during other suites.
-          swift test --skip 'FloeExecutionTests.JavaScriptEngineTests'
+          # Isolate JavaScriptCore deadline tests from the concurrent suite so
+          # shared-runner load cannot distort their wall-clock assertions.
+          swift test \
+            --skip 'FloeExecutionTests.JavaScriptEngineTests' \
+            --skip 'FloeExecutionTests.JavaScriptExecutionToolTests'
           swift test --filter 'FloeExecutionTests.JavaScriptEngineTests'
+          swift test --filter 'FloeExecutionTests.JavaScriptExecutionToolTests'
 
       - name: Build iOS simulator release gate
         run: |
