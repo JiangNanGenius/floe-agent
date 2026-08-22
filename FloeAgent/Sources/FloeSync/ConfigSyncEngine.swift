@@ -145,6 +145,7 @@ public actor ConfigSyncEngine {
             throw FloeError.invalidConfiguration("ConfigSyncEngine requires a configuration store")
         }
         try await configurationStore.saveProvider(provider)
+        guard provider.kind != .local else { return }
         try await enqueueSave(
             type: .providerProfile,
             id: provider.id.uuidString,
@@ -158,6 +159,7 @@ public actor ConfigSyncEngine {
             throw FloeError.invalidConfiguration("ConfigSyncEngine requires a configuration store")
         }
         try await configurationStore.saveModel(model)
+        guard model.providerID != ProviderProfile.onDeviceProviderID else { return }
         try await enqueueSave(
             type: .modelProfile,
             id: model.id.uuidString,
@@ -352,7 +354,7 @@ public actor ConfigSyncEngine {
     private func stageUntrackedLocalConfiguration() async throws {
         guard let configurationStore, let metadataStore, let syncEngine, let zoneID else { return }
 
-        let providers = try await configurationStore.providers()
+        let providers = try await configurationStore.providers().filter { $0.kind != .local }
         let providerTimestamps = Dictionary(uniqueKeysWithValues: providers.map { ($0.id, $0.updatedAt) })
         for provider in providers {
             try await stageIfUntracked(
@@ -365,7 +367,8 @@ public actor ConfigSyncEngine {
                 zoneID: zoneID
             )
         }
-        for model in try await configurationStore.models() {
+        for model in try await configurationStore.models()
+            where model.providerID != ProviderProfile.onDeviceProviderID {
             try await stageIfUntracked(
                 type: .modelProfile,
                 id: model.id.uuidString,
@@ -570,7 +573,9 @@ public actor ConfigSyncEngine {
             guard id == "default" else {
                 throw FloeError.storageCorrupted("Invalid preference record identifier")
             }
-            return try Self.encode(try await configurationStore.preferences())
+            return try Self.encode(Self.withoutDeviceLocalModels(
+                try await configurationStore.preferences()
+            ))
         case .providerProfile:
             guard let uuid = UUID(uuidString: id) else {
                 throw FloeError.storageCorrupted("Invalid provider record identifier")
@@ -624,12 +629,20 @@ public actor ConfigSyncEngine {
 
         switch type {
         case .providerProfile:
-            try await configurationStore.saveProvider(try JSONDecoder.floe.decode(ProviderProfile.self, from: mergedPayload))
+            let provider = try JSONDecoder.floe.decode(ProviderProfile.self, from: mergedPayload)
+            guard provider.kind != .local else { return }
+            try await configurationStore.saveProvider(provider)
         case .modelProfile:
-            try await configurationStore.saveModel(try JSONDecoder.floe.decode(ModelProfile.self, from: mergedPayload))
+            let model = try JSONDecoder.floe.decode(ModelProfile.self, from: mergedPayload)
+            guard model.providerID != ProviderProfile.onDeviceProviderID else { return }
+            try await configurationStore.saveModel(model)
         case .preference:
-            try await configurationStore.savePreferences(
+            let remote = Self.withoutDeviceLocalModels(
                 try JSONDecoder.floe.decode(ModelSelectionPreferences.self, from: mergedPayload)
+            )
+            let local = try await configurationStore.preferences()
+            try await configurationStore.savePreferences(
+                Self.restoringDeviceLocalModels(remote, from: local)
             )
         case .remoteHostProfile:
             guard let remoteHostStore else { return }
@@ -667,6 +680,55 @@ public actor ConfigSyncEngine {
         }
     }
 
+    private static func withoutDeviceLocalModels(
+        _ value: ModelSelectionPreferences
+    ) -> ModelSelectionPreferences {
+        var value = value
+        if value.defaultAgentModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
+            value.defaultAgentModelID = nil
+        }
+        if value.visionModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
+            value.visionModelID = nil
+        }
+        if value.approvalModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
+            value.approvalModelID = nil
+        }
+        if value.packageReviewModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
+            value.packageReviewModelID = nil
+        }
+        if value.sharedImageModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
+            value.sharedImageModelID = nil
+        }
+        if value.imageGenerationModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
+            value.imageGenerationModelID = nil
+        }
+        if value.imageEditingModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
+            value.imageEditingModelID = nil
+        }
+        return value
+    }
+
+    /// Local weights and their picker selections belong to this device. A
+    /// CloudKit update must not clear them merely because the sanitized cloud
+    /// payload intentionally contains nil for those fixed model identifiers.
+    private static func restoringDeviceLocalModels(
+        _ remote: ModelSelectionPreferences,
+        from local: ModelSelectionPreferences
+    ) -> ModelSelectionPreferences {
+        var value = remote
+        func deviceValue(_ id: UUID?) -> UUID? {
+            id.flatMap { ProviderProfile.onDeviceModelIDs.contains($0) ? $0 : nil }
+        }
+        value.defaultAgentModelID = deviceValue(local.defaultAgentModelID) ?? value.defaultAgentModelID
+        value.visionModelID = deviceValue(local.visionModelID) ?? value.visionModelID
+        value.approvalModelID = deviceValue(local.approvalModelID) ?? value.approvalModelID
+        value.packageReviewModelID = deviceValue(local.packageReviewModelID) ?? value.packageReviewModelID
+        value.sharedImageModelID = deviceValue(local.sharedImageModelID) ?? value.sharedImageModelID
+        value.imageGenerationModelID = deviceValue(local.imageGenerationModelID) ?? value.imageGenerationModelID
+        value.imageEditingModelID = deviceValue(local.imageEditingModelID) ?? value.imageEditingModelID
+        return value
+    }
+
     private func applyRemoteDeletion(recordID: CKRecord.ID, recordType: String) async throws {
         guard let type = ConfigSyncRecordType(rawValue: recordType),
               let configurationStore,
@@ -682,7 +744,10 @@ public actor ConfigSyncEngine {
                 try await configurationStore.deleteModel(id: uuid)
             }
         case .preference:
-            try await configurationStore.savePreferences(ModelSelectionPreferences())
+            let local = try await configurationStore.preferences()
+            try await configurationStore.savePreferences(
+                Self.restoringDeviceLocalModels(ModelSelectionPreferences(), from: local)
+            )
         case .remoteHostProfile:
             if let uuid = UUID(uuidString: recordID.recordName) {
                 try await remoteHostStore?.deleteHost(id: uuid)

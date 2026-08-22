@@ -220,6 +220,17 @@ struct ThreadComposerView: View {
             selectedPhoto = nil
             isPhotoPickerPresented = false
             photoPickerTraceID = nil
+            if selectedProjectID == nil {
+                environment.workspaceCenter.closeCurrentWorkspace()
+            }
+        }
+        .task(id: contextID) {
+            // A private/no-project task must not inherit a stale external
+            // security-scoped workspace from the previously viewed chat.
+            if selectedProjectID == nil {
+                environment.workspaceCenter.closeCurrentWorkspace()
+                attachmentError = nil
+            }
         }
         .onChange(of: isRunning) { _, running in
             if running { attachmentError = nil }
@@ -289,10 +300,21 @@ struct ThreadComposerView: View {
                     // the observed no-op on iPad and Mac Catalyst.
                     let traceID = UUID()
                     photoPickerTraceID = traceID
-                    isPhotoPickerPresented = true
                     FloeLogger(category: .app).info(
                         "photoPickerPresentationRequested trace=\(traceID.uuidString) context=\(contextID?.uuidString ?? "none")"
                     )
+                    // A Menu is removed from the hierarchy before its action
+                    // finishes. Presenting PhotosPicker in the same update is
+                    // dropped on iPadOS. Wait for that dismissal transaction,
+                    // then present from this stable composer view.
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(180))
+                        guard photoPickerTraceID == traceID else { return }
+                        isPhotoPickerPresented = true
+                        FloeLogger(category: .app).info(
+                            "photoPickerPresentationCommitted trace=\(traceID.uuidString)"
+                        )
+                    }
                 } label: {
                     Label("composer.attachment.photo_library", systemImage: "photo.on.rectangle")
                 }
@@ -555,7 +577,6 @@ struct ThreadComposerView: View {
             ForEach(projects) { project in
                 Button {
                     selectedProjectID = project.id
-                    Task { await openProject(project.id) }
                 } label: {
                     if selectedProjectID == project.id {
                         Label(project.name, systemImage: "checkmark")
@@ -578,8 +599,14 @@ struct ThreadComposerView: View {
             )
         }
         .onChange(of: selectedProjectID, initial: false) { _, newValue in
-            guard let newValue else { return }
-            Task { await openProject(newValue) }
+            Task {
+                if let newValue {
+                    await openProject(newValue)
+                } else {
+                    environment.workspaceCenter.closeCurrentWorkspace()
+                    attachmentError = nil
+                }
+            }
         }
         .disabled(projectSelectionLocked)
     }

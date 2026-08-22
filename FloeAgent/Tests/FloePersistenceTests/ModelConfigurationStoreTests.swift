@@ -11,6 +11,37 @@ struct ModelConfigurationStoreTests {
         return ModelConfigurationStore(database: database)
     }
 
+    @Test("Device-local reconciliation persists launch identities and disables removed models")
+    func localCatalogReconciliation() async throws {
+        let store = try await makeStore()
+        let provider = ProviderProfile(
+            id: ProviderProfile.onDeviceProviderID,
+            kind: .local,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "http://127.0.0.1")),
+            displayName: "On-device models",
+            allowsPlainHTTP: true
+        )
+        let installed = ModelProfile(
+            id: UUID(uuidString: "A1480001-0000-4000-8000-000000000001")!,
+            providerID: provider.id,
+            remoteModelID: "qwen-test",
+            displayName: "Qwen Test",
+            limits: .init(contextTokens: 8192, maxOutputTokens: 2048),
+            capabilities: [.text, .vision, .tools]
+        )
+
+        _ = try await store.reconcileDeviceLocalProvider(
+            provider: provider,
+            availableModels: [installed]
+        )
+        #expect(try await store.provider(id: provider.id) != nil)
+        #expect(try await store.model(id: installed.id)?.isEnabled == true)
+
+        _ = try await store.reconcileDeviceLocalProvider(provider: provider, availableModels: [])
+        #expect(try await store.model(id: installed.id)?.isEnabled == false)
+    }
+
     @Test("Provider metadata round-trips without an API-key body")
     func providerRoundTrip() async throws {
         let store = try await makeStore()

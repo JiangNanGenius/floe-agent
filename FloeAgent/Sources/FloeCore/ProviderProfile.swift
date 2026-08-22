@@ -29,6 +29,18 @@ public struct SecretReference: Sendable, Codable, Hashable {
 
 /// Configuration for one model provider endpoint.
 public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
+    /// Stable identity of Floe's device-local inference provider. Records
+    /// using this identity are persisted locally for relational integrity but
+    /// are deliberately excluded from CloudKit configuration sync.
+    public static let onDeviceProviderID = UUID(
+        uuidString: "A1480000-0000-4000-8000-000000000001"
+    )!
+    public static let onDeviceModelIDs: Set<UUID> = [
+        UUID(uuidString: "A1480001-0000-4000-8000-000000000001")!,
+        UUID(uuidString: "A1480001-0000-4000-8000-000000000002")!,
+        UUID(uuidString: "A1480001-0000-4000-8000-000000000003")!
+    ]
+
     public var id: UUID
     public var kind: ProviderKind
     /// Wire protocol the endpoint speaks. May differ from `kind` for

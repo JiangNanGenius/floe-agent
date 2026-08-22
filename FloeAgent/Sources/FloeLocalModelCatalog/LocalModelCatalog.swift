@@ -1,5 +1,65 @@
 import Foundation
 import FloeCore
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+
+#if os(iOS)
+/// Bridges URLSession background relaunch callbacks back to UIKit without
+/// making the catalog target depend on the application target.
+@MainActor
+public final class LocalModelBackgroundEvents {
+    public static let shared = LocalModelBackgroundEvents()
+    private var completions: [String: () -> Void] = [:]
+    private var sessionsThatAlreadyFinished: Set<String> = []
+
+    private init() {}
+
+    public func register(identifier: String, completion: @escaping () -> Void) {
+        if sessionsThatAlreadyFinished.remove(identifier) != nil {
+            completion()
+        } else {
+            completions[identifier] = completion
+        }
+    }
+
+    fileprivate func finish(identifier: String) {
+        if let completion = completions.removeValue(forKey: identifier) {
+            completion()
+        } else {
+            sessionsThatAlreadyFinished.insert(identifier)
+        }
+    }
+}
+#endif
+
+public struct LocalModelDownloadProgress: Sendable, Equatable {
+    public var modelID: String
+    public var component: String
+    public var bytesReceived: Int64
+    public var bytesExpected: Int64?
+    public var fractionCompleted: Double
+    public var bytesPerSecond: Double?
+    public var estimatedRemainingSeconds: Double?
+
+    public init(
+        modelID: String,
+        component: String,
+        bytesReceived: Int64,
+        bytesExpected: Int64?,
+        fractionCompleted: Double,
+        bytesPerSecond: Double? = nil,
+        estimatedRemainingSeconds: Double? = nil
+    ) {
+        self.modelID = modelID
+        self.component = component
+        self.bytesReceived = bytesReceived
+        self.bytesExpected = bytesExpected
+        self.fractionCompleted = min(max(fractionCompleted, 0), 1)
+        self.bytesPerSecond = bytesPerSecond
+        self.estimatedRemainingSeconds = estimatedRemainingSeconds
+    }
+}
 
 public struct LocalModelCatalogEntry: Identifiable, Codable, Hashable, Sendable {
     public var id: String
@@ -67,6 +127,8 @@ public actor LocalModelStore {
     }
 
     public let root: URL
+    private var activeTasks: [String: URLSessionDownloadTask] = [:]
+    private var activeOperations: [String: ComponentDownloadDelegate] = [:]
     public init(root: URL? = nil) {
         self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("FloeAgent/LocalModels", isDirectory: true)
@@ -92,7 +154,26 @@ public actor LocalModelStore {
         return entry.visionProjectorFile == nil || installedProjectorURL(id: id) != nil
     }
 
-    public func download(_ entry: LocalModelCatalogEntry) async throws -> URL {
+    public func resumableModelIDs() -> Set<String> {
+        let directory = root.appendingPathComponent(".downloads", isDirectory: true)
+        guard let children = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return Set(children.compactMap { child in
+            guard CuratedLocalModelCatalog.entries.contains(where: { $0.id == child.lastPathComponent }) else {
+                return nil
+            }
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: child.path)) ?? []
+            return files.contains(where: { $0.hasSuffix(".resume") }) ? child.lastPathComponent : nil
+        })
+    }
+
+    public func download(
+        _ entry: LocalModelCatalogEntry,
+        progress: (@Sendable (LocalModelDownloadProgress) -> Void)? = nil
+    ) async throws -> URL {
         let traceID = UUID().uuidString
         let startedAt = Date()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -115,15 +196,19 @@ public actor LocalModelStore {
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         do {
             let stagedModel = staging.appendingPathComponent(entry.modelFile)
-            try await Self.downloadGGUF(
+            try await downloadGGUF(
                 from: entry.modelURL, to: stagedModel,
-                traceID: traceID, modelID: entry.id, component: "weights"
+                traceID: traceID, modelID: entry.id, component: "weights",
+                overallBase: 0, overallWeight: entry.visionProjectorFile == nil ? 1 : 0.85,
+                progress: progress
             )
             if let projectorURL = entry.visionProjectorURL, let projectorName = entry.visionProjectorFile {
-                try await Self.downloadGGUF(
+                try await downloadGGUF(
                     from: projectorURL,
                     to: staging.appendingPathComponent(projectorName),
-                    traceID: traceID, modelID: entry.id, component: "projector"
+                    traceID: traceID, modelID: entry.id, component: "projector",
+                    overallBase: 0.85, overallWeight: 0.15,
+                    progress: progress
                 )
             }
 
@@ -156,6 +241,32 @@ public actor LocalModelStore {
         }
     }
 
+    /// Cancels the active transfer while asking URLSession to preserve opaque
+    /// resume data. A later call to `download` automatically resumes it.
+    public func pauseDownload(id: String) {
+        guard let task = activeTasks[id] else { return }
+        let resumeURL = resumeDataURL(modelID: id, component: task.taskDescription ?? "weights")
+        task.cancel { data in
+            guard let data else { return }
+            try? FileManager.default.createDirectory(
+                at: resumeURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try? data.write(to: resumeURL, options: .atomic)
+        }
+        activeTasks[id] = nil
+    }
+
+    public func cancelDownload(id: String) {
+        activeOperations[id]?.discardResumeData()
+        activeTasks[id]?.cancel()
+        activeTasks[id] = nil
+        activeOperations[id] = nil
+        let directory = root.appendingPathComponent(".downloads", isDirectory: true)
+            .appendingPathComponent(id, isDirectory: true)
+        try? FileManager.default.removeItem(at: directory)
+    }
+
     public func remove(id: String) throws {
         let directory = root.appendingPathComponent(id, isDirectory: true)
         if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
@@ -167,26 +278,208 @@ public actor LocalModelStore {
         guard try handle.read(upToCount: 4) == Data([0x47, 0x47, 0x55, 0x46]) else { throw StoreError.invalidGGUF }
     }
 
-    private static func downloadGGUF(
+    private func downloadGGUF(
         from source: URL,
         to destination: URL,
         traceID: String,
         modelID: String,
-        component: String
+        component: String,
+        overallBase: Double,
+        overallWeight: Double,
+        progress: (@Sendable (LocalModelDownloadProgress) -> Void)?
     ) async throws {
         let startedAt = Date()
         FloeLogger(category: .providers).debug(
             "localModelComponentDownloadStarted trace=\(traceID) model=\(modelID) component=\(component) host=\(source.host ?? "none")"
         )
-        let (temporary, response) = try await URLSession.shared.download(from: source)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw URLError(.badServerResponse)
+        let resumeURL = resumeDataURL(modelID: modelID, component: component)
+        let resumeData = try? Data(contentsOf: resumeURL)
+        let operation = ComponentDownloadDelegate(
+            destination: destination,
+            resumeDataURL: resumeURL,
+            modelID: modelID,
+            component: component,
+            overallBase: overallBase,
+            overallWeight: overallWeight,
+            progress: progress
+        )
+        #if os(iOS)
+        let configuration = URLSessionConfiguration.background(
+            withIdentifier: "org.floeagent.local-model.\(modelID).\(component)"
+        )
+        configuration.sessionSendsLaunchEvents = true
+        configuration.isDiscretionary = false
+        #else
+        let configuration = URLSessionConfiguration.default
+        #endif
+        configuration.waitsForConnectivity = true
+        configuration.timeoutIntervalForResource = 24 * 60 * 60
+        let session = URLSession(configuration: configuration, delegate: operation, delegateQueue: nil)
+        let restored = await session.allTasks.compactMap { $0 as? URLSessionDownloadTask }.first
+        let task = restored
+            ?? resumeData.map(session.downloadTask(withResumeData:))
+            ?? session.downloadTask(with: source)
+        task.taskDescription = component
+        activeTasks[modelID] = task
+        activeOperations[modelID] = operation
+        do {
+            let response = try await operation.start(task: task)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                throw URLError(.badServerResponse)
+            }
+        } catch {
+            activeTasks[modelID] = nil
+            activeOperations[modelID] = nil
+            session.finishTasksAndInvalidate()
+            throw error
         }
-        try validateGGUF(temporary)
-        let bytes = (try? temporary.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        try FileManager.default.moveItem(at: temporary, to: destination)
+        activeTasks[modelID] = nil
+        activeOperations[modelID] = nil
+        session.finishTasksAndInvalidate()
+        try? FileManager.default.removeItem(at: resumeURL)
+        try Self.validateGGUF(destination)
+        let bytes = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         FloeLogger(category: .providers).info(
             "localModelComponentDownloadFinished trace=\(traceID) model=\(modelID) component=\(component) bytes=\(bytes) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
         )
     }
+
+    private func resumeDataURL(modelID: String, component: String) -> URL {
+        root.appendingPathComponent(".downloads", isDirectory: true)
+            .appendingPathComponent(modelID, isDirectory: true)
+            .appendingPathComponent("\(component).resume")
+    }
+}
+
+private final class ComponentDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let destination: URL
+    private let resumeDataURL: URL
+    private let modelID: String
+    private let component: String
+    private let overallBase: Double
+    private let overallWeight: Double
+    private let progress: (@Sendable (LocalModelDownloadProgress) -> Void)?
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<URLResponse, Error>?
+    private var response: URLResponse?
+    private var movedFile = false
+    private var permitsResumePersistence = true
+    private let startedAt = Date()
+
+    init(
+        destination: URL,
+        resumeDataURL: URL,
+        modelID: String,
+        component: String,
+        overallBase: Double,
+        overallWeight: Double,
+        progress: (@Sendable (LocalModelDownloadProgress) -> Void)?
+    ) {
+        self.destination = destination
+        self.resumeDataURL = resumeDataURL
+        self.modelID = modelID
+        self.component = component
+        self.overallBase = overallBase
+        self.overallWeight = overallWeight
+        self.progress = progress
+    }
+
+    func start(task: URLSessionDownloadTask) async throws -> URLResponse {
+        try await withCheckedThrowingContinuation { continuation in
+            lock.withLock { self.continuation = continuation }
+            task.resume()
+        }
+    }
+
+    func discardResumeData() {
+        lock.withLock { permitsResumePersistence = false }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        let expected = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : nil
+        let componentFraction = expected.map { min(1, Double(totalBytesWritten) / Double($0)) } ?? 0
+        let elapsed = max(Date().timeIntervalSince(startedAt), 0.1)
+        let speed = Double(totalBytesWritten) / elapsed
+        let remaining = expected.map { max(0, Double($0 - totalBytesWritten) / max(speed, 1)) }
+        progress?(LocalModelDownloadProgress(
+            modelID: modelID,
+            component: component,
+            bytesReceived: totalBytesWritten,
+            bytesExpected: expected,
+            fractionCompleted: overallBase + componentFraction * overallWeight,
+            bytesPerSecond: speed,
+            estimatedRemainingSeconds: remaining
+        ))
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        do {
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.moveItem(at: location, to: destination)
+            lock.withLock {
+                response = downloadTask.response
+                movedFile = true
+            }
+        } catch {
+            finish(.failure(error))
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        if let error {
+            let nsError = error as NSError
+            let mayPersist = lock.withLock { permitsResumePersistence }
+            if mayPersist,
+               let data = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
+                try? FileManager.default.createDirectory(
+                    at: resumeDataURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try? data.write(to: resumeDataURL, options: .atomic)
+            }
+            finish(.failure(error))
+            return
+        }
+        let result: Result<URLResponse, Error> = lock.withLock {
+            guard movedFile, let response else { return .failure(URLError(.cannotCreateFile)) }
+            return .success(response)
+        }
+        finish(result)
+    }
+
+    private func finish(_ result: Result<URLResponse, Error>) {
+        let continuation: CheckedContinuation<URLResponse, Error>? = lock.withLock {
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume(with: result)
+    }
+
+    #if os(iOS)
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        guard let identifier = session.configuration.identifier else { return }
+        Task { @MainActor in
+            LocalModelBackgroundEvents.shared.finish(identifier: identifier)
+        }
+    }
+    #endif
 }

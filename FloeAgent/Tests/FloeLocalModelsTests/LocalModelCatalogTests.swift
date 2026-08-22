@@ -32,4 +32,21 @@ struct LocalModelCatalogTests {
             try LocalModelStore.validateGGUF(invalid)
         }
     }
+
+    @Test("Resume records are discovered without treating unknown directories as models")
+    func discoversResumeRecords() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let knownID = try #require(CuratedLocalModelCatalog.entries.first?.id)
+        let known = root.appendingPathComponent(".downloads/\(knownID)", isDirectory: true)
+        let unknown = root.appendingPathComponent(".downloads/not-in-catalog", isDirectory: true)
+        try FileManager.default.createDirectory(at: known, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: unknown, withIntermediateDirectories: true)
+        try Data([1, 2, 3]).write(to: known.appendingPathComponent("weights.resume"))
+        try Data([1, 2, 3]).write(to: unknown.appendingPathComponent("weights.resume"))
+
+        let resumable = await LocalModelStore(root: root).resumableModelIDs()
+        #expect(resumable == Set([knownID]))
+    }
 }

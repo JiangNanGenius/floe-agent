@@ -15,9 +15,24 @@ import AVFoundation
 import FloeCore
 import FloeModels
 import FloePersistence
+import FloeLocalModelCatalog
+
+final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        LocalModelBackgroundEvents.shared.register(
+            identifier: identifier,
+            completion: completionHandler
+        )
+    }
+}
 
 @main
 struct FloeAgentApp: App {
+    @UIApplicationDelegateAdaptor(FloeApplicationDelegate.self) private var applicationDelegate
     @StateObject private var environment: AppEnvironment
     @StateObject private var router: AppRouter
 
@@ -205,6 +220,15 @@ struct RootView: View {
     /// Presents first-run onboarding until a provider+model is configured.
     private func presentOnboardingIfNeeded() async {
         #if DEBUG
+        // UI tests that exercise an unrelated settings flow must not race the
+        // launch-time CloudKit grace period and have the first-run sheet appear
+        // over the control they are testing. This flag is DEBUG-only and does
+        // not alter production onboarding behavior.
+        if ProcessInfo.processInfo.arguments.contains("--ui-test-skip-onboarding") {
+            ConversationCenter.persistOnboardingSkippedMarker(true)
+            router.presentedSetup = nil
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--ui-test-force-onboarding") {
             router.presentedSetup = .firstLaunch
             return

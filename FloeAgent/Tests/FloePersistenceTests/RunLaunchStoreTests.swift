@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import GRDB
+import FloeCore
 import FloeModels
 @testable import FloePersistence
 
@@ -10,6 +11,27 @@ struct RunLaunchStoreTests {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
         return database
+    }
+
+    @Test("Unavailable provider/model fails preflight without creating a conversation")
+    func unavailableModelFailsBeforeLaunch() async throws {
+        let database = try await database()
+        let launchStore = SQLiteRunLaunchStore(database: database)
+        await #expect(throws: FloeError.self) {
+            try await launchStore.prepare(RunLaunchRequest(
+                conversationTitle: "Broken local launch",
+                goal: "hello",
+                providerID: ProviderProfile.onDeviceProviderID,
+                modelID: UUID(uuidString: "A1480001-0000-4000-8000-000000000001")
+            ))
+        }
+        let counts = try await database.reader { db in
+            [
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM conversations") ?? -1,
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM runs") ?? -1
+            ]
+        }
+        #expect(counts == [0, 0])
     }
 
     @Test("New task commits conversation, run, message, attachments and workspace link together")

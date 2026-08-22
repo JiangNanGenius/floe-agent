@@ -81,6 +81,38 @@ public actor ModelConfigurationStore {
         }
     }
 
+    /// Reconciles a provider whose catalog is owned by this device. Missing
+    /// models are disabled instead of deleted so historical `runs` foreign
+    /// keys remain valid after a user removes model files.
+    @discardableResult
+    public func reconcileDeviceLocalProvider(
+        provider: ProviderProfile,
+        availableModels: [ModelProfile]
+    ) async throws -> [ModelProfile] {
+        guard provider.kind == .local else {
+            throw FloeError.invalidConfiguration("Device-local reconciliation requires a local provider")
+        }
+        try provider.validate()
+        for model in availableModels { try ConfigurationCodec.validate(model) }
+        return try await database.writer { db in
+            try ConfigurationCodec.write(provider, to: db)
+            let saved = try availableModels.map { try ConfigurationCodec.write($0, to: db) }
+            let activeIDs = Set(saved.map { $0.id.uuidString })
+            let existingIDs = try String.fetchAll(
+                db,
+                sql: "SELECT id FROM models WHERE provider_id = ?",
+                arguments: [provider.id.uuidString]
+            )
+            for id in existingIDs where !activeIDs.contains(id) {
+                try db.execute(
+                    sql: "UPDATE models SET is_enabled = 0 WHERE id = ?",
+                    arguments: [id]
+                )
+            }
+            return saved
+        }
+    }
+
     public func model(id: UUID) async throws -> ModelProfile? {
         try await database.reader { db in
             guard let row = try Row.fetchOne(

@@ -252,12 +252,11 @@ private struct SandboxedArtifactWebView: UIViewRepresentable {
         var loadedDigest: Int?
         func webView(
             _ webView: WKWebView,
-            decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
-        ) {
+            decidePolicyFor navigationAction: WKNavigationAction
+        ) async -> WKNavigationActionPolicy {
             let url = navigationAction.request.url
             let isInitialDocument = url?.scheme == "about" || url?.absoluteString == nil
-            decisionHandler(isInitialDocument ? .allow : .cancel)
+            return isInitialDocument ? .allow : .cancel
         }
         func webView(
             _ webView: WKWebView,

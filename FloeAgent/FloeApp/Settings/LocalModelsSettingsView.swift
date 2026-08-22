@@ -7,9 +7,12 @@ import FloeLocalModels
 final class LocalModelsCenter: ObservableObject {
     @Published private(set) var installedIDs: Set<String> = []
     @Published private(set) var activeDownloads: Set<String> = []
+    @Published private(set) var pausedDownloads: Set<String> = []
+    @Published private(set) var downloadProgress: [String: LocalModelDownloadProgress] = [:]
     @Published var errorMessage: String?
     let store: LocalModelStore
     var onCatalogChanged: (@Sendable () async -> Void)?
+    private var downloadTasks: [String: Task<Void, Never>] = [:]
 
     init(store: LocalModelStore) {
         self.store = store
@@ -22,6 +25,8 @@ final class LocalModelsCenter: ObservableObject {
             installed.insert(entry.id)
         }
         installedIDs = installed
+        let resumable = await store.resumableModelIDs()
+        pausedDownloads.formUnion(resumable.subtracting(activeDownloads))
         FloeLogger(category: .providers).debug(
             "localModelCatalogRefreshed installed=\(installed.count) activeDownloads=\(activeDownloads.count)"
         )
@@ -29,24 +34,49 @@ final class LocalModelsCenter: ObservableObject {
 
     func download(_ entry: LocalModelCatalogEntry) {
         guard !activeDownloads.contains(entry.id) else { return }
+        pausedDownloads.remove(entry.id)
         activeDownloads.insert(entry.id)
         errorMessage = nil
         FloeLogger(category: .providers).info("localModelDownloadRequested model=\(entry.id)")
-        Task {
+        downloadTasks[entry.id] = Task { [weak self] in
+            guard let self else { return }
             do {
-                _ = try await store.download(entry)
-                await refresh()
-                await onCatalogChanged?()
+                _ = try await self.store.download(entry) { [weak self] progress in
+                    Task { @MainActor in self?.downloadProgress[entry.id] = progress }
+                }
+                await self.refresh()
+                await self.onCatalogChanged?()
             }
             catch {
+                if self.pausedDownloads.contains(entry.id) || Task.isCancelled {
+                    self.activeDownloads.remove(entry.id)
+                    return
+                }
                 let nsError = error as NSError
                 FloeLogger(category: .providers).warning(
                     "localModelDownloadUIFailed model=\(entry.id) domain=\(nsError.domain) code=\(nsError.code)"
                 )
-                errorMessage = error.localizedDescription
+                self.errorMessage = error.localizedDescription
             }
-            activeDownloads.remove(entry.id)
+            self.activeDownloads.remove(entry.id)
+            self.downloadTasks[entry.id] = nil
         }
+    }
+
+    func pause(_ entry: LocalModelCatalogEntry) {
+        guard activeDownloads.contains(entry.id) else { return }
+        pausedDownloads.insert(entry.id)
+        Task { await store.pauseDownload(id: entry.id) }
+        activeDownloads.remove(entry.id)
+    }
+
+    func cancel(_ entry: LocalModelCatalogEntry) {
+        pausedDownloads.remove(entry.id)
+        activeDownloads.remove(entry.id)
+        downloadProgress[entry.id] = nil
+        downloadTasks[entry.id]?.cancel()
+        downloadTasks[entry.id] = nil
+        Task { await store.cancelDownload(id: entry.id) }
     }
 
     func remove(_ entry: LocalModelCatalogEntry) {
@@ -84,11 +114,22 @@ struct LocalModelsSettingsView: View {
                             }
                             Spacer()
                             if center.activeDownloads.contains(entry.id) {
-                                ProgressView()
+                                Button("localmodels.pause") { center.pause(entry) }
+                            } else if center.pausedDownloads.contains(entry.id) {
+                                Button("localmodels.resume") { center.download(entry) }
+                                Button("localmodels.cancel", role: .destructive) { center.cancel(entry) }
                             } else if center.installedIDs.contains(entry.id) {
                                 Button("localmodels.remove", role: .destructive) { center.remove(entry) }
                             } else {
                                 Button("localmodels.download") { center.download(entry) }
+                            }
+                        }
+                        if let progress = center.downloadProgress[entry.id],
+                           center.activeDownloads.contains(entry.id) || center.pausedDownloads.contains(entry.id) {
+                            ProgressView(value: progress.fractionCompleted) {
+                                Text(progress.component == "projector" ? "localmodels.projector" : "localmodels.weights")
+                            } currentValueLabel: {
+                                Text(Self.progressLabel(progress))
                             }
                         }
                         HStack(spacing: 12) {
@@ -107,6 +148,29 @@ struct LocalModelsSettingsView: View {
         }
         .navigationTitle("localmodels.title")
         .task { await center.refresh() }
+    }
+
+    private static func progressLabel(_ progress: LocalModelDownloadProgress) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        let received = formatter.string(fromByteCount: progress.bytesReceived)
+        if let expected = progress.bytesExpected {
+            var parts = [
+                "\(Int(progress.fractionCompleted * 100))%",
+                "\(received) / \(formatter.string(fromByteCount: expected))"
+            ]
+            if let speed = progress.bytesPerSecond, speed > 0 {
+                parts.append("\(formatter.string(fromByteCount: Int64(speed)))/s")
+            }
+            if let remaining = progress.estimatedRemainingSeconds, remaining.isFinite {
+                let durationFormatter = DateComponentsFormatter()
+                durationFormatter.unitsStyle = .abbreviated
+                durationFormatter.allowedUnits = remaining >= 3_600 ? [.hour, .minute] : [.minute, .second]
+                parts.append(durationFormatter.string(from: remaining) ?? "")
+            }
+            return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+        }
+        return received
     }
 }
 #endif

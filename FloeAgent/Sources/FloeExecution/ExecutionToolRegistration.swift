@@ -36,6 +36,7 @@ public func registerExecutionTools(
     // Compile-time catalog descriptors.
     if includeOnDeviceJavaScript {
         ToolCatalog.register(JavaScriptExecutionTool.self)
+        ToolCatalog.register(WasmExecutionTool.self)
     }
     if localPythonService != nil {
         ToolCatalog.register(LocalPythonTool.self)
@@ -61,6 +62,7 @@ public func registerExecutionTools(
     // Runtime runners.
     if includeOnDeviceJavaScript {
         registry.register(JavaScriptExecutionTool(service: service))
+        registry.register(WasmExecutionTool(service: service))
     }
     if let localPythonService {
         registry.register(LocalPythonTool(service: localPythonService))

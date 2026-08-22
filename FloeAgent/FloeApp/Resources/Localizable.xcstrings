@@ -9354,6 +9354,41 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "下载" } }
       }
     },
+    "localmodels.pause": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Pause" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "暂停" } }
+      }
+    },
+    "localmodels.resume": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Resume" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "继续" } }
+      }
+    },
+    "localmodels.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Cancel" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "取消" } }
+      }
+    },
+    "localmodels.weights": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Model weights" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "模型权重" } }
+      }
+    },
+    "localmodels.projector": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Vision projector" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "视觉投影" } }
+      }
+    },
     "localmodels.remove": {
       "extractionState": "manual",
       "localizations": {

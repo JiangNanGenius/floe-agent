@@ -82,7 +82,7 @@ public actor LocalModelRuntime {
 @available(macOS 15.4, iOS 18.4, *)
 public struct LocalProviderAdapter: ProviderAdapter {
     public static let providerProfile = ProviderProfile(
-        id: UUID(uuidString: "A1480000-0000-4000-8000-000000000001")!,
+        id: ProviderProfile.onDeviceProviderID,
         kind: .local,
         wireProtocol: .openAIChatCompletions,
         baseURL: URL(string: "http://127.0.0.1")!,

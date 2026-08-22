@@ -124,6 +124,41 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
             let conversation: ConversationRecord
             let createdConversation: Bool
 
+            // Resolve relational configuration before creating any durable
+            // conversation/run rows. This turns a stale picker selection into
+            // an actionable preflight error instead of leaking SQLite's
+            // FOREIGN KEY diagnostic into the composer.
+            if let providerID = request.providerID {
+                guard try Bool.fetchOne(
+                    db,
+                    sql: "SELECT EXISTS(SELECT 1 FROM providers WHERE id = ? AND is_enabled = 1)",
+                    arguments: [providerID.uuidString]
+                ) == true else {
+                    throw FloeError.invalidConfiguration(
+                        "The selected provider is no longer available. Refresh the model list and choose another provider."
+                    )
+                }
+            }
+            if let modelID = request.modelID {
+                guard let providerID = request.providerID else {
+                    throw FloeError.invalidConfiguration("A selected model requires a provider")
+                }
+                guard try Bool.fetchOne(
+                    db,
+                    sql: """
+                        SELECT EXISTS(
+                            SELECT 1 FROM models
+                            WHERE id = ? AND provider_id = ? AND is_enabled = 1
+                        )
+                        """,
+                    arguments: [modelID.uuidString, providerID.uuidString]
+                ) == true else {
+                    throw FloeError.invalidConfiguration(
+                        "The selected model is not installed or has been disabled. Refresh the model list and choose an available model."
+                    )
+                }
+            }
+
             if let conversationID = request.conversationID {
                 guard let row = try Row.fetchOne(
                     db,

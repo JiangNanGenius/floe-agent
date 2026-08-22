@@ -165,6 +165,7 @@ final class ConversationCenter: ObservableObject {
 
     /// Reloads conversations, providers and models from the stores.
     func reload() async {
+        await reconcileLocalModelConfiguration()
         async let loadedConversations = environment.conversationStore.conversations()
         async let loadedProviders = environment.configurationStore.providers()
         async let loadedModels = environment.configurationStore.models()
@@ -173,26 +174,40 @@ final class ConversationCenter: ObservableObject {
             conversations = try await loadedConversations
                 .sorted { $0.updatedAt > $1.updatedAt }
             providers = try await loadedProviders.filter(\.isEnabled)
-            var models = try await loadedModels
-            let localProvider = LocalProviderAdapter.providerProfile
-            let localAdapter = LocalProviderAdapter(
-                runtime: environment.localModelRuntime,
-                store: environment.localModelStore
-            )
-            let localModels = (try? await localAdapter.listModels(
-                provider: localProvider,
-                credentials: ProviderCredentials()
-            )) ?? []
-            if !localModels.isEmpty {
-                providers.removeAll { $0.id == localProvider.id }
-                providers.append(localProvider)
-                models.removeAll { $0.providerID == localProvider.id }
-                models.append(contentsOf: localModels)
-            }
+            let models = try await loadedModels.filter(\.isEnabled)
             modelsByProvider = Dictionary(grouping: models, by: \.providerID)
             modelPreferences = try await loadedPreferences
         } catch {
             // Honest degradation: keep prior state; the list surfaces empty.
+        }
+    }
+
+    /// Installed local models participate in the same relational launch path
+    /// as remote models. Persist them before publishing the picker so a run
+    /// can never reference an in-memory-only provider/model pair.
+    private func reconcileLocalModelConfiguration() async {
+        let provider = LocalProviderAdapter.providerProfile
+        let adapter = LocalProviderAdapter(
+            runtime: environment.localModelRuntime,
+            store: environment.localModelStore
+        )
+        do {
+            let available = try await adapter.listModels(
+                provider: provider,
+                credentials: ProviderCredentials()
+            )
+            try await environment.configurationStore.reconcileDeviceLocalProvider(
+                provider: provider,
+                availableModels: available
+            )
+            FloeLogger(category: .providers).info(
+                "localModelConfigurationReconciled provider=\(provider.id.uuidString) available=\(available.count)"
+            )
+        } catch {
+            let nsError = error as NSError
+            FloeLogger(category: .providers).warning(
+                "localModelConfigurationReconcileFailed domain=\(nsError.domain) code=\(nsError.code)"
+            )
         }
     }
 

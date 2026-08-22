@@ -62,6 +62,9 @@ final class WorkspaceCenter: ObservableObject {
     /// stays started while the workspace is open).
     private(set) var currentRootURL: URL?
     private var currentRootUsesSecurityScope = false
+    /// Invalidates completions from older asynchronous open requests. SwiftUI
+    /// pickers can change selection again while bookmark refresh is awaiting.
+    private var openGeneration: UInt64 = 0
 
     /// Maximum size of the agent instruction file body (16 KiB).
     static let instructionsMaxBytes = 16 * 1024
@@ -137,16 +140,24 @@ final class WorkspaceCenter: ObservableObject {
     /// it when stale), touches last-opened, loads recent files and FLOE.md,
     /// and points the T04 agent tool root provider at the resolved root.
     func openWorkspace(id: UUID) async throws {
+        openGeneration &+= 1
+        let generation = openGeneration
         guard let record = try await store.workspace(id: id) else {
             throw FloeError.notFound("workspace \(id.uuidString)")
         }
+        guard generation == openGeneration else { return }
         let url = try await resolveRoot(record)
+        guard generation == openGeneration else { return }
         guard url.startAccessingSecurityScopedResource() else {
             throw FloeError.validationFailed("Workspace folder is not accessible")
         }
+        guard generation == openGeneration else {
+            url.stopAccessingSecurityScopedResource()
+            return
+        }
 
         // Stop accessing the previously opened root before switching.
-        closeCurrentWorkspace()
+        closeCurrentWorkspace(invalidatePendingOpen: false)
 
         currentRootURL = url
         currentRootUsesSecurityScope = true
@@ -157,12 +168,19 @@ final class WorkspaceCenter: ObservableObject {
         Self.sharedRootOverride = url
 
         try await store.touchLastOpened(id: id)
+        guard generation == openGeneration else { return }
         await reloadRecentFiles()
+        guard generation == openGeneration else { return }
         await loadInstructions()
     }
 
     /// Closes the current workspace and releases its security scope.
     func closeCurrentWorkspace() {
+        closeCurrentWorkspace(invalidatePendingOpen: true)
+    }
+
+    private func closeCurrentWorkspace(invalidatePendingOpen: Bool) {
+        if invalidatePendingOpen { openGeneration &+= 1 }
         if currentRootUsesSecurityScope, let url = currentRootURL {
             url.stopAccessingSecurityScopedResource()
         }

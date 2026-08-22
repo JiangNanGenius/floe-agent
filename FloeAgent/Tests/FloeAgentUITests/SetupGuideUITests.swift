@@ -63,12 +63,13 @@ final class SetupGuideUITests: XCTestCase {
     func testProviderSettingsKeepsModelRefreshAvailable() throws {
         XCUIDevice.shared.orientation = .landscapeLeft
         let app = XCUIApplication()
-        app.launchArguments = ["--ui-test-reset-onboarding"]
+        app.launchArguments = [
+            "--ui-test-reset-onboarding",
+            "--ui-test-skip-onboarding",
+            "-ui-testing",
+            "-ui-testing-ipad"
+        ]
         app.launch()
-
-        if app.buttons["setup.skip"].waitForExistence(timeout: 4) {
-            app.buttons["setup.skip"].tap()
-        }
 
         let settings = app.buttons["sidebar.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))

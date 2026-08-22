@@ -11,6 +11,9 @@ final class SyncSettingsUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = [
             "--ui-test-reset-sync",
+            "--ui-test-skip-onboarding",
+            "-ui-testing",
+            "-ui-testing-ipad",
             "-AppleLanguages", "(zh-Hans)",
             "-AppleLocale", "zh_CN"
         ]
@@ -48,6 +51,9 @@ final class SyncSettingsUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = [
             "--ui-test-reset-sync",
+            "--ui-test-skip-onboarding",
+            "-ui-testing",
+            "-ui-testing-ipad",
             "-AppleLanguages", "(zh-Hans)",
             "-AppleLocale", "zh_CN"
         ]
