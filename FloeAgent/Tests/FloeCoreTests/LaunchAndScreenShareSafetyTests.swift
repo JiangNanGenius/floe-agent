@@ -32,6 +32,27 @@ struct LaunchAndScreenShareSafetyTests {
         #expect(fence.isValid(fence.issue()))
     }
 
+    @Test("Launch recovery interrupts only ownerless runs from an earlier process")
+    func launchRunRecoveryPolicy() {
+        let cutoff = Date(timeIntervalSince1970: 2_000_000_000)
+
+        #expect(LaunchRunRecoveryPolicy.shouldInterrupt(
+            startedAt: cutoff.addingTimeInterval(-1),
+            currentProcessCutoff: cutoff,
+            hasLiveOwner: false
+        ))
+        #expect(!LaunchRunRecoveryPolicy.shouldInterrupt(
+            startedAt: cutoff,
+            currentProcessCutoff: cutoff,
+            hasLiveOwner: false
+        ))
+        #expect(!LaunchRunRecoveryPolicy.shouldInterrupt(
+            startedAt: cutoff.addingTimeInterval(-1),
+            currentProcessCutoff: cutoff,
+            hasLiveOwner: true
+        ))
+    }
+
     @Test("Screen-share frames require an active, current schema heartbeat")
     func screenShareFreshness() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)

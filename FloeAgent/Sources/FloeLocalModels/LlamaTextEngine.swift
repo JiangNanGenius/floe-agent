@@ -1,6 +1,7 @@
 import Foundation
 import llama
 import FloeLlamaVisionShim
+import FloeLocalModelCatalog
 
 public enum LocalInferenceError: LocalizedError {
     case modelLoadFailed
@@ -9,6 +10,7 @@ public enum LocalInferenceError: LocalizedError {
     case decodeFailed
     case visionLoadFailed
     case visionInputFailed
+    case insufficientMemory(required: UInt64, physical: UInt64)
     public var errorDescription: String? {
         switch self {
         case .modelLoadFailed: "Unable to load the local GGUF model."
@@ -17,6 +19,8 @@ public enum LocalInferenceError: LocalizedError {
         case .decodeFailed: "The local model failed while decoding."
         case .visionLoadFailed: "The local vision projector could not be loaded."
         case .visionInputFailed: "The local model could not decode the supplied image."
+        case .insufficientMemory(let required, let physical):
+            "This model needs more safe memory headroom (model files: \(required) bytes, device memory: \(physical) bytes). Choose a smaller model or omit vision input."
         }
     }
 }
@@ -30,26 +34,37 @@ public actor LlamaTextEngine {
     private var vocab: OpaquePointer?
     private var sampler: UnsafeMutablePointer<llama_sampler>?
     private var multimodal: UnsafeMutableRawPointer?
+    private var backendInitialized = false
 
-    public init(modelURL: URL, projectorURL: URL? = nil, contextSize: UInt32 = 8192) throws {
+    public init(
+        modelURL: URL,
+        projectorURL: URL? = nil,
+        resourceProfile: LocalInferenceResourceProfile
+    ) throws {
         llama_backend_init()
+        backendInitialized = true
         var modelParams = llama_model_default_params()
         #if targetEnvironment(simulator)
         modelParams.n_gpu_layers = 0
         #else
-        modelParams.n_gpu_layers = 99
+        modelParams.n_gpu_layers = resourceProfile.gpuLayers
         #endif
         guard let model = llama_model_load_from_file(modelURL.path, modelParams) else {
-            llama_backend_free(); throw LocalInferenceError.modelLoadFailed
+            llama_backend_free()
+            backendInitialized = false
+            throw LocalInferenceError.modelLoadFailed
         }
         var contextParams = llama_context_default_params()
-        contextParams.n_ctx = contextSize
-        contextParams.n_batch = min(contextSize, 512)
+        contextParams.n_ctx = resourceProfile.contextSize
+        contextParams.n_batch = min(resourceProfile.contextSize, resourceProfile.batchSize)
         let threadCount = Int32(max(2, min(8, ProcessInfo.processInfo.activeProcessorCount - 2)))
         contextParams.n_threads = threadCount
         contextParams.n_threads_batch = threadCount
         guard let context = llama_init_from_model(model, contextParams) else {
-            llama_model_free(model); llama_backend_free(); throw LocalInferenceError.contextCreationFailed
+            llama_model_free(model)
+            llama_backend_free()
+            backendInitialized = false
+            throw LocalInferenceError.contextCreationFailed
         }
         let chain = llama_sampler_chain_init(llama_sampler_chain_default_params())
         llama_sampler_chain_add(chain, llama_sampler_init_temp(0.55))
@@ -68,6 +83,7 @@ public actor LlamaTextEngine {
                 llama_free(context)
                 llama_model_free(model)
                 llama_backend_free()
+                backendInitialized = false
                 throw LocalInferenceError.visionLoadFailed
             }
             loadedMultimodal = multimodal
@@ -80,11 +96,29 @@ public actor LlamaTextEngine {
     }
 
     isolated deinit {
+        releaseResources()
+    }
+
+    /// Explicit, idempotent teardown lets the runtime release one mapped
+    /// model completely before initializing another llama backend.
+    public func shutdown() {
+        releaseResources()
+    }
+
+    private func releaseResources() {
         if let sampler { llama_sampler_free(sampler) }
         if let multimodal { floe_mtmd_free(multimodal) }
         if let context { llama_free(context) }
         if let model { llama_model_free(model) }
-        llama_backend_free()
+        sampler = nil
+        multimodal = nil
+        context = nil
+        model = nil
+        vocab = nil
+        if backendInitialized {
+            llama_backend_free()
+            backendInitialized = false
+        }
     }
 
     public func complete(prompt: String, images: [Data] = [], maxTokens: Int = 1024) throws -> String {

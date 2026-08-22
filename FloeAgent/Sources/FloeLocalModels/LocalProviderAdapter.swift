@@ -7,19 +7,40 @@ import FloeLocalModelCatalog
 @available(macOS 15.4, iOS 18.4, *)
 public actor LocalModelRuntime {
     private let store: LocalModelStore
-    private var engines: [String: LlamaTextEngine] = [:]
+    private struct EngineKey: Equatable {
+        let modelID: String
+        let includesVisionProjector: Bool
+    }
+    private struct ActiveEngine {
+        let key: EngineKey
+        let engine: LlamaTextEngine
+        let profile: LocalInferenceResourceProfile
+    }
+    /// iOS cannot safely keep several multi-gigabyte GGUF mappings alive.
+    /// One FIFO slot also prevents actor reentrancy from swapping an engine
+    /// while an earlier request is still decoding with it.
+    private var activeEngine: ActiveEngine?
+    private var inferenceBusy = false
+    private var inferenceWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(store: LocalModelStore = LocalModelStore()) { self.store = store }
 
     @available(macOS 15.4, iOS 18.4, *)
     public func complete(modelID: String, prompt: String, images: [Data], maxTokens: Int) async throws -> String {
+        await acquireInferenceSlot()
+        defer { releaseInferenceSlot() }
+        try Task.checkCancellation()
         let traceID = UUID().uuidString
         let startedAt = Date()
+        let wantsVision = !images.isEmpty
+        let key = EngineKey(modelID: modelID, includesVisionProjector: wantsVision)
         let engine: LlamaTextEngine
-        if let cached = engines[modelID] {
-            engine = cached
+        let profile: LocalInferenceResourceProfile
+        if let cached = activeEngine, cached.key == key {
+            engine = cached.engine
+            profile = cached.profile
             FloeLogger(category: .providers).debug(
-                "localInferenceEngineReused trace=\(traceID) model=\(modelID)"
+                "localInferenceEngineReused trace=\(traceID) model=\(modelID) vision=\(wantsVision)"
             )
         } else {
             guard let modelURL = await store.installedModelURL(id: modelID) else {
@@ -28,14 +49,53 @@ public actor LocalModelRuntime {
                 )
                 throw FloeError.notFound("Local model \(modelID) is not installed")
             }
-            let projectorURL = await store.installedProjectorURL(id: modelID)
+            let projectorURL: URL?
+            if wantsVision {
+                guard let installed = await store.installedProjectorURL(id: modelID) else {
+                    throw LocalInferenceError.visionLoadFailed
+                }
+                projectorURL = installed
+            } else {
+                // Vision projectors are often hundreds of MB to several GB.
+                // Never map one for a text-only turn.
+                projectorURL = nil
+            }
+            let mappedBytes = Self.fileSize(modelURL) + (projectorURL.map(Self.fileSize) ?? 0)
+            let physicalMemory = ProcessInfo.processInfo.physicalMemory
+            guard LocalInferenceResourcePolicy.canLoad(
+                mappedBytes: mappedBytes,
+                physicalMemoryBytes: physicalMemory
+            ) else {
+                FloeLogger(category: .providers).warning(
+                    "localInferenceEngineLoadRejected trace=\(traceID) model=\(modelID) reason=memoryHeadroom mappedBytes=\(mappedBytes) physicalBytes=\(physicalMemory) vision=\(wantsVision)"
+                )
+                throw LocalInferenceError.insufficientMemory(
+                    required: mappedBytes,
+                    physical: physicalMemory
+                )
+            }
+            profile = LocalInferenceResourcePolicy.profile(
+                mappedBytes: mappedBytes,
+                physicalMemoryBytes: physicalMemory
+            )
             let loadStartedAt = Date()
             FloeLogger(category: .providers).info(
-                "localInferenceEngineLoadStarted trace=\(traceID) model=\(modelID) projector=\(projectorURL != nil)"
+                "localInferenceEngineLoadStarted trace=\(traceID) model=\(modelID) projector=\(projectorURL != nil) mappedBytes=\(mappedBytes) physicalBytes=\(physicalMemory) context=\(profile.contextSize) batch=\(profile.batchSize) gpuLayers=\(profile.gpuLayers)"
             )
+            if let previous = activeEngine {
+                activeEngine = nil
+                await previous.engine.shutdown()
+                FloeLogger(category: .providers).info(
+                    "localInferencePreviousEngineReleased trace=\(traceID) previousModel=\(previous.key.modelID) previousVision=\(previous.key.includesVisionProjector)"
+                )
+            }
             let loaded: LlamaTextEngine
             do {
-                loaded = try LlamaTextEngine(modelURL: modelURL, projectorURL: projectorURL)
+                loaded = try LlamaTextEngine(
+                    modelURL: modelURL,
+                    projectorURL: projectorURL,
+                    resourceProfile: profile
+                )
             } catch {
                 let nsError = error as NSError
                 FloeLogger(category: .providers).warning(
@@ -43,17 +103,21 @@ public actor LocalModelRuntime {
                 )
                 throw error
             }
-            engines[modelID] = loaded
+            activeEngine = ActiveEngine(key: key, engine: loaded, profile: profile)
             engine = loaded
             FloeLogger(category: .providers).info(
                 "localInferenceEngineLoadFinished trace=\(traceID) model=\(modelID) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
             )
         }
         FloeLogger(category: .providers).info(
-            "localInferenceStarted trace=\(traceID) model=\(modelID) promptCharacters=\(prompt.count) images=\(images.count) imageBytes=\(images.reduce(0) { $0 + $1.count }) maxTokens=\(maxTokens)"
+            "localInferenceStarted trace=\(traceID) model=\(modelID) promptCharacters=\(prompt.count) images=\(images.count) imageBytes=\(images.reduce(0) { $0 + $1.count }) requestedMaxTokens=\(maxTokens) effectiveMaxTokens=\(min(maxTokens, profile.maximumOutputTokens))"
         )
         do {
-            let output = try await engine.complete(prompt: prompt, images: images, maxTokens: maxTokens)
+            let output = try await engine.complete(
+                prompt: prompt,
+                images: images,
+                maxTokens: min(maxTokens, profile.maximumOutputTokens)
+            )
             FloeLogger(category: .providers).info(
                 "localInferenceFinished trace=\(traceID) model=\(modelID) outputCharacters=\(output.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
             )
@@ -67,12 +131,40 @@ public actor LocalModelRuntime {
         }
     }
 
-    public func unload(modelID: String? = nil) {
-        let before = engines.count
-        if let modelID { engines[modelID] = nil } else { engines.removeAll() }
+    public func unload(modelID: String? = nil) async {
+        await acquireInferenceSlot()
+        defer { releaseInferenceSlot() }
+        let previous = activeEngine
+        if modelID == nil || previous?.key.modelID == modelID {
+            activeEngine = nil
+            if let previous { await previous.engine.shutdown() }
+        }
         FloeLogger(category: .providers).info(
-            "localInferenceUnloaded requested=\(modelID ?? "all") before=\(before) after=\(engines.count)"
+            "localInferenceUnloaded requested=\(modelID ?? "all") released=\(previous != nil && (modelID == nil || previous?.key.modelID == modelID))"
         )
+    }
+
+    private func acquireInferenceSlot() async {
+        if !inferenceBusy {
+            inferenceBusy = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            inferenceWaiters.append(continuation)
+        }
+    }
+
+    private func releaseInferenceSlot() {
+        if inferenceWaiters.isEmpty {
+            inferenceBusy = false
+        } else {
+            inferenceWaiters.removeFirst().resume()
+        }
+    }
+
+    private static func fileSize(_ url: URL) -> UInt64 {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .totalFileAllocatedSizeKey])
+        return UInt64(max(values?.totalFileAllocatedSize ?? values?.fileSize ?? 0, 0))
     }
 }
 
@@ -152,7 +244,10 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 providerID: provider.id,
                 remoteModelID: entry.id,
                 displayName: entry.displayName,
-                limits: .init(contextTokens: 8_192, maxOutputTokens: 2_048),
+                // The runtime reserves memory headroom for the UI, Metal and
+                // tools. Advertise the guaranteed profile, not llama.cpp's
+                // theoretical maximum, so the harness compacts in time.
+                limits: .init(contextTokens: 4_096, maxOutputTokens: 1_024),
                 capabilities: capabilities,
                 reasoningEffort: entry.supportsReasoning ? .low : .automatic
             ))

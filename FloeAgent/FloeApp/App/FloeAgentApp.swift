@@ -123,12 +123,14 @@ struct RootView: View {
         }
         .task(id: environment.persistenceReady) {
             guard environment.persistenceReady else { return }
+            // Repair only rows left by a previous process before settings or
+            // UI reloads can yield to a newly-created run.
+            await environment.conversationCenter.reconcileInterruptedRunsOnLaunch()
             // Refresh the complete settings snapshot (including probes) after
             // the launch-critical values were restored during bootstrap.
             await environment.settingsCenter.load()
             router.reconcileOnLaunch(environment: environment)
             await environment.conversationCenter.reload()
-            await environment.conversationCenter.reconcileInterruptedRunsOnLaunch()
             await environment.conversationCenter.resumeSafeRunsAfterForeground()
             await environment.workspaceCenter.reload()
             await environment.backgroundRunCoordinator.reconcileSchedulesAfterLaunch()

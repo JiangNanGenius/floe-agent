@@ -49,4 +49,33 @@ struct LocalModelCatalogTests {
         let resumable = await LocalModelStore(root: root).resumableModelIDs()
         #expect(resumable == Set([knownID]))
     }
+
+    @Test("Inference resource policy preserves headroom and adapts offload")
+    func inferenceResourcePolicy() {
+        let gib: UInt64 = 1_073_741_824
+        #expect(LocalInferenceResourcePolicy.canLoad(
+            mappedBytes: 4 * gib,
+            physicalMemoryBytes: 8 * gib
+        ))
+        #expect(!LocalInferenceResourcePolicy.canLoad(
+            mappedBytes: 6 * gib,
+            physicalMemoryBytes: 8 * gib
+        ))
+
+        let constrained = LocalInferenceResourcePolicy.profile(
+            mappedBytes: 4 * gib,
+            physicalMemoryBytes: 8 * gib
+        )
+        #expect(constrained.contextSize == 3_072)
+        #expect(constrained.batchSize == 96)
+        #expect(constrained.gpuLayers == 16)
+
+        let roomy = LocalInferenceResourcePolicy.profile(
+            mappedBytes: 3 * gib,
+            physicalMemoryBytes: 16 * gib
+        )
+        #expect(roomy.contextSize == 4_096)
+        #expect(roomy.gpuLayers == 99)
+        #expect(roomy.maximumOutputTokens == 1_024)
+    }
 }

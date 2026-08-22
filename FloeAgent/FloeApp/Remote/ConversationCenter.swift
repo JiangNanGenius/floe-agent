@@ -144,6 +144,10 @@ final class ConversationCenter: ObservableObject {
     private var deletingConversationIDs: Set<UUID> = []
     private var isClearingHistory = false
     private var didReconcileInterruptedRuns = false
+    /// Any run created after this center instance belongs to the current
+    /// process and must never be classified as a crash-leftover, even if its
+    /// deferred provider service is still assembling history or images.
+    private let launchRecoveryCutoff: Date
     private var attemptedForegroundRecovery: Set<UUID> = []
     private let adapterFactory = ProviderAdapterFactory()
 
@@ -159,6 +163,7 @@ final class ConversationCenter: ObservableObject {
 
     init(environment: AppEnvironment) {
         self.environment = environment
+        self.launchRecoveryCutoff = Date()
     }
 
     // MARK: - Loading
@@ -268,10 +273,25 @@ final class ConversationCenter: ObservableObject {
     func reconcileInterruptedRunsOnLaunch() async {
         guard !didReconcileInterruptedRuns else { return }
         didReconcileInterruptedRuns = true
+        let logger = FloeLogger(category: .persistence)
         let records = (try? await environment.conversationStore.conversations()) ?? []
         for conversation in records {
             let runs = (try? await environment.runStore.runs(conversationID: conversation.id)) ?? []
-            for run in runs where !Self.isPersistedTerminal(run.state) && runServices[run.id] == nil {
+            for run in runs where !Self.isPersistedTerminal(run.state) {
+                let hasLiveOwner = runServices[run.id] != nil
+                    || runTasks[run.id] != nil
+                    || activeRuns[run.id] != nil
+                guard LaunchRunRecoveryPolicy.shouldInterrupt(
+                    startedAt: run.startedAt,
+                    currentProcessCutoff: launchRecoveryCutoff,
+                    hasLiveOwner: hasLiveOwner
+                ) else {
+                    let reason = run.startedAt >= launchRecoveryCutoff ? "currentProcess" : "liveOwner"
+                    logger.info(
+                        "launchRecoverySkipped run=\(run.id.uuidString) reason=\(reason) state=\(run.state)"
+                    )
+                    continue
+                }
                 try? await environment.runStore.updateRunState(
                     id: run.id,
                     state: "interrupted",
@@ -281,6 +301,9 @@ final class ConversationCenter: ObservableObject {
                     runID: run.id,
                     kind: .status,
                     payloadJSON: #"{"state":"interrupted"}"#
+                )
+                logger.info(
+                    "launchRecoveryInterrupted run=\(run.id.uuidString) conversation=\(conversation.id.uuidString) previousState=\(run.state)"
                 )
             }
         }
@@ -642,7 +665,6 @@ final class ConversationCenter: ObservableObject {
         // transaction above already made the conversation/run durable, so
         // return that identity now and let the run task preprocess images in
         // the background before its first provider request.
-        await reload()
         let run = startDeferredTaskService(
             prepared: prepared,
             launchToken: launchToken,
@@ -652,6 +674,10 @@ final class ConversationCenter: ObservableObject {
             executionMode: executionMode,
             shouldGenerateTitle: true
         )
+        // Register the in-process owner before yielding to any reload or
+        // launch-recovery work. This closes the final race between durable
+        // insertion and deferred provider setup.
+        await reload()
         return StartedConversationTask(conversationID: prepared.conversation.id, run: run)
     }
 
