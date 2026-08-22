@@ -378,7 +378,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         let size = CGSize(width: 640, height: 360)
         let renderer = UIGraphicsImageRenderer(size: size)
         return renderer.image { context in
-            UIColor.black.setFill()
+            UIColor(red: 0.035, green: 0.043, blue: 0.065, alpha: 1).setFill()
             context.fill(CGRect(origin: .zero, size: size))
             if let guidanceImage, !guidanceHints.isEmpty {
                 let sourceSize = guidanceImage.size
@@ -426,17 +426,86 @@ final class BackgroundVideoService: NSObject, ObservableObject {
                 )
                 return
             }
-            let titleAttributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: 24, weight: .semibold),
-                .foregroundColor: UIColor.white
-            ]
-            let progressAttributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: 22, weight: .regular),
-                .foregroundColor: UIColor.lightGray
-            ]
-            title.draw(at: CGPoint(x: 32, y: 24), withAttributes: titleAttributes)
-            progress.draw(at: CGPoint(x: 32, y: 96), withAttributes: progressAttributes)
+            // The progress-only surface remains useful when no screen guidance
+            // is active: identify the app, show the surfaced task and its real
+            // stage, and turn the coordinator's percentage into a glanceable
+            // bar. Multi-task batches include their carousel position in the
+            // stage string (for example "2/3 · 正在调用工具 · 45%").
+            let card = CGRect(x: 24, y: 20, width: size.width - 48, height: size.height - 40)
+            UIColor(red: 0.075, green: 0.09, blue: 0.13, alpha: 1).setFill()
+            UIBezierPath(roundedRect: card, cornerRadius: 28).fill()
+
+            let mark = CGRect(x: 52, y: 48, width: 42, height: 42)
+            UIColor.systemBlue.setFill()
+            UIBezierPath(roundedRect: mark, cornerRadius: 12).fill()
+            ("F" as NSString).draw(
+                in: mark.insetBy(dx: 11, dy: 5),
+                withAttributes: [
+                    .font: UIFont.systemFont(ofSize: 24, weight: .bold),
+                    .foregroundColor: UIColor.white
+                ]
+            )
+            ("Floe Agent" as NSString).draw(
+                at: CGPoint(x: 108, y: 54),
+                withAttributes: [
+                    .font: UIFont.systemFont(ofSize: 23, weight: .semibold),
+                    .foregroundColor: UIColor.white
+                ]
+            )
+            let liveLabel = "任务持续运行中" as NSString
+            liveLabel.draw(
+                at: CGPoint(x: 440, y: 58),
+                withAttributes: [
+                    .font: UIFont.systemFont(ofSize: 16, weight: .medium),
+                    .foregroundColor: UIColor.systemGreen
+                ]
+            )
+
+            (title as NSString).draw(
+                in: CGRect(x: 52, y: 126, width: 536, height: 48),
+                withAttributes: [
+                    .font: UIFont.systemFont(ofSize: 28, weight: .bold),
+                    .foregroundColor: UIColor.white
+                ]
+            )
+            (progress as NSString).draw(
+                in: CGRect(x: 52, y: 184, width: 536, height: 38),
+                withAttributes: [
+                    .font: UIFont.systemFont(ofSize: 21, weight: .medium),
+                    .foregroundColor: UIColor(red: 0.72, green: 0.78, blue: 0.88, alpha: 1)
+                ]
+            )
+
+            let track = CGRect(x: 52, y: 252, width: 536, height: 12)
+            UIColor.white.withAlphaComponent(0.12).setFill()
+            UIBezierPath(roundedRect: track, cornerRadius: 6).fill()
+            let percent = Self.progressPercent(in: progress)
+            let fillWidth = max(16, track.width * CGFloat(percent) / 100)
+            UIColor.systemBlue.setFill()
+            UIBezierPath(
+                roundedRect: CGRect(x: track.minX, y: track.minY, width: fillWidth, height: track.height),
+                cornerRadius: 6
+            ).fill()
+            let detail = percent > 0 ? "进度 \(percent)%" : "正在同步最新状态"
+            (detail as NSString).draw(
+                at: CGPoint(x: 52, y: 282),
+                withAttributes: [
+                    .font: UIFont.monospacedDigitSystemFont(ofSize: 17, weight: .medium),
+                    .foregroundColor: UIColor.lightGray
+                ]
+            )
         }
+    }
+
+    private static func progressPercent(in text: String) -> Int {
+        guard let expression = try? NSRegularExpression(pattern: #"(\d{1,3})\s*%"#),
+              let match = expression.firstMatch(
+                in: text,
+                range: NSRange(text.startIndex..<text.endIndex, in: text)
+              ),
+              let range = Range(match.range(at: 1), in: text),
+              let value = Int(text[range]) else { return 0 }
+        return min(100, max(0, value))
     }
 
     /// Synthesizes a short looping MP4 whose frames carry the run title and

@@ -22,7 +22,7 @@ struct RemoteImageInspectToolTests {
         let tool = RemoteImageInspectTool { _, mimeType, prompt in
             #expect(mimeType == "image/jpeg")
             #expect(prompt.contains("Explain the arrows"))
-            return "The diagram contains two connected boxes and a directional arrow."
+            return .success("The diagram contains two connected boxes and a directional arrow.")
         }
         let output = try await tool.execute(
             .init(path: "diagram.png", question: "Explain the arrows"),
@@ -48,7 +48,7 @@ struct RemoteImageInspectToolTests {
         let digest = SHA256.hash(data: tinyPNG).map { String(format: "%02x", $0) }.joined()
 
         let tool = RemoteImageInspectTool(
-            inspect: { _, _, _ in "A browser page showing a disabled Submit button." },
+            inspect: { _, _, _ in .success("A browser page showing a disabled Submit button.") },
             artifactRootProvider: { root }
         )
         #expect(throws: FloeError.self) {
@@ -78,7 +78,7 @@ struct RemoteImageInspectToolTests {
         try tinyPNG.write(to: directory.appendingPathComponent("result.png"))
 
         let tool = RemoteImageInspectTool { _, _, _ in
-            "A generated landscape with a lake and mountains."
+            .success("A generated landscape with a lake and mountains.")
         }
         let output = try await tool.execute(
             .init(path: "GeneratedImages/result.png", question: "Describe the scene"),
@@ -108,7 +108,7 @@ struct RemoteImageInspectToolTests {
         let tool = RemoteImageInspectTool { _, mimeType, prompt in
             #expect(mimeType == "image/jpeg")
             #expect(prompt.contains("report.pdf page 2/2"))
-            return "Page two contains a chart with an upward trend."
+            return .success("Page two contains a chart with an upward trend.")
         }
         let output = try await tool.execute(
             .init(path: "report.pdf", question: "Summarize the chart", page: 2),

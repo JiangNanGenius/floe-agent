@@ -154,9 +154,9 @@ struct ThreadComposerView: View {
     var contextID: UUID? = nil
 
     @State private var isPickerPresented = false
-    @State private var isPhotoPickerPresented = false
     @State private var isCameraPresented = false
     @State private var selectedPhoto: PhotosPickerItem?
+    @State private var isAttachmentProcessing = false
     @State private var attachmentError: String?
     @State private var dictationPrefix = ""
     @EnvironmentObject private var voiceInput: VoiceInputController
@@ -191,11 +191,6 @@ struct ThreadComposerView: View {
                 Task { await registerPicked(url) }
             }
         }
-        .photosPicker(
-            isPresented: $isPhotoPickerPresented,
-            selection: $selectedPhoto,
-            matching: .images
-        )
         .fullScreenCover(isPresented: $isCameraPresented) {
             CameraPickerView { image in
                 isCameraPresented = false
@@ -277,10 +272,7 @@ struct ThreadComposerView: View {
     private var inputRow: some View {
         HStack(alignment: .bottom, spacing: 8) {
             Menu {
-                Button {
-                    isPhotoPickerPresented = true
-                    FloeLogger(category: .app).info("photoPickerRequested")
-                } label: {
+                PhotosPicker(selection: $selectedPhoto, matching: .images) {
                     Label("从照片中选择", systemImage: "photo.on.rectangle")
                 }
                 if AppleCapabilityPreferences.isEnabled(.camera),
@@ -359,12 +351,17 @@ struct ThreadComposerView: View {
             Button {
                 onSend()
             } label: {
-                Image(systemName: sendSystemImage)
-                    .font(.title2)
-                    .foregroundStyle(canSend ? FloeTheme.primary : Color.secondary)
+                if isAttachmentProcessing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: sendSystemImage)
+                        .font(.title2)
+                        .foregroundStyle(canSend ? FloeTheme.primary : Color.secondary)
+                }
             }
             .buttonStyle(.plain)
-            .disabled(!canSend)
+            .disabled(!canSend || isAttachmentProcessing)
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel(sendAccessibilityLabel)
             .accessibilityIdentifier("composer.send")
@@ -698,6 +695,8 @@ struct ThreadComposerView: View {
     }
 
     private func registerPickedPhoto(_ item: PhotosPickerItem) async {
+        isAttachmentProcessing = true
+        defer { isAttachmentProcessing = false }
         defer { selectedPhoto = nil }
         do {
             let advertisedTypes = item.supportedContentTypes

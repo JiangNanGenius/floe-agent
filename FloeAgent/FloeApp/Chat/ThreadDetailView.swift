@@ -23,8 +23,6 @@ struct ThreadDetailView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var editingPendingInput: PendingUserInput?
     @State private var showingGoalBuilder = false
-    @State private var showingScreenShareGuide = false
-    @State private var confirmingScreenTransmission = false
     @State private var showingPermissionsSheet = false
 
     init(conversationID: UUID, center: ConversationCenter) {
@@ -56,15 +54,6 @@ struct ThreadDetailView: View {
             viewModel.selectedRunID = router.selectedRunID
             await viewModel.load()
         }
-        .onReceive(environment.screenShareCenter.$isSharing) { isSharing in
-            guard isSharing,
-                  environment.settingsCenter.backgroundExecution == .screenShare else { return }
-            if environment.screenShareCenter.hasScreenAnalysisConsent {
-                showingScreenShareGuide = true
-            } else {
-                confirmingScreenTransmission = true
-            }
-        }
         .onDisappear { viewModel.stopLiveUpdates() }
         .sheet(item: $editingPendingInput) { input in
             PendingInputEditor(input: input) { text in
@@ -93,23 +82,6 @@ struct ThreadDetailView: View {
                     }
             }
             .presentationDetents([.medium, .large])
-        }
-        .sheet(isPresented: $showingScreenShareGuide) {
-            ScreenShareGuideView(
-                center: environment.screenShareCenter,
-                userGoal: viewModel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? viewModel.taskTitle
-                    : viewModel.draft
-            )
-        }
-        .alert("发送当前屏幕画面？", isPresented: $confirmingScreenTransmission) {
-            Button("取消", role: .cancel) {}
-            Button("发送并继续") {
-                guard environment.screenShareCenter.confirmScreenAnalysisTransmission() else { return }
-                showingScreenShareGuide = true
-            }
-        } message: {
-            Text("当前完整屏幕截图将发送到 \(environment.screenShareCenter.analysisDestinationName) 进行分析，画面可能包含其他 App 的敏感信息。")
         }
     }
 

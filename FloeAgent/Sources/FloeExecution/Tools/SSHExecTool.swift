@@ -31,17 +31,17 @@ public struct SSHExecTool: AgentTool {
 
     public static let name = "ssh.execute"
     public static let toolDescription =
-        "Run a shell command on a paired SSH host (ls, grep, git, npm, python3, etc.). Non-zero exit codes are returned as results, not errors. Requires a configured host; the call passes the catastrophic gate and approval policy because it runs commands remotely. To run Python, use `python3 -c \"...\"` or pipe a script via stdin: `python3 - <<'EOF'\\n...\\nEOF`."
+        "Run a shell command on a host paired in Floe's native SSH terminal (ls, grep, git, npm, python3, etc.). Omit `hostID` to use the default paired host; provide a host UUID only when a specific host is required. The terminal and this tool share credentials, host-key trust, and connection settings. Non-zero exit codes are returned as results, not transport errors. Remote commands still follow the active approval policy. For Python, use the remote host's normal `python3` environment when local iOS Python cannot satisfy a native dependency."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "command": {"type": "string", "description": "Shell command to execute remotely (max 64 KiB)"},
-        "hostID": {"type": "string", "description": "UUID of the paired SSH host"},
+        "hostID": {"type": "string", "description": "Optional UUID of a specific paired SSH host; omitted uses the default host"},
         "timeout": {"type": "number", "description": "Timeout in seconds (default 30, max 120)"},
         "maxOutputBytes": {"type": "integer", "description": "Output cap in bytes (default 65536, max 262144)"}
       },
-      "required": ["command", "hostID"],
+      "required": ["command"],
       "additionalProperties": false
     }
     """#
@@ -68,8 +68,8 @@ public struct SSHExecTool: AgentTool {
         if Data(args.command.utf8).count > Self.maxCommandBytes {
             throw FloeError.validationFailed("command exceeds the \(Self.maxCommandBytes)-byte limit")
         }
-        guard let hostID = args.hostID, UUID(uuidString: hostID) != nil else {
-            throw FloeError.validationFailed("hostID must be a UUID")
+        if let hostID = args.hostID, UUID(uuidString: hostID) == nil {
+            throw FloeError.validationFailed("hostID must be a UUID when provided")
         }
         if let timeout = args.timeout, timeout <= 0 {
             throw FloeError.validationFailed("timeout must be > 0")

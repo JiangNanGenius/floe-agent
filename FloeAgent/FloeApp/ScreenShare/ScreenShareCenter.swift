@@ -13,6 +13,11 @@ import FloeCore
 
 @MainActor
 final class ScreenShareCenter: NSObject, ObservableObject {
+    enum LifecycleState: String, Sendable {
+        case idle, requesting, waitingForFirstFrame, active, stopped, failed
+    }
+
+    @Published private(set) var lifecycleState: LifecycleState = .idle
     @Published private(set) var isSharing = false
     @Published private(set) var isWaitingForBroadcast = false
     @Published private(set) var sharingError: String?
@@ -33,6 +38,7 @@ final class ScreenShareCenter: NSObject, ObservableObject {
     private var framePollTask: Task<Void, Never>?
     private var activeSessionID: UUID?
     private var analysisConsentSessionID: UUID?
+    private var lastFrameReceivedAt: Date?
     /// ReplayKit only exposes its system-owned picker view. Keep a tiny host
     /// in the foreground window long enough to invoke that button directly;
     /// Floe must not interpose a second instructional sheet before the real
@@ -55,6 +61,9 @@ final class ScreenShareCenter: NSObject, ObservableObject {
         }
         FloeLogger(category: .app).info("screenSharePollingStarted")
         isWaitingForBroadcast = true
+        if lifecycleState == .idle || lifecycleState == .stopped {
+            lifecycleState = .waitingForFirstFrame
+        }
         sharingError = nil
         let startedAt = Date()
         framePollTask = Task { [weak self] in
@@ -79,10 +88,19 @@ final class ScreenShareCenter: NSObject, ObservableObject {
     }
 
     func requestBroadcast(for conversationID: UUID) {
+        guard lifecycleState != .requesting,
+              lifecycleState != .waitingForFirstFrame,
+              lifecycleState != .active else {
+            FloeLogger(category: .app).debug(
+                "screenShareAuthorizationCoalesced conversation=\(conversationID.uuidString) state=\(lifecycleState.rawValue)"
+            )
+            return
+        }
         FloeLogger(category: .app).info(
             "screenShareAuthorizationRequested conversation=\(conversationID.uuidString)"
         )
         requestedConversationID = conversationID
+        lifecycleState = .requesting
         startSharing()
         presentSystemBroadcastConfirmation(conversationID: conversationID)
     }
@@ -99,6 +117,8 @@ final class ScreenShareCenter: NSObject, ObservableObject {
         onGuidanceChanged?(nil, [])
         activeSessionID = nil
         analysisConsentSessionID = nil
+        lastFrameReceivedAt = nil
+        lifecycleState = .stopped
         broadcastPickerHost?.removeFromSuperview()
         broadcastPickerHost = nil
         removeSharedFrame()
@@ -143,6 +163,7 @@ final class ScreenShareCenter: NSObject, ObservableObject {
                 try? await Task.sleep(for: .milliseconds(100))
             }
             self.sharingError = "无法发起系统屏幕共享确认，请重新开始任务后再试。"
+            self.lifecycleState = .failed
             FloeLogger(category: .app).warning(
                 "screenShareSystemConfirmationUnavailable conversation=\(conversationID.uuidString) attempts=40"
             )
@@ -276,13 +297,16 @@ final class ScreenShareCenter: NSObject, ObservableObject {
 
     private func refreshSharedFrame() {
         guard let snapshot = latestFrameSnapshot() else {
-            let hadGuidance = !guideHints.isEmpty
-            isSharing = false
-            latestFrame = nil
-            activeSessionID = nil
-            analysisConsentSessionID = nil
-            guideHints = []
-            if hadGuidance { onGuidanceChanged?(nil, []) }
+            // The extension writes at a best-effort cadence. A single stale or
+            // partially replaced frame must not tear down the logical session:
+            // that transition previously retriggered the consent alert every
+            // time the next frame arrived.
+            if let lastFrameReceivedAt,
+               Date().timeIntervalSince(lastFrameReceivedAt) > 12 {
+                isSharing = false
+                isWaitingForBroadcast = true
+                lifecycleState = .waitingForFirstFrame
+            }
             return
         }
         if activeSessionID != snapshot.state.sessionID {
@@ -291,6 +315,8 @@ final class ScreenShareCenter: NSObject, ObservableObject {
             onGuidanceChanged?(nil, [])
         }
         activeSessionID = snapshot.state.sessionID
+        analysisConsentSessionID = snapshot.state.sessionID
+        lastFrameReceivedAt = Date()
         if !isSharing {
             FloeLogger(category: .app).info(
                 "screenShareFirstFrameReceived session=\(snapshot.state.sessionID.uuidString)"
@@ -298,6 +324,7 @@ final class ScreenShareCenter: NSObject, ObservableObject {
         }
         isSharing = true
         isWaitingForBroadcast = false
+        lifecycleState = .active
         sharingError = nil
         latestFrame = snapshot.image
     }

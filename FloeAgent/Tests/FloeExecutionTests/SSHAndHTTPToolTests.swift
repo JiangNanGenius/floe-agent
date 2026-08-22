@@ -34,6 +34,27 @@ struct SSHAndHTTPToolTests {
         #expect(output.summary.contains("hello"))
     }
 
+    @Test("ssh.execute uses the default paired host when hostID is omitted")
+    func sshDefaultHost() async throws {
+        let defaultHostID = UUID()
+        let service = SSHCommandService(
+            sessionFactory: { _ in FakeSession(result: SSHExecResult(stdout: "default", stderr: "", exitCode: 0, truncated: false)) },
+            hostResolver: { hostID in
+                #expect(hostID == defaultHostID)
+                return RemotePythonService.RemotePythonHost(id: hostID, displayName: "default")
+            },
+            defaultHostProvider: { defaultHostID }
+        )
+        let tool = SSHExecTool(service: service)
+        try tool.validate(.init(command: "uname -a"))
+        let output = try await tool.execute(
+            .init(command: "uname -a"),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(output.exitStatus == 0)
+        #expect(output.summary.contains("default"))
+    }
+
     @Test("ssh.execute maps timeout to exit 124")
     func sshTimeout() async throws {
         let hostID = UUID()
@@ -51,7 +72,7 @@ struct SSHAndHTTPToolTests {
     }
 
     @Test("ssh.execute rejects an invalid hostID")
-    func sshValidation() async {
+    func sshValidation() async throws {
         let tool = SSHExecTool(service: SSHCommandService(
             sessionFactory: { _ in FakeSession(result: .init(stdout: "", stderr: "", exitCode: 0, truncated: false)) },
             hostResolver: { _ in RemotePythonService.RemotePythonHost(id: UUID(), displayName: "h") },
@@ -60,9 +81,7 @@ struct SSHAndHTTPToolTests {
         #expect(throws: FloeError.self) {
             try tool.validate(.init(command: "ls", hostID: "not-a-uuid"))
         }
-        #expect(throws: FloeError.self) {
-            try tool.validate(.init(command: "ls"))
-        }
+        try tool.validate(.init(command: "ls"))
     }
 
     // MARK: - network.http
