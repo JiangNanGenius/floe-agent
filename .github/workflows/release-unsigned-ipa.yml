@@ -169,6 +169,12 @@ jobs:
           scripts/bootstrap_python_runtime.sh
           scripts/gen_project.sh
           scripts/release_preflight.sh "${{ needs.build-verify-release.outputs.tag }}"
+          /usr/bin/sed -i '' \
+            -e 's/Floe TestFlight AppGroup 2026/iOS Team Store Provisioning Profile: org.floeagent.ios/g' \
+            -e 's/Floe Screen Share TestFlight AppGroup 2026/iOS Team Store Provisioning Profile: org.floeagent.ios.screenshare/g' \
+            FloeAgent.xcodeproj/project.pbxproj
+          test "$(grep -c 'PROVISIONING_PROFILE_SPECIFIER = "iOS Team Store Provisioning Profile: org.floeagent.ios";' FloeAgent.xcodeproj/project.pbxproj)" = 1
+          test "$(grep -c 'PROVISIONING_PROFILE_SPECIFIER = "iOS Team Store Provisioning Profile: org.floeagent.ios.screenshare";' FloeAgent.xcodeproj/project.pbxproj)" = 1
 
       - name: Install App Store Connect API key
         env:
