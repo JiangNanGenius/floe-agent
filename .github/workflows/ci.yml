@@ -44,6 +44,7 @@ jobs:
             -scheme FloeAgent \
             -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
             -resultBundlePath FloeAgent-iPhone.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
             build
 
       - name: xcodebuild iPad mini (A17 Pro) Simulator
@@ -54,6 +55,7 @@ jobs:
             -scheme FloeAgent \
             -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
             -resultBundlePath FloeAgent-iPad.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
             build
 
       - name: SPM build (cross-platform targets)
