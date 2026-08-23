@@ -25,6 +25,33 @@ public enum LocalInferenceError: LocalizedError {
     }
 }
 
+public struct LocalGenerationResult: Sendable, Equatable {
+    public var text: String
+    public var inputTokens: Int
+    public var outputTokens: Int
+    public var timeToFirstTokenMs: Int?
+    public var generationDurationMs: Int
+
+    public init(
+        text: String,
+        inputTokens: Int,
+        outputTokens: Int,
+        timeToFirstTokenMs: Int?,
+        generationDurationMs: Int
+    ) {
+        self.text = text
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.timeToFirstTokenMs = timeToFirstTokenMs
+        self.generationDurationMs = generationDurationMs
+    }
+
+    public var tokensPerSecond: Double? {
+        guard outputTokens > 0, generationDurationMs > 0 else { return nil }
+        return Double(outputTokens) / (Double(generationDurationMs) / 1_000)
+    }
+}
+
 /// Serialized llama.cpp inference context. The framework is the official
 /// iOS XCFramework; Metal is used on device and disabled in Simulator.
 @available(macOS 15.4, iOS 18.4, *)
@@ -130,14 +157,31 @@ public actor LlamaTextEngine {
     }
 
     public func complete(prompt: String, images: [Data] = [], maxTokens: Int = 1024) throws -> String {
+        try completeMeasured(prompt: prompt, images: images, maxTokens: maxTokens).text
+    }
+
+    public func completeMeasured(
+        prompt: String,
+        images: [Data] = [],
+        maxTokens: Int = 1024
+    ) throws -> LocalGenerationResult {
         guard let context, let vocab, let sampler else { throw LocalInferenceError.contextCreationFailed }
+        let requestStartedAt = Date()
         llama_memory_clear(llama_get_memory(context), true)
         // A cached engine serves several turns. Reset sampling history as well
         // as KV memory so an earlier turn cannot bias or corrupt the next one.
         llama_sampler_reset(sampler)
         if !images.isEmpty {
             guard let multimodal else { throw LocalInferenceError.visionLoadFailed }
-            return try completeVision(prompt: prompt, images: images, context: context, multimodal: multimodal, sampler: sampler, maxTokens: maxTokens)
+            return try completeVision(
+                prompt: prompt,
+                images: images,
+                context: context,
+                multimodal: multimodal,
+                sampler: sampler,
+                maxTokens: maxTokens,
+                requestStartedAt: requestStartedAt
+            )
         }
         let bytes = prompt.utf8.count
         let capacity = bytes + 16
@@ -172,16 +216,29 @@ public actor LlamaTextEngine {
         }
         var position = tokenCount
         var output = ""
+        var outputTokenCount = 0
+        var firstTokenAt: Date?
         for _ in 0..<maxTokens {
             let token = llama_sampler_sample(sampler, context, batch.n_tokens - 1)
             if llama_vocab_is_eog(vocab, token) { break }
+            if firstTokenAt == nil { firstTokenAt = Date() }
             output += piece(token, vocab: vocab)
+            outputTokenCount += 1
             batch.n_tokens = 0
             add(token, position: position, logits: true, to: &batch)
             guard llama_decode(context, batch) == 0 else { throw LocalInferenceError.decodeFailed }
             position += 1
         }
-        return output
+        let endedAt = Date()
+        return LocalGenerationResult(
+            text: output,
+            inputTokens: Int(tokenCount),
+            outputTokens: outputTokenCount,
+            timeToFirstTokenMs: firstTokenAt.map {
+                max(0, Int($0.timeIntervalSince(requestStartedAt) * 1_000))
+            },
+            generationDurationMs: max(0, Int(endedAt.timeIntervalSince(firstTokenAt ?? endedAt) * 1_000))
+        )
     }
 
     private func completeVision(
@@ -190,8 +247,9 @@ public actor LlamaTextEngine {
         context: OpaquePointer,
         multimodal: UnsafeMutableRawPointer,
         sampler: UnsafeMutablePointer<llama_sampler>,
-        maxTokens: Int
-    ) throws -> String {
+        maxTokens: Int,
+        requestStartedAt: Date
+    ) throws -> LocalGenerationResult {
         let retainedImages = images.map { $0 as NSData }
         var lengths = retainedImages.map(\.length)
         var pointers: [UnsafePointer<UInt8>?] = retainedImages.map {
@@ -212,30 +270,52 @@ public actor LlamaTextEngine {
         guard result == 0 else { throw LocalInferenceError.visionInputFailed }
         let needed = tokenCount + maxTokens
         guard needed <= Int(llama_n_ctx(context)) else { throw LocalInferenceError.promptTooLong }
-        return try generate(context: context, sampler: sampler, startPosition: position, maxTokens: maxTokens)
+        return try generate(
+            context: context,
+            sampler: sampler,
+            startPosition: position,
+            inputTokens: tokenCount,
+            maxTokens: maxTokens,
+            requestStartedAt: requestStartedAt
+        )
     }
 
     private func generate(
         context: OpaquePointer,
         sampler: UnsafeMutablePointer<llama_sampler>,
         startPosition: llama_pos,
-        maxTokens: Int
-    ) throws -> String {
+        inputTokens: Int,
+        maxTokens: Int,
+        requestStartedAt: Date
+    ) throws -> LocalGenerationResult {
         guard let vocab else { throw LocalInferenceError.contextCreationFailed }
         var batch = llama_batch_init(1, 0, 1)
         defer { llama_batch_free(batch) }
         var position = startPosition
         var output = ""
+        var outputTokenCount = 0
+        var firstTokenAt: Date?
         for _ in 0..<maxTokens {
             let token = llama_sampler_sample(sampler, context, -1)
             if llama_vocab_is_eog(vocab, token) { break }
+            if firstTokenAt == nil { firstTokenAt = Date() }
             output += piece(token, vocab: vocab)
+            outputTokenCount += 1
             batch.n_tokens = 0
             add(token, position: position, logits: true, to: &batch)
             guard llama_decode(context, batch) == 0 else { throw LocalInferenceError.decodeFailed }
             position += 1
         }
-        return output
+        let endedAt = Date()
+        return LocalGenerationResult(
+            text: output,
+            inputTokens: inputTokens,
+            outputTokens: outputTokenCount,
+            timeToFirstTokenMs: firstTokenAt.map {
+                max(0, Int($0.timeIntervalSince(requestStartedAt) * 1_000))
+            },
+            generationDurationMs: max(0, Int(endedAt.timeIntervalSince(firstTokenAt ?? endedAt) * 1_000))
+        )
     }
 
     private func add(_ token: llama_token, position: llama_pos, logits: Bool, to batch: inout llama_batch) {

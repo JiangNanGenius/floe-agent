@@ -163,6 +163,9 @@ public struct RunUsageRecord: Sendable, Codable, Hashable, Identifiable {
     public var cacheReadTokens: Int?
     public var cacheWriteTokens: Int?
     public var reasoningTokens: Int?
+    public var totalDurationMs: Int?
+    public var timeToFirstTokenMs: Int?
+    public var tokensPerSecond: Double?
     public var isEstimated: Bool
     /// Decimal cost rendered as a string to avoid binary float drift.
     public var costEstimate: String?
@@ -176,6 +179,9 @@ public struct RunUsageRecord: Sendable, Codable, Hashable, Identifiable {
         cacheReadTokens: Int? = nil,
         cacheWriteTokens: Int? = nil,
         reasoningTokens: Int? = nil,
+        totalDurationMs: Int? = nil,
+        timeToFirstTokenMs: Int? = nil,
+        tokensPerSecond: Double? = nil,
         isEstimated: Bool = false,
         costEstimate: String? = nil,
         recordedAt: Date = Date()
@@ -187,6 +193,9 @@ public struct RunUsageRecord: Sendable, Codable, Hashable, Identifiable {
         self.cacheReadTokens = cacheReadTokens
         self.cacheWriteTokens = cacheWriteTokens
         self.reasoningTokens = reasoningTokens
+        self.totalDurationMs = totalDurationMs
+        self.timeToFirstTokenMs = timeToFirstTokenMs
+        self.tokensPerSecond = tokensPerSecond
         self.isEstimated = isEstimated
         self.costEstimate = costEstimate
         self.recordedAt = recordedAt

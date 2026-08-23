@@ -36,17 +36,19 @@ struct StepGroupView: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(events) { event in
-                    ThreadEventView(
-                        event: event,
-                        isLive: isLive,
-                        hasError: hasError,
-                        onRetry: nil
-                    )
+            if isExpanded {
+                LazyVStack(alignment: .leading, spacing: 6) {
+                    ForEach(events) { event in
+                        ThreadEventView(
+                            event: event,
+                            isLive: isLive,
+                            hasError: hasError,
+                            onRetry: nil
+                        )
+                    }
                 }
+                .padding(.leading, 8)
             }
-            .padding(.leading, 8)
         } label: {
             HStack {
                 Text(summary)

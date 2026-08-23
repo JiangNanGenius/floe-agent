@@ -54,10 +54,13 @@ public enum LocalInferenceResourcePolicy {
         physicalMemoryBytes: UInt64
     ) -> Bool {
         guard physicalMemoryBytes > 0 else { return true }
-        // Callers pass the process allowance from os_proc_available_memory on
-        // iOS, not installed RAM. Reserve 38% of that real allowance for
-        // llama.cpp load scratch space, KV cache, Metal and the app UI.
-        return mappedBytes <= physicalMemoryBytes * 62 / 100
+        // Callers pass the current process allowance from
+        // os_proc_available_memory on iOS, not installed RAM. A percentage
+        // alone was too conservative on recent iOS 26 devices: a 3.4 GB Q4
+        // model was rejected with roughly 4.9 GB still available. Permit the
+        // load when at least 26% of the real allowance remains; llama.cpp's
+        // allocation failures are still surfaced as recoverable errors.
+        return mappedBytes <= physicalMemoryBytes * 74 / 100
     }
 
     public static func profile(
@@ -67,26 +70,26 @@ public enum LocalInferenceResourcePolicy {
         guard physicalMemoryBytes > 0 else {
             return .init(
                 tier: .constrained,
-                contextSize: 3_072,
+                contextSize: 4_096,
                 batchSize: 128,
                 gpuLayers: 20,
                 maximumOutputTokens: 768
             )
         }
         let pressure = Double(mappedBytes) / Double(physicalMemoryBytes)
-        if pressure >= 0.45 {
+        if pressure >= 0.58 {
             return .init(
                 tier: .constrained,
-                contextSize: 3_072,
+                contextSize: 4_096,
                 batchSize: 96,
                 gpuLayers: 16,
                 maximumOutputTokens: 768
             )
         }
-        if pressure >= 0.30 {
+        if pressure >= 0.34 {
             return .init(
                 tier: .balanced,
-                contextSize: 4_096,
+                contextSize: 8_192,
                 batchSize: 128,
                 gpuLayers: 24,
                 maximumOutputTokens: 1_024
@@ -98,7 +101,7 @@ public enum LocalInferenceResourcePolicy {
         // transient prompt-evaluation allocation as well.
         return .init(
             tier: .roomy,
-            contextSize: 8_192,
+            contextSize: 16_384,
             batchSize: 128,
             gpuLayers: 99,
             maximumOutputTokens: 1_536

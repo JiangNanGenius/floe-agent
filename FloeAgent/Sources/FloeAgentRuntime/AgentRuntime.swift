@@ -270,6 +270,8 @@ public actor FloeAgentRuntime {
     private var streamTextByteCount = 0
     private var providerEventCount = 0
     private var providerPayloadBytes = 0
+    private var modelRequestStartedAt: Date?
+    private var firstModelActivityAt: Date?
     /// Tool executions so far in this run (bounded by
     /// `Configuration.maxToolSteps`).
     private var toolStepCount = 0
@@ -745,6 +747,8 @@ public actor FloeAgentRuntime {
         pendingToolCalls.removeAll(keepingCapacity: true)
         responseReasoning = ""
 
+        modelRequestStartedAt = Date()
+        firstModelActivityAt = nil
         let stream = adapter.stream(request: request, credentials: credentials)
         streamTask = Task { [weak self] in
             guard let self else { return }
@@ -837,9 +841,39 @@ public actor FloeAgentRuntime {
         return .imageData(mimeType: artifact.mimeType, base64: data.base64EncodedString())
     }
 
-    private func handleStreamEvent(_ event: AgentEvent) async {
+    private func handleStreamEvent(_ rawEvent: AgentEvent) async {
         // Never mutate after leaving streamingModel (cancel race safety).
         guard case .streamingModel(var info) = state else { return }
+
+        let observedAt = Date()
+        switch rawEvent {
+        case .textDelta, .reasoningSummary, .toolRequest:
+            if firstModelActivityAt == nil { firstModelActivityAt = observedAt }
+        default:
+            break
+        }
+        let event: AgentEvent
+        if case .usage(var report) = rawEvent {
+            if let startedAt = modelRequestStartedAt {
+                if report.totalDurationMs == nil {
+                    report.totalDurationMs = max(0, Int(observedAt.timeIntervalSince(startedAt) * 1_000))
+                }
+                if let firstAt = firstModelActivityAt {
+                    if report.timeToFirstTokenMs == nil {
+                        report.timeToFirstTokenMs = max(0, Int(firstAt.timeIntervalSince(startedAt) * 1_000))
+                    }
+                    let generationSeconds = observedAt.timeIntervalSince(firstAt)
+                    if report.tokensPerSecond == nil,
+                       report.outputTokens > 0,
+                       generationSeconds > 0.001 {
+                        report.tokensPerSecond = Double(report.outputTokens) / generationSeconds
+                    }
+                }
+            }
+            event = .usage(report)
+        } else {
+            event = rawEvent
+        }
 
         providerEventCount += 1
         providerPayloadBytes += Self.payloadSize(of: event)
@@ -904,6 +938,12 @@ public actor FloeAgentRuntime {
                 inputTokens: report.inputTokens,
                 outputTokens: report.outputTokens,
                 modelCalls: 1,
+                cacheReadTokens: report.cacheReadTokens,
+                cacheWriteTokens: report.cacheWriteTokens,
+                reasoningTokens: report.reasoningTokens,
+                totalDurationMs: report.totalDurationMs,
+                timeToFirstTokenMs: report.timeToFirstTokenMs,
+                tokensPerSecond: report.tokensPerSecond,
                 costEstimate: report.costEstimate
             ))
 

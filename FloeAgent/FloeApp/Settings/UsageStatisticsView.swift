@@ -35,6 +35,22 @@ struct UsageStatisticsView: View {
                     reportedTokenRow("缓存读取", value: stats.cacheReadTokens)
                     reportedTokenRow("缓存写入", value: stats.cacheWriteTokens)
                     reportedTokenRow("推理 token", value: stats.reasoningTokens)
+                    LabeledContent("缓存命中率") {
+                        Text(cacheHitRate(
+                            input: stats.totalInputTokens,
+                            read: stats.cacheReadTokens,
+                            write: stats.cacheWriteTokens
+                        )).foregroundStyle(.secondary)
+                    }
+                    LabeledContent("平均生成速度") {
+                        Text(speed(stats.averageTokensPerSecond)).foregroundStyle(.secondary)
+                    }
+                    LabeledContent("平均首 token") {
+                        Text(milliseconds(stats.averageTimeToFirstTokenMs)).foregroundStyle(.secondary)
+                    }
+                    LabeledContent("平均响应耗时") {
+                        Text(milliseconds(stats.averageDurationMs)).foregroundStyle(.secondary)
+                    }
                 }
                 Section("近 30 天") {
                     if stats.byDay.isEmpty {
@@ -44,7 +60,7 @@ struct UsageStatisticsView: View {
                         Chart(stats.byDay) { day in
                             BarMark(
                                 x: .value("日期", day.date),
-                                y: .value("token", day.inputTokens + day.outputTokens)
+                                y: .value("token", day.totalTokens)
                             )
                             .foregroundStyle(FloeTheme.primary)
                         }
@@ -52,7 +68,7 @@ struct UsageStatisticsView: View {
                     }
                     ForEach(stats.byDay) { day in
                         LabeledContent(day.date) {
-                            Text("\(day.inputTokens + day.outputTokens) token · \(day.runs) 任务")
+                            Text("\(day.totalTokens) token · \(day.runs) 任务")
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -93,6 +109,9 @@ struct UsageStatisticsView: View {
                         Text("缓存读取 \(reported(row.cacheReadTokens)) · 缓存写入 \(reported(row.cacheWriteTokens)) · 推理 \(reported(row.reasoningTokens))")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
+                        Text("命中率 \(cacheHitRate(input: row.inputTokens, read: row.cacheReadTokens, write: row.cacheWriteTokens)) · \(speed(row.averageTokensPerSecond)) · 首 token \(milliseconds(row.averageTimeToFirstTokenMs))")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                     }
                 }
             }
@@ -108,6 +127,24 @@ struct UsageStatisticsView: View {
 
     private func reported(_ value: Int?) -> String {
         value.map { "\($0) token" } ?? "未报告"
+    }
+
+    private func cacheHitRate(input: Int, read: Int?, write: Int?) -> String {
+        guard let read else { return "未报告" }
+        let cacheable = input + read + (write ?? 0)
+        guard cacheable > 0 else { return "未报告" }
+        return (Double(read) / Double(cacheable))
+            .formatted(.percent.precision(.fractionLength(1)))
+    }
+
+    private func speed(_ value: Double?) -> String {
+        value.map { "\($0.formatted(.number.precision(.fractionLength(1)))) token/s" }
+            ?? "未报告"
+    }
+
+    private func milliseconds(_ value: Double?) -> String {
+        value.map { "\(($0 / 1_000).formatted(.number.precision(.fractionLength(2))))s" }
+            ?? "未报告"
     }
 
     private func load() async {

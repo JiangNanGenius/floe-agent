@@ -17,6 +17,9 @@ final class LocalModelsCenter: ObservableObject {
     @Published private(set) var downloadProgress: [String: LocalModelDownloadProgress] = [:]
     @Published private(set) var runtimeState: RuntimeState = .unloaded
     @Published private(set) var incompatibleReasons: [String: String] = [:]
+    @Published private(set) var removingIDs: Set<String> = []
+    @Published private(set) var benchmarkingIDs: Set<String> = []
+    @Published private(set) var benchmarkResults: [String: LocalModelBenchmarkResult] = [:]
     @Published var errorMessage: String?
     let store: LocalModelStore
     let runtime: LocalModelRuntime
@@ -68,11 +71,32 @@ final class LocalModelsCenter: ObservableObject {
         }
     }
 
+    func benchmark(_ entry: LocalModelCatalogEntry) {
+        guard installedIDs.contains(entry.id), !benchmarkingIDs.contains(entry.id) else { return }
+        benchmarkingIDs.insert(entry.id)
+        errorMessage = nil
+        Task {
+            do {
+                runtimeState = .loading(entry.id)
+                let result = try await runtime.benchmark(modelID: entry.id)
+                benchmarkResults[entry.id] = result
+                runtimeState = .ready(entry.id)
+                FloeLogger(category: .providers).info(
+                    "localModelBenchmarkFinished model=\(entry.id) outputTokens=\(result.outputTokens) durationMs=\(result.totalDurationMs) ttftMs=\(result.timeToFirstTokenMs ?? -1) tokensPerSecond=\(result.tokensPerSecond ?? -1) recommendedConcurrency=\(result.recommendedConcurrentTasks)"
+                )
+            } catch {
+                runtimeState = .failed(entry.id, error.localizedDescription)
+                errorMessage = error.localizedDescription
+            }
+            benchmarkingIDs.remove(entry.id)
+        }
+    }
+
     func refresh() async {
         var installed = Set<String>()
         var incompatible: [String: String] = [:]
         let availableBytes = LocalInferenceResourcePolicy.availableMemoryBytes()
-        for entry in CuratedLocalModelCatalog.entries where await store.isInstalled(id: entry.id) {
+        for entry in CuratedLocalModelCatalog.knownEntries where await store.isInstalled(id: entry.id) {
             installed.insert(entry.id)
             if let mappedBytes = await store.installedWeightBytes(id: entry.id),
                !LocalInferenceResourcePolicy.canLoad(
@@ -148,7 +172,14 @@ final class LocalModelsCenter: ObservableObject {
     }
 
     func remove(_ entry: LocalModelCatalogEntry) {
+        guard !removingIDs.contains(entry.id) else { return }
         FloeLogger(category: .providers).info("localModelRemovalRequested model=\(entry.id)")
+        // Reflect the destructive choice immediately. Reopening Settings must
+        // never be required to observe a completed deletion.
+        removingIDs.insert(entry.id)
+        installedIDs.remove(entry.id)
+        incompatibleReasons[entry.id] = nil
+        downloadProgress[entry.id] = nil
         Task {
             do {
                 await runtime.unload(modelID: entry.id)
@@ -156,7 +187,6 @@ final class LocalModelsCenter: ObservableObject {
                     runtimeState = .unloaded
                 }
                 try await store.remove(id: entry.id)
-                await refresh()
                 await onCatalogChanged?()
             }
             catch {
@@ -165,7 +195,9 @@ final class LocalModelsCenter: ObservableObject {
                     "localModelRemovalFailed model=\(entry.id) domain=\(nsError.domain) code=\(nsError.code)"
                 )
                 errorMessage = error.localizedDescription
+                await refresh()
             }
+            removingIDs.remove(entry.id)
         }
     }
 }
@@ -186,7 +218,10 @@ struct LocalModelsSettingsView: View {
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if center.activeDownloads.contains(entry.id) {
+                            if center.removingIDs.contains(entry.id) {
+                                ProgressView().controlSize(.small)
+                                Text("正在删除…").font(.caption).foregroundStyle(.secondary)
+                            } else if center.activeDownloads.contains(entry.id) {
                                 Button("localmodels.pause") { center.pause(entry) }
                                     .buttonStyle(.borderless)
                             } else if center.pausedDownloads.contains(entry.id) {
@@ -208,6 +243,14 @@ struct LocalModelsSettingsView: View {
                                         .buttonStyle(.borderless)
                                         .disabled(center.incompatibleReasons[entry.id] != nil)
                                         .accessibilityIdentifier("localModel.load.\(entry.id)")
+                                }
+                                if center.benchmarkingIDs.contains(entry.id) {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Button("测速") { center.benchmark(entry) }
+                                        .buttonStyle(.borderless)
+                                        .disabled(center.incompatibleReasons[entry.id] != nil)
+                                        .accessibilityIdentifier("localModel.benchmark.\(entry.id)")
                                 }
                                 Button("localmodels.remove", role: .destructive) {
                                     FloeLogger(category: .providers).info(
@@ -243,10 +286,41 @@ struct LocalModelsSettingsView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                        if let result = center.benchmarkResults[entry.id] {
+                            Text(Self.benchmarkLabel(result))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }.padding(.vertical, 4)
                 }
             } footer: {
-                Text("localmodels.footer")
+                Text("同一时间只驻留一个本地模型；多个任务默认排队复用。测速使用真实本地推理，并据设备表现给出安全并发建议。")
+            }
+            let retiredInstalled = CuratedLocalModelCatalog.retiredEntries.filter {
+                center.installedIDs.contains($0.id)
+            }
+            if !retiredInstalled.isEmpty {
+                Section("已停用模型") {
+                    ForEach(retiredInstalled) { entry in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.displayName)
+                                Text("该型号已从推荐列表移除，可删除已下载文件。")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if center.removingIDs.contains(entry.id) {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Button("localmodels.remove", role: .destructive) {
+                                    pendingRemoval = entry
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                }
             }
             if let errorMessage = center.errorMessage {
                 Section { Text(errorMessage).foregroundStyle(.red) }
@@ -296,6 +370,16 @@ struct LocalModelsSettingsView: View {
             return parts.filter { !$0.isEmpty }.joined(separator: " · ")
         }
         return received
+    }
+
+    private static func benchmarkLabel(_ result: LocalModelBenchmarkResult) -> String {
+        let speed = result.tokensPerSecond.map {
+            "\($0.formatted(.number.precision(.fractionLength(1)))) token/s"
+        } ?? "速度未测得"
+        let first = result.timeToFirstTokenMs.map {
+            "首 token \((Double($0) / 1_000).formatted(.number.precision(.fractionLength(2))))s"
+        } ?? "首 token 未测得"
+        return "测速：\(speed) · \(first) · 建议并发 \(result.recommendedConcurrentTasks)"
     }
 }
 #endif

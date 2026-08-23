@@ -22,6 +22,10 @@ import FloePersistence
 ///     `exec.localPython` honestly absent from the catalog.
 ///   - sshCommandService: SSH command execution backend. Nil leaves
 ///     `ssh.execute` unregistered.
+///   - includeStandaloneWasmTool: Internal/testing escape hatch for the raw
+///     WASM runner. Production keeps this false: installed plugins should
+///     expose concrete capabilities instead of teaching the main model to
+///     fabricate or compile modules.
 @discardableResult
 public func registerExecutionTools(
     registry: ToolRunnerRegistry = .shared,
@@ -31,11 +35,14 @@ public func registerExecutionTools(
     remoteHostStore: RemoteHostStore? = nil,
     httpRequestService: HTTPRequestService = HTTPRequestService(),
     webSearchService: WebSearchService = WebSearchService(),
-    includeOnDeviceJavaScript: Bool = false
+    includeOnDeviceJavaScript: Bool = false,
+    includeStandaloneWasmTool: Bool = false
 ) -> any ScriptExecutionService {
     // Compile-time catalog descriptors.
     if includeOnDeviceJavaScript {
         ToolCatalog.register(JavaScriptExecutionTool.self)
+    }
+    if includeStandaloneWasmTool {
         ToolCatalog.register(WasmExecutionTool.self)
     }
     if localPythonService != nil {
@@ -62,6 +69,8 @@ public func registerExecutionTools(
     // Runtime runners.
     if includeOnDeviceJavaScript {
         registry.register(JavaScriptExecutionTool(service: service))
+    }
+    if includeStandaloneWasmTool {
         registry.register(WasmExecutionTool(service: service))
     }
     if let localPythonService {

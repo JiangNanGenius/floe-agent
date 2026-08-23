@@ -1283,6 +1283,10 @@ final class ConversationCenter: ObservableObject {
                 primaryModel: model
             )
             if provider.kind == .local {
+                await self.environment.localModelRuntime.retainForTask(
+                    taskID: runID,
+                    modelID: model.remoteModelID
+                )
                 self.environment.backgroundRunCoordinator.didUpdateProgress(
                     runID: runID,
                     stage: "正在加载本地模型",
@@ -1299,6 +1303,10 @@ final class ConversationCenter: ObservableObject {
                         conversationID: conversationID,
                         error: error
                     )
+                    await self.environment.localModelRuntime.releaseForTask(
+                        taskID: runID,
+                        reason: "launchFailed"
+                    )
                     return .failure(error)
                 }
             }
@@ -1314,6 +1322,12 @@ final class ConversationCenter: ObservableObject {
                     conversationID: conversationID,
                     error: error
                 )
+                if provider.kind == .local {
+                    await self.environment.localModelRuntime.releaseForTask(
+                        taskID: runID,
+                        reason: "launchCancelled"
+                    )
+                }
                 return .failure(error)
             }
             let service = await self.runService(
@@ -1341,7 +1355,8 @@ final class ConversationCenter: ObservableObject {
                 automaticTitle: shouldGenerateTitle ? (conversationID, provider, model) : nil,
                 goalContinuation: executionMode == .goal
                     ? (conversationID, provider, model, prepared.workspace.id)
-                    : nil
+                    : nil,
+                localModelID: provider.kind == .local ? model.remoteModelID : nil
             )
         }
         runTasks[runID] = result
@@ -1405,7 +1420,8 @@ final class ConversationCenter: ObservableObject {
             provider: ProviderProfile,
             model: ModelProfile,
             workspaceID: UUID
-        )?
+        )?,
+        localModelID: String? = nil
     ) async -> Result<Void, Error> {
         let runID = service.runID
         let outcome: Result<Void, Error>
@@ -1460,6 +1476,12 @@ final class ConversationCenter: ObservableObject {
             )
         }
         runTasks[runID] = nil
+        if localModelID != nil {
+            await environment.localModelRuntime.releaseForTask(
+                taskID: runID,
+                reason: terminalState
+            )
+        }
         if terminalState == "completed" || terminalState == "failed" {
             await launchNextQueuedInput(conversationID: service.conversationID)
         }
@@ -2060,6 +2082,12 @@ final class ConversationCenter: ObservableObject {
         case .goal: .goal
         case .chat, nil: .agent
         }
+        if provider.kind == .local {
+            await environment.localModelRuntime.retainForTask(
+                taskID: record.id,
+                modelID: model.remoteModelID
+            )
+        }
         let service = await runService(
             for: record.conversationID,
             provider: provider,
@@ -2095,7 +2123,10 @@ final class ConversationCenter: ObservableObject {
                 } else {
                     try await service.startPrepared(goal: record.goal)
                 }
-                return await self.finishResumedService(service)
+                return await self.finishResumedService(
+                    service,
+                    localModelID: provider.kind == .local ? model.remoteModelID : nil
+                )
             } catch {
                 await self.persistServiceFailure(service, error: error, stage: "resume")
                 self.runTasks[record.id] = nil
@@ -2104,6 +2135,12 @@ final class ConversationCenter: ObservableObject {
                     succeeded: false,
                     message: error.localizedDescription
                 )
+                if provider.kind == .local {
+                    await self.environment.localModelRuntime.releaseForTask(
+                        taskID: record.id,
+                        reason: "resumeFailed"
+                    )
+                }
                 self.publishSession(record.conversationID)
                 return .failure(error)
             }
@@ -2112,7 +2149,10 @@ final class ConversationCenter: ObservableObject {
         return StartedConversationRun(runID: record.id, result: task)
     }
 
-    private func finishResumedService(_ service: ConversationRunService) async -> Result<Void, Error> {
+    private func finishResumedService(
+        _ service: ConversationRunService,
+        localModelID: String?
+    ) async -> Result<Void, Error> {
         let snapshot = await service.snapshot()
         runTasks[service.runID] = nil
         let succeeded = snapshot.stateName == "completed"
@@ -2121,6 +2161,12 @@ final class ConversationCenter: ObservableObject {
             succeeded: succeeded,
             message: succeeded ? nil : "Run ended in \(snapshot.stateName)"
         )
+        if localModelID != nil {
+            await environment.localModelRuntime.releaseForTask(
+                taskID: service.runID,
+                reason: snapshot.stateName
+            )
+        }
         publishSession(service.conversationID)
         return succeeded
             ? .success(())

@@ -282,6 +282,10 @@ public struct ChatChunk: Sendable, Codable, Hashable {
         public var completionTokens: Int
         public var promptTokenDetails: PromptTokenDetails?
         public var completionTokenDetails: CompletionTokenDetails?
+        /// DeepSeek-compatible usage fields. They live at the usage root
+        /// rather than inside `prompt_tokens_details`.
+        public var promptCacheHitTokens: Int?
+        public var promptCacheMissTokens: Int?
 
         public struct PromptTokenDetails: Sendable, Codable, Hashable {
             public var cachedTokens: Int?
@@ -297,12 +301,16 @@ public struct ChatChunk: Sendable, Codable, Hashable {
             promptTokens: Int,
             completionTokens: Int,
             promptTokenDetails: PromptTokenDetails? = nil,
-            completionTokenDetails: CompletionTokenDetails? = nil
+            completionTokenDetails: CompletionTokenDetails? = nil,
+            promptCacheHitTokens: Int? = nil,
+            promptCacheMissTokens: Int? = nil
         ) {
             self.promptTokens = promptTokens
             self.completionTokens = completionTokens
             self.promptTokenDetails = promptTokenDetails
             self.completionTokenDetails = completionTokenDetails
+            self.promptCacheHitTokens = promptCacheHitTokens
+            self.promptCacheMissTokens = promptCacheMissTokens
         }
 
         enum CodingKeys: String, CodingKey {
@@ -310,6 +318,8 @@ public struct ChatChunk: Sendable, Codable, Hashable {
             case completionTokens = "completion_tokens"
             case promptTokenDetails = "prompt_tokens_details"
             case completionTokenDetails = "completion_tokens_details"
+            case promptCacheHitTokens = "prompt_cache_hit_tokens"
+            case promptCacheMissTokens = "prompt_cache_miss_tokens"
         }
     }
 }

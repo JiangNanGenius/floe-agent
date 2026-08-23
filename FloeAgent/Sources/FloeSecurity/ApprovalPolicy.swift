@@ -156,10 +156,14 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "image.inspect", "image.ocr", "image.scanBarcode",
             "document.pdf.inspect", "document.pdf.render",
             "workspace.listDirectory", "workspace.readFile",
-            "workspace.inspectMetadata", "workspace.searchFiles",
+            "workspace.inspectMetadata", "workspace.searchFiles", "workspace.createFile",
+            "browser.observe", "browser.events", "browser.wait", "browser.navigate",
             "memory.recall", "exec.localNumerical", "presentation.create"
         ]
         if alwaysExempt.contains(action.toolCall.toolName) { return true }
+        if action.toolCall.toolName == "exec.localPython", !action.isManagedPythonPackageRequest {
+            return true
+        }
         if action.toolCall.toolName == "image.svgDocument",
            let object = try? JSONSerialization.jsonObject(with: action.toolCall.argumentsJSON) as? [String: Any],
            object["operation"] as? String == "inspect" { return true }

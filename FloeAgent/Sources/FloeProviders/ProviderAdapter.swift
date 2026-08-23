@@ -458,6 +458,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                     let pump = SSEBytePump(urlRequest: urlRequest)
                     let decoder = JSONDecoder()
                     var aggregator = ToolCallAggregator()
+                    var deferredCompletion: AgentEvent.CompletionInfo?
                     for try await sseEvent in pump.events() {
                         if let errorEvent = httpErrorEvent(from: sseEvent) {
                             if case .error(let error) = errorEvent {
@@ -476,6 +477,12 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                                 if case .toolRequest(var call) = event {
                                     call.toolName = canonicalToolName(call.toolName, for: request)
                                     continuation.yield(.toolRequest(call))
+                                } else if case .completed(let completion) = event {
+                                    // OpenAI Chat Completions commonly sends a
+                                    // separate usage-only chunk after the
+                                    // finish_reason chunk. Do not terminate the
+                                    // runtime until the SSE stream has drained.
+                                    deferredCompletion = completion
                                 } else {
                                     continuation.yield(event)
                                 }
@@ -483,6 +490,9 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                         } catch {
                             logger.warning("Chat chunk decode failed: \(error.localizedDescription)")
                         }
+                    }
+                    if let deferredCompletion {
+                        continuation.yield(.completed(deferredCompletion))
                     }
                     continuation.finish()
                 } catch {

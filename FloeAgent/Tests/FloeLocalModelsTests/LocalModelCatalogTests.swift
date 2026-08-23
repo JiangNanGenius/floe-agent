@@ -8,9 +8,58 @@ import FloeProviders
 
 @Suite("Local model catalog")
 struct LocalModelCatalogTests {
+    @Test("Local task residency unloads only after the last task finishes")
+    func localTaskResidencyLedger() {
+        let first = UUID()
+        let second = UUID()
+        var ledger = LocalModelTaskResidencyLedger()
+
+        ledger.retain(taskID: first, modelID: "local-a")
+        ledger.retain(taskID: second, modelID: "local-a")
+        #expect(ledger.activeTaskCount == 2)
+        let firstWasLast = ledger.release(taskID: first)
+        #expect(!firstWasLast)
+        #expect(ledger.activeTaskCount == 1)
+        let secondWasLast = ledger.release(taskID: second)
+        #expect(secondWasLast)
+        #expect(ledger.activeTaskCount == 0)
+        let duplicateWasLast = ledger.release(taskID: second)
+        #expect(!duplicateWasLast)
+    }
+
+    @Test("Recovered local task retention is idempotent")
+    func localTaskResidencyRecoveryIsIdempotent() {
+        let runID = UUID()
+        var ledger = LocalModelTaskResidencyLedger()
+
+        ledger.retain(taskID: runID, modelID: "local-a")
+        ledger.retain(taskID: runID, modelID: "local-a")
+        #expect(ledger.activeTaskCount == 1)
+        let wasLast = ledger.release(taskID: runID)
+        #expect(wasLast)
+    }
+
+    @Test("Local residency switches silently only before the first load")
+    func residencySelectionPolicy() {
+        #expect(LocalModelResidencyPolicy.decision(
+            residentModelID: nil,
+            targetModelID: "local-a"
+        ) == .preloadSilently)
+        #expect(LocalModelResidencyPolicy.decision(
+            residentModelID: "local-a",
+            targetModelID: "local-a"
+        ) == .useResident)
+        #expect(LocalModelResidencyPolicy.decision(
+            residentModelID: "local-a",
+            targetModelID: "local-b"
+        ) == .confirmReplacement(currentModelID: "local-a"))
+    }
+
     @Test("Curated entries are downloadable Apache models")
     func curatedEntries() {
-        #expect(CuratedLocalModelCatalog.entries.count >= 3)
+        #expect(CuratedLocalModelCatalog.entries.count == 2)
+        #expect(!CuratedLocalModelCatalog.entries.contains { $0.id == "qwen3.5-9b-q4km" })
+        #expect(CuratedLocalModelCatalog.retiredEntries.contains { $0.id == "qwen3.5-9b-q4km" })
         for entry in CuratedLocalModelCatalog.entries {
             #expect(entry.modelURL.scheme == "https")
             #expect(entry.license == "Apache-2.0")
@@ -71,10 +120,10 @@ struct LocalModelCatalogTests {
         ))
 
         let constrained = LocalInferenceResourcePolicy.profile(
-            mappedBytes: 4 * gib,
+            mappedBytes: 5 * gib,
             physicalMemoryBytes: 8 * gib
         )
-        #expect(constrained.contextSize == 3_072)
+        #expect(constrained.contextSize == 4_096)
         #expect(constrained.tier == .constrained)
         #expect(constrained.batchSize == 96)
         #expect(constrained.gpuLayers == 16)
@@ -83,7 +132,7 @@ struct LocalModelCatalogTests {
             mappedBytes: 3 * gib,
             physicalMemoryBytes: 16 * gib
         )
-        #expect(roomy.contextSize == 8_192)
+        #expect(roomy.contextSize == 16_384)
         #expect(roomy.tier == .roomy)
         #expect(roomy.gpuLayers == 99)
         #expect(roomy.maximumOutputTokens == 1_536)
@@ -92,7 +141,7 @@ struct LocalModelCatalogTests {
             mappedBytes: 3 * gib,
             physicalMemoryBytes: 8 * gib
         )
-        #expect(balanced.contextSize == 4_096)
+        #expect(balanced.contextSize == 8_192)
         #expect(balanced.tier == .balanced)
         #expect(balanced.maximumOutputTokens == 1_024)
     }
@@ -131,6 +180,8 @@ struct LocalModelCatalogTests {
         #expect(build.text.count < 5_000)
         #expect(build.selectedToolCount == 0)
         #expect(build.text.contains("你好"))
+        #expect(build.text.contains("/no_think"))
+        #expect(!build.text.contains("SYSTEM:"))
         #expect(!build.text.contains(String(repeating: "large cloud harness ", count: 20)))
     }
 
@@ -188,5 +239,30 @@ struct LocalModelCatalogTests {
         )
         #expect(channels.reasoning.isEmpty)
         #expect(channels.answer == "I'm ready to help.")
+    }
+
+    @Test("Untagged local planning is hidden and the final revision is retained")
+    @available(macOS 15.4, *)
+    func untaggedPlanningIsSeparated() {
+        let channels = LocalProviderAdapter.splitReasoning(from: """
+        Thinking Process:
+        1. Analyze the request.
+        Draft: 你好，我可以帮助你。
+        Revised Draft: 你好，请告诉我具体需求。
+        Even shorter: 你好！请告诉我具体需求。
+        """)
+
+        #expect(channels.reasoning.contains("Thinking Process"))
+        #expect(channels.answer == "你好！请告诉我具体需求。")
+    }
+
+    @Test("Reasoning-only local output is not promoted to a visible answer")
+    @available(macOS 15.4, *)
+    func reasoningOnlyOutputIsEmpty() {
+        let channels = LocalProviderAdapter.splitReasoning(
+            from: "Thinking Process:\nI will inspect the request without answering."
+        )
+        #expect(!channels.reasoning.isEmpty)
+        #expect(channels.answer.isEmpty)
     }
 }

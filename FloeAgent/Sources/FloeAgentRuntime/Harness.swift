@@ -69,6 +69,9 @@ public struct UsageSnapshot: Sendable, Codable, Hashable {
     public var cacheReadTokens: Int?
     public var cacheWriteTokens: Int?
     public var reasoningTokens: Int?
+    public var totalDurationMs: Int?
+    public var timeToFirstTokenMs: Int?
+    public var tokensPerSecond: Double?
     public var costEstimate: Decimal?
 
     public init(
@@ -78,6 +81,9 @@ public struct UsageSnapshot: Sendable, Codable, Hashable {
         cacheReadTokens: Int? = nil,
         cacheWriteTokens: Int? = nil,
         reasoningTokens: Int? = nil,
+        totalDurationMs: Int? = nil,
+        timeToFirstTokenMs: Int? = nil,
+        tokensPerSecond: Double? = nil,
         costEstimate: Decimal? = nil
     ) {
         self.inputTokens = inputTokens
@@ -86,6 +92,9 @@ public struct UsageSnapshot: Sendable, Codable, Hashable {
         self.cacheReadTokens = cacheReadTokens
         self.cacheWriteTokens = cacheWriteTokens
         self.reasoningTokens = reasoningTokens
+        self.totalDurationMs = totalDurationMs
+        self.timeToFirstTokenMs = timeToFirstTokenMs
+        self.tokensPerSecond = tokensPerSecond
         self.costEstimate = costEstimate
     }
 }
@@ -460,6 +469,12 @@ public final class AgentRuntimeHarnessBridge: AgentEventSink, @unchecked Sendabl
                 inputTokens: usage.inputTokens,
                 outputTokens: usage.outputTokens,
                 modelCalls: 0,
+                cacheReadTokens: usage.cacheReadTokens,
+                cacheWriteTokens: usage.cacheWriteTokens,
+                reasoningTokens: usage.reasoningTokens,
+                totalDurationMs: usage.totalDurationMs,
+                timeToFirstTokenMs: usage.timeToFirstTokenMs,
+                tokensPerSecond: usage.tokensPerSecond,
                 costEstimate: usage.costEstimate
             )))
         case .error:

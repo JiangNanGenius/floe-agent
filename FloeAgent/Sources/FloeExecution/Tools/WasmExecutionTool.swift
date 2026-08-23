@@ -28,7 +28,7 @@ public struct WasmExecutionTool: AgentTool {
 
     public static let name = "exec.wasm"
     public static let toolDescription =
-        "Execute one exported numeric function from a self-contained WebAssembly module locally. Pass the module as Base64. The sandbox exposes no WASI, file, network, process, native, or host imports; use ssh.execute for modules that need a full runtime."
+        "Internal runtime for an already-downloaded, provenance-checked WebAssembly artifact. It executes one exported numeric function and cannot compile source code or create native Mach-O, ELF, dylib, or executable files on iPhone or iPad. The sandbox exposes no WASI, file, network, process, native, or host imports; use ssh.execute for compilation or a full operating-system runtime."
     public static let parametersJSON = #"""
     {
       "type": "object",

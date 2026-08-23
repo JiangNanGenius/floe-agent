@@ -22,8 +22,34 @@ struct ReasoningBlockView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(FloeTheme.motionAnimation(reduceMotion: reduceMotion)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    if isStreaming {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text("reasoning.title")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                    if !isExpanded {
+                        Text(preview)
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if isExpanded {
                 Text(text)
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
@@ -55,23 +81,6 @@ struct ReasoningBlockView: View {
                     )
                 }
             }
-            .padding(.top, 6)
-        } label: {
-            HStack(spacing: 8) {
-                if isStreaming {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                Text("reasoning.title")
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-                if !isExpanded {
-                    Text(preview)
-                        .font(FloeTheme.Typography.metadata)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-            }
         }
         .padding(10)
         .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 10))
@@ -80,7 +89,7 @@ struct ReasoningBlockView: View {
 
     /// Last non-empty line as the folded preview.
     private var preview: String {
-        text.split(whereSeparator: { $0.isNewline })
+        text.suffix(512).split(whereSeparator: { $0.isNewline })
             .last
             .map(String.init)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

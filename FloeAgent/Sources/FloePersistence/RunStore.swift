@@ -85,6 +85,9 @@ public struct UsageStatistics: Sendable, Codable, Hashable {
     public var cacheReadTokens: Int?
     public var cacheWriteTokens: Int?
     public var reasoningTokens: Int?
+    public var averageTokensPerSecond: Double?
+    public var averageTimeToFirstTokenMs: Double?
+    public var averageDurationMs: Double?
     public var byDay: [DailyUsage]
     public var byConversation: [UsageBreakdown]
     public var byModel: [UsageBreakdown]
@@ -98,6 +101,9 @@ public struct UsageStatistics: Sendable, Codable, Hashable {
         cacheReadTokens: Int? = nil,
         cacheWriteTokens: Int? = nil,
         reasoningTokens: Int? = nil,
+        averageTokensPerSecond: Double? = nil,
+        averageTimeToFirstTokenMs: Double? = nil,
+        averageDurationMs: Double? = nil,
         byDay: [DailyUsage],
         byConversation: [UsageBreakdown] = [],
         byModel: [UsageBreakdown] = [],
@@ -110,6 +116,9 @@ public struct UsageStatistics: Sendable, Codable, Hashable {
         self.cacheReadTokens = cacheReadTokens
         self.cacheWriteTokens = cacheWriteTokens
         self.reasoningTokens = reasoningTokens
+        self.averageTokensPerSecond = averageTokensPerSecond
+        self.averageTimeToFirstTokenMs = averageTimeToFirstTokenMs
+        self.averageDurationMs = averageDurationMs
         self.byDay = byDay
         self.byConversation = byConversation
         self.byModel = byModel
@@ -126,6 +135,9 @@ public struct UsageBreakdown: Sendable, Codable, Hashable, Identifiable {
     public var cacheReadTokens: Int?
     public var cacheWriteTokens: Int?
     public var reasoningTokens: Int?
+    public var averageTokensPerSecond: Double?
+    public var averageTimeToFirstTokenMs: Double?
+    public var averageDurationMs: Double?
 
     public init(
         id: String,
@@ -135,7 +147,10 @@ public struct UsageBreakdown: Sendable, Codable, Hashable, Identifiable {
         runs: Int,
         cacheReadTokens: Int? = nil,
         cacheWriteTokens: Int? = nil,
-        reasoningTokens: Int? = nil
+        reasoningTokens: Int? = nil,
+        averageTokensPerSecond: Double? = nil,
+        averageTimeToFirstTokenMs: Double? = nil,
+        averageDurationMs: Double? = nil
     ) {
         self.id = id
         self.label = label
@@ -145,9 +160,17 @@ public struct UsageBreakdown: Sendable, Codable, Hashable, Identifiable {
         self.cacheReadTokens = cacheReadTokens
         self.cacheWriteTokens = cacheWriteTokens
         self.reasoningTokens = reasoningTokens
+        self.averageTokensPerSecond = averageTokensPerSecond
+        self.averageTimeToFirstTokenMs = averageTimeToFirstTokenMs
+        self.averageDurationMs = averageDurationMs
     }
 
-    public var totalTokens: Int { inputTokens + outputTokens }
+    /// Cache-normalized token volume. Provider adapters store OpenAI-style
+    /// `input_tokens` without its cached subset, so each dimension appears
+    /// exactly once here.
+    public var totalTokens: Int {
+        inputTokens + outputTokens + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
+    }
 }
 
 public struct DailyUsage: Sendable, Codable, Hashable, Identifiable {
@@ -155,13 +178,28 @@ public struct DailyUsage: Sendable, Codable, Hashable, Identifiable {
     public var date: String
     public var inputTokens: Int
     public var outputTokens: Int
+    public var cacheReadTokens: Int?
+    public var cacheWriteTokens: Int?
     public var runs: Int
 
-    public init(date: String, inputTokens: Int, outputTokens: Int, runs: Int) {
+    public init(
+        date: String,
+        inputTokens: Int,
+        outputTokens: Int,
+        cacheReadTokens: Int? = nil,
+        cacheWriteTokens: Int? = nil,
+        runs: Int
+    ) {
         self.date = date
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheWriteTokens = cacheWriteTokens
         self.runs = runs
+    }
+
+    public var totalTokens: Int {
+        inputTokens + outputTokens + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
     }
 }
 
@@ -298,8 +336,9 @@ public actor SQLiteRunStore: RunStore {
                 sql: """
                     INSERT INTO run_usage (
                         id, run_id, input_tokens, output_tokens, cost_estimate, recorded_at,
-                        cache_read_tokens, cache_write_tokens, reasoning_tokens, is_estimated
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        cache_read_tokens, cache_write_tokens, reasoning_tokens, is_estimated,
+                        total_duration_ms, time_to_first_token_ms, tokens_per_second
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     usage.id.uuidString,
@@ -311,7 +350,10 @@ public actor SQLiteRunStore: RunStore {
                     usage.cacheReadTokens,
                     usage.cacheWriteTokens,
                     usage.reasoningTokens,
-                    usage.isEstimated
+                    usage.isEstimated,
+                    usage.totalDurationMs,
+                    usage.timeToFirstTokenMs,
+                    usage.tokensPerSecond
                 ]
             )
         }
@@ -455,6 +497,9 @@ public actor SQLiteRunStore: RunStore {
             cacheReadTokens: row["cache_read_tokens"],
             cacheWriteTokens: row["cache_write_tokens"],
             reasoningTokens: row["reasoning_tokens"],
+            totalDurationMs: row["total_duration_ms"],
+            timeToFirstTokenMs: row["time_to_first_token_ms"],
+            tokensPerSecond: row["tokens_per_second"],
             isEstimated: row["is_estimated"],
             costEstimate: row["cost_estimate"],
             recordedAt: try PersistenceCodec.decodeDate(row["recorded_at"])
@@ -488,6 +533,9 @@ public actor SQLiteRunStore: RunStore {
                     SUM(cache_read_tokens) AS cache_read,
                     SUM(cache_write_tokens) AS cache_write,
                     SUM(reasoning_tokens) AS reasoning,
+                    AVG(tokens_per_second) AS avg_tps,
+                    AVG(time_to_first_token_ms) AS avg_ttft,
+                    AVG(total_duration_ms) AS avg_duration,
                     COUNT(DISTINCT run_id) AS total_runs
                 FROM run_usage
                 """)
@@ -497,12 +545,17 @@ public actor SQLiteRunStore: RunStore {
             let cacheRead: Int? = totalRow?["cache_read"]
             let cacheWrite: Int? = totalRow?["cache_write"]
             let reasoning: Int? = totalRow?["reasoning"]
+            let averageTPS: Double? = totalRow?["avg_tps"]
+            let averageTTFT: Double? = totalRow?["avg_ttft"]
+            let averageDuration: Double? = totalRow?["avg_duration"]
 
             let dailyRows = try Row.fetchAll(db, sql: """
                 SELECT
                     date(recorded_at) AS day,
                     COALESCE(SUM(input_tokens), 0) AS input,
                     COALESCE(SUM(output_tokens), 0) AS output,
+                    SUM(cache_read_tokens) AS cache_read,
+                    SUM(cache_write_tokens) AS cache_write,
                     COUNT(DISTINCT run_id) AS runs
                 FROM run_usage
                 GROUP BY date(recorded_at)
@@ -514,6 +567,8 @@ public actor SQLiteRunStore: RunStore {
                     date: row["day"],
                     inputTokens: row["input"],
                     outputTokens: row["output"],
+                    cacheReadTokens: row["cache_read"],
+                    cacheWriteTokens: row["cache_write"],
                     runs: row["runs"]
                 )
             }
@@ -527,12 +582,19 @@ public actor SQLiteRunStore: RunStore {
                     SUM(u.cache_read_tokens) AS cache_read,
                     SUM(u.cache_write_tokens) AS cache_write,
                     SUM(u.reasoning_tokens) AS reasoning,
+                    AVG(u.tokens_per_second) AS avg_tps,
+                    AVG(u.time_to_first_token_ms) AS avg_ttft,
+                    AVG(u.total_duration_ms) AS avg_duration,
                     COUNT(DISTINCT r.id) AS runs
                 FROM run_usage u
                 JOIN runs r ON r.id = u.run_id
                 JOIN conversations c ON c.id = r.conversation_id
                 GROUP BY r.conversation_id, c.title
-                ORDER BY (SUM(u.input_tokens) + SUM(u.output_tokens)) DESC, label
+                ORDER BY (
+                    SUM(u.input_tokens) + SUM(u.output_tokens)
+                    + COALESCE(SUM(u.cache_read_tokens), 0)
+                    + COALESCE(SUM(u.cache_write_tokens), 0)
+                ) DESC, label
                 """)
             let modelRows = try Row.fetchAll(db, sql: """
                 SELECT
@@ -546,11 +608,18 @@ public actor SQLiteRunStore: RunStore {
                     SUM(u.cache_read_tokens) AS cache_read,
                     SUM(u.cache_write_tokens) AS cache_write,
                     SUM(u.reasoning_tokens) AS reasoning,
+                    AVG(u.tokens_per_second) AS avg_tps,
+                    AVG(u.time_to_first_token_ms) AS avg_ttft,
+                    AVG(u.total_duration_ms) AS avg_duration,
                     COUNT(DISTINCT r.id) AS runs
                 FROM run_usage u
                 JOIN runs r ON r.id = u.run_id
                 GROUP BY COALESCE(r.model_id, 'legacy-model')
-                ORDER BY (SUM(u.input_tokens) + SUM(u.output_tokens)) DESC, label
+                ORDER BY (
+                    SUM(u.input_tokens) + SUM(u.output_tokens)
+                    + COALESCE(SUM(u.cache_read_tokens), 0)
+                    + COALESCE(SUM(u.cache_write_tokens), 0)
+                ) DESC, label
                 """)
             let providerRows = try Row.fetchAll(db, sql: """
                 SELECT
@@ -564,21 +633,31 @@ public actor SQLiteRunStore: RunStore {
                     SUM(u.cache_read_tokens) AS cache_read,
                     SUM(u.cache_write_tokens) AS cache_write,
                     SUM(u.reasoning_tokens) AS reasoning,
+                    AVG(u.tokens_per_second) AS avg_tps,
+                    AVG(u.time_to_first_token_ms) AS avg_ttft,
+                    AVG(u.total_duration_ms) AS avg_duration,
                     COUNT(DISTINCT r.id) AS runs
                 FROM run_usage u
                 JOIN runs r ON r.id = u.run_id
                 GROUP BY COALESCE(r.provider_id, 'legacy-provider')
-                ORDER BY (SUM(u.input_tokens) + SUM(u.output_tokens)) DESC, label
+                ORDER BY (
+                    SUM(u.input_tokens) + SUM(u.output_tokens)
+                    + COALESCE(SUM(u.cache_read_tokens), 0)
+                    + COALESCE(SUM(u.cache_write_tokens), 0)
+                ) DESC, label
                 """)
 
             return UsageStatistics(
                 totalInputTokens: totalInput,
                 totalOutputTokens: totalOutput,
-                totalTokens: totalInput + totalOutput,
+                totalTokens: totalInput + totalOutput + (cacheRead ?? 0) + (cacheWrite ?? 0),
                 totalRuns: totalRuns,
                 cacheReadTokens: cacheRead,
                 cacheWriteTokens: cacheWrite,
                 reasoningTokens: reasoning,
+                averageTokensPerSecond: averageTPS,
+                averageTimeToFirstTokenMs: averageTTFT,
+                averageDurationMs: averageDuration,
                 byDay: byDay,
                 byConversation: conversationRows.map(Self.usageBreakdown(from:)),
                 byModel: modelRows.map(Self.usageBreakdown(from:)),
@@ -596,7 +675,10 @@ public actor SQLiteRunStore: RunStore {
             runs: row["runs"],
             cacheReadTokens: row["cache_read"],
             cacheWriteTokens: row["cache_write"],
-            reasoningTokens: row["reasoning"]
+            reasoningTokens: row["reasoning"],
+            averageTokensPerSecond: row["avg_tps"],
+            averageTimeToFirstTokenMs: row["avg_ttft"],
+            averageDurationMs: row["avg_duration"]
         )
     }
 }

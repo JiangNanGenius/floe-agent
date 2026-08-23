@@ -82,10 +82,14 @@ public enum WireTranslator {
         case .completed(let usage):
             var events: [AgentEvent] = []
             if let usage {
+                let cacheRead = usage.inputTokenDetails?.cachedTokens
                 events.append(.usage(AgentEvent.UsageReport(
-                    inputTokens: usage.inputTokens,
+                    // Responses/OpenAI-compatible APIs include cached input
+                    // in input_tokens. Store uncached input separately so
+                    // cache reads are not counted twice in normalized totals.
+                    inputTokens: max(0, usage.inputTokens - (cacheRead ?? 0)),
                     outputTokens: usage.outputTokens,
-                    cacheReadTokens: usage.inputTokenDetails?.cachedTokens,
+                    cacheReadTokens: cacheRead,
                     reasoningTokens: usage.outputTokenDetails?.reasoningTokens
                 )))
             }
@@ -119,6 +123,7 @@ public enum WireTranslator {
         aggregator: inout ToolCallAggregator
     ) -> [AgentEvent] {
         var events: [AgentEvent] = []
+        var completions: [AgentEvent] = []
 
         for choice in chunk.choices {
             if let content = choice.delta.content, !content.isEmpty {
@@ -141,20 +146,27 @@ public enum WireTranslator {
                     }
                     aggregator.reset()
                 }
-                events.append(.completed(AgentEvent.CompletionInfo(
+                completions.append(.completed(AgentEvent.CompletionInfo(
                     stopReason: normalizeStopReason(finishReason)
                 )))
             }
         }
 
         if let usage = chunk.usage {
+            let cacheRead = usage.promptTokenDetails?.cachedTokens
+                ?? usage.promptCacheHitTokens
             events.append(.usage(AgentEvent.UsageReport(
-                inputTokens: usage.promptTokens,
+                inputTokens: max(0, usage.promptTokens - (cacheRead ?? 0)),
                 outputTokens: usage.completionTokens,
-                cacheReadTokens: usage.promptTokenDetails?.cachedTokens,
+                cacheReadTokens: cacheRead,
                 reasoningTokens: usage.completionTokenDetails?.reasoningTokens
             )))
         }
+
+        // Some OpenAI-compatible providers include usage in the same final
+        // chunk. Keep it ahead of completion so runtimes can persist it before
+        // they transition to a terminal state.
+        events.append(contentsOf: completions)
 
         return events
     }

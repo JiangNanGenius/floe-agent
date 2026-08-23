@@ -244,6 +244,9 @@ struct ApprovalPolicyTests {
         #expect(try await AutomaticApprovalPolicy().decide(
             pythonAction(#"{"script":"print(1)"}"#)
         ).permitsExecution)
+        #expect(try await AutomaticApprovalPolicy(backend: AllowBackend()).decide(
+            pythonAction(#"{"script":"print(1)"}"#)
+        ).permitsExecution)
         guard case .escalateToHuman = try await AutomaticApprovalPolicy().decide(
             pythonAction(#"{"script":"import requests","packages":["requests==2.32.4"]}"#)
         ) else {

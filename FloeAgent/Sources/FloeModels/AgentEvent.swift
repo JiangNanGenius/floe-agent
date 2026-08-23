@@ -38,6 +38,12 @@ public enum AgentEvent: Sendable, Codable, Hashable {
         public var cacheReadTokens: Int?
         public var cacheWriteTokens: Int?
         public var reasoningTokens: Int?
+        /// End-to-end request latency measured by the client runtime.
+        public var totalDurationMs: Int?
+        /// Delay from request dispatch to the first model content/tool delta.
+        public var timeToFirstTokenMs: Int?
+        /// Output-token throughput after the first streamed model delta.
+        public var tokensPerSecond: Double?
         public var costEstimate: Decimal?
         public init(
             inputTokens: Int,
@@ -45,6 +51,9 @@ public enum AgentEvent: Sendable, Codable, Hashable {
             cacheReadTokens: Int? = nil,
             cacheWriteTokens: Int? = nil,
             reasoningTokens: Int? = nil,
+            totalDurationMs: Int? = nil,
+            timeToFirstTokenMs: Int? = nil,
+            tokensPerSecond: Double? = nil,
             costEstimate: Decimal? = nil
         ) {
             self.inputTokens = inputTokens
@@ -52,6 +61,9 @@ public enum AgentEvent: Sendable, Codable, Hashable {
             self.cacheReadTokens = cacheReadTokens
             self.cacheWriteTokens = cacheWriteTokens
             self.reasoningTokens = reasoningTokens
+            self.totalDurationMs = totalDurationMs
+            self.timeToFirstTokenMs = timeToFirstTokenMs
+            self.tokensPerSecond = tokensPerSecond
             self.costEstimate = costEstimate
         }
     }

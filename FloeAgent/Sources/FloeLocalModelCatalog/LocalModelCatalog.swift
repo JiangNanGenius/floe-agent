@@ -95,13 +95,6 @@ public enum CuratedLocalModelCatalog {
             supportsReasoning: true, supportsToolCalling: true, license: "Apache-2.0"
         ),
         .init(
-            id: "qwen3.5-9b-q4km", profileID: UUID(uuidString: "A1480001-0000-4000-8000-000000000002")!, displayName: "Qwen3.5 9B Q4_K_M",
-            repository: "unsloth/Qwen3.5-9B-GGUF", modelFile: "Qwen3.5-9B-Q4_K_M.gguf",
-            visionProjectorFile: "mmproj-BF16.gguf", parameterBillions: 9,
-            approximateDownloadBytes: 6_300_000_000, supportsVision: true,
-            supportsReasoning: true, supportsToolCalling: true, license: "Apache-2.0"
-        ),
-        .init(
             id: "ministral3-3b-q4km", profileID: UUID(uuidString: "A1480001-0000-4000-8000-000000000003")!, displayName: "Ministral 3 3B Q4_K_M",
             repository: "mistralai/Ministral-3-3B-Instruct-2512-GGUF",
             modelFile: "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
@@ -111,6 +104,21 @@ public enum CuratedLocalModelCatalog {
             license: "Apache-2.0"
         )
     ]
+
+    /// Entries removed from the selectable catalog remain known long enough
+    /// for an existing installation to be discovered and deleted. They are
+    /// never offered for download, model discovery, or task routing.
+    public static let retiredEntries: [LocalModelCatalogEntry] = [
+        .init(
+            id: "qwen3.5-9b-q4km", profileID: UUID(uuidString: "A1480001-0000-4000-8000-000000000002")!, displayName: "Qwen3.5 9B Q4_K_M",
+            repository: "unsloth/Qwen3.5-9B-GGUF", modelFile: "Qwen3.5-9B-Q4_K_M.gguf",
+            visionProjectorFile: "mmproj-BF16.gguf", parameterBillions: 9,
+            approximateDownloadBytes: 6_300_000_000, supportsVision: true,
+            supportsReasoning: true, supportsToolCalling: true, license: "Apache-2.0"
+        )
+    ]
+
+    public static let knownEntries = entries + retiredEntries
 }
 
 public actor LocalModelStore {
@@ -135,13 +143,13 @@ public actor LocalModelStore {
     }
 
     public func installedModelURL(id: String) -> URL? {
-        guard let entry = CuratedLocalModelCatalog.entries.first(where: { $0.id == id }) else { return nil }
+        guard let entry = CuratedLocalModelCatalog.knownEntries.first(where: { $0.id == id }) else { return nil }
         let url = root.appendingPathComponent(id, isDirectory: true).appendingPathComponent(entry.modelFile)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     public func installedProjectorURL(id: String) -> URL? {
-        guard let entry = CuratedLocalModelCatalog.entries.first(where: { $0.id == id }),
+        guard let entry = CuratedLocalModelCatalog.knownEntries.first(where: { $0.id == id }),
               let projector = entry.visionProjectorFile
         else { return nil }
         let url = root.appendingPathComponent(id, isDirectory: true).appendingPathComponent(projector)
@@ -161,7 +169,7 @@ public actor LocalModelStore {
     }
 
     public func isInstalled(id: String) -> Bool {
-        guard let entry = CuratedLocalModelCatalog.entries.first(where: { $0.id == id }),
+        guard let entry = CuratedLocalModelCatalog.knownEntries.first(where: { $0.id == id }),
               installedModelURL(id: id) != nil else { return false }
         return entry.visionProjectorFile == nil || installedProjectorURL(id: id) != nil
     }

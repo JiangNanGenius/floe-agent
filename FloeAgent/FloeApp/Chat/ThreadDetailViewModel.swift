@@ -24,11 +24,22 @@ struct ThreadUsageSummary: Equatable {
     var cacheReadTokens: Int?
     var cacheWriteTokens: Int?
     var reasoningTokens: Int?
+    var tokensPerSecond: Double?
+    var timeToFirstTokenMs: Int?
+    var totalDurationMs: Int?
 
-    var totalTokens: Int { inputTokens + outputTokens }
+    var totalTokens: Int {
+        inputTokens + outputTokens + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
+    }
     var contextFraction: Double {
         guard contextWindowTokens > 0 else { return 0 }
         return min(1, Double(contextTokens) / Double(contextWindowTokens))
+    }
+    var cacheHitRate: Double? {
+        guard let cacheReadTokens else { return nil }
+        let cacheable = inputTokens + cacheReadTokens + (cacheWriteTokens ?? 0)
+        guard cacheable > 0 else { return nil }
+        return Double(cacheReadTokens) / Double(cacheable)
     }
 }
 
@@ -254,8 +265,12 @@ final class ThreadDetailViewModel: ObservableObject {
             center.providerAndModel(modelID: $0)?.1.limits.contextTokens
         } ?? 0
         let currentContext = max(
-            records.last.map { $0.inputTokens + $0.outputTokens } ?? 0,
+            records.last.map {
+                $0.inputTokens + $0.outputTokens
+                    + ($0.cacheReadTokens ?? 0) + ($0.cacheWriteTokens ?? 0)
+            } ?? 0,
             latestUsage.inputTokens + max(latestUsage.outputTokens, streamedEstimate)
+                + (latestUsage.cacheReadTokens ?? 0) + (latestUsage.cacheWriteTokens ?? 0)
         )
         return ThreadUsageSummary(
             inputTokens: input,
@@ -265,7 +280,16 @@ final class ThreadDetailViewModel: ObservableObject {
             isEstimatedLive: isRunning && streamedEstimate > liveUsage.outputTokens,
             cacheReadTokens: Self.addReported(persistedCacheRead, isRunning ? liveUsage.cacheReadTokens : nil),
             cacheWriteTokens: Self.addReported(persistedCacheWrite, isRunning ? liveUsage.cacheWriteTokens : nil),
-            reasoningTokens: Self.addReported(persistedReasoning, isRunning ? liveUsage.reasoningTokens : nil)
+            reasoningTokens: Self.addReported(persistedReasoning, isRunning ? liveUsage.reasoningTokens : nil),
+            tokensPerSecond: isRunning
+                ? latestUsage.tokensPerSecond
+                : records.compactMap(\.tokensPerSecond).last,
+            timeToFirstTokenMs: isRunning
+                ? latestUsage.timeToFirstTokenMs
+                : records.compactMap(\.timeToFirstTokenMs).last,
+            totalDurationMs: isRunning
+                ? latestUsage.totalDurationMs
+                : records.compactMap(\.totalDurationMs).last
         )
     }
 
@@ -869,6 +893,9 @@ final class ThreadDetailViewModel: ObservableObject {
                     self.liveUsage.reasoningTokens = Self.addReported(
                         self.liveUsage.reasoningTokens, usage.reasoningTokens
                     )
+                    self.liveUsage.totalDurationMs = usage.totalDurationMs
+                    self.liveUsage.timeToFirstTokenMs = usage.timeToFirstTokenMs
+                    self.liveUsage.tokensPerSecond = usage.tokensPerSecond
                     if let cost = usage.costEstimate {
                         self.liveUsage.costEstimate = (self.liveUsage.costEstimate ?? 0) + cost
                     }

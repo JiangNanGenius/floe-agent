@@ -582,6 +582,9 @@ public actor ConversationRunService {
                 cacheReadTokens: report.cacheReadTokens,
                 cacheWriteTokens: report.cacheWriteTokens,
                 reasoningTokens: report.reasoningTokens,
+                totalDurationMs: report.totalDurationMs,
+                timeToFirstTokenMs: report.timeToFirstTokenMs,
+                tokensPerSecond: report.tokensPerSecond,
                 costEstimate: report.costEstimate
             )))
             try? await runStore.recordUsage(RunUsageRecord(
@@ -591,6 +594,9 @@ public actor ConversationRunService {
                 cacheReadTokens: report.cacheReadTokens,
                 cacheWriteTokens: report.cacheWriteTokens,
                 reasoningTokens: report.reasoningTokens,
+                totalDurationMs: report.totalDurationMs,
+                timeToFirstTokenMs: report.timeToFirstTokenMs,
+                tokensPerSecond: report.tokensPerSecond,
                 costEstimate: report.costEstimate.map { "\($0)" }
             ))
         case .error(let error):

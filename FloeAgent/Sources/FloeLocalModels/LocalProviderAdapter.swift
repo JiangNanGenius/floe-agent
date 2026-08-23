@@ -4,7 +4,68 @@ import FloeModels
 import FloeProviders
 import FloeLocalModelCatalog
 
-@available(macOS 15.4, iOS 18.4, *)
+public struct LocalRuntimeCompletion: Sendable, Equatable {
+    public var text: String
+    public var inputTokens: Int
+    public var outputTokens: Int
+    public var totalDurationMs: Int
+    public var timeToFirstTokenMs: Int?
+    public var tokensPerSecond: Double?
+}
+
+public struct LocalModelBenchmarkResult: Sendable, Equatable {
+    public var modelID: String
+    public var outputTokens: Int
+    public var totalDurationMs: Int
+    public var timeToFirstTokenMs: Int?
+    public var tokensPerSecond: Double?
+    public var recommendedConcurrentTasks: Int
+}
+
+/// Shared model-picker policy. Selection and residency are deliberately
+/// separate: a cloud model may be selected while one local model remains
+/// resident, but replacing that resident model requires a user decision.
+public enum LocalModelSelectionDecision: Sendable, Equatable {
+    case preloadSilently
+    case useResident
+    case confirmReplacement(currentModelID: String)
+}
+
+public enum LocalModelResidencyPolicy {
+    public static func decision(
+        residentModelID: String?,
+        targetModelID: String
+    ) -> LocalModelSelectionDecision {
+        guard let residentModelID else { return .preloadSilently }
+        guard residentModelID != targetModelID else { return .useResident }
+        return .confirmReplacement(currentModelID: residentModelID)
+    }
+}
+
+/// Tracks which durable agent runs still need the single resident local
+/// model. The ledger is deliberately independent from the loaded engine so
+/// settings-page preloads and benchmarks do not masquerade as active tasks.
+public struct LocalModelTaskResidencyLedger: Sendable, Equatable {
+    private var modelsByTaskID: [UUID: String] = [:]
+
+    public init() {}
+
+    public var activeTaskCount: Int { modelsByTaskID.count }
+
+    public mutating func retain(taskID: UUID, modelID: String) {
+        modelsByTaskID[taskID] = modelID
+    }
+
+    /// Returns true only when the released task was the last local-model
+    /// owner. Releasing an unknown or already-finished task is idempotent.
+    @discardableResult
+    public mutating func release(taskID: UUID) -> Bool {
+        guard modelsByTaskID.removeValue(forKey: taskID) != nil else { return false }
+        return modelsByTaskID.isEmpty
+    }
+}
+
+@available(macOS 15.4, iOS 26.0, *)
 public actor LocalModelRuntime {
     public enum LoadState: Sendable, Equatable {
         case unloaded
@@ -27,12 +88,54 @@ public actor LocalModelRuntime {
     /// while an earlier request is still decoding with it.
     private var activeEngine: ActiveEngine?
     private var loadState: LoadState = .unloaded
+    private var taskResidency = LocalModelTaskResidencyLedger()
     private var inferenceBusy = false
     private var inferenceWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(store: LocalModelStore = LocalModelStore()) { self.store = store }
 
     public func currentLoadState() -> LoadState { loadState }
+
+    public func residentModelID() -> String? {
+        activeEngine?.key.modelID
+    }
+
+    /// Claims local-model residency for a durable run before preprocessing or
+    /// inference starts. This is cheap and idempotent for launch recovery.
+    public func retainForTask(taskID: UUID, modelID: String) {
+        taskResidency.retain(taskID: taskID, modelID: modelID)
+        FloeLogger(category: .providers).info(
+            "localInferenceTaskRetained run=\(taskID.uuidString) model=\(modelID) activeTasks=\(taskResidency.activeTaskCount) resident=\(activeEngine?.key.modelID ?? "none")"
+        )
+    }
+
+    /// Releases the run's residency claim. When the last local task reaches a
+    /// terminal state, wait for any in-flight decode to leave the FIFO slot,
+    /// re-check the ledger (another task may have started while suspended),
+    /// then tear down the mapped model immediately.
+    public func releaseForTask(taskID: UUID, reason: String) async {
+        let shouldUnload = taskResidency.release(taskID: taskID)
+        FloeLogger(category: .providers).info(
+            "localInferenceTaskReleased run=\(taskID.uuidString) reason=\(reason) activeTasks=\(taskResidency.activeTaskCount) shouldUnload=\(shouldUnload)"
+        )
+        guard shouldUnload else { return }
+
+        await acquireInferenceSlot()
+        defer { releaseInferenceSlot() }
+        guard taskResidency.activeTaskCount == 0 else {
+            FloeLogger(category: .providers).info(
+                "localInferenceAutoUnloadSkipped run=\(taskID.uuidString) reason=newTaskRetained activeTasks=\(taskResidency.activeTaskCount)"
+            )
+            return
+        }
+        let previous = activeEngine
+        activeEngine = nil
+        if let previous { await previous.engine.shutdown() }
+        loadState = .unloaded
+        FloeLogger(category: .providers).info(
+            "localInferenceAutoUnloaded run=\(taskID.uuidString) reason=\(reason) releasedModel=\(previous?.key.modelID ?? "none")"
+        )
+    }
 
     /// Maps the model into memory without generating tokens. The settings UI
     /// can invoke this explicitly, while task launch invokes it automatically
@@ -47,8 +150,22 @@ public actor LocalModelRuntime {
         )
     }
 
-    @available(macOS 15.4, iOS 18.4, *)
+    @available(macOS 15.4, iOS 26.0, *)
     public func complete(modelID: String, prompt: String, images: [Data], maxTokens: Int) async throws -> String {
+        try await completeMeasured(
+            modelID: modelID,
+            prompt: prompt,
+            images: images,
+            maxTokens: maxTokens
+        ).text
+    }
+
+    public func completeMeasured(
+        modelID: String,
+        prompt: String,
+        images: [Data],
+        maxTokens: Int
+    ) async throws -> LocalRuntimeCompletion {
         await acquireInferenceSlot()
         defer { releaseInferenceSlot() }
         try Task.checkCancellation()
@@ -66,15 +183,25 @@ public actor LocalModelRuntime {
             "localInferenceStarted trace=\(traceID) model=\(modelID) promptCharacters=\(prompt.count) images=\(images.count) imageBytes=\(images.reduce(0) { $0 + $1.count }) requestedMaxTokens=\(maxTokens) effectiveMaxTokens=\(min(maxTokens, profile.maximumOutputTokens))"
         )
         do {
-            let output = try await engine.complete(
+            let engineStartedAt = Date()
+            let output = try await engine.completeMeasured(
                 prompt: prompt,
                 images: images,
                 maxTokens: min(maxTokens, profile.maximumOutputTokens)
             )
+            let endedAt = Date()
+            let prepareDurationMs = max(0, Int(engineStartedAt.timeIntervalSince(startedAt) * 1_000))
             FloeLogger(category: .providers).info(
-                "localInferenceFinished trace=\(traceID) model=\(modelID) outputCharacters=\(output.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+                "localInferenceFinished trace=\(traceID) model=\(modelID) outputCharacters=\(output.text.count) inputTokens=\(output.inputTokens) outputTokens=\(output.outputTokens) ttftMs=\(output.timeToFirstTokenMs.map { $0 + prepareDurationMs } ?? -1) tokensPerSecond=\(output.tokensPerSecond ?? -1) durationMs=\(Int(endedAt.timeIntervalSince(startedAt) * 1_000))"
             )
-            return output
+            return LocalRuntimeCompletion(
+                text: output.text,
+                inputTokens: output.inputTokens,
+                outputTokens: output.outputTokens,
+                totalDurationMs: max(0, Int(endedAt.timeIntervalSince(startedAt) * 1_000)),
+                timeToFirstTokenMs: output.timeToFirstTokenMs.map { $0 + prepareDurationMs },
+                tokensPerSecond: output.tokensPerSecond
+            )
         } catch {
             let nsError = error as NSError
             let safeMessage = String(error.localizedDescription.prefix(300))
@@ -83,6 +210,27 @@ public actor LocalModelRuntime {
             )
             throw error
         }
+    }
+
+    /// Runs a short, deterministic text-only probe through the same engine and
+    /// queue used by real tasks. One resident model remains the hard safety
+    /// boundary; the recommendation therefore starts at one until a future
+    /// multi-context implementation is measured on the device.
+    public func benchmark(modelID: String) async throws -> LocalModelBenchmarkResult {
+        let completion = try await completeMeasured(
+            modelID: modelID,
+            prompt: "/no_think\n请仅输出从 1 到 32 的整数，以空格分隔，不要解释。",
+            images: [],
+            maxTokens: 96
+        )
+        return LocalModelBenchmarkResult(
+            modelID: modelID,
+            outputTokens: completion.outputTokens,
+            totalDurationMs: completion.totalDurationMs,
+            timeToFirstTokenMs: completion.timeToFirstTokenMs,
+            tokensPerSecond: completion.tokensPerSecond,
+            recommendedConcurrentTasks: 1
+        )
     }
 
     private func prepareEngine(
@@ -234,7 +382,7 @@ public actor LocalModelRuntime {
 /// Provider-neutral bridge from downloaded GGUF weights into the same event
 /// stream consumed by the remote-provider harness. Local models therefore use
 /// identical approval, loop protection, tool execution and checkpoint logic.
-@available(macOS 15.4, iOS 18.4, *)
+@available(macOS 15.4, iOS 26.0, *)
 public struct LocalProviderAdapter: ProviderAdapter {
     public static let providerProfile = ProviderProfile(
         id: ProviderProfile.onDeviceProviderID,
@@ -261,8 +409,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    guard #available(iOS 18.4, macOS 15.4, *) else {
-                        throw FloeError.invalidConfiguration("Local inference requires iOS 18.4 or later")
+                    guard #available(iOS 26.0, macOS 15.4, *) else {
+                        throw FloeError.invalidConfiguration("Local inference requires iOS or iPadOS 26 or later")
                     }
                     let promptBuild = Self.buildPrompt(for: request)
                     let prompt = promptBuild.text
@@ -273,24 +421,33 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         guard case .imageData(_, let base64) = part else { return nil }
                         return Data(base64Encoded: base64)
                     }
-                    let output = try await runtime.complete(
+                    let completion = try await runtime.completeMeasured(
                         modelID: request.model.remoteModelID,
                         prompt: prompt,
                         images: images,
                         maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 1024), 4096)
                     )
-                    let channels = Self.splitReasoning(from: output)
+                    let channels = Self.splitReasoning(from: completion.text)
                     if !channels.reasoning.isEmpty {
                         continuation.yield(.reasoningSummary(.init(text: channels.reasoning)))
                     }
+                    continuation.yield(.usage(.init(
+                        inputTokens: completion.inputTokens,
+                        outputTokens: completion.outputTokens,
+                        totalDurationMs: completion.totalDurationMs,
+                        timeToFirstTokenMs: completion.timeToFirstTokenMs,
+                        tokensPerSecond: completion.tokensPerSecond
+                    )))
                     if let call = try Self.toolCall(from: channels.answer) {
                         continuation.yield(.toolRequest(call))
                         continuation.yield(.completed(.init(stopReason: .toolUse)))
                     } else {
+                        guard !channels.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                            throw FloeError.validationFailed(
+                                "The local model returned internal reasoning without a final answer. Retry with thinking disabled."
+                            )
+                        }
                         continuation.yield(.textDelta(.init(text: channels.answer)))
-                        let input = max(1, prompt.utf8.count / 4)
-                        let outputTokens = max(1, channels.answer.utf8.count / 4)
-                        continuation.yield(.usage(.init(inputTokens: input, outputTokens: outputTokens)))
                         continuation.yield(.completed(.init(stopReason: .endTurn)))
                     }
                     continuation.finish()
@@ -377,9 +534,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
             pendingToolNames: Set(request.pendingToolCalls.map(\.toolName))
         )
 
-        var sections: [String] = [
-            "SYSTEM: You are Floe, a concise on-device agent. Follow the latest user request. Tool execution and approval are enforced by the app. Use only the offered tools, do not invent names, and never claim success without a tool result."
-        ]
+        var sections: [String] = []
         if !selectedTools.isEmpty {
             let schemas = selectedTools.map {
                 "- \($0.name): \(clipped($0.description, limit: 120)) arguments=\($0.parametersJSON)"
@@ -424,13 +579,18 @@ public struct LocalProviderAdapter: ProviderAdapter {
         }
         let transcript = sections.joined(separator: "\n\n")
         let modelID = request.model.remoteModelID.lowercased()
+        let system = "You are Floe, a concise on-device agent. Follow the latest user request. Tool execution and approval are enforced by the app. Use only offered tools, never invent tool names, and never claim an action succeeded without a tool result. Think silently. Never print chain-of-thought, planning notes, drafts, self-corrections, or a 'Thinking Process' section. Return only the final answer or one tool-call JSON object."
         let text: String
         if modelID.contains("qwen") {
-            text = "<|im_start|>system\nYou are Floe, an on-device agent.<|im_end|>\n<|im_start|>user\n\(transcript)<|im_end|>\n<|im_start|>assistant\n"
+            // Qwen thinking variants default to verbose reasoning unless the
+            // turn explicitly opts out. Local inference is the constrained,
+            // offline path, so keep reasoning private and preserve tokens for
+            // the answer and tool loop.
+            text = "<|im_start|>system\n\(system)<|im_end|>\n<|im_start|>user\n\(transcript)\n/no_think<|im_end|>\n<|im_start|>assistant\n"
         } else if modelID.contains("ministral") || modelID.contains("mistral") {
-            text = "[INST] You are Floe, an on-device agent.\n\n\(transcript) [/INST]"
+            text = "[INST] \(system)\n\n\(transcript) [/INST]"
         } else {
-            text = transcript + "\n\nASSISTANT:"
+            text = "SYSTEM: \(system)\n\n\(transcript)\n\nASSISTANT:"
         }
         return PromptBuild(
             text: text,
@@ -530,6 +690,44 @@ public struct LocalProviderAdapter: ProviderAdapter {
             with: "",
             options: .regularExpression
         ).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Some small GGUF chat templates ignore XML tags and emit an
+        // English planning transcript. Never expose that internal scratchpad
+        // as the assistant answer. Prefer the last explicit draft/final
+        // marker because these models commonly revise the same answer several
+        // times before stopping.
+        let lower = answer.lowercased()
+        if lower.hasPrefix("thinking process:") || lower.hasPrefix("reasoning process:") {
+            let markers = [
+                "final answer:", "final response:", "answer:",
+                "最终回答：", "最终答复：", "答复：",
+                "even shorter:", "revised draft:", "draft:"
+            ]
+            var selected: Range<String.Index>?
+            for marker in markers {
+                var searchStart = answer.startIndex
+                while let range = answer.range(
+                    of: marker,
+                    options: [.caseInsensitive],
+                    range: searchStart..<answer.endIndex
+                ) {
+                    if selected == nil || range.lowerBound > selected!.lowerBound {
+                        selected = range
+                    }
+                    searchStart = range.upperBound
+                }
+            }
+            if let selected {
+                let privateText = answer[..<selected.lowerBound]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !privateText.isEmpty { reasoningParts.append(privateText) }
+                answer = answer[selected.upperBound...]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                reasoningParts.append(answer)
+                answer = ""
+            }
+        }
         return OutputChannels(
             reasoning: reasoningParts.joined(separator: "\n\n"),
             answer: answer

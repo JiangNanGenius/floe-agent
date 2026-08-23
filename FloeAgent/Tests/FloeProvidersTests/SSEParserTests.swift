@@ -218,6 +218,7 @@ struct WireTranslatorTests {
             Issue.record("Expected Responses usage"); return
         }
         #expect(responseUsage.cacheReadTokens == 80)
+        #expect(responseUsage.inputTokens == 40)
         #expect(responseUsage.cacheWriteTokens == nil)
         #expect(responseUsage.reasoningTokens == 12)
 
@@ -229,7 +230,19 @@ struct WireTranslatorTests {
             Issue.record("Expected Chat usage"); return
         }
         #expect(chatUsage.cacheReadTokens == 50)
+        #expect(chatUsage.inputTokens == 40)
         #expect(chatUsage.reasoningTokens == 7)
+
+        let deepSeekData = Data(#"{"choices":[],"usage":{"prompt_tokens":90,"completion_tokens":20,"prompt_cache_hit_tokens":60,"prompt_cache_miss_tokens":30,"completion_tokens_details":{"reasoning_tokens":7}}}"#.utf8)
+        let deepSeek = try JSONDecoder().decode(ChatChunk.self, from: deepSeekData)
+        var deepSeekAggregator = ToolCallAggregator()
+        let deepSeekEvents = WireTranslator.translate(deepSeek, aggregator: &deepSeekAggregator)
+        guard case .usage(let deepSeekUsage) = deepSeekEvents.first else {
+            Issue.record("Expected DeepSeek usage"); return
+        }
+        #expect(deepSeekUsage.inputTokens == 30)
+        #expect(deepSeekUsage.cacheReadTokens == 60)
+        #expect(deepSeekUsage.reasoningTokens == 7)
 
         let anthropicData = Data(#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":70,"output_tokens":15,"cache_creation_input_tokens":9,"cache_read_input_tokens":40}}"#.utf8)
         let anthropic = try JSONDecoder().decode(AnthropicStreamEvent.self, from: anthropicData)

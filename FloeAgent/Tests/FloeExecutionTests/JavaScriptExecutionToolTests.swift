@@ -182,5 +182,14 @@ struct JavaScriptExecutionToolTests {
             context: makeContext()
         )
         #expect(output?.summary.contains("wired") == true)
+        #expect(registry.runner(named: "exec.wasm") == nil)
+    }
+
+    @Test("Raw WASM runtime is registered only through the internal opt-in")
+    func wasmRuntimeOptIn() {
+        let registry = ToolRunnerRegistry()
+        registerExecutionTools(registry: registry, includeStandaloneWasmTool: true)
+
+        #expect(registry.runner(named: "exec.wasm") != nil)
     }
 }

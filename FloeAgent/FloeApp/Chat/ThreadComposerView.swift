@@ -17,6 +17,7 @@ import PhotosUI
 import FloeCore
 import FloeModels
 import FloeAgentRuntime
+import FloeLocalModels
 
 /// How the next run should execute. Forward-looking selection surface;
 /// the runtime mapping lands with the workspace tasks (T04/T05).
@@ -160,6 +161,8 @@ struct ThreadComposerView: View {
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var isAttachmentProcessing = false
     @State private var attachmentError: String?
+    @State private var pendingLocalModelSwitch: PendingLocalModelSwitch?
+    @State private var preparingLocalModelID: String?
     @State private var dictationPrefix = ""
     @EnvironmentObject private var voiceInput: VoiceInputController
     @EnvironmentObject private var environment: AppEnvironment
@@ -218,6 +221,7 @@ struct ThreadComposerView: View {
         .onChange(of: contextID) { _, _ in
             attachmentError = nil
             selectedPhoto = nil
+            pendingLocalModelSwitch = nil
             isPhotoPickerPresented = false
             photoPickerTraceID = nil
             if selectedProjectID == nil {
@@ -241,6 +245,28 @@ struct ThreadComposerView: View {
             draft = dictationPrefix + separator + transcript
         }
         .onDisappear { voiceInput.stop() }
+        .confirmationDialog(
+            "切换本地模型？",
+            isPresented: Binding(
+                get: { pendingLocalModelSwitch != nil },
+                set: { if !$0 { pendingLocalModelSwitch = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let pendingLocalModelSwitch {
+                Button("切换到 \(pendingLocalModelSwitch.target.displayName)") {
+                    applyModelSelection(pendingLocalModelSwitch.target)
+                    self.pendingLocalModelSwitch = nil
+                }
+            }
+            Button("action.cancel", role: .cancel) {
+                pendingLocalModelSwitch = nil
+            }
+        } message: {
+            if let pendingLocalModelSwitch {
+                Text("当前已加载 \(pendingLocalModelSwitch.residentName)。下次使用本地模型时会先释放它，再加载 \(pendingLocalModelSwitch.target.displayName)；正在执行的任务不会被中断。")
+            }
+        }
     }
 
     /// User-comprehensible voice notice for the current state, if any.
@@ -490,10 +516,7 @@ struct ThreadComposerView: View {
                 Menu {
                     ForEach(models) { model in
                         Button {
-                            selectedModelID = model.id
-                            // Persist so the task keeps this model after a
-                            // reload instead of reverting to the old default.
-                            Task { await environment.conversationCenter.setDefaultAgentModel(model.id) }
+                            chooseModel(model)
                         } label: {
                             if selectedModelID == model.id {
                                 Label(model.displayName, systemImage: "checkmark")
@@ -503,14 +526,68 @@ struct ThreadComposerView: View {
                         }
                     }
                 } label: {
-                    composerChip(title: modelName, systemImage: "cpu")
+                    composerChip(
+                        title: modelName,
+                        systemImage: preparingLocalModelID == nil ? "cpu" : "hourglass"
+                    )
                 }
+                .disabled(preparingLocalModelID != nil)
             } else {
                 Label("composer.no_model", systemImage: "cpu")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(FloeTheme.pending)
             }
         }
+    }
+
+    private struct PendingLocalModelSwitch: Identifiable {
+        let id = UUID()
+        let target: ModelProfile
+        let residentName: String
+    }
+
+    private func chooseModel(_ model: ModelProfile) {
+        guard model.providerID == ProviderProfile.onDeviceProviderID else {
+            applyModelSelection(model)
+            return
+        }
+        Task { @MainActor in
+            let residentModelID = await environment.localModelRuntime.residentModelID()
+            switch LocalModelResidencyPolicy.decision(
+                residentModelID: residentModelID,
+                targetModelID: model.remoteModelID
+            ) {
+            case .useResident:
+                applyModelSelection(model)
+            case .preloadSilently:
+                preparingLocalModelID = model.remoteModelID
+                defer { preparingLocalModelID = nil }
+                do {
+                    try await environment.localModelsCenter.prepareForTask(
+                        modelID: model.remoteModelID
+                    )
+                    applyModelSelection(model)
+                } catch {
+                    attachmentError = presentableComposerError(error, operation: "加载本地模型")
+                }
+            case .confirmReplacement(let currentModelID):
+                let residentName = models.first {
+                    $0.providerID == ProviderProfile.onDeviceProviderID
+                        && $0.remoteModelID == currentModelID
+                }?.displayName ?? currentModelID
+                pendingLocalModelSwitch = PendingLocalModelSwitch(
+                    target: model,
+                    residentName: residentName
+                )
+            }
+        }
+    }
+
+    private func applyModelSelection(_ model: ModelProfile) {
+        selectedModelID = model.id
+        // Persist so the task keeps this model after a reload instead of
+        // reverting to the old default.
+        Task { await environment.conversationCenter.setDefaultAgentModel(model.id) }
     }
 
     /// WorkBuddy-style quick control kept beside the model selector. The

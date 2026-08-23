@@ -90,7 +90,10 @@ struct V18RunUsageDimensionsTests {
             outputTokens: 30,
             cacheReadTokens: 40,
             cacheWriteTokens: 10,
-            reasoningTokens: 5
+            reasoningTokens: 5,
+            totalDurationMs: 2_000,
+            timeToFirstTokenMs: 400,
+            tokensPerSecond: 18.5
         ))
         try await runStore.recordUsage(RunUsageRecord(
             runID: second.run.id,
@@ -99,11 +102,15 @@ struct V18RunUsageDimensionsTests {
         ))
 
         let stats = try await runStore.usageStatistics()
-        #expect(stats.totalTokens == 200)
+        #expect(stats.totalTokens == 250)
         #expect(stats.totalRuns == 2)
         #expect(stats.cacheReadTokens == 40)
         #expect(stats.cacheWriteTokens == 10)
         #expect(stats.reasoningTokens == 5)
+        #expect(stats.averageTokensPerSecond == 18.5)
+        #expect(stats.averageTimeToFirstTokenMs == 400)
+        #expect(stats.averageDurationMs == 2_000)
+        #expect(stats.byDay.first?.totalTokens == 250)
         #expect(stats.byConversation == [UsageBreakdown(
             id: first.conversation.id.uuidString,
             label: "图片任务",
@@ -112,7 +119,10 @@ struct V18RunUsageDimensionsTests {
             runs: 2,
             cacheReadTokens: 40,
             cacheWriteTokens: 10,
-            reasoningTokens: 5
+            reasoningTokens: 5,
+            averageTokensPerSecond: 18.5,
+            averageTimeToFirstTokenMs: 400,
+            averageDurationMs: 2_000
         )])
         #expect(stats.byModel == [UsageBreakdown(
             id: modelID.uuidString,
@@ -122,7 +132,10 @@ struct V18RunUsageDimensionsTests {
             runs: 2,
             cacheReadTokens: 40,
             cacheWriteTokens: 10,
-            reasoningTokens: 5
+            reasoningTokens: 5,
+            averageTokensPerSecond: 18.5,
+            averageTimeToFirstTokenMs: 400,
+            averageDurationMs: 2_000
         )])
         #expect(stats.byProvider == [UsageBreakdown(
             id: providerID.uuidString,
@@ -132,7 +145,10 @@ struct V18RunUsageDimensionsTests {
             runs: 2,
             cacheReadTokens: 40,
             cacheWriteTokens: 10,
-            reasoningTokens: 5
+            reasoningTokens: 5,
+            averageTokensPerSecond: 18.5,
+            averageTimeToFirstTokenMs: 400,
+            averageDurationMs: 2_000
         )])
     }
 }

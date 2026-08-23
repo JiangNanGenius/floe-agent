@@ -598,6 +598,13 @@ private struct ThreadUsageFooter: View {
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
+            HStack(spacing: 12) {
+                Text("缓存命中 \(percent(summary.cacheHitRate))")
+                Text("速度 \(speed(summary.tokensPerSecond))")
+                Text("首 token \(duration(summary.timeToFirstTokenMs))")
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
         }
         .padding(10)
         .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 10))
@@ -610,6 +617,20 @@ private struct ThreadUsageFooter: View {
 
     private func reported(_ value: Int?) -> String {
         value.map(formatted) ?? "未报告"
+    }
+
+    private func percent(_ value: Double?) -> String {
+        value.map { $0.formatted(.percent.precision(.fractionLength(1))) } ?? "未报告"
+    }
+
+    private func speed(_ value: Double?) -> String {
+        value.map { "\($0.formatted(.number.precision(.fractionLength(1)))) token/s" } ?? "未报告"
+    }
+
+    private func duration(_ value: Int?) -> String {
+        value.map {
+            "\((Double($0) / 1_000).formatted(.number.precision(.fractionLength(2))))s"
+        } ?? "未报告"
     }
 }
 
