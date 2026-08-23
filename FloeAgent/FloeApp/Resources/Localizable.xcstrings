@@ -3330,13 +3330,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No account needed. Add a model provider to get started."
+            "value": "Start with a cloud or local model, then enable the capabilities your work needs."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "无需账号。添加模型提供商即可开始使用。"
+            "value": "从云端或本地模型开始，再按任务需要启用更多能力。"
           }
         }
       }
@@ -7035,6 +7035,153 @@
         }
       }
     },
+    "setup.features.auxiliary.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Add a fast vision model for non-visual chats and a lightweight model for automatic approval review." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "为非视觉对话配置快速读图模型，并用轻量模型执行自动审批。" } }
+      }
+    },
+    "setup.features.auxiliary.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Vision and approval models" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "视觉与审批模型" } }
+      }
+    },
+    "setup.features.background.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Picture in Picture keeps active tasks visible in the background; screen access is requested only when needed." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "画中画在后台展示活动任务；屏幕权限只在任务确实需要时申请。" } }
+      }
+    },
+    "setup.features.background.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Background continuity" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "后台持续运行" } }
+      }
+    },
+    "setup.features.connections.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Enable web search, Apple capabilities, or SSH hosts only for the workflows you use." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "按需启用联网搜索、Apple 能力和 SSH 主机，模型会在任务中组合使用。" } }
+      }
+    },
+    "setup.features.connections.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Search, Apple, and remote hosts" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "搜索、Apple 与远程主机" } }
+      }
+    },
+    "setup.features.intro": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Start with one conversation model. The remaining capabilities are optional and can be enabled later in Settings." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "先配置一个对话模型即可开始；其余能力均为可选项，可稍后在设置中逐步启用。" } }
+      }
+    },
+    "setup.features.local_hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Prefer offline use? Skip the setup guide, then download a model in Settings > Local Models." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "希望离线使用？可跳过设置向导，再到“设置 > 本地模型”下载模型。" } }
+      }
+    },
+    "setup.features.models.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Cloud models provide full capability. Downloaded local models provide an offline fallback and load only when needed." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "云模型提供完整能力；下载的本地模型可作为离线补充，并仅在需要时加载。" } }
+      }
+    },
+    "setup.features.models.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Cloud or local models" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "云端或本地模型" } }
+      }
+    },
+    "setup.features.operations.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Sync preferences, review token and speed metrics, and export correlated diagnostic logs when troubleshooting." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "同步偏好设置、查看 Token 与速度统计，并在排障时导出带关联信息的诊断日志。" } }
+      }
+    },
+    "setup.features.operations.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Sync, usage, and diagnostics" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "同步、用量与诊断" } }
+      }
+    },
+    "setup.point.change_anytime": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Every capability can be changed later in Settings" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "所有能力都可稍后在设置中调整" } }
+      }
+    },
+    "setup.point.cloud_or_local": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use cloud models, local models, or both" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "云端模型与本地模型可自由组合" } }
+      }
+    },
+    "setup.point.progressive": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Start chatting first, then enable advanced capabilities" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "先开始对话，再按需启用高级能力" } }
+      }
+    },
+    "setup.step.features": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Choose What to Set Up" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选择要启用的能力" } }
+      }
+    },
+    "setup.summary.apple_search": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Enable Apple capabilities and web search as needed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "按需启用 Apple 能力与联网搜索" } }
+      }
+    },
+    "setup.summary.auxiliary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Configure vision and automatic approval models" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "配置视觉与自动审批模型" } }
+      }
+    },
+    "setup.summary.next_steps": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Optional next steps in Settings" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "可在设置中继续完成" } }
+      }
+    },
+    "setup.summary.remote_background": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Add SSH hosts and choose a background strategy" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "添加 SSH 主机并选择后台运行策略" } }
+      }
+    },
+    "setup.summary.sync_diagnostics": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Review sync, usage, privacy, and diagnostics" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "检查同步、用量、隐私与诊断" } }
+      }
+    },
     "setup.capabilities.hint": {
       "extractionState": "manual",
       "localizations": {
@@ -7092,13 +7239,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Connect a provider, choose models and review their capabilities at any time."
+            "value": "Review cloud and local models, vision and approvals, search, Apple capabilities, SSH, background operation, sync, and diagnostics."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "随时连接服务商、选择模型并检查各模型能力。"
+            "value": "集中了解云端与本地模型、视觉与审批、搜索、Apple 能力、SSH、后台运行、同步和诊断。"
           }
         }
       }
@@ -7296,13 +7443,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Skip for Now"
+            "value": "Skip Setup Guide"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "暂时跳过"
+            "value": "跳过设置向导"
           }
         }
       }

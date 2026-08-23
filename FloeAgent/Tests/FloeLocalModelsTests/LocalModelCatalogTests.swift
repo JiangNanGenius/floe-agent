@@ -180,6 +180,8 @@ struct LocalModelCatalogTests {
         #expect(build.text.count < 5_000)
         #expect(build.selectedToolCount == 0)
         #expect(build.text.contains("你好"))
+        #expect(build.text.contains("unrelated.tool0"))
+        #expect(build.text.contains("AVAILABLE TOOL NAMES"))
         #expect(build.text.contains("/no_think"))
         #expect(!build.text.contains("SYSTEM:"))
         #expect(!build.text.contains(String(repeating: "large cloud harness ", count: 20)))
@@ -216,7 +218,41 @@ struct LocalModelCatalogTests {
         #expect(build.text.contains("workspace.readFile"))
         #expect(build.text.contains("pdf.read"))
         #expect(build.text.contains("presentation.create"))
-        #expect(!build.text.contains("ssh.execute"))
+        #expect(!build.text.contains("- ssh.execute:"))
+        #expect(build.text.count < 5_000)
+    }
+
+    @Test("Local capability questions can see the authoritative tool directory")
+    @available(macOS 15.4, *)
+    func localPromptExposesToolDirectory() {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "qwen3.5-4b-q4km",
+            displayName: "Qwen local",
+            limits: .init(contextTokens: 4_096, maxOutputTokens: 1_024),
+            capabilities: [.text, .tools]
+        )
+        let tools = [
+            ToolSchemaDescriptor(name: "workspace.readFile", description: "Read a file"),
+            ToolSchemaDescriptor(name: "image.inspect", description: "Inspect an image"),
+            ToolSchemaDescriptor(name: "ssh.execute", description: "Run SSH"),
+            ToolSchemaDescriptor(name: "apple.calendar.list", description: "List calendar events")
+        ]
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [("user", "你能看到哪些工具？")],
+            toolSchemas: tools
+        )
+
+        let build = LocalProviderAdapter.buildPrompt(for: request)
+
+        #expect(build.selectedToolCount == tools.count)
+        for tool in tools {
+            #expect(build.text.contains(tool.name))
+        }
+        #expect(build.text.contains("AVAILABLE TOOL NAMES"))
         #expect(build.text.count < 5_000)
     }
 

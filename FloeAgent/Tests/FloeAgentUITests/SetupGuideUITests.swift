@@ -27,6 +27,28 @@ final class SetupGuideUITests: XCTestCase {
     }
 
     @MainActor
+    func testSetupGuideExplainsCurrentCapabilityGroups() throws {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "--ui-test-reset-onboarding",
+            "--ui-test-force-onboarding",
+            "-AppleLanguages", "(zh-Hans)",
+            "-AppleLocale", "zh_CN"
+        ]
+        app.launch()
+
+        XCTAssertTrue(app.buttons["setup.skip"].waitForExistence(timeout: 8))
+        app.buttons["setup.continue"].tap()
+
+        let featureOverview = app.descendants(matching: .any)["setup.features"]
+        XCTAssertTrue(featureOverview.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["视觉与审批模型"].exists)
+        XCTAssertTrue(app.staticTexts["搜索、Apple 与远程主机"].exists)
+        XCTAssertTrue(app.staticTexts["后台持续运行"].exists)
+        XCTAssertTrue(app.staticTexts["同步、用量与诊断"].exists)
+    }
+
+    @MainActor
     func testPullDownDismissalPersistsSkippedState() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-test-reset-onboarding", "--ui-test-force-onboarding"]

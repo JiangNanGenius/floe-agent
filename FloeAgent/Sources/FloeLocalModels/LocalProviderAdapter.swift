@@ -535,6 +535,16 @@ public struct LocalProviderAdapter: ProviderAdapter {
         )
 
         var sections: [String] = []
+        // The cloud harness carries the complete tool inventory in a system
+        // message, but local turns intentionally drop that oversized system
+        // payload. Keep a compact, authoritative name-only directory on every
+        // local turn so the model can discover capabilities without paying for
+        // every schema. Intent-relevant schemas below still define the only
+        // calls it may actually emit.
+        if !request.toolSchemas.isEmpty {
+            let names = request.toolSchemas.map(\.name).sorted().joined(separator: ", ")
+            sections.append("AVAILABLE TOOL NAMES (authoritative): \(clipped(names, limit: 1_600))")
+        }
         if !selectedTools.isEmpty {
             let schemas = selectedTools.map {
                 "- \($0.name): \(clipped($0.description, limit: 120)) arguments=\($0.parametersJSON)"
@@ -609,6 +619,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
             "创建", "读取", "查看", "查找", "搜索", "运行", "执行", "修改", "编辑", "删除", "生成", "连接", "分析", "测试",
             "create", "read", "inspect", "find", "search", "run", "execute", "edit", "delete", "generate", "connect", "analyze", "test"
         ])
+        let inventoryRequested = containsAny(text, [
+            "工具", "能力", "能做什么", "可以做什么", "可用", "tool", "capability", "what can you do", "available"
+        ])
         let intentPrefixes: [(needles: [String], prefixes: [String])] = [
             (["文件", "目录", "文档", "pdf", "代码", "file", "folder", "document", "code"], ["workspace.", "document.", "pdf."]),
             (["图片", "照片", "图像", "视觉", "ocr", "image", "photo", "vision"], ["image."]),
@@ -633,6 +646,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
             for intent in intentPrefixes where containsAny(text, intent.needles) {
                 if intent.prefixes.contains(where: { normalizedName.hasPrefix($0) }) { score += 100 }
             }
+            if inventoryRequested { score += 20 }
             if actionRequested && fallbackNames.contains(tool.name) { score += 10 }
             return score > 0 ? (tool, score) : nil
         }.sorted {

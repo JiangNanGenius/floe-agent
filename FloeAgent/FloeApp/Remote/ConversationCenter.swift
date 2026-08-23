@@ -1501,6 +1501,13 @@ final class ConversationCenter: ObservableObject {
         FloeLogger(category: .runtime).error(
             "runServiceFailed run=\(service.runID.uuidString) conversation=\(service.conversationID.uuidString) stage=\(stage) runtimeState=\(snapshot.stateName) domain=\(nsError.domain) code=\(nsError.code) message=\(message)"
         )
+        // A persistence-side failure event does not flow through the live
+        // service channel, so `track` cannot always release this ownership.
+        // Clear it explicitly or the UI will believe a failed run is still
+        // active and refuse to resume it.
+        runServices[service.runID] = nil
+        snapshotTasks[service.runID]?.cancel()
+        snapshotTasks[service.runID] = nil
         try? await environment.runStore.updateRunState(
             id: service.runID,
             state: "failed",
@@ -2071,7 +2078,29 @@ final class ConversationCenter: ObservableObject {
         if runTasks[record.id] != nil {
             throw FloeError.validationFailed("This task is already resuming")
         }
-        let checkpoint = try await environment.checkpointStore.load(runID: record.id)
+        // A checkpoint accelerates exact replay but is not the only durable
+        // authority. Older builds could leave a truncated or incompatible
+        // JSON file after suspension. Fall back to the persisted conversation
+        // so an original stalled task cannot fail on every Continue tap.
+        let checkpoint: AgentCheckpoint?
+        do {
+            let loaded = try await environment.checkpointStore.load(runID: record.id)
+            if let loaded,
+               (loaded.runID != record.id || loaded.conversationID != record.conversationID) {
+                FloeLogger(category: .runtime).warning(
+                    "runResumeCheckpointIgnored run=\(record.id.uuidString) reason=identityMismatch format=\(loaded.formatVersion)"
+                )
+                checkpoint = nil
+            } else {
+                checkpoint = loaded
+            }
+        } catch {
+            let nsError = error as NSError
+            FloeLogger(category: .runtime).warning(
+                "runResumeCheckpointIgnored run=\(record.id.uuidString) reason=loadFailed domain=\(nsError.domain) code=\(nsError.code)"
+            )
+            checkpoint = nil
+        }
         let assembled = try await ConversationHistoryAssembler(
             store: environment.conversationStore
         ).build(conversationID: record.conversationID)
@@ -2082,6 +2111,9 @@ final class ConversationCenter: ObservableObject {
         case .goal: .goal
         case .chat, nil: .agent
         }
+        FloeLogger(category: .runtime).info(
+            "runResumePrepared run=\(record.id.uuidString) conversation=\(record.conversationID.uuidString) originalState=\(record.state) providerKind=\(String(describing: provider.kind)) checkpoint=\(checkpoint == nil ? "fallback" : "loaded") checkpointFormat=\(checkpoint?.formatVersion ?? 0) checkpointMessages=\(checkpoint?.messages.count ?? 0) durableMessages=\(assembled.count) pendingCalls=\(checkpoint?.pendingToolCalls.count ?? 0) pendingResults=\(checkpoint?.pendingToolResults.count ?? 0)"
+        )
         if provider.kind == .local {
             await environment.localModelRuntime.retainForTask(
                 taskID: record.id,
@@ -2130,6 +2162,9 @@ final class ConversationCenter: ObservableObject {
             } catch {
                 await self.persistServiceFailure(service, error: error, stage: "resume")
                 self.runTasks[record.id] = nil
+                self.runServices[record.id] = nil
+                self.snapshotTasks[record.id]?.cancel()
+                self.snapshotTasks[record.id] = nil
                 self.environment.backgroundRunCoordinator.didFinish(
                     runID: record.id,
                     succeeded: false,
@@ -2141,6 +2176,7 @@ final class ConversationCenter: ObservableObject {
                         reason: "resumeFailed"
                     )
                 }
+                await self.environment.subagentRunnerRegistry.remove(runID: record.id)
                 self.publishSession(record.conversationID)
                 return .failure(error)
             }
@@ -2155,7 +2191,16 @@ final class ConversationCenter: ObservableObject {
     ) async -> Result<Void, Error> {
         let snapshot = await service.snapshot()
         runTasks[service.runID] = nil
+        // The resumed invocation no longer owns execution, even if a terminal
+        // stream notification raced the observer. Releasing the service here
+        // keeps `hasLiveOwner` from disabling Continue on a parked run.
+        runServices[service.runID] = nil
+        snapshotTasks[service.runID]?.cancel()
+        snapshotTasks[service.runID] = nil
         let succeeded = snapshot.stateName == "completed"
+        FloeLogger(category: .runtime).info(
+            "runResumeFinished run=\(service.runID.uuidString) state=\(snapshot.stateName) terminal=\(snapshot.isTerminal) succeeded=\(succeeded)"
+        )
         environment.backgroundRunCoordinator.didFinish(
             runID: service.runID,
             succeeded: succeeded,
@@ -2167,6 +2212,7 @@ final class ConversationCenter: ObservableObject {
                 reason: snapshot.stateName
             )
         }
+        await environment.subagentRunnerRegistry.remove(runID: service.runID)
         publishSession(service.conversationID)
         return succeeded
             ? .success(())

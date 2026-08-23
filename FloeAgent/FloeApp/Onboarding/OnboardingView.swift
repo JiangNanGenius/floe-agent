@@ -7,11 +7,12 @@ import FloeProviders
 
 struct OnboardingView: View {
     private enum Step: Int, CaseIterable {
-        case welcome, provider, connection, discovery, capabilities, summary
+        case welcome, features, provider, connection, discovery, capabilities, summary
 
         var title: LocalizedStringKey {
             switch self {
             case .welcome: "setup.step.welcome"
+            case .features: "setup.step.features"
             case .provider: "setup.step.provider"
             case .connection: "setup.step.connection"
             case .discovery: "setup.step.models"
@@ -82,6 +83,7 @@ struct OnboardingView: View {
     private var stepContent: some View {
         switch step {
         case .welcome: welcomeStep
+        case .features: featuresStep
         case .provider: providerStep
         case .connection: connectionStep
         case .discovery: discoveryStep
@@ -105,11 +107,11 @@ struct OnboardingView: View {
                         .multilineTextAlignment(.center)
                 }
                 VStack(alignment: .leading, spacing: 16) {
-                    onboardingPoint("person.crop.circle.badge.checkmark", "setup.point.no_account")
+                    onboardingPoint("cloud.sun", "setup.point.cloud_or_local")
                     Divider()
-                    onboardingPoint("key.horizontal", "setup.point.keychain")
+                    onboardingPoint("switch.2", "setup.point.progressive")
                     Divider()
-                    onboardingPoint("rectangle.grid.2x2", "setup.point.explore")
+                    onboardingPoint("gearshape.2", "setup.point.change_anytime")
                 }
                 .padding(20)
                 .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 22))
@@ -122,6 +124,75 @@ struct OnboardingView: View {
 
     private func onboardingPoint(_ icon: String, _ title: LocalizedStringKey) -> some View {
         Label(title, systemImage: icon).font(.headline).foregroundStyle(.primary)
+    }
+
+    private var featuresStep: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("setup.features.intro")
+                    .font(FloeTheme.Typography.body)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 4)
+
+                setupFeature(
+                    "cloud.sun",
+                    title: "setup.features.models.title",
+                    detail: "setup.features.models.detail"
+                )
+                setupFeature(
+                    "eye.trianglebadge.exclamationmark",
+                    title: "setup.features.auxiliary.title",
+                    detail: "setup.features.auxiliary.detail"
+                )
+                setupFeature(
+                    "network",
+                    title: "setup.features.connections.title",
+                    detail: "setup.features.connections.detail"
+                )
+                setupFeature(
+                    "pip",
+                    title: "setup.features.background.title",
+                    detail: "setup.features.background.detail"
+                )
+                setupFeature(
+                    "chart.bar.doc.horizontal",
+                    title: "setup.features.operations.title",
+                    detail: "setup.features.operations.detail"
+                )
+
+                Label("setup.features.local_hint", systemImage: "info.circle")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+            }
+            .frame(maxWidth: 620, alignment: .leading)
+            .padding(24)
+            .frame(maxWidth: .infinity)
+        }
+        .accessibilityIdentifier("setup.features")
+    }
+
+    private func setupFeature(
+        _ icon: String,
+        title: LocalizedStringKey,
+        detail: LocalizedStringKey
+    ) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(FloeTheme.primary)
+                .frame(width: 34, height: 34)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.headline)
+                Text(detail)
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 16))
     }
 
     private var providerStep: some View {
@@ -295,6 +366,20 @@ struct OnboardingView: View {
                         }
                     }
                 }
+                .padding(20)
+                .frame(maxWidth: 520, alignment: .leading)
+                .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 20))
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("setup.summary.next_steps")
+                        .font(.headline)
+                    Label("setup.summary.auxiliary", systemImage: "eye")
+                    Label("setup.summary.apple_search", systemImage: "apple.logo")
+                    Label("setup.summary.remote_background", systemImage: "server.rack")
+                    Label("setup.summary.sync_diagnostics", systemImage: "stethoscope")
+                }
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(.secondary)
                 .padding(20)
                 .frame(maxWidth: 520, alignment: .leading)
                 .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 20))
