@@ -51,6 +51,7 @@ jobs:
       - name: Install release tooling
         run: |
           brew install xcodegen gitleaks syft
+          xcodebuild -downloadComponent MetalToolchain
           scripts/bootstrap_python_runtime.sh
 
       - name: Generate project and validate tag
@@ -90,6 +91,7 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/FloeSimulatorDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
             build
 
       - name: Scan source and generate compliance artifacts

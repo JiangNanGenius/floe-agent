@@ -25,6 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Install Xcode Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
       - name: Generate Xcode project
         run: |
           brew install xcodegen
