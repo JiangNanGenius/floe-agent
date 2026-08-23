@@ -35,12 +35,14 @@ public actor LlamaTextEngine {
     private var sampler: UnsafeMutablePointer<llama_sampler>?
     private var multimodal: UnsafeMutableRawPointer?
     private var backendInitialized = false
+    private let decodeBatchSize: Int
 
     public init(
         modelURL: URL,
         projectorURL: URL? = nil,
         resourceProfile: LocalInferenceResourceProfile
     ) throws {
+        decodeBatchSize = max(1, Int(min(resourceProfile.contextSize, resourceProfile.batchSize)))
         llama_backend_init()
         backendInitialized = true
         var modelParams = llama_model_default_params()
@@ -136,12 +138,29 @@ public actor LlamaTextEngine {
         guard tokenCount > 0, UInt32(tokenCount + Int32(maxTokens)) <= llama_n_ctx(context) else {
             throw LocalInferenceError.promptTooLong
         }
-        var batch = llama_batch_init(Int32(max(512, Int(tokenCount))), 0, 1)
+        // llama_decode accepts at most n_batch prompt tokens per call. The
+        // previous implementation allocated a larger batch and submitted the
+        // entire (often multi-thousand-token) harness prompt at once, causing
+        // immediate decode failures on the production n_batch=128 profile.
+        var batch = llama_batch_init(Int32(decodeBatchSize), 0, 1)
         defer { llama_batch_free(batch) }
-        for index in 0..<Int(tokenCount) {
-            add(buffer[index], position: Int32(index), logits: index == Int(tokenCount) - 1, to: &batch)
+        var decoded = 0
+        while decoded < Int(tokenCount) {
+            batch.n_tokens = 0
+            let upperBound = min(decoded + decodeBatchSize, Int(tokenCount))
+            for index in decoded..<upperBound {
+                add(
+                    buffer[index],
+                    position: Int32(index),
+                    logits: index == Int(tokenCount) - 1,
+                    to: &batch
+                )
+            }
+            guard llama_decode(context, batch) == 0 else {
+                throw LocalInferenceError.decodeFailed
+            }
+            decoded = upperBound
         }
-        guard llama_decode(context, batch) == 0 else { throw LocalInferenceError.decodeFailed }
         var position = tokenCount
         var output = ""
         for _ in 0..<maxTokens {

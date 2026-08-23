@@ -13,6 +13,7 @@ import FloeCore
 
 struct RemoteSettingsView: View {
     @ObservedObject var center: SettingsCenter
+    @State private var showsHostManager = false
 
     var body: some View {
         Form {
@@ -47,9 +48,7 @@ struct RemoteSettingsView: View {
             }
 
             Section {
-                NavigationLink {
-                    HostListView(center: center.environment.remoteSessionCenter)
-                } label: {
+                Button { showsHostManager = true } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("管理主机")
@@ -67,6 +66,7 @@ struct RemoteSettingsView: View {
                         }
                     }
                 }
+                .buttonStyle(.plain)
                 .frame(minHeight: FloeTheme.minimumTarget)
             } header: {
                 Text("settings.remote.hosts")
@@ -76,6 +76,11 @@ struct RemoteSettingsView: View {
         }
         .navigationTitle("settings.section.remote")
         .task { await center.load() }
+        .sheet(isPresented: $showsHostManager) {
+            NavigationStack {
+                HostListView(center: center.environment.remoteSessionCenter)
+            }
+        }
     }
 }
 #endif

@@ -73,6 +73,20 @@ struct ToolCatalogTests {
         #expect(descriptor.requiresHostScope == false)
     }
 
+    @Test("Malformed schemas fall back instead of breaking all provider requests")
+    func malformedSchemaFallsBack() throws {
+        let descriptor = ToolCatalog.Descriptor(
+            name: "test.invalidSchema",
+            parametersJSON: #"{"type":"object","properties":{"x":{"type":"number"}}"#,
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        let data = try #require(descriptor.parametersJSON.data(using: .utf8))
+        let schema = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(schema["type"] as? String == "object")
+        #expect(schema["additionalProperties"] as? Bool == true)
+    }
+
     @Test("allDescriptors is sorted by name")
     func allDescriptorsSorted() {
         ToolCatalog.register(EchoTool.self)

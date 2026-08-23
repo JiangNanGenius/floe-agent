@@ -13,6 +13,14 @@ struct PresentationArtifactToolTests {
         return (PresentationArtifactTool(rootURLProvider: { root }), root)
     }
 
+    @Test("advertised tool schema is valid JSON")
+    func schemaIsValidJSON() throws {
+        let data = try #require(PresentationArtifactTool.parametersJSON.data(using: .utf8))
+        let schema = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(schema["type"] as? String == "object")
+        #expect((schema["properties"] as? [String: Any])?["series"] != nil)
+    }
+
     @Test("native table is persisted as a digest-addressed rectangular document")
     func table() async throws {
         let (tool, root) = try fixture()

@@ -2545,14 +2545,22 @@ final class ConversationCenter: ObservableObject {
 
     private func apply(_ snapshot: ConversationRunService.Snapshot) {
         let existing = activeRuns[snapshot.runID]
-        activeRuns[snapshot.runID] = RunRecord(
-            id: snapshot.runID,
-            conversationID: snapshot.conversationID,
-            state: snapshot.stateName,
-            goal: existing?.goal ?? "",
-            startedAt: existing?.startedAt ?? Date(),
-            endedAt: snapshot.isTerminal ? (existing?.endedAt ?? Date()) : nil
-        )
+        if snapshot.isTerminal {
+            // Durable history already owns terminal runs. Keeping them in the
+            // live-owner projection made every failed launch look paused and
+            // caused Continue to chase a run that had already ended.
+            activeRuns[snapshot.runID] = nil
+            runServices[snapshot.runID] = nil
+        } else {
+            activeRuns[snapshot.runID] = RunRecord(
+                id: snapshot.runID,
+                conversationID: snapshot.conversationID,
+                state: snapshot.stateName,
+                goal: existing?.goal ?? "",
+                startedAt: existing?.startedAt ?? Date(),
+                endedAt: nil
+            )
+        }
         let progress: (stage: String, value: Int64) = switch snapshot.stateName {
         case "preparing": ("正在准备", 8)
         case "streamingModel": ("模型正在处理", 30)

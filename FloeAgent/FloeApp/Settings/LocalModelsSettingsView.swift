@@ -43,8 +43,15 @@ final class LocalModelsCenter: ObservableObject {
     }
 
     func load(_ entry: LocalModelCatalogEntry) {
-        guard installedIDs.contains(entry.id) else { return }
         Task {
+            guard await store.isInstalled(id: entry.id) else {
+                await refresh()
+                errorMessage = "本地模型文件不完整或已被移除，请重新下载。"
+                FloeLogger(category: .providers).warning(
+                    "localModelLoadRejected model=\(entry.id) reason=inventoryMismatch"
+                )
+                return
+            }
             do { try await prepareForTask(modelID: entry.id) }
             catch { errorMessage = error.localizedDescription }
         }
@@ -138,6 +145,7 @@ final class LocalModelsCenter: ObservableObject {
 
 struct LocalModelsSettingsView: View {
     @ObservedObject var center: LocalModelsCenter
+    @State private var pendingRemoval: LocalModelCatalogEntry?
 
     var body: some View {
         List {
@@ -166,7 +174,9 @@ struct LocalModelsSettingsView: View {
                                 default:
                                     Button("加载") { center.load(entry) }
                                 }
-                                Button("localmodels.remove", role: .destructive) { center.remove(entry) }
+                                Button("localmodels.remove", role: .destructive) {
+                                    pendingRemoval = entry
+                                }
                             } else {
                                 Button("localmodels.download") { center.download(entry) }
                             }
@@ -198,6 +208,24 @@ struct LocalModelsSettingsView: View {
         }
         .navigationTitle("localmodels.title")
         .task { await center.refresh() }
+        .confirmationDialog(
+            "删除本地模型？",
+            isPresented: Binding(
+                get: { pendingRemoval != nil },
+                set: { if !$0 { pendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let entry = pendingRemoval {
+                Button("删除 \(entry.displayName)", role: .destructive) {
+                    center.remove(entry)
+                    pendingRemoval = nil
+                }
+            }
+            Button("action.cancel", role: .cancel) { pendingRemoval = nil }
+        } message: {
+            Text("删除后需要重新下载模型文件。此操作不会自动恢复。")
+        }
     }
 
     private static func progressLabel(_ progress: LocalModelDownloadProgress) -> String {

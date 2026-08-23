@@ -176,6 +176,7 @@ private struct WebSearchProviderEditor: View {
     @State private var revealsAPIKey = false
     @State private var revealsSecretID = false
     @State private var revealsSecretKey = false
+    @State private var authenticationError: String?
 
     init(center: WebSearchSettingsCenter, configuration: WebSearchProviderConfiguration) {
         self.center = center
@@ -195,7 +196,9 @@ private struct WebSearchProviderEditor: View {
                     credentialField("API Key", value: $apiKey, revealed: $revealsAPIKey)
                 }
                 if configuration.kind == .googleProgrammable { TextField("Search Engine ID", text: $engineID) }
-                if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
+                if let message = errorMessage ?? authenticationError {
+                    Text(message).foregroundStyle(.red)
+                }
             }
             .navigationTitle(configuration.displayName)
             .toolbar {
@@ -222,12 +225,29 @@ private struct WebSearchProviderEditor: View {
                     .autocorrectionDisabled()
             }
             Button {
-                revealed.wrappedValue.toggle()
+                if revealed.wrappedValue {
+                    revealed.wrappedValue = false
+                } else {
+                    Task { await revealCredential(revealed) }
+                }
             } label: {
                 Image(systemName: revealed.wrappedValue ? "eye.slash" : "eye")
             }
             .buttonStyle(.plain)
             .accessibilityLabel(revealed.wrappedValue ? "隐藏凭据" : "显示凭据")
+        }
+    }
+
+    @MainActor
+    private func revealCredential(_ revealed: Binding<Bool>) async {
+        do {
+            guard try await DeviceOwnerAuthenticator.authenticate(
+                reason: "查看已保存的联网搜索凭据"
+            ) else { return }
+            authenticationError = nil
+            revealed.wrappedValue = true
+        } catch {
+            authenticationError = error.localizedDescription
         }
     }
 

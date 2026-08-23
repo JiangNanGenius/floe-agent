@@ -595,11 +595,17 @@ public actor ConversationRunService {
             ))
         case .error(let error):
             await flushAssistantSegment()
-            logger.error("Run \(runID.uuidString) provider error: \(error.kind.rawValue)")
+            let redactedMessage = SecretRedactor.redact(
+                error.providerMessage,
+                secret: secretForRedaction
+            )
+            logger.error(
+                "Run \(runID.uuidString) provider error kind=\(error.kind.rawValue) httpStatus=\(error.httpStatus.map(String.init) ?? "none") message=\(String(redactedMessage.prefix(500)))"
+            )
             try? await runStore.recordError(RunErrorRecord(
                 runID: runID,
                 kind: error.kind.rawValue,
-                message: SecretRedactor.redact(error.providerMessage, secret: secretForRedaction),
+                message: redactedMessage,
                 httpStatus: error.httpStatus,
                 recoverable: Self.isRecoverable(error.kind)
             ))

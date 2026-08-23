@@ -28,12 +28,28 @@ public enum ToolCatalog {
         ) {
             self.name = name
             self.toolDescription = toolDescription ?? name
-            self.parametersJSON = parametersJSON
+            self.parametersJSON = Self.validatedSchema(parametersJSON, toolName: name)
             self.riskLabels = riskLabels
             self.isSideEffecting = isSideEffecting
             self.effect = effect ?? (isSideEffecting ? .mutating : .readOnly)
             self.requiresHostScope = requiresHostScope
                 ?? !riskLabels.isDisjoint(with: [.executesRemoteCommand, .modifiesRemoteSystem])
+        }
+
+        /// A malformed tool schema must never make every provider request
+        /// fail during JSON encoding. Keep the tool available with a safe,
+        /// permissive object schema and leave an actionable local diagnostic.
+        private static func validatedSchema(_ schema: String, toolName: String) -> String {
+            guard let data = schema.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data),
+                  object is [String: Any]
+            else {
+                FloeLogger(category: .tools).error(
+                    "toolSchemaInvalid tool=\(toolName) fallback=permissiveObject"
+                )
+                return #"{"type":"object","additionalProperties":true}"#
+            }
+            return schema
         }
     }
 

@@ -168,24 +168,21 @@ struct MemoryView: View {
         // actually pushing their destination.
         List {
                 Section("个性化") {
-                    NavigationLink {
-                        PersonalizationDocumentView(center: center, kind: .userProfile)
-                    } label: {
+                    Button { presentedSheet = .userProfile } label: {
                         personalizationRow("用户画像", icon: "person.text.rectangle", available: center.profile != nil)
                     }
+                    .buttonStyle(.plain)
                     .accessibilityIdentifier("memory.user_profile")
-                    NavigationLink {
-                        PersonalizationDocumentView(center: center, kind: .soul)
-                    } label: {
+                    Button { presentedSheet = .soul } label: {
                         personalizationRow("SOUL.md", icon: "sparkles", available: center.soul != nil)
                     }
+                    .buttonStyle(.plain)
                     .accessibilityIdentifier("memory.soul")
-                    NavigationLink {
-                        PendingMemoryReviewView(center: center)
-                    } label: {
+                    Button { presentedSheet = .pending } label: {
                         Label("待确认记忆（\(center.pendingCandidates.count)）", systemImage: "tray.full")
                             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     }
+                    .buttonStyle(.plain)
                     .accessibilityIdentifier("memory.pending")
                 }
                 if !query.isEmpty { searchSection } else { memorySection }
@@ -213,8 +210,12 @@ struct MemoryView: View {
                 switch sheet {
                 case .add:
                     AddMemorySheet(center: center)
-                case .userProfile, .soul, .pending:
-                    EmptyView()
+                case .userProfile:
+                    PersonalizationDocumentView(center: center, kind: .userProfile)
+                case .soul:
+                    PersonalizationDocumentView(center: center, kind: .soul)
+                case .pending:
+                    PendingMemoryReviewView(center: center)
                 }
             }
         }

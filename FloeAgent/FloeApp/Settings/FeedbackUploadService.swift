@@ -171,7 +171,7 @@ enum FeedbackUploadService {
         )
         let problem = utf8Chunks(redactedProblem, maximumBytes: 7_800).first ?? ""
         let diagnostics = submission.diagnostics.map {
-            SecretRedactor.redact(String($0.suffix(maximumDiagnosticsCharacters)))
+            boundedDiagnostics(SecretRedactor.redact($0))
         }
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "unknown"
@@ -251,6 +251,17 @@ enum FeedbackUploadService {
         }
         request.httpBody = body
         return request
+    }
+
+    /// Preserve both the environment/header and the most recent failure
+    /// trace. Keeping only a suffix made provider/model configuration vanish
+    /// from large reports, while keeping only a prefix lost the actual crash.
+    static func boundedDiagnostics(_ text: String) -> String {
+        guard text.count > maximumDiagnosticsCharacters else { return text }
+        let headCount = min(20_000, maximumDiagnosticsCharacters / 4)
+        let marker = "\n\n== middle diagnostics omitted by client ==\n\n"
+        let tailCount = max(0, maximumDiagnosticsCharacters - headCount - marker.count)
+        return String(text.prefix(headCount)) + marker + String(text.suffix(tailCount))
     }
 
     private static var deviceModel: String {

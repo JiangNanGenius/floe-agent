@@ -772,15 +772,42 @@ public actor FloeAgentRuntime {
             } catch is CancellationError {
                 // cancel() owns the terminal transition.
             } catch {
-                let normalized = AgentEvent.NormalizedError(
-                    kind: .network,
-                    providerMessage: error.localizedDescription
-                )
+                let normalized = Self.normalizedBoundaryError(error)
                 await self.emit(.error(normalized))
-                await self.failRun(message: error.localizedDescription, recoverable: true)
+                await self.failRun(
+                    message: normalized.providerMessage,
+                    recoverable: [.network, .server, .rateLimited].contains(normalized.kind)
+                )
             }
         }
         await streamTask?.value
+    }
+
+    /// Errors thrown before the first wire event are often request-building
+    /// or local-inference failures, not network outages. Preserve that
+    /// distinction so the UI and uploaded diagnostics identify the real
+    /// failing layer instead of showing every launch as a retryable network
+    /// pause.
+    private static func normalizedBoundaryError(_ error: Error) -> AgentEvent.NormalizedError {
+        if error is CancellationError {
+            return .init(kind: .cancelled, providerMessage: "Cancelled")
+        }
+        if let urlError = error as? URLError {
+            return .init(kind: .network, providerMessage: urlError.localizedDescription)
+        }
+        if let floeError = error as? FloeError {
+            let kind: AgentEvent.NormalizedError.Kind = switch floeError {
+            case .unauthorized: .auth
+            case .syncUnavailable: .network
+            case .cancelled: .cancelled
+            case .invalidConfiguration, .validationFailed, .notFound,
+                 .storageCorrupted, .internalError: .malformed
+            }
+            return .init(kind: kind, providerMessage: floeError.localizedDescription)
+        }
+        let nsError = error as NSError
+        let message = "\(error.localizedDescription) [\(nsError.domain):\(nsError.code)]"
+        return .init(kind: .malformed, providerMessage: String(message.prefix(500)))
     }
 
     private static func providerImageEvidence(

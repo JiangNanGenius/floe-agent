@@ -58,6 +58,18 @@ struct CrashAndFeedbackRegressionTests {
         #expect(!body.contains("eyJhbGciOiJ9.payload"))
     }
 
+    @Test("Large diagnostics preserve configuration header and latest failure")
+    func diagnosticsKeepHeadAndTail() {
+        let input = "HEADER provider=DeepSeek\n"
+            + String(repeating: "middle\n", count: 30_000)
+            + "LATEST providerRequestBuildFailed\n"
+        let bounded = FeedbackUploadService.boundedDiagnostics(input)
+        #expect(bounded.count <= FeedbackUploadService.maximumDiagnosticsCharacters)
+        #expect(bounded.contains("HEADER provider=DeepSeek"))
+        #expect(bounded.contains("LATEST providerRequestBuildFailed"))
+        #expect(bounded.contains("middle diagnostics omitted"))
+    }
+
     @Test("Feedback images are bounded multipart attachments")
     func feedbackImagesAreMultipartAttachments() throws {
         let jpeg = Data([0xFF, 0xD8, 0x01, 0x02, 0xFF, 0xD9])
