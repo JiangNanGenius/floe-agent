@@ -167,13 +167,8 @@ struct DiagnosticsAboutView: View {
         }
         .fullScreenCover(isPresented: $presentsFullLog) {
             NavigationStack {
-                ScrollView([.horizontal, .vertical]) {
-                    Text(logText)
-                        .font(FloeTheme.Typography.evidence)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                }
+                DiagnosticLogTextView(text: logText)
+                    .ignoresSafeArea(edges: .bottom)
                 .navigationTitle("诊断日志")
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
@@ -234,6 +229,35 @@ struct DiagnosticsAboutView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+}
+
+/// UIKit's text system virtualizes very large logs and always wraps them to
+/// the available width. A two-axis SwiftUI ScrollView around one huge Text can
+/// resolve to an unbounded size and render an entirely blank page on iPad.
+private struct DiagnosticLogTextView: UIViewRepresentable {
+    let text: String
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.alwaysBounceVertical = true
+        view.alwaysBounceHorizontal = false
+        view.textContainer.widthTracksTextView = true
+        view.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        view.textColor = .label
+        view.backgroundColor = .systemBackground
+        view.textContainerInset = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        view.accessibilityIdentifier = "diagnostics.full_log"
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        guard view.text != text else { return }
+        let offset = view.contentOffset
+        view.text = text
+        view.setContentOffset(offset, animated: false)
     }
 }
 

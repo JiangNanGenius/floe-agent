@@ -59,6 +59,12 @@ public actor LlamaTextEngine {
         var contextParams = llama_context_default_params()
         contextParams.n_ctx = resourceProfile.contextSize
         contextParams.n_batch = min(resourceProfile.contextSize, resourceProfile.batchSize)
+        // llama.cpp's default physical micro-batch can be larger than the
+        // deliberately small iOS logical batch. Keeping n_ubatch at its
+        // desktop-oriented default while n_batch is 96/128 makes the first
+        // prompt decode fail immediately on device. The two limits must agree
+        // for the resource-constrained profile used by Floe.
+        contextParams.n_ubatch = contextParams.n_batch
         let threadCount = Int32(max(2, min(8, ProcessInfo.processInfo.activeProcessorCount - 2)))
         contextParams.n_threads = threadCount
         contextParams.n_threads_batch = threadCount
@@ -126,6 +132,9 @@ public actor LlamaTextEngine {
     public func complete(prompt: String, images: [Data] = [], maxTokens: Int = 1024) throws -> String {
         guard let context, let vocab, let sampler else { throw LocalInferenceError.contextCreationFailed }
         llama_memory_clear(llama_get_memory(context), true)
+        // A cached engine serves several turns. Reset sampling history as well
+        // as KV memory so an earlier turn cannot bias or corrupt the next one.
+        llama_sampler_reset(sampler)
         if !images.isEmpty {
             guard let multimodal else { throw LocalInferenceError.visionLoadFailed }
             return try completeVision(prompt: prompt, images: images, context: context, multimodal: multimodal, sampler: sampler, maxTokens: maxTokens)

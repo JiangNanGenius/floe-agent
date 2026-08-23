@@ -77,8 +77,9 @@ public actor LocalModelRuntime {
             return output
         } catch {
             let nsError = error as NSError
+            let safeMessage = String(error.localizedDescription.prefix(300))
             FloeLogger(category: .providers).warning(
-                "localInferenceFailed trace=\(traceID) model=\(modelID) domain=\(nsError.domain) code=\(nsError.code) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+                "localInferenceFailed trace=\(traceID) model=\(modelID) domain=\(nsError.domain) code=\(nsError.code) message=\(safeMessage) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
             )
             throw error
         }
@@ -154,8 +155,9 @@ public actor LocalModelRuntime {
                 )
             } catch {
                 let nsError = error as NSError
+                let safeMessage = String(error.localizedDescription.prefix(300))
                 FloeLogger(category: .providers).warning(
-                    "localInferenceEngineLoadFailed trace=\(traceID) model=\(modelID) projector=\(projectorURL != nil) domain=\(nsError.domain) code=\(nsError.code) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
+                    "localInferenceEngineLoadFailed trace=\(traceID) model=\(modelID) projector=\(projectorURL != nil) domain=\(nsError.domain) code=\(nsError.code) message=\(safeMessage) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
                 )
                 throw error
             }

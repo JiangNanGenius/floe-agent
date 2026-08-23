@@ -158,7 +158,7 @@ struct RequestContractTests {
         #expect(userContent?.contains { $0["type"] as? String == "tool_result" && $0["tool_use_id"] as? String == call.id } == true)
     }
 
-    @Test("Compatible tool names round-trip between wire and canonical catalogs")
+    @Test("DeepSeek tool names are wire-safe without relying on a settings toggle")
     func compatibleToolNamesRoundTrip() throws {
         let providerID = UUID()
         let provider = ProviderProfile(
@@ -166,7 +166,7 @@ struct RequestContractTests {
             kind: .custom,
             wireProtocol: .openAIChatCompletions,
             baseURL: try #require(URL(string: "https://api.deepseek.com")),
-            toolNameCompatibility: true
+            toolNameCompatibility: false
         )
         let model = ModelProfile(
             providerID: providerID,
@@ -199,6 +199,42 @@ struct RequestContractTests {
             == "workspace.listDirectory")
         #expect(adapter.canonicalToolName("workspace.listDirectory", for: request)
             == "workspace.listDirectory")
+    }
+
+    @Test("DeepSeek text-only turns validate the advertised catalog before generation")
+    func deepSeekTextOnlyTurnUsesWireSafeCatalog() throws {
+        let providerID = UUID()
+        let provider = ProviderProfile(
+            id: providerID,
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://api.deepseek.com")),
+            toolNameCompatibility: false
+        )
+        let model = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "deepseek-v4-flash",
+            displayName: "DeepSeek",
+            limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 8_192),
+            capabilities: [.text, .tools]
+        )
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [(role: "user", content: "hello")],
+            toolSchemas: [
+                .init(name: "browser.clickPoint", description: "Click", parametersJSON: schema),
+                .init(name: "image.inspect", description: "Inspect", parametersJSON: schema),
+            ]
+        )
+
+        let body = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: request))
+        let messages = try #require(body["messages"] as? [[String: Any]])
+        #expect(messages.count == 1)
+        #expect(messages[0]["content"] as? String == "hello")
+        let tools = try #require(body["tools"] as? [[String: Any]])
+        let names = tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
+        #expect(names == ["browser_clickPoint", "image_inspect"])
     }
 
     @Test("Volcengine Ark uses native Chat Completions tool contracts")

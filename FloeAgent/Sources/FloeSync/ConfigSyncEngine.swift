@@ -344,10 +344,15 @@ public actor ConfigSyncEngine {
     private func scheduleSynchronization() {
         guard synchronizationEnabled else { return }
         scheduledSync?.cancel()
-        scheduledSync = Task { [weak self] in
+        // CKSyncEngine forbids sendChanges/fetchChanges from recursively
+        // inheriting one of its delegate callback tasks. A normal Task keeps
+        // task-local callback context and triggers CloudKit's
+        // cannot-guarantee-serial-callbacks assertion. Detaching here preserves
+        // actor isolation at synchronize() while breaking that recursion.
+        scheduledSync = Task.detached(priority: .utility) { [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
-            try? await self?.synchronize()
+            _ = try? await self?.synchronize()
         }
     }
 

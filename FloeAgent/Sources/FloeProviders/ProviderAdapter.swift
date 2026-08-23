@@ -299,11 +299,22 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
             let task = Task {
                 do {
                     var urlRequest = try buildURLRequest(request: request, credentials: credentials)
-                    urlRequest.httpBody = try JSONEncoder().encode(buildBody(from: request))
+                    let body = try JSONEncoder().encode(buildBody(from: request))
+                    urlRequest.httpBody = body
+                    let host = request.provider.baseURL.host ?? "unknown"
+                    logger.info(
+                        "providerRequestStarted protocol=responses provider=\(request.provider.id.uuidString) host=\(host) model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) tools=\(request.toolSchemas.count) bodyBytes=\(body.count)"
+                    )
                     let pump = SSEBytePump(urlRequest: urlRequest)
                     let decoder = JSONDecoder()
                     for try await sseEvent in pump.events() {
                         if let errorEvent = httpErrorEvent(from: sseEvent) {
+                            if case .error(let error) = errorEvent {
+                                let status = error.httpStatus.map(String.init) ?? "none"
+                                logger.warning(
+                                    "providerRequestRejected protocol=responses provider=\(request.provider.id.uuidString) model=\(request.model.remoteModelID) kind=\(error.kind.rawValue) httpStatus=\(status) message=\(String(error.providerMessage.prefix(500)))"
+                                )
+                            }
                             continuation.yield(errorEvent)
                             continue
                         }
@@ -421,12 +432,23 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             let task = Task {
                 do {
                     var urlRequest = try buildURLRequest(request: request, credentials: credentials)
-                    urlRequest.httpBody = try JSONEncoder().encode(buildBody(from: request))
+                    let body = try JSONEncoder().encode(buildBody(from: request))
+                    urlRequest.httpBody = body
+                    let host = request.provider.baseURL.host ?? "unknown"
+                    logger.info(
+                        "providerRequestStarted protocol=chat provider=\(request.provider.id.uuidString) host=\(host) model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) tools=\(request.toolSchemas.count) bodyBytes=\(body.count)"
+                    )
                     let pump = SSEBytePump(urlRequest: urlRequest)
                     let decoder = JSONDecoder()
                     var aggregator = ToolCallAggregator()
                     for try await sseEvent in pump.events() {
                         if let errorEvent = httpErrorEvent(from: sseEvent) {
+                            if case .error(let error) = errorEvent {
+                                let status = error.httpStatus.map(String.init) ?? "none"
+                                logger.warning(
+                                    "providerRequestRejected protocol=chat provider=\(request.provider.id.uuidString) model=\(request.model.remoteModelID) kind=\(error.kind.rawValue) httpStatus=\(status) message=\(String(error.providerMessage.prefix(500)))"
+                                )
+                            }
                             continuation.yield(errorEvent)
                             continue
                         }
@@ -558,7 +580,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
     /// still return a canonical dotted name, and underscore collisions remain
     /// untouched unless the mapping is unique.
     func canonicalToolName(_ wireName: String, for request: ProviderStreamRequest) -> String {
-        guard request.provider.toolNameCompatibility else { return wireName }
+        guard usesWireSafeToolNames(request.provider) else { return wireName }
         if request.toolSchemas.contains(where: { $0.name == wireName }) { return wireName }
         let matches = request.toolSchemas.filter {
             wireToolName($0.name, for: request.provider) == wireName
@@ -567,9 +589,19 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
     }
 
     func wireToolName(_ canonicalName: String, for provider: ProviderProfile) -> String {
-        provider.toolNameCompatibility
+        usesWireSafeToolNames(provider)
             ? canonicalName.replacingOccurrences(of: ".", with: "_")
             : canonicalName
+    }
+
+    /// DeepSeek validates the complete tool catalog before it begins a turn,
+    /// including turns that contain no image and never end up using a tool.
+    /// Make its documented wire-name constraint automatic so a stale or
+    /// unsynchronised UI toggle cannot break every basic chat request.
+    private func usesWireSafeToolNames(_ provider: ProviderProfile) -> Bool {
+        if provider.toolNameCompatibility { return true }
+        if provider.baseURL.host?.lowercased().contains("deepseek") == true { return true }
+        return provider.displayName?.lowercased().contains("deepseek") == true
     }
 }
 
