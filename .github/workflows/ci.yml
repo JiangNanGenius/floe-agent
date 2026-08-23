@@ -2,7 +2,7 @@
 # Two jobs:
 #   build-test (xcode-27 preview image): SPM build/test + xcodegen +
 #     xcodebuild for the iOS app, secret scan, SBOM, license inventory.
-#   spm-linux-build (ubuntu-latest, Swift 6.2): cross-platform compile only —
+#   spm-linux-build (ubuntu-latest, Swift 6.3): cross-platform compile only —
 #     SSE parser, catastrophic gate, canonical JSON, audit chain, GRDB
 #     schema remain portable. Tests run on the Apple job because Debian's
 #     system SQLite omits GRDB's SQLITE_ENABLE_SNAPSHOT linker symbols.
@@ -108,7 +108,9 @@ jobs:
 
   spm-linux-build:
     runs-on: ubuntu-latest
-    container: swift:6.2
+    # mlx-swift 0.31.6 declares Swift tools 6.3 even though the targets built
+    # below do not link MLX. Resolution must therefore use a 6.3 toolchain.
+    container: swift:6.3
     defaults:
       run:
         working-directory: FloeAgent
