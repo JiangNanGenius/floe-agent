@@ -10,6 +10,7 @@ enum ReasoningCompatibility {
     struct ChatOptions: Equatable {
         var thinkingType: String? = nil
         var reasoningEffort: String? = nil
+        var enableThinking: Bool? = nil
     }
 
     struct AnthropicOptions: Equatable {
@@ -18,7 +19,18 @@ enum ReasoningCompatibility {
         var effort: String? = nil
     }
 
-    static func responsesEffort(provider: ProviderProfile, model: ModelProfile) -> String? {
+    static func responsesEffort(
+        provider: ProviderProfile,
+        model: ModelProfile,
+        policy: ProviderReasoningPolicy = .modelDefault
+    ) -> String? {
+        if policy == .disabled {
+            if provider.kind == .alibabaStudio || isDashScope(provider) { return "none" }
+            if isOpenAIReasoningFamily(provider: provider, model: model) {
+                return supportsOpenAINone(model.remoteModelID) ? "none" : nil
+            }
+            return nil
+        }
         let effort = model.effectiveReasoningEffort
         guard effort != .automatic, isOpenAIReasoningFamily(provider: provider, model: model) else {
             return nil
@@ -33,7 +45,24 @@ enum ReasoningCompatibility {
         isDeepSeek(provider: provider, model: model)
     }
 
-    static func chatOptions(provider: ProviderProfile, model: ModelProfile) -> ChatOptions {
+    static func chatOptions(
+        provider: ProviderProfile,
+        model: ModelProfile,
+        policy: ProviderReasoningPolicy = .modelDefault
+    ) -> ChatOptions {
+        if policy == .disabled {
+            if provider.kind == .alibabaStudio || isDashScope(provider) {
+                return ChatOptions(enableThinking: false)
+            }
+            if provider.kind == .volcengineArk || isDeepSeek(provider: provider, model: model) {
+                return ChatOptions(thinkingType: "disabled")
+            }
+            if isOpenAIReasoningFamily(provider: provider, model: model),
+               supportsOpenAINone(model.remoteModelID) {
+                return ChatOptions(reasoningEffort: "none")
+            }
+            return ChatOptions()
+        }
         let effort = model.effectiveReasoningEffort
         guard effort != .automatic else { return ChatOptions() }
 
@@ -51,12 +80,27 @@ enum ReasoningCompatibility {
                 reasoningEffort: effort == .maximum ? "high" : effort.rawValue
             )
         }
+        if provider.kind == .alibabaStudio || isDashScope(provider) {
+            return ChatOptions(reasoningEffort: effort == .maximum ? "max" : effort.rawValue)
+        }
         if isOpenAIReasoningFamily(provider: provider, model: model) {
             return ChatOptions(
                 reasoningEffort: openAIEffort(effort, modelID: model.remoteModelID)
             )
         }
         return ChatOptions()
+    }
+
+    static func responsesThinkingType(
+        provider: ProviderProfile,
+        model: ModelProfile,
+        policy: ProviderReasoningPolicy = .modelDefault
+    ) -> String? {
+        guard policy == .disabled else { return nil }
+        if provider.kind == .volcengineArk || isDeepSeek(provider: provider, model: model) {
+            return "disabled"
+        }
+        return nil
     }
 
     static func anthropicOptions(provider: ProviderProfile, model: ModelProfile) -> AnthropicOptions {
@@ -83,6 +127,18 @@ enum ReasoningCompatibility {
     private static func isDeepSeek(provider: ProviderProfile, model: ModelProfile) -> Bool {
         provider.baseURL.host?.lowercased().contains("deepseek") == true
             || model.remoteModelID.lowercased().contains("deepseek")
+    }
+
+    private static func isDashScope(_ provider: ProviderProfile) -> Bool {
+        provider.baseURL.host?.lowercased().contains("dashscope") == true
+            || provider.displayName?.lowercased().contains("dashscope") == true
+    }
+
+    private static func supportsOpenAINone(_ modelID: String) -> Bool {
+        let id = modelID.lowercased()
+        return id.hasPrefix("gpt-5.1") || id.hasPrefix("gpt-5.2")
+            || id.hasPrefix("gpt-5.3") || id.hasPrefix("gpt-5.4")
+            || id.hasPrefix("gpt-5.5") || id.hasPrefix("gpt-5.6")
     }
 
     private static func isOpenAIReasoningFamily(provider: ProviderProfile, model: ModelProfile) -> Bool {

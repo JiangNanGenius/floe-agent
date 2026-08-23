@@ -91,10 +91,17 @@ public actor LocalModelRuntime {
         traceID: String
     ) async throws -> ActiveEngine {
         let key = EngineKey(modelID: modelID, includesVisionProjector: wantsVision)
-        if let cached = activeEngine, cached.key == key {
-            loadState = .ready(modelID: modelID, includesVisionProjector: wantsVision)
+        if let cached = activeEngine,
+           cached.key.modelID == modelID,
+           (!wantsVision || cached.key.includesVisionProjector) {
+            // A vision-capable engine can serve later text turns. Reusing it
+            // avoids repeatedly unloading/reloading multi-gigabyte mappings.
+            loadState = .ready(
+                modelID: modelID,
+                includesVisionProjector: cached.key.includesVisionProjector
+            )
             FloeLogger(category: .providers).debug(
-                "localInferenceEngineReused trace=\(traceID) model=\(modelID) vision=\(wantsVision)"
+                "localInferenceEngineReused trace=\(traceID) model=\(modelID) requestedVision=\(wantsVision) loadedVision=\(cached.key.includesVisionProjector)"
             )
             return cached
         }
@@ -116,6 +123,18 @@ public actor LocalModelRuntime {
                 // Vision projectors are often hundreds of MB to several GB.
                 // Never map one for a text-only turn.
                 projectorURL = nil
+            }
+            // Release the old mapping before measuring process headroom. The
+            // prior implementation measured first, so switching a loaded 4B
+            // text model to its vision projector double-counted the model and
+            // rejected an otherwise viable load on 12 GB iPads.
+            if let previous = activeEngine {
+                activeEngine = nil
+                await previous.engine.shutdown()
+                await Task.yield()
+                FloeLogger(category: .providers).info(
+                    "localInferencePreviousEngineReleased trace=\(traceID) previousModel=\(previous.key.modelID) previousVision=\(previous.key.includesVisionProjector)"
+                )
             }
             let mappedBytes = Self.fileSize(modelURL) + (projectorURL.map(Self.fileSize) ?? 0)
             let physicalMemory = ProcessInfo.processInfo.physicalMemory
@@ -143,13 +162,6 @@ public actor LocalModelRuntime {
             FloeLogger(category: .providers).info(
                 "localInferenceEngineLoadStarted trace=\(traceID) model=\(modelID) projector=\(projectorURL != nil) mappedBytes=\(mappedBytes) availableBytes=\(availableMemory) physicalBytes=\(physicalMemory) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize) gpuLayers=\(profile.gpuLayers)"
             )
-            if let previous = activeEngine {
-                activeEngine = nil
-                await previous.engine.shutdown()
-                FloeLogger(category: .providers).info(
-                    "localInferencePreviousEngineReleased trace=\(traceID) previousModel=\(previous.key.modelID) previousVision=\(previous.key.includesVisionProjector)"
-                )
-            }
             let loaded: LlamaTextEngine
             do {
                 loaded = try LlamaTextEngine(
@@ -267,13 +279,17 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         images: images,
                         maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 1024), 4096)
                     )
-                    if let call = try Self.toolCall(from: output) {
+                    let channels = Self.splitReasoning(from: output)
+                    if !channels.reasoning.isEmpty {
+                        continuation.yield(.reasoningSummary(.init(text: channels.reasoning)))
+                    }
+                    if let call = try Self.toolCall(from: channels.answer) {
                         continuation.yield(.toolRequest(call))
                         continuation.yield(.completed(.init(stopReason: .toolUse)))
                     } else {
-                        continuation.yield(.textDelta(.init(text: output)))
+                        continuation.yield(.textDelta(.init(text: channels.answer)))
                         let input = max(1, prompt.utf8.count / 4)
-                        let outputTokens = max(1, output.utf8.count / 4)
+                        let outputTokens = max(1, channels.answer.utf8.count / 4)
                         continuation.yield(.usage(.init(inputTokens: input, outputTokens: outputTokens)))
                         continuation.yield(.completed(.init(stopReason: .endTurn)))
                     }
@@ -291,13 +307,12 @@ public struct LocalProviderAdapter: ProviderAdapter {
         credentials: ProviderCredentials
     ) async throws -> [ModelProfile] {
         var models: [ModelProfile] = []
-        let physicalMemory = ProcessInfo.processInfo.physicalMemory
         for entry in CuratedLocalModelCatalog.entries {
             guard let modelURL = await store.installedModelURL(id: entry.id) else { continue }
             let mappedBytes = Self.fileSize(modelURL)
             let resourceProfile = LocalInferenceResourcePolicy.profile(
                 mappedBytes: mappedBytes,
-                physicalMemoryBytes: physicalMemory
+                physicalMemoryBytes: LocalInferenceResourcePolicy.availableMemoryBytes()
             )
             var capabilities: ModelCapabilities = [.text, .tools, .approval]
             if entry.supportsVision { capabilities.insert(.vision) }
@@ -479,6 +494,46 @@ public struct LocalProviderAdapter: ProviderAdapter {
 
     private static func containsAny(_ text: String, _ needles: [String]) -> Bool {
         needles.contains(where: { text.contains($0) })
+    }
+
+    struct OutputChannels: Sendable, Equatable {
+        let reasoning: String
+        let answer: String
+    }
+
+    /// Qwen/Mistral GGUF templates may return raw `<think>` blocks. Normalize
+    /// them into the same private reasoning channel used by cloud providers so
+    /// tags never leak into replies or conversation titles.
+    static func splitReasoning(from output: String) -> OutputChannels {
+        var answer = output
+        var reasoningParts: [String] = []
+        let pattern = #"(?is)<think\b[^>]*>(.*?)</think\s*>"#
+        if let expression = try? NSRegularExpression(pattern: pattern) {
+            let full = NSRange(answer.startIndex..<answer.endIndex, in: answer)
+            let matches = expression.matches(in: answer, range: full)
+            for match in matches {
+                guard match.numberOfRanges > 1,
+                      let range = Range(match.range(at: 1), in: answer) else { continue }
+                let value = answer[range].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !value.isEmpty { reasoningParts.append(value) }
+            }
+            answer = expression.stringByReplacingMatches(
+                in: answer,
+                range: full,
+                withTemplate: ""
+            )
+        }
+        // Be defensive around templates that emit an empty or unmatched
+        // closing tag before the visible answer.
+        answer = answer.replacingOccurrences(
+            of: #"(?is)</?think\b[^>]*>"#,
+            with: "",
+            options: .regularExpression
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        return OutputChannels(
+            reasoning: reasoningParts.joined(separator: "\n\n"),
+            answer: answer
+        )
     }
 
     private static func clipped(_ text: String, limit: Int) -> String {

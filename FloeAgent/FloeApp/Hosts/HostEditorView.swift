@@ -68,8 +68,36 @@ struct HostEditorView: View {
                 Text("hosts.auth.imported_key").tag(HostEditorViewModel.AuthKind.importedKey)
                 Text("hosts.auth.device_key").tag(HostEditorViewModel.AuthKind.deviceKey)
             }
-            SecureField(secretFieldLabel, text: $viewModel.secretInput)
+            HStack {
+                Group {
+                    if viewModel.isSecretVisible {
+                        TextField(secretFieldLabel, text: $viewModel.secretInput)
+                    } else {
+                        SecureField(secretFieldLabel, text: $viewModel.secretInput)
+                    }
+                }
                 .textInputAutocapitalization(.never)
+                if viewModel.existing != nil {
+                    Button {
+                        if viewModel.isSecretVisible {
+                            viewModel.isSecretVisible = false
+                        } else if viewModel.secretInput.isEmpty {
+                            Task { await viewModel.revealStoredSecret() }
+                        } else {
+                            viewModel.isSecretVisible = true
+                        }
+                    } label: {
+                        if viewModel.isRevealingSecret {
+                            ProgressView()
+                        } else {
+                            Image(systemName: viewModel.isSecretVisible ? "eye.slash" : "eye")
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(viewModel.isRevealingSecret)
+                    .accessibilityLabel(viewModel.isSecretVisible ? "隐藏主机凭据" : "验证身份并查看主机凭据")
+                }
+            }
         } header: {
             Text("hosts.authentication")
         } footer: {

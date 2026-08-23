@@ -18,6 +18,10 @@ struct AuxiliaryModelsView: View {
         Form {
             Section("model.capability.vision") {
                 modelPicker(selection: $viewModel.visionModelID, models: viewModel.visionCandidates)
+                Toggle("auxiliary.vision.reasoning", isOn: $viewModel.visionReasoningEnabled)
+                Text("auxiliary.vision.reasoning.footer")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
                 if viewModel.visionCandidates.isEmpty {
                     Label("auxiliary.shared.empty", systemImage: "eye.slash")
                         .foregroundStyle(.secondary)
@@ -95,6 +99,9 @@ struct AuxiliaryModelsView: View {
         .task { await viewModel.load() }
         .onChange(of: viewModel.mode) { _, _ in viewModel.scheduleSave() }
         .onChange(of: viewModel.visionModelID) { _, _ in viewModel.scheduleSave() }
+        .onChange(of: viewModel.visionReasoningEnabled) { _, value in
+            viewModel.saveVisionReasoning(value)
+        }
         .onChange(of: viewModel.packageReviewModelID) { _, _ in viewModel.scheduleSave() }
         .onChange(of: viewModel.sharedModelID) { _, _ in viewModel.scheduleSave() }
         .onChange(of: viewModel.generationModelID) { _, _ in viewModel.scheduleSave() }
@@ -124,6 +131,7 @@ struct AuxiliaryModelsView: View {
 final class AuxiliaryModelsViewModel: ObservableObject {
     @Published var mode: AuxiliaryImageMode = .shared
     @Published var visionModelID: UUID?
+    @Published var visionReasoningEnabled = false
     @Published var packageReviewModelID: UUID?
     @Published var sharedModelID: UUID?
     @Published var generationModelID: UUID?
@@ -133,6 +141,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
 
     let center: ConversationCenter
     private let adapterFactory = ImageProviderAdapterFactory()
+    private let cloudPreferences = NSUbiquitousKeyValueStore.default
     private var hasLoaded = false
     private var saveTask: Task<Void, Never>?
 
@@ -165,11 +174,42 @@ final class AuxiliaryModelsViewModel: ObservableObject {
         let preferences = center.modelPreferences
         mode = preferences.auxiliaryImageMode
         visionModelID = preferences.visionModelID
+        if cloudPreferences.object(
+            forKey: ConversationCenter.auxiliaryVisionReasoningDefaultsKey
+        ) != nil {
+            visionReasoningEnabled = cloudPreferences.bool(
+                forKey: ConversationCenter.auxiliaryVisionReasoningDefaultsKey
+            )
+            UserDefaults.standard.set(
+                visionReasoningEnabled,
+                forKey: ConversationCenter.auxiliaryVisionReasoningDefaultsKey
+            )
+        } else {
+            visionReasoningEnabled = UserDefaults.standard.bool(
+                forKey: ConversationCenter.auxiliaryVisionReasoningDefaultsKey
+            )
+        }
         packageReviewModelID = preferences.packageReviewModelID
         sharedModelID = preferences.sharedImageModelID
         generationModelID = preferences.imageGenerationModelID
         editingModelID = preferences.imageEditingModelID
         hasLoaded = true
+    }
+
+    func saveVisionReasoning(_ enabled: Bool) {
+        guard hasLoaded else { return }
+        UserDefaults.standard.set(
+            enabled,
+            forKey: ConversationCenter.auxiliaryVisionReasoningDefaultsKey
+        )
+        cloudPreferences.set(
+            enabled,
+            forKey: ConversationCenter.auxiliaryVisionReasoningDefaultsKey
+        )
+        cloudPreferences.synchronize()
+        FloeLogger(category: .sync).info(
+            "auxiliaryVisionReasoningSaved enabled=\(enabled)"
+        )
     }
 
     func setSharedMode(_ shared: Bool) {

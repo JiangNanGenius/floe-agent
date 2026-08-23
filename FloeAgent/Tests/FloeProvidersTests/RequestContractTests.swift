@@ -356,6 +356,53 @@ struct RequestContractTests {
         #expect((anthropicBody["output_config"] as? [String: Any])?["effort"] as? String == "high")
     }
 
+    @Test("Internal preprocessing explicitly disables provider-default reasoning")
+    func internalReasoningDisableContracts() throws {
+        let dashScopeID = UUID()
+        let dashScope = ProviderProfile(
+            id: dashScopeID,
+            kind: .alibabaStudio,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1"))
+        )
+        let qwen = ModelProfile(
+            providerID: dashScopeID,
+            remoteModelID: "qwen3.5-flash",
+            displayName: "Qwen 3.5 Flash",
+            limits: ModelLimits(contextTokens: 256_000, maxOutputTokens: 1_024),
+            reasoningEffort: .high
+        )
+        let dashScopeBody = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: .init(
+            provider: dashScope,
+            model: qwen,
+            messages: [(role: "user", content: "inspect")],
+            reasoningPolicy: .disabled
+        )))
+        #expect(dashScopeBody["enable_thinking"] as? Bool == false)
+        #expect(dashScopeBody["reasoning_effort"] == nil)
+
+        let arkID = UUID()
+        let ark = ProviderProfile(
+            id: arkID,
+            kind: .volcengineArk,
+            wireProtocol: .openAIResponses,
+            baseURL: try #require(URL(string: "https://ark.cn-beijing.volces.com/api/v3"))
+        )
+        let doubao = ModelProfile(
+            providerID: arkID,
+            remoteModelID: "doubao-seed-2-0-lite-260215",
+            displayName: "Doubao Seed",
+            limits: ModelLimits(contextTokens: 256_000, maxOutputTokens: 1_024)
+        )
+        let arkBody = try jsonObject(OpenAIResponsesAdapter().buildBody(from: .init(
+            provider: ark,
+            model: doubao,
+            messages: [(role: "user", content: "inspect")],
+            reasoningPolicy: .disabled
+        )))
+        #expect((arkBody["thinking"] as? [String: Any])?["type"] as? String == "disabled")
+    }
+
     @Test("Unknown custom gateways omit reasoning fields")
     func unknownGatewayOmitsReasoningFields() throws {
         let providerID = UUID()

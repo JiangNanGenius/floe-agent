@@ -148,6 +148,18 @@ public actor LocalModelStore {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    /// Resident preflight uses the actual downloaded weight file rather than
+    /// the catalog estimate. The projector is intentionally excluded because
+    /// Floe keeps the text agent resident and routes visual evidence through
+    /// the configured auxiliary vision model instead of loading two local
+    /// model components at once.
+    public func installedWeightBytes(id: String) -> UInt64? {
+        guard let url = installedModelURL(id: id),
+              let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
+              let size = values.fileSize else { return nil }
+        return UInt64(max(0, size))
+    }
+
     public func isInstalled(id: String) -> Bool {
         guard let entry = CuratedLocalModelCatalog.entries.first(where: { $0.id == id }),
               installedModelURL(id: id) != nil else { return false }

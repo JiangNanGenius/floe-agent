@@ -25,6 +25,7 @@ struct ThreadDetailView: View {
     @State private var editingPendingInput: PendingUserInput?
     @State private var showingGoalBuilder = false
     @State private var showingPermissionsSheet = false
+    @State private var showingUsageDetails = false
     @State private var selectedImportantFile: ImportantFileShortcut?
 
     init(conversationID: UUID, center: ConversationCenter) {
@@ -362,6 +363,26 @@ struct ThreadDetailView: View {
     @ToolbarContentBuilder
     private var stateToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
+            if let usage = viewModel.usageSummary,
+               usage.contextWindowTokens > 0 {
+                Button {
+                    showingUsageDetails = true
+                } label: {
+                    ContextUsageRing(fraction: usage.contextFraction)
+                }
+                .buttonStyle(.plain)
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .accessibilityLabel("查看上下文用量")
+                .accessibilityValue(
+                    "\(TokenUnitFormatter.string(usage.contextTokens)) / \(TokenUnitFormatter.string(usage.contextWindowTokens))"
+                )
+                .popover(isPresented: $showingUsageDetails) {
+                    ContextUsageDetails(summary: usage)
+                        .presentationCompactAdaptation(.popover)
+                }
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Button("直接设置 Goal", systemImage: "target") {
                     showingGoalBuilder = true
@@ -570,23 +591,6 @@ private struct ThreadUsageFooter: View {
             }
             .font(FloeTheme.Typography.metadata)
             .foregroundStyle(.secondary)
-            if summary.contextWindowTokens > 0 {
-                HStack(spacing: 8) {
-                    Gauge(value: summary.contextFraction) {
-                        Text("上下文")
-                    } currentValueLabel: {
-                        Text("\(Int(summary.contextFraction * 100))%")
-                            .font(.caption2.monospacedDigit())
-                    }
-                    .gaugeStyle(.accessoryCircularCapacity)
-                    .tint(summary.contextFraction > 0.85 ? FloeTheme.pending : FloeTheme.primary)
-                    .frame(width: 34, height: 34)
-                    Text("上下文 \(formatted(summary.contextTokens)) / \(formatted(summary.contextWindowTokens))")
-                        .font(FloeTheme.Typography.metadata)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-            }
             HStack(spacing: 12) {
                 Text("缓存读取 \(reported(summary.cacheReadTokens))")
                 Text("缓存写入 \(reported(summary.cacheWriteTokens))")
@@ -601,14 +605,73 @@ private struct ThreadUsageFooter: View {
     }
 
     private func formatted(_ value: Int) -> String {
-        if value >= 10_000 {
-            return value.formatted(.number.notation(.compactName))
-        }
-        return value.formatted()
+        TokenUnitFormatter.string(value)
     }
 
     private func reported(_ value: Int?) -> String {
         value.map(formatted) ?? "未报告"
+    }
+}
+
+private struct ContextUsageRing: View {
+    let fraction: Double
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(.secondary.opacity(0.22), lineWidth: 3)
+            Circle()
+                .trim(from: 0, to: min(max(fraction, 0), 1))
+                .stroke(
+                    fraction > 0.85 ? FloeTheme.pending : FloeTheme.primary,
+                    style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 20, height: 20)
+        .contentShape(Circle())
+    }
+}
+
+private struct ContextUsageDetails: View {
+    let summary: ThreadUsageSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("上下文窗口", systemImage: "circle.dotted")
+                .font(.headline)
+            Text("\(TokenUnitFormatter.string(summary.contextTokens)) / \(TokenUnitFormatter.string(summary.contextWindowTokens))")
+                .font(.title3.monospacedDigit().weight(.semibold))
+            ProgressView(value: summary.contextFraction)
+                .tint(summary.contextFraction > 0.85 ? FloeTheme.pending : FloeTheme.primary)
+            Text("本轮输入 \(TokenUnitFormatter.string(summary.inputTokens)) · 输出 \(TokenUnitFormatter.string(summary.outputTokens))")
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .frame(minWidth: 240)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private enum TokenUnitFormatter {
+    static func string(_ value: Int) -> String {
+        let magnitude = abs(value)
+        if magnitude >= 1_000_000 {
+            return scaled(value, divisor: 1_000_000, suffix: "M")
+        }
+        if magnitude >= 1_000 {
+            return scaled(value, divisor: 1_000, suffix: "K")
+        }
+        return value.formatted()
+    }
+
+    private static func scaled(_ value: Int, divisor: Int, suffix: String) -> String {
+        let quotient = Double(value) / Double(divisor)
+        let number = quotient.rounded() == quotient
+            ? String(Int(quotient))
+            : String(format: "%.1f", quotient).replacingOccurrences(of: ".0", with: "")
+        return number + suffix
     }
 }
 

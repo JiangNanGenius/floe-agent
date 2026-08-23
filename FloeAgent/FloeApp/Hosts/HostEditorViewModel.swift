@@ -39,6 +39,8 @@ final class HostEditorViewModel: ObservableObject {
     @Published var vncPassword: String = ""
 
     @Published private(set) var isSaving = false
+    @Published private(set) var isRevealingSecret = false
+    @Published var isSecretVisible = false
     @Published var errorMessage: String?
 
     let center: RemoteSessionCenter
@@ -75,6 +77,35 @@ final class HostEditorViewModel: ObservableObject {
         !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && (1...65535).contains(port)
+    }
+
+    /// Reveals an already-persisted credential only after one centralized
+    /// owner-authentication request. The plaintext remains transient view
+    /// state and is never logged or copied into the host database.
+    func revealStoredSecret() async {
+        guard existing != nil, !isRevealingSecret else { return }
+        isRevealingSecret = true
+        defer { isRevealingSecret = false }
+        errorMessage = nil
+        do {
+            guard try await DeviceOwnerAuthenticator.authenticate(
+                reason: "查看已保存的主机凭据"
+            ) else { return }
+            let data = try await secretStore.readSecret(scope: .hostSSH(hostID))
+            guard let value = String(data: data, encoding: .utf8) else {
+                throw FloeError.validationFailed("保存的主机凭据不是可显示的文本")
+            }
+            secretInput = value
+            isSecretVisible = true
+            FloeLogger(category: .security).info(
+                "hostCredentialRevealed host=\(hostID.uuidString) kind=\(authKind.rawValue)"
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+            FloeLogger(category: .security).warning(
+                "hostCredentialRevealFailed host=\(hostID.uuidString)"
+            )
+        }
     }
 
     /// Persists secrets to Keychain and the profile to the store. Only a

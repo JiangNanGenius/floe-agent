@@ -101,6 +101,18 @@ struct ToolCatalogTests {
         #expect(schema["additionalProperties"] as? Bool == true)
     }
 
+    @Test("Schema keyword names remain valid application properties")
+    func schemaKeywordPropertyNamesRemainValid() throws {
+        let source = #"{"type":"object","properties":{"type":{"type":"string"},"items":{"type":"array","items":{"type":"string"}}},"required":["type"]}"#
+        let descriptor = ToolCatalog.Descriptor(
+            name: "test.schemaKeywordProperties",
+            parametersJSON: source,
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        #expect(descriptor.parametersJSON == source)
+    }
+
     @Test("allDescriptors is sorted by name")
     func allDescriptorsSorted() {
         ToolCatalog.register(EchoTool.self)

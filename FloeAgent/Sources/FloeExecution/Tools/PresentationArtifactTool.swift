@@ -86,7 +86,31 @@ public struct PresentationArtifactTool: AgentTool {
         "columns":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":200}},
         "rows":{"type":"array","maxItems":500,"items":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":1000}}},
         "chartType":{"type":"string","enum":["line","bar","area","pie","scatter"]},
-        "series":{"type":"array","maxItems":16,"items":{"type":"object","properties":{"name":{"type":"string","maxLength":100},"points":{"type":"array","maxItems":2000,"items":{"type":"object","properties":{"label":{"type":"string","maxLength":100},"value":{"type":"number"}},"required":["label","value"],"additionalProperties":false}}},"required":["name","points"],"additionalProperties":false}},
+        "series":{
+          "type":"array",
+          "maxItems":16,
+          "items":{
+            "type":"object",
+            "properties":{
+              "name":{"type":"string","maxLength":100},
+              "points":{
+                "type":"array",
+                "maxItems":2000,
+                "items":{
+                  "type":"object",
+                  "properties":{
+                    "label":{"type":"string","maxLength":100},
+                    "value":{"type":"number"}
+                  },
+                  "required":["label","value"],
+                  "additionalProperties":false
+                }
+              }
+            },
+            "required":["name","points"],
+            "additionalProperties":false
+          }
+        },
         "html":{"type":"string","description":"Self-contained HTML, max 512 KiB"}
       },
       "required":["kind"],

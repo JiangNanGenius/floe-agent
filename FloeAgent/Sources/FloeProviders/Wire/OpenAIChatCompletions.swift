@@ -15,6 +15,7 @@ public struct ChatRequest: Sendable, Codable, Hashable {
     public var maxTokens: Int?
     public var thinking: Thinking?
     public var reasoningEffort: String?
+    public var enableThinking: Bool?
     public var stream: Bool
     /// OpenAI-compatible providers only include usage in streamed responses
     /// when explicitly requested.
@@ -27,6 +28,7 @@ public struct ChatRequest: Sendable, Codable, Hashable {
         maxTokens: Int? = nil,
         thinking: Thinking? = nil,
         reasoningEffort: String? = nil,
+        enableThinking: Bool? = nil,
         stream: Bool = true,
         streamOptions: StreamOptions? = StreamOptions(includeUsage: true)
     ) {
@@ -36,6 +38,7 @@ public struct ChatRequest: Sendable, Codable, Hashable {
         self.maxTokens = maxTokens
         self.thinking = thinking
         self.reasoningEffort = reasoningEffort
+        self.enableThinking = enableThinking
         self.stream = stream
         self.streamOptions = streamOptions
     }
@@ -212,6 +215,7 @@ public struct ChatRequest: Sendable, Codable, Hashable {
         case model, messages, tools, thinking, stream
         case maxTokens = "max_tokens"
         case reasoningEffort = "reasoning_effort"
+        case enableThinking = "enable_thinking"
         case streamOptions = "stream_options"
     }
 }

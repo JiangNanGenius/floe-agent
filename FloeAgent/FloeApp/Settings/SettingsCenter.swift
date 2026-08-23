@@ -166,7 +166,7 @@ final class SettingsCenter: ObservableObject {
         async let version = (try? environment.database.userVersion()) ?? 0
         async let providers = (try? environment.configurationStore.providers()) ?? []
         async let models = (try? environment.configurationStore.models()) ?? []
-        async let hosts = (try? environment.remoteSessionCenterHostsCount()) ?? 0
+        async let hosts = (try? environment.remoteHostStore.hosts().count) ?? 0
         async let activeSessions = (try? environment.remoteSessionRegistry.activeSessions().count) ?? 0
 
         let stored = await values
@@ -639,13 +639,4 @@ final class SettingsCenter: ObservableObject {
     }
 }
 
-// MARK: - AppEnvironment helper
-
-private extension AppEnvironment {
-    /// Host count without exposing RemoteSessionCenter internals; the
-    /// center's `hosts` list is the single source of truth.
-    func remoteSessionCenterHostsCount() async throws -> Int {
-        remoteSessionCenter.hosts.count
-    }
-}
 #endif

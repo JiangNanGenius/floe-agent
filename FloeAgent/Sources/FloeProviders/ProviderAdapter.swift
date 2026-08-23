@@ -58,6 +58,14 @@ public struct ProviderMessage: Sendable, Hashable {
     }
 }
 
+/// Per-request reasoning policy. Internal classifiers and visual evidence
+/// extraction must be able to explicitly disable reasoning even when the
+/// selected provider/model defaults it on.
+public enum ProviderReasoningPolicy: Sendable, Hashable {
+    case modelDefault
+    case disabled
+}
+
 /// Everything an adapter needs to build one streaming request.
 public struct ProviderStreamRequest: Sendable {
     public var provider: ProviderProfile
@@ -76,6 +84,7 @@ public struct ProviderStreamRequest: Sendable {
     public var pendingAssistantReasoning: String?
     /// Tools offered to the model, as wire-neutral schema descriptors.
     public var toolSchemas: [ToolSchemaDescriptor]
+    public var reasoningPolicy: ProviderReasoningPolicy
 
     public init(
         provider: ProviderProfile,
@@ -85,7 +94,8 @@ public struct ProviderStreamRequest: Sendable {
         toolResults: [(callID: String, output: String)] = [],
         pendingToolCalls: [ToolCall] = [],
         pendingAssistantReasoning: String? = nil,
-        toolSchemas: [ToolSchemaDescriptor] = []
+        toolSchemas: [ToolSchemaDescriptor] = [],
+        reasoningPolicy: ProviderReasoningPolicy = .modelDefault
     ) {
         self.provider = provider
         self.model = model
@@ -95,6 +105,7 @@ public struct ProviderStreamRequest: Sendable {
         self.pendingToolCalls = pendingToolCalls
         self.pendingAssistantReasoning = pendingAssistantReasoning
         self.toolSchemas = toolSchemas
+        self.reasoningPolicy = reasoningPolicy
     }
 
     public var effectiveMessages: [ProviderMessage] {
@@ -408,8 +419,14 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
             maxOutputTokens: request.model.limits.configuredMaxOutputTokens,
             reasoning: ReasoningCompatibility.responsesEffort(
                 provider: request.provider,
-                model: request.model
+                model: request.model,
+                policy: request.reasoningPolicy
             ).map(ResponsesRequest.Reasoning.init(effort:)),
+            thinking: ReasoningCompatibility.responsesThinkingType(
+                provider: request.provider,
+                model: request.model,
+                policy: request.reasoningPolicy
+            ).map(ResponsesRequest.Thinking.init(type:)),
             stream: true
         )
     }
@@ -562,7 +579,8 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
         }
         let reasoning = ReasoningCompatibility.chatOptions(
             provider: request.provider,
-            model: request.model
+            model: request.model,
+            policy: request.reasoningPolicy
         )
         return ChatRequest(
             model: request.model.remoteModelID,
@@ -571,6 +589,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             maxTokens: request.model.limits.configuredMaxOutputTokens,
             thinking: reasoning.thinkingType.map(ChatRequest.Thinking.init(type:)),
             reasoningEffort: reasoning.reasoningEffort,
+            enableThinking: reasoning.enableThinking,
             stream: true,
             streamOptions: .init(includeUsage: true)
         )

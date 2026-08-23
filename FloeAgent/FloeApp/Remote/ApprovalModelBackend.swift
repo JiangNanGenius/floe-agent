@@ -78,8 +78,12 @@ struct ApprovalModelBackend: ModelApprovalPolicy.DecisionBackend {
         // provider-specific thinking fields (DeepSeek maps `low` to `high`).
         var reviewModel = model
         reviewModel.reasoningEffort = .automatic
+        // Synced model rows can carry a zero/tiny output override. A thinking
+        // classifier then spends its whole budget before producing a visible
+        // verdict and appears as an empty response. Keep a small floor while
+        // still bounding this inexpensive internal pass.
         reviewModel.limits.maxOutputTokens = min(
-            reviewModel.limits.configuredMaxOutputTokens ?? 512,
+            max(reviewModel.limits.configuredMaxOutputTokens ?? 256, 96),
             512
         )
         let text = try await responseText(
@@ -101,7 +105,7 @@ struct ApprovalModelBackend: ModelApprovalPolicy.DecisionBackend {
                 \(String(text.prefix(1_500)))
                 """
             var repairModel = reviewModel
-            repairModel.limits.maxOutputTokens = 16
+            repairModel.limits.maxOutputTokens = 96
             let repaired = try await responseText(
                 prompt: repairPrompt,
                 model: repairModel,
@@ -131,10 +135,13 @@ struct ApprovalModelBackend: ModelApprovalPolicy.DecisionBackend {
             provider: provider,
             model: reviewModel,
             messages: [(role: "user", content: prompt)],
-            toolSchemas: []
+            toolSchemas: [],
+            reasoningPolicy: .disabled
         )
         var text = ""
+        var reasoning = ""
         var sawProviderOutput = false
+        var stopReason = "none"
         for try await event in adapter.stream(request: request, credentials: credentials) {
             switch event {
             case .textDelta(let delta):
@@ -148,13 +155,22 @@ struct ApprovalModelBackend: ModelApprovalPolicy.DecisionBackend {
                 guard text.utf8.count <= outputLimit else {
                     throw FloeError.validationFailed("Approval response exceeded limit")
                 }
-            case .reasoningSummary:
+            case .reasoningSummary(let summary):
                 if !sawProviderOutput {
                     sawProviderOutput = true
                     FloeLogger(category: .security).info(
                         "approvalReviewFirstOutput kind=\(reviewKind.logName) model=\(model.id.uuidString) channel=reasoning"
                     )
                 }
+                // Never expose this channel in the approval UI. It is retained
+                // only as a bounded fallback because weak reasoning models
+                // occasionally put their final ALLOW/DENY token here and emit
+                // an empty visible channel.
+                if reasoning.utf8.count < outputLimit {
+                    reasoning += String(summary.text.prefix(outputLimit - reasoning.utf8.count))
+                }
+            case .completed(let completion):
+                stopReason = completion.stopReason.rawValue
             case .error(let error):
                 throw FloeError.syncUnavailable(
                     "Approval provider error (\(error.kind.rawValue), HTTP \(error.httpStatus.map(String.init) ?? "none"))"
@@ -163,7 +179,12 @@ struct ApprovalModelBackend: ModelApprovalPolicy.DecisionBackend {
                 break
             }
         }
-        return text
+        let visible = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
+        FloeLogger(category: .security).info(
+            "approvalReviewOutput kind=\(reviewKind.logName) model=\(model.id.uuidString) visibleCharacters=\(visible.count) reasoningCharacters=\(fallback.count) stopReason=\(stopReason) route=\(visible.isEmpty ? (fallback.isEmpty ? "empty" : "reasoningFallback") : "visible")"
+        )
+        return visible.isEmpty ? fallback : visible
     }
 
     private func scope(for call: ToolCall) -> ApprovalScope {

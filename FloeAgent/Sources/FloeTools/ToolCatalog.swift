@@ -61,6 +61,10 @@ public enum ToolCatalog {
         private static func schemaNodeIsValid(_ node: [String: Any]) -> Bool {
             if let propertiesValue = node["properties"] {
                 guard let properties = propertiesValue as? [String: Any] else { return false }
+                // Validate property values by shape, not by their names. A
+                // tool may legitimately expose fields such as `type` or
+                // `items`; a misplaced `required` array still fails below
+                // because arrays are not valid property schemas.
                 for child in properties.values where !schemaValueIsValid(child) { return false }
             }
             if let requiredValue = node["required"] {

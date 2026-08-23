@@ -1,6 +1,40 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "auxiliary.vision.reasoning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable reasoning for vision"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "视觉识别启用思考"
+          }
+        }
+      }
+    },
+    "auxiliary.vision.reasoning.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off by default for faster image inspection. When enabled, Floe explicitly requests the provider's lowest reasoning level."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认关闭以加快识图；开启后会显式请求供应商支持的最低思考强度。"
+          }
+        }
+      }
+    },
     "action.approve": {
       "extractionState": "manual",
       "localizations": {

@@ -168,4 +168,25 @@ struct LocalModelCatalogTests {
         #expect(!build.text.contains("ssh.execute"))
         #expect(build.text.count < 5_000)
     }
+
+    @Test("Local reasoning tags are separated from the visible answer")
+    @available(macOS 15.4, *)
+    func localReasoningTagsAreSeparated() {
+        let channels = LocalProviderAdapter.splitReasoning(
+            from: "<think>先检查约束，再回答。</think>\n这是最终回答。"
+        )
+        #expect(channels.reasoning == "先检查约束，再回答。")
+        #expect(channels.answer == "这是最终回答。")
+        #expect(!channels.answer.contains("<think>"))
+    }
+
+    @Test("Stray local reasoning tags never leak into titles")
+    @available(macOS 15.4, *)
+    func strayLocalReasoningTagsAreRemoved() {
+        let channels = LocalProviderAdapter.splitReasoning(
+            from: "<think></think></think>I'm ready to help."
+        )
+        #expect(channels.reasoning.isEmpty)
+        #expect(channels.answer == "I'm ready to help.")
+    }
 }

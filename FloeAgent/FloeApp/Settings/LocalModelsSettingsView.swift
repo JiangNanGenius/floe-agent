@@ -16,6 +16,7 @@ final class LocalModelsCenter: ObservableObject {
     @Published private(set) var pausedDownloads: Set<String> = []
     @Published private(set) var downloadProgress: [String: LocalModelDownloadProgress] = [:]
     @Published private(set) var runtimeState: RuntimeState = .unloaded
+    @Published private(set) var incompatibleReasons: [String: String] = [:]
     @Published var errorMessage: String?
     let store: LocalModelStore
     let runtime: LocalModelRuntime
@@ -69,15 +70,34 @@ final class LocalModelsCenter: ObservableObject {
 
     func refresh() async {
         var installed = Set<String>()
+        var incompatible: [String: String] = [:]
+        let availableBytes = LocalInferenceResourcePolicy.availableMemoryBytes()
         for entry in CuratedLocalModelCatalog.entries where await store.isInstalled(id: entry.id) {
             installed.insert(entry.id)
+            if let mappedBytes = await store.installedWeightBytes(id: entry.id),
+               !LocalInferenceResourcePolicy.canLoad(
+                mappedBytes: mappedBytes,
+                physicalMemoryBytes: availableBytes
+               ) {
+                incompatible[entry.id] = Self.incompatibleMessage(
+                    mappedBytes: mappedBytes,
+                    availableBytes: availableBytes
+                )
+            }
         }
         installedIDs = installed
+        incompatibleReasons = incompatible
         let resumable = await store.resumableModelIDs()
         pausedDownloads.formUnion(resumable.subtracting(activeDownloads))
         FloeLogger(category: .providers).debug(
             "localModelCatalogRefreshed installed=\(installed.count) activeDownloads=\(activeDownloads.count)"
         )
+    }
+
+    private static func incompatibleMessage(mappedBytes: UInt64, availableBytes: UInt64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .memory
+        return "当前可用内存不足：模型权重 \(formatter.string(fromByteCount: Int64(mappedBytes)))，进程可用 \(formatter.string(fromByteCount: Int64(availableBytes)))。关闭大型 App 后刷新，或选更小模型。"
     }
 
     func download(_ entry: LocalModelCatalogEntry) {
@@ -186,6 +206,7 @@ struct LocalModelsSettingsView: View {
                                 default:
                                     Button("加载") { center.load(entry) }
                                         .buttonStyle(.borderless)
+                                        .disabled(center.incompatibleReasons[entry.id] != nil)
                                         .accessibilityIdentifier("localModel.load.\(entry.id)")
                                 }
                                 Button("localmodels.remove", role: .destructive) {
@@ -217,6 +238,11 @@ struct LocalModelsSettingsView: View {
                         if case .failed(let id, let message) = center.runtimeState, id == entry.id {
                             Text(message).font(.caption).foregroundStyle(.red)
                         }
+                        if let reason = center.incompatibleReasons[entry.id] {
+                            Label(reason, systemImage: "memorychip")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }.padding(.vertical, 4)
                 }
             } footer: {
@@ -228,6 +254,7 @@ struct LocalModelsSettingsView: View {
         }
         .navigationTitle("localmodels.title")
         .task { await center.refresh() }
+        .refreshable { await center.refresh() }
         .confirmationDialog(
             "删除本地模型？",
             isPresented: Binding(

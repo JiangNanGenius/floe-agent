@@ -50,7 +50,10 @@ final class RemoteSessionCenter: ObservableObject {
 
     init(environment: AppEnvironment) {
         self.environment = environment
-        let hostStore = RemoteHostStore(database: environment.database)
+        // Use the same store instance that model tools and configuration sync
+        // use. Constructing a second store here let SSH succeed through the
+        // tool path while the Settings host list observed an empty snapshot.
+        let hostStore = environment.remoteHostStore
         self.hostStore = hostStore
         self.sshService = SSHConnectionService(hostStore: hostStore)
     }
