@@ -523,7 +523,10 @@ let package = Package(
         ),
         .testTarget(
             name: "FloeLocalModelsTests",
-            dependencies: ["FloeLocalModelCatalog"],
+            dependencies: [
+                "FloeLocalModelCatalog", "FloeLocalModels", "FloeProviders",
+                "FloeModels", "FloeCore"
+            ],
             path: "Tests/FloeLocalModelsTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

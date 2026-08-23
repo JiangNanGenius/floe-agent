@@ -87,6 +87,20 @@ struct ToolCatalogTests {
         #expect(schema["additionalProperties"] as? Bool == true)
     }
 
+    @Test("Semantically malformed property schemas fall back before reaching strict providers")
+    func semanticallyMalformedSchemaFallsBack() throws {
+        let descriptor = ToolCatalog.Descriptor(
+            name: "test.invalidSemanticSchema",
+            parametersJSON: #"{"type":"object","properties":{"series":{"type":"object","properties":{"name":{"type":"string"},"required":["name"]}}}}"#,
+            riskLabels: [],
+            isSideEffecting: false
+        )
+        let data = try #require(descriptor.parametersJSON.data(using: .utf8))
+        let schema = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(schema["type"] as? String == "object")
+        #expect(schema["additionalProperties"] as? Bool == true)
+    }
+
     @Test("allDescriptors is sorted by name")
     func allDescriptorsSorted() {
         ToolCatalog.register(EchoTool.self)

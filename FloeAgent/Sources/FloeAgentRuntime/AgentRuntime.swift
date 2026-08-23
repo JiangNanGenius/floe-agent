@@ -627,14 +627,16 @@ public actor FloeAgentRuntime {
             let protection = ContextProtection(
                 messageIDs: latestUserID.map { [$0] } ?? []
             )
+            let compressionPolicy = Self.contextCompressionPolicy(
+                configuration: configuration,
+                messages: messages
+            )
+            logger.debug(
+                "contextBudgetConfigured run=\(runID.uuidString) mode=\(compressionPolicy.mode.rawValue) tier=\(compressionPolicy.tier.rawValue) window=\(compressionPolicy.budget.contextWindowTokens) availableInput=\(compressionPolicy.budget.availableInputTokens) reservedOutput=\(compressionPolicy.budget.reservedOutputTokens) toolSchemas=\(compressionPolicy.budget.toolSchemaTokens) images=\(compressionPolicy.budget.imageTokens) trigger=\(compressionPolicy.budget.triggerRatio) target=\(compressionPolicy.budget.targetRatio)"
+            )
             let request = ContextRequest(
                 messages: messages,
-                budget: ContextBudget(
-                    contextWindowTokens: configuration.model.limits.contextTokens,
-                    reservedOutputTokens: Self.contextOutputReservation(
-                        limits: configuration.model.limits
-                    )
-                ),
+                budget: compressionPolicy.budget,
                 protection: protection
             )
             if let prepared = try? await contextEngine.prepareContext(for: request),
@@ -647,6 +649,9 @@ public actor FloeAgentRuntime {
                     runID: runID,
                     record: compaction,
                     summary: summary
+                )
+                logger.info(
+                    "contextCompacted run=\(runID.uuidString) mode=\(compressionPolicy.mode.rawValue) tier=\(compressionPolicy.tier.rawValue) before=\(compaction.beforeEstimatedTokens) after=\(compaction.afterEstimatedTokens) sources=\(compaction.sourceMessageIDs.count) emergency=\(prepared.isEmergencyCompaction)"
                 )
                 await sink?.agentRuntime(self, didCompact: compaction)
             }
@@ -1553,12 +1558,10 @@ public actor FloeAgentRuntime {
             let request = CompactionRequest(
                 context: ContextRequest(
                     messages: messages,
-                    budget: ContextBudget(
-                        contextWindowTokens: configuration.model.limits.contextTokens,
-                        reservedOutputTokens: Self.contextOutputReservation(
-                            limits: configuration.model.limits
-                        )
-                    ),
+                    budget: Self.contextCompressionPolicy(
+                        configuration: configuration,
+                        messages: messages
+                    ).budget,
                     protection: ContextProtection(
                         messageIDs: latestUserID.map { [$0] } ?? []
                     )
@@ -1709,6 +1712,37 @@ public actor FloeAgentRuntime {
             return min(configured, max(1, limits.contextTokens / 2))
         }
         return min(4_096, max(512, limits.contextTokens / 4))
+    }
+
+    private static func contextCompressionPolicy(
+        configuration: Configuration,
+        messages: [ConversationMessage]
+    ) -> ContextCompressionPolicy {
+        let reservedOutput = contextOutputReservation(limits: configuration.model.limits)
+        guard configuration.provider.kind == .local else {
+            return .cloud(
+                contextWindowTokens: configuration.model.limits.contextTokens,
+                reservedOutputTokens: reservedOutput
+            )
+        }
+        let toolSchemaTokens: Int
+        if configuration.toolsEnabled && configuration.model.capabilities.contains(.tools) {
+            // LocalProviderAdapter performs intent routing and offers at most
+            // a small bounded tool subset on each turn.
+            toolSchemaTokens = 1_000
+        } else {
+            toolSchemaTokens = 0
+        }
+        // Inline images are not represented in ConversationMessage.content,
+        // so account for them explicitly. This is deliberately conservative;
+        // provider-specific token usage will refine later turns.
+        let imageTokens = messages.reduce(0) { $0 + $1.images.count * 1_024 }
+        return .local(
+            contextWindowTokens: configuration.model.limits.contextTokens,
+            reservedOutputTokens: reservedOutput,
+            toolSchemaTokens: toolSchemaTokens,
+            imageTokens: imageTokens
+        )
     }
 
     private static func payloadSize(of event: AgentEvent) -> Int {

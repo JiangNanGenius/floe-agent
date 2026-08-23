@@ -240,6 +240,47 @@ struct HarnessPlanningTests {
         })
     }
 
+    @Test("Context compression policy adapts independently of model loading")
+    func adaptiveContextCompressionPolicy() {
+        let micro = ContextCompressionPolicy.local(
+            contextWindowTokens: 4_096,
+            reservedOutputTokens: 768,
+            toolSchemaTokens: 900,
+            imageTokens: 0
+        )
+        #expect(micro.tier == .micro)
+        #expect(micro.mode == .local)
+        #expect(micro.budget.triggerRatio == 0.50)
+        #expect(micro.budget.protectedTailTokens <= 800)
+        #expect(micro.budget.availableInputTokens == 2_428)
+
+        let compact = ContextCompressionPolicy.local(
+            contextWindowTokens: 8_192,
+            reservedOutputTokens: 1_024,
+            toolSchemaTokens: 900,
+            imageTokens: 1_024
+        )
+        #expect(compact.tier == .compact)
+        #expect(compact.budget.triggerRatio == 0.58)
+        #expect(compact.budget.protectedTailTokens <= 1_600)
+
+        let extended = ContextCompressionPolicy.local(
+            contextWindowTokens: 262_144,
+            reservedOutputTokens: 8_192
+        )
+        #expect(extended.tier == .extended)
+        #expect(extended.budget.protectedTailTokens == 12_000)
+
+        let cloud = ContextCompressionPolicy.cloud(
+            contextWindowTokens: 8_192,
+            reservedOutputTokens: 1_024
+        )
+        #expect(cloud.mode == .cloud)
+        #expect(cloud.budget.triggerRatio == 0.75)
+        #expect(cloud.budget.targetRatio == 0.55)
+        #expect(cloud.budget.protectedTailTokens == 12_000)
+    }
+
     @Test("Memory policy rejects secrets and bounds pending workspace candidates")
     func memoryReviewPolicy() async {
         let workspaceID = UUID()

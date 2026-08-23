@@ -36,6 +36,110 @@ public struct ContextBudget: Sendable, Codable, Hashable {
     }
 }
 
+/// Context compression is deliberately independent from model loading. A
+/// device may be able to map a model while the current conversation still
+/// needs aggressive compaction because tools, images and output all share the
+/// same context window.
+public enum ContextCompressionTier: String, Sendable, Codable, Hashable {
+    case micro
+    case compact
+    case standard
+    case extended
+}
+
+public enum ContextCompressionMode: String, Sendable, Codable, Hashable {
+    case cloud
+    case local
+}
+
+public struct ContextCompressionPolicy: Sendable, Hashable {
+    public let mode: ContextCompressionMode
+    public let tier: ContextCompressionTier
+    public let budget: ContextBudget
+
+    private init(
+        mode: ContextCompressionMode,
+        tier: ContextCompressionTier,
+        budget: ContextBudget
+    ) {
+        self.mode = mode
+        self.tier = tier
+        self.budget = budget
+    }
+
+    /// Cloud providers retain the existing roomy policy. Local-model
+    /// emergency support must never reduce cloud conversation fidelity or
+    /// tool availability.
+    public static func cloud(
+        contextWindowTokens: Int,
+        reservedOutputTokens: Int
+    ) -> ContextCompressionPolicy {
+        ContextCompressionPolicy(
+            mode: .cloud,
+            tier: contextWindowTokens > 32_768 ? .extended : .standard,
+            budget: ContextBudget(
+                contextWindowTokens: contextWindowTokens,
+                reservedOutputTokens: reservedOutputTokens,
+                triggerRatio: 0.75,
+                targetRatio: 0.55,
+                emergencyRatio: 0.90,
+                protectedTailTokens: 12_000
+            )
+        )
+    }
+
+    /// Local inference has its own pressure curve because its 3K-8K runtime
+    /// windows are deliberately much smaller than provider-native limits.
+    public static func local(
+        contextWindowTokens: Int,
+        reservedOutputTokens: Int,
+        toolSchemaTokens: Int = 0,
+        imageTokens: Int = 0
+    ) -> ContextCompressionPolicy {
+        let window = max(1, contextWindowTokens)
+        let fixed = max(0, reservedOutputTokens)
+            + max(0, toolSchemaTokens)
+            + max(0, imageTokens)
+        let available = max(1, window - fixed)
+
+        let settings: (
+            tier: ContextCompressionTier,
+            trigger: Double,
+            target: Double,
+            emergency: Double,
+            tailFraction: Double,
+            tailCeiling: Int
+        )
+        switch window {
+        case ...4_096:
+            settings = (.micro, 0.50, 0.32, 0.72, 0.22, 800)
+        case ...8_192:
+            settings = (.compact, 0.58, 0.38, 0.78, 0.25, 1_600)
+        case ...32_768:
+            settings = (.standard, 0.68, 0.48, 0.85, 0.28, 6_000)
+        default:
+            settings = (.extended, 0.75, 0.55, 0.90, 0.30, 12_000)
+        }
+        return ContextCompressionPolicy(
+            mode: .local,
+            tier: settings.tier,
+            budget: ContextBudget(
+                contextWindowTokens: window,
+                reservedOutputTokens: reservedOutputTokens,
+                toolSchemaTokens: toolSchemaTokens,
+                imageTokens: imageTokens,
+                triggerRatio: settings.trigger,
+                targetRatio: settings.target,
+                emergencyRatio: settings.emergency,
+                protectedTailTokens: min(
+                    settings.tailCeiling,
+                    max(128, Int(Double(available) * settings.tailFraction))
+                )
+            )
+        )
+    }
+}
+
 public struct ContextProtection: Sendable, Codable, Hashable {
     public var messageIDs: Set<UUID>
     public var planDraft: String?

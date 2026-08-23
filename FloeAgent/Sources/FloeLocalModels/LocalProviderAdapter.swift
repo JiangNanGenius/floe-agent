@@ -119,25 +119,29 @@ public actor LocalModelRuntime {
             }
             let mappedBytes = Self.fileSize(modelURL) + (projectorURL.map(Self.fileSize) ?? 0)
             let physicalMemory = ProcessInfo.processInfo.physicalMemory
+            let availableMemory = LocalInferenceResourcePolicy.availableMemoryBytes()
             guard LocalInferenceResourcePolicy.canLoad(
                 mappedBytes: mappedBytes,
-                physicalMemoryBytes: physicalMemory
+                physicalMemoryBytes: availableMemory
             ) else {
                 FloeLogger(category: .providers).warning(
-                    "localInferenceEngineLoadRejected trace=\(traceID) model=\(modelID) reason=memoryHeadroom mappedBytes=\(mappedBytes) physicalBytes=\(physicalMemory) vision=\(wantsVision)"
+                    "localInferenceEngineLoadRejected trace=\(traceID) model=\(modelID) reason=memoryHeadroom mappedBytes=\(mappedBytes) availableBytes=\(availableMemory) physicalBytes=\(physicalMemory) vision=\(wantsVision)"
                 )
                 throw LocalInferenceError.insufficientMemory(
                     required: mappedBytes,
-                    physical: physicalMemory
+                    physical: availableMemory
                 )
             }
             let profile = LocalInferenceResourcePolicy.profile(
                 mappedBytes: mappedBytes,
-                physicalMemoryBytes: physicalMemory
+                // Re-evaluate the tier for every load. Background tasks,
+                // decoded images and a previously loaded model can all change
+                // the process allowance without changing installed RAM.
+                physicalMemoryBytes: availableMemory
             )
             let loadStartedAt = Date()
             FloeLogger(category: .providers).info(
-                "localInferenceEngineLoadStarted trace=\(traceID) model=\(modelID) projector=\(projectorURL != nil) mappedBytes=\(mappedBytes) physicalBytes=\(physicalMemory) context=\(profile.contextSize) batch=\(profile.batchSize) gpuLayers=\(profile.gpuLayers)"
+                "localInferenceEngineLoadStarted trace=\(traceID) model=\(modelID) projector=\(projectorURL != nil) mappedBytes=\(mappedBytes) availableBytes=\(availableMemory) physicalBytes=\(physicalMemory) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize) gpuLayers=\(profile.gpuLayers)"
             )
             if let previous = activeEngine {
                 activeEngine = nil
@@ -248,7 +252,11 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     guard #available(iOS 18.4, macOS 15.4, *) else {
                         throw FloeError.invalidConfiguration("Local inference requires iOS 18.4 or later")
                     }
-                    let prompt = Self.prompt(for: request)
+                    let promptBuild = Self.buildPrompt(for: request)
+                    let prompt = promptBuild.text
+                    FloeLogger(category: .providers).info(
+                        "localPromptPrepared model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) sourceCharacters=\(promptBuild.sourceCharacters) promptCharacters=\(prompt.count) offeredTools=\(request.toolSchemas.count) selectedTools=\(promptBuild.selectedToolCount) omittedTools=\(max(0, request.toolSchemas.count - promptBuild.selectedToolCount))"
+                    )
                     let images = request.effectiveMessages.flatMap(\.content).compactMap { part -> Data? in
                         guard case .imageData(_, let base64) = part else { return nil }
                         return Data(base64Encoded: base64)
@@ -283,7 +291,14 @@ public struct LocalProviderAdapter: ProviderAdapter {
         credentials: ProviderCredentials
     ) async throws -> [ModelProfile] {
         var models: [ModelProfile] = []
-        for entry in CuratedLocalModelCatalog.entries where await store.isInstalled(id: entry.id) {
+        let physicalMemory = ProcessInfo.processInfo.physicalMemory
+        for entry in CuratedLocalModelCatalog.entries {
+            guard let modelURL = await store.installedModelURL(id: entry.id) else { continue }
+            let mappedBytes = Self.fileSize(modelURL)
+            let resourceProfile = LocalInferenceResourcePolicy.profile(
+                mappedBytes: mappedBytes,
+                physicalMemoryBytes: physicalMemory
+            )
             var capabilities: ModelCapabilities = [.text, .tools, .approval]
             if entry.supportsVision { capabilities.insert(.vision) }
             models.append(ModelProfile(
@@ -294,7 +309,10 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 // The runtime reserves memory headroom for the UI, Metal and
                 // tools. Advertise the guaranteed profile, not llama.cpp's
                 // theoretical maximum, so the harness compacts in time.
-                limits: .init(contextTokens: 4_096, maxOutputTokens: 1_024),
+                limits: .init(
+                    contextTokens: Int(resourceProfile.contextSize),
+                    maxOutputTokens: resourceProfile.maximumOutputTokens
+                ),
                 capabilities: capabilities,
                 reasoningEffort: entry.supportsReasoning ? .low : .automatic
             ))
@@ -311,43 +329,163 @@ public struct LocalProviderAdapter: ProviderAdapter {
         }
     }
 
-    private static func prompt(for request: ProviderStreamRequest) -> String {
-        var sections: [String] = []
-        if !request.toolSchemas.isEmpty {
-            let schemas = request.toolSchemas.map {
-                "- \($0.name): \($0.description) arguments=\($0.parametersJSON)"
+    private static func fileSize(_ url: URL) -> UInt64 {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .totalFileAllocatedSizeKey])
+        return UInt64(max(values?.totalFileAllocatedSize ?? values?.fileSize ?? 0, 0))
+    }
+
+    struct PromptBuild: Sendable, Equatable {
+        let text: String
+        let selectedToolCount: Int
+        let sourceCharacters: Int
+    }
+
+    /// The full cloud harness is intentionally much larger than the safe
+    /// 3K-8K on-device context. Replaying it verbatim made every local turn
+    /// fail before decoding. Build a bounded local activation instead: the
+    /// latest conversation evidence plus a small intent-relevant tool set.
+    static func buildPrompt(for request: ProviderStreamRequest) -> PromptBuild {
+        let sourceCharacters = request.effectiveMessages.reduce(0) { partial, message in
+            partial + message.content.reduce(0) { count, part in
+                if case .text(let value) = part { return count + value.count }
+                return count
+            }
+        }
+        let latestUserText = request.effectiveMessages.last(where: { $0.role == "user" })?
+            .content.compactMap { part -> String? in
+                if case .text(let value) = part { return value }
+                return nil
+            }.joined(separator: "\n") ?? ""
+        let selectedTools = selectTools(
+            request.toolSchemas,
+            latestUserText: latestUserText,
+            pendingToolNames: Set(request.pendingToolCalls.map(\.toolName))
+        )
+
+        var sections: [String] = [
+            "SYSTEM: You are Floe, a concise on-device agent. Follow the latest user request. Tool execution and approval are enforced by the app. Use only the offered tools, do not invent names, and never claim success without a tool result."
+        ]
+        if !selectedTools.isEmpty {
+            let schemas = selectedTools.map {
+                "- \($0.name): \(clipped($0.description, limit: 120)) arguments=\($0.parametersJSON)"
             }.joined(separator: "\n")
             sections.append("""
-            SYSTEM: Tools available:\n\(schemas)
-            When a tool is needed, output only one JSON object in this exact shape:
-            {"tool_call":{"name":"tool.name","arguments":{}}}
-            Otherwise answer normally. Never invent a tool name.
+            TOOLS:\n\(schemas)
+            To call one, output only {"tool_call":{"name":"tool.name","arguments":{}}}. Otherwise answer normally.
             """)
         }
-        for message in request.effectiveMessages {
-            let text = message.content.compactMap { part -> String? in
+
+        var transcriptSections: [String] = []
+        var transcriptCharacters = 0
+        for message in request.effectiveMessages.reversed() where message.role != "system" {
+            let raw = message.content.compactMap { part -> String? in
                 if case .text(let value) = part { return value }
-                if case .imageData = part { return "<__media__>" }
-                if case .imageURL(let url) = part { return "[image: \(url.absoluteString)]" }
+                if case .imageData = part { return "<image attached>" }
+                if case .imageURL = part { return "<image attached>" }
                 return nil
             }.joined(separator: "\n")
-            sections.append("\(message.role.uppercased()): \(text)")
+            let remaining = 1_600 - transcriptCharacters
+            guard remaining > 80 else { break }
+            let line = "\(message.role.uppercased()): \(clipped(raw, limit: min(800, remaining)))"
+            transcriptSections.insert(line, at: 0)
+            transcriptCharacters += line.count
         }
-        for call in request.pendingToolCalls {
-            sections.append("ASSISTANT TOOL REQUEST \(call.id): \(call.toolName) \(String(decoding: call.argumentsJSON, as: UTF8.self))")
+        sections.append(contentsOf: transcriptSections)
+        // Tool evidence shares the same bounded history budget. Without this,
+        // a tool follow-up could grow back beyond the bounded local context even
+        // after the cloud system prompt had been removed.
+        var evidenceBudget = max(0, 2_000 - transcriptCharacters)
+        for call in request.pendingToolCalls.suffix(2) where evidenceBudget > 80 {
+            let line = "ASSISTANT TOOL REQUEST \(call.id): \(call.toolName) \(String(decoding: call.argumentsJSON, as: UTF8.self))"
+            let bounded = clipped(line, limit: min(500, evidenceBudget))
+            sections.append(bounded)
+            evidenceBudget -= bounded.count
         }
-        for result in request.toolResults {
-            sections.append("TOOL RESULT \(result.callID): \(result.output)")
+        for result in request.toolResults.suffix(2) where evidenceBudget > 80 {
+            let line = "TOOL RESULT \(result.callID): \(result.output)"
+            let bounded = clipped(line, limit: min(700, evidenceBudget))
+            sections.append(bounded)
+            evidenceBudget -= bounded.count
         }
         let transcript = sections.joined(separator: "\n\n")
         let modelID = request.model.remoteModelID.lowercased()
+        let text: String
         if modelID.contains("qwen") {
-            return "<|im_start|>system\nYou are Floe, an on-device agent. Follow the transcript and use only offered tools.<|im_end|>\n<|im_start|>user\n\(transcript)<|im_end|>\n<|im_start|>assistant\n"
+            text = "<|im_start|>system\nYou are Floe, an on-device agent.<|im_end|>\n<|im_start|>user\n\(transcript)<|im_end|>\n<|im_start|>assistant\n"
+        } else if modelID.contains("ministral") || modelID.contains("mistral") {
+            text = "[INST] You are Floe, an on-device agent.\n\n\(transcript) [/INST]"
+        } else {
+            text = transcript + "\n\nASSISTANT:"
         }
-        if modelID.contains("ministral") || modelID.contains("mistral") {
-            return "[INST] You are Floe, an on-device agent. Follow the transcript and use only offered tools.\n\n\(transcript) [/INST]"
+        return PromptBuild(
+            text: text,
+            selectedToolCount: selectedTools.count,
+            sourceCharacters: sourceCharacters
+        )
+    }
+
+    private static func selectTools(
+        _ tools: [ToolSchemaDescriptor],
+        latestUserText: String,
+        pendingToolNames: Set<String>
+    ) -> [ToolSchemaDescriptor] {
+        let text = latestUserText.lowercased()
+        let actionRequested = containsAny(text, [
+            "创建", "读取", "查看", "查找", "搜索", "运行", "执行", "修改", "编辑", "删除", "生成", "连接", "分析", "测试",
+            "create", "read", "inspect", "find", "search", "run", "execute", "edit", "delete", "generate", "connect", "analyze", "test"
+        ])
+        let intentPrefixes: [(needles: [String], prefixes: [String])] = [
+            (["文件", "目录", "文档", "pdf", "代码", "file", "folder", "document", "code"], ["workspace.", "document.", "pdf."]),
+            (["图片", "照片", "图像", "视觉", "ocr", "image", "photo", "vision"], ["image."]),
+            (["网页", "浏览器", "联网", "搜索", "网站", "web", "browser", "search", "url"], ["browser.", "web.", "network.http"]),
+            (["python", "javascript", "js", "脚本", "计算", "运行", "execute", "script", "compute"], ["exec."]),
+            (["ssh", "主机", "远程", "终端", "服务器", "host", "remote", "terminal", "server"], ["ssh."]),
+            (["记忆", "memory", "偏好"], ["memory."]),
+            (["日历", "提醒", "邮件", "地图", "家庭", "快捷指令", "calendar", "reminder", "mail", "map", "home", "shortcut"], ["apple."]),
+            (["表格", "图表", "网页预览", "table", "chart", "preview", "presentation"], ["presentation."]),
+            (["技能", "skill"], ["skill."])
+        ]
+        let fallbackNames: Set<String> = [
+            "workspace.listDirectory", "workspace.readFile", "web.search",
+            "image.inspect", "exec.localPython", "memory.recall"
+        ]
+        let scored = tools.compactMap { tool -> (ToolSchemaDescriptor, Int)? in
+            if pendingToolNames.contains(tool.name) { return (tool, 10_000) }
+            var score = 0
+            let normalizedName = tool.name.lowercased()
+            let components = normalizedName.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            if components.contains(where: { $0.count >= 3 && text.contains(String($0)) }) { score += 200 }
+            for intent in intentPrefixes where containsAny(text, intent.needles) {
+                if intent.prefixes.contains(where: { normalizedName.hasPrefix($0) }) { score += 100 }
+            }
+            if actionRequested && fallbackNames.contains(tool.name) { score += 10 }
+            return score > 0 ? (tool, score) : nil
+        }.sorted {
+            if $0.1 != $1.1 { return $0.1 > $1.1 }
+            return $0.0.name < $1.0.name
         }
-        return transcript + "\n\nASSISTANT:"
+
+        var selected: [ToolSchemaDescriptor] = []
+        var schemaCharacters = 0
+        for (tool, _) in scored {
+            let cost = tool.name.count + min(tool.description.count, 120) + tool.parametersJSON.count + 16
+            guard selected.count < 6 else { break }
+            guard schemaCharacters + cost <= 2_800 else { continue }
+            selected.append(tool)
+            schemaCharacters += cost
+        }
+        return selected
+    }
+
+    private static func containsAny(_ text: String, _ needles: [String]) -> Bool {
+        needles.contains(where: { text.contains($0) })
+    }
+
+    private static func clipped(_ text: String, limit: Int) -> String {
+        guard text.count > limit, limit > 24 else { return text }
+        let headCount = (limit - 17) * 2 / 3
+        let tailCount = limit - 17 - headCount
+        return String(text.prefix(headCount)) + "\n...[omitted]...\n" + String(text.suffix(tailCount))
     }
 
     private static func toolCall(from output: String) throws -> ToolCall? {

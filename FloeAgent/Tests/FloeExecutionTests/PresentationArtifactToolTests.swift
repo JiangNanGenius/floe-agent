@@ -18,7 +18,13 @@ struct PresentationArtifactToolTests {
         let data = try #require(PresentationArtifactTool.parametersJSON.data(using: .utf8))
         let schema = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(schema["type"] as? String == "object")
-        #expect((schema["properties"] as? [String: Any])?["series"] != nil)
+        let rootProperties = try #require(schema["properties"] as? [String: Any])
+        let series = try #require(rootProperties["series"] as? [String: Any])
+        let seriesItems = try #require(series["items"] as? [String: Any])
+        let seriesProperties = try #require(seriesItems["properties"] as? [String: Any])
+        #expect(Set(seriesProperties.keys) == Set(["name", "points"]))
+        #expect(seriesItems["required"] as? [String] == ["name", "points"])
+        #expect(seriesItems["additionalProperties"] as? Bool == false)
     }
 
     @Test("native table is persisted as a digest-addressed rectangular document")

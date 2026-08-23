@@ -43,6 +43,9 @@ final class LocalModelsCenter: ObservableObject {
     }
 
     func load(_ entry: LocalModelCatalogEntry) {
+        FloeLogger(category: .providers).info(
+            "localModelLoadRequested model=\(entry.id) installedSnapshot=\(installedIDs.contains(entry.id))"
+        )
         Task {
             guard await store.isInstalled(id: entry.id) else {
                 await refresh()
@@ -128,6 +131,10 @@ final class LocalModelsCenter: ObservableObject {
         FloeLogger(category: .providers).info("localModelRemovalRequested model=\(entry.id)")
         Task {
             do {
+                await runtime.unload(modelID: entry.id)
+                if case .ready(let id) = runtimeState, id == entry.id {
+                    runtimeState = .unloaded
+                }
                 try await store.remove(id: entry.id)
                 await refresh()
                 await onCatalogChanged?()
@@ -161,9 +168,12 @@ struct LocalModelsSettingsView: View {
                             Spacer()
                             if center.activeDownloads.contains(entry.id) {
                                 Button("localmodels.pause") { center.pause(entry) }
+                                    .buttonStyle(.borderless)
                             } else if center.pausedDownloads.contains(entry.id) {
                                 Button("localmodels.resume") { center.download(entry) }
+                                    .buttonStyle(.borderless)
                                 Button("localmodels.cancel", role: .destructive) { center.cancel(entry) }
+                                    .buttonStyle(.borderless)
                             } else if center.installedIDs.contains(entry.id) {
                                 switch center.runtimeState {
                                 case .loading(let id) where id == entry.id:
@@ -171,14 +181,24 @@ struct LocalModelsSettingsView: View {
                                     Text("正在加载…").font(.caption).foregroundStyle(.secondary)
                                 case .ready(let id) where id == entry.id:
                                     Button("卸载") { center.unload(entry) }
+                                        .buttonStyle(.borderless)
+                                        .accessibilityIdentifier("localModel.unload.\(entry.id)")
                                 default:
                                     Button("加载") { center.load(entry) }
+                                        .buttonStyle(.borderless)
+                                        .accessibilityIdentifier("localModel.load.\(entry.id)")
                                 }
                                 Button("localmodels.remove", role: .destructive) {
+                                    FloeLogger(category: .providers).info(
+                                        "localModelRemovalConfirmationPresented model=\(entry.id)"
+                                    )
                                     pendingRemoval = entry
                                 }
+                                .buttonStyle(.borderless)
+                                .accessibilityIdentifier("localModel.remove.\(entry.id)")
                             } else {
                                 Button("localmodels.download") { center.download(entry) }
+                                    .buttonStyle(.borderless)
                             }
                         }
                         if let progress = center.downloadProgress[entry.id],

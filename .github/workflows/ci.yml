@@ -57,6 +57,16 @@ jobs:
 
       - name: SPM test (cross-platform targets)
         run: |
+          # SwiftPM links the universal llama binary into the local-model test
+          # bundle but does not copy the macOS framework beside xctest. Put it
+          # in the standard PackageFrameworks rpath before the test helper
+          # loads bundles; no model inference is performed by these tests.
+          LLAMA_FRAMEWORK="$(find .build/artifacts -path '*/macos-arm64_x86_64/llama.framework' -print -quit)"
+          test -n "$LLAMA_FRAMEWORK"
+          BIN_PATH="$(swift build --show-bin-path)"
+          mkdir -p "$BIN_PATH/PackageFrameworks"
+          cp -R "$LLAMA_FRAMEWORK" "$BIN_PATH/PackageFrameworks/"
+          find "$BIN_PATH/PackageFrameworks/llama.framework" -name '._*' -delete
           # Deadline tests intentionally outlive the caller briefly. Isolate
           # both JavaScript suites so loaded shared runners cannot make their
           # wall-clock assertions interfere with unrelated concurrent tests.

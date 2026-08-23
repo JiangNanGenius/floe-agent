@@ -42,7 +42,8 @@ public enum ToolCatalog {
         private static func validatedSchema(_ schema: String, toolName: String) -> String {
             guard let data = schema.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data),
-                  object is [String: Any]
+                  let root = object as? [String: Any],
+                  schemaNodeIsValid(root)
             else {
                 FloeLogger(category: .tools).error(
                     "toolSchemaInvalid tool=\(toolName) fallback=permissiveObject"
@@ -50,6 +51,43 @@ public enum ToolCatalog {
                 return #"{"type":"object","additionalProperties":true}"#
             }
             return schema
+        }
+
+        /// JSON can parse successfully while still placing schema keywords
+        /// under `properties` as though they were property names. Strict
+        /// providers reject the entire request in that case. Validate the
+        /// structural subset used by Floe before a descriptor reaches a wire
+        /// adapter, while keeping support for boolean schemas and combinators.
+        private static func schemaNodeIsValid(_ node: [String: Any]) -> Bool {
+            if let propertiesValue = node["properties"] {
+                guard let properties = propertiesValue as? [String: Any] else { return false }
+                for child in properties.values where !schemaValueIsValid(child) { return false }
+            }
+            if let requiredValue = node["required"] {
+                guard let required = requiredValue as? [Any],
+                      required.allSatisfy({ $0 is String })
+                else { return false }
+            }
+            if let additional = node["additionalProperties"],
+               !schemaValueIsValid(additional) {
+                return false
+            }
+            if let items = node["items"], !schemaValueIsValid(items) { return false }
+            for keyword in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+                if let value = node[keyword] {
+                    guard let alternatives = value as? [Any],
+                          alternatives.allSatisfy({ schemaValueIsValid($0) })
+                    else { return false }
+                }
+            }
+            return true
+        }
+
+        private static func schemaValueIsValid(_ value: Any) -> Bool {
+            if value is Bool { return true }
+            if let object = value as? [String: Any] { return schemaNodeIsValid(object) }
+            if let array = value as? [Any] { return array.allSatisfy(schemaValueIsValid) }
+            return false
         }
     }
 
