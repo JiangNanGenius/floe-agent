@@ -55,16 +55,68 @@ struct LocalModelCatalogTests {
         ) == .confirmReplacement(currentModelID: "local-a"))
     }
 
-    @Test("Curated entries are downloadable Apache models")
+    @Test("Public catalog contains only immutable curated MLX snapshots")
     func curatedEntries() {
-        #expect(CuratedLocalModelCatalog.entries.count == 2)
+        #expect(CuratedLocalModelCatalog.entries.count == 3)
         #expect(!CuratedLocalModelCatalog.entries.contains { $0.id == "qwen3.5-9b-q4km" })
+        #expect(!CuratedLocalModelCatalog.entries.contains { $0.id == "ministral3-3b-q4km" })
         #expect(CuratedLocalModelCatalog.retiredEntries.contains { $0.id == "qwen3.5-9b-q4km" })
+        #expect(CuratedLocalModelCatalog.retiredEntries.contains { $0.id == "ministral3-3b-q4km" })
+        let publicProfileIDs = CuratedLocalModelCatalog.entries.map(\.profileID)
+        #expect(Set(publicProfileIDs).count == publicProfileIDs.count)
+        #expect(publicProfileIDs.allSatisfy(ProviderProfile.onDeviceModelIDs.contains))
+        #expect(!publicProfileIDs.contains(AppleFoundationModelIdentity.profileID))
         for entry in CuratedLocalModelCatalog.entries {
-            #expect(entry.modelURL.scheme == "https")
-            #expect(entry.license == "Apache-2.0")
+            #expect(entry.runtimeFormat == .mlx)
+            #expect(entry.revision.count == 40)
+            #expect(!entry.artifacts.isEmpty)
+            #expect(entry.artifacts.allSatisfy { entry.artifactURL($0).scheme == "https" })
+            #expect(entry.artifacts.allSatisfy { entry.artifactURL($0).path.contains(entry.revision) })
             #expect(entry.supportsToolCalling)
             #expect(entry.approximateDownloadBytes > 1_000_000_000)
+        }
+
+        let qwen38 = CuratedLocalModelCatalog.entries.first {
+            $0.id == "qwen3.8-4b-heretic-mlx4"
+        }
+        #expect(qwen38?.repository == "yachen4ever/Qwen3.8-4B-Distill-Heretic-Abliterated-MLX-4bit")
+        #expect(qwen38?.artifacts.contains { $0.path == "model.safetensors" } == true)
+        #expect(qwen38?.license == "Apache-2.0")
+        #expect(qwen38?.parameterBillions == 4)
+        #expect(qwen38?.supportsVision == true)
+        #expect(qwen38?.supportsReasoning == true)
+
+        let gemma4 = CuratedLocalModelCatalog.entries.first {
+            $0.id == "gemma4-e4b-mlx4"
+        }
+        #expect(gemma4?.repository == "mlx-community/gemma-4-e4b-it-4bit")
+        #expect(gemma4?.license == "Gemma")
+        #expect(gemma4?.parameterBillions == 4.5)
+        #expect(gemma4?.approximateDownloadBytes == 5_179_239_349)
+        #expect(gemma4?.supportsVision == true)
+        #expect(gemma4?.supportsReasoning == true)
+    }
+
+    @Test("Safetensors validation checks its bounded JSON header")
+    func safetensorsSignature() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let valid = directory.appendingPathComponent("model.safetensors")
+        let header = Data(#"{"weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#.utf8)
+        var length = UInt64(header.count).littleEndian
+        var bytes = withUnsafeBytes(of: &length) { Data($0) }
+        bytes.append(header)
+        bytes.append(contentsOf: [0, 0])
+        try bytes.write(to: valid)
+        try LocalModelStore.validateSafetensors(valid)
+
+        let invalid = directory.appendingPathComponent("invalid.safetensors")
+        try Data([0, 1, 2, 3]).write(to: invalid)
+        #expect(throws: LocalModelStore.StoreError.self) {
+            try LocalModelStore.validateSafetensors(invalid)
         }
     }
 
@@ -152,7 +204,7 @@ struct LocalModelCatalogTests {
         let provider = LocalProviderAdapter.providerProfile
         let model = ModelProfile(
             providerID: provider.id,
-            remoteModelID: "qwen3.5-4b-q4km",
+            remoteModelID: "qwen3.5-4b-mlx4",
             displayName: "Qwen local",
             limits: .init(contextTokens: 4_096, maxOutputTokens: 1_024),
             capabilities: [.text, .tools]
@@ -182,7 +234,8 @@ struct LocalModelCatalogTests {
         #expect(build.text.contains("你好"))
         #expect(build.text.contains("unrelated.tool0"))
         #expect(build.text.contains("AVAILABLE TOOL NAMES"))
-        #expect(build.text.contains("/no_think"))
+        #expect(build.systemInstructions.contains("Think silently"))
+        #expect(!build.text.contains("<|im_start|>"))
         #expect(!build.text.contains("SYSTEM:"))
         #expect(!build.text.contains(String(repeating: "large cloud harness ", count: 20)))
     }
@@ -193,7 +246,7 @@ struct LocalModelCatalogTests {
         let provider = LocalProviderAdapter.providerProfile
         let model = ModelProfile(
             providerID: provider.id,
-            remoteModelID: "qwen3.5-4b-q4km",
+            remoteModelID: "qwen3.5-4b-mlx4",
             displayName: "Qwen local",
             limits: .init(contextTokens: 4_096, maxOutputTokens: 1_024),
             capabilities: [.text, .tools]
@@ -215,6 +268,9 @@ struct LocalModelCatalogTests {
         let build = LocalProviderAdapter.buildPrompt(for: request)
 
         #expect(build.selectedToolCount == 3)
+        #expect(build.selectedTools.map(\.name) == [
+            "pdf.read", "presentation.create", "workspace.readFile"
+        ])
         #expect(build.text.contains("workspace.readFile"))
         #expect(build.text.contains("pdf.read"))
         #expect(build.text.contains("presentation.create"))
@@ -228,7 +284,7 @@ struct LocalModelCatalogTests {
         let provider = LocalProviderAdapter.providerProfile
         let model = ModelProfile(
             providerID: provider.id,
-            remoteModelID: "qwen3.5-4b-q4km",
+            remoteModelID: "qwen3.5-4b-mlx4",
             displayName: "Qwen local",
             limits: .init(contextTokens: 4_096, maxOutputTokens: 1_024),
             capabilities: [.text, .tools]
@@ -300,5 +356,38 @@ struct LocalModelCatalogTests {
         )
         #expect(!channels.reasoning.isEmpty)
         #expect(channels.answer.isEmpty)
+    }
+
+    @Test("Local tool calls tolerate prose, fences, and nested function envelopes")
+    @available(macOS 15.4, *)
+    func tolerantLocalToolCalls() throws {
+        let offered: Set<String> = ["apple.automation.list", "workspace.readFile"]
+
+        let prose = try LocalProviderAdapter.toolCall(
+            from: "我来查看。\n<tool_call>{\"tool_call\":{\"name\":\"apple.automation.list\",\"arguments\":{}}}</tool_call>",
+            offeredToolNames: offered
+        )
+        #expect(prose?.toolName == "apple.automation.list")
+
+        let fenced = try LocalProviderAdapter.toolCall(
+            from: """
+            ```json
+            {"tool_calls":[{"type":"function","function":{"name":"workspace.readFile","arguments":"{\\"path\\":\\"notes.md\\"}"}}]}
+            ```
+            """,
+            offeredToolNames: offered
+        )
+        #expect(fenced?.toolName == "workspace.readFile")
+        #expect(String(decoding: try #require(fenced?.argumentsJSON), as: UTF8.self).contains("notes.md"))
+    }
+
+    @Test("Local tool parser rejects tools not offered on the turn")
+    @available(macOS 15.4, *)
+    func localToolCallCapabilityBoundary() throws {
+        let call = try LocalProviderAdapter.toolCall(
+            from: #"{"tool_call":{"name":"ssh.execute","arguments":{}}}"#,
+            offeredToolNames: ["workspace.readFile"]
+        )
+        #expect(call == nil)
     }
 }

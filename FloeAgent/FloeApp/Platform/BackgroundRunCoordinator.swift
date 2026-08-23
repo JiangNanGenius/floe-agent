@@ -33,6 +33,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private var refreshWork: Task<Void, Never>?
     private var processingWork: Task<Void, Never>?
     private var pipCarouselTask: Task<Void, Never>?
+    /// SwiftUI reports lifecycle independently for every window. Reconcile
+    /// those reports before touching the app-wide PiP surface so a secondary
+    /// scene cannot repeatedly start/retract it while another scene is active.
+    private var scenePhases: [String: ScenePhase] = [:]
+    private var effectiveScenePhase: ScenePhase = .active
     private var activeProcessingTaskID: UUID?
     @available(iOS 26.0, *)
     private var continuedTask: BGContinuedProcessingTask?
@@ -97,6 +102,26 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if surfacedRunID == runID {
             environment.backgroundVideoService.update(progress: stage)
         }
+    }
+
+    /// Keeps a durable, user-resumable run visible without turning the
+    /// checkpoint into a failure notification or tearing down PiP. Browser
+    /// takeover and other explicit user-action boundaries use this path.
+    func didSuspend(runID: UUID, message: String) {
+        guard var active = activeRuns[runID] else { return }
+        active.stage = message
+        active.progress = max(active.progress, 60)
+        activeRuns[runID] = active
+        retainedPausedRun = (runID, active)
+        if #available(iOS 26.0, *) {
+            updateContinuedTask(title: active.title, stage: message, progress: active.progress)
+        }
+        if surfacedRunID == runID {
+            environment.backgroundVideoService.update(title: active.title, progress: message)
+        }
+        FloeLogger(category: .app).info(
+            "backgroundRunSuspended run=\(runID.uuidString) message=\(message) activeRuns=\(activeRuns.count)"
+        )
     }
 
     func didFinish(runID: UUID, succeeded: Bool, message: String?) {
@@ -368,8 +393,22 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         continuedTask = nil
     }
 
-    func handleScenePhase(_ phase: ScenePhase) {
-        switch phase {
+    func handleScenePhase(_ phase: ScenePhase, sceneID: String) {
+        scenePhases[sceneID] = phase
+        let effective: ScenePhase
+        if scenePhases.values.contains(.active) {
+            effective = .active
+        } else if scenePhases.values.contains(.inactive) {
+            effective = .inactive
+        } else {
+            effective = .background
+        }
+        guard effective != effectiveScenePhase else { return }
+        effectiveScenePhase = effective
+        FloeLogger(category: .app).info(
+            "scenePhaseReconciled scene=\(sceneID) reported=\(String(describing: phase)) effective=\(String(describing: effective)) scenes=\(scenePhases.count)"
+        )
+        switch effective {
         case .background:
             isAppInBackground = true
             resumeBackgroundSurfaceIfNeeded()

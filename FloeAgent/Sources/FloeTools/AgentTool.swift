@@ -83,16 +83,21 @@ public struct ToolExecutionOutput: Sendable {
     public var fullOutputSHA256: String
     public var exitStatus: Int32?
     public var artifacts: [ToolArtifactReference]
+    /// The tool reached a stable boundary that requires the user to interact
+    /// with a visible system surface before the same run can continue.
+    public var requiresUserAction: Bool
 
     public init(
         summary: String,
         fullOutputSHA256: String,
         exitStatus: Int32? = nil,
-        artifacts: [ToolArtifactReference] = []
+        artifacts: [ToolArtifactReference] = [],
+        requiresUserAction: Bool = false
     ) {
         self.summary = String(summary.prefix(4096))
         self.fullOutputSHA256 = fullOutputSHA256
         self.exitStatus = exitStatus
         self.artifacts = artifacts
+        self.requiresUserAction = requiresUserAction
     }
 }

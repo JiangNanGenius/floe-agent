@@ -25,13 +25,13 @@ concurrency:
 
 jobs:
   build-verify-release:
-    runs-on: macos-26
+    runs-on: xcode-27
     permissions:
       contents: write
       id-token: write
       attestations: write
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
       GH_TOKEN: ${{ github.token }}
     defaults:
       run:
@@ -83,6 +83,8 @@ jobs:
       - name: Build iOS simulator release gate
         run: |
           xcodebuild \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
             -project FloeAgent.xcodeproj \
             -scheme FloeAgent \
             -configuration Release \
@@ -96,9 +98,15 @@ jobs:
           scripts/sbom.sh
           scripts/license_inventory.sh
 
+      - name: Package the matching Floe remote agent
+        run: |
+          scripts/package_remote_agent.sh release-assets 1.2.0
+
       - name: Build unsigned device application
         run: |
           xcodebuild \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
             -project FloeAgent.xcodeproj \
             -scheme FloeAgent \
             -configuration Release \
@@ -142,6 +150,7 @@ jobs:
             echo "swift_tests=passed"
             echo "simulator_release_build=passed"
             echo "unsigned_device_build=passed"
+            echo "remote_agent_asset=packaged"
           } > release-assets/TEST-SUMMARY.txt
 
       - name: Attest unsigned IPA provenance
@@ -159,9 +168,9 @@ jobs:
   testflight:
     name: Archive and upload the same commit to TestFlight
     needs: build-verify-release
-    runs-on: macos-26
+    runs-on: xcode-27
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
     defaults:
       run:
         working-directory: FloeAgent

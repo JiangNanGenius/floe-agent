@@ -11,45 +11,70 @@ import FloeModels
 import FloePersistence
 
 struct UsageStatisticsView: View {
+    private enum Dimension: String, CaseIterable, Identifiable {
+        case total = "总览"
+        case model = "模型"
+        case provider = "供应商"
+        var id: String { rawValue }
+    }
+
     @EnvironmentObject private var environment: AppEnvironment
     @State private var stats: UsageStatistics?
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var dimension: Dimension = .total
+    @State private var selectedBreakdownID: String?
 
     var body: some View {
         List {
             if let stats {
+                Section("筛选") {
+                    Picker("统计维度", selection: $dimension) {
+                        ForEach(Dimension.allCases) { item in
+                            Text(item.rawValue).tag(item)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    if dimension != .total {
+                        Picker(dimension == .model ? "模型" : "供应商", selection: $selectedBreakdownID) {
+                            Text("全部").tag(nil as String?)
+                            ForEach(dimensionRows(stats)) { row in
+                                Text(row.label).tag(Optional(row.id))
+                            }
+                        }
+                    }
+                }
                 Section("总计") {
                     LabeledContent("总输入 token") {
-                        Text("\(stats.totalInputTokens)").foregroundStyle(.secondary)
+                        Text("\(selectedRow(in: stats)?.inputTokens ?? stats.totalInputTokens)").foregroundStyle(.secondary)
                     }
                     LabeledContent("总输出 token") {
-                        Text("\(stats.totalOutputTokens)").foregroundStyle(.secondary)
+                        Text("\(selectedRow(in: stats)?.outputTokens ?? stats.totalOutputTokens)").foregroundStyle(.secondary)
                     }
                     LabeledContent("总 token") {
-                        Text("\(stats.totalTokens)").foregroundStyle(.secondary)
+                        Text("\(selectedRow(in: stats)?.totalTokens ?? stats.totalTokens)").foregroundStyle(.secondary)
                     }
                     LabeledContent("总任务数") {
-                        Text("\(stats.totalRuns)").foregroundStyle(.secondary)
+                        Text("\(selectedRow(in: stats)?.runs ?? stats.totalRuns)").foregroundStyle(.secondary)
                     }
-                    reportedTokenRow("缓存读取", value: stats.cacheReadTokens)
-                    reportedTokenRow("缓存写入", value: stats.cacheWriteTokens)
-                    reportedTokenRow("推理 token", value: stats.reasoningTokens)
+                    reportedTokenRow("缓存读取", value: selectedCacheRead(in: stats))
+                    reportedTokenRow("缓存写入", value: selectedCacheWrite(in: stats))
+                    reportedTokenRow("推理 token", value: selectedReasoning(in: stats))
                     LabeledContent("缓存命中率") {
                         Text(cacheHitRate(
-                            input: stats.totalInputTokens,
-                            read: stats.cacheReadTokens,
-                            write: stats.cacheWriteTokens
+                            input: selectedRow(in: stats)?.inputTokens ?? stats.totalInputTokens,
+                            read: selectedCacheRead(in: stats),
+                            write: selectedCacheWrite(in: stats)
                         )).foregroundStyle(.secondary)
                     }
                     LabeledContent("平均生成速度") {
-                        Text(speed(stats.averageTokensPerSecond)).foregroundStyle(.secondary)
+                        Text(speed(selectedSpeed(in: stats))).foregroundStyle(.secondary)
                     }
                     LabeledContent("平均首 token") {
-                        Text(milliseconds(stats.averageTimeToFirstTokenMs)).foregroundStyle(.secondary)
+                        Text(milliseconds(selectedTTFT(in: stats))).foregroundStyle(.secondary)
                     }
                     LabeledContent("平均响应耗时") {
-                        Text(milliseconds(stats.averageDurationMs)).foregroundStyle(.secondary)
+                        Text(milliseconds(selectedDuration(in: stats))).foregroundStyle(.secondary)
                     }
                 }
                 Section("近 30 天") {
@@ -87,6 +112,40 @@ struct UsageStatisticsView: View {
         }
         .navigationTitle("用量统计")
         .task { await load() }
+        .onChange(of: dimension) { _, _ in selectedBreakdownID = nil }
+    }
+
+    private func dimensionRows(_ stats: UsageStatistics) -> [UsageBreakdown] {
+        dimension == .model ? stats.byModel : stats.byProvider
+    }
+
+    private func selectedRow(in stats: UsageStatistics) -> UsageBreakdown? {
+        guard dimension != .total, let selectedBreakdownID else { return nil }
+        return dimensionRows(stats).first { $0.id == selectedBreakdownID }
+    }
+
+    private func selectedCacheRead(in stats: UsageStatistics) -> Int? {
+        selectedRow(in: stats).map(\.cacheReadTokens) ?? stats.cacheReadTokens
+    }
+
+    private func selectedCacheWrite(in stats: UsageStatistics) -> Int? {
+        selectedRow(in: stats).map(\.cacheWriteTokens) ?? stats.cacheWriteTokens
+    }
+
+    private func selectedReasoning(in stats: UsageStatistics) -> Int? {
+        selectedRow(in: stats).map(\.reasoningTokens) ?? stats.reasoningTokens
+    }
+
+    private func selectedSpeed(in stats: UsageStatistics) -> Double? {
+        selectedRow(in: stats).map(\.averageTokensPerSecond) ?? stats.averageTokensPerSecond
+    }
+
+    private func selectedTTFT(in stats: UsageStatistics) -> Double? {
+        selectedRow(in: stats).map(\.averageTimeToFirstTokenMs) ?? stats.averageTimeToFirstTokenMs
+    }
+
+    private func selectedDuration(in stats: UsageStatistics) -> Double? {
+        selectedRow(in: stats).map(\.averageDurationMs) ?? stats.averageDurationMs
     }
 
     @ViewBuilder

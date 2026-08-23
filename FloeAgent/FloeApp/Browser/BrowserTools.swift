@@ -47,7 +47,8 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         return ToolExecutionOutput(
             summary: summary,
             fullOutputSHA256: result.page?.screenshotArtifact?.sha256 ?? "",
-            artifacts: artifacts
+            artifacts: artifacts,
+            requiresUserAction: result.status == .needsUser
         )
     }
 }

@@ -20,6 +20,7 @@ final class LocalModelsCenter: ObservableObject {
     @Published private(set) var removingIDs: Set<String> = []
     @Published private(set) var benchmarkingIDs: Set<String> = []
     @Published private(set) var benchmarkResults: [String: LocalModelBenchmarkResult] = [:]
+    @Published private(set) var appleFoundationAvailability: AppleFoundationModelAvailability = .unsupportedOS
     @Published var errorMessage: String?
     let store: LocalModelStore
     let runtime: LocalModelRuntime
@@ -93,6 +94,7 @@ final class LocalModelsCenter: ObservableObject {
     }
 
     func refresh() async {
+        appleFoundationAvailability = await AppleFoundationModelRuntime.shared.availability()
         var installed = Set<String>()
         var incompatible: [String: String] = [:]
         let availableBytes = LocalInferenceResourcePolicy.availableMemoryBytes()
@@ -208,6 +210,47 @@ struct LocalModelsSettingsView: View {
 
     var body: some View {
         List {
+            if shouldShowAppleFoundationModel {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Apple Foundation Model").font(.headline)
+                                Text("由 Apple Intelligence 管理 · 无需下载")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if center.appleFoundationAvailability.isAvailable {
+                                Label("可用", systemImage: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                            }
+                        }
+                        if case .available(let context, let vision, let tools, let reasoning) =
+                            center.appleFoundationAvailability {
+                            HStack(spacing: 12) {
+                                Label(Self.contextLabel(context), systemImage: "circle.dotted")
+                                if vision { Label("视觉", systemImage: "eye") }
+                                if tools { Label("工具", systemImage: "wrench.and.screwdriver") }
+                                if reasoning { Label("推理", systemImage: "brain") }
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        } else {
+                            Text(AppleFoundationModelRuntime.unavailableMessage(
+                                for: center.appleFoundationAvailability
+                            ))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                } header: {
+                    Text("系统模型")
+                } footer: {
+                    Text("可用性由系统实时报告；模型尚在下载时不会循环重试。")
+                }
+            }
             Section {
                 ForEach(CuratedLocalModelCatalog.entries) { entry in
                     VStack(alignment: .leading, spacing: 8) {
@@ -268,7 +311,9 @@ struct LocalModelsSettingsView: View {
                         if let progress = center.downloadProgress[entry.id],
                            center.activeDownloads.contains(entry.id) || center.pausedDownloads.contains(entry.id) {
                             ProgressView(value: progress.fractionCompleted) {
-                                Text(progress.component == "projector" ? "localmodels.projector" : "localmodels.weights")
+                                Text(progress.component)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
                             } currentValueLabel: {
                                 Text(Self.progressLabel(progress))
                             }
@@ -294,7 +339,7 @@ struct LocalModelsSettingsView: View {
                     }.padding(.vertical, 4)
                 }
             } footer: {
-                Text("同一时间只驻留一个本地模型；多个任务默认排队复用。测速使用真实本地推理，并据设备表现给出安全并发建议。")
+                Text("模型权重不随应用内置；由用户主动下载、固定版本校验并仅保存在本机。MLX 通过 Metal 运行；同一时间只驻留一个模型，多个任务排队复用。")
             }
             let retiredInstalled = CuratedLocalModelCatalog.retiredEntries.filter {
                 center.installedIDs.contains($0.id)
@@ -380,6 +425,22 @@ struct LocalModelsSettingsView: View {
             "首 token \((Double($0) / 1_000).formatted(.number.precision(.fractionLength(2))))s"
         } ?? "首 token 未测得"
         return "测速：\(speed) · \(first) · 建议并发 \(result.recommendedConcurrentTasks)"
+    }
+
+    private var shouldShowAppleFoundationModel: Bool {
+        switch center.appleFoundationAvailability {
+        case .unsupportedOS, .unsupportedToolchain:
+            return false
+        default:
+            return true
+        }
+    }
+
+    private static func contextLabel(_ tokens: Int) -> String {
+        if tokens >= 1_000_000 {
+            return "上下文 \((Double(tokens) / 1_000_000).formatted(.number.precision(.fractionLength(1))))M"
+        }
+        return "上下文 \((Double(tokens) / 1_000).formatted(.number.precision(.fractionLength(tokens >= 10_000 ? 0 : 1))))K"
     }
 }
 #endif

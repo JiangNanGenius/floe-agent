@@ -151,14 +151,12 @@ public actor WebSearchService {
         switch configuration.kind {
         case .bochaWeb, .bochaAI:
             guard !apiKey.isEmpty else { throw WebRetrievalError.missingCredential("apiKey") }
-            let fallback = configuration.kind == .bochaAI
-                ? "https://api.bochaai.com/v1/ai-search"
-                : "https://api.bochaai.com/v1/web-search"
-            request = try post(configuration.endpoint ?? URL(string: fallback)!, json: [
+            // Bocha's currently documented public API is Web Search. The old
+            // separate /ai-search preset returned HTTP 406 for valid keys.
+            // Summary enrichment is an option on the same provider/key.
+            request = try post(configuration.endpoint ?? URL(string: "https://api.bochaai.com/v1/web-search")!, json: [
                 "query": query.text,
-                "summary": true,
-                "answer": false,
-                "stream": false,
+                "summary": configuration.options["summaryEnabled"] != "false",
                 "freshness": Self.bochaFreshness(days: query.recencyDays),
                 "count": count
             ])

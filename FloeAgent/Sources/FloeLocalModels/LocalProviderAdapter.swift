@@ -11,6 +11,10 @@ public struct LocalRuntimeCompletion: Sendable, Equatable {
     public var totalDurationMs: Int
     public var timeToFirstTokenMs: Int?
     public var tokensPerSecond: Double?
+    /// System Foundation Models invokes its Tool closure internally. The
+    /// closure only records the request; Floe's normal approval harness still
+    /// owns execution and continuation.
+    public var deferredToolCall: ToolCall? = nil
 }
 
 public struct LocalModelBenchmarkResult: Sendable, Equatable {
@@ -80,10 +84,10 @@ public actor LocalModelRuntime {
     }
     private struct ActiveEngine {
         let key: EngineKey
-        let engine: LlamaTextEngine
+        let engine: MLXTextEngine
         let profile: LocalInferenceResourceProfile
     }
-    /// iOS cannot safely keep several multi-gigabyte GGUF mappings alive.
+    /// iOS cannot safely keep several multi-gigabyte model mappings alive.
     /// One FIFO slot also prevents actor reentrancy from swapping an engine
     /// while an earlier request is still decoding with it.
     private var activeEngine: ActiveEngine?
@@ -154,16 +158,20 @@ public actor LocalModelRuntime {
     public func complete(modelID: String, prompt: String, images: [Data], maxTokens: Int) async throws -> String {
         try await completeMeasured(
             modelID: modelID,
+            instructions: Self.defaultInstructions,
             prompt: prompt,
             images: images,
+            tools: [],
             maxTokens: maxTokens
         ).text
     }
 
     public func completeMeasured(
         modelID: String,
+        instructions: String,
         prompt: String,
         images: [Data],
+        tools: [ToolSchemaDescriptor],
         maxTokens: Int
     ) async throws -> LocalRuntimeCompletion {
         await acquireInferenceSlot()
@@ -185,8 +193,10 @@ public actor LocalModelRuntime {
         do {
             let engineStartedAt = Date()
             let output = try await engine.completeMeasured(
+                instructions: instructions,
                 prompt: prompt,
                 images: images,
+                tools: tools,
                 maxTokens: min(maxTokens, profile.maximumOutputTokens)
             )
             let endedAt = Date()
@@ -219,8 +229,10 @@ public actor LocalModelRuntime {
     public func benchmark(modelID: String) async throws -> LocalModelBenchmarkResult {
         let completion = try await completeMeasured(
             modelID: modelID,
-            prompt: "/no_think\n请仅输出从 1 到 32 的整数，以空格分隔，不要解释。",
+            instructions: Self.defaultInstructions,
+            prompt: "请仅输出从 1 到 32 的整数，以空格分隔，不要解释。",
             images: [],
+            tools: [],
             maxTokens: 96
         )
         return LocalModelBenchmarkResult(
@@ -238,12 +250,11 @@ public actor LocalModelRuntime {
         wantsVision: Bool,
         traceID: String
     ) async throws -> ActiveEngine {
-        let key = EngineKey(modelID: modelID, includesVisionProjector: wantsVision)
+        // Every curated MLX model uses the VLM factory. Text and vision share
+        // one resident container, so adding an image never remaps a projector.
+        let key = EngineKey(modelID: modelID, includesVisionProjector: true)
         if let cached = activeEngine,
-           cached.key.modelID == modelID,
-           (!wantsVision || cached.key.includesVisionProjector) {
-            // A vision-capable engine can serve later text turns. Reusing it
-            // avoids repeatedly unloading/reloading multi-gigabyte mappings.
+           cached.key.modelID == modelID {
             loadState = .ready(
                 modelID: modelID,
                 includesVisionProjector: cached.key.includesVisionProjector
@@ -261,16 +272,11 @@ public actor LocalModelRuntime {
                 )
                 throw FloeError.notFound("Local model \(modelID) is not installed")
             }
-            let projectorURL: URL?
-            if wantsVision {
-                guard let installed = await store.installedProjectorURL(id: modelID) else {
-                    throw LocalInferenceError.visionLoadFailed
-                }
-                projectorURL = installed
-            } else {
-                // Vision projectors are often hundreds of MB to several GB.
-                // Never map one for a text-only turn.
-                projectorURL = nil
+            guard let entry = CuratedLocalModelCatalog.entries.first(where: { $0.id == modelID }),
+                  entry.runtimeFormat == .mlx else {
+                throw FloeError.invalidConfiguration(
+                    "This release only exposes curated MLX local models."
+                )
             }
             // Release the old mapping before measuring process headroom. The
             // prior implementation measured first, so switching a loaded 4B
@@ -284,7 +290,7 @@ public actor LocalModelRuntime {
                     "localInferencePreviousEngineReleased trace=\(traceID) previousModel=\(previous.key.modelID) previousVision=\(previous.key.includesVisionProjector)"
                 )
             }
-            let mappedBytes = Self.fileSize(modelURL) + (projectorURL.map(Self.fileSize) ?? 0)
+            let mappedBytes = await store.installedWeightBytes(id: modelID) ?? 0
             let physicalMemory = ProcessInfo.processInfo.physicalMemory
             let availableMemory = LocalInferenceResourcePolicy.availableMemoryBytes()
             guard LocalInferenceResourcePolicy.canLoad(
@@ -308,26 +314,25 @@ public actor LocalModelRuntime {
             )
             let loadStartedAt = Date()
             FloeLogger(category: .providers).info(
-                "localInferenceEngineLoadStarted trace=\(traceID) model=\(modelID) projector=\(projectorURL != nil) mappedBytes=\(mappedBytes) availableBytes=\(availableMemory) physicalBytes=\(physicalMemory) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize) gpuLayers=\(profile.gpuLayers)"
+                "localInferenceEngineLoadStarted trace=\(traceID) model=\(modelID) runtime=mlx visionRequested=\(wantsVision) mappedBytes=\(mappedBytes) availableBytes=\(availableMemory) physicalBytes=\(physicalMemory) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize)"
             )
-            let loaded: LlamaTextEngine
+            let loaded: MLXTextEngine
             do {
-                loaded = try LlamaTextEngine(
-                    modelURL: modelURL,
-                    projectorURL: projectorURL,
+                loaded = try await MLXTextEngine(
+                    modelDirectory: modelURL,
                     resourceProfile: profile
                 )
             } catch {
                 let nsError = error as NSError
                 let safeMessage = String(error.localizedDescription.prefix(300))
                 FloeLogger(category: .providers).warning(
-                    "localInferenceEngineLoadFailed trace=\(traceID) model=\(modelID) projector=\(projectorURL != nil) domain=\(nsError.domain) code=\(nsError.code) message=\(safeMessage) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
+                    "localInferenceEngineLoadFailed trace=\(traceID) model=\(modelID) runtime=mlx visionRequested=\(wantsVision) domain=\(nsError.domain) code=\(nsError.code) message=\(safeMessage) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
                 )
                 throw error
             }
             let prepared = ActiveEngine(key: key, engine: loaded, profile: profile)
             activeEngine = prepared
-            loadState = .ready(modelID: modelID, includesVisionProjector: wantsVision)
+            loadState = .ready(modelID: modelID, includesVisionProjector: true)
             FloeLogger(category: .providers).info(
                 "localInferenceEngineLoadFinished trace=\(traceID) model=\(modelID) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
             )
@@ -373,13 +378,12 @@ public actor LocalModelRuntime {
         }
     }
 
-    private static func fileSize(_ url: URL) -> UInt64 {
-        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .totalFileAllocatedSizeKey])
-        return UInt64(max(values?.totalFileAllocatedSize ?? values?.fileSize ?? 0, 0))
-    }
+    private static let defaultInstructions =
+        "You are Floe, a concise on-device agent. Think silently and return only the final answer."
+
 }
 
-/// Provider-neutral bridge from downloaded GGUF weights into the same event
+/// Provider-neutral bridge from downloaded MLX weights into the same event
 /// stream consumed by the remote-provider harness. Local models therefore use
 /// identical approval, loop protection, tool execution and checkpoint logic.
 @available(macOS 15.4, iOS 26.0, *)
@@ -414,19 +418,38 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     }
                     let promptBuild = Self.buildPrompt(for: request)
                     let prompt = promptBuild.text
-                    FloeLogger(category: .providers).info(
-                        "localPromptPrepared model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) sourceCharacters=\(promptBuild.sourceCharacters) promptCharacters=\(prompt.count) offeredTools=\(request.toolSchemas.count) selectedTools=\(promptBuild.selectedToolCount) omittedTools=\(max(0, request.toolSchemas.count - promptBuild.selectedToolCount))"
-                    )
                     let images = request.effectiveMessages.flatMap(\.content).compactMap { part -> Data? in
                         guard case .imageData(_, let base64) = part else { return nil }
                         return Data(base64Encoded: base64)
                     }
-                    let completion = try await runtime.completeMeasured(
-                        modelID: request.model.remoteModelID,
-                        prompt: prompt,
-                        images: images,
-                        maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 1024), 4096)
+                    FloeLogger(category: .providers).info(
+                        "localPromptPrepared model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) sourceCharacters=\(promptBuild.sourceCharacters) promptCharacters=\(prompt.count) offeredTools=\(request.toolSchemas.count) selectedTools=\(promptBuild.selectedToolCount) omittedTools=\(max(0, request.toolSchemas.count - promptBuild.selectedToolCount))"
                     )
+                    let completion: LocalRuntimeCompletion
+                    if request.model.remoteModelID == AppleFoundationModelIdentity.remoteModelID {
+                        completion = try await AppleFoundationModelRuntime.shared.complete(
+                            instructions: promptBuild.systemInstructions,
+                            prompt: prompt,
+                            images: images,
+                            tools: promptBuild.selectedTools,
+                            maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 512), 2_048)
+                        )
+                    } else {
+                        completion = try await runtime.completeMeasured(
+                            modelID: request.model.remoteModelID,
+                            instructions: promptBuild.systemInstructions,
+                            prompt: prompt,
+                            images: images,
+                            tools: promptBuild.selectedTools,
+                            maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 1024), 4096)
+                        )
+                    }
+                    if let deferred = completion.deferredToolCall {
+                        continuation.yield(.toolRequest(deferred))
+                        continuation.yield(.completed(.init(stopReason: .toolUse)))
+                        continuation.finish()
+                        return
+                    }
                     let channels = Self.splitReasoning(from: completion.text)
                     if !channels.reasoning.isEmpty {
                         continuation.yield(.reasoningSummary(.init(text: channels.reasoning)))
@@ -438,7 +461,10 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         timeToFirstTokenMs: completion.timeToFirstTokenMs,
                         tokensPerSecond: completion.tokensPerSecond
                     )))
-                    if let call = try Self.toolCall(from: channels.answer) {
+                    if let call = try Self.toolCall(
+                        from: channels.answer,
+                        offeredToolNames: Set(request.toolSchemas.map(\.name))
+                    ) {
                         continuation.yield(.toolRequest(call))
                         continuation.yield(.completed(.init(stopReason: .toolUse)))
                     } else {
@@ -464,9 +490,27 @@ public struct LocalProviderAdapter: ProviderAdapter {
         credentials: ProviderCredentials
     ) async throws -> [ModelProfile] {
         var models: [ModelProfile] = []
+        if case .available(let contextTokens, let supportsVision, let supportsTools, let supportsReasoning) =
+            await AppleFoundationModelRuntime.shared.availability() {
+            var capabilities: ModelCapabilities = [.text, .approval]
+            if supportsVision { capabilities.insert(.vision) }
+            if supportsTools { capabilities.insert(.tools) }
+            models.append(ModelProfile(
+                id: AppleFoundationModelIdentity.profileID,
+                providerID: provider.id,
+                remoteModelID: AppleFoundationModelIdentity.remoteModelID,
+                displayName: "Apple Foundation Model",
+                limits: .init(
+                    contextTokens: contextTokens,
+                    maxOutputTokens: min(2_048, max(256, contextTokens / 4))
+                ),
+                capabilities: capabilities,
+                reasoningEffort: supportsReasoning ? .low : .automatic
+            ))
+        }
         for entry in CuratedLocalModelCatalog.entries {
-            guard let modelURL = await store.installedModelURL(id: entry.id) else { continue }
-            let mappedBytes = Self.fileSize(modelURL)
+            guard await store.installedModelURL(id: entry.id) != nil else { continue }
+            let mappedBytes = await store.installedWeightBytes(id: entry.id) ?? 0
             let resourceProfile = LocalInferenceResourcePolicy.profile(
                 mappedBytes: mappedBytes,
                 physicalMemoryBytes: LocalInferenceResourcePolicy.availableMemoryBytes()
@@ -479,8 +523,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 remoteModelID: entry.id,
                 displayName: entry.displayName,
                 // The runtime reserves memory headroom for the UI, Metal and
-                // tools. Advertise the guaranteed profile, not llama.cpp's
-                // theoretical maximum, so the harness compacts in time.
+                // tools. Advertise the guaranteed profile, not the model's
+                // theoretical maximum, so the local-only compactor runs in time.
                 limits: .init(
                     contextTokens: Int(resourceProfile.contextSize),
                     maxOutputTokens: resourceProfile.maximumOutputTokens
@@ -501,13 +545,10 @@ public struct LocalProviderAdapter: ProviderAdapter {
         }
     }
 
-    private static func fileSize(_ url: URL) -> UInt64 {
-        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .totalFileAllocatedSizeKey])
-        return UInt64(max(values?.totalFileAllocatedSize ?? values?.fileSize ?? 0, 0))
-    }
-
     struct PromptBuild: Sendable, Equatable {
+        let systemInstructions: String
         let text: String
+        let selectedTools: [ToolSchemaDescriptor]
         let selectedToolCount: Int
         let sourceCharacters: Int
     }
@@ -545,15 +586,6 @@ public struct LocalProviderAdapter: ProviderAdapter {
             let names = request.toolSchemas.map(\.name).sorted().joined(separator: ", ")
             sections.append("AVAILABLE TOOL NAMES (authoritative): \(clipped(names, limit: 1_600))")
         }
-        if !selectedTools.isEmpty {
-            let schemas = selectedTools.map {
-                "- \($0.name): \(clipped($0.description, limit: 120)) arguments=\($0.parametersJSON)"
-            }.joined(separator: "\n")
-            sections.append("""
-            TOOLS:\n\(schemas)
-            To call one, output only {"tool_call":{"name":"tool.name","arguments":{}}}. Otherwise answer normally.
-            """)
-        }
 
         var transcriptSections: [String] = []
         var transcriptCharacters = 0
@@ -588,22 +620,15 @@ public struct LocalProviderAdapter: ProviderAdapter {
             evidenceBudget -= bounded.count
         }
         let transcript = sections.joined(separator: "\n\n")
-        let modelID = request.model.remoteModelID.lowercased()
-        let system = "You are Floe, a concise on-device agent. Follow the latest user request. Tool execution and approval are enforced by the app. Use only offered tools, never invent tool names, and never claim an action succeeded without a tool result. Think silently. Never print chain-of-thought, planning notes, drafts, self-corrections, or a 'Thinking Process' section. Return only the final answer or one tool-call JSON object."
-        let text: String
-        if modelID.contains("qwen") {
-            // Qwen thinking variants default to verbose reasoning unless the
-            // turn explicitly opts out. Local inference is the constrained,
-            // offline path, so keep reasoning private and preserve tokens for
-            // the answer and tool loop.
-            text = "<|im_start|>system\n\(system)<|im_end|>\n<|im_start|>user\n\(transcript)\n/no_think<|im_end|>\n<|im_start|>assistant\n"
-        } else if modelID.contains("ministral") || modelID.contains("mistral") {
-            text = "[INST] \(system)\n\n\(transcript) [/INST]"
-        } else {
-            text = "SYSTEM: \(system)\n\n\(transcript)\n\nASSISTANT:"
-        }
+        let system = "You are Floe, a concise on-device agent. Follow the latest user request. Tool execution and approval are enforced by the app. Use only offered native tools, never invent tool names, and never claim an action succeeded without a tool result. Invoke at most one tool per turn. If a tool returns PENDING_EXTERNAL_EXECUTION, stop immediately without claiming completion. Think silently. Never print chain-of-thought, planning notes, drafts, self-corrections, or a 'Thinking Process' section. Return only the final answer."
         return PromptBuild(
-            text: text,
+            systemInstructions: system,
+            // MLX receives structured system/user messages and applies the
+            // model's own chat template exactly once. Hand-written Qwen or
+            // Mistral control tokens here caused double templating, exposed
+            // chain-of-thought, and made native tool calls invisible.
+            text: transcript,
+            selectedTools: selectedTools,
             selectedToolCount: selectedTools.count,
             sourceCharacters: sourceCharacters
         )
@@ -663,7 +688,10 @@ public struct LocalProviderAdapter: ProviderAdapter {
             selected.append(tool)
             schemaCharacters += cost
         }
-        return selected
+        // Preserve score-based admission under the schema budget, then expose
+        // a stable order so chat templates and tests do not churn between
+        // equivalent tool sets.
+        return selected.sorted { $0.name < $1.name }
     }
 
     private static func containsAny(_ text: String, _ needles: [String]) -> Bool {
@@ -675,7 +703,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let answer: String
     }
 
-    /// Qwen/Mistral GGUF templates may return raw `<think>` blocks. Normalize
+    /// Some local templates may return raw `<think>` blocks. Normalize
     /// them into the same private reasoning channel used by cloud providers so
     /// tags never leak into replies or conversation titles.
     static func splitReasoning(from output: String) -> OutputChannels {
@@ -705,7 +733,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
             options: .regularExpression
         ).trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // Some small GGUF chat templates ignore XML tags and emit an
+        // Some small local chat templates ignore XML tags and emit an
         // English planning transcript. Never expose that internal scratchpad
         // as the assistant answer. Prefer the last explicit draft/final
         // marker because these models commonly revise the same answer several
@@ -755,17 +783,38 @@ public struct LocalProviderAdapter: ProviderAdapter {
         return String(text.prefix(headCount)) + "\n...[omitted]...\n" + String(text.suffix(tailCount))
     }
 
-    private static func toolCall(from output: String) throws -> ToolCall? {
+    /// Small local models are not reliable JSON emitters. Accept the common
+    /// tool-call envelopes and prose/fence wrappers, but never accept a tool
+    /// that was not offered on this turn. This keeps parsing tolerant without
+    /// weakening the app-side capability boundary.
+    static func toolCall(
+        from output: String,
+        offeredToolNames: Set<String>
+    ) throws -> ToolCall? {
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        let candidates = [trimmed, fencedJSON(in: trimmed)].compactMap { $0 }
+        let candidates = ([trimmed, fencedJSON(in: trimmed)].compactMap { $0 }
+            + embeddedJSONObjects(in: trimmed))
+            .uniqued()
         for candidate in candidates {
             guard let data = candidate.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                  let object = try? JSONSerialization.jsonObject(with: data)
             else { continue }
-            let body = (object["tool_call"] as? [String: Any]) ?? object
-            guard let name = body["name"] as? String,
-                  let arguments = body["arguments"] as? [String: Any]
-            else { continue }
+            guard let body = toolCallBody(in: object),
+                  let rawName = body["name"] as? String else { continue }
+            let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard offeredToolNames.contains(name) else { continue }
+            let arguments: [String: Any]
+            if let dictionary = body["arguments"] as? [String: Any] {
+                arguments = dictionary
+            } else if let encoded = body["arguments"] as? String,
+                      let encodedData = encoded.data(using: .utf8),
+                      let dictionary = try? JSONSerialization.jsonObject(with: encodedData) as? [String: Any] {
+                arguments = dictionary
+            } else if body["arguments"] == nil {
+                arguments = [:]
+            } else {
+                continue
+            }
             let argumentsData = try JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys])
             return try ToolCall(
                 id: "local-\(UUID().uuidString)", toolName: name,
@@ -775,10 +824,69 @@ public struct LocalProviderAdapter: ProviderAdapter {
         return nil
     }
 
+    private static func toolCallBody(in object: Any) -> [String: Any]? {
+        guard let dictionary = object as? [String: Any] else { return nil }
+        if let body = dictionary["tool_call"] as? [String: Any] {
+            return (body["function"] as? [String: Any]) ?? body
+        }
+        if let calls = dictionary["tool_calls"] as? [[String: Any]],
+           let first = calls.first {
+            return (first["function"] as? [String: Any]) ?? first
+        }
+        if let function = dictionary["function"] as? [String: Any] {
+            return function
+        }
+        return dictionary["name"] is String ? dictionary : nil
+    }
+
+    /// Extract balanced JSON objects while respecting quoted braces. This is
+    /// intentionally not a JSON repair engine: malformed payloads still fail
+    /// closed and the harness can ask the model to change strategy once.
+    private static func embeddedJSONObjects(in text: String) -> [String] {
+        var results: [String] = []
+        var start: String.Index?
+        var depth = 0
+        var inString = false
+        var escaped = false
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if character == "\\" {
+                    escaped = true
+                } else if character == "\"" {
+                    inString = false
+                }
+            } else if character == "\"" {
+                inString = true
+            } else if character == "{" {
+                if depth == 0 { start = index }
+                depth += 1
+            } else if character == "}" && depth > 0 {
+                depth -= 1
+                if depth == 0, let objectStart = start {
+                    results.append(String(text[objectStart...index]))
+                    start = nil
+                }
+            }
+            index = text.index(after: index)
+        }
+        return results
+    }
+
     private static func fencedJSON(in text: String) -> String? {
         guard let start = text.range(of: "```json", options: .caseInsensitive),
               let end = text.range(of: "```", range: start.upperBound..<text.endIndex)
         else { return nil }
         return String(text[start.upperBound..<end.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+private extension Array where Element: Hashable {
+    func uniqued() -> [Element] {
+        var seen: Set<Element> = []
+        return filter { seen.insert($0).inserted }
     }
 }

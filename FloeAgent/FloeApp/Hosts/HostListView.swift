@@ -18,6 +18,8 @@ struct HostListView: View {
 
     @State private var activeTerminalSession: UUID?
     @State private var activeVNCSession: UUID?
+    @State private var agentUpdateCandidate: RemoteHostProfile?
+    @State private var advancedLinkCandidate: RemoteHostProfile?
 
     init(center: RemoteSessionCenter) {
         self.center = center
@@ -62,6 +64,49 @@ struct HostListView: View {
         .navigationDestination(item: $activeVNCSession) { sessionID in
             VNCView(sessionID: sessionID, center: center)
         }
+        .confirmationDialog(
+            "更新 Floe 守护程序？",
+            isPresented: Binding(
+                get: { agentUpdateCandidate != nil },
+                set: { if !$0 { agentUpdateCandidate = nil } }
+            ),
+            presenting: agentUpdateCandidate
+        ) { host in
+            Button("更新 \(host.displayName.isEmpty ? host.address : host.displayName)") {
+                agentUpdateCandidate = nil
+                Task { await viewModel.updateRemoteAgent(on: host) }
+            }
+            Button("取消", role: .cancel) { agentUpdateCandidate = nil }
+        } message: { _ in
+            Text("将通过已验证的 SSH 安装与当前 Floe 版本配套的守护程序；更新失败会自动回滚。")
+        }
+        .confirmationDialog(
+            "为本设备建立高级链路？",
+            isPresented: Binding(get: { advancedLinkCandidate != nil }, set: { if !$0 { advancedLinkCandidate = nil } }),
+            presenting: advancedLinkCandidate
+        ) { host in
+            Button("配对 \(host.displayName.isEmpty ? host.address : host.displayName)") {
+                advancedLinkCandidate = nil
+                Task { await viewModel.pairAdvancedLink(on: host) }
+            }
+            Button("取消", role: .cancel) { advancedLinkCandidate = nil }
+        } message: { _ in
+            Text("通过已验证 SSH 创建本设备专属证书；私钥只保存在本设备。之后日常任务走 mTLS，SSH 仅用于救援。")
+        }
+        .alert(
+            "主机操作",
+            isPresented: Binding(
+                get: { viewModel.errorMessage != nil || viewModel.statusMessage != nil },
+                set: { if !$0 { viewModel.errorMessage = nil; viewModel.statusMessage = nil } }
+            )
+        ) {
+            Button("好") {
+                viewModel.errorMessage = nil
+                viewModel.statusMessage = nil
+            }
+        } message: {
+            Text(viewModel.errorMessage ?? viewModel.statusMessage ?? "")
+        }
     }
 
     /// Bridges the center's @Published pendingTrust into a sheet binding.
@@ -79,8 +124,12 @@ struct HostListView: View {
                     host: host,
                     sessions: viewModel.sessions(for: host.id),
                     isConnecting: viewModel.connectingHostID == host.id,
+                    isUpdatingAgent: viewModel.updatingAgentHostID == host.id,
+                    isPairingAgent: viewModel.pairingAgentHostID == host.id,
                     onConnectTerminal: { connectTerminal(host) },
-                    onConnectVNC: { connectVNC(host) }
+                    onConnectVNC: { connectVNC(host) },
+                    onUpdateAgent: { agentUpdateCandidate = host },
+                    onPairAdvancedLink: { advancedLinkCandidate = host }
                 )
             }
             .onDelete { offsets in
@@ -115,8 +164,12 @@ private struct HostRow: View {
     let host: RemoteHostProfile
     let sessions: [RemoteSessionSnapshot]
     let isConnecting: Bool
+    let isUpdatingAgent: Bool
+    let isPairingAgent: Bool
     let onConnectTerminal: () -> Void
     let onConnectVNC: () -> Void
+    let onUpdateAgent: () -> Void
+    let onPairAdvancedLink: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -130,7 +183,7 @@ private struct HostRow: View {
                         .lineLimit(1)
                 }
                 Spacer()
-                if isConnecting {
+                if isConnecting || isUpdatingAgent || isPairingAgent {
                     ProgressView()
                 } else if let session = sessions.first {
                     SessionDot(state: session.record.state)
@@ -156,6 +209,24 @@ private struct HostRow: View {
                     .buttonStyle(.bordered)
                     .frame(minHeight: FloeTheme.minimumTarget)
                 }
+
+                Button {
+                    onUpdateAgent()
+                } label: {
+                    Label("更新守护程序", systemImage: "arrow.triangle.2.circlepath")
+                        .font(FloeTheme.Typography.metadata)
+                }
+                .buttonStyle(.bordered)
+                .disabled(isConnecting || isUpdatingAgent || isPairingAgent)
+                .frame(minHeight: FloeTheme.minimumTarget)
+
+                Button(action: onPairAdvancedLink) {
+                    Label("配对高级链路", systemImage: "lock.shield")
+                        .font(FloeTheme.Typography.metadata)
+                }
+                .buttonStyle(.bordered)
+                .disabled(isConnecting || isUpdatingAgent || isPairingAgent)
+                .frame(minHeight: FloeTheme.minimumTarget)
             }
         }
         .padding(.vertical, 4)

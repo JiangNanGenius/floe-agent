@@ -13,7 +13,7 @@ import FloeCore
 
 /// One settings category in the settings center.
 enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case general, personalization, providers, auxiliary, localModels, webSearch, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sync, remote, usage, diagnostics
+    case general, personalization, providers, auxiliary, localModels, webSearch, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sync, remote, usage, dataManagement, diagnostics
 
     var id: String { rawValue }
 
@@ -34,6 +34,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .sync: "settings.section.sync"
         case .remote: "settings.section.remote"
         case .usage: "settings.section.usage"
+        case .dataManagement: "数据管理"
         case .diagnostics: "settings.section.diagnostics"
         }
     }
@@ -55,6 +56,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .sync: "icloud"
         case .remote: "server.rack"
         case .usage: "chart.bar"
+        case .dataManagement: "archivebox"
         case .diagnostics: "stethoscope"
         }
     }
@@ -149,6 +151,11 @@ struct SettingsRootView: View {
             RemoteSettingsView(center: environment.settingsCenter)
         case .usage:
             UsageStatisticsView()
+        case .dataManagement:
+            ArchivedConversationsView(
+                center: environment.conversationCenter,
+                showsDoneButton: false
+            )
         case .diagnostics:
             DiagnosticsAboutView(center: environment.settingsCenter)
         }

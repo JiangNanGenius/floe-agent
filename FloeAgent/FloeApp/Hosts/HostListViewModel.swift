@@ -17,7 +17,10 @@ final class HostListViewModel: ObservableObject {
 
     @Published private(set) var isLoading = false
     @Published var connectingHostID: UUID?
+    @Published var updatingAgentHostID: UUID?
+    @Published var pairingAgentHostID: UUID?
     @Published var errorMessage: String?
+    @Published var statusMessage: String?
 
     let center: RemoteSessionCenter
 
@@ -70,6 +73,30 @@ final class HostListViewModel: ObservableObject {
     func delete(_ host: RemoteHostProfile) async {
         try? await center.deleteHost(id: host.id)
         await load()
+    }
+
+    func updateRemoteAgent(on host: RemoteHostProfile) async {
+        updatingAgentHostID = host.id
+        errorMessage = nil
+        statusMessage = nil
+        defer { updatingAgentHostID = nil }
+        do {
+            let result = try await center.updateRemoteAgent(on: host)
+            statusMessage = "Floe 守护程序已更新到 \(result.version)。"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func pairAdvancedLink(on host: RemoteHostProfile) async {
+        pairingAgentHostID = host.id
+        errorMessage = nil
+        statusMessage = nil
+        defer { pairingAgentHostID = nil }
+        do {
+            try await center.pairAdvancedLink(on: host)
+            statusMessage = "已为本设备建立独立 mTLS 高级链路。"
+        } catch { errorMessage = error.localizedDescription }
     }
 }
 #endif

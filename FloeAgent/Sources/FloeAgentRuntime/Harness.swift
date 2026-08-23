@@ -55,10 +55,14 @@ public struct ApprovalRequestSnapshot: Sendable, Codable, Hashable, Identifiable
 public struct ApprovalReviewSnapshot: Sendable, Codable, Hashable {
     public var toolName: String
     public var isEvaluating: Bool
+    /// A short policy outcome suitable for the UI. This is deliberately not
+    /// model reasoning and must never contain chain-of-thought text.
+    public var outcomeSummary: String?
 
-    public init(toolName: String, isEvaluating: Bool) {
+    public init(toolName: String, isEvaluating: Bool, outcomeSummary: String? = nil) {
         self.toolName = toolName
         self.isEvaluating = isEvaluating
+        self.outcomeSummary = outcomeSummary
     }
 }
 
@@ -265,9 +269,9 @@ public struct HarnessBudgets: Sendable, Codable, Hashable {
     public var maxConcurrentChildren: Int
 
     public init(
-        maxParentIterations: Int = 90,
-        maxChildIterations: Int = 50,
-        maxTotalIterations: Int = 290,
+        maxParentIterations: Int = Int.max / 4,
+        maxChildIterations: Int = Int.max / 4,
+        maxTotalIterations: Int = Int.max / 2,
         maxConcurrentChildren: Int = 4
     ) {
         self.maxParentIterations = max(1, maxParentIterations)

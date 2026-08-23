@@ -38,7 +38,10 @@ public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
     public static let onDeviceModelIDs: Set<UUID> = [
         UUID(uuidString: "A1480001-0000-4000-8000-000000000001")!,
         UUID(uuidString: "A1480001-0000-4000-8000-000000000002")!,
-        UUID(uuidString: "A1480001-0000-4000-8000-000000000003")!
+        UUID(uuidString: "A1480001-0000-4000-8000-000000000003")!,
+        UUID(uuidString: "A1480001-0000-4000-8000-000000000004")!,
+        UUID(uuidString: "A1480001-0000-4000-8000-000000000005")!,
+        UUID(uuidString: "A1480001-0000-4000-8000-000000000006")!
     ]
 
     public var id: UUID

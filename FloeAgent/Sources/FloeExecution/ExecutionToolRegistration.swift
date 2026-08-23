@@ -52,6 +52,14 @@ public func registerExecutionTools(
         ToolCatalog.register(SSHExecTool.self)
         ToolCatalog.register(SSHInspectTargetTool.self)
         ToolCatalog.register(SSHBootstrapExecutionHostTool.self)
+        ToolCatalog.register(SSHBootstrapRemoteAgentTool.self)
+        ToolCatalog.register(CloudWorkspaceListTool.self)
+        ToolCatalog.register(CloudWorkspaceReadTool.self)
+        ToolCatalog.register(CloudWorkspaceWriteTool.self)
+        ToolCatalog.register(CloudWorkspaceCreateDirectoryTool.self)
+        ToolCatalog.register(CloudWorkspaceProvisionTool.self)
+        ToolCatalog.register(RemoteHostingInspectTool.self)
+        ToolCatalog.register(RemoteHostingManageTool.self)
     }
     if remoteHostStore != nil {
         ToolCatalog.register(SSHListHostsTool.self)
@@ -80,6 +88,15 @@ public func registerExecutionTools(
         registry.register(SSHExecTool(service: sshCommandService))
         registry.register(SSHInspectTargetTool(service: sshCommandService))
         registry.register(SSHBootstrapExecutionHostTool(service: sshCommandService))
+        registry.register(SSHBootstrapRemoteAgentTool(service: sshCommandService))
+        let cloudWorkspaceService = CloudWorkspaceService(ssh: sshCommandService)
+        registry.register(CloudWorkspaceListTool(service: cloudWorkspaceService))
+        registry.register(CloudWorkspaceReadTool(service: cloudWorkspaceService))
+        registry.register(CloudWorkspaceWriteTool(service: cloudWorkspaceService))
+        registry.register(CloudWorkspaceCreateDirectoryTool(service: cloudWorkspaceService))
+        registry.register(CloudWorkspaceProvisionTool(service: cloudWorkspaceService))
+        registry.register(RemoteHostingInspectTool(service: cloudWorkspaceService))
+        registry.register(RemoteHostingManageTool(service: cloudWorkspaceService))
     }
     if let remoteHostStore {
         registry.register(SSHListHostsTool(store: remoteHostStore))

@@ -13,7 +13,7 @@ public enum LocalInferenceError: LocalizedError {
     case insufficientMemory(required: UInt64, physical: UInt64)
     public var errorDescription: String? {
         switch self {
-        case .modelLoadFailed: "Unable to load the local GGUF model."
+        case .modelLoadFailed: "Unable to load the local model runtime."
         case .contextCreationFailed: "Unable to create a local inference context."
         case .promptTooLong: "The prompt exceeds the local model context window."
         case .decodeFailed: "The local model failed while decoding."

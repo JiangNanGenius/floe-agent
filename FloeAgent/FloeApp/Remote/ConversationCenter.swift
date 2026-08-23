@@ -473,7 +473,7 @@ final class ConversationCenter: ObservableObject {
         return ConversationRunService(
             configuration: configuration,
             adapter: providerAdapter(for: provider),
-            policy: approvalPolicy(for: taskPolicy),
+            policy: await approvalPolicy(for: taskPolicy, primaryModel: model),
             executor: CatalogToolExecutor(),
             credentials: credentials,
             gate: environment.catastrophicGate,
@@ -498,7 +498,10 @@ final class ConversationCenter: ObservableObject {
                 userProfileContext: personalization.profile,
                 activePlan: activePlan,
                 activeGoal: activeGoal,
-                workspaceAttachmentPaths: workspaceAttachmentPaths
+                workspaceAttachmentPaths: workspaceAttachmentPaths,
+                workspaceNotes: environment.workspaceCenter.runtimeWorkspaceNotes(
+                    rootURL: taskRootLease?.url
+                ) + [WebSearchSettingsCenter.runtimeProviderNote()].compactMap { $0 }
             ),
             resourceAccessCleanup: taskRootLease?.release
         )
@@ -507,12 +510,27 @@ final class ConversationCenter: ObservableObject {
     /// Constructs the effective three-choice policy saved for this task.
     /// Legacy/unknown values resolve to Ask; Full Access is only persisted
     /// after device-owner authentication in the task inspector.
-    private func approvalPolicy(for taskPolicy: TaskPolicy) -> any ApprovalPolicy {
+    private func approvalPolicy(
+        for taskPolicy: TaskPolicy,
+        primaryModel: ModelProfile
+    ) async -> any ApprovalPolicy {
         let packageBackend = reviewBackend(modelID: modelPreferences.packageReviewModelID)
+        let localBackend = await localApprovalBackend(primaryModel: primaryModel)
+        let mustUseLocalApproval = environment.networkStatusMonitor.isOffline
+            || primaryModel.providerID == ProviderProfile.onDeviceProviderID
         switch taskPolicy.resolvedApprovalMode {
         case .ask:
             return HumanApprovalPolicy()
         case .automatic:
+            if mustUseLocalApproval, let localBackend {
+                FloeLogger(category: .security).info(
+                    "approvalRoute mode=automatic route=local offline=\(environment.networkStatusMonitor.isOffline) primaryLocal=\(primaryModel.providerID == ProviderProfile.onDeviceProviderID) model=\(localBackend.model.id.uuidString)"
+                )
+                return AutomaticApprovalPolicy(
+                    backend: localBackend.backend,
+                    packageReviewBackend: localBackend.backend
+                )
+            }
             guard let modelID = modelPreferences.approvalModelID,
                   let model = modelsByProvider.values.flatMap({ $0 }).first(where: {
                       $0.id == modelID && $0.isEnabled && $0.capabilities.contains(.text)
@@ -527,8 +545,49 @@ final class ConversationCenter: ObservableObject {
                 credentials: resolveCredentials(for: provider)
             ), packageReviewBackend: packageBackend)
         case .fullAccess:
+            // Weak local models may assist with approval, but can never grant
+            // an unreviewed Full Access path. Pure-local/offline tasks are
+            // downgraded to automatic review for every non-exempt action.
+            if mustUseLocalApproval {
+                FloeLogger(category: .security).warning(
+                    "approvalRoute mode=fullAccess route=downgradedLocalReview offline=\(environment.networkStatusMonitor.isOffline) primaryLocal=\(primaryModel.providerID == ProviderProfile.onDeviceProviderID)"
+                )
+                return AutomaticApprovalPolicy(
+                    backend: localBackend?.backend,
+                    packageReviewBackend: localBackend?.backend ?? packageBackend
+                )
+            }
             return TaskFullAccessPolicy(packageReviewBackend: packageBackend)
         }
+    }
+
+    private struct LocalApprovalRoute {
+        let model: ModelProfile
+        let backend: ApprovalModelBackend
+    }
+
+    private func localApprovalBackend(primaryModel: ModelProfile) async -> LocalApprovalRoute? {
+        let localModels = modelsByProvider[ProviderProfile.onDeviceProviderID] ?? []
+        let residentID = await environment.localModelRuntime.residentModelID()
+        let model: ModelProfile? = if primaryModel.providerID == ProviderProfile.onDeviceProviderID {
+            primaryModel
+        } else if let residentID {
+            localModels.first(where: { $0.remoteModelID == residentID })
+        } else {
+            localModels.first(where: { $0.isEnabled && $0.capabilities.contains(.text) })
+        }
+        guard let model,
+              let provider = providers.first(where: { $0.id == ProviderProfile.onDeviceProviderID })
+        else { return nil }
+        return LocalApprovalRoute(
+            model: model,
+            backend: ApprovalModelBackend(
+                adapter: providerAdapter(for: provider),
+                provider: provider,
+                model: model,
+                credentials: ProviderCredentials()
+            )
+        )
     }
 
     private func reviewBackend(modelID: UUID?) -> ApprovalModelBackend? {
@@ -1282,7 +1341,9 @@ final class ConversationCenter: ObservableObject {
                 userRequest: goal,
                 primaryModel: model
             )
-            if provider.kind == .local {
+            let usesResidentLocalModel = provider.kind == .local
+                && model.remoteModelID != AppleFoundationModelIdentity.remoteModelID
+            if usesResidentLocalModel {
                 await self.environment.localModelRuntime.retainForTask(
                     taskID: runID,
                     modelID: model.remoteModelID
@@ -1322,7 +1383,7 @@ final class ConversationCenter: ObservableObject {
                     conversationID: conversationID,
                     error: error
                 )
-                if provider.kind == .local {
+                if usesResidentLocalModel {
                     await self.environment.localModelRuntime.releaseForTask(
                         taskID: runID,
                         reason: "launchCancelled"
@@ -1356,7 +1417,7 @@ final class ConversationCenter: ObservableObject {
                 goalContinuation: executionMode == .goal
                     ? (conversationID, provider, model, prepared.workspace.id)
                     : nil,
-                localModelID: provider.kind == .local ? model.remoteModelID : nil
+                localModelID: usesResidentLocalModel ? model.remoteModelID : nil
             )
         }
         runTasks[runID] = result
@@ -1430,14 +1491,14 @@ final class ConversationCenter: ObservableObject {
             try await service.startPrepared(goal: goal)
             let snapshot = await service.snapshot()
             terminalState = snapshot.stateName
-            if snapshot.stateName == "completed" {
+            if snapshot.stateName == "completed" || snapshot.stateName == "checkpointed" {
                 outcome = .success(())
             } else {
                 outcome = .failure(FloeError.internalError(
                     "Run ended in \(snapshot.stateName)"
                 ))
             }
-            if case .success = outcome, let automaticTitle {
+            if terminalState == "completed", case .success = outcome, let automaticTitle {
                 await generateAndApplyTitle(
                     conversationID: automaticTitle.conversationID,
                     goal: goal,
@@ -1445,13 +1506,13 @@ final class ConversationCenter: ObservableObject {
                     model: automaticTitle.model
                 )
             }
-            if case .success = outcome {
+            if terminalState == "completed", case .success = outcome {
                 await recordPersonalizationActivity(
                     completedRuns: 1,
                     conversationID: service.conversationID
                 )
             }
-            if case .success = outcome, let goalContinuation {
+            if terminalState == "completed", case .success = outcome, let goalContinuation {
                 await evaluateAndContinueGoal(
                     completedRunID: runID,
                     conversationID: goalContinuation.conversationID,
@@ -1465,12 +1526,17 @@ final class ConversationCenter: ObservableObject {
             terminalState = "failed"
             outcome = .failure(error)
         }
-        switch outcome {
-        case .success:
+        switch (terminalState, outcome) {
+        case ("checkpointed", _):
+            environment.backgroundRunCoordinator.didSuspend(
+                runID: runID,
+                message: "等待你完成接管后继续"
+            )
+        case (_, .success):
             environment.backgroundRunCoordinator.didFinish(
                 runID: runID, succeeded: true, message: nil
             )
-        case .failure(let error):
+        case (_, .failure(let error)):
             environment.backgroundRunCoordinator.didFinish(
                 runID: runID, succeeded: false, message: error.localizedDescription
             )
@@ -1869,12 +1935,17 @@ final class ConversationCenter: ObservableObject {
         let ownedWorkspace: WorkspaceRecord? = if let ownedWorkspaceID {
             try? await workspaceStore.workspace(id: ownedWorkspaceID)
         } else { nil }
+        let cloudTombstones: [CloudWorkspaceCleanupTombstone] = if let ownedWorkspaceID {
+            await environment.workspaceCenter.cloudCleanupTombstones(workspaceID: ownedWorkspaceID)
+        } else { [] }
+        try await environment.cloudWorkspaceCleanupQueue.enqueue(cloudTombstones)
         await waitForLaunches()
         try await stopRunsAndDelete(conversationIDs: [id])
         if ownedWorkspace?.kind == .privateTask, let ownedWorkspaceID {
             try? await environment.workspaceCenter.deleteWorkspace(id: ownedWorkspaceID)
         }
         await environment.credentialVault.drainDeletionQueue()
+        _ = await environment.cloudWorkspaceCleanupQueue.drain()
         environment.browserCenter.discard(conversationID: id)
         await reload()
         await environment.workspaceCenter.reload()
@@ -1955,6 +2026,7 @@ final class ConversationCenter: ObservableObject {
         let ids = Set(records.map(\.id))
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
         var privateWorkspaceIDs = Set<UUID>()
+        var cloudTombstones: [CloudWorkspaceCleanupTombstone] = []
         var runCount = 0
         for id in ids {
             runCount += try await environment.runStore.runs(conversationID: id).count
@@ -1962,13 +2034,16 @@ final class ConversationCenter: ObservableObject {
                let workspace = try? await workspaceStore.workspace(id: workspaceID),
                workspace.kind == .privateTask {
                 privateWorkspaceIDs.insert(workspaceID)
+                cloudTombstones += await environment.workspaceCenter.cloudCleanupTombstones(workspaceID: workspaceID)
             }
         }
+        try await environment.cloudWorkspaceCleanupQueue.enqueue(cloudTombstones)
         try await stopRunsAndDelete(conversationIDs: ids)
         for workspaceID in privateWorkspaceIDs {
             try? await environment.workspaceCenter.deleteWorkspace(id: workspaceID)
         }
         await environment.credentialVault.drainDeletionQueue()
+        _ = await environment.cloudWorkspaceCleanupQueue.drain()
         await environment.workspaceCenter.reload()
         await reload()
         return (records.count, runCount)
@@ -2114,7 +2189,9 @@ final class ConversationCenter: ObservableObject {
         FloeLogger(category: .runtime).info(
             "runResumePrepared run=\(record.id.uuidString) conversation=\(record.conversationID.uuidString) originalState=\(record.state) providerKind=\(String(describing: provider.kind)) checkpoint=\(checkpoint == nil ? "fallback" : "loaded") checkpointFormat=\(checkpoint?.formatVersion ?? 0) checkpointMessages=\(checkpoint?.messages.count ?? 0) durableMessages=\(assembled.count) pendingCalls=\(checkpoint?.pendingToolCalls.count ?? 0) pendingResults=\(checkpoint?.pendingToolResults.count ?? 0)"
         )
-        if provider.kind == .local {
+        let usesResidentLocalModel = provider.kind == .local
+            && model.remoteModelID != AppleFoundationModelIdentity.remoteModelID
+        if usesResidentLocalModel {
             await environment.localModelRuntime.retainForTask(
                 taskID: record.id,
                 modelID: model.remoteModelID
@@ -2157,7 +2234,7 @@ final class ConversationCenter: ObservableObject {
                 }
                 return await self.finishResumedService(
                     service,
-                    localModelID: provider.kind == .local ? model.remoteModelID : nil
+                    localModelID: usesResidentLocalModel ? model.remoteModelID : nil
                 )
             } catch {
                 await self.persistServiceFailure(service, error: error, stage: "resume")
@@ -2170,7 +2247,7 @@ final class ConversationCenter: ObservableObject {
                     succeeded: false,
                     message: error.localizedDescription
                 )
-                if provider.kind == .local {
+                if usesResidentLocalModel {
                     await self.environment.localModelRuntime.releaseForTask(
                         taskID: record.id,
                         reason: "resumeFailed"
@@ -2198,14 +2275,22 @@ final class ConversationCenter: ObservableObject {
         snapshotTasks[service.runID]?.cancel()
         snapshotTasks[service.runID] = nil
         let succeeded = snapshot.stateName == "completed"
+        let suspended = snapshot.stateName == "checkpointed"
         FloeLogger(category: .runtime).info(
             "runResumeFinished run=\(service.runID.uuidString) state=\(snapshot.stateName) terminal=\(snapshot.isTerminal) succeeded=\(succeeded)"
         )
-        environment.backgroundRunCoordinator.didFinish(
-            runID: service.runID,
-            succeeded: succeeded,
-            message: succeeded ? nil : "Run ended in \(snapshot.stateName)"
-        )
+        if suspended {
+            environment.backgroundRunCoordinator.didSuspend(
+                runID: service.runID,
+                message: "等待你完成接管后继续"
+            )
+        } else {
+            environment.backgroundRunCoordinator.didFinish(
+                runID: service.runID,
+                succeeded: succeeded,
+                message: succeeded ? nil : "Run ended in \(snapshot.stateName)"
+            )
+        }
         if localModelID != nil {
             await environment.localModelRuntime.releaseForTask(
                 taskID: service.runID,
@@ -2214,7 +2299,7 @@ final class ConversationCenter: ObservableObject {
         }
         await environment.subagentRunnerRegistry.remove(runID: service.runID)
         publishSession(service.conversationID)
-        return succeeded
+        return (succeeded || suspended)
             ? .success(())
             : .failure(FloeError.internalError("Run ended in \(snapshot.stateName)"))
     }

@@ -1,6 +1,6 @@
 # Floe Agent CI.
 # Two jobs:
-#   build-test (macos-26, full Xcode): SPM build/test + xcodegen +
+#   build-test (xcode-27 preview image): SPM build/test + xcodegen +
 #     xcodebuild for the iOS app, secret scan, SBOM, license inventory.
 #   spm-linux-build (ubuntu-latest, Swift 6.2): cross-platform compile only —
 #     SSE parser, catastrophic gate, canonical JSON, audit chain, GRDB
@@ -16,12 +16,12 @@ on:
 
 jobs:
   build-test:
-    runs-on: macos-26
+    runs-on: xcode-27
     defaults:
       run:
         working-directory: FloeAgent
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
     steps:
       - uses: actions/checkout@v5
 
@@ -39,6 +39,8 @@ jobs:
       - name: xcodebuild iPhone Simulator
         run: |
           xcodebuild \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
             -scheme FloeAgent \
             -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
             -resultBundlePath FloeAgent-iPhone.xcresult \
@@ -47,6 +49,8 @@ jobs:
       - name: xcodebuild iPad mini (A17 Pro) Simulator
         run: |
           xcodebuild \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
             -scheme FloeAgent \
             -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
             -resultBundlePath FloeAgent-iPad.xcresult \

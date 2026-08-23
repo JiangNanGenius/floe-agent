@@ -38,7 +38,8 @@ final class WebSearchSettingsCenter: ObservableObject {
     func reload() {
         let data = cloud.data(forKey: Self.defaultsKey) ?? defaults.data(forKey: Self.defaultsKey)
         if let data, let decoded = try? JSONDecoder().decode([WebSearchProviderConfiguration].self, from: data) {
-            providers = decoded.sorted { $0.priority < $1.priority }
+            providers = Self.normalizedProviders(decoded)
+            migrateBochaCredentialIfNeeded()
             FloeLogger(category: .sync).info(
                 "webSearchSettingsLoaded source=\(cloud.data(forKey: Self.defaultsKey) == nil ? "local" : "cloud") count=\(providers.count) enabled=\(providers.filter(\.enabled).count)"
             )
@@ -80,10 +81,14 @@ final class WebSearchSettingsCenter: ObservableObject {
     }
 
     func credential(for configuration: WebSearchProviderConfiguration) -> WebSearchCredential? {
-        guard let data = try? keychain.read(account: configuration.credentialAccount) else {
-            return nil
+        if let data = try? keychain.read(account: configuration.credentialAccount) {
+            return try? JSONDecoder().decode(WebSearchCredential.self, from: data)
         }
-        return try? JSONDecoder().decode(WebSearchCredential.self, from: data)
+        if configuration.kind == .bochaWeb,
+           let legacy = try? keychain.read(account: "web-search.bochaAI") {
+            return try? JSONDecoder().decode(WebSearchCredential.self, from: legacy)
+        }
+        return nil
     }
 
     nonisolated static func resolvedConfigurations() async -> [(WebSearchProviderConfiguration, WebSearchCredential)] {
@@ -91,8 +96,13 @@ final class WebSearchSettingsCenter: ObservableObject {
         guard let data = defaults.data(forKey: defaultsKey),
               let providers = try? JSONDecoder().decode([WebSearchProviderConfiguration].self, from: data) else { return [] }
         let store = KeychainStore(service: keychainService, synchronizable: true)
-        return providers.filter(\.enabled).compactMap { configuration in
+        return normalizedProviders(providers).filter(\.enabled).compactMap { configuration in
             if let secret = try? store.read(account: configuration.credentialAccount),
+               let credential = try? JSONDecoder().decode(WebSearchCredential.self, from: secret) {
+                return (configuration, credential)
+            }
+            if configuration.kind == .bochaWeb,
+               let secret = try? store.read(account: "web-search.bochaAI"),
                let credential = try? JSONDecoder().decode(WebSearchCredential.self, from: secret) {
                 return (configuration, credential)
             }
@@ -114,7 +124,7 @@ final class WebSearchSettingsCenter: ObservableObject {
 
     private static func presets() -> [WebSearchProviderConfiguration] {
         let kinds: [(WebSearchProviderKind, String)] = [
-            (.bochaWeb, "Bocha Web Search"), (.bochaAI, "Bocha AI Search"),
+            (.bochaWeb, "Bocha Search"),
             (.tencentWSA, "Tencent Cloud WSA"), (.volcengine, "Volcengine Web Search"),
             (.brave, "Brave Search"), (.tavily, "Tavily"), (.exa, "Exa"),
             (.googleProgrammable, "Google Programmable Search"), (.searxng, "SearXNG")
@@ -128,6 +138,52 @@ final class WebSearchSettingsCenter: ObservableObject {
                 priority: index
             )
         }
+    }
+
+    /// v1.4.19 presents Bocha as one provider. Older installs stored Web and
+    /// AI search separately even though they share one account and key. Keep
+    /// the legacy enum for decoding, but collapse it at the settings/runtime
+    /// boundary and use the supported Web Search endpoint for both modes.
+    nonisolated private static func normalizedProviders(
+        _ source: [WebSearchProviderConfiguration]
+    ) -> [WebSearchProviderConfiguration] {
+        let legacyAI = source.first { $0.kind == .bochaAI }
+        var result = source.filter { $0.kind != .bochaAI }
+        if let index = result.firstIndex(where: { $0.kind == .bochaWeb }) {
+            if let legacyAI {
+                result[index].enabled = result[index].enabled || legacyAI.enabled
+                result[index].options["summaryEnabled"] =
+                    result[index].options["summaryEnabled"] ?? "true"
+            }
+            result[index].displayName = "Bocha Search"
+            result[index].credentialAccount = "web-search.bochaWeb"
+        } else if var legacyAI {
+            legacyAI.kind = .bochaWeb
+            legacyAI.displayName = "Bocha Search"
+            legacyAI.credentialAccount = "web-search.bochaWeb"
+            legacyAI.options["summaryEnabled"] = "true"
+            result.append(legacyAI)
+        }
+        return result.sorted { $0.priority < $1.priority }
+    }
+
+    private func migrateBochaCredentialIfNeeded() {
+        guard (try? keychain.read(account: "web-search.bochaWeb")) == nil,
+              let legacy = try? keychain.read(account: "web-search.bochaAI") else { return }
+        try? keychain.store(account: "web-search.bochaWeb", secret: legacy)
+    }
+
+    nonisolated static func runtimeProviderNote() -> String? {
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
+              let decoded = try? JSONDecoder().decode(
+                [WebSearchProviderConfiguration].self,
+                from: data
+              ) else { return nil }
+        let enabled = normalizedProviders(decoded).filter(\.enabled)
+        guard !enabled.isEmpty else { return "Web search providers enabled: none." }
+        return "Web search providers enabled: "
+            + enabled.map { "\($0.displayName) [\($0.kind.rawValue)]" }.joined(separator: ", ")
+            + ". The optional web.search provider argument must use one of these names or kinds."
     }
 }
 
@@ -196,6 +252,15 @@ private struct WebSearchProviderEditor: View {
                     credentialField("API Key", value: $apiKey, revealed: $revealsAPIKey)
                 }
                 if configuration.kind == .googleProgrammable { TextField("Search Engine ID", text: $engineID) }
+                if configuration.kind == .bochaWeb {
+                    Toggle("AI 摘要增强", isOn: Binding(
+                        get: { configuration.options["summaryEnabled"] != "false" },
+                        set: { configuration.options["summaryEnabled"] = $0 ? "true" : "false" }
+                    ))
+                    Text("使用同一 API Key 和官方 Web Search 接口；开启后请求结果摘要，不再调用旧的独立 AI Search 端点。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if let message = errorMessage ?? authenticationError {
                     Text(message).foregroundStyle(.red)
                 }

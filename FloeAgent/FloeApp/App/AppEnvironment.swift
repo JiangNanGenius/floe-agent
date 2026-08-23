@@ -54,6 +54,7 @@ final class AppEnvironment: ObservableObject {
     let localModelStore: LocalModelStore
     let localModelRuntime: LocalModelRuntime
     let localModelsCenter: LocalModelsCenter
+    let networkStatusMonitor: NetworkStatusMonitor
 
     // MARK: Security
 
@@ -65,6 +66,11 @@ final class AppEnvironment: ObservableObject {
 
     /// Host store backing SSH + remote Python (shares the database).
     let remoteHostStore: RemoteHostStore
+    /// Shared verified-SSH command service used by model tools and explicit
+    /// host-management actions such as remote-agent updates.
+    let sshCommandService: SSHCommandService
+    let cloudWorkspaceService: CloudWorkspaceService
+    let cloudWorkspaceCleanupQueue: CloudWorkspaceCleanupQueue
     /// Bundled CPython capability. Unavailable only when the reproducible
     /// runtime bootstrap was intentionally omitted from the build.
     let localPythonProbe: FloeExecution.LocalPythonCapabilityProbe
@@ -197,6 +203,7 @@ final class AppEnvironment: ObservableObject {
             store: localModelStore,
             runtime: self.localModelRuntime
         )
+        self.networkStatusMonitor = NetworkStatusMonitor()
         self.keychain = keychain
         self.catastrophicGate = catastrophicGate
         self.subagentRunnerRegistry = SubagentRunnerRegistry()
@@ -213,6 +220,10 @@ final class AppEnvironment: ObservableObject {
         let remoteServices = Self.makeRemoteServices(hostStore: hostStore)
         let pythonService = remoteServices.python
         let sshCommandService = remoteServices.ssh
+        self.sshCommandService = sshCommandService
+        let cloudWorkspaceService = CloudWorkspaceService(ssh: sshCommandService)
+        self.cloudWorkspaceService = cloudWorkspaceService
+        self.cloudWorkspaceCleanupQueue = CloudWorkspaceCleanupQueue(service: cloudWorkspaceService)
         let localPythonService = CPythonServiceFactory.make()
         self.remotePythonProbe = FloeExecution.RemotePythonProbe(service: pythonService)
         self.localPythonProbe = FloeExecution.LocalPythonCapabilityProbe(
@@ -407,6 +418,11 @@ final class AppEnvironment: ObservableObject {
             await settingsCenter.loadLaunchPreferences()
             await configurationSync.setCredentialStore(credentialStore)
             await credentialVault.drainDeletionQueue()
+            // Replays offline cloud deletion tombstones. The endpoint is
+            // idempotent, so launch-time retry is safe after crashes too.
+            Task { [cloudWorkspaceCleanupQueue] in
+                _ = await cloudWorkspaceCleanupQueue.drain()
+            }
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--ui-test-reset-onboarding") {
                 ConversationCenter.persistOnboardingSkippedMarker(false)

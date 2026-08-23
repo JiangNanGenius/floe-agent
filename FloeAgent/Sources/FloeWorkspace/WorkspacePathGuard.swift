@@ -22,17 +22,23 @@ public struct WorkspacePathGuard: Sendable {
 
     /// Standardized root path used for containment prefix checks.
     private let rootPath: String
+    /// User-selected folders exposed under virtual `Mounts/<name>` paths.
+    private let mounts: [String: URL]
 
     public init(
         rootURL: URL,
         maxReadBytes: Int = 10 * 1024 * 1024,
-        maxWriteBytes: Int = 4 * 1024 * 1024
+        maxWriteBytes: Int = 4 * 1024 * 1024,
+        mounts: [String: URL] = [:]
     ) {
         let standardized = rootURL.standardizedFileURL.resolvingSymlinksInPath()
         self.rootURL = standardized
         self.rootPath = standardized.path
         self.maxReadBytes = maxReadBytes
         self.maxWriteBytes = maxWriteBytes
+        self.mounts = Dictionary(uniqueKeysWithValues: mounts.map { name, url in
+            (name, url.standardizedFileURL.resolvingSymlinksInPath())
+        })
     }
 
     /// Basename denylist: exact matches and prefixes (case-insensitive).
@@ -71,11 +77,24 @@ public struct WorkspacePathGuard: Sendable {
         // Expand "." / ".." before joining so ".." cannot smuggle a segment
         // past the root prefix check below.
         let normalized = (trimmed as NSString).standardizingPath
-        let joined = rootURL.appendingPathComponent(normalized)
+        let pathComponents = normalized.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        let joined: URL
+        let allowedRootPath: String
+        if pathComponents.count >= 2,
+           pathComponents[0] == "Mounts",
+           let mountRoot = mounts[pathComponents[1]] {
+            joined = pathComponents.dropFirst(2).reduce(mountRoot) { partial, component in
+                partial.appendingPathComponent(component)
+            }
+            allowedRootPath = mountRoot.path
+        } else {
+            joined = rootURL.appendingPathComponent(normalized)
+            allowedRootPath = rootPath
+        }
         let resolved = joined.resolvingSymlinksInPath()
 
         let resolvedPath = resolved.path
-        guard resolvedPath == rootPath || resolvedPath.hasPrefix(rootPath + "/") else {
+        guard resolvedPath == allowedRootPath || resolvedPath.hasPrefix(allowedRootPath + "/") else {
             throw WorkspaceToolError.escapesRoot(path)
         }
         if isSecretPath(resolved) {
@@ -121,7 +140,8 @@ public struct WorkspacePathGuard: Sendable {
     public func assertWritable(_ url: URL) throws {
         let resolved = url.standardizedFileURL.resolvingSymlinksInPath()
         let path = resolved.path
-        guard path == rootPath || path.hasPrefix(rootPath + "/") else {
+        let allowedPaths = [rootPath] + mounts.values.map(\.path)
+        guard allowedPaths.contains(where: { path == $0 || path.hasPrefix($0 + "/") }) else {
             throw WorkspaceToolError.escapesRoot(url.path)
         }
         if isSecretPath(resolved) {

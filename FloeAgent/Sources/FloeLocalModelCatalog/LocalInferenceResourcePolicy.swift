@@ -3,8 +3,8 @@ import Foundation
 import Darwin
 #endif
 
-/// Conservative device-side loading limits for GGUF models. The policy is
-/// deliberately independent from llama.cpp so it can be tested without ever
+/// Conservative device-side loading limits for local model weights. The policy
+/// is deliberately independent from a concrete runtime so it can be tested without ever
 /// mapping model weights on the development Mac.
 public enum LocalInferenceResourceTier: String, Sendable, Codable, Equatable {
     case constrained
@@ -58,7 +58,7 @@ public enum LocalInferenceResourcePolicy {
         // os_proc_available_memory on iOS, not installed RAM. A percentage
         // alone was too conservative on recent iOS 26 devices: a 3.4 GB Q4
         // model was rejected with roughly 4.9 GB still available. Permit the
-        // load when at least 26% of the real allowance remains; llama.cpp's
+        // load when at least 26% of the real allowance remains; the runtime's
         // allocation failures are still surfaced as recoverable errors.
         return mappedBytes <= physicalMemoryBytes * 74 / 100
     }

@@ -20,6 +20,29 @@ struct WebRetrievalTests {
         let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(object["freshness"] as? String == "oneWeek")
         #expect(object["count"] as? Int == 8)
+        #expect(object["summary"] as? Bool == true)
+        #expect(object["answer"] == nil)
+        #expect(object["stream"] == nil)
+    }
+
+    @Test("Bocha summary can be disabled without changing endpoint or credential")
+    func bochaSummaryToggle() throws {
+        let configuration = WebSearchProviderConfiguration(
+            kind: .bochaWeb,
+            displayName: "Bocha Search",
+            credentialAccount: "web-search.bochaWeb",
+            options: ["summaryEnabled": "false"]
+        )
+        let request = try WebSearchService.makeRequest(
+            configuration,
+            credential: WebSearchCredential(values: ["apiKey": "shared-key"]),
+            query: WebSearchQuery(text: "Floe")
+        )
+        #expect(request.url?.path == "/v1/web-search")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer shared-key")
+        let body = try #require(request.httpBody)
+        let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(object["summary"] as? Bool == false)
     }
 
     @Test("Tencent WSA request is signed with current SearchPro contract")

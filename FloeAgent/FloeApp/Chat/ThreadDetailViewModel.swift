@@ -69,6 +69,7 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var latestUsage = UsageSnapshot()
     /// Live snapshot of the selected run, when the center owns it.
     @Published private(set) var liveStateName: String?
+    @Published private(set) var approvalReviewSummary: String?
     @Published private(set) var liveReasoningText: String = ""
     /// Published mirror of StreamingTextAnimator.displayedText. SwiftUI
     /// observes this value, so every grapheme tick is actually rendered.
@@ -79,6 +80,7 @@ final class ThreadDetailViewModel: ObservableObject {
     /// Composer draft text.
     @Published var draft: String = ""
     @Published var selectedModelID: UUID?
+    private var didRestoreConversationModel = false
     /// Workspace selected for the next run.
     @Published var selectedProjectID: UUID?
     /// Where the next run executes (local only until host tools land).
@@ -227,6 +229,10 @@ final class ThreadDetailViewModel: ObservableObject {
         center.providerAndModel(modelID: selectedModelID)?.1.displayName
     }
 
+    var usesLocalModel: Bool {
+        center.providerAndModel(modelID: selectedModelID)?.0.kind == .local
+    }
+
     var canContinue: Bool {
         guard !isRunning, let state = selectedRun?.state else { return false }
         return !center.hasLiveOwner(runID: selectedRun?.id)
@@ -331,9 +337,15 @@ final class ThreadDetailViewModel: ObservableObject {
             taskTitle = conversation.title
             center.environment.browserCenter.bind(to: conversationID)
             selectedProjectID = center.environment.workspaceCenter.projectWorkspaceID(for: conversationID)
-            if selectedModelID == nil { selectedModelID = center.modelPreferences.defaultAgentModelID }
             stage = "runList"
             runs = try await center.environment.runStore.runs(conversationID: conversationID)
+            if !didRestoreConversationModel {
+                let previousModelID = runs.first?.modelID
+                selectedModelID = center.providerAndModel(modelID: previousModelID) != nil
+                    ? previousModelID
+                    : center.modelPreferences.defaultAgentModelID
+                didRestoreConversationModel = true
+            }
             stage = "messageList"
             messages = try await center.environment.conversationStore
                 .messages(conversationID: conversationID)
@@ -875,6 +887,9 @@ final class ThreadDetailViewModel: ObservableObject {
                     self.liveStateName = state.rawValue
                     self.isRunning = ![.completed, .cancelled, .failed, .interrupted].contains(state)
                 case .approvalReviewChanged(let snapshot):
+                    self.approvalReviewSummary = snapshot.isEvaluating
+                        ? nil
+                        : snapshot.outcomeSummary
                     self.liveStateName = snapshot.isEvaluating
                         ? "reviewingApproval"
                         : "streamingModel"

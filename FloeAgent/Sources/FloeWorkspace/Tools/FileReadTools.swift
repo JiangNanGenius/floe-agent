@@ -38,7 +38,8 @@ public struct WorkspaceToolEnvironment: Sendable {
         let guardResolver = WorkspacePathGuard(
             rootURL: root,
             maxReadBytes: maxReadBytes,
-            maxWriteBytes: maxWriteBytes
+            maxWriteBytes: maxWriteBytes,
+            mounts: WorkspaceMountRegistry.shared.mounts(for: root)
         )
         return WorkspaceFileService(guard: guardResolver)
     }
@@ -52,7 +53,8 @@ public struct WorkspaceToolEnvironment: Sendable {
         return WorkspaceFileService(guard: WorkspacePathGuard(
             rootURL: root,
             maxReadBytes: maxReadBytes,
-            maxWriteBytes: maxWriteBytes
+            maxWriteBytes: maxWriteBytes,
+            mounts: WorkspaceMountRegistry.shared.mounts(for: root)
         ))
     }
 }

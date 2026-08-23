@@ -63,7 +63,7 @@ struct RunLaunchStoreTests {
             id: UUID(uuidString: "A1480001-0000-4000-8000-000000000001")!,
             providerID: provider.id,
             remoteModelID: legacy.remoteModelID,
-            displayName: "Qwen3.5 4B Q4_K_M",
+            displayName: "Qwen3.5 4B MLX 4-bit",
             limits: legacy.limits,
             capabilities: legacy.capabilities
         )

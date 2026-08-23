@@ -65,7 +65,7 @@ struct ConversationListView: View {
                 Task { await viewModel.delete(target) }
             }
         } message: {
-            Text("任务、私有工作区和临时凭据将被删除，此操作不可撤销。")
+            Text("任务、私有工作区和临时凭据将被删除；由 Floe 创建的云工作区会立即清理，离线时会排队后自动清理。此操作不可撤销。")
         }
     }
 
@@ -194,8 +194,9 @@ struct ConversationListView: View {
     }
 }
 
-private struct ArchivedConversationsView: View {
+struct ArchivedConversationsView: View {
     let center: ConversationCenter
+    var showsDoneButton = true
     @Environment(\.dismiss) private var dismiss
     @State private var conversations: [ConversationRecord] = []
     @State private var selection: Set<UUID> = []
@@ -221,8 +222,10 @@ private struct ArchivedConversationsView: View {
         .navigationTitle("归档区")
         .environment(\.editMode, .constant(.active))
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("完成") { dismiss() }
+            if showsDoneButton {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("完成") { dismiss() }
+                }
             }
             if !selection.isEmpty {
                 ToolbarItem(placement: .bottomBar) {
@@ -242,7 +245,7 @@ private struct ArchivedConversationsView: View {
         .alert("永久删除所选任务？", isPresented: $confirmsDelete) {
             Button("取消", role: .cancel) {}
             Button("删除", role: .destructive) { Task { await delete(ids: selection) } }
-        } message: { Text("任务、生成内容、私有工作区和附件引用将被永久删除。") }
+        } message: { Text("任务、生成内容、私有工作区和附件引用将被永久删除；Floe 托管的云工作区也会清理，离线时进入待处理队列。") }
         .alert("清空归档区？", isPresented: $confirmsDeleteAll) {
             Button("取消", role: .cancel) {}
             Button("全部删除", role: .destructive) {

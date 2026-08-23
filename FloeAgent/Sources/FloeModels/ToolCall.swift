@@ -83,6 +83,7 @@ public struct ToolResult: Sendable, Codable, Hashable {
         case denied
         case expired
         case cancelled
+        case needsUser
     }
 
     public init(

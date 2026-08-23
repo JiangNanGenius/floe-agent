@@ -158,7 +158,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     func activate(_ id: UUID) {
         guard tabs.contains(where: { $0.id == id }) else { return }
         activeTabID = id
-        addressText = activeWebView?.url?.absoluteString ?? ""
+        refreshVisibleAddress()
         appendEvent(tabID: id, method: "Target.targetActivated")
     }
 
@@ -170,9 +170,49 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     }
 
     func navigateFromAddressBar() {
+        if let currentURL = activeWebView?.url,
+           Self.isLocalPreview(currentURL),
+           addressText == Self.visibleAddress(for: activeWebView) {
+            activeWebView?.reload()
+            return
+        }
         let candidate = addressText.contains("://") ? addressText : "https://\(addressText)"
         guard let url = try? BrowserURLPolicy.validate(candidate), let activeWebView else { return }
         activeWebView.load(URLRequest(url: url))
+    }
+
+    /// The address bar deliberately presents a human label for app-owned
+    /// loopback previews. The real URL remains on WKWebView for navigation,
+    /// browser tools, diagnostics, and an explicit copy action.
+    var technicalAddress: String? { activeWebView?.url?.absoluteString }
+
+    var isDisplayingLocalPreview: Bool {
+        activeWebView?.url.map(Self.isLocalPreview) ?? false
+    }
+
+    func refreshVisibleAddress() {
+        addressText = Self.visibleAddress(for: activeWebView)
+    }
+
+    private static func visibleAddress(for webView: WKWebView?) -> String {
+        guard let webView, let url = webView.url else { return "" }
+        guard isLocalPreview(url) else { return url.absoluteString }
+        if let title = webView.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty,
+           title.caseInsensitiveCompare("localhost") != .orderedSame {
+            return title
+        }
+        let decodedName = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
+        let baseName = (decodedName as NSString).deletingPathExtension
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return baseName.isEmpty ? String(localized: "本地网页预览") : baseName
+    }
+
+    private static func isLocalPreview(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "http" else { return false }
+        return url.host == "127.0.0.1" || url.host?.lowercased() == "localhost"
     }
 
     func takeControl() {
@@ -1026,7 +1066,7 @@ extension BrowserSessionCenter: WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let index = tabs.firstIndex(where: { $0.webView === webView }) else { return }
         appendEvent(tabID: tabs[index].id, method: "Page.loadEventFired")
-        if tabs[index].id == activeTabID { addressText = webView.url?.absoluteString ?? "" }
+        if tabs[index].id == activeTabID { refreshVisibleAddress() }
         surfaceState = isUserControlling ? .needsUser("User takeover is active") : .ready
         objectWillChange.send()
     }

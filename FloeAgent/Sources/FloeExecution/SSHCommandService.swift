@@ -262,6 +262,18 @@ public struct SSHCommandService: Sendable {
         }
     }
 
+    /// Opens the concrete verified SSH session required by tunnel-backed
+    /// services. Test doubles intentionally fail this capability instead of
+    /// silently falling back to shell transport.
+    public func openTunnelSession(hostID: UUID?) async throws -> (UUID, SSHSessionHandle) {
+        let resolvedID = try await resolveHostID(hostID)
+        let session = try await makeSession(hostID: resolvedID)
+        guard let handle = session as? SSHSessionHandle else {
+            throw RemotePythonError.connectionFailed("SSH tunnel transport is unavailable")
+        }
+        return (resolvedID, handle)
+    }
+
     private func boundedProbe(
         _ command: String,
         session: any RemotePythonSession,

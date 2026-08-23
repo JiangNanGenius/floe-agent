@@ -53,7 +53,23 @@ let package = Package(
         .package(url: "https://github.com/royalapplications/royalvnc.git", revision: "92d4427c73817d8f849bb289ff190aa4b40c44ea"),
         // ZIPFoundation supplies the bounded archive reader used for local,
         // value-only Office Open XML spreadsheet inspection.
-        .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20")
+        .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20"),
+        // Exact revision: Qwen3.5/Gemma 4 VLM support and the shared-KV Gemma
+        // E4B loading fix. FoundationModelsIntegration is disabled because
+        // Floe separately gates Apple's system model at iOS 27 while this app
+        // continues to support iOS/iPadOS 26.
+        .package(
+            url: "https://github.com/ml-explore/mlx-swift-lm.git",
+            revision: "14414441fa44f45eee35a61e9fa0bab577cf9734",
+            traits: []
+        ),
+        // mlx-swift-lm deliberately keeps Hugging Face tokenizers as a
+        // consumer-provided integration. Floe downloads model snapshots
+        // itself, but still needs the tokenizer implementation to open them.
+        .package(
+            url: "https://github.com/huggingface/swift-transformers.git",
+            exact: "1.3.0"
+        )
     ],
     targets: [
         .binaryTarget(
@@ -120,7 +136,16 @@ let package = Package(
         ),
         .target(
             name: "FloeLocalModels",
-            dependencies: ["FloeCore", "FloeModels", "FloeProviders", "FloeLocalModelCatalog", "LlamaFramework", "FloeLlamaVisionShim"],
+            dependencies: [
+                "FloeCore", "FloeModels", "FloeProviders", "FloeLocalModelCatalog",
+                // Kept in source for compatibility and possible future
+                // fallback, but the public v1.4.19 catalog is MLX-only.
+                "LlamaFramework", "FloeLlamaVisionShim",
+                .product(name: "MLXVLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),
+                .product(name: "Tokenizers", package: "swift-transformers")
+            ],
             path: "Sources/FloeLocalModels",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -180,6 +205,7 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeExecution",
+            resources: [.copy("Resources")],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency"),

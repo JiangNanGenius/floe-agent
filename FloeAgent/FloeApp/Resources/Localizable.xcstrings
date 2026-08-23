@@ -7119,6 +7119,34 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "同步、用量与诊断" } }
       }
     },
+    "setup.features.safety.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Automatic approval reviews each concrete action. Offline local approval stays restricted, and system safety boundaries always remain enforced." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "自动审批会审核每个具体动作；离线本地审批保持受限，系统安全边界始终生效。" } }
+      }
+    },
+    "setup.features.safety.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Approval and privacy" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "审批与隐私" } }
+      }
+    },
+    "setup.features.workspaces.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Import a folder into a private workspace, or connect a remote agent for durable cloud tasks, files, and hosted previews." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "将文件夹导入私有工作区，或连接远端代理来持续执行云任务、传输文件并托管预览。" } }
+      }
+    },
+    "setup.features.workspaces.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Private and cloud workspaces" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "私有与云工作区" } }
+      }
+    },
     "setup.point.change_anytime": {
       "extractionState": "manual",
       "localizations": {
@@ -9601,8 +9629,8 @@
     "localmodels.footer": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Model weights are not bundled. Downloads are user initiated, stored only on this device, validated as GGUF, and run with llama.cpp and Metal." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "应用不内置模型权重。下载由用户主动发起，仅保存在本机，校验 GGUF 格式后通过 llama.cpp 与 Metal 运行。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Model weights are not bundled. Downloads are user initiated, pinned to reviewed revisions, stored only on this device, validated, and run with MLX and Metal." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "应用不内置模型权重。下载由用户主动发起，固定到已审核版本，仅保存在本机，校验后通过 MLX 与 Metal 运行。" } }
       }
     },
     "websearch.title": {

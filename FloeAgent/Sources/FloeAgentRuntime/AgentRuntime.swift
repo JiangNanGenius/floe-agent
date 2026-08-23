@@ -121,7 +121,7 @@ public struct CatalogToolExecutor: ToolExecutor {
             )
             return ToolResult(
                 callID: call.id,
-                status: .ok,
+                status: output.requiresUserAction ? .needsUser : .ok,
                 outputSummary: output.summary,
                 outputDigest: output.fullOutputSHA256,
                 exitStatus: output.exitStatus,
@@ -199,9 +199,9 @@ public actor FloeAgentRuntime {
         public var toolsEnabled: Bool
         /// Pause timeout before automatic checkpoint.
         public var pauseTimeout: TimeInterval
-        /// Maximum parent iterations in the mobile activation budget. The
-        /// runtime uses the shared Harness ledger and finishes with a
-        /// tool-free summary when this value is exhausted.
+        /// Emergency parent-iteration ceiling. Normal runs use a practically
+        /// unbounded value and are governed by progress fingerprints instead;
+        /// tests and constrained deployments can still provide a finite cap.
         public var maxToolSteps: Int
         /// When enabled, a completed answer gets one tool-free self-critique
         /// pass (verifying) before the run terminates, letting the model
@@ -219,7 +219,7 @@ public actor FloeAgentRuntime {
             allowedWorkspacePaths: [String] = [],
             toolsEnabled: Bool = true,
             pauseTimeout: TimeInterval = 300,
-            maxToolSteps: Int = 90,
+            maxToolSteps: Int = Int.max / 4,
             verifyFinalAnswer: Bool = false
         ) {
             self.conversationID = conversationID
@@ -290,6 +290,9 @@ public actor FloeAgentRuntime {
     /// The outer model loop consumes this flag; handlers never recursively
     /// enter `runModelTurn`, which keeps one owner for state transitions.
     private var modelTurnContinuationRequested = false
+    /// A visible tool (for example browser takeover) parked the run at a
+    /// durable checkpoint until the user explicitly continues it.
+    private var waitingForUserAction = false
     /// User guidance waits here until the current model output and any tool
     /// request/result pair have reached a complete step boundary.
     private var pendingSteers: [RuntimeSteerInput] = []
@@ -693,9 +696,10 @@ public actor FloeAgentRuntime {
         // request but never pollutes durable conversation history.
         let iterationSnapshot = await budgetLedger.snapshot()
         let remainingIterations = max(0, configuration.maxToolSteps - iterationSnapshot.parent)
-        let pressure: String? = if !isFinalizingWithoutTools && remainingIterations <= 3 {
+        let usesFiniteIterationBudget = configuration.maxToolSteps < 100_000
+        let pressure: String? = if usesFiniteIterationBudget && !isFinalizingWithoutTools && remainingIterations <= 3 {
             "Harness control: only \(remainingIterations) tool iterations remain. Return the final answer now and do not call another tool unless it is strictly required to avoid an incorrect answer."
-        } else if !isFinalizingWithoutTools && remainingIterations <= 10 {
+        } else if usesFiniteIterationBudget && !isFinalizingWithoutTools && remainingIterations <= 10 {
             "Harness control: \(remainingIterations) tool iterations remain. Start wrapping up, consolidate evidence, and prepare a final answer."
         } else {
             nil
@@ -1147,9 +1151,23 @@ public actor FloeAgentRuntime {
                 decision = .escalateToHuman(reason: "Policy error: \(error.localizedDescription)")
             }
             if requiresModelReview {
+                let outcomeSummary: String = switch decision {
+                case .allow:
+                    "已通过：该操作在当前任务授权和安全边界内。"
+                case .deny(let reason):
+                    "未通过：\(reason)"
+                case .escalateToHuman(let reason):
+                    "需要确认：\(reason)"
+                case .stopped(let gateReason):
+                    "已阻止：\(gateReason)"
+                }
                 await sink?.agentRuntime(
                     self,
-                    didChangeApprovalReview: .init(toolName: call.toolName, isEvaluating: false)
+                    didChangeApprovalReview: .init(
+                        toolName: call.toolName,
+                        isEvaluating: false,
+                        outcomeSummary: outcomeSummary
+                    )
                 )
             }
         }
@@ -1526,6 +1544,23 @@ public actor FloeAgentRuntime {
     private func resumeStream(with result: ToolResult, after call: ToolCall) async {
         pendingToolResults.append(result)
         executionLedger.record(call: call, result: result)
+        if result.status == .needsUser {
+            waitingForUserAction = true
+            modelTurnContinuationRequested = false
+            do {
+                try await writeCheckpoint()
+                await transition(to: .checkpointed(AgentState.CheckpointRef()))
+            } catch {
+                await failRun(
+                    message: "Unable to save the browser takeover checkpoint: \(error.localizedDescription)",
+                    recoverable: true
+                )
+            }
+            return
+        }
+        // A batch can contain multiple results. Once any member requests a
+        // user action, later completions must not restart the provider turn.
+        guard !waitingForUserAction else { return }
         if let guardrail = loopGuard.record(call: call, result: result) {
             if guardrail.shouldStop {
                 await beginForcedFinalization(with: nil, stopReason: .noProgress)

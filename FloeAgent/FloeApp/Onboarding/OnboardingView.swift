@@ -150,6 +150,16 @@ struct OnboardingView: View {
                     detail: "setup.features.connections.detail"
                 )
                 setupFeature(
+                    "externaldrive.connected.to.line.below",
+                    title: "setup.features.workspaces.title",
+                    detail: "setup.features.workspaces.detail"
+                )
+                setupFeature(
+                    "checkmark.shield",
+                    title: "setup.features.safety.title",
+                    detail: "setup.features.safety.detail"
+                )
+                setupFeature(
                     "pip",
                     title: "setup.features.background.title",
                     detail: "setup.features.background.detail"

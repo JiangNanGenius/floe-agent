@@ -11,6 +11,8 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeModels
+import FloeExecution
+import UniformTypeIdentifiers
 
 /// The file inspector surface: workspace header + tree/search + preview
 /// navigation. Presented in the iPad third column or the iPhone sheet via
@@ -22,6 +24,10 @@ struct FileInspectorView: View {
     @StateObject private var treeModel: FileTreeViewModel
     @State private var previewPath: String?
     @State private var showWorkspacePicker = false
+    @State private var showMountPicker = false
+    @State private var showImportPicker = false
+    @State private var showCloudWorkspaceLink = false
+    @State private var exportURL: URL?
     /// Prevents the tree's restoration task from reopening the file during
     /// the short async window in which the cleared selection is persisted.
     @State private var isClosingPreview = false
@@ -52,6 +58,27 @@ struct FileInspectorView: View {
                             .frame(minHeight: FloeTheme.minimumTarget)
                     }
                 }
+            }
+        }
+        .sheet(isPresented: $showMountPicker) {
+            DocumentPickerView(contentTypes: [.folder]) { url in
+                Task { await mountFolder(url) }
+            }
+        }
+        .sheet(isPresented: $showImportPicker) {
+            DocumentPickerView(contentTypes: [.folder]) { url in
+                Task { await importFolder(url) }
+            }
+        }
+        .sheet(isPresented: $showCloudWorkspaceLink) {
+            CloudWorkspaceLinkSheet(center: center)
+        }
+        .sheet(isPresented: Binding(
+            get: { exportURL != nil },
+            set: { if !$0 { exportURL = nil } }
+        )) {
+            if let exportURL {
+                WorkspaceExportShareSheet(items: [exportURL])
             }
         }
     }
@@ -88,6 +115,11 @@ struct FileInspectorView: View {
             }
             .navigationTitle("inspector.files")
             .toolbar {
+                if workspace.kind == .privateTask {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        workspaceActions
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         router.hideInspector()
@@ -105,6 +137,53 @@ struct FileInspectorView: View {
                     previewPath = selected
                 }
             }
+        }
+    }
+
+    private var workspaceActions: some View {
+        Menu {
+            Button {
+                showMountPicker = true
+            } label: {
+                Label("链接外部文件夹", systemImage: "folder.badge.plus")
+            }
+            Button {
+                showImportPicker = true
+            } label: {
+                Label("导入整个文件夹", systemImage: "square.and.arrow.down")
+            }
+            Button {
+                showCloudWorkspaceLink = true
+            } label: {
+                Label("链接云工作区", systemImage: "cloud")
+            }
+            Button {
+                do { exportURL = try center.prepareWorkspaceExport() }
+                catch { center.actionError = error.localizedDescription }
+            } label: {
+                Label("导出工作区", systemImage: "square.and.arrow.up")
+            }
+        } label: {
+            Label("工作区操作", systemImage: "ellipsis.circle")
+        }
+        .accessibilityLabel("工作区操作")
+    }
+
+    private func mountFolder(_ url: URL) async {
+        do {
+            try await center.mountExternalFolder(url)
+            await treeModel.loadRoot()
+        } catch {
+            center.actionError = error.localizedDescription
+        }
+    }
+
+    private func importFolder(_ url: URL) async {
+        do {
+            try await center.importFolder(url)
+            await treeModel.loadRoot()
+        } catch {
+            center.actionError = error.localizedDescription
         }
     }
 
@@ -130,6 +209,18 @@ struct FileInspectorView: View {
                     .font(FloeTheme.Typography.section)
                     .foregroundStyle(.primary)
                     .lineLimit(1)
+                if !center.activeMountNames.isEmpty {
+                    Label("\(center.activeMountNames.count)", systemImage: "externaldrive.connected.to.line.below")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("已链接 \(center.activeMountNames.count) 个外部文件夹")
+                }
+                if !center.cloudWorkspaceLinks.isEmpty {
+                    Label("\(center.cloudWorkspaceLinks.count)", systemImage: "cloud.fill")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.primary)
+                        .accessibilityLabel("已链接 \(center.cloudWorkspaceLinks.count) 个云工作区")
+                }
                 Spacer()
                 if showsSwitch {
                     Text("workspace.switch")
@@ -178,5 +269,93 @@ struct FileInspectorView: View {
             conversationID: router.selectedConversationID
         ) }
     }
+}
+
+private struct CloudWorkspaceLinkSheet: View {
+    @ObservedObject var center: WorkspaceCenter
+    @ObservedObject private var remoteCenter: RemoteSessionCenter
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedHostID: UUID?
+    @State private var name = ""
+    @State private var remotePath = ""
+    @State private var port = String(RemoteAgentPayload.defaultPort)
+    @State private var cleanupOnDelete = false
+    @State private var errorMessage: String?
+
+    init(center: WorkspaceCenter) {
+        self.center = center
+        self.remoteCenter = center.environment.remoteSessionCenter
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("云工作区") {
+                    Picker("受信任主机", selection: $selectedHostID) {
+                        Text("请选择主机").tag(UUID?.none)
+                        ForEach(remoteCenter.hosts) { host in
+                            Text("\(host.displayName) · \(host.user)@\(host.address)")
+                                .tag(Optional(host.id))
+                        }
+                    }
+                    TextField("显示名称", text: $name)
+                    TextField("守护程序工作区 ID / 相对路径", text: $remotePath)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("守护程序端口", text: $port)
+                        .keyboardType(.numberPad)
+                    Toggle("永久删除任务时清理云工作区", isOn: $cleanupOnDelete)
+                }
+                Section {
+                    Text("这里只创建连接标记。守护程序仅在你于对话中明确要求安装后，才由模型通过已验证的 SSH 主机执行引导；默认服务只监听远端回环地址，并通过 SSH 隧道访问。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let errorMessage {
+                    Section { Text(errorMessage).foregroundStyle(.red) }
+                }
+            }
+            .navigationTitle("链接云工作区")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("链接") { link() }
+                        .disabled(selectedHostID == nil || remotePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .task {
+                await remoteCenter.loadHosts()
+                if selectedHostID == nil { selectedHostID = remoteCenter.hosts.first?.id }
+            }
+        }
+    }
+
+    private func link() {
+        guard let selectedHostID else { return }
+        do {
+            _ = try center.linkCloudWorkspace(
+                name: name,
+                hostID: selectedHostID,
+                remotePath: remotePath.trimmingCharacters(in: .whitespacesAndNewlines),
+                daemonPort: Int(port) ?? RemoteAgentPayload.defaultPort,
+                cleanupOnConversationDelete: cleanupOnDelete
+            )
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct WorkspaceExportShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 #endif

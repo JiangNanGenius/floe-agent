@@ -191,7 +191,7 @@ final class AppRouter: ObservableObject {
     /// active). The center owns the honest session lifecycle.
     func handleScenePhase(_ phase: ScenePhase, environment: AppEnvironment) {
         backgroundPolicy.handleScenePhase(policyPhase(for: phase), sceneID: sceneID)
-        environment.backgroundRunCoordinator.handleScenePhase(phase)
+        environment.backgroundRunCoordinator.handleScenePhase(phase, sceneID: sceneID)
         let center = environment.remoteSessionCenter
         Task { @MainActor in
             switch phase {

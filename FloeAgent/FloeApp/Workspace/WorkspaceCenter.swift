@@ -17,11 +17,30 @@ import FloeCore
 import FloeModels
 import FloePersistence
 import FloeWorkspace
+import FloeExecution
 
 /// Coordinates workspaces for the UI layer. Views bind only to this center,
 /// never to WorkspaceStore or WorkspaceFileService directly.
 @MainActor
 final class WorkspaceCenter: ObservableObject {
+
+    struct WorkspaceMount: Codable, Hashable, Identifiable, Sendable {
+        var id: String { name }
+        var name: String
+        var bookmark: Data
+        var addedAt: Date
+    }
+
+    struct CloudWorkspaceLink: Codable, Hashable, Identifiable, Sendable {
+        var id: UUID
+        var name: String
+        var hostID: UUID
+        var remotePath: String
+        var daemonPort: Int
+        var createdAt: Date
+        /// Nil preserves old records and means "external, never delete".
+        var cleanupOnConversationDelete: Bool?
+    }
 
     struct TaskRootLease: Sendable {
         let url: URL
@@ -43,6 +62,10 @@ final class WorkspaceCenter: ObservableObject {
     @Published var actionError: String?
     /// A save conflict surfaced by the text editor (file changed on disk).
     @Published var conflict: WorkspaceFileConflict?
+    /// Active virtual folders currently reachable as `Mounts/<name>`.
+    @Published private(set) var activeMountNames: [String] = []
+    /// Cloud workspace markers currently linked into the private workspace.
+    @Published private(set) var cloudWorkspaceLinks: [CloudWorkspaceLink] = []
 
     /// A write conflict on a workspace file: the editor's base snapshot no
     /// longer matches the on-disk mtime/sha256. Identifiable so it can drive
@@ -62,6 +85,7 @@ final class WorkspaceCenter: ObservableObject {
     /// stays started while the workspace is open).
     private(set) var currentRootURL: URL?
     private var currentRootUsesSecurityScope = false
+    private var currentMountScopeURLs: [URL] = []
     /// Invalidates completions from older asynchronous open requests. SwiftUI
     /// pickers can change selection again while bookmark refresh is awaiting.
     private var openGeneration: UInt64 = 0
@@ -70,6 +94,8 @@ final class WorkspaceCenter: ObservableObject {
     static let instructionsMaxBytes = 16 * 1024
     /// Conventional agent instruction file name (see ARCHITECTURE §7.3).
     static let instructionsFileName = "FLOE.md"
+    private static let mountsDirectoryName = "WorkspaceMounts"
+    private static let cloudLinksFileName = ".floe-cloud-workspaces.json"
 
     init(environment: AppEnvironment) {
         self.environment = environment
@@ -146,6 +172,10 @@ final class WorkspaceCenter: ObservableObject {
         if let deleting, deleting.kind == .privateTask {
             try removePrivateWorkspaceDirectory(deleting)
         }
+        if let mountsURL = try? mountsStoreURL(workspaceID: id),
+           FileManager.default.fileExists(atPath: mountsURL.path) {
+            try? FileManager.default.removeItem(at: mountsURL)
+        }
         await environment.credentialVault.drainDeletionQueue()
         await reload()
     }
@@ -197,7 +227,8 @@ final class WorkspaceCenter: ObservableObject {
 
         currentRootURL = url
         currentRootUsesSecurityScope = true
-        fileService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: url))
+        let mounts = try activateMounts(for: record, rootURL: url)
+        fileService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: url, mounts: mounts))
         var opened = record
         opened.lastOpenedAt = Date()
         currentWorkspace = opened
@@ -220,6 +251,13 @@ final class WorkspaceCenter: ObservableObject {
         if currentRootUsesSecurityScope, let url = currentRootURL {
             url.stopAccessingSecurityScopedResource()
         }
+        if let root = currentRootURL {
+            WorkspaceMountRegistry.shared.unregister(rootURL: root)
+        }
+        currentMountScopeURLs.forEach { $0.stopAccessingSecurityScopedResource() }
+        currentMountScopeURLs = []
+        activeMountNames = []
+        cloudWorkspaceLinks = []
         currentRootUsesSecurityScope = false
         currentRootURL = nil
         fileService = nil
@@ -271,14 +309,23 @@ final class WorkspaceCenter: ObservableObject {
             let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
                 .appendingPathComponent(relative, isDirectory: true)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            return TaskRootLease(url: root, release: {})
+            let activation = try activateMountsForLease(for: record, rootURL: root)
+            return TaskRootLease(url: root, release: {
+                WorkspaceMountRegistry.shared.unregister(rootURL: root)
+                activation.scopeURLs.forEach { $0.stopAccessingSecurityScopedResource() }
+            })
         }
 
         let root = try await resolveRoot(record)
         guard root.startAccessingSecurityScopedResource() else {
             throw FloeError.validationFailed("Workspace folder is not accessible")
         }
-        return TaskRootLease(url: root, release: { root.stopAccessingSecurityScopedResource() })
+        let activation = try activateMountsForLease(for: record, rootURL: root)
+        return TaskRootLease(url: root, release: {
+            WorkspaceMountRegistry.shared.unregister(rootURL: root)
+            activation.scopeURLs.forEach { $0.stopAccessingSecurityScopedResource() }
+            root.stopAccessingSecurityScopedResource()
+        })
     }
 
     /// Rebinds the visible file inspector to the selected task's immutable
@@ -297,12 +344,22 @@ final class WorkspaceCenter: ObservableObject {
             try await openWorkspace(id: record.id)
             return
         }
-        let lease = try await acquireTaskRoot(record, conversationID: conversationID)
-        currentRootURL = lease.url
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let relative = record.internalRelativePath ?? "PrivateTasks/\(conversationID.uuidString)"
+        let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
+            .appendingPathComponent(relative, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        currentRootURL = root
         currentRootUsesSecurityScope = false
-        fileService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: lease.url))
+        let mounts = try activateMounts(for: record, rootURL: root)
+        fileService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root, mounts: mounts))
         currentWorkspace = record
-        Self.sharedRootOverride = lease.url
+        Self.sharedRootOverride = root
         await reloadRecentFiles()
         await loadInstructions()
     }
@@ -430,6 +487,232 @@ final class WorkspaceCenter: ObservableObject {
             throw FloeError.validationFailed("No workspace is open")
         }
         try service.copy(from, to: to)
+    }
+
+    // MARK: - Imported, mounted, and cloud folders
+
+    /// Live-links a Files/iCloud directory beneath `Mounts/<name>`. The
+    /// directory stays in place and is never copied or deleted by Floe.
+    func mountExternalFolder(_ url: URL) async throws {
+        guard let workspace = currentWorkspace, workspace.kind == .privateTask,
+              let root = currentRootURL else {
+            throw FloeError.validationFailed("External folders can be mounted only inside a private task workspace")
+        }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        var records = try loadPersistedMounts(workspaceID: workspace.id)
+        let name = uniqueMountName(preferred: url.lastPathComponent, existing: records.map(\.name))
+        records.append(WorkspaceMount(name: name, bookmark: bookmark, addedAt: Date()))
+        try savePersistedMounts(records, workspaceID: workspace.id)
+
+        // Rebuild the active map without invalidating the workspace itself.
+        WorkspaceMountRegistry.shared.unregister(rootURL: root)
+        currentMountScopeURLs.forEach { $0.stopAccessingSecurityScopedResource() }
+        currentMountScopeURLs = []
+        let mounts = try activateMounts(for: workspace, rootURL: root)
+        fileService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root, mounts: mounts))
+    }
+
+    /// Copies an entire selected folder into app-owned storage. This is the
+    /// durable/offline alternative to a live security-scoped mount.
+    func importFolder(_ url: URL) async throws {
+        guard let workspace = currentWorkspace, workspace.kind == .privateTask,
+              let root = currentRootURL else {
+            throw FloeError.validationFailed("Folders can be imported only into a private task workspace")
+        }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let importsRoot = root.appendingPathComponent("Imports", isDirectory: true)
+        try FileManager.default.createDirectory(at: importsRoot, withIntermediateDirectories: true)
+        let destinationName = uniqueFilesystemName(preferred: url.lastPathComponent, parent: importsRoot)
+        let destination = importsRoot.appendingPathComponent(destinationName, isDirectory: true)
+        try FileManager.default.copyItem(at: url, to: destination)
+    }
+
+    /// Creates a local, explicit marker for a remote daemon-backed workspace.
+    /// Network access still happens through the verified SSH tunnel; this
+    /// folder tells the model and UI that its contents are remote, not local.
+    @discardableResult
+    func linkCloudWorkspace(
+        name: String,
+        hostID: UUID,
+        remotePath: String,
+        daemonPort: Int = RemoteAgentPayload.defaultPort,
+        cleanupOnConversationDelete: Bool = false
+    ) throws -> CloudWorkspaceLink {
+        guard currentWorkspace?.kind == .privateTask, let root = currentRootURL else {
+            throw FloeError.validationFailed("Cloud workspaces can be linked only inside a private task workspace")
+        }
+        guard daemonPort > 0, daemonPort <= 65_535 else {
+            throw FloeError.validationFailed("Invalid daemon port")
+        }
+        let safeName = sanitizedFolderName(name.isEmpty ? "Cloud Workspace" : name)
+        let cloudRoot = root.appendingPathComponent("Cloud", isDirectory: true)
+        let markerRoot = cloudRoot.appendingPathComponent(safeName, isDirectory: true)
+        try FileManager.default.createDirectory(at: markerRoot, withIntermediateDirectories: true)
+        let link = CloudWorkspaceLink(
+            id: UUID(), name: safeName, hostID: hostID,
+            remotePath: remotePath, daemonPort: daemonPort, createdAt: Date(),
+            cleanupOnConversationDelete: cleanupOnConversationDelete
+        )
+        var links = loadCloudWorkspaceLinks(rootURL: root)
+        links.removeAll { $0.name == safeName }
+        links.append(link)
+        let data = try JSONEncoder().encode(links)
+        try data.write(to: root.appendingPathComponent(Self.cloudLinksFileName), options: .atomic)
+        let readme = """
+        # Cloud workspace: \(safeName)
+
+        This folder is linked to remote host \(hostID.uuidString), path `\(remotePath)`.
+        Use the Floe remote workspace service through its verified SSH tunnel. Do not treat this marker as a local copy.
+        """
+        try Data(readme.utf8).write(to: markerRoot.appendingPathComponent("README.md"), options: .atomic)
+        cloudWorkspaceLinks = links.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return link
+    }
+
+    /// Captures remote deletion intents before local workspace metadata is
+    /// removed. Only explicitly app-owned, single-root daemon workspaces are
+    /// eligible; arbitrary linked server paths are never recursively deleted.
+    func cloudCleanupTombstones(workspaceID: UUID) async -> [CloudWorkspaceCleanupTombstone] {
+        guard let record = try? await store.workspace(id: workspaceID),
+              record.kind == .privateTask,
+              let relative = record.internalRelativePath,
+              let support = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        else { return [] }
+        let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
+            .appendingPathComponent(relative, isDirectory: true)
+        return loadCloudWorkspaceLinks(rootURL: root).compactMap { link in
+            guard link.cleanupOnConversationDelete == true,
+                  link.remotePath.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"#, options: .regularExpression) != nil
+            else { return nil }
+            return CloudWorkspaceCleanupTombstone(hostID: link.hostID, workspaceID: link.remotePath, daemonPort: link.daemonPort)
+        }
+    }
+
+    /// Produces a disposable folder copy suitable for the system share sheet.
+    /// Live mount targets are represented by their local placeholders and are
+    /// never silently copied out of the user's selected external directory.
+    func prepareWorkspaceExport() throws -> URL {
+        guard let workspace = currentWorkspace, let root = currentRootURL else {
+            throw FloeError.validationFailed("No workspace is open")
+        }
+        let exportRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloeWorkspaceExports", isDirectory: true)
+        try FileManager.default.createDirectory(at: exportRoot, withIntermediateDirectories: true)
+        let destination = exportRoot.appendingPathComponent(
+            "\(sanitizedFolderName(workspace.name))-\(UUID().uuidString.prefix(8))",
+            isDirectory: true
+        )
+        try FileManager.default.copyItem(at: root, to: destination)
+        return destination
+    }
+
+    /// Builds bounded, non-secret prompt notes for the active run. The real
+    /// security-scoped URLs and remote credentials never enter model context.
+    func runtimeWorkspaceNotes(rootURL: URL?) -> [String] {
+        guard let rootURL else { return [] }
+        let mountedNames = WorkspaceMountRegistry.shared.mounts(for: rootURL).keys.sorted()
+        var notes = mountedNames.map {
+            "External folder is live-mounted at Mounts/\($0). Changes there affect the user-selected Files folder."
+        }
+        notes += loadCloudWorkspaceLinks(rootURL: rootURL).map {
+            "Cloud workspace '\($0.name)' is linked at Cloud/\($0.name) to host \($0.hostID.uuidString), remote path \($0.remotePath), daemon port \($0.daemonPort). Use cloudWorkspace.* tools rather than reading the local marker."
+        }
+        return Array(notes.prefix(16))
+    }
+
+    private func mountsStoreURL(workspaceID: UUID) throws -> URL {
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true
+        )
+        let directory = support.appendingPathComponent("FloeAgent", isDirectory: true)
+            .appendingPathComponent(Self.mountsDirectoryName, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("\(workspaceID.uuidString).json")
+    }
+
+    private func loadPersistedMounts(workspaceID: UUID) throws -> [WorkspaceMount] {
+        let url = try mountsStoreURL(workspaceID: workspaceID)
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        return try JSONDecoder().decode([WorkspaceMount].self, from: data)
+    }
+
+    private func savePersistedMounts(_ mounts: [WorkspaceMount], workspaceID: UUID) throws {
+        let data = try JSONEncoder().encode(mounts)
+        try data.write(to: mountsStoreURL(workspaceID: workspaceID), options: .atomic)
+    }
+
+    private func activateMounts(for record: WorkspaceRecord, rootURL: URL) throws -> [String: URL] {
+        let activation = try activateMountsForLease(for: record, rootURL: rootURL)
+        currentMountScopeURLs = activation.scopeURLs
+        activeMountNames = activation.mounts.keys.sorted()
+        cloudWorkspaceLinks = loadCloudWorkspaceLinks(rootURL: rootURL)
+        return activation.mounts
+    }
+
+    private func activateMountsForLease(
+        for record: WorkspaceRecord,
+        rootURL: URL
+    ) throws -> (mounts: [String: URL], scopeURLs: [URL]) {
+        let records = try loadPersistedMounts(workspaceID: record.id)
+        var mounts: [String: URL] = [:]
+        var scopes: [URL] = []
+        let placeholders = rootURL.appendingPathComponent("Mounts", isDirectory: true)
+        if !records.isEmpty { try FileManager.default.createDirectory(at: placeholders, withIntermediateDirectories: true) }
+        for record in records {
+            var stale = false
+            guard let url = try? URL(
+                resolvingBookmarkData: record.bookmark,
+                options: [], relativeTo: nil, bookmarkDataIsStale: &stale
+            ), url.startAccessingSecurityScopedResource() else { continue }
+            mounts[record.name] = url
+            scopes.append(url)
+            try? FileManager.default.createDirectory(
+                at: placeholders.appendingPathComponent(record.name, isDirectory: true),
+                withIntermediateDirectories: true
+            )
+        }
+        WorkspaceMountRegistry.shared.register(rootURL: rootURL, mounts: mounts)
+        return (mounts, scopes)
+    }
+
+    private func loadCloudWorkspaceLinks(rootURL: URL) -> [CloudWorkspaceLink] {
+        let url = rootURL.appendingPathComponent(Self.cloudLinksFileName)
+        guard let data = try? Data(contentsOf: url),
+              let links = try? JSONDecoder().decode([CloudWorkspaceLink].self, from: data) else { return [] }
+        return links.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private func uniqueMountName(preferred: String, existing: [String]) -> String {
+        let base = sanitizedFolderName(preferred.isEmpty ? "Folder" : preferred)
+        var candidate = base
+        var suffix = 2
+        while existing.contains(candidate) {
+            candidate = "\(base) \(suffix)"
+            suffix += 1
+        }
+        return candidate
+    }
+
+    private func uniqueFilesystemName(preferred: String, parent: URL) -> String {
+        let base = sanitizedFolderName(preferred.isEmpty ? "Imported Folder" : preferred)
+        var candidate = base
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: parent.appendingPathComponent(candidate).path) {
+            candidate = "\(base) \(suffix)"
+            suffix += 1
+        }
+        return candidate
+    }
+
+    private func sanitizedFolderName(_ value: String) -> String {
+        let invalid = CharacterSet(charactersIn: "/:\\")
+        let clean = value.components(separatedBy: invalid).joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.isEmpty ? "Workspace" : clean
     }
 
     // MARK: - Conversation context

@@ -17,7 +17,9 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import UIKit
 import FloeCore
+import FloeExecution
 import FloeModels
 import FloePersistence
 import FloeSecurity
@@ -128,6 +130,26 @@ final class RemoteSessionCenter: ObservableObject {
         try? await secretStore.deleteSecret(scope: .hostSSH(id))
         try? await secretStore.deleteSecret(scope: .hostVNC(id))
         await loadHosts()
+    }
+
+    /// Updates exactly to the helper version paired with this app build. The
+    /// operation uses verified SSH, performs an atomic replacement, and rolls
+    /// back when the loopback health check fails.
+    func updateRemoteAgent(on host: RemoteHostProfile) async throws -> RemoteAgentInstaller.Result {
+        let installer = RemoteAgentInstaller(service: environment.sshCommandService)
+        let result = try await installer.installOrUpdate(hostID: host.id)
+        guard result.succeeded else {
+            throw FloeError.internalError(result.output)
+        }
+        return result
+    }
+
+    func pairAdvancedLink(on host: RemoteHostProfile) async throws {
+        let installer = RemoteAgentInstaller(service: environment.sshCommandService)
+        let enrollment = try await installer.enrollDevice(
+            hostID: host.id, endpoint: host.address, deviceName: UIDevice.current.name
+        )
+        try await AdvancedRemoteLinkStore.shared.save(enrollment)
     }
 
     // MARK: - Credential + trust handlers

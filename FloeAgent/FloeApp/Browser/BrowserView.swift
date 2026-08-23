@@ -83,7 +83,23 @@ private struct BrowserAddressBar: View {
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { center.navigateFromAddressBar() }
+                .accessibilityHint(center.isDisplayingLocalPreview
+                    ? "显示网页名称；真实回环地址仅在技术信息中提供。"
+                    : "输入网页地址")
             Button { center.navigateFromAddressBar() } label: { Image(systemName: "arrow.right.circle.fill") }
+            if center.isDisplayingLocalPreview, let technicalAddress = center.technicalAddress {
+                Menu {
+                    Button {
+                        UIPasteboard.general.string = technicalAddress
+                    } label: {
+                        Label("复制技术地址", systemImage: "doc.on.doc")
+                    }
+                    Text(technicalAddress)
+                } label: {
+                    Image(systemName: "lock.shield")
+                }
+                .accessibilityLabel("本地网页预览")
+            }
             Menu {
                 ForEach(center.tabs) { tab in
                     Button(tab.webView.title?.isEmpty == false ? tab.webView.title! : "browser.new_tab") {

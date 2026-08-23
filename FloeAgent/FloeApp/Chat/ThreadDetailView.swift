@@ -48,6 +48,18 @@ struct ThreadDetailView: View {
             if let error = viewModel.actionError {
                 errorBanner(error)
             }
+            if let summary = viewModel.approvalReviewSummary {
+                Label(summary, systemImage: "checkmark.shield")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(FloeTheme.groupedSurface)
+            }
+            if viewModel.usesLocalModel {
+                localApprovalNotice
+            }
             if viewModel.canContinue {
                 continuationBar
             }
@@ -103,6 +115,19 @@ struct ThreadDetailView: View {
                 }
             }
         }
+    }
+
+    private var localApprovalNotice: some View {
+        Label(
+            "纯本地模式由较小的本地模型执行并至少自动审批一次；完全访问在本地模型下不可用。",
+            systemImage: "shield.lefthalf.filled"
+        )
+        .font(FloeTheme.Typography.metadata)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(FloeTheme.groupedSurface)
     }
 
     private var importantFilesStrip: some View {
@@ -548,7 +573,13 @@ struct ThreadDetailView: View {
                     executionTarget: $viewModel.executionTarget,
                     agentMode: $viewModel.agentMode,
                     attachments: $viewModel.attachments,
-                    onSend: { Task { await viewModel.send() } },
+                    onSend: {
+                        // Sending owns the composer from this point. End any
+                        // in-flight dictation first so late partial results
+                        // cannot mutate the already-submitted prompt.
+                        environment.voiceInput.stop()
+                        Task { await viewModel.send() }
+                    },
                     onStop: { Task { await viewModel.cancel() } },
                     onPermissions: { showingPermissionsSheet = true },
                     approvalMode: viewModel.taskPolicy.resolvedApprovalMode,

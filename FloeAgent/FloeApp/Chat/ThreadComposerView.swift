@@ -316,7 +316,16 @@ struct ThreadComposerView: View {
 
     // MARK: - Input row
 
+    @ViewBuilder
     private var inputRow: some View {
+        if voiceInput.state.hasSession || voiceInput.state == .requestingPermission {
+            voiceCaptureRow
+        } else {
+            standardInputRow
+        }
+    }
+
+    private var standardInputRow: some View {
         HStack(alignment: .bottom, spacing: 8) {
             Menu {
                 Button {
@@ -378,28 +387,21 @@ struct ThreadComposerView: View {
             .accessibilityIdentifier("composer.input")
 
             Button {
-                if voiceInput.state.hasSession {
-                    // Stop synchronously so a second rapid tap cannot observe
-                    // the stale listening state and queue overlapping teardown.
-                    voiceInput.stop()
-                } else {
-                    // Preserve whatever the user already typed; dictation
-                    // appends after this prefix and never replaces it.
-                    dictationPrefix = draft
-                    voiceInput.requestStart()
-                }
+                // Preserve whatever the user already typed; dictation appends
+                // after this prefix and never replaces it.
+                dictationPrefix = draft
+                voiceInput.requestStart()
             } label: {
-                Image(systemName: voiceInput.isListening ? "waveform.circle.fill" : "microphone.circle")
+                Image(systemName: "microphone.circle")
                     .font(.title2)
-                    .symbolEffect(.pulse, isActive: voiceInput.isListening && !reduceMotion)
-                    .foregroundStyle(voiceInput.isListening ? FloeTheme.destructive : FloeTheme.primary)
+                    .foregroundStyle(FloeTheme.primary)
             }
             .buttonStyle(.plain)
             .disabled(voiceInput.state == .requestingPermission
                       || voiceInput.state == .preparing
                       || voiceInput.state == .stopping)
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-            .accessibilityLabel(voiceInput.isListening ? "voice.stop" : "voice.start")
+            .accessibilityLabel("voice.start")
             .accessibilityValue(voiceAccessibilityValue)
             .accessibilityHint("voice.hint")
             .accessibilityIdentifier("composer.voice")
@@ -437,6 +439,67 @@ struct ThreadComposerView: View {
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
+    }
+
+    /// Recording is a distinct composer mode, matching the system-agent
+    /// interaction: the editor and microphone disappear, partial speech is
+    /// shown in place, and the only primary action is an unambiguous square
+    /// stop control. Stopping restores the editable draft via the transcript
+    /// observer above.
+    private var voiceCaptureRow: some View {
+        HStack(spacing: 12) {
+            VoiceWaveformView(
+                isActive: voiceInput.isListening,
+                reduceMotion: reduceMotion
+            )
+            .frame(width: 92, height: 34)
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(voiceCaptureTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(voiceInput.transcript.isEmpty ? "正在聆听…" : voiceInput.transcript)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .contentTransition(.interpolate)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button {
+                // Synchronous state reservation prevents rapid taps from
+                // starting a second capture while the final transcript drains.
+                voiceInput.stop()
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(FloeTheme.destructive)
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(.white)
+                        .frame(width: 14, height: 14)
+                }
+                .frame(width: 38, height: 38)
+            }
+            .buttonStyle(.plain)
+            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            .accessibilityLabel("voice.stop")
+            .accessibilityValue(voiceAccessibilityValue)
+            .accessibilityIdentifier("composer.voice.stop")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+    }
+
+    private var voiceCaptureTitle: LocalizedStringKey {
+        switch voiceInput.state {
+        case .requestingPermission: "正在请求语音权限…"
+        case .preparing: "正在准备语音识别…"
+        case .listening: "正在听你说话"
+        case .stopping: "正在完成转写…"
+        case .idle, .unavailable, .failed: "语音输入"
+        }
     }
 
     // MARK: - Context row: model / project / target / mode
@@ -549,6 +612,19 @@ struct ThreadComposerView: View {
     private func chooseModel(_ model: ModelProfile) {
         guard model.providerID == ProviderProfile.onDeviceProviderID else {
             applyModelSelection(model)
+            return
+        }
+        if model.remoteModelID == AppleFoundationModelIdentity.remoteModelID {
+            Task { @MainActor in
+                // The system model is owned by iOS and has no Floe-managed
+                // residency. Release a manually preloaded model before the
+                // switch so only one local inference engine consumes memory.
+                if await environment.localModelRuntime.residentModelID() != nil {
+                    await environment.localModelRuntime.unload()
+                    await environment.localModelsCenter.refresh()
+                }
+                applyModelSelection(model)
+            }
             return
         }
         Task { @MainActor in
@@ -925,6 +1001,39 @@ struct ThreadComposerView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+    }
+}
+
+/// Lightweight live waveform. The transcriber does not expose raw audio
+/// metering, so this intentionally communicates an active capture session
+/// without fabricating an amplitude measurement. Reduced Motion renders a
+/// stable equalizer instead of continuously animating.
+private struct VoiceWaveformView: View {
+    let isActive: Bool
+    let reduceMotion: Bool
+
+    var body: some View {
+        if isActive && !reduceMotion {
+            TimelineView(.animation(minimumInterval: 1.0 / 18.0)) { context in
+                bars(phase: context.date.timeIntervalSinceReferenceDate)
+            }
+        } else {
+            bars(phase: 0)
+        }
+    }
+
+    private func bars(phase: TimeInterval) -> some View {
+        HStack(spacing: 3) {
+            ForEach(0..<15, id: \.self) { index in
+                let oscillation = abs(sin(phase * 4.2 + Double(index) * 0.72))
+                let envelope = 0.42 + 0.58 * sin(Double(index + 1) / 16.0 * .pi)
+                Capsule(style: .continuous)
+                    .fill(isActive ? FloeTheme.primary : Color.secondary.opacity(0.5))
+                    .frame(width: 3, height: isActive ? 6 + 25 * oscillation * envelope : 5)
+            }
+        }
+        .frame(maxHeight: .infinity)
+        .animation(reduceMotion ? nil : .linear(duration: 0.06), value: phase)
     }
 }
 #endif
