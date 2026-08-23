@@ -67,11 +67,17 @@ jobs:
           swift package resolve
           scripts/pin_check.sh
           swift build
-          LLAMA_FRAMEWORK="$(find .build/artifacts -path '*/macos-arm64_x86_64/llama.framework' -print -quit)"
+          LLAMA_FRAMEWORK="$(find .build/artifacts -path '*/macos-arm64_x86_64/llama.framework' ! -path '*/__MACOSX/*' -print -quit)"
           test -n "$LLAMA_FRAMEWORK"
+          test -x "$LLAMA_FRAMEWORK/Versions/Current/llama"
+          export DYLD_FRAMEWORK_PATH="$(dirname "$LLAMA_FRAMEWORK")${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}"
           BIN_PATH="$(swift build --show-bin-path)"
           mkdir -p "$BIN_PATH/PackageFrameworks"
           cp -R "$LLAMA_FRAMEWORK" "$BIN_PATH/PackageFrameworks/"
+          while IFS= read -r PRODUCTS_DIR; do
+            mkdir -p "$PRODUCTS_DIR/PackageFrameworks"
+            cp -R "$LLAMA_FRAMEWORK" "$PRODUCTS_DIR/PackageFrameworks/"
+          done < <(find .build -type d -path '*/Products/Debug')
           find "$BIN_PATH/PackageFrameworks/llama.framework" -name '._*' -delete
           # Isolate JavaScriptCore deadline tests from the concurrent suite so
           # shared-runner load cannot distort their wall-clock assertions.

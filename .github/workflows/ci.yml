@@ -70,11 +70,23 @@ jobs:
           # bundle but does not copy the macOS framework beside xctest. Put it
           # in the standard PackageFrameworks rpath before the test helper
           # loads bundles; no model inference is performed by these tests.
-          LLAMA_FRAMEWORK="$(find .build/artifacts -path '*/macos-arm64_x86_64/llama.framework' -print -quit)"
+          # The upstream artifact also contains a __MACOSX metadata tree whose
+          # fake framework only contains AppleDouble files. Never select it.
+          LLAMA_FRAMEWORK="$(find .build/artifacts -path '*/macos-arm64_x86_64/llama.framework' ! -path '*/__MACOSX/*' -print -quit)"
           test -n "$LLAMA_FRAMEWORK"
+          test -x "$LLAMA_FRAMEWORK/Versions/Current/llama"
+          # Xcode 27's SwiftPM xctest helper writes test bundles under
+          # .build/out/Products/Debug while --show-bin-path still reports the
+          # target-triple directory. Make the binary artifact discoverable to
+          # dyld and mirror it beside every products directory SwiftPM created.
+          export DYLD_FRAMEWORK_PATH="$(dirname "$LLAMA_FRAMEWORK")${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}"
           BIN_PATH="$(swift build --show-bin-path)"
           mkdir -p "$BIN_PATH/PackageFrameworks"
           cp -R "$LLAMA_FRAMEWORK" "$BIN_PATH/PackageFrameworks/"
+          while IFS= read -r PRODUCTS_DIR; do
+            mkdir -p "$PRODUCTS_DIR/PackageFrameworks"
+            cp -R "$LLAMA_FRAMEWORK" "$PRODUCTS_DIR/PackageFrameworks/"
+          done < <(find .build -type d -path '*/Products/Debug')
           find "$BIN_PATH/PackageFrameworks/llama.framework" -name '._*' -delete
           # Deadline tests intentionally outlive the caller briefly. Isolate
           # both JavaScript suites so loaded shared runners cannot make their
