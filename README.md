@@ -26,8 +26,10 @@ Floe Agent turns a model conversation into a durable task. Each message continue
 ## Why Floe Agent
 
 - **Bring your own models.** Connect compatible providers with credentials you control. Agent, vision, image-generation, and image-editing roles can be configured independently.
+- **Run on device when it fits.** Use the iOS 27 Apple Foundation Model or downloaded MLX models. Local models have their own context and memory policy, while cloud-model context and tools remain unchanged.
 - **Keep work inspectable.** Reasoning previews, tool calls, file changes, browser state, child agents, approvals, and errors live in one continuous timeline.
 - **Work where the files are.** Use Files workspaces, local image tools, SSH terminals, jump hosts, VNC, and a visible WebKit browser without a Floe-operated relay.
+- **Manage source without leaving the workspace.** Inspect changes and diffs, initialize a repository, stage, commit, branch, fetch, fast-forward pull, push, and connect GitHub from a lightweight native source-control surface.
 - **Approve consequential actions.** Task policies narrow file, network, browser, upload, credential, and remote-execution authority. Sensitive actions still require explicit confirmation.
 - **Resume honestly.** Checkpoints, notifications, and background coordination preserve safe progress. iOS suspension and uncertain side effects are reported instead of hidden.
 - **Extend declaratively.** Skill Creator and Skill Finder install validated instruction and knowledge packages. Skills cannot dynamically load native code or silently grant tools.
@@ -55,7 +57,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Signed builds are distributed through TestFlight when a testing group is available. The current source targets Floe Agent 1.4.20 (build 51); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) for artifacts that actually completed the release gates. TestFlight access may remain limited while the project is in prerelease.
+Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.4.24 (build 55); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
 
 ### Unsigned IPA
 
@@ -71,7 +73,7 @@ GitHub prereleases include an unsigned IPA for advanced testers and downstream p
 
 ### Build from source
 
-Requirements: macOS, a full Xcode installation with the iOS 26 SDK or newer, Swift 6.2+, and XcodeGen.
+Requirements: macOS, a full Xcode installation with the iOS 26 SDK or newer, Swift 6.2+, and XcodeGen. Xcode 27 is required to compile the iOS 27 Foundation Models path used by the current release target.
 
 ```bash
 git clone https://github.com/JiangNanGenius/floe-agent.git
@@ -102,7 +104,20 @@ See the [English user guide](docs/USER_GUIDE.md), [简体中文使用指南](doc
 | Task Center | Filter running, waiting, approval-required, failed, completed, and scheduled tasks. |
 | Inspector | Review changes, files, browser, terminal/host, progress, child agents, and permissions. It is collapsed by default. |
 | Visible browser | Automate a real `WKWebView`, then hand control to the user for login, QR codes, verification, uploads, or other trusted interaction. |
+| Source Control | Review repository status, diffs and history; stage, commit, branch and synchronize without destructive reset, clean, force-push or history rewriting. |
 | Settings | Configure providers, auxiliary models, task defaults, execution, files, sync, remote hosts, data controls, and diagnostics. |
+
+### Models and image providers
+
+The system-owned Apple Foundation Model appears in **Settings → Local Models** on every device. On iOS/iPadOS 27 it uses the Foundation Models framework and reports the system's real availability state, including device eligibility, Apple Intelligence being disabled, or the model still downloading. There is no API-key or model-download setting because iOS owns both. Downloaded Qwen and Gemma MLX models are separate: Floe checks safe load headroom, keeps at most one resident model, clears runtime caches on unload/failure, and supplies a bounded catalog of real task tools.
+
+OpenAI image generation/editing defaults to `gpt-image-2`. Google Gemini Images includes Nano Banana Pro (`gemini-3-pro-image`). Both provider entries accept an editable Base URL for compatible proxies; generation, editing and vision remain separate roles.
+
+### Workspaces, Git and approvals
+
+Private task workspaces are created and bound atomically with the first message. Project workspaces retain their explicit Files scope. The Files inspector includes a lightweight Source Control tab, while **Settings → GitHub & Source Control** stores a fine-grained GitHub token only in the device Keychain and supports listing, cloning and creating repositories.
+
+Routine bounded reads, local workspace operations, image generation/inspection, OCR, read-only PDF work and LAN discovery do not wait for an approval-model round trip. Consequential writes are evaluated by scope and intent. Destructive changes, credentials, uploads, payments, broad remote commands and force/history-rewriting Git operations remain blocked or explicitly reviewed. A broad request such as “test all tools” can authorize safe diagnostics, but cannot silently expand into destructive or credential-bearing tests.
 
 ### Python execution
 

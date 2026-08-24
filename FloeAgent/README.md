@@ -2,11 +2,11 @@
 
 [Website](https://www.floe-agent.com/) · [Product README](../README.md) · [中文 README](../README.zh-CN.md) · [Architecture](../docs/ARCHITECTURE_OVERVIEW.md) · [User guide](../docs/USER_GUIDE.md) · [中文使用指南](../docs/USER_GUIDE.zh-CN.md)
 
-This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for Floe Agent 1.4.5. The minimum deployment target is iOS/iPadOS 26.0 and the current database schema is v19.
+This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for the Floe Agent 1.4.24 source target (build 55). The minimum deployment target is iOS/iPadOS 26.0 and the current database schema is v20.
 
 ## Build prerequisites
 
-- macOS with a full Xcode installation containing the iOS 26 SDK or newer;
+- macOS with a full Xcode installation containing the iOS 26 SDK or newer; use Xcode 27 to compile and validate the iOS 27 Foundation Models implementation;
 - Swift 6.2 or newer;
 - XcodeGen for regenerating `FloeAgent.xcodeproj`;
 - optional release tools: `gitleaks`, `syft`, and GitHub CLI.
@@ -54,10 +54,12 @@ CI regenerates the project and fails if the committed project differs.
 | --- | --- |
 | `FloeCore`, `FloeModels` | Shared provider, task, workspace, policy, event, and error models. |
 | `FloeProviders` | Streaming wire adapters and multimodal/image provider translation. |
+| `FloeLocalModels` | Apple Foundation Models availability/runtime, curated MLX downloads, resource policy, dynamic local context, and bounded local tool-call translation. |
 | `FloeAgentRuntime` | Continuous run state machine, context assembly, Plan/Goal/Memory, harness, checkpoints, and tool loop. |
 | `FloeTools`, `FloeSecurity` | Compile-time tool catalog, scoped execution, approvals, audit chain, Keychain, and catastrophic-action gate. |
 | `FloePersistence` | GRDB stores, atomic run launch, credential metadata, archive state, and append-only migrations through v14. |
 | `FloeWorkspace`, `FloeDocuments`, `FloeImages` | File scopes, change evidence, document working copies, and image operations. |
+| `FloeGit` | Non-destructive libgit2 repository operations, GitHub API/Keychain integration, and model-facing local/cloud source-control tools. |
 | `FloeSSH`, `FloeExecution`, `FloeVNC` | SSH/jump/PTY/forwarding, remote execution, and Metal-backed VNC. |
 | `FloeSkills` | Declarative Skill validation, compatibility, provenance, install staging, and tool ceilings. |
 | `FloeApp` | SwiftUI workbench, visible browser, voice coordinator, task inspector, settings, notifications, and background recovery. |
@@ -72,6 +74,8 @@ CI regenerates the project and fails if the committed project differs.
 6. Browser element references are document-scoped and fail as stale after invalidation.
 7. Uncertain side effects are never silently replayed during recovery.
 8. Skills are declarative packages and never dynamically expand the compiled tool catalog.
+9. Completed tool executions are checkpointed with the run ledger; recovery clears unfinished stream fields and never replays a successful identical tool/argument pair.
+10. Local-model context/tool selection is independent from cloud-provider context, compression, and capability ceilings.
 
 ## Release checks
 
@@ -85,7 +89,7 @@ scripts/license_inventory.sh
 scripts/sbom.sh
 ```
 
-The release workflow builds an unsigned device IPA and a signed App Store archive from the same commit. GitHub assets are published only after TestFlight transport accepts the archive. See [the root README](../README.md#unsigned-ipa) for the user-facing distinction between these packages.
+The release workflow builds an unsigned device IPA and signs the exact verified Xcode 27 application from the same tagged source. It rejects an Xcode build that Apple no longer accepts before starting expensive work. GitHub assets are published only after TestFlight transport accepts the upload. See [the root README](../README.md#unsigned-ipa) for the user-facing distinction between these packages.
 
 ## Documentation discipline
 

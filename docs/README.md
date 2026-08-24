@@ -14,6 +14,8 @@
 | Security | [Security](../SECURITY.md) | [安全策略](../SECURITY.zh-CN.md) |
 | Support | [Support](../SUPPORT.md) | [支持](../SUPPORT.zh-CN.md) |
 
+Current TestFlight validation: [Floe Agent 1.4.24 (Build 55) test notes](TESTFLIGHT_1.4.24.md).
+
 ## Product references
 
 - [Floe Browser Protocol](FLOE_BROWSER_PROTOCOL.md): visible WebKit automation protocol, validation, stale references, and takeover.

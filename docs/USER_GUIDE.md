@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide describes Floe Agent 1.4.5. Labels may vary slightly with the system language and the configured provider.
+This guide describes the Floe Agent 1.4.24 source target (build 55). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
 
 ## 1. Install safely
 
@@ -30,6 +30,16 @@ Open **Settings → Auxiliary Models**. The roles are independent:
 
 A provider appearing in the Agent picker does not imply it supports vision or image operations. Floe disables incompatible role combinations instead of sending an invalid request.
 
+For a dedicated image provider, choose **OpenAI** or **Google Gemini**, enter its API key, and review the editable Base URL before saving. OpenAI defaults to `gpt-image-2`. Google defaults to Nano Banana Pro (`gemini-3-pro-image`) through the native Gemini `generateContent` API. Keep generation, editing and vision capabilities enabled only when the selected endpoint implements them. A proxy URL may include its own path prefix; Floe preserves that prefix when constructing requests.
+
+### Apple Intelligence and downloaded local models
+
+Open **Settings → Local Models**. The Apple Foundation Model row is system-managed and therefore has no Floe download button, API-key field or model selector. On iOS/iPadOS 27 it reports one of the system's real states: available, unsupported device, Apple Intelligence disabled, model not ready/downloading, or another system availability failure. Resolve that reason in iOS settings and leave Floe open long enough to refresh; do not repeatedly retry while the system model is downloading.
+
+Qwen and Gemma entries are user-downloaded MLX snapshots. Download, load and benchmark are separate actions. Floe keeps one downloaded model resident at a time and checks current device headroom before mapping it. Closing background apps may increase available memory, but iPadOS can still terminate an app under pressure. If loading is rejected, retry after freeing memory or select a smaller model; if the process terminates, export the new Xcode/device or uploaded diagnostic log rather than assuming a prior crash has the same cause.
+
+Local models receive a smaller, intent-ranked catalog of real Floe tools and a local-only dynamic context/compression budget. Cloud-provider context limits, compression and tool schemas are not reduced to accommodate a local model. If a local model cannot produce a valid tool call, Floe reports the parsing or capability reason instead of claiming the tool ran.
+
 ## 4. Start a task
 
 Normal app launch opens **New Task**. Before sending, use the chips around the composer to choose:
@@ -48,6 +58,12 @@ Attach files or images, write the request, and send. The draft becomes a persist
 - **Project selected:** the task belongs to that project and appears under its folder in the sidebar.
 - A task has exactly one workspace owner. Moving it later is an explicit action because the available file scope changes.
 - Deleting a project task never deletes the external project files. Deleting a private task may remove its app-managed workspace and browser data.
+
+### Lightweight source control
+
+Open the workspace Files inspector and select **Source Control**. A non-repository workspace can be initialized in place. For a repository you can inspect status, per-file diffs and recent commits; stage all changes; commit; create or switch branches; fetch; fast-forward pull; and push. Floe intentionally omits destructive reset/clean, force-push and history rewriting.
+
+Open **Settings → GitHub & Source Control** to connect a fine-grained GitHub token. The token is validated against GitHub, stored only in the device Keychain, and never added to a remote URL, repository file, log or model prompt. After connection you can list accessible repositories, clone one into a subfolder of the current workspace, or create a public/private repository. Grant only the repository permissions needed for the intended operations.
 
 ## 5. Continue the same conversation
 
@@ -89,7 +105,9 @@ An element reference is bound to a document ID. After navigation or a major DOM 
 
 Effective authority is the intersection of the global ceiling, workspace defaults, task overrides, available device/host capabilities, and any time-bounded grant. The provider receives only allowed tool schemas, and the executor checks authority again.
 
-Deleting data, entering credentials, uploading files, browser login/payment, and catastrophic commands always require explicit review. A Skill declaration is a maximum request, not authorization. Stop or cancel remains available while a task or remote session is active.
+Routine bounded reads, workspace inspection, image generation/inspection, OCR, read-only PDF operations and local-network discovery bypass approval-model latency. Bounded preparation on an explicitly selected SSH host and ordinary workspace/Git operations can reuse a matching task or session grant. Deleting data, entering credentials, uploading files, browser login/payment, broad remote mutation and catastrophic commands still require explicit review. Git force-push, destructive reset/clean and history rewriting are not exposed.
+
+Approval is based on the user's stated goal and the concrete tool target, not on a brittle keyword match. A broad request such as “test all tools” permits safe diagnostics and bounded non-destructive checks, but does not authorize deletion, credential access, arbitrary remote commands, model-policy changes or persisted personal-data writes. Approval results and reasons appear inside the corresponding expanded tool call rather than as a detached chat message.
 
 ## 10. Background work and notifications
 
@@ -119,10 +137,17 @@ Only instruction-only or read-only low-risk packages can install automatically. 
 ## 14. Troubleshoot
 
 - **Model not configured:** add a provider and select a default Agent model.
+- **Apple Foundation Model unavailable:** read the exact reason under **Settings → Local Models**. It requires an eligible device, iOS/iPadOS 27, Apple Intelligence enabled, and the system model ready.
+- **Downloaded local model will not load or terminates the app:** free device memory, unload another model and retry once. Export the newest device/Xcode or uploaded diagnostic log; do not diagnose it from an older unrelated crash.
 - **Vision unavailable:** select a provider/model that advertises and implements image input.
+- **Local model does not call a tool:** confirm the tool is allowed for the task and that the request names the intended action. Floe displays a capability or structured-call parsing reason when the model cannot use it.
 - **Task interrupted after backgrounding:** reopen the task and use the offered safe recovery action.
+- **A resumed task repeats completed tools:** stop the run and export diagnostics. A recovered run should restore its execution ledger and must not replay successful tool/argument pairs.
 - **Browser says `stale`:** observe the page again before interacting.
 - **Remote tool unavailable:** confirm the host, SSH authorization, task permission, and network path.
+- **LAN scan finds nothing:** allow Local Network access in iOS Settings, stay on the same LAN, and retry. Discovery is limited to the Bonjour service types declared by the app and is not a general port scanner.
+- **Workspace preview says it is not open:** reopen the Files inspector and confirm the task has either its private workspace or the intended project binding before opening the file.
+- **Picture in Picture is black or does not start:** keep Floe in the foreground until the progress preview is prepared, then leave the app. Returning to Floe ends the active system PiP session; a later task prepares a new one. Include the PiP status and latest diagnostics when reporting a persistent black frame.
 - **A Python package will not activate:** confirm it is a pure-Python universal wheel. Packages containing native extensions remain download-and-inspect only; use a trusted SSH host for native dependencies.
 - **Voice fails or exits:** check microphone and speech-recognition permissions, audio route, and whether another app owns the input session.
 
