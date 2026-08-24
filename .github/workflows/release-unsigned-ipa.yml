@@ -25,8 +25,9 @@ concurrency:
 
 jobs:
   build-verify-release:
-    # The iOS 27 Foundation Models implementation requires Swift 6.4. Keep
-    # archive/TestFlight on the same SDK as the feature gate used by source.
+    # The iOS 27 Foundation Models implementation requires Swift 6.4, so use
+    # Xcode 27 for source validation even while App Store distribution must use
+    # the latest SDK version accepted by App Store Connect.
     runs-on: xcode-27
     permissions:
       contents: write
@@ -178,9 +179,13 @@ jobs:
   testflight:
     name: Archive and upload the same commit to TestFlight
     needs: build-verify-release
-    runs-on: xcode-27
+    # App Store Connect currently rejects the public Xcode 27 runner because
+    # it resolves to a beta SDK (90534). Keep the Xcode 27 source/feature gate
+    # above, then rebuild the exact same tag with Apple's accepted stable SDK
+    # for distribution.
+    runs-on: macos-26
     env:
-      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     defaults:
       run:
         working-directory: FloeAgent
@@ -197,17 +202,46 @@ jobs:
           name: unsigned-ipa-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
           path: ${{ runner.temp }}/UnsignedRelease
 
-      - name: Unpack the exact verified application
+      - name: Validate the exact verified application
         run: |
           IPA_PATH="$(find "$RUNNER_TEMP/UnsignedRelease" -type f -name '*.ipa' -print -quit)"
           test -n "$IPA_PATH"
-          mkdir -p "$RUNNER_TEMP/FloeSignedPayload"
-          unzip -q "$IPA_PATH" -d "$RUNNER_TEMP/FloeSignedPayload"
-          APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          mkdir -p "$RUNNER_TEMP/FloeVerifiedPayload"
+          unzip -q "$IPA_PATH" -d "$RUNNER_TEMP/FloeVerifiedPayload"
+          APP_PATH="$(find "$RUNNER_TEMP/FloeVerifiedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$APP_PATH"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")" = org.floeagent.ios
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.version }}"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.build }}"
+
+      - name: Rebuild the exact tag with the accepted App Store SDK
+        run: |
+          brew install xcodegen
+          xcodebuild -downloadComponent MetalToolchain
+          scripts/bootstrap_python_runtime.sh
+          scripts/gen_project.sh
+          scripts/pin_check.sh
+          xcodebuild \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            -project FloeAgent.xcodeproj \
+            -scheme FloeAgent \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/FloeStableDeviceDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            DEVELOPMENT_TEAM='' \
+            build
+          STABLE_APP_PATH="$(find "$RUNNER_TEMP/FloeStableDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$STABLE_APP_PATH"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$STABLE_APP_PATH/Info.plist")" = org.floeagent.ios
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$STABLE_APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.version }}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$STABLE_APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.build }}"
+          mkdir -p "$RUNNER_TEMP/FloeSignedPayload/Payload"
+          ditto "$STABLE_APP_PATH" "$RUNNER_TEMP/FloeSignedPayload/Payload/$(basename "$STABLE_APP_PATH")"
 
       - name: Install App Store Connect API key
         env:
