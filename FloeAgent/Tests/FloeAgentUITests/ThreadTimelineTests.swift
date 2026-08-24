@@ -344,5 +344,72 @@ struct ThreadTimelineTests {
             return false
         })
     }
+
+    @Test("Guidance consumed by an active run remains visible in conversation history")
+    func consumedGuidanceRemainsVisible() {
+        let conversationID = UUID()
+        let start = Date()
+        let run = RunRecord(
+            id: UUID(),
+            conversationID: conversationID,
+            state: "completed",
+            goal: "先整理文档",
+            startedAt: start,
+            endedAt: start.addingTimeInterval(8)
+        )
+        let goal = PersistedMessage(
+            id: UUID(), conversationID: conversationID, role: "user",
+            content: "先整理文档", createdAt: start, parts: [], runID: run.id
+        )
+        let guidance = PersistedMessage(
+            id: UUID(), conversationID: conversationID, role: "user",
+            content: "引导：先处理 PDF", createdAt: start.addingTimeInterval(3),
+            parts: [], runID: run.id
+        )
+        var firstAnswer = makeEvent(
+            runID: run.id, sequence: 1, kind: .assistantText,
+            payload: ["text": "我先检查文件"]
+        )
+        firstAnswer.createdAt = start.addingTimeInterval(2)
+        var finalAnswer = makeEvent(
+            runID: run.id, sequence: 2, kind: .assistantText,
+            payload: ["text": "已按引导完成"]
+        )
+        finalAnswer.createdAt = start.addingTimeInterval(6)
+        var terminal = makeEvent(
+            runID: run.id, sequence: 3, kind: .terminal,
+            payload: ["stopReason": "endTurn"]
+        )
+        terminal.createdAt = start.addingTimeInterval(8)
+
+        let items = ThreadTimelineBuilder.buildConversation(
+            messages: [goal, guidance],
+            runs: [run],
+            eventsByRun: [run.id: [firstAnswer, finalAnswer, terminal]],
+            liveRunID: nil,
+            isRunning: false,
+            liveStreamedText: "",
+            liveReasoningText: "",
+            pendingApprovals: []
+        )
+
+        let guidanceIndex = items.firstIndex {
+            if case .userMessage(let message) = $0 { return message.id == guidance.id }
+            return false
+        }
+        let firstAnswerIndex = items.firstIndex {
+            if case .assistantMessage(let text, _) = $0 { return text == "我先检查文件" }
+            return false
+        }
+        let finalAnswerIndex = items.firstIndex {
+            if case .assistantMessage(let text, _) = $0 { return text == "已按引导完成" }
+            return false
+        }
+        #expect(guidanceIndex != nil)
+        if let firstAnswerIndex, let guidanceIndex, let finalAnswerIndex {
+            #expect(firstAnswerIndex < guidanceIndex)
+            #expect(guidanceIndex < finalAnswerIndex)
+        }
+    }
 }
 #endif

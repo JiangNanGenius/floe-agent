@@ -8,6 +8,11 @@ import FloeProviders
 
 @Suite("Local model catalog")
 struct LocalModelCatalogTests {
+    @Test("Release toolchain compiles the real Foundation Models integration")
+    func foundationModelsSDKIsCompiled() {
+        #expect(AppleFoundationModelRuntime.sdkIntegrationCompiled)
+    }
+
     @Test("Local task residency unloads only after the last task finishes")
     func localTaskResidencyLedger() {
         let first = UUID()

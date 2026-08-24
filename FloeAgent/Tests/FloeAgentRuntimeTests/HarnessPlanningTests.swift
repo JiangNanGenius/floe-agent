@@ -240,6 +240,68 @@ struct HarnessPlanningTests {
         })
     }
 
+    @Test("Forced compaction of a short conversation is an explicit no-op")
+    func forcedCompactionNoOp() async throws {
+        let message = ConversationMessage(role: "user", content: "Keep this request intact")
+        let engine = HybridContextEngine()
+        let result = try await engine.compact(CompactionRequest(
+            context: ContextRequest(
+                messages: [message],
+                budget: ContextBudget(contextWindowTokens: 4_096),
+                protection: ContextProtection(messageIDs: [message.id])
+            ),
+            force: true
+        ))
+
+        #expect(result.messages == [message])
+        #expect(result.record.sourceMessageIDs.isEmpty)
+        #expect(result.record.beforeEstimatedTokens == result.record.afterEstimatedTokens)
+    }
+
+    @Test("Compaction rejects an empty model summary")
+    func emptyCompactionSummaryIsRejected() async {
+        let messages = (0..<8).map {
+            ConversationMessage(role: "assistant", content: String(repeating: "history \($0) ", count: 40))
+        }
+        let engine = HybridContextEngine(summarizer: EmptyContextSummarizer())
+
+        await #expect(throws: (any Error).self) {
+            _ = try await engine.compact(CompactionRequest(
+                context: ContextRequest(
+                    messages: messages,
+                    budget: ContextBudget(
+                        contextWindowTokens: 1_200,
+                        reservedOutputTokens: 100,
+                        protectedTailTokens: 80
+                    )
+                ),
+                force: true
+            ))
+        }
+    }
+
+    @Test("Compaction rejects a summary that does not shrink context")
+    func nonShrinkingCompactionIsRejected() async {
+        let messages = (0..<8).map {
+            ConversationMessage(role: "assistant", content: String(repeating: "history \($0) ", count: 30))
+        }
+        let engine = HybridContextEngine(summarizer: ExpandingContextSummarizer())
+
+        await #expect(throws: (any Error).self) {
+            _ = try await engine.compact(CompactionRequest(
+                context: ContextRequest(
+                    messages: messages,
+                    budget: ContextBudget(
+                        contextWindowTokens: 1_200,
+                        reservedOutputTokens: 100,
+                        protectedTailTokens: 80
+                    )
+                ),
+                force: true
+            ))
+        }
+    }
+
     @Test("Context compression policy adapts independently of model loading")
     func adaptiveContextCompressionPolicy() {
         let micro = ContextCompressionPolicy.local(
@@ -331,5 +393,23 @@ struct HarnessPlanningTests {
             .stateChanged(.preparing),
             .answerDelta(TextDelta(text: "hello"))
         ])
+    }
+}
+
+private struct EmptyContextSummarizer: ContextSummarizer {
+    func summarize(
+        messages: [ConversationMessage],
+        maximumCharacters: Int
+    ) async throws -> String {
+        "   "
+    }
+}
+
+private struct ExpandingContextSummarizer: ContextSummarizer {
+    func summarize(
+        messages: [ConversationMessage],
+        maximumCharacters: Int
+    ) async throws -> String {
+        String(repeating: "expanded history ", count: maximumCharacters)
     }
 }

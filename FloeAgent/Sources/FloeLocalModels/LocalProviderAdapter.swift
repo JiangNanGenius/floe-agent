@@ -8,6 +8,9 @@ public struct LocalRuntimeCompletion: Sendable, Equatable {
     public var text: String
     public var inputTokens: Int
     public var outputTokens: Int
+    public var cacheReadTokens: Int? = nil
+    public var cacheWriteTokens: Int? = nil
+    public var reasoningTokens: Int? = nil
     public var totalDurationMs: Int
     public var timeToFirstTokenMs: Int?
     public var tokensPerSecond: Double?
@@ -418,9 +421,20 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     }
                     let promptBuild = Self.buildPrompt(for: request)
                     let prompt = promptBuild.text
-                    let images = request.effectiveMessages.flatMap(\.content).compactMap { part -> Data? in
-                        guard case .imageData(_, let base64) = part else { return nil }
-                        return Data(base64Encoded: base64)
+                    let imageParts = request.effectiveMessages.flatMap(\.content).compactMap {
+                        part -> AppleFoundationImageInput? in
+                        switch part {
+                        case .imageData(_, let base64):
+                            guard let data = Data(base64Encoded: base64) else { return nil }
+                            return .data(data)
+                        case .imageURL(let url):
+                            // Attachment import resolves network/iCloud sources before the
+                            // provider boundary. Do not let a local model perform hidden I/O.
+                            guard url.isFileURL else { return nil }
+                            return .file(url)
+                        case .text:
+                            return nil
+                        }
                     }
                     FloeLogger(category: .providers).info(
                         "localPromptPrepared model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) sourceCharacters=\(promptBuild.sourceCharacters) promptCharacters=\(prompt.count) offeredTools=\(request.toolSchemas.count) selectedTools=\(promptBuild.selectedToolCount) omittedTools=\(max(0, request.toolSchemas.count - promptBuild.selectedToolCount))"
@@ -430,7 +444,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         completion = try await AppleFoundationModelRuntime.shared.complete(
                             instructions: promptBuild.systemInstructions,
                             prompt: prompt,
-                            images: images,
+                            images: imageParts,
                             tools: promptBuild.selectedTools,
                             maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 512), 2_048)
                         )
@@ -439,7 +453,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             modelID: request.model.remoteModelID,
                             instructions: promptBuild.systemInstructions,
                             prompt: prompt,
-                            images: images,
+                            images: try imageParts.map { try $0.dataForLegacyRuntime() },
                             tools: promptBuild.selectedTools,
                             maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 1024), 4096)
                         )
@@ -457,6 +471,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     continuation.yield(.usage(.init(
                         inputTokens: completion.inputTokens,
                         outputTokens: completion.outputTokens,
+                        cacheReadTokens: completion.cacheReadTokens,
+                        cacheWriteTokens: completion.cacheWriteTokens,
+                        reasoningTokens: completion.reasoningTokens,
                         totalDurationMs: completion.totalDurationMs,
                         timeToFirstTokenMs: completion.timeToFirstTokenMs,
                         tokensPerSecond: completion.tokensPerSecond

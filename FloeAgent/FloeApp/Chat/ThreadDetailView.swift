@@ -581,6 +581,7 @@ struct ThreadDetailView: View {
                         Task { await viewModel.send() }
                     },
                     onStop: { Task { await viewModel.cancel() } },
+                    onManualCompact: { viewModel.requestManualCompaction() },
                     onPermissions: { showingPermissionsSheet = true },
                     approvalMode: viewModel.taskPolicy.resolvedApprovalMode,
                     contextID: viewModel.conversationID

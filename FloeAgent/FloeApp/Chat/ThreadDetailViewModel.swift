@@ -518,6 +518,10 @@ final class ThreadDetailViewModel: ObservableObject {
         await center.cancel(runID: runID)
     }
 
+    func requestManualCompaction() {
+        center.requestManualCompaction(conversationID: conversationID)
+    }
+
     func editPendingInput(_ input: PendingUserInput, content: String) async {
         do {
             try await center.editPendingInput(id: input.id, content: content)

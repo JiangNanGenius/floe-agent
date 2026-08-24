@@ -153,10 +153,10 @@ public actor SubagentRunner {
         let runID = request.runID
         let token = parentContext.cancellation
         let collected = await withTaskGroup(
-            of: (String, ToolResult).self,
-            returning: [(String, ToolResult)].self
+            of: (Int, String, ToolResult).self,
+            returning: [(Int, String, ToolResult)].self
         ) { group in
-            for call in calls {
+            for (index, call) in calls.enumerated() {
                 group.addTask {
                     let result: ToolResult
                     do {
@@ -165,7 +165,7 @@ public actor SubagentRunner {
                               !descriptor.requiresHostScope,
                               call.toolName != DelegateTool.name,
                               parentContext.allowedToolNames?.contains(call.toolName) ?? true else {
-                            return (call.id, ToolResult(
+                            return (index, call.id, ToolResult(
                                 callID: call.id, status: .denied,
                                 outputSummary: "Denied: tool is outside the read-only child ceiling",
                                 outputDigest: ""
@@ -188,14 +188,18 @@ public actor SubagentRunner {
                             outputDigest: ""
                         )
                     }
-                    return (call.id, result)
+                    return (index, call.id, result)
                 }
             }
-            var items: [(String, ToolResult)] = []
+            var items: [(Int, String, ToolResult)] = []
             for await item in group { items.append(item) }
             return items
         }
-        return collected.map { (callID: $0.0, output: $0.1.outputSummary) }
+        // Preserve provider call order even when parallel reads complete in a
+        // different order. This keeps child transcripts deterministic and
+        // prevents completion timing from changing the next model turn.
+        return collected.sorted { $0.0 < $1.0 }
+            .map { (callID: $0.1, output: $0.2.outputSummary) }
     }
 
     // MARK: - Schema / prompt

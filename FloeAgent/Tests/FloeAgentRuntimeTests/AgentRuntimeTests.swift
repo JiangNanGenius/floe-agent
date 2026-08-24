@@ -132,6 +132,18 @@ final class MockCheckpointStore: CheckpointStore, @unchecked Sendable {
     }
 }
 
+final class FailingCheckpointStore: CheckpointStore, @unchecked Sendable {
+    func save(_ checkpoint: AgentCheckpoint) async throws {
+        throw NSError(
+            domain: "FloeAgentRuntimeTests.Checkpoint",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "checkpoint unavailable"]
+        )
+    }
+
+    func load(runID: UUID) async throws -> AgentCheckpoint? { nil }
+}
+
 final class RecordingApprovalBackend: ModelApprovalPolicy.DecisionBackend, @unchecked Sendable {
     private let storage = AsyncLock<[ProposedAction]>([])
     var actions: [ProposedAction] { storage.withLock { $0 } }
@@ -198,7 +210,7 @@ struct AgentRuntimeTests {
         executor: MockExecutor = MockExecutor(),
         policy: any ApprovalPolicy = HumanApprovalPolicy(),
         audit: MockAuditSink = MockAuditSink(),
-        store: MockCheckpointStore = MockCheckpointStore(),
+        store: any CheckpointStore = MockCheckpointStore(),
         sink: MockSink = MockSink(),
         verifyFinalAnswer: Bool = false
     ) -> FloeAgentRuntime {
@@ -459,6 +471,30 @@ struct AgentRuntimeTests {
         #expect(state.name == "completed")
         #expect(sink.transitions.contains("waitingApproval"))
         #expect(sink.transitions.contains("executingTool"))
+    }
+
+    @Test("Side-effecting tool is not dispatched when its preflight checkpoint fails")
+    func sideEffectRequiresDurableCheckpoint() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(try TestFixtures.toolCall(id: "checkpoint-write"))],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor, sideEffecting: true)
+        let audit = MockAuditSink()
+        let runtime = makeRuntime(
+            adapter: adapter,
+            executor: executor,
+            policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
+            audit: audit,
+            store: FailingCheckpointStore()
+        )
+
+        try await runtime.start(goal: "perform one write")
+
+        #expect(executor.executedCalls.isEmpty)
+        #expect(audit.entries.contains { $0.decision == "deny:checkpoint-failed" })
     }
 
     @Test("Human approval with a mismatched host scope does not execute")

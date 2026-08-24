@@ -132,6 +132,7 @@ enum ThreadTimelineBuilder {
         pendingApprovals: [PendingApproval]
     ) -> [ThreadTimelineItem] {
         var items: [ThreadTimelineItem] = []
+        var startingGoalMessageID: UUID?
 
         // 1. The user goal of the selected run anchors the block. Duplicate
         //    prompts are common, so choose the matching message nearest to
@@ -145,6 +146,7 @@ enum ThreadTimelineBuilder {
                 abs($0.createdAt.timeIntervalSince(run.startedAt))
                     < abs($1.createdAt.timeIntervalSince(run.startedAt))
             }) {
+                startingGoalMessageID = goalMessage.id
                 items.append(.userMessage(goalMessage))
             }
         }
@@ -167,12 +169,37 @@ enum ThreadTimelineBuilder {
 
         var finalReplyRendered = false
         var currentStepGroup: [RunEventRecord] = []
+        var guidedMessages = run.map { currentRun in
+            messages
+                .filter {
+                    $0.role == "user"
+                        && $0.runID == currentRun.id
+                        && $0.id != startingGoalMessageID
+                }
+                .sorted { lhs, rhs in
+                    if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+                    return lhs.id.uuidString < rhs.id.uuidString
+                }
+        } ?? []
         func flushStepGroup() {
             guard !currentStepGroup.isEmpty else { return }
             items.append(.stepGroup(events: currentStepGroup, isLatest: false))
             currentStepGroup = []
         }
+        func flushGuidedMessages(upTo date: Date? = nil) {
+            while let next = guidedMessages.first,
+                  date.map({ next.createdAt <= $0 }) ?? true {
+                flushStepGroup()
+                items.append(.userMessage(next))
+                guidedMessages.removeFirst()
+            }
+        }
         for event in nonTerminalEvents {
+            // Runtime guidance is persisted as another user message bound to
+            // the same run. It has no provider event sequence of its own, so
+            // place it at the nearest durable event boundary by timestamp
+            // without ever reordering provider events relative to each other.
+            flushGuidedMessages(upTo: event.createdAt)
             // Render every assistantText event in place (sequence order),
             // not just the last one. The old "final text only" rule inverted
             // the order when verifyFinalAnswer wrote a draft message.
@@ -203,6 +230,7 @@ enum ThreadTimelineBuilder {
             items.append(.event(event))
         }
         flushStepGroup()
+        flushGuidedMessages()
         // Preserve the true sequence while expanding only the newest group.
         if let latestIndex = items.indices.last(where: {
             if case .stepGroup = items[$0] { return true }

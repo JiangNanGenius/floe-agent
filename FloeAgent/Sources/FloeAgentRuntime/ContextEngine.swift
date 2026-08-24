@@ -376,6 +376,18 @@ public actor HybridContextEngine: ContextEngine {
         let recentIDs = Set(recent.map(\.id))
         let candidates = ordinary.filter { !recentIDs.contains($0.id) }
 
+        // A forced request against a short conversation is a valid no-op. Do
+        // not manufacture an empty summary or claim that context shrank.
+        guard !candidates.isEmpty else {
+            let record = ContextCompactionRecord(
+                sourceMessageIDs: [],
+                sourceDigest: "",
+                beforeEstimatedTokens: before,
+                afterEstimatedTokens: before
+            )
+            return CompactionResult(messages: input, record: record, estimatedTokens: before)
+        }
+
         // Preserve ordering for explicitly protected messages that happened
         // in the recent tail while preventing duplicates.
         let recentAndProtectedIDs = Set(recent.map(\.id)).union(protected.map(\.id))
@@ -392,6 +404,9 @@ public actor HybridContextEngine: ContextEngine {
             messages: prunedCandidates,
             maximumCharacters: maxCharacters
         )
+        guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FloeError.validationFailed("Context compaction returned an empty summary")
+        }
 
         var output = systemMessages
         if !summary.isEmpty {
@@ -412,6 +427,11 @@ public actor HybridContextEngine: ContextEngine {
         }
         output.append(contentsOf: protected)
         let after = estimator.estimate(output)
+        guard after < before else {
+            throw FloeError.validationFailed(
+                "Context compaction did not reduce the estimated token count"
+            )
+        }
         let sourceIDs = candidates.map(\.id)
         let record = ContextCompactionRecord(
             sourceMessageIDs: sourceIDs,

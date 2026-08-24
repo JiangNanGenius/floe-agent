@@ -25,13 +25,15 @@ concurrency:
 
 jobs:
   build-verify-release:
-    runs-on: macos-26
+    # The iOS 27 Foundation Models implementation requires Swift 6.4. Keep
+    # archive/TestFlight on the same SDK as the feature gate used by source.
+    runs-on: xcode-27
     permissions:
       contents: write
       id-token: write
       attestations: write
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
       GH_TOKEN: ${{ github.token }}
     defaults:
       run:
@@ -176,9 +178,9 @@ jobs:
   testflight:
     name: Archive and upload the same commit to TestFlight
     needs: build-verify-release
-    runs-on: macos-26
+    runs-on: xcode-27
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
     defaults:
       run:
         working-directory: FloeAgent

@@ -148,6 +148,7 @@ struct ThreadComposerView: View {
 
     let onSend: () -> Void
     let onStop: () -> Void
+    var onManualCompact: (() -> Void)? = nil
     var onPermissions: () -> Void = {}
     var approvalMode: TaskApprovalMode = .ask
     /// Changes when the composer is reused for another conversation. Local
@@ -164,6 +165,7 @@ struct ThreadComposerView: View {
     @State private var pendingLocalModelSwitch: PendingLocalModelSwitch?
     @State private var preparingLocalModelID: String?
     @State private var dictationPrefix = ""
+    @State private var slashNotice: String?
     @EnvironmentObject private var voiceInput: VoiceInputController
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
@@ -171,8 +173,14 @@ struct ThreadComposerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if !slashActions.isEmpty {
+                slashCommandPalette
+            }
             if let attachmentError {
                 errorBanner(attachmentError)
+            }
+            if let slashNotice {
+                infoBanner(slashNotice)
             }
             if let voiceNotice = voiceNotice {
                 voiceBanner(voiceNotice)
@@ -217,6 +225,7 @@ struct ThreadComposerView: View {
         }
         .onChange(of: attachments.map(\.id)) { _, _ in
             attachmentError = nil
+            slashNotice = nil
         }
         .onChange(of: contextID) { _, _ in
             attachmentError = nil
@@ -315,6 +324,124 @@ struct ThreadComposerView: View {
     }
 
     // MARK: - Input row
+
+    private enum SlashActionKind {
+        case compact
+        case openSkills
+        case mode(AgentExecutionMode)
+        case skill(id: String, name: String)
+    }
+
+    private struct SlashAction: Identifiable {
+        let id: String
+        let title: String
+        let subtitle: String
+        let systemImage: String
+        let kind: SlashActionKind
+    }
+
+    private var slashActions: [SlashAction] {
+        guard let query = ComposerSlashQuery.parse(draft) else { return [] }
+        if query.command == "skill" || query.command == "skills" && !query.argument.isEmpty {
+            let needle = query.argument.lowercased()
+            return environment.skillsCenter.installed
+                .filter { $0.status == "enabled" }
+                .filter {
+                    needle.isEmpty
+                        || $0.name.lowercased().contains(needle)
+                        || $0.id.lowercased().contains(needle)
+                }
+                .prefix(8)
+                .map {
+                    SlashAction(
+                        id: "skill:\($0.id)", title: $0.name,
+                        subtitle: "在下一条请求中指定 $\($0.id)",
+                        systemImage: "puzzlepiece.extension",
+                        kind: .skill(id: $0.id, name: $0.name)
+                    )
+                }
+        }
+
+        var actions: [SlashAction] = [
+            SlashAction(
+                id: "skills", title: "管理 Skills", subtitle: "打开已安装 Skill 与权限",
+                systemImage: "puzzlepiece.extension", kind: .openSkills
+            ),
+            SlashAction(
+                id: "agent", title: "Agent 模式", subtitle: "允许调用已授权工具",
+                systemImage: "wand.and.sparkles", kind: .mode(.agent)
+            ),
+            SlashAction(
+                id: "chat", title: "聊天模式", subtitle: "不调用工具",
+                systemImage: "text.bubble", kind: .mode(.chat)
+            ),
+            SlashAction(
+                id: "plan", title: "计划模式", subtitle: "只读分析并生成计划",
+                systemImage: "list.bullet.clipboard", kind: .mode(.plan)
+            ),
+            SlashAction(
+                id: "goal", title: "目标模式", subtitle: "持续执行到满足验收条件",
+                systemImage: "target", kind: .mode(.goal)
+            )
+        ]
+        if onManualCompact != nil {
+            actions.insert(SlashAction(
+                id: "compact", title: "压缩上下文", subtitle: "下次模型请求前压缩当前会话历史",
+                systemImage: "arrow.down.right.and.arrow.up.left", kind: .compact
+            ), at: 0)
+        }
+        let needle = query.command
+        return actions.filter { needle.isEmpty || $0.id.hasPrefix(needle) }
+    }
+
+    private var slashCommandPalette: some View {
+        VStack(spacing: 0) {
+            ForEach(slashActions) { action in
+                Button {
+                    performSlashAction(action)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: action.systemImage)
+                            .frame(width: 24)
+                            .foregroundStyle(FloeTheme.primary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("/\(action.id.hasPrefix("skill:") ? "skill" : action.id) · \(action.title)")
+                                .font(.subheadline.weight(.semibold))
+                            Text(action.subtitle)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
+                if action.id != slashActions.last?.id { Divider().padding(.leading, 46) }
+            }
+        }
+        .background(FloeTheme.groupedSurface)
+        .accessibilityIdentifier("composer.slash.palette")
+    }
+
+    private func performSlashAction(_ action: SlashAction) {
+        switch action.kind {
+        case .compact:
+            onManualCompact?()
+            draft = ""
+            slashNotice = "已安排上下文压缩，将在下一次模型请求前执行。"
+        case .openSkills:
+            draft = ""
+            router.openMore(.skills)
+        case .mode(let mode):
+            agentMode = mode
+            draft = ""
+            slashNotice = "已切换到\(mode.localizedTitle)。"
+        case .skill(let id, _):
+            draft = "Use $\(id) "
+        }
+    }
 
     @ViewBuilder
     private var inputRow: some View {
@@ -998,6 +1125,25 @@ struct ThreadComposerView: View {
             .buttonStyle(.plain)
             .frame(minWidth: 28, minHeight: 28)
             .accessibilityLabel(Text("action.done"))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private func infoBanner(_ message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle")
+                .foregroundStyle(FloeTheme.success)
+            Text(message)
+                .font(FloeTheme.Typography.metadata)
+            Spacer()
+            Button {
+                slashNotice = nil
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .frame(minWidth: 28, minHeight: 28)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)

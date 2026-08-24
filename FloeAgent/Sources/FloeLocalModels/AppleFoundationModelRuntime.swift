@@ -18,12 +18,30 @@ public enum AppleFoundationModelIdentity {
     public static let remoteModelID = "apple-foundation-model"
 }
 
+/// Foundation Models can consume imported bytes and stable local file URLs.
+/// Network/iCloud resolution stays in Floe's attachment pipeline so local
+/// inference never performs unreported I/O.
+public enum AppleFoundationImageInput: Sendable, Equatable {
+    case data(Data)
+    case file(URL)
+
+    public func dataForLegacyRuntime() throws -> Data {
+        switch self {
+        case .data(let data):
+            return data
+        case .file(let url):
+            return try Data(contentsOf: url, options: [.mappedIfSafe])
+        }
+    }
+}
+
 public enum AppleFoundationModelAvailability: Sendable, Equatable {
     case available(contextTokens: Int, supportsVision: Bool, supportsTools: Bool, supportsReasoning: Bool)
     case unsupportedOS
     case deviceNotEligible
     case appleIntelligenceDisabled
     case modelNotReady
+    case unsupportedLocale(String)
     case unsupportedToolchain
 
     public var isAvailable: Bool {
@@ -38,12 +56,25 @@ public enum AppleFoundationModelAvailability: Sendable, Equatable {
 public actor AppleFoundationModelRuntime {
     public static let shared = AppleFoundationModelRuntime()
 
+    /// Release gate used by tests to prevent an older Xcode image from
+    /// silently compiling only the unsupported fallback implementation.
+    public nonisolated static var sdkIntegrationCompiled: Bool {
+#if compiler(>=6.4) && canImport(FoundationModels)
+        true
+#else
+        false
+#endif
+    }
+
     public func availability() -> AppleFoundationModelAvailability {
 #if compiler(>=6.4) && canImport(FoundationModels)
         guard #available(iOS 27.0, macOS 27.0, *) else { return .unsupportedOS }
         let model = SystemLanguageModel.default
         switch model.availability {
         case .available:
+            guard model.supportsLocale(Locale.current) else {
+                return .unsupportedLocale(Locale.current.identifier)
+            }
             return .available(
                 contextTokens: model.contextSize,
                 supportsVision: model.capabilities.contains(.vision),
@@ -67,7 +98,7 @@ public actor AppleFoundationModelRuntime {
     public func complete(
         instructions: String,
         prompt: String,
-        images: [Data],
+        images: [AppleFoundationImageInput],
         tools: [ToolSchemaDescriptor],
         maxTokens: Int
     ) async throws -> LocalRuntimeCompletion {
@@ -79,22 +110,33 @@ public actor AppleFoundationModelRuntime {
         guard case .available = model.availability else {
             throw FloeError.invalidConfiguration(Self.unavailableMessage(for: availability()))
         }
+        guard model.supportsLocale(Locale.current) else {
+            throw FloeError.invalidConfiguration(
+                "Apple Foundation Models does not support the current language or locale (\(Locale.current.identifier))"
+            )
+        }
+        guard images.count <= 4 else {
+            throw FloeError.validationFailed("Apple Foundation Models accepts at most four images per request")
+        }
 
         let startedAt = ContinuousClock.now
         let recorder = DeferredToolCallRecorder()
         let nativeTools = tools.compactMap { descriptor in
             Self.deferredTool(from: descriptor, recorder: recorder)
         }
+        let localizedInstructions = instructions +
+            "\nRespond using the user's language when it is supported. Current locale: \(Locale.current.identifier)."
         let session = LanguageModelSession(
             model: model,
             tools: nativeTools,
-            instructions: instructions
+            instructions: localizedInstructions
         )
         session.prewarm()
+        let effectiveMaxTokens = max(64, min(maxTokens, 2_048))
         let options = GenerationOptions(
             samplingMode: .greedy,
             temperature: 0,
-            maximumResponseTokens: max(64, min(maxTokens, 2_048)),
+            maximumResponseTokens: effectiveMaxTokens,
             toolCallingMode: .allowed
         )
         let contextOptions = ContextOptions(
@@ -102,12 +144,12 @@ public actor AppleFoundationModelRuntime {
         )
         var latest = ""
         var firstContentAt: ContinuousClock.Instant?
-        let attachments = try images.enumerated().map { index, data in
-            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-                throw FloeError.validationFailed("Image \(index + 1) could not be decoded")
-            }
-            return Attachment<ImageAttachmentContent>(image).label("user-image-\(index)")
+        var usageInputTokens: Int?
+        var usageCacheReadTokens: Int?
+        var usageOutputTokens: Int?
+        var usageReasoningTokens: Int?
+        let attachments = try images.enumerated().map { index, input in
+            try Self.imageAttachment(input, index: index)
         }
         if !attachments.isEmpty, !model.capabilities.contains(.vision) {
             throw FloeError.invalidConfiguration("Apple Foundation Model vision is not available on this device")
@@ -116,17 +158,35 @@ public actor AppleFoundationModelRuntime {
             prompt
             attachments
         }
-        for try await snapshot in session.streamResponse(
-            to: request,
-            options: options,
-            contextOptions: contextOptions
-        ) {
-            // Foundation Models snapshots are cumulative. Replacing `latest`
-            // avoids duplicated prefixes in the chat UI.
-            latest = snapshot.content
-            if firstContentAt == nil, !latest.isEmpty {
-                firstContentAt = .now
+        let promptTokens = try await model.tokenCount(for: request)
+        let instructionTokens = try await model.tokenCount(for: Instructions(localizedInstructions))
+        let toolTokens = try await model.tokenCount(for: nativeTools)
+        let inputTokenCount = promptTokens + instructionTokens + toolTokens
+        guard inputTokenCount + effectiveMaxTokens <= model.contextSize else {
+            throw FloeError.validationFailed(
+                "Apple Foundation Models context is too large (\(inputTokenCount) input + \(effectiveMaxTokens) reserved, limit \(model.contextSize)); compact the conversation and retry"
+            )
+        }
+        do {
+            for try await snapshot in session.streamResponse(
+                to: request,
+                options: options,
+                contextOptions: contextOptions
+            ) {
+                // Foundation Models snapshots are cumulative. Replacing `latest`
+                // avoids duplicated prefixes in the chat UI.
+                latest = snapshot.content
+                usageInputTokens = snapshot.usage.input.totalTokenCount
+                usageCacheReadTokens = snapshot.usage.input.cachedTokenCount
+                usageOutputTokens = snapshot.usage.output.totalTokenCount
+                usageReasoningTokens = snapshot.usage.output.reasoningTokenCount
+                if firstContentAt == nil, !latest.isEmpty {
+                    firstContentAt = .now
+                }
             }
+        } catch {
+            if Task.isCancelled { throw FloeError.cancelled }
+            throw Self.normalizedFoundationError(error)
         }
         let deferredToolCall = try await recorder.toolCall()
         if deferredToolCall != nil {
@@ -140,13 +200,15 @@ public actor AppleFoundationModelRuntime {
         let elapsed = startedAt.duration(to: .now)
         let elapsedMs = Self.milliseconds(elapsed)
         let firstMs = firstContentAt.map { Self.milliseconds(startedAt.duration(to: $0)) }
-        let inputTokens = max(1, prompt.utf8.count / 4)
-        let outputTokens = max(1, latest.utf8.count / 4)
+        let inputTokens = usageInputTokens ?? inputTokenCount
+        let outputTokens = usageOutputTokens ?? max(1, latest.utf8.count / 4)
         let decodeMs = max(1, elapsedMs - (firstMs ?? 0))
         return LocalRuntimeCompletion(
             text: latest,
             inputTokens: inputTokens,
             outputTokens: outputTokens,
+            cacheReadTokens: usageCacheReadTokens,
+            reasoningTokens: usageReasoningTokens,
             totalDurationMs: elapsedMs,
             timeToFirstTokenMs: firstMs,
             tokensPerSecond: Double(outputTokens) / (Double(decodeMs) / 1_000),
@@ -173,12 +235,93 @@ public actor AppleFoundationModelRuntime {
             return "Turn on Apple Intelligence in System Settings"
         case .modelNotReady:
             return "The system model is still downloading or is not ready"
+        case .unsupportedLocale(let identifier):
+            return "Apple Foundation Models does not support the current language or locale (\(identifier))"
         case .unsupportedToolchain:
             return "This build does not include the Xcode 27 Foundation Models SDK"
         }
     }
 
 #if compiler(>=6.4) && canImport(FoundationModels)
+    @available(iOS 27.0, macOS 27.0, *)
+    private static func imageAttachment(
+        _ input: AppleFoundationImageInput,
+        index: Int
+    ) throws -> Attachment<ImageAttachmentContent> {
+        let maximumBytes = 24 * 1_024 * 1_024
+        let source: CGImageSource
+        switch input {
+        case .data(let data):
+            guard data.count <= maximumBytes else {
+                throw FloeError.validationFailed("Image \(index + 1) exceeds the 24 MB local-model limit")
+            }
+            guard let decoded = CGImageSourceCreateWithData(data as CFData, nil) else {
+                throw FloeError.validationFailed("Image \(index + 1) could not be decoded")
+            }
+            source = decoded
+        case .file(let url):
+            guard url.isFileURL else {
+                throw FloeError.validationFailed("Image \(index + 1) must be a validated local file")
+            }
+            let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            guard size <= maximumBytes else {
+                throw FloeError.validationFailed("Image \(index + 1) exceeds the 24 MB local-model limit")
+            }
+            guard let decoded = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+                throw FloeError.validationFailed("Image \(index + 1) could not be decoded")
+            }
+            source = decoded
+        }
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let width = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
+        let height = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
+        guard width > 0, height > 0, width * height <= 50_000_000 else {
+            throw FloeError.validationFailed("Image \(index + 1) has unsupported pixel dimensions")
+        }
+        let orientationValue = properties?[kCGImagePropertyOrientation] as? UInt32
+        let orientation = orientationValue.flatMap(CGImagePropertyOrientation.init(rawValue:))
+        switch input {
+        case .file(let url):
+            return Attachment<ImageAttachmentContent>(imageURL: url, orientation: orientation)
+                .label("user-image-\(index)")
+        case .data:
+            guard let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+                throw FloeError.validationFailed("Image \(index + 1) could not be decoded")
+            }
+            return Attachment<ImageAttachmentContent>(image, orientation: orientation)
+                .label("user-image-\(index)")
+        }
+    }
+
+    @available(iOS 27.0, macOS 27.0, *)
+    private static func normalizedFoundationError(_ error: Error) -> Error {
+        if let modelError = error as? LanguageModelError {
+            switch modelError {
+            case .contextSizeExceeded(let details):
+                return FloeError.validationFailed(
+                    "Apple Foundation Models context exceeded (\(details.tokenCount)/\(details.contextSize)); compact and retry once"
+                )
+            case .rateLimited(let details):
+                let retry = details.resetDate.map { " Retry after \($0.formatted())." } ?? ""
+                return FloeError.syncUnavailable("Apple Foundation Models is rate limited.\(retry)")
+            case .unsupportedLanguageOrLocale:
+                return FloeError.invalidConfiguration("Apple Foundation Models does not support this language or locale")
+            case .timeout:
+                return FloeError.syncUnavailable("Apple Foundation Models timed out; retry once")
+            case .guardrailViolation, .refusal:
+                return FloeError.validationFailed("Apple Foundation Models declined this request")
+            case .unsupportedCapability, .unsupportedTranscriptContent, .unsupportedGenerationGuide:
+                return FloeError.invalidConfiguration("Apple Foundation Models does not support part of this request")
+            @unknown default:
+                return FloeError.internalError(error.localizedDescription)
+            }
+        }
+        if error is LanguageModelSession.Error {
+            return FloeError.syncUnavailable("Apple Foundation Models is busy; wait for the current request and retry once")
+        }
+        return error
+    }
+
     @available(iOS 27.0, macOS 27.0, *)
     private static func deferredTool(
         from descriptor: ToolSchemaDescriptor,
@@ -210,14 +353,23 @@ public actor AppleFoundationModelRuntime {
 @available(iOS 27.0, macOS 27.0, *)
 private actor DeferredToolCallRecorder {
     private var recorded: (name: String, arguments: String)?
+    private var additionalCallDetected = false
 
     func record(name: String, arguments: String) -> Bool {
-        guard recorded == nil else { return false }
+        guard recorded == nil else {
+            additionalCallDetected = true
+            return false
+        }
         recorded = (name, arguments)
         return true
     }
 
     func toolCall() throws -> FloeModels.ToolCall? {
+        guard !additionalCallDetected else {
+            throw FloeError.validationFailed(
+                "Apple Foundation Models requested multiple tools concurrently; retry with one tool per turn"
+            )
+        }
         guard let recorded else { return nil }
         let data = Data(recorded.arguments.utf8)
         return try FloeModels.ToolCall(

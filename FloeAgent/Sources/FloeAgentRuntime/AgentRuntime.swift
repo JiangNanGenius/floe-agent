@@ -207,6 +207,10 @@ public actor FloeAgentRuntime {
         /// pass (verifying) before the run terminates, letting the model
         /// correct omissions or tighten its final reply.
         public var verifyFinalAnswer: Bool
+        /// One-shot user request to compact seeded history before the next
+        /// provider request. This is separate from automatic pressure-based
+        /// compaction and is consumed by exactly one runtime.
+        public var forceInitialCompaction: Bool
 
         public init(
             conversationID: UUID = UUID(),
@@ -220,7 +224,8 @@ public actor FloeAgentRuntime {
             toolsEnabled: Bool = true,
             pauseTimeout: TimeInterval = 300,
             maxToolSteps: Int = Int.max / 4,
-            verifyFinalAnswer: Bool = false
+            verifyFinalAnswer: Bool = false,
+            forceInitialCompaction: Bool = false
         ) {
             self.conversationID = conversationID
             self.provider = provider
@@ -234,6 +239,7 @@ public actor FloeAgentRuntime {
             self.pauseTimeout = pauseTimeout
             self.maxToolSteps = maxToolSteps
             self.verifyFinalAnswer = verifyFinalAnswer
+            self.forceInitialCompaction = forceInitialCompaction
         }
     }
 
@@ -297,6 +303,11 @@ public actor FloeAgentRuntime {
     /// request/result pair have reached a complete step boundary.
     private var pendingSteers: [RuntimeSteerInput] = []
     private var acceptedSteerIDs: Set<UUID> = []
+    private var forceCompactionOnNextTurn: Bool
+    /// Last committed compaction transaction. Persisting this in checkpoints
+    /// makes resume auditable and prevents a recovered run from treating an
+    /// already summarized transcript as pristine history.
+    private var latestContextCompaction: ContextCompactionRecord?
 
     private var streamTask: Task<Void, Never>?
     private var cancellationToken = CancellationToken()
@@ -331,6 +342,8 @@ public actor FloeAgentRuntime {
         self.contextEngine = contextEngine
         self.sink = sink
         self.runID = runID
+        self.forceCompactionOnNextTurn = configuration.forceInitialCompaction
+        self.latestContextCompaction = nil
         self.budgetLedger = HarnessBudgetLedger(
             rootRunID: runID,
             budgets: HarnessBudgets(
@@ -553,6 +566,7 @@ public actor FloeAgentRuntime {
         pendingToolResults = checkpoint.pendingToolResults
         grants = checkpoint.approvals
         executedIdempotencyKeys = checkpoint.idempotencyKeys
+        latestContextCompaction = checkpoint.contextCompaction
         toolStepCount = checkpoint.parentIterationCount ?? 0
         await budgetLedger.restore(
             parent: checkpoint.parentIterationCount ?? 0,
@@ -644,21 +658,57 @@ public actor FloeAgentRuntime {
                 budget: compressionPolicy.budget,
                 protection: protection
             )
-            if let prepared = try? await contextEngine.prepareContext(for: request),
-               let compaction = prepared.compaction {
-                messages = prepared.messages
-                let summary = prepared.messages.first(where: {
-                    $0.role == "system" && $0.content.contains("Historical summary:")
-                })?.content ?? ""
-                try? await intelligenceStore?.saveCompaction(
-                    runID: runID,
-                    record: compaction,
-                    summary: summary
+            let wasForcedCompaction = forceCompactionOnNextTurn
+            do {
+                let prepared: PreparedContext
+                if forceCompactionOnNextTurn {
+                    let compacted = try await contextEngine.compact(CompactionRequest(
+                        context: request,
+                        force: true
+                    ))
+                    prepared = PreparedContext(
+                        messages: compacted.messages,
+                        estimatedInputTokens: compacted.estimatedTokens,
+                        compaction: compacted.record
+                    )
+                    forceCompactionOnNextTurn = false
+                } else {
+                    prepared = try await contextEngine.prepareContext(for: request)
+                }
+                if let compaction = prepared.compaction,
+                   !compaction.sourceMessageIDs.isEmpty {
+                    let summary = prepared.messages.first(where: {
+                        $0.role == "system" && $0.content.contains("Historical summary:")
+                    })?.content ?? ""
+                    // Treat compaction as a transaction. The provider must
+                    // never receive a rewritten history that failed durable
+                    // persistence, otherwise resume can silently diverge.
+                    if let intelligenceStore {
+                        try await intelligenceStore.saveCompaction(
+                            runID: runID,
+                            record: compaction,
+                            summary: summary
+                        )
+                    }
+                    messages = prepared.messages
+                    latestContextCompaction = compaction
+                    logger.info(
+                        "contextCompacted run=\(runID.uuidString) mode=\(compressionPolicy.mode.rawValue) tier=\(compressionPolicy.tier.rawValue) before=\(compaction.beforeEstimatedTokens) after=\(compaction.afterEstimatedTokens) sources=\(compaction.sourceMessageIDs.count) emergency=\(prepared.isEmergencyCompaction)"
+                    )
+                    await sink?.agentRuntime(self, didCompact: compaction)
+                }
+            } catch {
+                logger.warning(
+                    "contextCompactionFailed run=\(runID.uuidString) forced=\(wasForcedCompaction) error=\(error.localizedDescription)"
                 )
-                logger.info(
-                    "contextCompacted run=\(runID.uuidString) mode=\(compressionPolicy.mode.rawValue) tier=\(compressionPolicy.tier.rawValue) before=\(compaction.beforeEstimatedTokens) after=\(compaction.afterEstimatedTokens) sources=\(compaction.sourceMessageIDs.count) emergency=\(prepared.isEmergencyCompaction)"
-                )
-                await sink?.agentRuntime(self, didCompact: compaction)
+                forceCompactionOnNextTurn = false
+                if wasForcedCompaction {
+                    await failRun(
+                        message: "Context compaction failed: \(error.localizedDescription)",
+                        recoverable: true
+                    )
+                    return
+                }
             }
         }
         let streamInfo = AgentState.StreamingInfo(modelRemoteID: configuration.model.remoteModelID)
@@ -1278,6 +1328,26 @@ public actor FloeAgentRuntime {
             await transition(to: .executingTool(AgentState.ExecutingInfo(toolCall: call)))
         }
 
+        // Commit the exact provider history, approval grant and pending call
+        // before crossing a side-effect boundary. If persistence is
+        // unavailable we must not dispatch the action: recovery could
+        // otherwise replay a write whose real-world outcome is unknown.
+        if executor.descriptor(named: call.toolName)?.isSideEffecting != false {
+            do {
+                try await writeCheckpoint()
+            } catch {
+                let result = ToolResult(
+                    callID: call.id,
+                    status: .failed,
+                    outputSummary: "Action not executed because its recovery checkpoint could not be saved: \(error.localizedDescription)",
+                    outputDigest: ""
+                )
+                await audit(toolCall: call, result: result, decision: "deny:checkpoint-failed")
+                await emit(.toolResult(result))
+                return result
+            }
+        }
+
         // Subagent delegation opens a child slot in the shared budget ledger
         // so the subagent's iterations are charged against this run's total.
         let childBudget = await makeChildBudget(for: call)
@@ -1643,9 +1713,14 @@ public actor FloeAgentRuntime {
                 ),
                 force: force
             )
-            if let result = try? await contextEngine.compact(request) {
+            do {
+                let result = try await contextEngine.compact(request)
                 messages = result.messages
                 return
+            } catch {
+                logger.warning(
+                    "contextHistoryFallback run=\(runID.uuidString) forced=\(force) error=\(error.localizedDescription)"
+                )
             }
         }
         let system = messages.filter { $0.role == "system" }
@@ -1686,6 +1761,7 @@ public actor FloeAgentRuntime {
             approvals: grants,
             idempotencyKeys: executedIdempotencyKeys,
             conversationMode: configuration.conversationMode,
+            contextCompaction: latestContextCompaction,
             parentIterationCount: iterationSnapshot.parent,
             totalIterationCount: iterationSnapshot.total
         )

@@ -1,6 +1,6 @@
 # Floe Agent CI.
 # Two jobs:
-#   build-test (macOS 26 arm64, Xcode 26.6): SPM build/test + xcodegen +
+#   build-test (macOS 26 arm64, Xcode 27): SPM build/test + xcodegen +
 #     xcodebuild for the iOS app, secret scan, SBOM, license inventory.
 #   spm-linux-build (ubuntu-latest, Swift 6.3): cross-platform compile only —
 #     SSE parser, catastrophic gate, canonical JSON, audit chain, GRDB
@@ -16,12 +16,14 @@ on:
 
 jobs:
   build-test:
-    runs-on: macos-26
+    # Foundation Models is guarded by Swift 6.4. Building on the generic
+    # macOS 26 image (Xcode 26.6) silently selects the unsupported stub.
+    runs-on: xcode-27
     defaults:
       run:
         working-directory: FloeAgent
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
     steps:
       - uses: actions/checkout@v5
 

@@ -96,6 +96,21 @@ struct ConversationSessionSnapshot: Sendable {
 final class ConversationCenter: ObservableObject {
     static let onboardingSkippedDefaultsKey = "org.floeagent.onboarding.skipped"
     static let auxiliaryVisionReasoningDefaultsKey = "org.floeagent.auxiliaryVision.reasoningEnabled"
+    private static let manualCompactionPrefix = "org.floeagent.context.manualCompaction."
+
+    func requestManualCompaction(conversationID: UUID) {
+        UserDefaults.standard.set(
+            true,
+            forKey: Self.manualCompactionPrefix + conversationID.uuidString
+        )
+    }
+
+    private func consumeManualCompaction(conversationID: UUID) -> Bool {
+        let key = Self.manualCompactionPrefix + conversationID.uuidString
+        let requested = UserDefaults.standard.bool(forKey: key)
+        if requested { UserDefaults.standard.removeObject(forKey: key) }
+        return requested
+    }
 
     /// Writes the launch-critical skip marker synchronously. Interactive
     /// sheet dismissal can be followed immediately by process termination;
@@ -448,6 +463,7 @@ final class ConversationCenter: ObservableObject {
                 ?? nonWorkspace
         }
         let credentials = resolveCredentials(for: provider)
+        let forceInitialCompaction = consumeManualCompaction(conversationID: conversationID)
         let configuration = FloeAgentRuntime.Configuration(
             conversationID: conversationID,
             provider: provider,
@@ -458,7 +474,8 @@ final class ConversationCenter: ObservableObject {
             workspaceRootURL: taskRootLease?.url,
             allowedWorkspacePaths: taskPolicy.filePaths,
             toolsEnabled: executionMode.toolsEnabled,
-            verifyFinalAnswer: environment.settingsCenter.verifyFinalAnswer
+            verifyFinalAnswer: environment.settingsCenter.verifyFinalAnswer,
+            forceInitialCompaction: forceInitialCompaction
         )
         await environment.subagentRunnerRegistry.register(
             SubagentRunner(
