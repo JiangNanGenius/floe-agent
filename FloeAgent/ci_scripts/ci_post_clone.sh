@@ -6,6 +6,12 @@ echo "CI build: ${CI_BUILD_ID:-local}"
 echo "Xcode: ${CI_XCODE_VERSION:-unknown}"
 echo "macOS: $(sw_vers -productVersion)"
 echo "Architecture: $(uname -m)"
+
+# Xcode Cloud workers cannot present the interactive trust sheet required the
+# first time a pinned Swift macro target is encountered. The package graph is
+# still fixed by Package.resolved and validated by the normal CI/release gates.
+defaults write com.apple.dt.Xcode IDESkipMacroFingerprintValidation -bool YES
+echo "Pinned Swift macro fingerprint prompt disabled for this CI worker"
 echo "Logical CPUs: $(sysctl -n hw.logicalcpu 2>/dev/null || echo unknown)"
 
 memory_bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
