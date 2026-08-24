@@ -48,15 +48,6 @@ struct ThreadDetailView: View {
             if let error = viewModel.actionError {
                 errorBanner(error)
             }
-            if let summary = viewModel.approvalReviewSummary {
-                Label(summary, systemImage: "checkmark.shield")
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(FloeTheme.groupedSurface)
-            }
             if viewModel.usesLocalModel {
                 localApprovalNotice
             }

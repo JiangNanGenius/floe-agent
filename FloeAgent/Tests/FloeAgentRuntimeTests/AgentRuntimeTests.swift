@@ -714,6 +714,55 @@ struct AgentRuntimeTests {
         #expect(state.name == "completed")
     }
 
+    @Test("Recovery ledger prevents a completed tool from executing twice")
+    func recoveryLedgerDeduplicatesCompletedTool() async throws {
+        let adapter = MockAdapter()
+        let call = try TestFixtures.toolCall(id: "recovered-call")
+        adapter.script = [
+            [.toolRequest(call)],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let runtime = makeRuntime(adapter: adapter, executor: executor)
+        let checkpoint = AgentCheckpoint(
+            runID: UUID(),
+            conversationID: UUID(),
+            state: .preparing(AgentState.PreparingInfo(goal: "resume safely")),
+            messages: [ConversationMessage(role: "user", content: "resume safely")],
+            executionLedgerEntries: [AgentExecutionLedgerEntry(
+                toolName: call.toolName,
+                callFingerprint: "cbbbdcd27692",
+                status: .ok,
+                resultFingerprint: "result",
+                excerpt: "already inspected",
+                occurrenceCount: 1
+            )]
+        )
+
+        try await runtime.resume(from: checkpoint)
+
+        #expect(executor.executedCalls.isEmpty)
+        #expect(await runtime.state.name == "completed")
+    }
+
+    @Test("Tool results are checkpointed with the execution ledger")
+    func toolResultCheckpointIncludesLedger() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(try TestFixtures.toolCall(id: "ledger-persist"))],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let store = MockCheckpointStore()
+        let runtime = makeRuntime(adapter: adapter, executor: executor, store: store)
+
+        try await runtime.start(goal: "persist result boundary")
+
+        #expect(store.saved.contains { !$0.executionLedgerEntries!.isEmpty })
+    }
+
     @Test("Provider server error fails the run as recoverable")
     func serverErrorFails() async throws {
         let adapter = MockAdapter()

@@ -53,13 +53,23 @@ public struct ApprovalRequestSnapshot: Sendable, Codable, Hashable, Identifiable
 }
 
 public struct ApprovalReviewSnapshot: Sendable, Codable, Hashable {
+    /// Provider tool-call identity. Optional keeps snapshots produced by an
+    /// older checkpoint/runtime decodable while letting the UI attach the
+    /// review outcome to the exact tool step instead of a global footer.
+    public var callID: String?
     public var toolName: String
     public var isEvaluating: Bool
     /// A short policy outcome suitable for the UI. This is deliberately not
     /// model reasoning and must never contain chain-of-thought text.
     public var outcomeSummary: String?
 
-    public init(toolName: String, isEvaluating: Bool, outcomeSummary: String? = nil) {
+    public init(
+        callID: String? = nil,
+        toolName: String,
+        isEvaluating: Bool,
+        outcomeSummary: String? = nil
+    ) {
+        self.callID = callID
         self.toolName = toolName
         self.isEvaluating = isEvaluating
         self.outcomeSummary = outcomeSummary

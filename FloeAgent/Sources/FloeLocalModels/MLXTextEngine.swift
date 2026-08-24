@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import MLXHuggingFace
 import MLXLMCommon
 import MLXVLM
@@ -25,7 +26,20 @@ public actor MLXTextEngine {
                 using: #huggingFaceTokenizerLoader()
             )
         } catch {
-            throw LocalInferenceError.modelLoadFailed
+            // A failed graph/model construction can leave Metal allocations
+            // in MLX's process-wide cache even though no container escaped.
+            // Clear them before the runtime evaluates or loads another model.
+            Memory.clearCache()
+            let nsError = error as NSError
+            // Keep the useful class/code while avoiding model paths or raw
+            // provider payloads in the user-visible diagnostic.
+            throw LocalInferenceError.modelLoadFailedWithReason(
+                "MLX container initialization failed (domain "
+                    + nsError.domain
+                    + ", code "
+                    + String(nsError.code)
+                    + "). Verify the model snapshot and device memory, then retry."
+            )
         }
     }
 
@@ -34,6 +48,11 @@ public actor MLXTextEngine {
     /// finishes so several multi-gigabyte models never remain resident.
     public func shutdown() {
         container = nil
+        // Dropping Swift references is not enough: MLX deliberately keeps a
+        // process-wide Metal allocation cache for reuse. On iPad that made a
+        // 3.8 -> 3.5 switch look like two resident multi-GB models and could
+        // end in a jetsam-style termination without a normal crash report.
+        Memory.clearCache()
     }
 
     public func completeMeasured(

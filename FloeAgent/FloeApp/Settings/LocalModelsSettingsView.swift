@@ -428,12 +428,10 @@ struct LocalModelsSettingsView: View {
     }
 
     private var shouldShowAppleFoundationModel: Bool {
-        switch center.appleFoundationAvailability {
-        case .unsupportedOS, .unsupportedToolchain:
-            return false
-        default:
-            return true
-        }
+        // Keep the row visible even when the system model cannot run. The
+        // availability reason is the actionable setting: hiding it made a
+        // selected Apple Intelligence model look like a missing local model.
+        return true
     }
 
     private static func contextLabel(_ tokens: Int) -> String {

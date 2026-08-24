@@ -24,6 +24,8 @@ struct ThreadEventView: View {
     var hasError: Bool = false
     /// Retry entry point forwarded to ErrorEventView.
     var onRetry: (() -> Void)? = nil
+    /// Approval result/reason associated with this tool call ID.
+    var approvalSummary: String? = nil
 
     @State private var isExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -99,7 +101,8 @@ struct ThreadEventView: View {
             ToolCallCardView(
                 name: payload["tool"] ?? event.kind.rawValue,
                 status: "pending",
-                inputSummary: payload["input"] ?? payload["summary"]
+                inputSummary: payload["input"] ?? payload["summary"],
+                approvalSummary: approvalSummary
             )
 
         case .toolResult:
@@ -118,17 +121,28 @@ struct ThreadEventView: View {
                 status: status,
                 inputSummary: payload["input"],
                 resultSummary: payload["summary"],
+                approvalSummary: approvalSummary,
                 duration: payload["durationMs"].flatMap(Double.init)
                     .map { $0 / 1000 },
                 artifacts: artifacts
             )
 
         case .approval:
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.shield")
-                    .foregroundStyle(FloeTheme.pending)
-                Text(payload["reason"] ?? "")
-                    .font(FloeTheme.Typography.body)
+            if let outcome = payload["outcome"] {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.shield")
+                        .foregroundStyle(FloeTheme.success)
+                    Text(outcome)
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.shield")
+                        .foregroundStyle(FloeTheme.pending)
+                    Text(payload["reason"] ?? "")
+                        .font(FloeTheme.Typography.body)
+                }
             }
 
         case .error:

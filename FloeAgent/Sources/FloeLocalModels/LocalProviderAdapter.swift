@@ -441,6 +441,16 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     )
                     let completion: LocalRuntimeCompletion
                     if request.model.remoteModelID == AppleFoundationModelIdentity.remoteModelID {
+                        let availability = await AppleFoundationModelRuntime.shared.availability()
+                        guard availability.isAvailable else {
+                            let reason = AppleFoundationModelRuntime.unavailableMessage(for: availability)
+                            FloeLogger(category: .providers).warning(
+                                "appleFoundationModelUnavailable model=\(request.model.remoteModelID) reason=\(reason)"
+                            )
+                            throw FloeError.invalidConfiguration(
+                                "Apple Intelligence 模型当前无法调用：\(reason)"
+                            )
+                        }
                         completion = try await AppleFoundationModelRuntime.shared.complete(
                             instructions: promptBuild.systemInstructions,
                             prompt: prompt,
@@ -507,24 +517,30 @@ public struct LocalProviderAdapter: ProviderAdapter {
         credentials: ProviderCredentials
     ) async throws -> [ModelProfile] {
         var models: [ModelProfile] = []
-        if case .available(let contextTokens, let supportsVision, let supportsTools, let supportsReasoning) =
-            await AppleFoundationModelRuntime.shared.availability() {
-            var capabilities: ModelCapabilities = [.text, .approval]
-            if supportsVision { capabilities.insert(.vision) }
-            if supportsTools { capabilities.insert(.tools) }
-            models.append(ModelProfile(
-                id: AppleFoundationModelIdentity.profileID,
-                providerID: provider.id,
-                remoteModelID: AppleFoundationModelIdentity.remoteModelID,
-                displayName: "Apple Foundation Model",
-                limits: .init(
-                    contextTokens: contextTokens,
-                    maxOutputTokens: min(2_048, max(256, contextTokens / 4))
-                ),
-                capabilities: capabilities,
-                reasoningEffort: supportsReasoning ? .low : .automatic
-            ))
+        let appleAvailability = await AppleFoundationModelRuntime.shared.availability()
+        var appleLimits = ModelLimits(contextTokens: 4_096, maxOutputTokens: 512)
+        var appleCapabilities: ModelCapabilities = [.text, .approval]
+        var appleReasoning: ModelReasoningEffort? = .automatic
+        var appleSuffix = "（不可用：" + AppleFoundationModelRuntime.unavailableMessage(for: appleAvailability) + "）"
+        if case .available(let contextTokens, let supportsVision, let supportsTools, let supportsReasoning) = appleAvailability {
+            appleLimits = .init(
+                contextTokens: contextTokens,
+                maxOutputTokens: min(2_048, max(256, contextTokens / 4))
+            )
+            if supportsVision { appleCapabilities.insert(.vision) }
+            if supportsTools { appleCapabilities.insert(.tools) }
+            appleReasoning = supportsReasoning ? .low : .automatic
+            appleSuffix = ""
         }
+        models.append(ModelProfile(
+            id: AppleFoundationModelIdentity.profileID,
+            providerID: provider.id,
+            remoteModelID: AppleFoundationModelIdentity.remoteModelID,
+            displayName: "Apple Foundation Model" + appleSuffix,
+            limits: appleLimits,
+            capabilities: appleCapabilities,
+            reasoningEffort: appleReasoning
+        ))
         for entry in CuratedLocalModelCatalog.entries {
             guard await store.installedModelURL(id: entry.id) != nil else { continue }
             let mappedBytes = await store.installedWeightBytes(id: entry.id) ?? 0
@@ -603,6 +619,17 @@ public struct LocalProviderAdapter: ProviderAdapter {
             let names = request.toolSchemas.map(\.name).sorted().joined(separator: ", ")
             sections.append("AVAILABLE TOOL NAMES (authoritative): \(clipped(names, limit: 1_600))")
         }
+        if !selectedTools.isEmpty {
+            let offered = selectedTools.map { tool in
+                "- \(tool.name): \(clipped(tool.description, limit: 120))\n  parameters: \(clipped(tool.parametersJSON, limit: 900))"
+            }.joined(separator: "\n")
+            sections.append("""
+            OFFERED TOOLS FOR THIS TURN (callable now):
+            \(offered)
+            To call one, use the native tool interface. If the model template cannot emit a native call, return exactly one JSON object and no prose:
+            {"tool_call":{"name":"exact.offered.name","arguments":{}}}
+            """)
+        }
 
         var transcriptSections: [String] = []
         var transcriptCharacters = 0
@@ -637,7 +664,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
             evidenceBudget -= bounded.count
         }
         let transcript = sections.joined(separator: "\n\n")
-        let system = "You are Floe, a concise on-device agent. Follow the latest user request. Tool execution and approval are enforced by the app. Use only offered native tools, never invent tool names, and never claim an action succeeded without a tool result. Invoke at most one tool per turn. If a tool returns PENDING_EXTERNAL_EXECUTION, stop immediately without claiming completion. Think silently. Never print chain-of-thought, planning notes, drafts, self-corrections, or a 'Thinking Process' section. Return only the final answer."
+        let system = "You are Floe, a concise on-device agent. Follow the latest user request. Tool execution and approval are enforced by the app. The user message contains an authoritative AVAILABLE TOOL NAMES directory and, when action is needed, an OFFERED TOOLS section. For capability questions, report exact names from that directory; never claim you cannot see it. Use only offered native tools, never invent tool names, and never claim an action succeeded without a tool result. Invoke at most one tool per turn. If native tool calling is unavailable, emit the documented single JSON tool_call object with no prose. If a tool returns PENDING_EXTERNAL_EXECUTION, stop immediately without claiming completion. Think silently. Never print chain-of-thought, planning notes, drafts, self-corrections, or a 'Thinking Process' section. Return only the final answer."
         return PromptBuild(
             systemInstructions: system,
             // MLX receives structured system/user messages and applies the
@@ -700,8 +727,10 @@ public struct LocalProviderAdapter: ProviderAdapter {
         var schemaCharacters = 0
         for (tool, _) in scored {
             let cost = tool.name.count + min(tool.description.count, 120) + tool.parametersJSON.count + 16
-            guard selected.count < 6 else { break }
-            guard schemaCharacters + cost <= 2_800 else { continue }
+            let maximumCount = inventoryRequested ? 8 : 6
+            let maximumCharacters = inventoryRequested ? 3_600 : 2_800
+            guard selected.count < maximumCount else { break }
+            guard schemaCharacters + cost <= maximumCharacters else { continue }
             selected.append(tool)
             schemaCharacters += cost
         }

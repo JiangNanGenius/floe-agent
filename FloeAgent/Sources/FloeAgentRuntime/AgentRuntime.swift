@@ -284,6 +284,11 @@ public actor FloeAgentRuntime {
     private var contextOverflowRecoveryCount = 0
     private var loopGuard = ToolLoopGuard()
     private var executionLedger = HarnessExecutionLedger()
+    /// True only after this runtime has loaded a persisted checkpoint. The
+    /// recovery ledger is intentionally used to deduplicate calls at this
+    /// boundary; a normal fresh run may legitimately observe the same path
+    /// again after a mutation.
+    private var resumedFromCheckpoint = false
     private var forcedStopReason: AgentEvent.StopReason?
     private var isFinalizingWithoutTools = false
     /// Structured logging for run diagnostics (state transitions, approval
@@ -566,6 +571,15 @@ public actor FloeAgentRuntime {
         pendingToolResults = checkpoint.pendingToolResults
         grants = checkpoint.approvals
         executedIdempotencyKeys = checkpoint.idempotencyKeys
+        executionLedger = HarnessExecutionLedger(records: checkpoint.executionLedgerEntries ?? [])
+        resumedFromCheckpoint = true
+        // A checkpoint is a committed tool-result boundary. Never carry a
+        // cancelled provider stream's partial prose into the replay turn.
+        streamText = ""
+        responseReasoning = ""
+        streamTextByteCount = 0
+        providerEventCount = 0
+        providerPayloadBytes = 0
         latestContextCompaction = checkpoint.contextCompaction
         toolStepCount = checkpoint.parentIterationCount ?? 0
         await budgetLedger.restore(
@@ -1192,7 +1206,11 @@ public actor FloeAgentRuntime {
             if requiresModelReview {
                 await sink?.agentRuntime(
                     self,
-                    didChangeApprovalReview: .init(toolName: call.toolName, isEvaluating: true)
+                    didChangeApprovalReview: .init(
+                        callID: call.id,
+                        toolName: call.toolName,
+                        isEvaluating: true
+                    )
                 )
             }
             do {
@@ -1214,6 +1232,7 @@ public actor FloeAgentRuntime {
                 await sink?.agentRuntime(
                     self,
                     didChangeApprovalReview: .init(
+                        callID: call.id,
                         toolName: call.toolName,
                         isEvaluating: false,
                         outcomeSummary: outcomeSummary
@@ -1418,6 +1437,15 @@ public actor FloeAgentRuntime {
             // Every provider tool call must be paired with one result in the
             // next request, including the run-scoped plan hand-off.
             pendingToolCalls.append(call)
+            if resumedFromCheckpoint,
+               let recovered = executionLedger.recoveredResult(for: call) {
+                // A provider can regenerate a completed call after a stream
+                // interruption. Preserve the provider pairing, but do not
+                // cross the executor/approval boundary a second time.
+                await emit(.toolResult(recovered))
+                resultsByID[call.id] = recovered
+                continue
+            }
             // plan.submit is an internal, run-scoped persistence hand-off and
             // is not part of the batch/parallel path.
             if configuration.conversationMode == .plan,
@@ -1614,6 +1642,18 @@ public actor FloeAgentRuntime {
     private func resumeStream(with result: ToolResult, after call: ToolCall) async {
         pendingToolResults.append(result)
         executionLedger.record(call: call, result: result)
+        // The result is now the durable replay boundary. Persist it before
+        // asking the provider for another turn so a suspension cannot roll
+        // back to the pre-execution checkpoint and dispatch the same tool.
+        do {
+            try await writeCheckpoint()
+        } catch {
+            await failRun(
+                message: "Unable to save the tool-result recovery checkpoint: \(error.localizedDescription)",
+                recoverable: true
+            )
+            return
+        }
         if result.status == .needsUser {
             waitingForUserAction = true
             modelTurnContinuationRequested = false
@@ -1743,13 +1783,12 @@ public actor FloeAgentRuntime {
         default:
             persistedState = state
         }
-        var checkpointMessages = messages
-        if !streamText.isEmpty {
-            checkpointMessages.append(ConversationMessage(
-                role: "assistant",
-                content: streamText
-            ))
-        }
+        // Do not persist `streamText`: it is an uncommitted fragment from a
+        // provider stream that may have been cancelled mid-token. Replaying it
+        // as an assistant message loses the real continuation point and makes
+        // the model repeat completed work. Committed assistant steps already
+        // live in `messages`.
+        let checkpointMessages = messages
         let iterationSnapshot = await budgetLedger.snapshot()
         let checkpoint = AgentCheckpoint(
             runID: runID,
@@ -1763,7 +1802,8 @@ public actor FloeAgentRuntime {
             conversationMode: configuration.conversationMode,
             contextCompaction: latestContextCompaction,
             parentIterationCount: iterationSnapshot.parent,
-            totalIterationCount: iterationSnapshot.total
+            totalIterationCount: iterationSnapshot.total,
+            executionLedgerEntries: executionLedger.checkpointRecords()
         )
         try await checkpointStore.save(checkpoint)
     }

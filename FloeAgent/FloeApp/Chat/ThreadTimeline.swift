@@ -222,7 +222,11 @@ enum ThreadTimelineBuilder {
             }
             // Group consecutive reasoning/tool events into a collapsible
             // stepGroup. userMessage/assistantText breaks the group.
-            if event.kind == .reasoning || event.kind == .toolRequest || event.kind == .toolResult {
+            if event.kind == .reasoning
+                || event.kind == .toolRequest
+                || event.kind == .toolResult
+                || event.kind == .approval
+                || event.kind == .autoApproved {
                 currentStepGroup.append(event)
                 continue
             }

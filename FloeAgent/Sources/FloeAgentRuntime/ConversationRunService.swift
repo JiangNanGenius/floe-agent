@@ -436,8 +436,21 @@ public actor ConversationRunService {
     private func handleApprovalReview(_ snapshot: ApprovalReviewSnapshot) async {
         isReviewingApproval = snapshot.isEvaluating
         eventChannel.yield(.approvalReviewChanged(snapshot))
+        if !snapshot.isEvaluating, let outcome = snapshot.outcomeSummary {
+            let payload = Self.jsonPayload([
+                "tool": snapshot.toolName,
+                "callID": snapshot.callID ?? "",
+                "outcome": outcome
+            ])
+            _ = try? await runStore.appendEvent(
+                runID: runID,
+                kind: .approval,
+                payloadJSON: payload
+            )
+        }
+        let callLabel = snapshot.callID ?? "none"
         logger.info(
-            "approvalReviewState run=\(runID.uuidString) tool=\(snapshot.toolName) evaluating=\(snapshot.isEvaluating)"
+            "approvalReviewState run=\(runID.uuidString) call=\(callLabel) tool=\(snapshot.toolName) evaluating=\(snapshot.isEvaluating)"
         )
     }
 

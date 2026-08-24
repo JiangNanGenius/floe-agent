@@ -9,6 +9,34 @@ import FloeCore
 import FloeModels
 import FloeSecurity
 
+/// Codable, provider-neutral form of the bounded execution ledger. Keeping it
+/// in the checkpoint prevents a resumed run from re-running observations that
+/// already succeeded before suspension.
+public struct AgentExecutionLedgerEntry: Sendable, Codable, Hashable {
+    public var toolName: String
+    public var callFingerprint: String
+    public var status: ToolResult.Status
+    public var resultFingerprint: String
+    public var excerpt: String
+    public var occurrenceCount: Int
+
+    public init(
+        toolName: String,
+        callFingerprint: String,
+        status: ToolResult.Status,
+        resultFingerprint: String,
+        excerpt: String,
+        occurrenceCount: Int
+    ) {
+        self.toolName = toolName
+        self.callFingerprint = callFingerprint
+        self.status = status
+        self.resultFingerprint = resultFingerprint
+        self.excerpt = excerpt
+        self.occurrenceCount = occurrenceCount
+    }
+}
+
 /// Serializable snapshot of an agent run, written on cancellation, app
 /// suspension, or explicit user pause timeout.
 public struct AgentCheckpoint: Sendable, Codable, Hashable {
@@ -42,6 +70,9 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     public var activeChildRunIDs: [UUID]?
     public var parentIterationCount: Int?
     public var totalIterationCount: Int?
+    /// Bounded evidence of tool attempts already completed in this run.
+    /// Optional so V1/V2 checkpoints written before Build 53 remain readable.
+    public var executionLedgerEntries: [AgentExecutionLedgerEntry]?
 
     /// Current checkpoint file format.
     public static let currentFormatVersion = 2
@@ -67,7 +98,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         contextCompaction: ContextCompactionRecord? = nil,
         activeChildRunIDs: [UUID]? = nil,
         parentIterationCount: Int? = nil,
-        totalIterationCount: Int? = nil
+        totalIterationCount: Int? = nil,
+        executionLedgerEntries: [AgentExecutionLedgerEntry]? = nil
     ) {
         self.formatVersion = formatVersion
         self.runID = runID
@@ -88,6 +120,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         self.activeChildRunIDs = activeChildRunIDs
         self.parentIterationCount = parentIterationCount
         self.totalIterationCount = totalIterationCount
+        self.executionLedgerEntries = executionLedgerEntries
     }
 
     public func encoded() throws -> Data {

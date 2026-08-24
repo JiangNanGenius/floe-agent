@@ -5,6 +5,10 @@ import FloeLocalModelCatalog
 
 public enum LocalInferenceError: LocalizedError {
     case modelLoadFailed
+    /// MLX can surface a provider/runtime error before a model container is
+    /// available. Keep a bounded, non-secret reason for the settings and run
+    /// error surfaces instead of reducing every failure to "cannot load".
+    case modelLoadFailedWithReason(String)
     case contextCreationFailed
     case promptTooLong
     case decodeFailed
@@ -14,6 +18,8 @@ public enum LocalInferenceError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .modelLoadFailed: "Unable to load the local model runtime."
+        case .modelLoadFailedWithReason(let reason):
+            "Unable to load the local model runtime: " + reason
         case .contextCreationFailed: "Unable to create a local inference context."
         case .promptTooLong: "The prompt exceeds the local model context window."
         case .decodeFailed: "The local model failed while decoding."

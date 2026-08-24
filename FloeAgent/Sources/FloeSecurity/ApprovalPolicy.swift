@@ -153,7 +153,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     /// create a new output instead of overwriting their source.
     private static func isDeterministicallyExempt(_ action: ProposedAction) -> Bool {
         let alwaysExempt: Set<String> = [
-            "image.inspect", "image.ocr", "image.scanBarcode",
+            "image.inspect", "image.ocr", "image.scanBarcode", "image.generate",
             "document.pdf.inspect", "document.pdf.render",
             "workspace.listDirectory", "workspace.readFile",
             "workspace.inspectMetadata", "workspace.searchFiles", "workspace.createFile",

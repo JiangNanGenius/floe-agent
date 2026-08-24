@@ -29,7 +29,10 @@ struct StepGroupView: View {
     private var summary: String {
         let count = events.count
         let lastTool = events.last(where: { $0.kind == .toolRequest || $0.kind == .toolResult })
-        let lastName = lastTool.map { decodePayload($0.payloadJSON)["name"] ?? "工具" } ?? "思考"
+        let lastName = lastTool.map {
+            let payload = decodePayload($0.payloadJSON)
+            return payload["tool"] ?? payload["name"] ?? "工具"
+        } ?? "思考"
         let status = lastTool.map { decodePayload($0.payloadJSON)["status"] ?? "" } ?? ""
         return "\(count) 个步骤 · 最后：\(lastName)\(status.isEmpty ? "" : " (\(status))")"
     }
@@ -39,12 +42,17 @@ struct StepGroupView: View {
             if isExpanded {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(events) { event in
-                        ThreadEventView(
-                            event: event,
-                            isLive: isLive,
-                            hasError: hasError,
-                            onRetry: nil
-                        )
+                        if isDetachedApproval(event) {
+                            EmptyView()
+                        } else {
+                            ThreadEventView(
+                                event: event,
+                                isLive: isLive,
+                                hasError: hasError,
+                                onRetry: nil,
+                                approvalSummary: approvalSummary(for: event)
+                            )
+                        }
                     }
                 }
                 .padding(.leading, 8)
@@ -69,6 +77,40 @@ struct StepGroupView: View {
     private func decodePayload(_ json: String) -> [String: String] {
         guard let data = json.data(using: .utf8) else { return [:] }
         return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+    }
+
+    private var approvalSummariesByCallID: [String: String] {
+        var result: [String: String] = [:]
+        for event in events where event.kind == .approval || event.kind == .autoApproved {
+            let payload = decodePayload(event.payloadJSON)
+            let callID = payload["callID"] ?? payload["id"] ?? ""
+            let summary = payload["outcome"] ?? payload["reason"]
+                ?? (event.kind == .autoApproved ? "已自动批准" : "")
+            if !callID.isEmpty, !summary.isEmpty {
+                result[callID] = summary
+            }
+        }
+        return result
+    }
+
+    private func callID(for event: RunEventRecord) -> String? {
+        let payload = decodePayload(event.payloadJSON)
+        guard event.kind == .toolRequest || event.kind == .toolResult else { return nil }
+        let callID = payload["callID"] ?? payload["id"] ?? ""
+        return callID.isEmpty ? nil : callID
+    }
+
+    private func approvalSummary(for event: RunEventRecord) -> String? {
+        guard let callID = callID(for: event) else { return nil }
+        return approvalSummariesByCallID[callID]
+    }
+
+    private func isDetachedApproval(_ event: RunEventRecord) -> Bool {
+        guard event.kind == .approval || event.kind == .autoApproved else { return false }
+        let payload = decodePayload(event.payloadJSON)
+        let approvalCallID = payload["callID"] ?? payload["id"] ?? ""
+        let hasMatchingTool = events.contains { callID(for: $0) == approvalCallID }
+        return !approvalCallID.isEmpty && hasMatchingTool && approvalSummariesByCallID[approvalCallID] != nil
     }
 }
 #endif

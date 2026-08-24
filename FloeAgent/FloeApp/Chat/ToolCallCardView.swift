@@ -25,6 +25,9 @@ struct ToolCallCardView: View {
     var inputSummary: String? = nil
     /// One-line summary of the result (output).
     var resultSummary: String? = nil
+    /// Approval decision/reason for this exact invocation, shown inside the
+    /// expanded tool details rather than as a detached timeline footer.
+    var approvalSummary: String? = nil
     /// Wall-clock duration when known.
     var duration: TimeInterval? = nil
     /// Digest-addressed files returned by the tool. Image artifacts render
@@ -109,6 +112,9 @@ struct ToolCallCardView: View {
             if let resultSummary, !resultSummary.isEmpty {
                 labeledEvidence(title: "tool.result", text: resultSummary)
             }
+            if let approvalSummary, !approvalSummary.isEmpty {
+                labeledEvidence(title: "tool.approval", text: approvalSummary)
+            }
         }
     }
 
@@ -128,7 +134,9 @@ struct ToolCallCardView: View {
     // MARK: - Status mapping
 
     private var hasDetail: Bool {
-        (inputSummary?.isEmpty == false) || (resultSummary?.isEmpty == false)
+        (inputSummary?.isEmpty == false)
+            || (resultSummary?.isEmpty == false)
+            || (approvalSummary?.isEmpty == false)
     }
 
     private var imageArtifacts: [ToolArtifactReference] {

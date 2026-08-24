@@ -19,6 +19,56 @@ struct HarnessExecutionLedger: Sendable {
     private(set) var entries: [Entry] = []
     private let maximumEntries = 12
 
+    init(records: [AgentExecutionLedgerEntry] = []) {
+        entries = records.suffix(maximumEntries).map { record in
+            Entry(
+                toolName: record.toolName,
+                callFingerprint: record.callFingerprint,
+                status: record.status,
+                resultFingerprint: record.resultFingerprint,
+                excerpt: String(record.excerpt.prefix(220)),
+                occurrenceCount: max(1, record.occurrenceCount)
+            )
+        }
+    }
+
+    func checkpointRecords() -> [AgentExecutionLedgerEntry] {
+        entries.map { entry in
+            AgentExecutionLedgerEntry(
+                toolName: entry.toolName,
+                callFingerprint: entry.callFingerprint,
+                status: entry.status,
+                resultFingerprint: entry.resultFingerprint,
+                excerpt: entry.excerpt,
+                occurrenceCount: entry.occurrenceCount
+            )
+        }
+    }
+
+    /// Returns a terminal result that is safe to feed back to the provider
+    /// when a recovered model emits the same call again. Successful calls are
+    /// never re-run after recovery; an unchanged failure is suppressed only
+    /// after it has already been observed twice, leaving one retry for a
+    /// plausibly transient failure.
+    func recoveredResult(for call: ToolCall) -> ToolResult? {
+        let callFingerprint = Self.fingerprint(call.argumentsJSON)
+        guard let entry = entries.last(where: {
+            $0.toolName == call.toolName && $0.callFingerprint == callFingerprint
+        }) else { return nil }
+        guard entry.status == .ok || (entry.status == .failed && entry.occurrenceCount >= 2) else {
+            return nil
+        }
+        let prefix = entry.status == .ok
+            ? "Skipped duplicate completed tool call after recovery."
+            : "Skipped unchanged failed tool call after recovery."
+        return ToolResult(
+            callID: call.id,
+            status: entry.status,
+            outputSummary: prefix + " Prior evidence: " + entry.excerpt,
+            outputDigest: ""
+        )
+    }
+
     mutating func record(call: ToolCall, result: ToolResult) {
         let callFingerprint = Self.fingerprint(call.argumentsJSON)
         let resultData = result.outputDigest.isEmpty

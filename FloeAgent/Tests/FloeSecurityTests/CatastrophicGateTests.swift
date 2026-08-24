@@ -280,7 +280,8 @@ struct ApprovalPolicyTests {
         let backend = Backend()
         let policy = AutomaticApprovalPolicy(backend: backend)
         for name in [
-            "image.inspect", "image.ocr", "document.pdf.inspect", "document.pdf.render",
+            "image.inspect", "image.ocr", "image.generate",
+            "document.pdf.inspect", "document.pdf.render",
             "exec.localNumerical", "presentation.create"
         ] {
             let call = try ToolCall(
