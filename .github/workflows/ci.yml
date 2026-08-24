@@ -2,8 +2,8 @@
 # Three jobs:
 #   build-test (macOS 26 arm64, Xcode 27): SPM build/test + xcodegen +
 #     xcodebuild for the iOS app, secret scan, SBOM, license inventory.
-#   appstore-sdk-compatibility (macOS 26, Xcode 26.6): compiles the exact SDK
-#     branch used by App Store Connect, including Foundation Models text.
+#   appstore-sdk-compatibility (macOS 26, Xcode 26.6): keeps the explicit
+#     unsupported-Foundation-Models fallback and non-iOS-27 code buildable.
 #   spm-linux-build (ubuntu-latest, Swift 6.3): cross-platform compile only —
 #     SSE parser, catastrophic gate, canonical JSON, audit chain, GRDB
 #     schema remain portable. Tests run on the Apple job because Debian's
@@ -128,9 +128,9 @@ jobs:
           if-no-files-found: ignore
 
   appstore-sdk-compatibility:
-    # TestFlight distribution currently uses Xcode 26.6. Keep this gate on
-    # every main/PR build so Xcode 27-only source cannot silently leave the
-    # shipped Foundation Models implementation behind a fallback branch.
+    # TestFlight distribution uses Xcode 27. Keep this independent Xcode 26.6
+    # compatibility gate so the explicit unsupported-Foundation-Models path
+    # and the rest of Floe's non-iOS-27 source cannot silently stop compiling.
     runs-on: macos-26
     defaults:
       run:

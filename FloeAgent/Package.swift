@@ -55,17 +55,15 @@ let package = Package(
         // ZIPFoundation supplies the bounded archive reader used for local,
         // value-only Office Open XML spreadsheet inspection.
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20"),
-        // Exact revision: Qwen3.5 and Gemma 4 text/VLM support while retaining
-        // compatibility with the App Store accepted Xcode 26.6 toolchain.
-        // Newer mlx-swift-lm revisions require mlx-swift 0.31.6 / Swift 6.3,
-        // which currently requires a beta Xcode that App Store Connect rejects.
+        // Exact revision: Qwen3.5 and Gemma 4 text/VLM support with a verified,
+        // deterministic model-loading surface. Advance this pin only together
+        // with iPad memory, crash, tokenizer, and tool-calling validation.
         .package(
             url: "https://github.com/ml-explore/mlx-swift-lm.git",
             revision: "bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57"
         ),
-        // Constrain the transitive MLX runtime to the last Swift 6.2-compatible
-        // release. SwiftPM intersects this exact root pin with mlx-swift-lm's
-        // 0.31.x requirement instead of drifting to the Swift 6.3-only 0.31.6.
+        // Constrain the transitive MLX runtime to the revision verified by the
+        // Xcode 27 release gate and the separate Xcode 26.6 fallback gate.
         .package(
             url: "https://github.com/ml-explore/mlx-swift.git",
             exact: "0.31.4"
