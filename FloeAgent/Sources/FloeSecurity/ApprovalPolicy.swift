@@ -157,10 +157,22 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "document.pdf.inspect", "document.pdf.render",
             "workspace.listDirectory", "workspace.readFile",
             "workspace.inspectMetadata", "workspace.searchFiles", "workspace.createFile",
+            "workspace.writeFile", "workspace.applyPatch", "workspace.createDirectory",
+            "workspace.moveItem", "document.createDocument",
             "browser.observe", "browser.events", "browser.wait", "browser.navigate",
-            "memory.recall", "exec.localNumerical", "presentation.create"
+            "network.scanLAN",
+            "memory.recall", "exec.localNumerical", "presentation.create",
+            "git.status", "git.diff", "git.log", "git.initialize", "git.stage",
+            "git.commit", "git.createBranch", "git.switchBranch", "git.fetch",
+            "git.pull", "github.repositories", "github.clone",
+            "cloudWorkspace.gitStatus", "cloudWorkspace.gitDiff", "cloudWorkspace.gitLog",
+            "cloudWorkspace.gitInitialize", "cloudWorkspace.gitStage",
+            "cloudWorkspace.gitCommit", "cloudWorkspace.gitFetch",
+            "cloudWorkspace.gitPull", "cloudWorkspace.gitBranch"
         ]
         if alwaysExempt.contains(action.toolCall.toolName) { return true }
+        if Self.isRoutineToolDiagnosticRequest(action) { return true }
+        if Self.isExplicitlyAuthorizedGitPublication(action) { return true }
         if action.toolCall.toolName == "exec.localPython", !action.isManagedPythonPackageRequest {
             return true
         }
@@ -175,6 +187,54 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
               ) as? [String: Any] else { return false }
         let overwritesSource = object["overwrite"] as? Bool ?? false
         return !overwritesSource
+    }
+
+    /// A user asking Floe to test/check its tools is authorizing ordinary
+    /// diagnostic execution even when they did not enumerate every call.
+    /// Keep the authority bounded: this never covers deletion, arbitrary
+    /// remote execution, credentials, outbound disclosure, GUI control, or
+    /// remote-system mutation, and never skips managed-package review.
+    private static func isRoutineToolDiagnosticRequest(_ action: ProposedAction) -> Bool {
+        guard !action.isManagedPythonPackageRequest else { return false }
+        let goal = action.userGoal.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let mentionsTools = ["工具", "能力", "tool", "capability"].contains(where: goal.contains)
+        let requestsDiagnostic = [
+            "测试", "测一下", "检查", "验证", "试一下", "跑一遍",
+            "test", "check", "verify", "smoke test", "try"
+        ].contains(where: goal.contains)
+        guard mentionsTools, requestsDiagnostic else { return false }
+        let excludedRisks: Set<String> = [
+            "deletesFiles",
+            "accessesCredentials",
+            "modifiesRemoteSystem",
+            "persistsPersonalData",
+            "changesAgentBehavior",
+            "controlsGUI",
+            "sendsDataToProvider",
+            "executesRemoteCommand"
+        ]
+        return action.riskLabels.isDisjoint(with: excludedRisks)
+    }
+
+    /// Safe Git plumbing is deterministic above. Publication remains tied to
+    /// the user's stated goal, but one direct request authorizes the bounded
+    /// non-force push or repository creation without repeated model reviews.
+    private static func isExplicitlyAuthorizedGitPublication(_ action: ProposedAction) -> Bool {
+        let goal = action.userGoal.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !goal.isEmpty else { return false }
+        let denials = [
+            "不要推送", "别推送", "不要发布", "不要上传", "不要创建仓库",
+            "do not push", "don't push", "do not publish", "do not create"
+        ]
+        guard !denials.contains(where: goal.contains) else { return false }
+        switch action.toolCall.toolName {
+        case "git.push", "cloudWorkspace.gitPush":
+            return ["推送", "发布", "上传", "push", "publish"].contains(where: goal.contains)
+        case "github.createRepository":
+            return ["创建仓库", "新建仓库", "create repository", "create repo"].contains(where: goal.contains)
+        default:
+            return false
+        }
     }
 
     /// SSH discovery and bootstrap planning are read-only even though the

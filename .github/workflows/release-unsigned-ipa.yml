@@ -25,9 +25,8 @@ concurrency:
 
 jobs:
   build-verify-release:
-    # Xcode 27 validates the enhanced Foundation Models vision/tool path. The
-    # base text implementation is also compiled below by the exact Xcode 26.6
-    # toolchain accepted by App Store Connect.
+    # The shipped binary is built and verified with Xcode 27 so the complete
+    # iOS 27 Foundation Models implementation is present.
     runs-on: xcode-27
     permissions:
       contents: write
@@ -111,7 +110,7 @@ jobs:
 
       - name: Package the matching Floe remote agent
         run: |
-          scripts/package_remote_agent.sh release-assets 1.2.0
+          scripts/package_remote_agent.sh release-assets 1.3.0
 
       - name: Build unsigned device application
         run: |
@@ -179,13 +178,12 @@ jobs:
   testflight:
     name: Archive and upload the same commit to TestFlight
     needs: build-verify-release
-    # App Store Connect currently rejects the public Xcode 27 runner because
-    # it resolves to a beta SDK (90534). Rebuild the exact same tag with the
-    # accepted stable SDK; this build includes the Xcode 26 Foundation Models
-    # text implementation rather than an unsupported placeholder.
-    runs-on: macos-26
+    # Sign the exact Xcode 27 application that passed the preceding gates.
+    # Never replace it with an Xcode 26 rebuild, which would silently remove
+    # the iOS 27-only Foundation Models path.
+    runs-on: xcode-27
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
     defaults:
       run:
         working-directory: FloeAgent
@@ -214,34 +212,12 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.version }}"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.build }}"
 
-      - name: Rebuild the exact tag with the accepted App Store SDK
+      - name: Prepare the exact Xcode 27 verified application for signing
         run: |
-          brew install xcodegen
-          xcodebuild -downloadComponent MetalToolchain
-          scripts/bootstrap_python_runtime.sh
-          scripts/gen_project.sh
-          scripts/pin_check.sh
-          xcodebuild \
-            -skipPackagePluginValidation \
-            -skipMacroValidation \
-            -project FloeAgent.xcodeproj \
-            -scheme FloeAgent \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath "$RUNNER_TEMP/FloeStableDeviceDerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY='' \
-            DEVELOPMENT_TEAM='' \
-            build
-          STABLE_APP_PATH="$(find "$RUNNER_TEMP/FloeStableDeviceDerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
-          test -n "$STABLE_APP_PATH"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$STABLE_APP_PATH/Info.plist")" = org.floeagent.ios
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$STABLE_APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.version }}"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$STABLE_APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.build }}"
+          VERIFIED_APP_PATH="$(find "$RUNNER_TEMP/FloeVerifiedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$VERIFIED_APP_PATH"
           mkdir -p "$RUNNER_TEMP/FloeSignedPayload/Payload"
-          ditto "$STABLE_APP_PATH" "$RUNNER_TEMP/FloeSignedPayload/Payload/$(basename "$STABLE_APP_PATH")"
+          ditto "$VERIFIED_APP_PATH" "$RUNNER_TEMP/FloeSignedPayload/Payload/$(basename "$VERIFIED_APP_PATH")"
 
       - name: Install App Store Connect API key
         env:

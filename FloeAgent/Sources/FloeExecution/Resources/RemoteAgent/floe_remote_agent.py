@@ -11,7 +11,7 @@ import subprocess, tempfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 ROOT = pathlib.Path(os.environ.get("FLOE_CLOUD_ROOT", "~/.floe/cloud-workspaces")).expanduser().resolve()
 STATE = pathlib.Path(os.environ.get("FLOE_STATE_ROOT", "~/.local/state/floe-agent")).expanduser().resolve()
 CONFIG = pathlib.Path(os.environ.get("FLOE_CONFIG_ROOT", "~/.config/floe-agent")).expanduser().resolve()
@@ -164,6 +164,66 @@ def delete_workspace(workspace_id):
     import shutil; shutil.rmtree(target)
     return {"ok":True,"workspace_id":workspace_id,"already_absent":False}
 
+def owned_workspace(workspace_id):
+    workspace_id=valid_id(workspace_id,"workspace id"); target=resolve(workspace_id)
+    marker=target/WORKSPACE_MARKER
+    if not target.is_dir() or not marker.is_file(): raise ValueError("Floe-owned cloud workspace not found")
+    try: metadata=json.loads(marker.read_text())
+    except (OSError,ValueError,TypeError): raise ValueError("workspace ownership marker is invalid")
+    if metadata.get("workspace_id")!=workspace_id: raise ValueError("workspace ownership marker mismatch")
+    return target
+
+def git_path(value):
+    if not isinstance(value,str) or not value or value.startswith(("/","~")): raise ValueError("git path must be workspace-relative")
+    normalized=pathlib.PurePosixPath(value)
+    if ".." in normalized.parts or normalized.parts[0]==".git": raise ValueError("git path escapes workspace or targets repository metadata")
+    return normalized.as_posix()
+
+def git_branch(value):
+    if not isinstance(value,str) or not re.fullmatch(r"(?![.-])(?!.*\.\.)(?!.*//)[A-Za-z0-9._/-]{1,200}",value) or value.endswith((".","/")) or "@{" in value:
+        raise ValueError("git branch name is invalid")
+    return value
+
+def run_git(workspace,args,timeout=60):
+    if not available("git"): raise ValueError("git is not installed on the cloud host")
+    environment=os.environ.copy(); environment["GIT_TERMINAL_PROMPT"]="0"; environment["GIT_OPTIONAL_LOCKS"]="0"
+    try:
+        result=subprocess.run(["git","-C",str(workspace)]+args,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=timeout,env=environment)
+    except subprocess.TimeoutExpired: raise ValueError("git operation timed out")
+    output=result.stdout[-512*1024:]
+    if result.returncode!=0: raise ValueError("git operation failed: "+output[-4096:])
+    return {"ok":True,"exit_code":result.returncode,"output":output}
+
+def git_action(body):
+    workspace=owned_workspace(body.get("workspace_id","")); action=str(body.get("action") or "")
+    repository=(workspace/".git").exists()
+    if action=="initialize":
+        if repository: return {"ok":True,"already_initialized":True}
+        result=run_git(workspace,["init","-b","main"])
+        info=workspace/".git"/"info"; info.mkdir(parents=True,exist_ok=True)
+        with (info/"exclude").open("a",encoding="utf-8") as stream: stream.write("\n"+WORKSPACE_MARKER+"\n")
+        return result
+    if not repository: raise ValueError("cloud workspace is not a Git repository")
+    if action=="status": return run_git(workspace,["status","--short","--branch","--untracked-files=all"])
+    if action=="diff":
+        args=["diff","--no-ext-diff","--"]
+        if body.get("path"): args.append(git_path(body["path"]))
+        return run_git(workspace,args)
+    if action=="log": return run_git(workspace,["log","--max-count=30","--date=iso-strict","--pretty=format:%h%x09%aI%x09%an%x09%s"])
+    if action=="stage":
+        path=body.get("path"); return run_git(workspace,["add","--",git_path(path)] if path else ["add","--all"])
+    if action=="commit":
+        message=str(body.get("message") or "").strip()
+        if not message or len(message.encode())>8192: raise ValueError("commit message must contain 1 to 8192 bytes")
+        return run_git(workspace,["commit","-m",message])
+    if action=="fetch": return run_git(workspace,["fetch","--prune"],120)
+    if action=="pull": return run_git(workspace,["pull","--ff-only"],120)
+    if action=="push": return run_git(workspace,["push"],120)
+    if action in ("switch_branch","create_branch"):
+        if run_git(workspace,["status","--porcelain"])["output"].strip(): raise ValueError("commit workspace changes before switching branches")
+        name=git_branch(body.get("name")); return run_git(workspace,["switch","-c",name] if action=="create_branch" else ["switch",name])
+    raise ValueError("unsupported safe git action")
+
 def stop_share(share_id):
     record=share_record(share_id); prefix=SHARES/share_id
     subprocess.run(["nginx","-p",str(prefix)+"/","-c","nginx.conf","-s","quit"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -302,6 +362,7 @@ class Handler(BaseHTTPRequestHandler):
                 atomic_json(task_dir(task_id)/"result.json",{"state":"cancelled","ended_at":time.time()}); return self._send(200,{"ok":True,"id":task_id})
             if self.path=="/v1/workspaces/delete":
                 return self._send(200,delete_workspace(body.get("workspace_id","")))
+            if self.path=="/v1/git": return self._send(200,git_action(body))
             target=resolve(body.get("path",""))
             if self.path=="/v1/files/mkdir": target.mkdir(parents=True,exist_ok=True); return self._send(200,{"ok":True})
             if self.path=="/v1/files/write":

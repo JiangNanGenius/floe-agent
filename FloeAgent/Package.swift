@@ -26,6 +26,7 @@ let package = Package(
         .library(name: "FloeMarkdown", targets: ["FloeMarkdown"]),
         .library(name: "FloeWorkspace", targets: ["FloeWorkspace"]),
         .library(name: "FloeExecution", targets: ["FloeExecution"]),
+        .library(name: "FloeGit", targets: ["FloeGit"]),
         .library(name: "FloeLocalModelCatalog", targets: ["FloeLocalModelCatalog"]),
         .library(name: "FloeLocalModels", targets: ["FloeLocalModels"])
     ],
@@ -75,6 +76,19 @@ let package = Package(
         .package(
             url: "https://github.com/huggingface/swift-transformers.git",
             exact: "1.3.0"
+        ),
+        // Native, App Store-compatible Git implementation for iOS. SwiftGitX
+        // wraps the bundled libgit2 source package; Floe owns authentication
+        // callbacks so GitHub credentials remain in Keychain and memory.
+        .package(
+            url: "https://github.com/ibrahimcetin/SwiftGitX.git",
+            exact: "0.4.0"
+        ),
+        // Root declaration exposes libgit2's C product to FloeGit for
+        // credential callbacks; the exact version matches SwiftGitX 0.4.0.
+        .package(
+            url: "https://github.com/ibrahimcetin/libgit2.git",
+            exact: "1.9.2"
         )
     ],
     targets: [
@@ -386,6 +400,23 @@ let package = Package(
             ]
         ),
 
+        .target(
+            name: "FloeGit",
+            dependencies: [
+                "FloeCore", "FloeModels", "FloeTools", "FloeSecurity",
+                .product(name: "SwiftGitX", package: "SwiftGitX"),
+                .product(name: "libgit2", package: "libgit2"),
+                .product(name: "Crypto", package: "swift-crypto")
+            ],
+            path: "Sources/FloeGit",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency"),
+                .enableUpcomingFeature("InferSendableFromCaptures"),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault")
+            ]
+        ),
+
         // MARK: - Test targets
 
         .target(
@@ -537,6 +568,15 @@ let package = Package(
             name: "FloeWorkspaceTests",
             dependencies: ["FloeWorkspace", "FloeTools", "FloeModels", "FloeTestSupport"],
             path: "Tests/FloeWorkspaceTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+        .testTarget(
+            name: "FloeGitTests",
+            dependencies: ["FloeGit", "FloeTools", "FloeModels"],
+            path: "Tests/FloeGitTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency")

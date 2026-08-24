@@ -85,10 +85,10 @@ final class ProviderEditorViewModel: ObservableObject {
             self.nonSecretHeadersText = Self.headersText(from: existing.nonSecretHeaders)
         } else {
             self.providerID = UUID()
-            self.selectedPreset = ProviderPreset.all[0]
-            self.selectedProtocol = ProviderPreset.all[0].defaultProtocol
-            self.displayName = ProviderPreset.all[0].displayName
-            self.baseURLString = ProviderPreset.all[0].defaultBaseURL.absoluteString
+            self.selectedPreset = ProviderPreset.chatPresets[0]
+            self.selectedProtocol = ProviderPreset.chatPresets[0].defaultProtocol
+            self.displayName = ProviderPreset.chatPresets[0].displayName
+            self.baseURLString = ProviderPreset.chatPresets[0].defaultBaseURL.absoluteString
         }
     }
 
@@ -109,6 +109,10 @@ final class ProviderEditorViewModel: ObservableObject {
     }
 
     var availableProtocols: [ModelProtocol] { selectedPreset.supportedProtocols }
+
+    var availablePresets: [ProviderPreset] {
+        existing?.kind == .googleGemini ? [.googleGemini] : ProviderPreset.chatPresets
+    }
 
     var supportsDiscovery: Bool {
         selectedPreset.supportsModelDiscovery

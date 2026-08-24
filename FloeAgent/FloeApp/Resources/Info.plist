@@ -26,12 +26,23 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_home-assistant._tcp</string>
+		<string>_http._tcp</string>
+		<string>_printer._tcp</string>
+		<string>_ipp._tcp</string>
+		<string>_airplay._tcp</string>
+		<string>_raop._tcp</string>
+	</array>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Floe accesses calendars only when you ask the agent to read or edit events.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Floe opens the camera only when you choose to capture an image for a task.</string>
 	<key>NSHomeKitUsageDescription</key>
 	<string>Floe accesses your Home only when you enable Home tools and request an automation action.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Floe scans your local network only when you ask the agent to discover nearby services and devices.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Floe uses your location only for a map or location task you request.</string>
 	<key>NSMicrophoneUsageDescription</key>

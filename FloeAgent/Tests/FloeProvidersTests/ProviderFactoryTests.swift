@@ -56,7 +56,10 @@ struct ProviderFactoryTests {
     @Test("Remote launch presets use HTTPS and the local preset is loopback-only")
     func presetsAreCompleteAndSecure() throws {
         let kinds = Set(ProviderPreset.all.map(\.kind))
-        #expect(kinds.isSuperset(of: [.openAI, .anthropic, .volcengineArk, .alibabaStudio, .custom, .local]))
+        #expect(kinds.isSuperset(of: [
+            .openAI, .anthropic, .volcengineArk, .alibabaStudio,
+            .googleGemini, .custom, .local
+        ]))
         for preset in ProviderPreset.all {
             if preset.kind == .local {
                 #expect(preset.defaultBaseURL.host == "127.0.0.1")
@@ -76,6 +79,7 @@ struct ProviderFactoryTests {
         ])
         #expect(ProviderPreset.anthropic.supportedProtocols == [.anthropicMessages])
         #expect(Set(ProviderPreset.custom.supportedProtocols) == Set(ModelProtocol.allCases))
+        #expect(!ProviderPreset.chatPresets.contains { $0.kind == .googleGemini })
     }
 
     @Test("Factory returns a working adapter for a full provider profile")

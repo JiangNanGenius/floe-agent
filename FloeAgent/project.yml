@@ -46,6 +46,14 @@ targets:
         NSPhotoLibraryUsageDescription: Floe opens your photo library only when you choose an image for a task.
         NSPhotoLibraryAddUsageDescription: Floe saves generated or edited images only when you ask it to save them to Photos.
         NSHomeKitUsageDescription: Floe accesses your Home only when you enable Home tools and request an automation action.
+        NSLocalNetworkUsageDescription: Floe scans your local network only when you ask the agent to discover nearby services and devices.
+        NSBonjourServices:
+          - _home-assistant._tcp
+          - _http._tcp
+          - _printer._tcp
+          - _ipp._tcp
+          - _airplay._tcp
+          - _raop._tcp
         BGTaskSchedulerPermittedIdentifiers:
           - org.floeagent.ios.refresh
           - org.floeagent.ios.processing
@@ -157,6 +165,8 @@ targets:
       - package: FloeAgentPackages
         product: FloeExecution
       - package: FloeAgentPackages
+        product: FloeGit
+      - package: FloeAgentPackages
         product: FloeLocalModels
       - target: FloeScreenShare
         embed: true
@@ -170,8 +180,8 @@ targets:
         SWIFT_VERSION: "6.0"
         SWIFT_OBJC_BRIDGING_HEADER: FloeApp/Execution/FloeApp-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.4.23"
-        CURRENT_PROJECT_VERSION: "54"
+        MARKETING_VERSION: "1.4.24"
+        CURRENT_PROJECT_VERSION: "55"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
         ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -217,8 +227,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.23"
-        CURRENT_PROJECT_VERSION: "54"
+        MARKETING_VERSION: "1.4.24"
+        CURRENT_PROJECT_VERSION: "55"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -262,8 +272,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.23"
-        CURRENT_PROJECT_VERSION: "54"
+        MARKETING_VERSION: "1.4.24"
+        CURRENT_PROJECT_VERSION: "55"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -302,8 +312,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.23"
-        CURRENT_PROJECT_VERSION: "54"
+        MARKETING_VERSION: "1.4.24"
+        CURRENT_PROJECT_VERSION: "55"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:

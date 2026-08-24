@@ -138,7 +138,11 @@ private final class SafeImageRedirectDelegate: NSObject, URLSessionTaskDelegate,
 /// OpenAI Images API (`/v1/images/...`). Supports generation and edit;
 /// variations and inpainting via the edit endpoint. No upscale.
 public struct OpenAIImageAdapter: ImageProviderAdapter {
-    public init() {}
+    private let session: URLSession
+
+    public init() { session = .shared }
+
+    init(session: URLSession) { self.session = session }
 
     public func supportedOperations(for provider: ProviderProfile) -> Set<RemoteImageOperation> {
         [.generate, .edit, .variation, .inpaint]
@@ -180,7 +184,7 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
     ) async throws -> RemoteImageResult {
         let url = provider.baseURL.appendingPathComponent("images/generations")
         let body = GenerationBody(
-            model: request.modelRemoteID ?? "gpt-image-1",
+            model: request.modelRemoteID ?? "gpt-image-2",
             prompt: request.prompt,
             n: max(1, min(request.count, 4)),
             size: request.sizeHint ?? "1024x1024"
@@ -191,6 +195,7 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
         )
         let (data, response) = try await BoundedHTTP.data(
             for: urlRequest,
+            session: session,
             maxBytes: 32 * 1_024 * 1_024
         )
         try RemoteImageHTTP.validate(
@@ -221,7 +226,7 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
             body.append(data)
             body.append(Data("\r\n".utf8))
         }
-        field("model", request.modelRemoteID ?? "gpt-image-1")
+        field("model", request.modelRemoteID ?? "gpt-image-2")
         field("prompt", request.prompt)
         field("n", String(max(1, min(request.count, 4))))
         field("size", request.sizeHint ?? "1024x1024")
@@ -240,12 +245,194 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
         urlRequest.httpBody = body
         let (data, response) = try await BoundedHTTP.data(
             for: urlRequest,
+            session: session,
             maxBytes: 32 * 1_024 * 1_024
         )
         try RemoteImageHTTP.validate(response, data: data, provider: "OpenAI", apiKey: credentials.apiKey)
         return RemoteImageResult(images: try await RemoteImageDecoder.images(
             from: data, b64Key: "b64_json", urlKey: "url"
         ))
+    }
+}
+
+// MARK: - Google Gemini native image generation
+
+/// Google Gemini native image API (`models/{model}:generateContent`). Nano
+/// Banana models generate and edit through the same multimodal request. The
+/// configured base URL is preserved so regional gateways and user proxies can
+/// expose the standard path under their own prefix.
+public struct GoogleGeminiImageAdapter: ImageProviderAdapter {
+    private let session: URLSession
+    private static let maximumImageBytes = 12 * 1_024 * 1_024
+    private static let maximumRequestBytes = 48 * 1_024 * 1_024
+
+    public init() { session = .shared }
+
+    init(session: URLSession) { self.session = session }
+
+    public func supportedOperations(for provider: ProviderProfile) -> Set<RemoteImageOperation> {
+        [.generate, .edit]
+    }
+
+    public func perform(
+        _ request: RemoteImageRequest,
+        provider: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async throws -> RemoteImageResult {
+        guard supports(request.operation, for: provider) else {
+            throw RemoteImageError.unsupportedOperation(request.operation, provider: "Google Gemini Images")
+        }
+        guard let apiKey = credentials.apiKey, !apiKey.isEmpty else {
+            throw RemoteImageError.requestFailed("Google Gemini API key is required")
+        }
+        let model = request.modelRemoteID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedModel = model.flatMap { $0.isEmpty ? nil : $0 } ?? "gemini-3-pro-image"
+        guard resolvedModel.range(of: #"^[A-Za-z0-9._-]{1,128}$"#, options: .regularExpression) != nil else {
+            throw RemoteImageError.requestFailed("Google Gemini image model ID is invalid")
+        }
+        if request.operation == .edit, request.sourceImages.isEmpty {
+            throw RemoteImageError.requestFailed("Google Gemini image editing requires a source image")
+        }
+        guard request.sourceImages.count <= 14,
+              request.sourceImages.allSatisfy({ $0.count <= Self.maximumImageBytes }),
+              request.sourceImages.reduce(0, { $0 + $1.count }) <= Self.maximumRequestBytes else {
+            throw RemoteImageError.requestFailed("Google Gemini image inputs exceed the bounded request limit")
+        }
+
+        var parts = [GeminiPart(text: request.prompt, inlineData: nil)]
+        parts.append(contentsOf: request.sourceImages.map {
+            GeminiPart(
+                text: nil,
+                inlineData: GeminiInlineData(
+                    mimeType: Self.mimeType(for: $0),
+                    data: $0.base64EncodedString()
+                )
+            )
+        })
+        let format = Self.imageFormat(from: request.sizeHint, model: resolvedModel)
+        let body = GeminiGenerateBody(
+            contents: [GeminiContent(parts: parts)],
+            generationConfig: GeminiGenerationConfig(
+                responseModalities: ["IMAGE"],
+                responseFormat: format.map { GeminiResponseFormat(image: $0) }
+            )
+        )
+        let url = provider.baseURL
+            .appendingPathComponent("models", isDirectory: true)
+            .appendingPathComponent("\(resolvedModel):generateContent")
+        var urlRequest = try RemoteImageHTTP.post(
+            url: url,
+            apiKey: nil,
+            authHeader: "x-goog-api-key",
+            extraHeaders: provider.nonSecretHeaders,
+            body: body
+        )
+        urlRequest.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+        let (data, response) = try await BoundedHTTP.data(
+            for: urlRequest,
+            session: session,
+            maxBytes: 48 * 1_024 * 1_024
+        )
+        try RemoteImageHTTP.validate(
+            response,
+            data: data,
+            provider: "Google Gemini Images",
+            apiKey: apiKey
+        )
+        let decoded = try Self.decodeResponse(data)
+        guard !decoded.images.isEmpty else {
+            throw RemoteImageError.invalidResponse("Google Gemini returned no image parts")
+        }
+        return RemoteImageResult(
+            images: Array(decoded.images.prefix(max(1, min(request.count, 4)))),
+            revisedPrompt: decoded.text.isEmpty ? nil : decoded.text,
+            metadata: ["model": resolvedModel]
+        )
+    }
+
+    private struct GeminiGenerateBody: Encodable {
+        let contents: [GeminiContent]
+        let generationConfig: GeminiGenerationConfig
+    }
+
+    private struct GeminiContent: Encodable { let parts: [GeminiPart] }
+    private struct GeminiPart: Encodable {
+        let text: String?
+        let inlineData: GeminiInlineData?
+    }
+    private struct GeminiInlineData: Encodable {
+        let mimeType: String
+        let data: String
+    }
+    private struct GeminiGenerationConfig: Encodable {
+        let responseModalities: [String]
+        let responseFormat: GeminiResponseFormat?
+    }
+    private struct GeminiResponseFormat: Encodable { let image: GeminiImageFormat }
+    private struct GeminiImageFormat: Encodable {
+        let aspectRatio: String?
+        let imageSize: String?
+    }
+
+    private static func decodeResponse(_ data: Data) throws -> (images: [Data], text: String) {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw RemoteImageError.invalidResponse("Google Gemini returned invalid JSON")
+        }
+        let candidates = root["candidates"] as? [[String: Any]] ?? []
+        var images: [Data] = []
+        var text: [String] = []
+        for candidate in candidates {
+            let content = candidate["content"] as? [String: Any]
+            let parts = content?["parts"] as? [[String: Any]] ?? []
+            for part in parts {
+                if let value = part["text"] as? String, !value.isEmpty { text.append(value) }
+                let inline = (part["inlineData"] as? [String: Any])
+                    ?? (part["inline_data"] as? [String: Any])
+                guard let encoded = inline?["data"] as? String,
+                      let image = Data(base64Encoded: encoded) else { continue }
+                guard image.count <= maximumImageBytes else {
+                    throw RemoteImageError.invalidResponse("Google Gemini image exceeds the 12 MiB limit")
+                }
+                images.append(image)
+                if images.count == 4 { break }
+            }
+            if images.count == 4 { break }
+        }
+        return (images, text.joined(separator: "\n"))
+    }
+
+    private static func imageFormat(from hint: String?, model: String) -> GeminiImageFormat? {
+        guard let raw = hint?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        let upper = raw.uppercased()
+        if ["512", "1K", "2K", "4K"].contains(upper) {
+            return GeminiImageFormat(aspectRatio: nil, imageSize: upper)
+        }
+        if raw.range(of: #"^\d{1,2}:\d{1,2}$"#, options: .regularExpression) != nil {
+            return GeminiImageFormat(aspectRatio: raw, imageSize: nil)
+        }
+        let dimensions = raw.lowercased().split(separator: "x").compactMap { Int($0) }
+        guard dimensions.count == 2, dimensions[0] > 0, dimensions[1] > 0 else { return nil }
+        let divisor = greatestCommonDivisor(dimensions[0], dimensions[1])
+        let aspect = "\(dimensions[0] / divisor):\(dimensions[1] / divisor)"
+        let longest = max(dimensions[0], dimensions[1])
+        let size = model == "gemini-2.5-flash-image" ? nil : (longest >= 3_072 ? "4K" : longest >= 1_536 ? "2K" : "1K")
+        return GeminiImageFormat(aspectRatio: aspect, imageSize: size)
+    }
+
+    private static func greatestCommonDivisor(_ lhs: Int, _ rhs: Int) -> Int {
+        var a = lhs
+        var b = rhs
+        while b != 0 { (a, b) = (b, a % b) }
+        return max(a, 1)
+    }
+
+    private static func mimeType(for data: Data) -> String {
+        if data.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "image/png" }
+        if data.starts(with: [0x47, 0x49, 0x46, 0x38]) { return "image/gif" }
+        if data.starts(with: [0x52, 0x49, 0x46, 0x46]) { return "image/webp" }
+        return "image/jpeg"
     }
 }
 

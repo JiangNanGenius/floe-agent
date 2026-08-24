@@ -50,20 +50,14 @@ public struct NetworkScanLANTool: AgentTool {
                 throw FloeError.validationFailed("timeoutSeconds must be between 1 and 30")
             }
         }
+        _ = try LANDiscoveryService.normalizedServiceTypes(args.serviceTypes)
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
 
         let timeout = min(max(args.timeoutSeconds ?? 5, 1), 30)
-        let types = args.serviceTypes ?? [
-            "_home-assistant._tcp.",
-            "_http._tcp.",
-            "_printer._tcp.",
-            "_ipp._tcp.",
-            "_airplay._tcp.",
-            "_raop._tcp."
-        ]
+        let types = try LANDiscoveryService.normalizedServiceTypes(args.serviceTypes)
         do {
             let devices = try await service.discover(serviceTypes: types, timeoutSeconds: timeout)
             let summary: String

@@ -328,6 +328,52 @@ struct LocalModelCatalogTests {
         #expect(build.text.count < 5_000)
     }
 
+    @Test("Local Git requests receive real local, GitHub and cloud Git tools")
+    @available(macOS 15.4, *)
+    func localPromptSelectsGitTools() {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "qwen3.5-4b-mlx4",
+            displayName: "Qwen local",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 1_024),
+            capabilities: [.text, .tools]
+        )
+        let tools = [
+            ToolSchemaDescriptor(name: "workspace.readFile", description: "Read a file"),
+            ToolSchemaDescriptor(name: "git.status", description: "Git status"),
+            ToolSchemaDescriptor(name: "git.stage", description: "Stage changes"),
+            ToolSchemaDescriptor(name: "git.commit", description: "Commit changes"),
+            ToolSchemaDescriptor(name: "git.push", description: "Push changes"),
+            ToolSchemaDescriptor(name: "github.repositories", description: "List repositories"),
+            ToolSchemaDescriptor(name: "cloudWorkspace.gitStatus", description: "Cloud Git status"),
+            ToolSchemaDescriptor(name: "cloudWorkspace.gitPush", description: "Cloud Git push"),
+            ToolSchemaDescriptor(name: "ssh.execute", description: "Run SSH")
+        ]
+
+        let local = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [("user", "查看本地仓库状态，暂存并提交代码，然后推送 GitHub")],
+            toolSchemas: tools
+        ))
+        #expect(local.selectedTools.contains { $0.name == "git.status" })
+        #expect(local.selectedTools.contains { $0.name == "git.stage" })
+        #expect(local.selectedTools.contains { $0.name == "git.commit" })
+        #expect(local.selectedTools.contains { $0.name == "git.push" })
+        #expect(local.selectedTools.contains { $0.name == "github.repositories" })
+        #expect(!local.selectedTools.contains { $0.name == "ssh.execute" })
+
+        let cloud = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [("user", "检查云工作区 Git 状态并推送")],
+            toolSchemas: tools
+        ))
+        #expect(cloud.selectedTools.contains { $0.name == "cloudWorkspace.gitStatus" })
+        #expect(cloud.selectedTools.contains { $0.name == "cloudWorkspace.gitPush" })
+    }
+
     @Test("Local reasoning tags are separated from the visible answer")
     @available(macOS 15.4, *)
     func localReasoningTagsAreSeparated() {

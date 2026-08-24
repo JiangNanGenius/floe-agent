@@ -268,6 +268,122 @@ struct ApprovalPolicyTests {
         }
     }
 
+    @Test("Bounded Git work is automatic and one publication request is not reviewed repeatedly")
+    func gitApprovalExemptions() async throws {
+        actor Backend: ModelApprovalPolicy.DecisionBackend {
+            private(set) var calls = 0
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+                calls += 1
+                return .deny(reason: "unexpected review")
+            }
+            func callCount() -> Int { calls }
+        }
+        let backend = Backend()
+        let policy = AutomaticApprovalPolicy(backend: backend)
+        for name in [
+            "git.status", "git.diff", "git.initialize", "git.stage", "git.commit",
+            "git.pull", "github.clone", "cloudWorkspace.gitCommit"
+        ] {
+            let call = try ToolCall(id: name, toolName: name, argumentsJSON: Data(#"{}"#.utf8), scope: .local)
+            let proposed = ProposedAction(
+                toolCall: call,
+                riskLabels: ["writesFiles", "executesRemoteCommand"],
+                userGoal: "维护这个项目",
+                hostAndPathScope: .local
+            )
+            #expect(try await policy.decide(proposed).permitsExecution)
+        }
+
+        let push = try ToolCall(id: "push", toolName: "git.push", argumentsJSON: Data(#"{}"#.utf8), scope: .local)
+        #expect(try await policy.decide(ProposedAction(
+            toolCall: push,
+            riskLabels: ["modifiesRemoteSystem", "accessesCredentials"],
+            userGoal: "修复后推送 main 并发布",
+            hostAndPathScope: .local
+        )).permitsExecution)
+        #expect(await backend.callCount() == 0)
+
+        #expect(!(try await policy.decide(ProposedAction(
+            toolCall: push,
+            riskLabels: ["modifiesRemoteSystem"],
+            userGoal: "不要推送，只检查",
+            hostAndPathScope: .local
+        )).permitsExecution))
+        #expect(await backend.callCount() == 1)
+    }
+
+    @Test("LAN discovery never invokes the approval model")
+    func lanDiscoveryApprovalExemption() async throws {
+        struct FailingBackend: ModelApprovalPolicy.DecisionBackend {
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+                Issue.record("network.scanLAN must not reach the approval model")
+                throw FloeError.syncUnavailable("unexpected review")
+            }
+        }
+        let call = try ToolCall(
+            id: "lan-scan",
+            toolName: "network.scanLAN",
+            argumentsJSON: Data(#"{"timeoutSeconds":5}"#.utf8),
+            scope: .local
+        )
+        let action = ProposedAction(
+            toolCall: call,
+            riskLabels: ["networkAccess"],
+            userGoal: "扫描局域网设备",
+            hostAndPathScope: .local
+        )
+        let policy = AutomaticApprovalPolicy(backend: FailingBackend())
+        #expect(!policy.requiresModelReview(action))
+        #expect(try await policy.decide(action).permitsExecution)
+    }
+
+    @Test("Broad tool-test goals authorize routine diagnostics but not sensitive actions")
+    func broadToolTestAuthorization() async throws {
+        struct FailingBackend: ModelApprovalPolicy.DecisionBackend {
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+                throw FloeError.syncUnavailable("approval backend should be bypassed")
+            }
+        }
+        func proposed(tool: String, risks: Set<String>) throws -> ProposedAction {
+            let call = try ToolCall(
+                id: tool,
+                toolName: tool,
+                argumentsJSON: Data("{}".utf8),
+                scope: .local
+            )
+            return ProposedAction(
+                toolCall: call,
+                riskLabels: risks,
+                userGoal: "帮我测试一下所有的工具",
+                hostAndPathScope: .local
+            )
+        }
+        let policy = AutomaticApprovalPolicy(backend: FailingBackend())
+        for (tool, risks) in [
+            ("diagnostic.networkProbe", Set(["networkAccess"])),
+            ("diagnostic.workspaceFixture", Set(["writesFiles"])),
+            ("diagnostic.sandbox", Set(["executesLocalCode"]))
+        ] {
+            let action = try proposed(tool: tool, risks: risks)
+            #expect(!policy.requiresModelReview(action))
+            #expect(try await policy.decide(action).permitsExecution)
+        }
+
+        for risks in [
+            Set(["deletesFiles"]),
+            Set(["executesRemoteCommand"]),
+            Set(["accessesCredentials"]),
+            Set(["modifiesRemoteSystem"])
+        ] {
+            let action = try proposed(tool: "diagnostic.sensitive", risks: risks)
+            #expect(policy.requiresModelReview(action))
+            guard case .escalateToHuman = try await policy.decide(action) else {
+                Issue.record("Sensitive diagnostic actions must remain reviewable")
+                continue
+            }
+        }
+    }
+
     @Test("SSH inspection and bootstrap planning bypass redundant review")
     func sshReadOnlyBootstrapExemptions() async throws {
         actor Backend: ModelApprovalPolicy.DecisionBackend {

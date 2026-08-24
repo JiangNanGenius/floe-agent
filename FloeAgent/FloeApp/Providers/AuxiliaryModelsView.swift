@@ -499,7 +499,7 @@ private struct AuxiliaryModelEditorView: View {
     }
 
     private static let imageProviderKinds: [ProviderKind] = [
-        .openAI, .volcengineArk, .alibabaStudio
+        .openAI, .googleGemini, .volcengineArk, .alibabaStudio
     ]
 
     private static func imageProviderName(_ kind: ProviderKind) -> String {
@@ -507,6 +507,7 @@ private struct AuxiliaryModelEditorView: View {
         case .openAI: "OpenAI"
         case .volcengineArk: "火山方舟"
         case .alibabaStudio: "DashScope"
+        case .googleGemini: "Google Gemini"
         case .anthropic, .local, .custom: ProviderPreset.preset(for: kind).displayName
         }
     }
@@ -516,6 +517,7 @@ private struct AuxiliaryModelEditorView: View {
         case .openAI: "gpt-image-2"
         case .volcengineArk: "doubao-seedream-5-0-260128"
         case .alibabaStudio: "wan2.7-image"
+        case .googleGemini: "gemini-3-pro-image"
         case .anthropic, .local, .custom: ""
         }
     }
@@ -525,6 +527,7 @@ private struct AuxiliaryModelEditorView: View {
         case .openAI: "OpenAI Images API，支持图片生成与编辑。"
         case .volcengineArk: "火山方舟 Seedream，使用 Ark API Key。"
         case .alibabaStudio: "DashScope（阿里云百炼）图像 API，API Key 与地域端点需匹配。"
+        case .googleGemini: "Google Gemini 原生图像 API；Nano Banana Pro 支持生成与编辑，Base URL 可改为兼容代理。"
         case .anthropic, .local, .custom: ""
         }
     }

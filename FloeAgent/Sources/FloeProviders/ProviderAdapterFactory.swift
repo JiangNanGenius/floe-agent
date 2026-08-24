@@ -42,6 +42,7 @@ public enum ProviderTemplateID: String, Sendable, Codable, CaseIterable, Hashabl
     case anthropic
     case volcengineArk
     case alibabaStudio
+    case googleGemini
     case local
     case custom
 }
@@ -143,6 +144,20 @@ public extension ProviderPreset {
         authStyle: .bearer
     )
 
+    /// Image-only Gemini API preset. It is intentionally excluded from the
+    /// chat-provider picker because Floe uses the native generateContent image
+    /// contract rather than pretending it is OpenAI-compatible.
+    static let googleGemini = ProviderPreset(
+        id: .googleGemini,
+        kind: .googleGemini,
+        displayName: "Google Gemini Images",
+        defaultProtocol: .openAIChatCompletions,
+        supportedProtocols: [.openAIChatCompletions],
+        defaultBaseURL: URL(string: "https://generativelanguage.googleapis.com/v1")!,
+        supportsModelDiscovery: false,
+        authStyle: .apiKeyHeader
+    )
+
     static let custom = ProviderPreset(
         id: .custom,
         kind: .custom,
@@ -173,9 +188,14 @@ public extension ProviderPreset {
         .anthropic,
         .volcengineArk,
         .alibabaStudio,
+        .googleGemini,
         .local,
         .custom
     ]
+
+    /// Providers that can be configured as conversation-model endpoints.
+    /// Google Gemini Images is configured only from Auxiliary Models.
+    static let chatPresets: [ProviderPreset] = all.filter { $0.kind != .googleGemini }
 
     /// Looks up the preset matching a provider kind, defaulting to custom.
     static func preset(for kind: ProviderKind) -> ProviderPreset {

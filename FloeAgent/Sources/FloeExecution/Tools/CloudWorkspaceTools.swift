@@ -121,3 +121,190 @@ public struct CloudWorkspaceCreateDirectoryTool: AgentTool {
         return CloudWorkspaceToolSupport.output(data)
     }
 }
+
+public struct CloudWorkspaceGitArguments: Decodable, Sendable {
+    public var hostID: String?
+    public var workspaceID: String
+    public var path: String?
+    public var message: String?
+    public var name: String?
+    public var port: Int?
+}
+
+private enum CloudWorkspaceGitSupport {
+    static let schema = #"{"type":"object","properties":{"hostID":{"type":"string","description":"Paired host UUID; omit to use the default host"},"workspaceID":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},"path":{"type":"string","description":"Optional path relative to the cloud workspace"},"message":{"type":"string","maxLength":8192},"name":{"type":"string","maxLength":200},"port":{"type":"integer","minimum":1,"maximum":65535}},"required":["workspaceID"],"additionalProperties":false}"#
+
+    static func validate(_ args: CloudWorkspaceGitArguments) throws {
+        _ = try CloudWorkspaceToolSupport.hostID(args.hostID)
+        guard args.workspaceID.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"#, options: .regularExpression) != nil else {
+            throw FloeError.validationFailed("workspaceID is invalid")
+        }
+    }
+
+    static func execute(
+        action: String,
+        args: CloudWorkspaceGitArguments,
+        service: CloudWorkspaceService
+    ) async throws -> ToolExecutionOutput {
+        var body = ["workspace_id": args.workspaceID, "action": action]
+        if let path = args.path { body["path"] = path }
+        if let message = args.message { body["message"] = message }
+        if let name = args.name { body["name"] = name }
+        let data = try await service.request(
+            hostID: try CloudWorkspaceToolSupport.hostID(args.hostID),
+            port: args.port ?? RemoteAgentPayload.defaultPort,
+            method: "POST", endpoint: "v1/git", body: body
+        )
+        return CloudWorkspaceToolSupport.output(data)
+    }
+}
+
+public struct CloudWorkspaceGitStatusTool: AgentTool {
+    public static let name = "cloudWorkspace.gitStatus"
+    public static let toolDescription = "Read Git branch and working-tree status in one Floe-owned cloud workspace. Read-only."
+    public static let parametersJSON = CloudWorkspaceGitSupport.schema
+    public static let riskLabels: Set<RiskLabel> = [.readsFiles]
+    public static let isSideEffecting = false
+    private let service: CloudWorkspaceService
+    public init(service: CloudWorkspaceService) { self.service = service }
+    public func validate(_ args: CloudWorkspaceGitArguments) throws { try CloudWorkspaceGitSupport.validate(args) }
+    public func execute(_ args: CloudWorkspaceGitArguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await CloudWorkspaceGitSupport.execute(action: "status", args: args, service: service)
+    }
+}
+
+public struct CloudWorkspaceGitDiffTool: AgentTool {
+    public static let name = "cloudWorkspace.gitDiff"
+    public static let toolDescription = "Read a bounded Git diff for an entire Floe-owned cloud workspace or one relative path."
+    public static let parametersJSON = CloudWorkspaceGitSupport.schema
+    public static let riskLabels: Set<RiskLabel> = [.readsFiles]
+    public static let isSideEffecting = false
+    private let service: CloudWorkspaceService
+    public init(service: CloudWorkspaceService) { self.service = service }
+    public func validate(_ args: CloudWorkspaceGitArguments) throws { try CloudWorkspaceGitSupport.validate(args) }
+    public func execute(_ args: CloudWorkspaceGitArguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await CloudWorkspaceGitSupport.execute(action: "diff", args: args, service: service)
+    }
+}
+
+public struct CloudWorkspaceGitLogTool: AgentTool {
+    public static let name = "cloudWorkspace.gitLog"
+    public static let toolDescription = "Read the latest 30 commits in a Floe-owned cloud workspace."
+    public static let parametersJSON = CloudWorkspaceGitSupport.schema
+    public static let riskLabels: Set<RiskLabel> = [.readsFiles]
+    public static let isSideEffecting = false
+    private let service: CloudWorkspaceService
+    public init(service: CloudWorkspaceService) { self.service = service }
+    public func validate(_ args: CloudWorkspaceGitArguments) throws { try CloudWorkspaceGitSupport.validate(args) }
+    public func execute(_ args: CloudWorkspaceGitArguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await CloudWorkspaceGitSupport.execute(action: "log", args: args, service: service)
+    }
+}
+
+public struct CloudWorkspaceGitInitializeTool: AgentTool {
+    public static let name = "cloudWorkspace.gitInitialize"
+    public static let toolDescription = "Initialize a Git repository with main as its first branch inside a Floe-owned cloud workspace."
+    public static let parametersJSON = CloudWorkspaceGitSupport.schema
+    public static let riskLabels: Set<RiskLabel> = [.writesFiles, .executesRemoteCommand]
+    public static let isSideEffecting = true
+    private let service: CloudWorkspaceService
+    public init(service: CloudWorkspaceService) { self.service = service }
+    public func validate(_ args: CloudWorkspaceGitArguments) throws { try CloudWorkspaceGitSupport.validate(args) }
+    public func execute(_ args: CloudWorkspaceGitArguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await CloudWorkspaceGitSupport.execute(action: "initialize", args: args, service: service)
+    }
+}
+
+public struct CloudWorkspaceGitStageTool: AgentTool {
+    public static let name = "cloudWorkspace.gitStage"
+    public static let toolDescription = "Stage all changes or one relative path in a Floe-owned cloud workspace. Repository metadata cannot be targeted."
+    public static let parametersJSON = CloudWorkspaceGitSupport.schema
+    public static let riskLabels: Set<RiskLabel> = [.writesFiles, .executesRemoteCommand]
+    public static let isSideEffecting = true
+    private let service: CloudWorkspaceService
+    public init(service: CloudWorkspaceService) { self.service = service }
+    public func validate(_ args: CloudWorkspaceGitArguments) throws { try CloudWorkspaceGitSupport.validate(args) }
+    public func execute(_ args: CloudWorkspaceGitArguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await CloudWorkspaceGitSupport.execute(action: "stage", args: args, service: service)
+    }
+}
+
+public struct CloudWorkspaceGitCommitTool: AgentTool {
+    public static let name = "cloudWorkspace.gitCommit"
+    public static let toolDescription = "Commit staged changes in a Floe-owned cloud workspace using the host's configured Git identity. Does not push."
+    public static let parametersJSON = CloudWorkspaceGitSupport.schema
+    public static let riskLabels: Set<RiskLabel> = [.writesFiles, .executesRemoteCommand]
+    public static let isSideEffecting = true
+    private let service: CloudWorkspaceService
+    public init(service: CloudWorkspaceService) { self.service = service }
+    public func validate(_ args: CloudWorkspaceGitArguments) throws {
+        try CloudWorkspaceGitSupport.validate(args)
+        guard args.message?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            throw FloeError.validationFailed("message is required")
+        }
+    }
+    public func execute(_ args: CloudWorkspaceGitArguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await CloudWorkspaceGitSupport.execute(action: "commit", args: args, service: service)
+    }
+}
+
+public struct CloudWorkspaceGitFetchTool: AgentTool {
+    public static let name = "cloudWorkspace.gitFetch"
+    public static let toolDescription = "Fetch remote refs in a cloud workspace using the cloud host's existing Git/SSH credential configuration; does not modify workspace files."
+    public static let parametersJSON = CloudWorkspaceGitSupport.schema
+    public static let riskLabels: Set<RiskLabel> = [.readsFiles, .networkAccess, .executesRemoteCommand]
+    public static let isSideEffecting = true
+    private let service: CloudWorkspaceService
+    public init(service: CloudWorkspaceService) { self.service = service }
+    public func validate(_ args: CloudWorkspaceGitArguments) throws { try CloudWorkspaceGitSupport.validate(args) }
+    public func execute(_ args: CloudWorkspaceGitArguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await CloudWorkspaceGitSupport.execute(action: "fetch", args: args, service: service)
+    }
+}
+
+public struct CloudWorkspaceGitPullTool: AgentTool {
+    public static let name = "cloudWorkspace.gitPull"
+    public static let toolDescription = "Perform a fast-forward-only pull in a Floe-owned cloud workspace. Never merges, rebases, resets or discards files."
+    public static let parametersJSON = CloudWorkspaceGitSupport.schema
+    public static let riskLabels: Set<RiskLabel> = [.writesFiles, .networkAccess, .executesRemoteCommand]
+    public static let isSideEffecting = true
+    private let service: CloudWorkspaceService
+    public init(service: CloudWorkspaceService) { self.service = service }
+    public func validate(_ args: CloudWorkspaceGitArguments) throws { try CloudWorkspaceGitSupport.validate(args) }
+    public func execute(_ args: CloudWorkspaceGitArguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await CloudWorkspaceGitSupport.execute(action: "pull", args: args, service: service)
+    }
+}
+
+public struct CloudWorkspaceGitPushTool: AgentTool {
+    public static let name = "cloudWorkspace.gitPush"
+    public static let toolDescription = "Push the current cloud-workspace branch without force using credentials already configured on the cloud host."
+    public static let parametersJSON = CloudWorkspaceGitSupport.schema
+    public static let riskLabels: Set<RiskLabel> = [.networkAccess, .executesRemoteCommand, .modifiesRemoteSystem]
+    public static let isSideEffecting = true
+    private let service: CloudWorkspaceService
+    public init(service: CloudWorkspaceService) { self.service = service }
+    public func validate(_ args: CloudWorkspaceGitArguments) throws { try CloudWorkspaceGitSupport.validate(args) }
+    public func execute(_ args: CloudWorkspaceGitArguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await CloudWorkspaceGitSupport.execute(action: "push", args: args, service: service)
+    }
+}
+
+public struct CloudWorkspaceGitBranchTool: AgentTool {
+    public static let name = "cloudWorkspace.gitBranch"
+    public static let toolDescription = "Create or switch a cloud-workspace branch only while its working tree is clean. Set name and create=true to create."
+    public struct Arguments: Decodable, Sendable {
+        public var hostID: String?; public var workspaceID: String; public var name: String; public var create: Bool?; public var port: Int?
+    }
+    public static let parametersJSON = #"{"type":"object","properties":{"hostID":{"type":"string"},"workspaceID":{"type":"string"},"name":{"type":"string","maxLength":200},"create":{"type":"boolean","default":false},"port":{"type":"integer","minimum":1,"maximum":65535}},"required":["workspaceID","name"],"additionalProperties":false}"#
+    public static let riskLabels: Set<RiskLabel> = [.writesFiles, .executesRemoteCommand]
+    public static let isSideEffecting = true
+    private let service: CloudWorkspaceService
+    public init(service: CloudWorkspaceService) { self.service = service }
+    public func validate(_ args: Arguments) throws { guard !args.name.isEmpty else { throw FloeError.validationFailed("name is required") } }
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        let generic = CloudWorkspaceGitArguments(hostID: args.hostID, workspaceID: args.workspaceID, path: nil, message: nil, name: args.name, port: args.port)
+        try CloudWorkspaceGitSupport.validate(generic)
+        return try await CloudWorkspaceGitSupport.execute(action: args.create == true ? "create_branch" : "switch_branch", args: generic, service: service)
+    }
+}

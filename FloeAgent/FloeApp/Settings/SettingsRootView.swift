@@ -13,7 +13,7 @@ import FloeCore
 
 /// One settings category in the settings center.
 enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case general, personalization, providers, auxiliary, localModels, webSearch, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sync, remote, usage, dataManagement, diagnostics
+    case general, personalization, providers, auxiliary, localModels, webSearch, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sourceControl, sync, remote, usage, dataManagement, diagnostics
 
     var id: String { rawValue }
 
@@ -31,6 +31,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .execution: "settings.section.execution"
         case .backgroundExecution: "settings.section.background_execution"
         case .files: "settings.section.files"
+        case .sourceControl: "GitHub 与源码管理"
         case .sync: "settings.section.sync"
         case .remote: "settings.section.remote"
         case .usage: "settings.section.usage"
@@ -53,6 +54,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .execution: "terminal"
         case .backgroundExecution: "pip"
         case .files: "folder"
+        case .sourceControl: "arrow.triangle.branch"
         case .sync: "icloud"
         case .remote: "server.rack"
         case .usage: "chart.bar"
@@ -145,6 +147,8 @@ struct SettingsRootView: View {
             )
         case .files:
             FilesSettingsView(center: environment.settingsCenter)
+        case .sourceControl:
+            GitHubSettingsView(center: environment.sourceControlCenter)
         case .sync:
             SyncSettingsView(center: environment.settingsCenter)
         case .remote:

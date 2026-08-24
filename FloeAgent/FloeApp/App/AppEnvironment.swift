@@ -23,6 +23,7 @@ import FloeImages
 import FloeProviders
 import FloeAgentRuntime
 import FloeLocalModels
+import FloeGit
 import CloudKit
 
 /// Owns the app's long-lived services and stores. Created once at launch and
@@ -93,6 +94,7 @@ final class AppEnvironment: ObservableObject {
     private lazy var _remoteSessionCenter = RemoteSessionCenter(environment: self)
     private lazy var _filesCenter = FilesCenter(environment: self)
     private lazy var _workspaceCenter = WorkspaceCenter(environment: self)
+    private lazy var _sourceControlCenter = SourceControlCenter(environment: self)
     private lazy var _settingsCenter = SettingsCenter(environment: self)
     private lazy var _skillsCenter = SkillsCenter(environment: self)
     private lazy var _memoryCenter = MemoryCenter(environment: self)
@@ -108,6 +110,7 @@ final class AppEnvironment: ObservableObject {
     var remoteSessionCenter: RemoteSessionCenter { _remoteSessionCenter }
     var filesCenter: FilesCenter { _filesCenter }
     var workspaceCenter: WorkspaceCenter { _workspaceCenter }
+    var sourceControlCenter: SourceControlCenter { _sourceControlCenter }
     /// Lazily created on first access; ConversationCenter reads
     /// `defaultAgentMode` through it without a construction cycle.
     var settingsCenter: SettingsCenter { _settingsCenter }
@@ -255,6 +258,9 @@ final class AppEnvironment: ObservableObject {
     ) {
         // Workspace file tools (T04/T05).
         registerWorkspaceTools(rootProvider: WorkspaceCenter.toolRootProvider)
+        // Native local Git and GitHub repository tools. Credentials are read
+        // from the dedicated device-local Keychain store at execution time.
+        registerGitTools(rootProvider: WorkspaceCenter.toolRootProvider)
         // Document tools (OOXML spreadsheet reading).
         registerDocumentTools(rootProvider: WorkspaceCenter.toolRootProvider)
         // Image tools (Core Image processing).

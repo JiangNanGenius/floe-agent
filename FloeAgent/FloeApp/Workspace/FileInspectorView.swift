@@ -28,6 +28,7 @@ struct FileInspectorView: View {
     @State private var showImportPicker = false
     @State private var showCloudWorkspaceLink = false
     @State private var exportURL: URL?
+    @State private var inspectorMode: InspectorMode = .files
     /// Prevents the tree's restoration task from reopening the file during
     /// the short async window in which the cleared selection is persisted.
     @State private var isClosingPreview = false
@@ -35,6 +36,13 @@ struct FileInspectorView: View {
     init(center: WorkspaceCenter) {
         self.center = center
         _treeModel = StateObject(wrappedValue: FileTreeViewModel(center: center))
+    }
+
+    private enum InspectorMode: String, CaseIterable, Identifiable {
+        case files, sourceControl
+        var id: String { rawValue }
+        var title: String { self == .files ? "文件" : "源码管理" }
+        var icon: String { self == .files ? "folder" : "arrow.triangle.branch" }
     }
 
     var body: some View {
@@ -107,10 +115,22 @@ struct FileInspectorView: View {
             VStack(spacing: 0) {
                 workspaceHeader(workspace)
                 Divider()
-                FileTreeView(viewModel: treeModel) { path in
-                    isClosingPreview = false
-                    self.previewPath = path
-                    Task { await persistSelection(path) }
+                Picker("工作区面板", selection: $inspectorMode) {
+                    ForEach(InspectorMode.allCases) { mode in
+                        Label(mode.title, systemImage: mode.icon).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                if inspectorMode == .files {
+                    FileTreeView(viewModel: treeModel) { path in
+                        isClosingPreview = false
+                        self.previewPath = path
+                        Task { await persistSelection(path) }
+                    }
+                } else {
+                    SourceControlView(center: center.environment.sourceControlCenter)
                 }
             }
             .navigationTitle("inspector.files")

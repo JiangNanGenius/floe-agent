@@ -86,6 +86,7 @@ struct ImageAdapterTests {
         #expect(factory.adapter(for: provider(kind: .openAI)) is OpenAIImageAdapter)
         #expect(factory.adapter(for: provider(kind: .volcengineArk)) is VolcengineImageAdapter)
         #expect(factory.adapter(for: provider(kind: .alibabaStudio)) is AlibabaImageAdapter)
+        #expect(factory.adapter(for: provider(kind: .googleGemini)) is GoogleGeminiImageAdapter)
         // Anthropic and custom endpoints expose no remote image adapter.
         #expect(factory.adapter(for: provider(kind: .anthropic)) == nil)
         #expect(factory.adapter(for: provider(kind: .custom)) == nil)
@@ -105,6 +106,9 @@ struct ImageAdapterTests {
         let alibaba = AlibabaImageAdapter()
         #expect(alibaba.supportedOperations(for: provider(kind: .alibabaStudio)).contains(.generate))
         #expect(alibaba.supportedOperations(for: provider(kind: .alibabaStudio)).contains(.edit))
+
+        let google = GoogleGeminiImageAdapter()
+        #expect(google.supportedOperations(for: provider(kind: .googleGemini)) == [.generate, .edit])
     }
 
     @Test("Unsupported operations throw unsupportedOperation, never fabricate")
@@ -124,6 +128,88 @@ struct ImageAdapterTests {
         #expect(adapter.supports(.generate, for: alibabaProvider))
         #expect(adapter.supports(.edit, for: alibabaProvider))
         #expect(!adapter.supports(.removeBackground, for: alibabaProvider))
+    }
+
+    @Test("OpenAI GPT Image 2 preserves a configurable proxy base URL")
+    func openAIProxyWireContract() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ImageAdapterURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let image = Data([0x89, 0x50, 0x4E, 0x47, 0x01])
+        ImageAdapterURLProtocol.prepare([
+            .init(statusCode: 200, body: try JSONSerialization.data(withJSONObject: [
+                "data": [["b64_json": image.base64EncodedString()]]
+            ]))
+        ])
+        let adapter = OpenAIImageAdapter(session: session)
+        let profile = ProviderProfile(
+            kind: .openAI,
+            wireProtocol: .openAIResponses,
+            baseURL: URL(string: "https://proxy.example/openai/v1")!
+        )
+        let result = try await adapter.perform(
+            RemoteImageRequest(operation: .generate, prompt: "draw a lake"),
+            provider: profile,
+            credentials: ProviderCredentials(apiKey: "test-key")
+        )
+        #expect(result.images == [image])
+        let request = try #require(ImageAdapterURLProtocol.snapshotRequests().first)
+        #expect(request.url?.path == "/openai/v1/images/generations")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+        let body = try #require(request.httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["model"] as? String == "gpt-image-2")
+    }
+
+    @Test("Nano Banana Pro uses native Gemini JSON through a configurable proxy")
+    func googleGeminiProxyWireContract() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ImageAdapterURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let image = Data([0x89, 0x50, 0x4E, 0x47, 0x02])
+        ImageAdapterURLProtocol.prepare([
+            .init(statusCode: 200, body: try JSONSerialization.data(withJSONObject: [
+                "candidates": [["content": ["parts": [
+                    ["text": "completed"],
+                    ["inlineData": ["mimeType": "image/png", "data": image.base64EncodedString()]]
+                ]]]]
+            ]))
+        ])
+        let adapter = GoogleGeminiImageAdapter(session: session)
+        let profile = ProviderProfile(
+            kind: .googleGemini,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://proxy.example/google/v1")!
+        )
+        let result = try await adapter.perform(
+            RemoteImageRequest(
+                operation: .generate,
+                prompt: "draw a lake",
+                sizeHint: "2048x2048",
+                modelRemoteID: "gemini-3-pro-image"
+            ),
+            provider: profile,
+            credentials: ProviderCredentials(apiKey: "google-test-key")
+        )
+        #expect(result.images == [image])
+        #expect(result.revisedPrompt == "completed")
+        let request = try #require(ImageAdapterURLProtocol.snapshotRequests().first)
+        #expect(request.url?.path == "/google/v1/models/gemini-3-pro-image:generateContent")
+        #expect(request.value(forHTTPHeaderField: "x-goog-api-key") == "google-test-key")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+        let body = try #require(request.httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let contents = try #require(json["contents"] as? [[String: Any]])
+        let parts = try #require(contents.first?["parts"] as? [[String: Any]])
+        #expect(parts.first?["text"] as? String == "draw a lake")
+        let config = try #require(json["generationConfig"] as? [String: Any])
+        #expect(config["responseModalities"] as? [String] == ["IMAGE"])
+        let responseFormat = try #require(config["responseFormat"] as? [String: Any])
+        let format = try #require(responseFormat["image"] as? [String: Any])
+        #expect(format["aspectRatio"] as? String == "1:1")
+        #expect(format["imageSize"] as? String == "2K")
     }
 
     @Test("DashScope current image models use multimodal generation for editing")

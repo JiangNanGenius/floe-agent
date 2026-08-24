@@ -95,7 +95,7 @@ struct ProviderEditorView: View {
                 get: { viewModel.selectedPreset },
                 set: { viewModel.applyPreset($0) }
             )) {
-                ForEach(ProviderPreset.all) { preset in
+                ForEach(viewModel.availablePresets) { preset in
                     Text(preset.displayName).tag(preset)
                 }
             }

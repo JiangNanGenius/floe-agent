@@ -208,7 +208,7 @@ struct OnboardingView: View {
     private var providerStep: some View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
-                ForEach(ProviderPreset.all) { preset in
+                ForEach(ProviderPreset.chatPresets) { preset in
                     Button { editor.applyPreset(preset) } label: {
                         HStack(spacing: 14) {
                             Image(systemName: providerIcon(preset.kind))
@@ -454,6 +454,7 @@ struct OnboardingView: View {
         case .anthropic: "a.circle"
         case .volcengineArk: "flame"
         case .alibabaStudio: "cloud"
+        case .googleGemini: "photo.on.rectangle.angled"
         case .local: "iphone"
         case .custom: "slider.horizontal.3"
         }

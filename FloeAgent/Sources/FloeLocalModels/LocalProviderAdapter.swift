@@ -689,7 +689,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let text = latestUserText.lowercased()
         let actionRequested = containsAny(text, [
             "创建", "读取", "查看", "查找", "搜索", "运行", "执行", "修改", "编辑", "删除", "生成", "连接", "分析", "测试",
-            "create", "read", "inspect", "find", "search", "run", "execute", "edit", "delete", "generate", "connect", "analyze", "test"
+            "初始化", "提交", "暂存", "克隆", "拉取", "推送", "同步", "切换分支",
+            "create", "read", "inspect", "find", "search", "run", "execute", "edit", "delete", "generate", "connect", "analyze", "test",
+            "initialize", "commit", "stage", "clone", "fetch", "pull", "push", "sync", "switch branch"
         ])
         let inventoryRequested = containsAny(text, [
             "工具", "能力", "能做什么", "可以做什么", "可用", "tool", "capability", "what can you do", "available"
@@ -701,6 +703,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
             (["python", "javascript", "js", "脚本", "计算", "运行", "execute", "script", "compute"], ["exec."]),
             (["ssh", "主机", "远程", "终端", "服务器", "host", "remote", "terminal", "server"], ["ssh."]),
             (["记忆", "memory", "偏好"], ["memory."]),
+            (["git", "github", "版本控制", "源码管理", "代码仓库", "仓库", "分支", "提交", "暂存", "克隆", "拉取", "推送",
+              "source control", "repository", "repo", "branch", "commit", "stage", "clone", "fetch", "pull", "push"],
+             ["git.", "github.", "cloudworkspace.git"]),
             (["日历", "提醒", "邮件", "地图", "家庭", "快捷指令", "calendar", "reminder", "mail", "map", "home", "shortcut"], ["apple."]),
             (["表格", "图表", "网页预览", "table", "chart", "preview", "presentation"], ["presentation."]),
             (["技能", "skill"], ["skill."])
@@ -718,6 +723,17 @@ public struct LocalProviderAdapter: ProviderAdapter {
             for intent in intentPrefixes where containsAny(text, intent.needles) {
                 if intent.prefixes.contains(where: { normalizedName.hasPrefix($0) }) { score += 100 }
             }
+            let isGitIntent = containsAny(text, [
+                "git", "github", "版本控制", "源码管理", "代码仓库", "仓库", "分支", "提交", "暂存", "克隆", "拉取", "推送",
+                "source control", "repository", "repo", "branch", "commit", "stage", "clone", "fetch", "pull", "push"
+            ])
+            if isGitIntent {
+                let wantsCloud = containsAny(text, ["云端", "云工作区", "cloud", "remote workspace"])
+                let wantsGitHub = containsAny(text, ["github", "远程仓库", "repository", "repo", "克隆", "clone"])
+                if wantsCloud, normalizedName.hasPrefix("cloudworkspace.git") { score += 220 }
+                if !wantsCloud, normalizedName.hasPrefix("git.") { score += 180 }
+                if wantsGitHub, normalizedName.hasPrefix("github.") { score += 200 }
+            }
             if inventoryRequested { score += 20 }
             if actionRequested && fallbackNames.contains(tool.name) { score += 10 }
             return score > 0 ? (tool, score) : nil
@@ -730,8 +746,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
         var schemaCharacters = 0
         for (tool, _) in scored {
             let cost = tool.name.count + min(tool.description.count, 120) + tool.parametersJSON.count + 16
-            let maximumCount = inventoryRequested ? 8 : 6
-            let maximumCharacters = inventoryRequested ? 3_600 : 2_800
+            let maximumCount = inventoryRequested ? 10 : 8
+            let maximumCharacters = inventoryRequested ? 4_800 : 3_600
             guard selected.count < maximumCount else { break }
             guard schemaCharacters + cost <= maximumCharacters else { continue }
             selected.append(tool)
