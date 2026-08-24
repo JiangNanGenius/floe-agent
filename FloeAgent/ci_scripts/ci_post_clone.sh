@@ -19,7 +19,12 @@ echo "Pinned Swift macro fingerprint prompt disabled for this CI worker"
 # These reproducible build inputs are intentionally not committed because the
 # expanded frameworks are large. Bootstrap verifies the pinned CPython archive
 # digest before populating Vendor/ and the bundled standard library.
-xcodebuild -downloadComponent MetalToolchain
+if xcodebuild -showComponent MetalToolchain -json 2>/dev/null \
+  | grep -q '"status" : "installed"'; then
+  echo "Pinned Metal Toolchain is already installed"
+else
+  xcodebuild -downloadComponent MetalToolchain
+fi
 "$app_root/scripts/bootstrap_python_runtime.sh"
 echo "Pinned Metal and CPython build inputs installed"
 echo "Logical CPUs: $(sysctl -n hw.logicalcpu 2>/dev/null || echo unknown)"
