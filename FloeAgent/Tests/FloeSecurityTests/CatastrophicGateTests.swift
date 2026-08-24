@@ -500,7 +500,7 @@ struct ApprovalPolicyTests {
         #expect(await backend.calls == 0)
     }
 
-    @Test("Bounded font install and resolution bypass review, removal does not")
+    @Test("Bounded font inspection and install bypass review, removal does not")
     func fontApprovalBoundary() async throws {
         actor Backend: ModelApprovalPolicy.DecisionBackend {
             private(set) var calls = 0
@@ -512,7 +512,7 @@ struct ApprovalPolicyTests {
         }
         let backend = Backend()
         let policy = AutomaticApprovalPolicy(backend: backend)
-        for name in ["font.list", "font.install", "font.resolve"] {
+        for name in ["font.list", "font.install"] {
             let call = try ToolCall(
                 id: name,
                 toolName: name,

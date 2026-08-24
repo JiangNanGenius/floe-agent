@@ -161,7 +161,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "workspace.moveItem", "document.createDocument",
             "browser.observe", "browser.events", "browser.wait", "browser.navigate",
             "network.scanLAN",
-            "font.list", "font.install", "font.resolve",
+            "font.list", "font.install",
             "memory.recall", "exec.localNumerical", "presentation.create",
             "git.status", "git.diff", "git.log", "git.initialize", "git.stage",
             "git.commit", "git.createBranch", "git.switchBranch", "git.fetch",

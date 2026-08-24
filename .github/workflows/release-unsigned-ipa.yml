@@ -275,7 +275,6 @@ jobs:
             SOURCE_ENTITLEMENTS_PATH="$3"
             ENTITLEMENTS_PATH="$4"
             EXPECTED_HOMEKIT="${5:-false}"
-            EXPECTED_FONT_USAGE="${6:-false}"
             PROFILE_PLIST="$RUNNER_TEMP/$(basename "$PROFILE_PATH").plist"
             security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
             test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST")" = "$EXPECTED_APP_ID"
@@ -284,9 +283,6 @@ jobs:
             test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups:0' "$PROFILE_PLIST")" = group.org.floeagent.ios
             if test "$EXPECTED_HOMEKIT" = true; then
               test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.homekit' "$PROFILE_PLIST")" = true
-            fi
-            if test "$EXPECTED_FONT_USAGE" = true; then
-              test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.user-fonts:0' "$PROFILE_PLIST")" = app-usage
             fi
             # Sign with the app's declared capabilities, not the profile's raw
             # wildcard/development values. Xcode normally performs these exact
@@ -307,7 +303,6 @@ jobs:
             QYL72C43K6.org.floeagent.ios \
             FloeApp/Entitlements/Floe.entitlements \
             "$RUNNER_TEMP/Floe.entitlements" \
-            true \
             true
           /usr/libexec/PlistBuddy \
             -c 'Add :com.apple.developer.icloud-container-environment string Production' \

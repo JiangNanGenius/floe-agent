@@ -25,7 +25,6 @@ enum DeviceFontError: LocalizedError {
     case tooLarge
     case badResponse(Int)
     case notFound
-    case unresolvedSystemFonts([String])
 
     var errorDescription: String? {
         switch self {
@@ -34,7 +33,6 @@ enum DeviceFontError: LocalizedError {
         case .tooLarge: "字体文件超过 32 MB 限制。"
         case .badResponse(let code): "字体下载失败（HTTP \(code)）。"
         case .notFound: "找不到这个 Floe 全局字体。"
-        case .unresolvedSystemFonts(let names): "iOS 无法提供这些系统字体：\(names.joined(separator: "、"))"
         }
     }
 }
@@ -113,28 +111,6 @@ actor DeviceFontStore {
         var error: Unmanaged<CFError>?
         _ = CTFontManagerUnregisterFontsForURL(url as CFURL, .process, &error)
         try FileManager.default.removeItem(at: url)
-    }
-
-    func requestSystemFonts(named names: [String]) async throws {
-        let cleaned = Array(Set(names.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty })).sorted()
-        guard !cleaned.isEmpty else {
-            throw FloeError.validationFailed("At least one font family or PostScript name is required")
-        }
-        let descriptors = cleaned.map {
-            CTFontDescriptorCreateWithAttributes([
-                kCTFontNameAttribute: $0 as CFString
-            ] as CFDictionary)
-        }
-        let unresolved: [String] = await withCheckedContinuation { continuation in
-            CTFontManagerRequestFonts(descriptors as CFArray) { unresolvedDescriptors in
-                let unresolvedNames = (unresolvedDescriptors as? [CTFontDescriptor] ?? []).compactMap {
-                    CTFontDescriptorCopyAttribute($0, kCTFontNameAttribute) as? String
-                }
-                continuation.resume(returning: unresolvedNames)
-            }
-        }
-        if !unresolved.isEmpty { throw DeviceFontError.unresolvedSystemFonts(unresolved) }
     }
 
     private func persist(data: Data, extension ext: String) throws -> ManagedFontRecord {
@@ -311,26 +287,6 @@ struct FontInstallTool: AgentTool {
     }
 }
 
-struct FontResolveTool: AgentTool {
-    struct Arguments: Decodable, Sendable { let names: [String] }
-    static let name = "font.resolve"
-    static let toolDescription = "Ask iOS to resolve font family or PostScript names already supplied system-wide by Apple or an installed font provider. Use this separately from font.install, which manages Floe-global downloaded fonts."
-    static let parametersJSON = #"{"type":"object","properties":{"names":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":16}},"required":["names"],"additionalProperties":false}"#
-    static let riskLabels: Set<RiskLabel> = [.networkAccess]
-    static let isSideEffecting = true
-    let store: DeviceFontStore
-    func validate(_ args: Arguments) throws {
-        guard (1...16).contains(args.names.count), args.names.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.utf8.count <= 128 }) else {
-            throw FloeError.validationFailed("names must contain 1-16 bounded font names")
-        }
-    }
-    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try context.cancellation.throwIfCancelled()
-        try await store.requestSystemFonts(named: args.names)
-        return FontToolOutput.make("iOS resolved the requested system fonts: \(args.names.joined(separator: ", ")).")
-    }
-}
-
 struct FontRemoveTool: AgentTool {
     struct Arguments: Decodable, Sendable { let id: String }
     static let name = "font.remove"
@@ -356,8 +312,6 @@ func registerFontTools(store: DeviceFontStore, registry: ToolRunnerRegistry = .s
     registry.register(FontListTool(store: store))
     ToolCatalog.register(FontInstallTool.self)
     registry.register(FontInstallTool(store: store))
-    ToolCatalog.register(FontResolveTool.self)
-    registry.register(FontResolveTool(store: store))
     ToolCatalog.register(FontRemoveTool.self)
     registry.register(FontRemoveTool(store: store))
 }

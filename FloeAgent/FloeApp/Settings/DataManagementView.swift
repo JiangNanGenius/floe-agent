@@ -215,8 +215,8 @@ struct FontManagementView: View {
                 Text("仅接受公开 HTTPS 地址和真实的 TTF、OTF、TTC、OTC 字体，单文件上限 32 MB；私网地址、凭据 URL 和伪装文件会被拒绝。字体按内容去重，不会因不同工作区重复下载。")
             }
 
-            Section("系统字体") {
-                Text("Floe 也可使用 iOS 或其他字体提供 App 已安装的系统字体。由于 Apple 平台限制，网络下载字体会全局提供给 Floe，而不会静默安装给其他 App。")
+            Section("作用范围") {
+                Text("这里安装的字体会全局提供给 Floe 的所有工作区和文档流程。由于 Apple 平台限制，它们不会被静默安装给 Floe 以外的其他 App。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
 
