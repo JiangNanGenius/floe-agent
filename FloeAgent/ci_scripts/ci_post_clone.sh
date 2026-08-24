@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+app_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+
 echo "Floe Agent Xcode Cloud environment probe"
 echo "CI build: ${CI_BUILD_ID:-local}"
 echo "Xcode: ${CI_XCODE_VERSION:-unknown}"
@@ -12,6 +15,13 @@ echo "Architecture: $(uname -m)"
 # still fixed by Package.resolved and validated by the normal CI/release gates.
 defaults write com.apple.dt.Xcode IDESkipMacroFingerprintValidation -bool YES
 echo "Pinned Swift macro fingerprint prompt disabled for this CI worker"
+
+# These reproducible build inputs are intentionally not committed because the
+# expanded frameworks are large. Bootstrap verifies the pinned CPython archive
+# digest before populating Vendor/ and the bundled standard library.
+xcodebuild -downloadComponent MetalToolchain
+"$app_root/scripts/bootstrap_python_runtime.sh"
+echo "Pinned Metal and CPython build inputs installed"
 echo "Logical CPUs: $(sysctl -n hw.logicalcpu 2>/dev/null || echo unknown)"
 
 memory_bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
