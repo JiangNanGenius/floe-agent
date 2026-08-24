@@ -34,6 +34,7 @@ jobs:
       attestations: write
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      REQUIRED_XCODE_BUILD: 27A5237l
       GH_TOKEN: ${{ github.token }}
     defaults:
       run:
@@ -49,6 +50,12 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Require Apple-accepted Xcode 27 beta 5
+        run: |
+          XCODE_VERSION="$(xcodebuild -version)"
+          printf '%s\n' "$XCODE_VERSION"
+          printf '%s\n' "$XCODE_VERSION" | grep -F "Build version $REQUIRED_XCODE_BUILD"
 
       - name: Install release tooling
         run: |
@@ -184,6 +191,7 @@ jobs:
     runs-on: xcode-27
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      REQUIRED_XCODE_BUILD: 27A5237l
     defaults:
       run:
         working-directory: FloeAgent
@@ -193,6 +201,12 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ needs.build-verify-release.outputs.tag }}
+
+      - name: Require Apple-accepted Xcode 27 beta 5
+        run: |
+          XCODE_VERSION="$(xcodebuild -version)"
+          printf '%s\n' "$XCODE_VERSION"
+          printf '%s\n' "$XCODE_VERSION" | grep -F "Build version $REQUIRED_XCODE_BUILD"
 
       - name: Download the tested and attested unsigned application
         uses: actions/download-artifact@v5
