@@ -27,7 +27,7 @@ jobs:
   build-verify-release:
     # The shipped binary is built and verified with Xcode 27 so the complete
     # iOS 27 Foundation Models implementation is present.
-    runs-on: xcode-27
+    runs-on: xcode-27-xlarge
     permissions:
       contents: write
       id-token: write
@@ -188,7 +188,7 @@ jobs:
     # Sign the exact Xcode 27 application that passed the preceding gates.
     # Never replace it with an Xcode 26 rebuild, which would silently remove
     # the iOS 27-only Foundation Models path.
-    runs-on: xcode-27
+    runs-on: xcode-27-xlarge
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
       REQUIRED_XCODE_BUILD: 27A5237l
