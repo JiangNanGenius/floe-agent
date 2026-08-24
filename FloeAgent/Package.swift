@@ -227,7 +227,7 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeExecution",
-            resources: [.copy("Resources")],
+            resources: [.copy("Resources/RemoteAgent")],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency"),
