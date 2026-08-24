@@ -1,6 +1,6 @@
 # Floe Agent CI.
 # Two jobs:
-#   build-test (xcode-27 preview image): SPM build/test + xcodegen +
+#   build-test (macOS 26 arm64, Xcode 26.6): SPM build/test + xcodegen +
 #     xcodebuild for the iOS app, secret scan, SBOM, license inventory.
 #   spm-linux-build (ubuntu-latest, Swift 6.3): cross-platform compile only —
 #     SSE parser, catastrophic gate, canonical JSON, audit chain, GRDB
@@ -16,12 +16,12 @@ on:
 
 jobs:
   build-test:
-    runs-on: xcode-27
+    runs-on: macos-26
     defaults:
       run:
         working-directory: FloeAgent
     env:
-      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@v5
 
@@ -75,7 +75,7 @@ jobs:
           LLAMA_FRAMEWORK="$(find .build/artifacts -path '*/macos-arm64_x86_64/llama.framework' ! -path '*/__MACOSX/*' -print -quit)"
           test -n "$LLAMA_FRAMEWORK"
           test -x "$LLAMA_FRAMEWORK/Versions/Current/llama"
-          # Xcode 27's SwiftPM xctest helper writes test bundles under
+          # SwiftPM may write test bundles under
           # .build/out/Products/Debug while --show-bin-path still reports the
           # target-triple directory. Make the binary artifact discoverable to
           # dyld and mirror it beside every products directory SwiftPM created.

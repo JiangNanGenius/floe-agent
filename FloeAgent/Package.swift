@@ -54,14 +54,20 @@ let package = Package(
         // ZIPFoundation supplies the bounded archive reader used for local,
         // value-only Office Open XML spreadsheet inspection.
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20"),
-        // Exact revision: Qwen3.5/Gemma 4 VLM support and the shared-KV Gemma
-        // E4B loading fix. FoundationModelsIntegration is disabled because
-        // Floe separately gates Apple's system model at iOS 27 while this app
-        // continues to support iOS/iPadOS 26.
+        // Exact revision: Qwen3.5 and Gemma 4 text/VLM support while retaining
+        // compatibility with the App Store accepted Xcode 26.6 toolchain.
+        // Newer mlx-swift-lm revisions require mlx-swift 0.31.6 / Swift 6.3,
+        // which currently requires a beta Xcode that App Store Connect rejects.
         .package(
             url: "https://github.com/ml-explore/mlx-swift-lm.git",
-            revision: "14414441fa44f45eee35a61e9fa0bab577cf9734",
-            traits: []
+            revision: "bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57"
+        ),
+        // Constrain the transitive MLX runtime to the last Swift 6.2-compatible
+        // release. SwiftPM intersects this exact root pin with mlx-swift-lm's
+        // 0.31.x requirement instead of drifting to the Swift 6.3-only 0.31.6.
+        .package(
+            url: "https://github.com/ml-explore/mlx-swift.git",
+            exact: "0.31.4"
         ),
         // mlx-swift-lm deliberately keeps Hugging Face tokenizers as a
         // consumer-provided integration. Floe downloads model snapshots

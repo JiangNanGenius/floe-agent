@@ -118,15 +118,14 @@ public actor MLXTextEngine {
                     if firstTokenAt == nil { firstTokenAt = Date() }
                     text += encoded
                 }
-            case .rejectedToolCall:
-                // The harness will request a corrected call when the textual
-                // response is incomplete; do not fabricate executable JSON.
-                continue
             }
         }
         let endedAt = Date()
         let outputTokens = info?.generationTokenCount ?? Self.estimatedTokens(text)
-        let inputTokens = info?.totalPromptTokenCount ?? Self.estimatedTokens(prompt)
+        // MLX Swift 0.31.4 does not expose its prepared prompt-token count.
+        // Keep this explicitly estimated (as the rest of Floe's usage layer
+        // records) instead of depending on a newer, App-Store-ineligible API.
+        let inputTokens = Self.estimatedTokens(instructions + "\n" + prompt)
         let generationDurationMs = info.map { max(1, Int($0.generateTime * 1_000)) }
             ?? max(1, Int(endedAt.timeIntervalSince(firstTokenAt ?? startedAt) * 1_000))
         return LocalGenerationResult(
