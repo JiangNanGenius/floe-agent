@@ -13,8 +13,6 @@ import FloeModels
 
 struct FilesSettingsView: View {
     @ObservedObject var center: SettingsCenter
-    @State private var clearedBytes: Int64?
-    @State private var isClearing = false
     @State private var workspacePendingDeletion: WorkspaceRecord?
 
     var body: some View {
@@ -68,27 +66,6 @@ struct FilesSettingsView: View {
                 }
             }
 
-            Section {
-                Button(role: .destructive) {
-                    Task { await clearTemporaryFiles() }
-                } label: {
-                    if isClearing {
-                        ProgressView()
-                    } else {
-                        Text("settings.files.clear_cache")
-                    }
-                }
-                .frame(minHeight: FloeTheme.minimumTarget)
-                .disabled(isClearing)
-            } header: {
-                Text("settings.files.cache")
-            } footer: {
-                if let clearedBytes {
-                    Text("settings.files.clear_cache.result \(clearedBytes)")
-                } else {
-                    Text("settings.files.clear_cache.footer")
-                }
-            }
         }
         .navigationTitle("settings.section.files")
         .task { await center.load() }
@@ -114,27 +91,5 @@ struct FilesSettingsView: View {
         }
     }
 
-    // MARK: - Helpers
-
-    /// Deletes everything in the app temporary directory and echoes the
-    /// reclaimed byte count. Real deletion, no silent success.
-    private func clearTemporaryFiles() async {
-        isClearing = true
-        defer { isClearing = false }
-        let bytes = await Task.detached(priority: .utility) { () -> Int64 in
-            let tmp = FileManager.default.temporaryDirectory
-            guard let children = try? FileManager.default.contentsOfDirectory(
-                at: tmp, includingPropertiesForKeys: [.fileSizeKey]
-            ) else { return 0 }
-            var total: Int64 = 0
-            for url in children {
-                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                if let bytes = size as Int? { total += Int64(bytes) }
-                try? FileManager.default.removeItem(at: url)
-            }
-            return total
-        }.value
-        clearedBytes = bytes
-    }
 }
 #endif

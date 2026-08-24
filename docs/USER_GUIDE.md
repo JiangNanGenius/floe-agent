@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide describes the Floe Agent 1.4.25 source target (build 56). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
+This guide describes the Floe Agent 1.4.26 source target (build 57). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
 
 ## 1. Install safely
 
@@ -153,8 +153,12 @@ Only instruction-only or read-only low-risk packages can install automatically. 
 
 Export a redacted diagnostics report from **Settings → Privacy & Security** when filing a reproducible bug. See [Support](../SUPPORT.md) for the report checklist and [Security](../SECURITY.md) for private vulnerability reporting.
 
-## 15. Archive tasks and sync credentials
+## 15. Manage data, fonts, archives, and synced credentials
 
-Swipe a task to archive it. Deletion never runs as a full-swipe action and requires confirmation. Use **Task Center → Archived** to restore multiple tasks or delete selected archived tasks.
+Open **Settings → Data Management** to inspect Floe's total footprint, installed app size, user data, safely reclaimable space, and categories for local models, private workspaces, fonts, attachments, generated content, browser artifacts, checkpoints, database and other data. Safe Cleanup removes only rebuildable caches and temporary items left for at least one hour. It does not remove workspaces, documents, models, fonts, attachments, the database, or credentials.
+
+**Data Management → Archived Tasks** supports swipe-to-restore, confirmed single deletion, selected restore/delete and clear-all. The normal task list still supports swipe-to-archive.
+
+**Data Management → Font Resources** keeps one content-addressed Floe-global copy of each imported font. Import from Files or use a direct public HTTPS URL for a TTF, OTF, TTC or OTC file up to 32 MB. Floe registers the managed library again at launch, so Word/PDF work in every workspace can reuse it without downloading per workspace. In Automatic mode, `font.list`, bounded `font.install`, and `font.resolve` bypass approval-model latency; `font.remove` remains reviewed because it affects all workspaces. Floe can also use fonts installed system-wide by iOS or a font-provider app. Apple public APIs do not permit an arbitrary web font to be silently installed for unrelated apps, so downloaded fonts are global within Floe rather than system-wide outside Floe.
 
 Task history is device-local. Configuration sync includes provider/model profiles and non-secret host profiles, while provider API keys use iCloud Keychain. **Sync saved credentials** is off by default and requires device authentication. When enabled, only credentials explicitly promoted to the vault can sync; task/workspace temporary credentials never do. A descriptor may arrive before its Keychain item, in which case the UI shows **Waiting for secret** instead of claiming synchronization completed.

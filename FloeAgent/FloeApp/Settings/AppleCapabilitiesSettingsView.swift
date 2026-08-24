@@ -71,7 +71,7 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
         case .watch: ["apple.watch."]
         case .vision: ["image.inspect", "image.ocr", "image.scanBarcode"]
         case .mail: ["apple.mail.compose"]
-        case .documents: ["document."]
+        case .documents: ["document.", "font."]
         case .camera: ["apple.camera.capture"]
         case .location: ["apple.location.current"]
         case .shortcuts: ["apple.shortcuts."]
@@ -118,6 +118,7 @@ enum AppleCapabilityPreferences {
             blocks.append("""
             ## Built-in skill: pdf-workbench
             For PDF tasks follow this closed loop: inspect and extract text first; render only relevant pages for visual evidence; make page, annotation, form, redaction, watermark, or overlay edits through document.pdf.edit; save to a new output unless the user explicitly requested overwrite; reopen the saved PDF with document.pdf.inspect; render the changed pages to verify them. If the user asks for an interactive web companion, create it in the task workspace, use structured browser inspection before screenshots, exercise each interaction, and finish with a concise structured test report. PDF inspect/render and image recognition are built-in read operations and do not require Floe approval, although file and system access remain sandboxed.
+            When a Word or PDF workflow reports a missing font, call font.list first. Use font.install with a direct public HTTPS font URL or a workspace-relative font file; the validated font is stored once in Floe's global font library and becomes available to every Floe workspace. Use font.resolve for a font already provided system-wide by iOS. Do not redownload a font that font.list already reports.
             """)
         }
         if enabled.contains(.vision) {

@@ -156,9 +156,9 @@ struct SettingsRootView: View {
         case .usage:
             UsageStatisticsView()
         case .dataManagement:
-            ArchivedConversationsView(
-                center: environment.conversationCenter,
-                showsDoneButton: false
+            DataManagementView(
+                environment: environment,
+                conversationCenter: environment.conversationCenter
             )
         case .diagnostics:
             DiagnosticsAboutView(center: environment.settingsCenter)

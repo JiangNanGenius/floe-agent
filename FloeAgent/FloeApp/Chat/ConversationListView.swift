@@ -202,6 +202,7 @@ struct ArchivedConversationsView: View {
     @State private var selection: Set<UUID> = []
     @State private var confirmsDelete = false
     @State private var confirmsDeleteAll = false
+    @State private var conversationPendingDeletion: ConversationRecord?
 
     var body: some View {
         List(conversations, selection: $selection) { conversation in
@@ -213,6 +214,21 @@ struct ArchivedConversationsView: View {
                 }
             }
             .frame(minHeight: FloeTheme.minimumTarget)
+            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                Button {
+                    Task { await restore(ids: [conversation.id]) }
+                } label: {
+                    Label("恢复", systemImage: "arrow.uturn.backward")
+                }
+                .tint(.blue)
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button(role: .destructive) {
+                    conversationPendingDeletion = conversation
+                } label: {
+                    Label("永久删除", systemImage: "trash")
+                }
+            }
         }
         .overlay {
             if conversations.isEmpty {
@@ -252,6 +268,22 @@ struct ArchivedConversationsView: View {
                 Task { await delete(ids: Set(conversations.map(\.id))) }
             }
         } message: { Text("归档区内的所有任务及其私有数据将被永久删除。") }
+        .alert(
+            "永久删除这个任务？",
+            isPresented: Binding(
+                get: { conversationPendingDeletion != nil },
+                set: { if !$0 { conversationPendingDeletion = nil } }
+            )
+        ) {
+            Button("取消", role: .cancel) { conversationPendingDeletion = nil }
+            Button("删除", role: .destructive) {
+                guard let conversation = conversationPendingDeletion else { return }
+                conversationPendingDeletion = nil
+                Task { await delete(ids: [conversation.id]) }
+            }
+        } message: {
+            Text("任务、生成内容、私有工作区和附件引用将被永久删除。")
+        }
     }
 
     private func load() async {
@@ -263,7 +295,11 @@ struct ArchivedConversationsView: View {
     }
 
     private func restoreSelection() async {
-        for id in selection { try? await center.restoreConversation(id: id) }
+        await restore(ids: selection)
+    }
+
+    private func restore(ids: Set<UUID>) async {
+        for id in ids { try? await center.restoreConversation(id: id) }
         selection.removeAll()
         await load()
     }

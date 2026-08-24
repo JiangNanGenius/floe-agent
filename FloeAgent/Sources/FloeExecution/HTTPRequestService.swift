@@ -115,8 +115,8 @@ public struct HTTPRequestService: Sendable {
 
 /// Deterministic public-network boundary shared by the initial request and
 /// redirect delegate. DNS failure is fail-closed.
-enum PublicNetworkTargetPolicy {
-    static func validate(_ url: URL) throws {
+public enum PublicNetworkTargetPolicy {
+    public static func validate(_ url: URL) throws {
         guard url.scheme?.lowercased() == "https",
               url.user == nil,
               url.password == nil,
@@ -161,7 +161,7 @@ enum PublicNetworkTargetPolicy {
         guard foundAddress else { throw HTTPRequestError.invalidURL(url.absoluteString) }
     }
 
-    static func isAllowedHeader(_ name: String) -> Bool {
+    public static func isAllowedHeader(_ name: String) -> Bool {
         let blocked = [
             "host", "connection", "content-length", "transfer-encoding",
             "proxy-authorization", "proxy-connection", "upgrade", "te", "trailer"

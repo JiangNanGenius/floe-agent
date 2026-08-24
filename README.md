@@ -57,7 +57,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.4.25 (build 56); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
+Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.4.26 (build 57); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
 
 ### Unsigned IPA
 
@@ -125,7 +125,7 @@ Signed Floe builds bundle a fixed CPython 3.13 runtime and standard library as a
 
 ### Archive and credential sync
 
-Swipe a task to archive it or open Task Center → Archived to restore or batch-delete tasks. Deletion always requires confirmation. Configuration sync covers provider/model profiles and non-secret host metadata; API keys use iCloud Keychain. The separate **Sync saved credentials** switch is off by default and publishes only vault descriptors to CloudKit while SSH, VNC, website, and token secret bytes remain in Keychain. Task/workspace-scoped temporary credentials never sync.
+**Settings → Data Management** combines total/category storage accounting, safe cache cleanup, archived-task restore/single/batch deletion, and one Floe-global font library. Import a validated font once from Files or a public HTTPS URL and reuse it in Word/PDF work across every workspace; bounded install/system-font resolution bypass approval-model latency, while cross-workspace removal remains reviewed. The task list still supports swipe-to-archive and permanent deletion always requires confirmation. Configuration sync covers provider/model profiles and non-secret host metadata; API keys use iCloud Keychain. The separate **Sync saved credentials** switch is off by default and publishes only vault descriptors to CloudKit while SSH, VNC, website, and token secret bytes remain in Keychain. Task/workspace-scoped temporary credentials never sync.
 
 ## Security boundary
 

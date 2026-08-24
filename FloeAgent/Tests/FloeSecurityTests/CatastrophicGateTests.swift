@@ -500,6 +500,52 @@ struct ApprovalPolicyTests {
         #expect(await backend.calls == 0)
     }
 
+    @Test("Bounded font install and resolution bypass review, removal does not")
+    func fontApprovalBoundary() async throws {
+        actor Backend: ModelApprovalPolicy.DecisionBackend {
+            private(set) var calls = 0
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+                calls += 1
+                return .escalateToHuman(reason: "destructive font change")
+            }
+            func callCount() -> Int { calls }
+        }
+        let backend = Backend()
+        let policy = AutomaticApprovalPolicy(backend: backend)
+        for name in ["font.list", "font.install", "font.resolve"] {
+            let call = try ToolCall(
+                id: name,
+                toolName: name,
+                argumentsJSON: Data(#"{}"#.utf8),
+                scope: .local
+            )
+            let action = ProposedAction(
+                toolCall: call,
+                riskLabels: ["networkAccess", "writesFiles"],
+                userGoal: "文档缺字体时自动下载并安装",
+                hostAndPathScope: .local
+            )
+            #expect(!policy.requiresModelReview(action))
+            #expect(try await policy.decide(action).permitsExecution)
+        }
+
+        let removeCall = try ToolCall(
+            id: "font.remove",
+            toolName: "font.remove",
+            argumentsJSON: Data(#"{"id":"font"}"#.utf8),
+            scope: .local
+        )
+        let removal = ProposedAction(
+            toolCall: removeCall,
+            riskLabels: ["deletesFiles"],
+            userGoal: "处理字体",
+            hostAndPathScope: .local
+        )
+        #expect(policy.requiresModelReview(removal))
+        #expect(!(try await policy.decide(removal).permitsExecution))
+        #expect(await backend.callCount() == 1)
+    }
+
     @Test("ModelApprovalPolicy fail-closed on backend error")
     func modelPolicyFailClosed() async throws {
         struct FailingBackend: ModelApprovalPolicy.DecisionBackend {

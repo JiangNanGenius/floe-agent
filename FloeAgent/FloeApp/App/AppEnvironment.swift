@@ -55,6 +55,9 @@ final class AppEnvironment: ObservableObject {
     let localModelStore: LocalModelStore
     let localModelRuntime: LocalModelRuntime
     let localModelsCenter: LocalModelsCenter
+    /// One validated font library shared by document workflows in every
+    /// Floe workspace. Fonts are process-registered again on each launch.
+    let fontStore: DeviceFontStore
     let networkStatusMonitor: NetworkStatusMonitor
 
     // MARK: Security
@@ -206,6 +209,7 @@ final class AppEnvironment: ObservableObject {
             store: localModelStore,
             runtime: self.localModelRuntime
         )
+        self.fontStore = DeviceFontStore()
         self.networkStatusMonitor = NetworkStatusMonitor()
         self.keychain = keychain
         self.catastrophicGate = catastrophicGate
@@ -263,6 +267,9 @@ final class AppEnvironment: ObservableObject {
         registerGitTools(rootProvider: WorkspaceCenter.toolRootProvider)
         // Document tools (OOXML spreadsheet reading).
         registerDocumentTools(rootProvider: WorkspaceCenter.toolRootProvider)
+        // Device-global, digest-addressed font resources for document/PDF
+        // work. Removal remains approval-gated; bounded installation does not.
+        registerFontTools(store: fontStore)
         // Image tools (Core Image processing).
         registerImageTools(rootProvider: WorkspaceCenter.toolRootProvider)
         // Provider-backed semantic visual inspection plus generation through
@@ -418,6 +425,12 @@ final class AppEnvironment: ObservableObject {
         do {
             try await database.migrate()
             try await runningInputStore.recoverTransientInputs()
+            let fontActivationFailures = await fontStore.activateManagedFonts()
+            if !fontActivationFailures.isEmpty {
+                FloeLogger(category: .tools).warning(
+                    "fontActivationFailed count=\(fontActivationFailures.count)"
+                )
+            }
             // Approval/background choices affect the very first task created
             // after launch. Restore them before `persistenceReady` exposes the
             // composer; settings-screen visitation must never be required.
