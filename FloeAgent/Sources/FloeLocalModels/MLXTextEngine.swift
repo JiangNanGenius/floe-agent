@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXHuggingFace
 import MLXLMCommon
+import MLXLLM
 import MLXVLM
 import Tokenizers
 import FloeLocalModelCatalog
@@ -17,14 +18,33 @@ public actor MLXTextEngine {
 
     public init(
         modelDirectory: URL,
+        includesVisionProjector: Bool,
         resourceProfile: LocalInferenceResourceProfile
     ) async throws {
         self.resourceProfile = resourceProfile
+        // A previous model or a failed Metal graph can leave process-wide
+        // allocations cached even after its Swift container is gone. Start a
+        // new load from a known baseline so the preflight allowance describes
+        // this model, rather than this model plus stale MLX cache pages.
+        Memory.clearCache()
         do {
-            self.container = try await VLMModelFactory.shared.loadContainer(
-                from: modelDirectory,
-                using: #huggingFaceTokenizerLoader()
-            )
+            if includesVisionProjector {
+                self.container = try await VLMModelFactory.shared.loadContainer(
+                    from: modelDirectory,
+                    using: #huggingFaceTokenizerLoader()
+                )
+            } else {
+                // Qwen3.5/3.8 and Gemma 4 snapshots include a vision tower,
+                // but the upstream LLM factory deliberately strips those
+                // weights and remaps language_model.* for text generation.
+                // Loading the full VLM for every tool/text turn wasted more
+                // than a gigabyte and could terminate the process during the
+                // first Metal graph construction on iPad.
+                self.container = try await LLMModelFactory.shared.loadContainer(
+                    from: modelDirectory,
+                    using: #huggingFaceTokenizerLoader()
+                )
+            }
         } catch {
             // A failed graph/model construction can leave Metal allocations
             // in MLX's process-wide cache even though no container escaped.

@@ -25,9 +25,9 @@ concurrency:
 
 jobs:
   build-verify-release:
-    # The iOS 27 Foundation Models implementation requires Swift 6.4, so use
-    # Xcode 27 for source validation even while App Store distribution must use
-    # the latest SDK version accepted by App Store Connect.
+    # Xcode 27 validates the enhanced Foundation Models vision/tool path. The
+    # base text implementation is also compiled below by the exact Xcode 26.6
+    # toolchain accepted by App Store Connect.
     runs-on: xcode-27
     permissions:
       contents: write
@@ -180,9 +180,9 @@ jobs:
     name: Archive and upload the same commit to TestFlight
     needs: build-verify-release
     # App Store Connect currently rejects the public Xcode 27 runner because
-    # it resolves to a beta SDK (90534). Keep the Xcode 27 source/feature gate
-    # above, then rebuild the exact same tag with Apple's accepted stable SDK
-    # for distribution.
+    # it resolves to a beta SDK (90534). Rebuild the exact same tag with the
+    # accepted stable SDK; this build includes the Xcode 26 Foundation Models
+    # text implementation rather than an unsupported placeholder.
     runs-on: macos-26
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer

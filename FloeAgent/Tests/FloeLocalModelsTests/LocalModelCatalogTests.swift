@@ -172,8 +172,19 @@ struct LocalModelCatalogTests {
             physicalMemoryBytes: 8 * gib
         ))
         #expect(!LocalInferenceResourcePolicy.canLoad(
-            mappedBytes: 6 * gib,
+            mappedBytes: 9 * gib,
             physicalMemoryBytes: 8 * gib
+        ))
+        // Gemma 4's mapped snapshot may be slightly larger than the current
+        // 4.7-4.9 GiB process allowance on an M4 iPad. MLX maps weights lazily,
+        // so this is allowed while a clearly larger snapshot is still denied.
+        #expect(LocalInferenceResourcePolicy.canLoad(
+            mappedBytes: 5_146_800_534,
+            physicalMemoryBytes: 4_900_000_000
+        ))
+        #expect(!LocalInferenceResourcePolicy.canLoad(
+            mappedBytes: 6_000_000_000,
+            physicalMemoryBytes: 4_900_000_000
         ))
 
         let constrained = LocalInferenceResourcePolicy.profile(
@@ -394,5 +405,18 @@ struct LocalModelCatalogTests {
             offeredToolNames: ["workspace.readFile"]
         )
         #expect(call == nil)
+    }
+
+    @Test("Local JSON fallback preserves SSH host scope")
+    @available(macOS 15.4, *)
+    func localToolFallbackHostScope() throws {
+        let hostID = UUID()
+        let call = try #require(try LocalProviderAdapter.toolCall(
+            from: """
+            {"tool_call":{"name":"ssh.execute","arguments":{"hostID":"\(hostID.uuidString)","command":"uname -a"}}}
+            """,
+            offeredToolNames: ["ssh.execute"]
+        ))
+        #expect(call.scope == .host(hostID))
     }
 }

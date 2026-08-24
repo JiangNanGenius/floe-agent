@@ -268,6 +268,73 @@ struct ApprovalPolicyTests {
         }
     }
 
+    @Test("SSH inspection and bootstrap planning bypass redundant review")
+    func sshReadOnlyBootstrapExemptions() async throws {
+        actor Backend: ModelApprovalPolicy.DecisionBackend {
+            private(set) var calls = 0
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+                calls += 1
+                return .deny(reason: "unexpected review")
+            }
+            func callCount() -> Int { calls }
+        }
+        let backend = Backend()
+        let policy = AutomaticApprovalPolicy(backend: backend)
+        for (name, arguments) in [
+            ("ssh.listHosts", #"{}"#),
+            ("ssh.inspectTarget", #"{}"#),
+            ("ssh.bootstrapExecutionHost", #"{"apply":false}"#),
+            ("ssh.bootstrapFloeRemoteAgent", #"{"operation":"check"}"#)
+        ] {
+            let call = try ToolCall(
+                id: name,
+                toolName: name,
+                argumentsJSON: Data(arguments.utf8),
+                scope: .host(UUID())
+            )
+            let action = ProposedAction(
+                toolCall: call,
+                riskLabels: ["executesRemoteCommand", "modifiesRemoteSystem"],
+                userGoal: "检查远程环境",
+                hostAndPathScope: call.scope
+            )
+            #expect(try await policy.decide(action).permitsExecution)
+        }
+        #expect(await backend.callCount() == 0)
+    }
+
+    @Test("Explicit Docker bootstrap authorization is not requested twice")
+    func sshBootstrapExplicitAuthorization() async throws {
+        actor Backend: ModelApprovalPolicy.DecisionBackend {
+            private(set) var calls = 0
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+                calls += 1
+                return .escalateToHuman(reason: "unexpected review")
+            }
+            func callCount() -> Int { calls }
+        }
+        let backend = Backend()
+        let hostID = UUID()
+        func decision(goal: String) async throws -> ApprovalDecision {
+            let call = try ToolCall(
+                id: UUID().uuidString,
+                toolName: "ssh.bootstrapExecutionHost",
+                argumentsJSON: Data(#"{"apply":true,"installContainerRuntime":true}"#.utf8),
+                scope: .host(hostID)
+            )
+            return try await AutomaticApprovalPolicy(backend: backend).decide(ProposedAction(
+                toolCall: call,
+                riskLabels: ["executesRemoteCommand", "modifiesRemoteSystem"],
+                userGoal: goal,
+                hostAndPathScope: call.scope
+            ))
+        }
+        #expect(try await decision(goal: "我同意安装 Docker").permitsExecution)
+        #expect(await backend.callCount() == 0)
+        #expect(!(try await decision(goal: "不要安装 Docker").permitsExecution))
+        #expect(await backend.callCount() == 1)
+    }
+
     @Test("Bounded local inspection and presentation bypass the approval model")
     func builtInInspectionExemptions() async throws {
         actor Backend: ModelApprovalPolicy.DecisionBackend {

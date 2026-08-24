@@ -147,6 +147,7 @@ let package = Package(
                 // Kept in source for compatibility and possible future
                 // fallback, but the public v1.4.19 catalog is MLX-only.
                 "LlamaFramework", "FloeLlamaVisionShim",
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),

@@ -1,7 +1,9 @@
 # Floe Agent CI.
-# Two jobs:
+# Three jobs:
 #   build-test (macOS 26 arm64, Xcode 27): SPM build/test + xcodegen +
 #     xcodebuild for the iOS app, secret scan, SBOM, license inventory.
+#   appstore-sdk-compatibility (macOS 26, Xcode 26.6): compiles the exact SDK
+#     branch used by App Store Connect, including Foundation Models text.
 #   spm-linux-build (ubuntu-latest, Swift 6.3): cross-platform compile only —
 #     SSE parser, catastrophic gate, canonical JSON, audit chain, GRDB
 #     schema remain portable. Tests run on the Apple job because Debian's
@@ -124,6 +126,43 @@ jobs:
             FloeAgent/FloeAgent-iPhone.xcresult
             FloeAgent/FloeAgent-iPad.xcresult
           if-no-files-found: ignore
+
+  appstore-sdk-compatibility:
+    # TestFlight distribution currently uses Xcode 26.6. Keep this gate on
+    # every main/PR build so Xcode 27-only source cannot silently leave the
+    # shipped Foundation Models implementation behind a fallback branch.
+    runs-on: macos-26
+    defaults:
+      run:
+        working-directory: FloeAgent
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Xcode Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Generate project and resolve dependencies
+        run: |
+          brew install xcodegen
+          scripts/bootstrap_python_runtime.sh
+          scripts/gen_project.sh
+          swift package resolve
+          scripts/pin_check.sh
+
+      - name: Build App Store SDK branch
+        run: |
+          xcodebuild \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            -project FloeAgent.xcodeproj \
+            -scheme FloeAgent \
+            -configuration Release \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/FloeXcode26DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
 
   spm-linux-build:
     runs-on: ubuntu-latest

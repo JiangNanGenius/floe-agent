@@ -164,6 +164,8 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
         if action.toolCall.toolName == "exec.localPython", !action.isManagedPythonPackageRequest {
             return true
         }
+        if Self.isReadOnlySSHBootstrap(action) { return true }
+        if Self.isExplicitlyAuthorizedSSHBootstrap(action) { return true }
         if action.toolCall.toolName == "image.svgDocument",
            let object = try? JSONSerialization.jsonObject(with: action.toolCall.argumentsJSON) as? [String: Any],
            object["operation"] as? String == "inspect" { return true }
@@ -173,6 +175,65 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
               ) as? [String: Any] else { return false }
         let overwritesSource = object["overwrite"] as? Bool ?? false
         return !overwritesSource
+    }
+
+    /// SSH discovery and bootstrap planning are read-only even though the
+    /// compiled descriptors conservatively carry the mutating labels needed
+    /// by their apply variants. They should never consume an approval-model
+    /// call or interrupt a setup workflow.
+    private static func isReadOnlySSHBootstrap(_ action: ProposedAction) -> Bool {
+        switch action.toolCall.toolName {
+        case "ssh.listHosts", "ssh.inspectTarget":
+            return true
+        case "ssh.bootstrapExecutionHost":
+            guard let object = action.argumentObject else { return false }
+            return object["apply"] as? Bool != true
+        case "ssh.bootstrapFloeRemoteAgent":
+            guard let object = action.argumentObject else { return false }
+            let operation = object["operation"] as? String
+            return operation == nil || operation == "plan" || operation == "check"
+        default:
+            return false
+        }
+    }
+
+    /// The two bootstrap tools execute fixed, bounded installers. A direct
+    /// user request to install/deploy/update that environment is authority for
+    /// the requested apply call; asking again after messages such as “授权” or
+    /// “我同意安装” is both redundant and the source of the observed loop.
+    /// Arbitrary ssh.execute commands remain reviewable.
+    private static func isExplicitlyAuthorizedSSHBootstrap(_ action: ProposedAction) -> Bool {
+        guard let object = action.argumentObject else { return false }
+        let isApplying: Bool
+        switch action.toolCall.toolName {
+        case "ssh.bootstrapExecutionHost":
+            isApplying = object["apply"] as? Bool == true
+        case "ssh.bootstrapFloeRemoteAgent":
+            isApplying = object["operation"] as? String == "installOrUpdate"
+                || object["apply"] as? Bool == true
+        default:
+            return false
+        }
+        guard isApplying else { return false }
+        let goal = action.userGoal
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !goal.isEmpty else { return false }
+        let denials = [
+            "不要安装", "别安装", "不要部署", "别部署", "不同意", "不授权",
+            "do not install", "don't install", "do not deploy", "not authorized"
+        ]
+        guard !denials.contains(where: goal.contains) else { return false }
+        let explicitConsent = [
+            "授权", "同意", "批准", "允许", "可以安装", "确认安装",
+            "authorized", "i approve", "i agree", "permission granted"
+        ].contains(where: goal.contains)
+        let directInstallRequest = [
+            "安装", "部署", "配置环境", "准备环境", "搭建环境", "更新远程",
+            "install", "deploy", "set up", "setup", "configure the environment",
+            "prepare the environment", "update the remote"
+        ].contains(where: goal.contains)
+        return explicitConsent || directInstallRequest
     }
 
     private func deterministicDecision(
@@ -248,6 +309,10 @@ public struct TaskFullAccessPolicy: ApprovalPolicy {
 }
 
 private extension ProposedAction {
+    var argumentObject: [String: Any]? {
+        try? JSONSerialization.jsonObject(with: toolCall.argumentsJSON) as? [String: Any]
+    }
+
     var isManagedPythonPackageRequest: Bool {
         guard toolCall.toolName == "exec.localPython",
               let object = try? JSONSerialization.jsonObject(with: toolCall.argumentsJSON) as? [String: Any],

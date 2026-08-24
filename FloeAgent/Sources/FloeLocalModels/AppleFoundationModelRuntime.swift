@@ -3,8 +3,10 @@ import FloeCore
 import FloeModels
 import FloeProviders
 
-#if compiler(>=6.4) && canImport(FoundationModels)
+#if canImport(FoundationModels)
 import FoundationModels
+#endif
+#if compiler(>=6.4) && canImport(FoundationModels)
 import ImageIO
 #endif
 
@@ -59,7 +61,7 @@ public actor AppleFoundationModelRuntime {
     /// Release gate used by tests to prevent an older Xcode image from
     /// silently compiling only the unsupported fallback implementation.
     public nonisolated static var sdkIntegrationCompiled: Bool {
-#if compiler(>=6.4) && canImport(FoundationModels)
+#if canImport(FoundationModels)
         true
 #else
         false
@@ -80,6 +82,31 @@ public actor AppleFoundationModelRuntime {
                 supportsVision: model.capabilities.contains(.vision),
                 supportsTools: model.capabilities.contains(.toolCalling),
                 supportsReasoning: model.capabilities.contains(.reasoning)
+            )
+        case .unavailable(.deviceNotEligible):
+            return .deviceNotEligible
+        case .unavailable(.appleIntelligenceNotEnabled):
+            return .appleIntelligenceDisabled
+        case .unavailable(.modelNotReady):
+            return .modelNotReady
+        @unknown default:
+            return .modelNotReady
+        }
+#elseif canImport(FoundationModels)
+        // Xcode 26 ships the first public Foundation Models API used by the
+        // App Store build. Its base text session is fully usable even though
+        // Xcode 27-only vision, capability and usage APIs are unavailable.
+        guard #available(iOS 26.0, macOS 26.0, *) else { return .unsupportedOS }
+        switch SystemLanguageModel.default.availability {
+        case .available:
+            return .available(
+                contextTokens: 4_096,
+                supportsVision: false,
+                // Xcode 26 does not expose the newer dynamic Tool bridge used
+                // below, but Floe still offers its bounded schemas and parses
+                // the same strict JSON tool_call envelope as the MLX path.
+                supportsTools: true,
+                supportsReasoning: false
             )
         case .unavailable(.deviceNotEligible):
             return .deviceNotEligible
@@ -214,6 +241,61 @@ public actor AppleFoundationModelRuntime {
             tokensPerSecond: Double(outputTokens) / (Double(decodeMs) / 1_000),
             deferredToolCall: deferredToolCall
         )
+#elseif canImport(FoundationModels)
+        guard #available(iOS 26.0, macOS 26.0, *) else {
+            throw FloeError.invalidConfiguration("Apple Foundation Models requires iOS or iPadOS 26 or later")
+        }
+        guard images.isEmpty else {
+            throw FloeError.invalidConfiguration(
+                "This App Store build supports Apple Intelligence text requests; image input requires the newer system Foundation Models runtime"
+            )
+        }
+        let model = SystemLanguageModel.default
+        guard case .available = model.availability else {
+            throw FloeError.invalidConfiguration(Self.unavailableMessage(for: availability()))
+        }
+        let localizedInstructions = instructions
+            + "\nRespond using the user's language when it is supported. Current locale: \(Locale.current.identifier)."
+            + (tools.isEmpty ? "" : "\nIf a tool is required, emit only the exact JSON tool_call object documented in the prompt.")
+        let session = LanguageModelSession(instructions: localizedInstructions)
+        session.prewarm()
+        let startedAt = ContinuousClock.now
+        var latest = ""
+        var firstContentAt: ContinuousClock.Instant?
+        do {
+            for try await snapshot in session.streamResponse(to: prompt) {
+                latest = snapshot.content
+                if firstContentAt == nil, !latest.isEmpty { firstContentAt = .now }
+            }
+        } catch {
+            if Task.isCancelled { throw FloeError.cancelled }
+            throw FloeError.syncUnavailable(
+                "Apple Foundation Models could not complete the request: \(error.localizedDescription)"
+            )
+        }
+        guard !latest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FloeError.validationFailed("Apple Foundation Models returned an empty response")
+        }
+        let elapsed = startedAt.duration(to: .now)
+        let elapsedParts = elapsed.components
+        let elapsedMs = Int(elapsedParts.seconds * 1_000)
+            + Int(elapsedParts.attoseconds / 1_000_000_000_000_000)
+        let firstMs = firstContentAt.map { instant in
+            let parts = startedAt.duration(to: instant).components
+            return Int(parts.seconds * 1_000)
+                + Int(parts.attoseconds / 1_000_000_000_000_000)
+        }
+        let inputTokens = max(1, (localizedInstructions.utf8.count + prompt.utf8.count) / 4)
+        let outputTokens = max(1, latest.utf8.count / 4)
+        let decodeMs = max(1, elapsedMs - (firstMs ?? 0))
+        return LocalRuntimeCompletion(
+            text: latest,
+            inputTokens: inputTokens,
+            outputTokens: outputTokens,
+            totalDurationMs: elapsedMs,
+            timeToFirstTokenMs: firstMs,
+            tokensPerSecond: Double(outputTokens) / (Double(decodeMs) / 1_000)
+        )
 #else
         throw FloeError.invalidConfiguration(
             "This build does not include the Xcode 27 Foundation Models SDK"
@@ -228,7 +310,7 @@ public actor AppleFoundationModelRuntime {
         case .available:
             return "Available"
         case .unsupportedOS:
-            return "Apple Foundation Models requires iOS or iPadOS 27 or later"
+            return "Apple Foundation Models requires a supported iOS or iPadOS version"
         case .deviceNotEligible:
             return "This device is not eligible for Apple Intelligence"
         case .appleIntelligenceDisabled:
@@ -238,7 +320,7 @@ public actor AppleFoundationModelRuntime {
         case .unsupportedLocale(let identifier):
             return "Apple Foundation Models does not support the current language or locale (\(identifier))"
         case .unsupportedToolchain:
-            return "This build does not include the Xcode 27 Foundation Models SDK"
+            return "This installation does not contain the Apple Foundation Models framework"
         }
     }
 

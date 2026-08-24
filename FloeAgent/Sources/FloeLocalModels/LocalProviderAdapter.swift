@@ -253,11 +253,13 @@ public actor LocalModelRuntime {
         wantsVision: Bool,
         traceID: String
     ) async throws -> ActiveEngine {
-        // Every curated MLX model uses the VLM factory. Text and vision share
-        // one resident container, so adding an image never remaps a projector.
-        let key = EngineKey(modelID: modelID, includesVisionProjector: true)
+        // Keep text-only turns on the language-model factory. Vision models
+        // are loaded only when an actual image arrives; a resident VLM can
+        // still serve later text turns without remapping.
+        let key = EngineKey(modelID: modelID, includesVisionProjector: wantsVision)
         if let cached = activeEngine,
-           cached.key.modelID == modelID {
+           cached.key.modelID == modelID,
+           cached.key.includesVisionProjector || !wantsVision {
             loadState = .ready(
                 modelID: modelID,
                 includesVisionProjector: cached.key.includesVisionProjector
@@ -323,6 +325,7 @@ public actor LocalModelRuntime {
             do {
                 loaded = try await MLXTextEngine(
                     modelDirectory: modelURL,
+                    includesVisionProjector: wantsVision,
                     resourceProfile: profile
                 )
             } catch {
@@ -335,7 +338,7 @@ public actor LocalModelRuntime {
             }
             let prepared = ActiveEngine(key: key, engine: loaded, profile: profile)
             activeEngine = prepared
-            loadState = .ready(modelID: modelID, includesVisionProjector: true)
+            loadState = .ready(modelID: modelID, includesVisionProjector: wantsVision)
             FloeLogger(category: .providers).info(
                 "localInferenceEngineLoadFinished trace=\(traceID) model=\(modelID) durationMs=\(Int(Date().timeIntervalSince(loadStartedAt) * 1_000))"
             )
@@ -864,10 +867,28 @@ public struct LocalProviderAdapter: ProviderAdapter {
             let argumentsData = try JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys])
             return try ToolCall(
                 id: "local-\(UUID().uuidString)", toolName: name,
-                argumentsJSON: argumentsData, scope: .local
+                argumentsJSON: argumentsData,
+                scope: inferredScope(from: arguments)
             )
         }
         return nil
+    }
+
+    /// Local JSON fallback has no wire translator, so derive the same
+    /// host/path scope here. Without this, valid Qwen SSH calls were marked
+    /// local and rejected by the runtime before reaching the real tool.
+    private static func inferredScope(from arguments: [String: Any]) -> ToolScope {
+        let hostID = ["hostID", "hostId", "host_id"]
+            .compactMap { arguments[$0] as? String }
+            .compactMap(UUID.init(uuidString:))
+            .first
+        guard let hostID else { return .local }
+        if let path = ["path", "remotePath", "remote_path"]
+            .compactMap({ arguments[$0] as? String }).first,
+           !path.isEmpty {
+            return .hostPath(hostID: hostID, path: path)
+        }
+        return .host(hostID)
     }
 
     private static func toolCallBody(in object: Any) -> [String: Any]? {

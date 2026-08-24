@@ -190,6 +190,7 @@ final class SkillsCenter: ObservableObject {
         )
         var activeIDs: Set<String> = []
         var allowedTools: Set<String> = []
+        var declaresToolBoundary = false
         var instructionBlocks: [String] = []
         let decoder = JSONDecoder()
 
@@ -202,6 +203,13 @@ final class SkillsCenter: ObservableObject {
             activeIDs.insert(skill.id)
             instructionBlocks.append("## Skill: \(skill.name)\n\(skill.skillMarkdown)")
 
+            // An instruction-only skill must not turn the complete agent
+            // catalog into an empty set. A tool ceiling exists only when at
+            // least one enabled manifest actually declares tools; revoked or
+            // incompatible declarations still correctly resolve to an empty
+            // ceiling and therefore grant nothing.
+            if !manifest.tools.isEmpty { declaresToolBoundary = true }
+
             for name in manifest.tools {
                 guard let descriptor = descriptors[name] else { continue }
                 let required = Self.requiredCapabilities(for: descriptor)
@@ -213,7 +221,7 @@ final class SkillsCenter: ObservableObject {
         guard !activeIDs.isEmpty else { return .none }
         return RuntimeSelection(
             skillIDs: activeIDs,
-            allowedToolNames: allowedTools,
+            allowedToolNames: declaresToolBoundary ? allowedTools : nil,
             instructions: instructionBlocks.joined(separator: "\n\n")
         )
     }

@@ -178,7 +178,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// A later newly-started task will call `didStart` and request PiP again.
     func didClosePictureInPicture() {
         surfacedRunID = nil
-        pipSuppressedForCurrentBatch = true
+        // Respect the close while the app stays in the background. Once the
+        // user returns to Floe, the next departure is a fresh explicit PiP
+        // attempt and must not remain permanently suppressed.
+        pipSuppressedForCurrentBatch = isAppInBackground
         FloeLogger(category: .app).info(
             "pictureInPictureClosedByUser activeRuns=\(activeRuns.count)"
         )
@@ -430,9 +433,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             }
         case .active:
             isAppInBackground = false
+            pipSuppressedForCurrentBatch = false
             pipCarouselTask?.cancel()
             pipCarouselTask = nil
             environment.backgroundVideoService.retractForForeground()
+            prepareBackgroundSurfaceIfNeeded()
             lease?.release()
             lease = nil
             Task { [weak self] in
@@ -445,6 +450,28 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             break
         @unknown default:
             break
+        }
+    }
+
+    /// A user/system close destroys AVKit's controller. Rebuild it while a
+    /// foreground key window exists so the next background transition can
+    /// start immediately; attempting this only after entering background
+    /// cannot attach the required inline player layer.
+    private func prepareBackgroundSurfaceIfNeeded() {
+        guard environment.settingsCenter.backgroundExecution != .standard,
+              !environment.backgroundVideoService.isPiPPrepared,
+              !environment.backgroundVideoService.isPreparingPiP else { return }
+        let candidate = activeRuns.first.map { (id: $0.key, run: $0.value) }
+            ?? retainedPausedRun
+        guard let (runID, run) = candidate else { return }
+        surfacedRunID = runID
+        Task { [weak self] in
+            guard let self else { return }
+            await self.environment.backgroundVideoService.begin(
+                title: run.title,
+                initialProgress: "\(run.stage) · \(run.progress)%",
+                startImmediately: false
+            )
         }
     }
 

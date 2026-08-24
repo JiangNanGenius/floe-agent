@@ -33,7 +33,6 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     private var playerLayer: AVPlayerLayer?
     private var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
-    private var sampleBufferLayer: AVSampleBufferDisplayLayer?
     private var currentTitle = ""
     private var currentProgress = ""
     private var guidanceImage: UIImage?
@@ -70,7 +69,21 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         // session active so the system registers that capability at task start
         // instead of suspending the app the moment it backgrounds.
         configureAudioSession()
+        guard let assetURL = await synthesizeProgressVideo(
+            title: title,
+            progress: initialProgress,
+            guidanceImage: nil,
+            guidanceHints: []
+        ) else {
+            lastError = "无法创建画中画进度视频"
+            FloeLogger(category: .app).error(
+                "pictureInPicturePrepareFailed stage=videoSynthesis generation=\(generation)"
+            )
+            deactivateAudioSession()
+            return
+        }
         guard !Task.isCancelled, generation == startGeneration else {
+            try? FileManager.default.removeItem(at: assetURL)
             deactivateAudioSession()
             return
         }
@@ -79,33 +92,42 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             FloeLogger(category: .app).warning(
                 "pictureInPicturePrepareFailed stage=unsupported generation=\(generation)"
             )
+            try? FileManager.default.removeItem(at: assetURL)
             deactivateAudioSession()
             return
         }
-        let layer = AVSampleBufferDisplayLayer()
+        let item = AVPlayerItem(url: assetURL)
+        let queue = AVQueuePlayer(playerItem: item)
+        let layer = AVPlayerLayer(player: queue)
         layer.videoGravity = .resizeAspect
         guard attachInlinePreview(layer: layer) else {
             lastError = "画中画需要应用处于前台并显示预览"
             FloeLogger(category: .app).warning(
                 "pictureInPicturePrepareFailed stage=inlinePreview generation=\(generation)"
             )
+            try? FileManager.default.removeItem(at: assetURL)
             deactivateAudioSession()
             return
         }
-        let source = AVPictureInPictureController.ContentSource(
-            sampleBufferDisplayLayer: layer,
-            playbackDelegate: self
-        )
-        let controller = AVPictureInPictureController(contentSource: source)
-        sampleBufferLayer = layer
-        enqueueCurrentFrame(on: layer)
+        guard let controller = AVPictureInPictureController(playerLayer: layer) else {
+            lastError = "无法初始化画中画控制器"
+            FloeLogger(category: .app).error(
+                "pictureInPicturePrepareFailed stage=controller generation=\(generation)"
+            )
+            removeInlinePreview()
+            try? FileManager.default.removeItem(at: assetURL)
+            deactivateAudioSession()
+            return
+        }
+        currentAssetURL = assetURL
+        player = queue
+        playerLayer = layer
+        looper = AVPlayerLooper(player: queue, templateItem: item)
         controller.delegate = self
         controller.canStartPictureInPictureAutomaticallyFromInline = true
-        // This is a live task-status surface, not seekable entertainment.
-        // Linear playback removes the system skip controls whose state jumped
-        // whenever a fresh progress frame replaced the backing loop.
         controller.requiresLinearPlayback = true
         pipController = controller
+        queue.play()
         // AVKit readiness is asynchronous and varies by device. Starting at
         // a fixed delay silently fails on slower iPads, so wait for the real
         // capability signal with a bounded timeout.
@@ -201,10 +223,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         }
     }
 
-    /// Pushes a new live status frame into the stable PiP content source.
-    /// Keeping one sample-buffer layer for the whole task batch avoids AVKit
-    /// rebuilding its transport state (and flashing pause/skip controls) on
-    /// every status publication.
+    /// Re-synthesizes the progress asset and hot-swaps the player item so the
+    /// floating PiP shows the latest title/progress without restarting PiP.
     private func refreshVideo(
         title: String,
         progress: String,
@@ -212,17 +232,29 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         guidanceHints: [GuidanceHint],
         generation: UInt64
     ) async {
-        guard !Task.isCancelled,
-              generation == startGeneration,
-              isPiPActive,
-              let layer = sampleBufferLayer,
-              let frame = renderProgressFrame(
-                title: title,
-                progress: progress,
-                guidanceImage: guidanceImage,
-                guidanceHints: guidanceHints
-              ) else { return }
-        enqueue(frame: frame, on: layer)
+        guard isPiPActive, let player else { return }
+        guard let assetURL = await synthesizeProgressVideo(
+            title: title,
+            progress: progress,
+            guidanceImage: guidanceImage,
+            guidanceHints: guidanceHints
+        ) else { return }
+        guard !Task.isCancelled, generation == startGeneration, isPiPActive else {
+            try? FileManager.default.removeItem(at: assetURL)
+            return
+        }
+        let item = AVPlayerItem(url: assetURL)
+        looper?.disableLooping()
+        for queuedItem in player.items().dropFirst() {
+            player.remove(queuedItem)
+        }
+        player.replaceCurrentItem(with: item)
+        looper = AVPlayerLooper(player: player, templateItem: item)
+        player.play()
+        if let old = currentAssetURL {
+            try? FileManager.default.removeItem(at: old)
+        }
+        currentAssetURL = assetURL
     }
 
     func stop() {
@@ -241,8 +273,6 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         player?.pause()
         player = nil
         playerLayer = nil
-        sampleBufferLayer?.flushAndRemoveImage()
-        sampleBufferLayer = nil
         guidanceImage = nil
         guidanceHints = []
         removeInlinePreview()
@@ -276,8 +306,6 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         player?.pause()
         player = nil
         playerLayer = nil
-        sampleBufferLayer?.flushAndRemoveImage()
-        sampleBufferLayer = nil
         guidanceImage = nil
         guidanceHints = []
         removeInlinePreview()
@@ -483,53 +511,6 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         return min(100, max(0, value))
     }
 
-    private func enqueueCurrentFrame(on layer: AVSampleBufferDisplayLayer) {
-        guard let frame = renderProgressFrame(
-            title: currentTitle,
-            progress: currentProgress,
-            guidanceImage: guidanceImage,
-            guidanceHints: guidanceHints
-        ) else { return }
-        enqueue(frame: frame, on: layer)
-    }
-
-    private func enqueue(frame: UIImage, on layer: AVSampleBufferDisplayLayer) {
-        guard let cgImage = frame.cgImage,
-              let pixelBuffer = Self.pixelBuffer(from: cgImage, size: frame.size)
-        else { return }
-        var formatDescription: CMVideoFormatDescription?
-        guard CMVideoFormatDescriptionCreateForImageBuffer(
-            allocator: kCFAllocatorDefault,
-            imageBuffer: pixelBuffer,
-            formatDescriptionOut: &formatDescription
-        ) == noErr,
-              let formatDescription else { return }
-        var timing = CMSampleTimingInfo(
-            duration: .invalid,
-            presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()),
-            decodeTimeStamp: .invalid
-        )
-        var sampleBuffer: CMSampleBuffer?
-        guard CMSampleBufferCreateReadyWithImageBuffer(
-            allocator: kCFAllocatorDefault,
-            imageBuffer: pixelBuffer,
-            formatDescription: formatDescription,
-            sampleTiming: &timing,
-            sampleBufferOut: &sampleBuffer
-        ) == noErr,
-              let sampleBuffer else { return }
-        if let attachments = CMSampleBufferGetSampleAttachmentsArray(
-            sampleBuffer,
-            createIfNecessary: true
-        ) as? [NSMutableDictionary], let first = attachments.first {
-            first[kCMSampleAttachmentKey_DisplayImmediately] = true
-        }
-        if layer.status == .failed {
-            layer.flush()
-        }
-        layer.enqueue(sampleBuffer)
-    }
-
     /// Synthesizes a short looping MP4 whose frames carry the run title and
     /// progress. Real, visible content — the surface review expects. PiP owns
     /// video playback continuity; avoiding a hand-built compressed audio
@@ -728,37 +709,4 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
     }
 }
 
-extension BackgroundVideoService: AVPictureInPictureSampleBufferPlaybackDelegate {
-    nonisolated func pictureInPictureController(
-        _ pictureInPictureController: AVPictureInPictureController,
-        setPlaying playing: Bool
-    ) {}
-
-    nonisolated func pictureInPictureControllerTimeRangeForPlayback(
-        _ pictureInPictureController: AVPictureInPictureController
-    ) -> CMTimeRange {
-        CMTimeRange(start: .zero, duration: .positiveInfinity)
-    }
-
-    nonisolated func pictureInPictureControllerIsPlaybackPaused(
-        _ pictureInPictureController: AVPictureInPictureController
-    ) -> Bool { false }
-
-    nonisolated func pictureInPictureController(
-        _ pictureInPictureController: AVPictureInPictureController,
-        didTransitionToRenderSize newRenderSize: CMVideoDimensions
-    ) {}
-
-    nonisolated func pictureInPictureController(
-        _ pictureInPictureController: AVPictureInPictureController,
-        skipByInterval skipInterval: CMTime,
-        completion: @escaping () -> Void
-    ) {
-        completion()
-    }
-
-    nonisolated func pictureInPictureControllerShouldProhibitBackgroundAudioPlayback(
-        _ pictureInPictureController: AVPictureInPictureController
-    ) -> Bool { true }
-}
 #endif

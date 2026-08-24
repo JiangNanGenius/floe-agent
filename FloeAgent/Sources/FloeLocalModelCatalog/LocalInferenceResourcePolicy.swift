@@ -54,13 +54,13 @@ public enum LocalInferenceResourcePolicy {
         physicalMemoryBytes: UInt64
     ) -> Bool {
         guard physicalMemoryBytes > 0 else { return true }
-        // Callers pass the current process allowance from
-        // os_proc_available_memory on iOS, not installed RAM. A percentage
-        // alone was too conservative on recent iOS 26 devices: a 3.4 GB Q4
-        // model was rejected with roughly 4.9 GB still available. Permit the
-        // load when at least 26% of the real allowance remains; the runtime's
-        // allocation failures are still surfaced as recoverable errors.
-        return mappedBytes <= physicalMemoryBytes * 74 / 100
+        // Callers pass os_proc_available_memory on iOS. Comparing a
+        // safetensors file byte-for-byte with that instantaneous allowance is
+        // incorrect for MLX: weights are memory-mapped and iPadOS can reclaim
+        // other background processes as pages become resident. Permit a Q4
+        // snapshot up to 110% of the current allowance, while still rejecting
+        // clearly impossible loads before they reach an uncatchable Jetsam.
+        return mappedBytes <= physicalMemoryBytes * 110 / 100
     }
 
     public static func profile(

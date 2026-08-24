@@ -17,6 +17,10 @@ import FloeWorkspace
 struct FilePreviewView: View {
     let relativePath: String
     @ObservedObject var center: WorkspaceCenter
+    /// Important-file shortcuts can open before the inspector column has
+    /// mounted the task's private workspace. Bind it here as a fallback so
+    /// SVG/PDF/text previews never depend on opening “All files” first.
+    var conversationID: UUID? = nil
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
     /// Called when the user adds this file to the conversation context.
@@ -197,6 +201,14 @@ struct FilePreviewView: View {
     private func load() async {
         loadError = nil
         content = nil
+        if center.fileService == nil, let conversationID {
+            do {
+                try await center.openTaskWorkspace(conversationID: conversationID)
+            } catch {
+                loadError = error.localizedDescription
+                return
+            }
+        }
         guard let service = center.fileService else {
             loadError = String(localized: "inspector.no_workspace")
             return

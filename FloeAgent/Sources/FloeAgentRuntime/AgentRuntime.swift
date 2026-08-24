@@ -1197,6 +1197,19 @@ public actor FloeAgentRuntime {
                 return .stopped(reason: verdict.reason ?? patternID)
             }
         }
+        // A human can deliberately choose a task/project/host scope on the
+        // inline approval card. Reuse that non-single-use grant for later
+        // matching calls in this activation instead of asking for the same
+        // authority on every SSH/bootstrap step. The catastrophic gate above
+        // still evaluates every concrete command, including reused grants.
+        if let reusableGrant = grants.last(where: {
+            !$0.scope.singleUse && !$0.isExpired() && Self.scopePermits($0.scope, call: call)
+        }) {
+            logger.info(
+                "toolDecision run=\(runID.uuidString) tool=\(call.toolName) policy=\(reusableGrant.policyName) decision=reuseGrant"
+            )
+            return .approved(grant: reusableGrant)
+        }
         let decision: ApprovalDecision
         let requiresModelReview = (policy as? any ApprovalReviewRouting)?
             .requiresModelReview(action) ?? (policy.policyName == "approval-model")

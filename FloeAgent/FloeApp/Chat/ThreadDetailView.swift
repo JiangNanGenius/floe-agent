@@ -97,7 +97,8 @@ struct ThreadDetailView: View {
             NavigationStack {
                 FilePreviewView(
                     relativePath: file.path,
-                    center: environment.workspaceCenter
+                    center: environment.workspaceCenter,
+                    conversationID: viewModel.conversationID
                 )
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
