@@ -125,7 +125,7 @@ Floe 会向快捷指令公开**立即运行 Floe 任务**和**安排 Floe 任务
 
 ## 12. 本机 Python、受管包和代码编辑
 
-签名构建包含受限 CPython 3.13。受管包接口可以先把依赖下载到隔离暂存区，但只有通过哈希、静态检查和软件包审核的纯 Python `py3-none-any` wheel 才能激活；原生扩展、Mach-O/ELF、动态库、子进程和沙箱逃逸仍不可用。反复直接尝试 `pip`、Shell 或 `subprocess` 会返回机器可读原因，不会循环重试。
+签名构建包含受限 CPython 3.13。模型可以直接提出类似 `pip install marko==2.2.0` 的声明式命令；Floe 会解析包名，并在任何下载前让软件包审批模型核对它是否确实服务于用户当前已有任务。受管安装器只在隔离暂存区解析依赖，并仅激活通过哈希和静态检查的纯 Python `py3-none-any` wheel；参数旗标、URL、路径、Shell 语法、原生扩展、Mach-O/ELF、动态库、子进程和沙箱逃逸仍不可用。
 
 `exec.localNumerical` 提供无需额外运行时的受限 R、Stata 和 MATLAB/Octave 兼容数值表面，包括描述统计、分位数、协方差/相关和单自变量 OLS；Stata 兼容命令包括 `generate`、`display`、`summarize`、`correlate` 和 `regress`。它不是 GNU R 或 Stata。PyStata 仍要求另行安装并授权 Stata，`pyreadstat` 则依赖本机扩展，二者都不能伪装成纯 Python 包装进 iOS 沙箱；完整 R/Stata 或 pandas/native 包应在已配置的可信 SSH 主机运行。
 

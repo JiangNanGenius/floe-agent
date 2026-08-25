@@ -14,8 +14,68 @@ struct LocalPythonToolTests {
         #expect(LocalPythonTool.parametersJSON.contains("maxOutputBytes"))
         #expect(LocalPythonTool.parametersJSON.contains("inputJSON"))
         #expect(LocalPythonTool.parametersJSON.contains("packages"))
+        #expect(LocalPythonTool.parametersJSON.contains("pipCommand"))
         #expect(LocalPythonTool.toolDescription.contains("packagePurpose"))
         #expect(LocalPythonTool.parametersJSON.contains("packageCapabilities"))
+    }
+
+    @Test("declarative pip commands use the reviewed package path")
+    func declarativePipValidation() async {
+        let service = LocalPythonService(version: "CPython 3.13") { _, _ in .cancelled }
+        let tool = LocalPythonTool(service: service)
+        #expect(throws: Never.self) {
+            try tool.validate(.init(
+                script: "import marko",
+                pipCommand: "pip install marko==2.2.0",
+                packagePurpose: "Render the Markdown document requested by the user",
+                packageCapabilities: ["document.render"]
+            ))
+        }
+        #expect(throws: FloeError.self) {
+            try tool.validate(.init(
+                script: "pass",
+                pipCommand: "pip install --index-url https://example.com marko",
+                packagePurpose: "Render Markdown",
+                packageCapabilities: ["document.render"]
+            ))
+        }
+    }
+
+    @Test("declarative pip command is installed only through the managed phase")
+    func declarativePipExecution() async throws {
+        actor Recorder {
+            var requests: [ScriptExecutionRequest] = []
+            func append(_ request: ScriptExecutionRequest) { requests.append(request) }
+            func snapshot() -> [ScriptExecutionRequest] { requests }
+        }
+        let recorder = Recorder()
+        let service = LocalPythonService(version: "CPython 3.13") { request, _ in
+            await recorder.append(request)
+            return .ok(
+                resultJSON: nil,
+                stdout: request.allowsManagedPackageInstaller ? "managedPackages=marko==2.2.0" : "rendered",
+                stderr: "",
+                truncated: false,
+                stderrTruncated: false,
+                durationMs: 1
+            )
+        }
+        let tool = LocalPythonTool(service: service)
+        let output = try await tool.execute(
+            .init(
+                script: "import marko; print(marko.convert('# Title'))",
+                pipCommand: "pip install marko==2.2.0",
+                packagePurpose: "Render the Markdown requested by the user",
+                packageCapabilities: ["document.render"]
+            ),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        let requests = await recorder.snapshot()
+        #expect(requests.count == 2)
+        #expect(requests.first?.allowsManagedPackageInstaller == true)
+        #expect(requests.first?.script.contains("marko==2.2.0") == true)
+        #expect(requests.last?.allowsManagedPackageInstaller == false)
+        #expect(output.exitStatus == 0)
     }
 
     @Test("managed package specs reject direct URLs and script-level pip")

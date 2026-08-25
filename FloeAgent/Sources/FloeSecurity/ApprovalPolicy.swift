@@ -444,10 +444,12 @@ private extension ProposedAction {
 
     var isManagedPythonPackageRequest: Bool {
         guard toolCall.toolName == "exec.localPython",
-              let object = try? JSONSerialization.jsonObject(with: toolCall.argumentsJSON) as? [String: Any],
-              let packages = object["packages"] as? [Any]
+              let object = try? JSONSerialization.jsonObject(with: toolCall.argumentsJSON) as? [String: Any]
         else { return false }
-        return !packages.isEmpty
+        if let packages = object["packages"] as? [Any], !packages.isEmpty { return true }
+        return !((try? ManagedPythonPackageSpecParser.parse(
+            command: object["pipCommand"] as? String
+        )) ?? []).isEmpty
     }
 }
 

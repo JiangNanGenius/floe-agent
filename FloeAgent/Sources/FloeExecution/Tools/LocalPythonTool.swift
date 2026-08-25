@@ -18,6 +18,9 @@ public struct LocalPythonTool: AgentTool {
         /// Package specs installed through Floe's managed, pure-Python-only
         /// pip path before the script runs.
         public var packages: [String]?
+        /// Familiar declarative spelling for the same reviewed path, for
+        /// example `pip install marko==2.2.0`. It is parsed, not shell-run.
+        public var pipCommand: String?
         /// Why these packages are necessary for the user's requested result.
         /// This is review evidence, not an authority escalation.
         public var packagePurpose: String?
@@ -32,6 +35,7 @@ public struct LocalPythonTool: AgentTool {
             timeout: Double? = nil,
             maxOutputBytes: Int? = nil,
             packages: [String]? = nil,
+            pipCommand: String? = nil,
             packagePurpose: String? = nil,
             packageCapabilities: [String]? = nil
         ) {
@@ -40,6 +44,7 @@ public struct LocalPythonTool: AgentTool {
             self.timeout = timeout
             self.maxOutputBytes = maxOutputBytes
             self.packages = packages
+            self.pipCommand = pipCommand
             self.packagePurpose = packagePurpose
             self.packageCapabilities = packageCapabilities
         }
@@ -47,7 +52,7 @@ public struct LocalPythonTool: AgentTool {
 
     public static let name = "exec.localPython"
     public static let toolDescription =
-        "Execute bundled Python 3.13 in Floe's on-device sandbox. The standard library includes statistics, csv, json and sqlite3 for bounded data work. The model chooses packages needed for the user's task; provide `packagePurpose` and the narrow `packageCapabilities` actually required. Floe reviews purpose and source evidence, resolves dependencies in quarantine, and atomically installs only runnable platform-independent pure-Python wheels. Package names are not a permission whitelist. Never invoke pip, ensurepip, subprocess, or shell installers inside `script`. Native wheels and host executables cannot run locally. PyStata requires a separately installed licensed Stata runtime, while pyreadstat uses native extensions, so neither can be installed in this on-device pure-Python sandbox. Use exec.localNumerical for bounded R/Stata-compatible statistics, or a classified SSH task on a configured licensed host for full R, Stata, PyStata, pandas or native packages. Common PDF, image/SVG, document, batch-processing and data-analysis workflows are legitimate when their capabilities stay within the user's request."
+        "Execute bundled Python 3.13 in Floe's on-device sandbox. The standard library includes statistics, csv, json and sqlite3 for bounded data work. The model may request pip packages with `packages` or a familiar declarative `pipCommand` such as `pip install marko==2.2.0`; provide `packagePurpose` and the narrow `packageCapabilities` actually required. Before download, Floe's package-review model verifies that the package is necessary for the user's existing task, then Floe resolves it in quarantine and atomically installs only runnable platform-independent pure-Python wheels. Package names are not a permission whitelist. `pipCommand` is parsed rather than shell-run; do not invoke pip, ensurepip, subprocess, or shell installers inside `script`. Native wheels and host executables cannot run locally. PyStata requires a separately installed licensed Stata runtime, while pyreadstat uses native extensions, so neither can be installed in this on-device pure-Python sandbox. Use exec.localNumerical for bounded R/Stata-compatible statistics, or a classified SSH task on a configured licensed host for full R, Stata, PyStata, pandas or native packages. Common PDF, image/SVG, document, batch-processing and data-analysis workflows are legitimate when their capabilities stay within the user's request."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -62,6 +67,7 @@ public struct LocalPythonTool: AgentTool {
           "items": {"type": "string", "description": "PyPI name or exact name==version; no URLs, paths, VCS, or native wheels"},
           "description": "Managed pure-Python package installs. All entries are reviewed, including trusted-catalog packages."
         },
+        "pipCommand": {"type": "string", "description": "Declarative `pip install package...` spelling for the same reviewed managed installer; no flags, URLs, paths, shell syntax, or VCS sources"},
         "packagePurpose": {"type": "string", "description": "Concrete reason these packages are necessary for the user's requested result"},
         "packageCapabilities": {"type": "array", "maxItems": 16, "items": {"type": "string"}, "description": "Narrow required capabilities such as pdf.read, image.render, svg.edit or data.transform"}
       },
@@ -109,22 +115,15 @@ public struct LocalPythonTool: AgentTool {
         ]
         if forbiddenInstallMarkers.contains(where: normalizedScript.contains) {
             throw FloeError.validationFailed(
-                "Install packages with the managed `packages` argument; direct pip, subprocess, and shell installation are unavailable"
+                "Put a direct `pip install package...` request in `pipCommand` (or use `packages`) so Floe can review it before download; pip, subprocess, and shell installation inside `script` are unavailable"
             )
         }
-        let packages = args.packages ?? []
+        let packages = try Self.requestedPackages(args)
         guard packages.count <= 16 else {
             throw FloeError.validationFailed("packages accepts at most 16 top-level entries per call")
         }
-        let packagePattern = #"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9_,.-]+\])?(?:==[A-Za-z0-9][A-Za-z0-9.*+!_-]*)?$"#
-        let expression = try NSRegularExpression(pattern: packagePattern)
         for package in packages {
-            let range = NSRange(package.startIndex..<package.endIndex, in: package)
-            guard expression.firstMatch(in: package, range: range)?.range == range else {
-                throw FloeError.validationFailed(
-                    "Package specs must be a PyPI name or exact name==version; URLs, paths, ranges, and VCS sources are rejected"
-                )
-            }
+            try ManagedPythonPackageSpecParser.validate(package)
         }
         if !packages.isEmpty {
             guard let purpose = args.packagePurpose?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -151,7 +150,8 @@ public struct LocalPythonTool: AgentTool {
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         var packageOutput = ""
-        if let packages = args.packages, !packages.isEmpty {
+        let packages = try Self.requestedPackages(args)
+        if !packages.isEmpty {
             let encoded = try JSONEncoder().encode(packages)
             let packageJSON = String(decoding: encoded, as: UTF8.self)
             let installer = """
@@ -248,6 +248,13 @@ public struct LocalPythonTool: AgentTool {
         case .cancelled:
             throw FloeError.cancelled
         }
+    }
+
+    private static func requestedPackages(_ args: Arguments) throws -> [String] {
+        var packages = args.packages ?? []
+        packages.append(contentsOf: try ManagedPythonPackageSpecParser.parse(command: args.pipCommand))
+        var seen = Set<String>()
+        return packages.filter { seen.insert($0.lowercased()).inserted }
     }
 
     private static func output(_ text: String, exitStatus: Int32) -> ToolExecutionOutput {

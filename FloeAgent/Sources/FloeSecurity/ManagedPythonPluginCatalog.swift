@@ -1,4 +1,5 @@
 import Foundation
+import FloeCore
 import FloeModels
 
 /// Review-time purpose metadata for managed Python packages. Package choice is
@@ -12,9 +13,14 @@ public enum ManagedPythonPluginCatalog {
 
     public static func reviewContext(for call: ToolCall) -> String? {
         guard call.toolName == "exec.localPython",
-              let object = try? JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any],
-              let packages = object["packages"] as? [String], !packages.isEmpty
+              let object = try? JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any]
         else { return nil }
+        var packages = object["packages"] as? [String] ?? []
+        packages += (try? ManagedPythonPackageSpecParser.parse(
+            command: object["pipCommand"] as? String
+        )) ?? []
+        packages = Array(Set(packages)).sorted()
+        guard !packages.isEmpty else { return nil }
         let purpose = object["packagePurpose"] as? String ?? "(missing)"
         let capabilities = object["packageCapabilities"] as? [String] ?? []
         let common = capabilities.filter { capability in

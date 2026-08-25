@@ -256,6 +256,15 @@ struct ApprovalPolicyTests {
         #expect(try await AutomaticApprovalPolicy(packageReviewBackend: AllowBackend()).decide(
             pythonAction(#"{"script":"import requests","packages":["requests==2.32.4"]}"#)
         ).permitsExecution)
+        guard case .escalateToHuman = try await AutomaticApprovalPolicy().decide(
+            pythonAction(#"{"script":"import marko","pipCommand":"pip install marko==2.2.0","packagePurpose":"Render requested Markdown","packageCapabilities":["document.render"]}"#)
+        ) else {
+            Issue.record("Declarative pip install without a review model must escalate")
+            return
+        }
+        #expect(try await AutomaticApprovalPolicy(packageReviewBackend: AllowBackend()).decide(
+            pythonAction(#"{"script":"import marko","pipCommand":"pip install marko==2.2.0","packagePurpose":"Render requested Markdown","packageCapabilities":["document.render"]}"#)
+        ).permitsExecution)
     }
 
     @Test("HumanApprovalPolicy always escalates")

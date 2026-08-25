@@ -57,8 +57,11 @@ struct ApprovalModelBackend: ModelApprovalPolicy.DecisionBackend {
             ?? "No managed package catalog context."
         let sourceInspection: String
         if reviewKind == .softwarePackage,
-           let object = try? JSONSerialization.jsonObject(with: action.toolCall.argumentsJSON) as? [String: Any],
-           let packages = object["packages"] as? [String], !packages.isEmpty {
+           let object = try? JSONSerialization.jsonObject(with: action.toolCall.argumentsJSON) as? [String: Any] {
+            var packages = object["packages"] as? [String] ?? []
+            packages += (try? ManagedPythonPackageSpecParser.parse(
+                command: object["pipCommand"] as? String
+            )) ?? []
             sourceInspection = try await ManagedPythonPackageInspector.inspect(specs: packages)
         } else {
             sourceInspection = "No package artifact to inspect."

@@ -125,7 +125,7 @@ Floe publishes **Run Floe Task** and **Schedule Floe Task** App Intents. Add **R
 
 ## 12. Local Python, packages and code editing
 
-Signed builds include bounded CPython 3.13. The managed package interface may download dependencies into quarantine, but activates only pure-Python `py3-none-any` wheels after hash verification, static inspection and package review. Native extensions, Mach-O/ELF payloads, dynamic libraries, subprocess execution and sandbox escape remain unavailable. Repeated direct `pip`, shell or `subprocess` attempts are rejected with a machine-readable explanation.
+Signed builds include bounded CPython 3.13. The model can request a familiar declarative command such as `pip install marko==2.2.0`; Floe parses its package specs and asks the package-review model whether they are necessary for the user's existing task before any download. The managed installer resolves dependencies in quarantine and activates only pure-Python `py3-none-any` wheels after hash verification and static inspection. Flags, URLs, paths, shell syntax, native extensions, Mach-O/ELF payloads, dynamic libraries, subprocess execution and sandbox escape remain unavailable.
 
 `exec.localNumerical` provides a bounded, dependency-free R, Stata and MATLAB/Octave compatibility surface for descriptive statistics, quantiles, covariance/correlation and one-predictor OLS. Stata-compatible commands include `generate`, `display`, `summarize`, `correlate` and `regress`. It is not GNU R or Stata. PyStata still requires a separately installed, licensed Stata runtime, while `pyreadstat` depends on native extensions; neither can masquerade as an installable pure-Python iOS package. Route full R/Stata or pandas/native-package work to a configured trusted SSH host.
 
