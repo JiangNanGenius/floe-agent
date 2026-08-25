@@ -97,7 +97,12 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             return
         }
         let item = AVPlayerItem(url: assetURL)
-        let queue = AVQueuePlayer(playerItem: item)
+        // AVPlayerLooper owns the queue population. Initializing the queue
+        // with the same template item and then handing that item to the
+        // looper can leave AVKit attached to an exhausted/black first item on
+        // some iPadOS builds.
+        let queue = AVQueuePlayer()
+        queue.automaticallyWaitsToMinimizeStalling = false
         let layer = AVPlayerLayer(player: queue)
         layer.videoGravity = .resizeAspect
         guard attachInlinePreview(layer: layer) else {
@@ -127,6 +132,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         controller.canStartPictureInPictureAutomaticallyFromInline = true
         controller.requiresLinearPlayback = true
         pipController = controller
+        await queue.seek(to: .zero)
         queue.play()
         // AVKit readiness is asynchronous and varies by device. Starting at
         // a fixed delay silently fails on slower iPads, so wait for the real
@@ -160,7 +166,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
               controller.isPictureInPicturePossible,
               !controller.isPictureInPictureActive else { return }
         FloeLogger(category: .app).info(
-            "pictureInPictureStartRequested generation=\(startGeneration)"
+            "pictureInPictureStartRequested generation=\(startGeneration) playerStatus=\(String(describing: player?.timeControlStatus)) itemStatus=\(String(describing: player?.currentItem?.status))"
         )
         controller.startPictureInPicture()
     }
@@ -245,11 +251,11 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         }
         let item = AVPlayerItem(url: assetURL)
         looper?.disableLooping()
-        for queuedItem in player.items().dropFirst() {
+        for queuedItem in player.items() {
             player.remove(queuedItem)
         }
-        player.replaceCurrentItem(with: item)
         looper = AVPlayerLooper(player: player, templateItem: item)
+        await player.seek(to: .zero)
         player.play()
         if let old = currentAssetURL {
             try? FileManager.default.removeItem(at: old)

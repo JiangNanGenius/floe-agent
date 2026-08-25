@@ -337,6 +337,37 @@ struct ApprovalPolicyTests {
         #expect(try await policy.decide(action).permitsExecution)
     }
 
+    @Test("Read-only Apple capability tools never invoke the approval model")
+    func appleReadApprovalExemptions() async throws {
+        struct FailingBackend: ModelApprovalPolicy.DecisionBackend {
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+                Issue.record("Read-only Apple tools must not reach the approval model")
+                throw FloeError.syncUnavailable("unexpected review")
+            }
+        }
+        let policy = AutomaticApprovalPolicy(backend: FailingBackend())
+        for name in [
+            "apple.calendar.list", "apple.reminders.list", "apple.maps.search",
+            "apple.home.list", "apple.watch.status", "apple.location.current",
+            "apple.automation.list"
+        ] {
+            let call = try ToolCall(
+                id: name,
+                toolName: name,
+                argumentsJSON: Data(#"{}"#.utf8),
+                scope: .local
+            )
+            let proposed = ProposedAction(
+                toolCall: call,
+                riskLabels: ["readsPersonalData"],
+                userGoal: "查看 Apple 能力",
+                hostAndPathScope: .local
+            )
+            #expect(!policy.requiresModelReview(proposed))
+            #expect(try await policy.decide(proposed).permitsExecution)
+        }
+    }
+
     @Test("Broad tool-test goals authorize routine diagnostics but not sensitive actions")
     func broadToolTestAuthorization() async throws {
         struct FailingBackend: ModelApprovalPolicy.DecisionBackend {
@@ -449,6 +480,70 @@ struct ApprovalPolicyTests {
         #expect(await backend.callCount() == 0)
         #expect(!(try await decision(goal: "不要安装 Docker").permitsExecution))
         #expect(await backend.callCount() == 1)
+    }
+
+    @Test("Explicit tool testing authorizes disposable SSH commands without repeated review")
+    func sandboxedSSHDiagnosticAuthorization() async throws {
+        actor Backend: ModelApprovalPolicy.DecisionBackend {
+            private(set) var calls = 0
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+                calls += 1
+                return .deny(reason: "unexpected review")
+            }
+            func callCount() -> Int { calls }
+        }
+        let backend = Backend()
+        let hostID = UUID()
+        func proposed(
+            mode: String?,
+            goal: String,
+            command: String = "printf container-ok && uname -a"
+        ) throws -> ProposedAction {
+            var object: [String: Any] = [
+                "command": command,
+                "hostID": hostID.uuidString
+            ]
+            if let mode { object["executionMode"] = mode }
+            let arguments = try JSONSerialization.data(withJSONObject: object)
+            let call = try ToolCall(
+                id: UUID().uuidString,
+                toolName: "ssh.execute",
+                argumentsJSON: arguments,
+                scope: .host(hostID)
+            )
+            return ProposedAction(
+                toolCall: call,
+                riskLabels: ["executesRemoteCommand", "networkAccess"],
+                userGoal: goal,
+                hostAndPathScope: call.scope
+            )
+        }
+
+        let policy = AutomaticApprovalPolicy(backend: backend)
+        #expect(try await policy.decide(proposed(
+            mode: nil,
+            goal: "帮我测试一下所有的工具，包括远程容器"
+        )).permitsExecution)
+        #expect(try await policy.decide(proposed(
+            mode: "container",
+            goal: "准备远程执行环境"
+        )).permitsExecution)
+        #expect(await backend.callCount() == 0)
+
+        #expect(!(try await policy.decide(proposed(
+            mode: "host",
+            goal: "帮我测试一下所有的工具"
+        )).permitsExecution))
+        #expect(!(try await policy.decide(proposed(
+            mode: nil,
+            goal: "准备远程执行环境",
+            command: "apt-get install -y git"
+        )).permitsExecution))
+        #expect(!(try await policy.decide(proposed(
+            mode: "container",
+            goal: "不要执行测试"
+        )).permitsExecution))
+        #expect(await backend.callCount() == 3)
     }
 
     @Test("Bounded local inspection and presentation bypass the approval model")

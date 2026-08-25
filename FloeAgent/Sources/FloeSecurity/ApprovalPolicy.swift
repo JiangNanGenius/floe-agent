@@ -161,6 +161,9 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "workspace.moveItem", "document.createDocument",
             "browser.observe", "browser.events", "browser.wait", "browser.navigate",
             "network.scanLAN",
+            "apple.calendar.list", "apple.reminders.list", "apple.maps.search",
+            "apple.home.list", "apple.watch.status", "apple.location.current",
+            "apple.automation.list",
             "font.list", "font.install",
             "memory.recall", "exec.localNumerical", "presentation.create",
             "git.status", "git.diff", "git.log", "git.initialize", "git.stage",
@@ -179,6 +182,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
         }
         if Self.isReadOnlySSHBootstrap(action) { return true }
         if Self.isExplicitlyAuthorizedSSHBootstrap(action) { return true }
+        if Self.isExplicitlyAuthorizedSandboxedSSH(action) { return true }
         if action.toolCall.toolName == "image.svgDocument",
            let object = try? JSONSerialization.jsonObject(with: action.toolCall.argumentsJSON) as? [String: Any],
            object["operation"] as? String == "inspect" { return true }
@@ -295,6 +299,70 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "prepare the environment", "update the remote"
         ].contains(where: goal.contains)
         return explicitConsent || directInstallRequest
+    }
+
+    /// `ssh.execute` in automatic/container mode cannot mutate the paired
+    /// host: the SSH router either runs inside a disposable unprivileged task
+    /// container or returns a bootstrap-required result. A direct request to
+    /// test tools or prepare that execution environment therefore authorizes
+    /// the bounded command without asking once per probe. Explicit host and
+    /// network-device modes remain reviewable.
+    private static func isExplicitlyAuthorizedSandboxedSSH(_ action: ProposedAction) -> Bool {
+        guard action.toolCall.toolName == "ssh.execute",
+              let object = action.argumentObject,
+              let command = object["command"] as? String,
+              !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return false }
+        let mode = (object["executionMode"] as? String)?.lowercased() ?? "automatic"
+        guard mode == "container"
+                || (mode == "automatic" && isClearlyReadOnlySSHDiagnostic(command))
+        else { return false }
+
+        let goal = action.userGoal.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !goal.isEmpty else { return false }
+        let denials = [
+            "不要执行", "别执行", "不要测试", "别测试", "不要安装", "别安装",
+            "do not execute", "don't execute", "do not test", "do not install"
+        ]
+        guard !denials.contains(where: goal.contains) else { return false }
+        let asksForToolDiagnostics =
+            ["工具", "能力", "tool", "capability"].contains(where: goal.contains)
+            && ["测试", "检查", "验证", "试一下", "跑一遍", "走一遍",
+                "test", "check", "verify", "smoke test", "try"].contains(where: goal.contains)
+        let asksForEnvironmentWork = [
+            "准备环境", "准备远程执行环境", "配置环境", "搭建环境", "安装环境", "远程环境", "容器测试",
+            "prepare the environment", "configure the environment", "set up", "setup",
+            "remote environment", "container test"
+        ].contains(where: goal.contains)
+        return asksForToolDiagnostics || asksForEnvironmentWork
+    }
+
+    /// Automatic routing can resolve to a real macOS or Windows host, so it
+    /// is exempt only for a small shell-free diagnostic vocabulary. Mutating
+    /// setup work must explicitly select the disposable container mode.
+    private static func isClearlyReadOnlySSHDiagnostic(_ command: String) -> Bool {
+        let normalized = command
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalized.isEmpty else { return false }
+        let forbidden = [";", "|", ">", "<", "`", "$(", "${", "\n", "\r"]
+        guard !forbidden.contains(where: normalized.contains) else { return false }
+        guard !normalized.replacingOccurrences(of: "&&", with: "").contains("&") else {
+            return false
+        }
+        let clauses = normalized.components(separatedBy: "&&")
+        let allowedPrefixes = [
+            "pwd", "id", "whoami", "uname", "uptime", "date", "arch",
+            "printf ", "echo ", "command -v ", "which ", "type ",
+            "ls", "stat ", "df", "du ", "free", "vm_stat",
+            "sw_vers", "systeminfo", "ver", "docker --version",
+            "podman --version", "python --version", "python3 --version",
+            "node --version", "git --version"
+        ]
+        return clauses.allSatisfy { clause in
+            let value = clause.trimmingCharacters(in: .whitespacesAndNewlines)
+            return allowedPrefixes.contains(where: { value == $0 || value.hasPrefix($0) })
+        }
     }
 
     private func deterministicDecision(

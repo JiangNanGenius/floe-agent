@@ -454,11 +454,25 @@ public struct LocalProviderAdapter: ProviderAdapter {
                                 "Apple Intelligence 模型当前无法调用：\(reason)"
                             )
                         }
+                        let resultByCallID = Dictionary(
+                            request.toolResults.map { ($0.callID, $0.output) },
+                            uniquingKeysWith: { _, newest in newest }
+                        )
+                        let toolHistory = request.pendingToolCalls.compactMap { call in
+                            resultByCallID[call.id].map {
+                                AppleFoundationToolExchange(call: call, output: $0)
+                            }
+                        }
+                        let historicalNames = Set(toolHistory.map { $0.call.toolName })
                         completion = try await AppleFoundationModelRuntime.shared.complete(
                             instructions: promptBuild.systemInstructions,
                             prompt: prompt,
                             images: imageParts,
                             tools: promptBuild.selectedTools,
+                            historicalTools: request.toolSchemas.filter {
+                                historicalNames.contains($0.name)
+                            },
+                            toolHistory: toolHistory,
                             maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 512), 2_048)
                         )
                     } else {
@@ -498,12 +512,13 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         continuation.yield(.toolRequest(call))
                         continuation.yield(.completed(.init(stopReason: .toolUse)))
                     } else {
-                        guard !channels.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        let visibleAnswer = Self.visibleAnswer(from: channels.answer)
+                        guard !visibleAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                             throw FloeError.validationFailed(
                                 "The local model returned internal reasoning without a final answer. Retry with thinking disabled."
                             )
                         }
-                        continuation.yield(.textDelta(.init(text: channels.answer)))
+                        continuation.yield(.textDelta(.init(text: visibleAnswer)))
                         continuation.yield(.completed(.init(stopReason: .endTurn)))
                     }
                     continuation.finish()
@@ -605,7 +620,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 if case .text(let value) = part { return value }
                 return nil
             }.joined(separator: "\n") ?? ""
-        let selectedTools = selectTools(
+        let isAppleToolFollowUp = request.model.remoteModelID
+            == AppleFoundationModelIdentity.remoteModelID && !request.toolResults.isEmpty
+        let selectedTools = isAppleToolFollowUp ? [] : selectTools(
             request.toolSchemas,
             latestUserText: latestUserText,
             pendingToolNames: Set(request.pendingToolCalls.map(\.toolName))
@@ -654,20 +671,28 @@ public struct LocalProviderAdapter: ProviderAdapter {
         // a tool follow-up could grow back beyond the bounded local context even
         // after the cloud system prompt had been removed.
         var evidenceBudget = max(0, 2_000 - transcriptCharacters)
-        for call in request.pendingToolCalls.suffix(2) where evidenceBudget > 80 {
-            let line = "ASSISTANT TOOL REQUEST \(call.id): \(call.toolName) \(String(decoding: call.argumentsJSON, as: UTF8.self))"
-            let bounded = clipped(line, limit: min(500, evidenceBudget))
-            sections.append(bounded)
-            evidenceBudget -= bounded.count
-        }
-        for result in request.toolResults.suffix(2) where evidenceBudget > 80 {
-            let line = "TOOL RESULT \(result.callID): \(result.output)"
-            let bounded = clipped(line, limit: min(700, evidenceBudget))
-            sections.append(bounded)
-            evidenceBudget -= bounded.count
+        if !isAppleToolFollowUp {
+            for call in request.pendingToolCalls.suffix(2) where evidenceBudget > 80 {
+                let line = "ASSISTANT TOOL REQUEST \(call.id): \(call.toolName) \(String(decoding: call.argumentsJSON, as: UTF8.self))"
+                let bounded = clipped(line, limit: min(500, evidenceBudget))
+                sections.append(bounded)
+                evidenceBudget -= bounded.count
+            }
+            for result in request.toolResults.suffix(2) where evidenceBudget > 80 {
+                let line = "TOOL RESULT \(result.callID): \(result.output)"
+                let bounded = clipped(line, limit: min(700, evidenceBudget))
+                sections.append(bounded)
+                evidenceBudget -= bounded.count
+            }
         }
         let transcript = sections.joined(separator: "\n\n")
-        let system = "You are Floe, a concise on-device agent. Follow the latest user request. Tool execution and approval are enforced by the app. The user message contains an authoritative AVAILABLE TOOL NAMES directory and, when action is needed, an OFFERED TOOLS section. For capability questions, report exact names from that directory; never claim you cannot see it. Use only offered native tools, never invent tool names, and never claim an action succeeded without a tool result. Invoke at most one tool per turn. If native tool calling is unavailable, emit the documented single JSON tool_call object with no prose. If a tool returns PENDING_EXTERNAL_EXECUTION, stop immediately without claiming completion. Think silently. Never print chain-of-thought, planning notes, drafts, self-corrections, or a 'Thinking Process' section. Return only the final answer."
+        let toolInstructions: String
+        if selectedTools.isEmpty {
+            toolInstructions = "No tool is callable on this turn. Reply directly in natural language. Never emit tool-call JSON or wrap an ordinary answer in a tool/result object."
+        } else {
+            toolInstructions = "Use only offered native tools, never invent tool names, and never claim an action succeeded without a tool result. Invoke at most one tool per turn. If native tool calling is unavailable, emit the documented single JSON tool_call object with no prose. If a tool returns PENDING_EXTERNAL_EXECUTION, stop immediately without claiming completion."
+        }
+        let system = "You are Floe, a concise on-device agent. Follow the latest user request. Tool execution and approval are enforced by the app. The user message contains an authoritative AVAILABLE TOOL NAMES directory and, when action is needed, an OFFERED TOOLS section. For capability questions, report exact names from that directory; never claim you cannot see it. \(toolInstructions) Think silently. Never print chain-of-thought, planning notes, drafts, self-corrections, or a 'Thinking Process' section. Return only the final answer."
         return PromptBuild(
             systemInstructions: system,
             // MLX receives structured system/user messages and applies the
@@ -888,6 +913,21 @@ public struct LocalProviderAdapter: ProviderAdapter {
             )
         }
         return nil
+    }
+
+    /// Xcode 27 Foundation Models can occasionally serialize a plain answer
+    /// using the legacy `{tool,result}` envelope seen in early builds. It is
+    /// not a callable tool request, so unwrap only the exact string-result
+    /// shape and keep all other model output untouched.
+    static func visibleAnswer(from output: String) -> String {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = trimmed.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object.keys.allSatisfy({ $0 == "tool" || $0 == "result" }),
+              object["tool"] is String,
+              let result = object["result"] as? String
+        else { return output }
+        return result
     }
 
     /// Local JSON fallback has no wire translator, so derive the same

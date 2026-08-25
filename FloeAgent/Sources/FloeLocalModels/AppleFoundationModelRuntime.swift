@@ -37,6 +37,20 @@ public enum AppleFoundationImageInput: Sendable, Equatable {
     }
 }
 
+/// One externally executed Floe tool exchange reconstructed into the public
+/// Foundation Models transcript on the follow-up turn. The call ID is kept
+/// identical so Apple sees a real structured tool call/output pair rather
+/// than a prompt string or a fake sentinel result.
+public struct AppleFoundationToolExchange: Sendable, Equatable {
+    public let call: FloeModels.ToolCall
+    public let output: String
+
+    public init(call: FloeModels.ToolCall, output: String) {
+        self.call = call
+        self.output = output
+    }
+}
+
 public enum AppleFoundationModelAvailability: Sendable, Equatable {
     case available(contextTokens: Int, supportsVision: Bool, supportsTools: Bool, supportsReasoning: Bool)
     case unsupportedOS
@@ -127,6 +141,8 @@ public actor AppleFoundationModelRuntime {
         prompt: String,
         images: [AppleFoundationImageInput],
         tools: [ToolSchemaDescriptor],
+        historicalTools: [ToolSchemaDescriptor] = [],
+        toolHistory: [AppleFoundationToolExchange] = [],
         maxTokens: Int
     ) async throws -> LocalRuntimeCompletion {
 #if compiler(>=6.4) && canImport(FoundationModels)
@@ -148,7 +164,12 @@ public actor AppleFoundationModelRuntime {
 
         let startedAt = ContinuousClock.now
         let recorder = DeferredToolCallRecorder()
-        let nativeTools = tools.compactMap { descriptor in
+        var nativeDescriptors = tools
+        for descriptor in historicalTools
+            where !nativeDescriptors.contains(where: { $0.name == descriptor.name }) {
+            nativeDescriptors.append(descriptor)
+        }
+        let nativeTools = nativeDescriptors.compactMap { descriptor in
             Self.deferredTool(from: descriptor, recorder: recorder)
         }
         let localizedInstructions = instructions +
@@ -158,13 +179,30 @@ public actor AppleFoundationModelRuntime {
             tools: nativeTools,
             instructions: localizedInstructions
         )
+        for exchange in toolHistory {
+            let arguments = try GeneratedContent(
+                json: String(decoding: exchange.call.argumentsJSON, as: UTF8.self)
+            )
+            session.transcript.append(.toolCalls(.init([
+                .init(
+                    id: exchange.call.id,
+                    toolName: exchange.call.toolName,
+                    arguments: arguments
+                )
+            ])))
+            session.transcript.append(.toolOutput(.init(
+                id: exchange.call.id,
+                toolName: exchange.call.toolName,
+                segments: [.text(.init(content: exchange.output))]
+            )))
+        }
         session.prewarm()
         let effectiveMaxTokens = max(64, min(maxTokens, 2_048))
         let options = GenerationOptions(
             samplingMode: .greedy,
             temperature: 0,
             maximumResponseTokens: effectiveMaxTokens,
-            toolCallingMode: .allowed
+            toolCallingMode: tools.isEmpty ? .disallowed : .allowed
         )
         let contextOptions = ContextOptions(
             reasoningLevel: model.capabilities.contains(.reasoning) ? .light : nil
@@ -188,7 +226,14 @@ public actor AppleFoundationModelRuntime {
         let promptTokens = try await model.tokenCount(for: request)
         let instructionTokens = try await model.tokenCount(for: Instructions(localizedInstructions))
         let toolTokens = try await model.tokenCount(for: nativeTools)
-        let inputTokenCount = promptTokens + instructionTokens + toolTokens
+        let transcriptTokens = try await model.tokenCount(for: session.transcript)
+        // `session.transcript` already contains the instructions. Use the
+        // larger accounting result so reconstructed tool evidence cannot make
+        // the manual preflight undercount the real request.
+        let inputTokenCount = max(
+            promptTokens + instructionTokens + toolTokens,
+            promptTokens + transcriptTokens
+        )
         guard inputTokenCount + effectiveMaxTokens <= model.contextSize else {
             throw FloeError.validationFailed(
                 "Apple Foundation Models context is too large (\(inputTokenCount) input + \(effectiveMaxTokens) reserved, limit \(model.contextSize)); compact the conversation and retry"
@@ -212,7 +257,7 @@ public actor AppleFoundationModelRuntime {
                 }
             }
         } catch {
-            if Task.isCancelled { throw FloeError.cancelled }
+            if Task.isCancelled || error is CancellationError { throw FloeError.cancelled }
             throw Self.normalizedFoundationError(error)
         }
         let deferredToolCall = try await recorder.toolCall()
@@ -268,7 +313,7 @@ public actor AppleFoundationModelRuntime {
                 if firstContentAt == nil, !latest.isEmpty { firstContentAt = .now }
             }
         } catch {
-            if Task.isCancelled { throw FloeError.cancelled }
+            if Task.isCancelled || error is CancellationError { throw FloeError.cancelled }
             throw FloeError.syncUnavailable(
                 "Apple Foundation Models could not complete the request: \(error.localizedDescription)"
             )

@@ -74,7 +74,10 @@ struct HomeLaunchpadView: View {
         }
         .refreshable { await viewModel.load() }
         .sheet(isPresented: $showsDraftPermissions) {
-            DraftTaskPermissionsSheet(policy: $viewModel.draftPolicy)
+            DraftTaskPermissionsSheet(
+                policy: $viewModel.draftPolicy,
+                isLocalModel: viewModel.usesLocalModel
+            )
         }
     }
 

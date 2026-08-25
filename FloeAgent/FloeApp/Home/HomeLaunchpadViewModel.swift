@@ -87,6 +87,10 @@ final class HomeLaunchpadViewModel: ObservableObject {
         center.providerAndModel(modelID: selectedModelID)?.1.displayName
     }
 
+    var usesLocalModel: Bool {
+        center.providerAndModel(modelID: selectedModelID)?.0.kind == .local
+    }
+
     var availableProjects: [ComposerProject] {
         environment.workspaceCenter.projectWorkspaces.map(ComposerProject.init(record:))
     }

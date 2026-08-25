@@ -48,9 +48,6 @@ struct ThreadDetailView: View {
             if let error = viewModel.actionError {
                 errorBanner(error)
             }
-            if viewModel.usesLocalModel {
-                localApprovalNotice
-            }
             if viewModel.canContinue {
                 continuationBar
             }
@@ -84,7 +81,10 @@ struct ThreadDetailView: View {
         }
         .sheet(isPresented: $showingPermissionsSheet) {
             NavigationStack {
-                TaskPermissionsInspectorView(conversationID: viewModel.conversationID)
+                TaskPermissionsInspectorView(
+                    conversationID: viewModel.conversationID,
+                    isLocalModel: viewModel.usesLocalModel
+                )
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
                             Button("action.done") { showingPermissionsSheet = false }
@@ -107,19 +107,6 @@ struct ThreadDetailView: View {
                 }
             }
         }
-    }
-
-    private var localApprovalNotice: some View {
-        Label(
-            "纯本地模式由较小的本地模型执行并至少自动审批一次；完全访问在本地模型下不可用。",
-            systemImage: "shield.lefthalf.filled"
-        )
-        .font(FloeTheme.Typography.metadata)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(FloeTheme.groupedSurface)
     }
 
     private var importantFilesStrip: some View {
@@ -309,8 +296,11 @@ struct ThreadDetailView: View {
                 events: events,
                 isLatest: isLatest,
                 isLive: viewModel.isRunning,
-                hasError: viewModel.events.contains { $0.kind == .error }
-            )
+                hasError: viewModel.events.contains { $0.kind == .error },
+                pendingApprovals: viewModel.pendingApprovals
+            ) { approval, decision in
+                Task { await viewModel.resolve(approval, decision: decision) }
+            }
 
         case .terminal(let event):
             TerminalEventRow(event: event)

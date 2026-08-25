@@ -539,6 +539,17 @@ final class ConversationCenter: ObservableObject {
         case .ask:
             return HumanApprovalPolicy()
         case .automatic:
+            if primaryModel.providerID == ProviderProfile.onDeviceProviderID {
+                // Never recursively run the same resident MLX model as its
+                // own action reviewer. Device diagnostics showed the primary
+                // turn completing and the process being terminated during
+                // this second generation. Deterministic low-risk actions run
+                // locally; sensitive actions escalate to the user.
+                FloeLogger(category: .security).info(
+                    "approvalRoute mode=automatic route=deterministicLocal primaryLocal=true"
+                )
+                return AutomaticApprovalPolicy(packageReviewBackend: nil)
+            }
             if mustUseLocalApproval, let localBackend {
                 FloeLogger(category: .security).info(
                     "approvalRoute mode=automatic route=local offline=\(environment.networkStatusMonitor.isOffline) primaryLocal=\(primaryModel.providerID == ProviderProfile.onDeviceProviderID) model=\(localBackend.model.id.uuidString)"
@@ -570,8 +581,10 @@ final class ConversationCenter: ObservableObject {
                     "approvalRoute mode=fullAccess route=downgradedLocalReview offline=\(environment.networkStatusMonitor.isOffline) primaryLocal=\(primaryModel.providerID == ProviderProfile.onDeviceProviderID)"
                 )
                 return AutomaticApprovalPolicy(
-                    backend: localBackend?.backend,
-                    packageReviewBackend: localBackend?.backend ?? packageBackend
+                    backend: primaryModel.providerID == ProviderProfile.onDeviceProviderID
+                        ? nil : localBackend?.backend,
+                    packageReviewBackend: primaryModel.providerID == ProviderProfile.onDeviceProviderID
+                        ? nil : (localBackend?.backend ?? packageBackend)
                 )
             }
             return TaskFullAccessPolicy(packageReviewBackend: packageBackend)
@@ -752,6 +765,7 @@ final class ConversationCenter: ObservableObject {
         // launch-recovery work. This closes the final race between durable
         // insertion and deferred provider setup.
         await reload()
+        await environment.workspaceCenter.reload()
         return StartedConversationTask(conversationID: prepared.conversation.id, run: run)
     }
 
@@ -1947,25 +1961,36 @@ final class ConversationCenter: ObservableObject {
         }
         launchFence.invalidate(scope: id)
         defer { deletingConversationIDs.remove(id) }
-        let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
-        let ownedWorkspaceID = try? await workspaceStore.workspaceID(conversationID: id)
-        let ownedWorkspace: WorkspaceRecord? = if let ownedWorkspaceID {
-            try? await workspaceStore.workspace(id: ownedWorkspaceID)
-        } else { nil }
-        let cloudTombstones: [CloudWorkspaceCleanupTombstone] = if let ownedWorkspaceID {
-            await environment.workspaceCenter.cloudCleanupTombstones(workspaceID: ownedWorkspaceID)
-        } else { [] }
-        try await environment.cloudWorkspaceCleanupQueue.enqueue(cloudTombstones)
-        await waitForLaunches()
-        try await stopRunsAndDelete(conversationIDs: [id])
-        if ownedWorkspace?.kind == .privateTask, let ownedWorkspaceID {
-            try? await environment.workspaceCenter.deleteWorkspace(id: ownedWorkspaceID)
+        let removedConversation = conversations.first(where: { $0.id == id })
+        conversations.removeAll { $0.id == id }
+        do {
+            let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
+            let ownedWorkspaceID = try? await workspaceStore.workspaceID(conversationID: id)
+            let ownedWorkspace: WorkspaceRecord? = if let ownedWorkspaceID {
+                try? await workspaceStore.workspace(id: ownedWorkspaceID)
+            } else { nil }
+            let cloudTombstones: [CloudWorkspaceCleanupTombstone] = if let ownedWorkspaceID {
+                await environment.workspaceCenter.cloudCleanupTombstones(workspaceID: ownedWorkspaceID)
+            } else { [] }
+            try await environment.cloudWorkspaceCleanupQueue.enqueue(cloudTombstones)
+            await waitForLaunches()
+            try await stopRunsAndDelete(conversationIDs: [id])
+            if ownedWorkspace?.kind == .privateTask, let ownedWorkspaceID {
+                try? await environment.workspaceCenter.deleteWorkspace(id: ownedWorkspaceID)
+            }
+            await environment.credentialVault.drainDeletionQueue()
+            _ = await environment.cloudWorkspaceCleanupQueue.drain()
+            environment.browserCenter.discard(conversationID: id)
+            await reload()
+            await environment.workspaceCenter.reload()
+        } catch {
+            if let removedConversation,
+               !conversations.contains(where: { $0.id == id }) {
+                conversations.append(removedConversation)
+                conversations.sort { $0.updatedAt > $1.updatedAt }
+            }
+            throw error
         }
-        await environment.credentialVault.drainDeletionQueue()
-        _ = await environment.cloudWorkspaceCleanupQueue.drain()
-        environment.browserCenter.discard(conversationID: id)
-        await reload()
-        await environment.workspaceCenter.reload()
     }
 
     func renameConversation(id: UUID, title: String) async throws {
@@ -1993,15 +2018,26 @@ final class ConversationCenter: ObservableObject {
     }
 
     func archiveConversation(id: UUID) async throws {
-        let live = runServices.values.filter { $0.conversationID == id }
-        for service in live { await service.cancel() }
-        for service in live {
-            if let task = runTasks[service.runID] { _ = await task.value }
+        let removedConversation = conversations.first(where: { $0.id == id })
+        conversations.removeAll { $0.id == id }
+        do {
+            let live = runServices.values.filter { $0.conversationID == id }
+            for service in live { await service.cancel() }
+            for service in live {
+                if let task = runTasks[service.runID] { _ = await task.value }
+            }
+            try await environment.conversationStore.setArchived(id: id, archived: true)
+            environment.browserCenter.discard(conversationID: id)
+            await reload()
+            publishSession(id)
+        } catch {
+            if let removedConversation,
+               !conversations.contains(where: { $0.id == id }) {
+                conversations.append(removedConversation)
+                conversations.sort { $0.updatedAt > $1.updatedAt }
+            }
+            throw error
         }
-        try await environment.conversationStore.setArchived(id: id, archived: true)
-        environment.browserCenter.discard(conversationID: id)
-        await reload()
-        publishSession(id)
     }
 
     func restoreConversation(id: UUID) async throws {

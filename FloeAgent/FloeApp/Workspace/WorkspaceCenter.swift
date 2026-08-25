@@ -115,6 +115,10 @@ final class WorkspaceCenter: ObservableObject {
                 }
             }
             conversationWorkspaceIDs = ownership
+            actionError = nil
+        } catch is CancellationError {
+            // SwiftUI cancels view-bound reload tasks during navigation. That
+            // is an expected lifecycle event, not a workspace failure modal.
         } catch {
             actionError = error.localizedDescription
         }
@@ -336,8 +340,23 @@ final class WorkspaceCenter: ObservableObject {
         if workspaces.isEmpty || conversationWorkspaceIDs[conversationID] == nil {
             await reload()
         }
-        guard let workspaceID = conversationWorkspaceIDs[conversationID],
-              let record = workspaces.first(where: { $0.id == workspaceID }) else {
+        var workspaceID = conversationWorkspaceIDs[conversationID]
+        var record = workspaceID.flatMap { id in workspaces.first(where: { $0.id == id }) }
+        if record == nil {
+            guard let conversation = try await environment.conversationStore
+                .conversation(id: conversationID) else {
+                throw FloeError.notFound("conversation \(conversationID.uuidString)")
+            }
+            // Repair legacy or partially-migrated tasks in one DB transaction.
+            // This is idempotent and never replaces an existing project owner.
+            record = try await store.ensureWorkspace(
+                conversationID: conversationID,
+                title: conversation.title
+            )
+            await reload()
+            workspaceID = record?.id
+        }
+        guard let record, workspaceID != nil else {
             throw FloeError.notFound("workspace for task \(conversationID.uuidString)")
         }
         if record.kind == .project {
@@ -362,6 +381,7 @@ final class WorkspaceCenter: ObservableObject {
         Self.sharedRootOverride = root
         await reloadRecentFiles()
         await loadInstructions()
+        actionError = nil
     }
 
     // MARK: - Inspector state

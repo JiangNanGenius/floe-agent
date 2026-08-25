@@ -7,6 +7,7 @@ import FloeModels
 /// happens atomically with the first task/run launch.
 struct DraftTaskPermissionsSheet: View {
     @Binding var policy: DraftTaskPolicy
+    var isLocalModel = false
     @Environment(\.dismiss) private var dismiss
     @State private var errorMessage: String?
 
@@ -17,7 +18,9 @@ struct DraftTaskPermissionsSheet: View {
                     Picker("新任务", selection: modeBinding) {
                         Text("询问").tag(TaskApprovalMode.ask)
                         Text("自动审批").tag(TaskApprovalMode.automatic)
-                        Text("完全访问").tag(TaskApprovalMode.fullAccess)
+                        Text("完全访问")
+                            .tag(TaskApprovalMode.fullAccess)
+                            .disabled(isLocalModel)
                     }
                     .pickerStyle(.segmented)
                     Text(explanation)
@@ -42,12 +45,15 @@ struct DraftTaskPermissionsSheet: View {
             }
         }
         .presentationDetents([.medium])
+        .onAppear { normalizeLocalPolicy() }
+        .onChange(of: isLocalModel) { _, _ in normalizeLocalPolicy() }
     }
 
     private var modeBinding: Binding<TaskApprovalMode> {
         Binding(
             get: { policy.approvalMode },
             set: { requested in
+                guard !(isLocalModel && requested == .fullAccess) else { return }
                 guard requested == .fullAccess else {
                     policy.approvalMode = requested
                     return
@@ -66,6 +72,7 @@ struct DraftTaskPermissionsSheet: View {
     }
 
     private func authenticateFullAccess() async {
+        guard !isLocalModel else { return }
         do {
             if try await DeviceOwnerAuthenticator.authenticate(
                 reason: "确认新任务启用完全访问权限"
@@ -75,6 +82,12 @@ struct DraftTaskPermissionsSheet: View {
             }
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func normalizeLocalPolicy() {
+        if isLocalModel, policy.approvalMode == .fullAccess {
+            policy.approvalMode = .automatic
         }
     }
 }

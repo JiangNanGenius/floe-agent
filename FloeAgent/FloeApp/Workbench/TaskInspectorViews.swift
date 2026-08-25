@@ -104,6 +104,7 @@ struct ChildAgentsInspectorView: View {
 
 struct TaskPermissionsInspectorView: View {
     let conversationID: UUID?
+    var isLocalModel: Bool? = nil
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var conversationCenter: ConversationCenter
     @State private var policy: TaskPolicy?
@@ -111,6 +112,7 @@ struct TaskPermissionsInspectorView: View {
     @State private var errorMessage: String?
     @State private var isConfirmingFullAccess = false
     @State private var didSave = false
+    @State private var resolvedIsLocalModel = false
 
     var body: some View {
         Form {
@@ -119,7 +121,9 @@ struct TaskPermissionsInspectorView: View {
                     Picker("本任务", selection: approvalModeBinding) {
                         Text("询问").tag(TaskApprovalMode.ask.rawValue)
                         Text("自动审批").tag(TaskApprovalMode.automatic.rawValue)
-                        Text("完全访问").tag(TaskApprovalMode.fullAccess.rawValue)
+                        Text("完全访问")
+                            .tag(TaskApprovalMode.fullAccess.rawValue)
+                            .disabled(resolvedIsLocalModel)
                     }
                     .pickerStyle(.segmented)
                     Text(modeExplanation)
@@ -170,6 +174,7 @@ struct TaskPermissionsInspectorView: View {
             get: { policy?.resolvedApprovalMode.rawValue ?? TaskApprovalMode.ask.rawValue },
             set: { value in
                 if value == TaskApprovalMode.fullAccess.rawValue {
+                    guard !resolvedIsLocalModel else { return }
                     isConfirmingFullAccess = true
                 } else {
                     policy?.approvalMode = value
@@ -187,6 +192,7 @@ struct TaskPermissionsInspectorView: View {
     }
 
     private func authenticateFullAccess() async {
+        guard !resolvedIsLocalModel else { return }
         do {
             let allowed = try await DeviceOwnerAuthenticator.authenticate(
                 reason: "确认本任务启用完全访问权限"
@@ -212,6 +218,19 @@ struct TaskPermissionsInspectorView: View {
         let store = SQLiteWorkspaceStore(database: environment.database)
         policy = (try? await store.taskPolicy(conversationID: conversationID))
             ?? TaskPolicy(conversationID: conversationID)
+        if let isLocalModel {
+            resolvedIsLocalModel = isLocalModel
+        } else if let modelID = (try? await environment.runStore
+            .runs(conversationID: conversationID))?.first?.modelID {
+            resolvedIsLocalModel = conversationCenter
+                .providerAndModel(modelID: modelID)?.0.kind == .local
+        } else {
+            resolvedIsLocalModel = false
+        }
+        if resolvedIsLocalModel,
+           policy?.resolvedApprovalMode == .fullAccess {
+            policy?.approvalMode = TaskApprovalMode.automatic.rawValue
+        }
     }
 
     private func save() async {

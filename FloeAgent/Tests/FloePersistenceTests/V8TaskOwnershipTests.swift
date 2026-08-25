@@ -128,4 +128,40 @@ struct V8TaskOwnershipTests {
         }
         #expect(foreignKeyIssueCount == 0)
     }
+
+    @Test("Runtime repair creates one private owner for an unowned legacy task")
+    func runtimeRepairIsIdempotent() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let conversation = ConversationRecord(
+            id: UUID(),
+            title: "Recovered task",
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+        try await SQLiteConversationStore(database: database).saveConversation(conversation)
+        // Simulate a partially restored database whose canonical ownership
+        // row was absent after migration/import.
+        try await database.writer { db in
+            try db.execute(
+                sql: "DELETE FROM conversation_workspace_ownership WHERE conversation_id = ?",
+                arguments: [conversation.id.uuidString]
+            )
+        }
+
+        let store = SQLiteWorkspaceStore(database: database)
+        let first = try await store.ensureWorkspace(
+            conversationID: conversation.id,
+            title: conversation.title
+        )
+        let second = try await store.ensureWorkspace(
+            conversationID: conversation.id,
+            title: "A later title must not replace the owner"
+        )
+
+        #expect(first.id == second.id)
+        #expect(first.kind == .privateTask)
+        #expect(first.internalRelativePath == "PrivateTasks/\(conversation.id.uuidString)")
+        #expect(try await store.workspaceID(conversationID: conversation.id) == first.id)
+    }
 }

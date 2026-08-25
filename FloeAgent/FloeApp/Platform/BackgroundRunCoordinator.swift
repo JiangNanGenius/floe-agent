@@ -185,6 +185,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         FloeLogger(category: .app).info(
             "pictureInPictureClosedByUser activeRuns=\(activeRuns.count)"
         )
+        if !isAppInBackground {
+            // The AVKit stop callback has already released the old controller.
+            // Rebuild while a key window exists so the next app departure is
+            // not stuck with no prepared source.
+            prepareBackgroundSurfaceIfNeeded()
+        }
     }
 
     /// Applies the user's background-execution choice when a run starts.
@@ -447,7 +453,16 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 await self?.environment.memoryDreamService.deepDream()
             }
         case .inactive:
-            break
+            // iPadOS may move directly through inactive while automatic PiP
+            // begins and delay/omit the SwiftUI background callback. Request
+            // the already-prepared controller during this transition while
+            // the source view is still attached to a foreground window.
+            if !pipSuppressedForCurrentBatch,
+               !activeRuns.isEmpty,
+               environment.settingsCenter.backgroundExecution != .standard,
+               environment.backgroundVideoService.isPiPPrepared {
+                environment.backgroundVideoService.startPreparedPictureInPicture()
+            }
         @unknown default:
             break
         }

@@ -291,9 +291,18 @@ enum ThreadTimelineBuilder {
             }
         }
 
-        // 6. Pending approvals sit at the decision point — after the tool
-        //    request that produced them, i.e. at the live tail.
-        for approval in pendingApprovals {
+        // 6. Modern approvals render inside their matching tool disclosure.
+        // Keep the standalone row only for legacy events that lack a durable
+        // call ID, so no approval card is pinned independently at the bottom.
+        let representedApprovalCallIDs = Set(sortedEvents.compactMap { event -> String? in
+            guard event.kind == .toolRequest || event.kind == .toolResult else { return nil }
+            let value = decodePayload(event.payloadJSON)["callID"]
+                ?? decodePayload(event.payloadJSON)["id"]
+                ?? ""
+            return value.isEmpty ? nil : value
+        })
+        for approval in pendingApprovals
+            where !representedApprovalCallIDs.contains(approval.toolCall.id) {
             items.append(.approval(approval))
         }
 

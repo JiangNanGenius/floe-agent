@@ -2,7 +2,7 @@
 
 [README](../README.md) · [简体中文 README](../README.zh-CN.md) · [User guide](USER_GUIDE.md)
 
-This page is the current 1.4.27 map. Older audit and delivery documents are historical evidence and may use superseded schema versions or navigation names.
+This page is the current 1.4.28 map. Older audit and delivery documents are historical evidence and may use superseded schema versions or navigation names.
 
 ## Domain vocabulary / 领域术语
 

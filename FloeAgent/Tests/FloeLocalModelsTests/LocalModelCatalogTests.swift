@@ -187,6 +187,15 @@ struct LocalModelCatalogTests {
             physicalMemoryBytes: 4_900_000_000
         ))
 
+        let minimumScratch = LocalInferenceResourcePolicy.profile(
+            mappedBytes: 5_146_800_534,
+            physicalMemoryBytes: 5_264_538_280
+        )
+        #expect(minimumScratch.tier == .constrained)
+        #expect(minimumScratch.contextSize == 2_048)
+        #expect(minimumScratch.batchSize == 32)
+        #expect(minimumScratch.maximumOutputTokens == 256)
+
         let constrained = LocalInferenceResourcePolicy.profile(
             mappedBytes: 5 * gib,
             physicalMemoryBytes: 8 * gib
@@ -251,6 +260,8 @@ struct LocalModelCatalogTests {
         #expect(build.text.contains("unrelated.tool0"))
         #expect(build.text.contains("AVAILABLE TOOL NAMES"))
         #expect(build.systemInstructions.contains("Think silently"))
+        #expect(build.systemInstructions.contains("Reply directly in natural language"))
+        #expect(!build.systemInstructions.contains("emit the documented single JSON tool_call"))
         #expect(!build.text.contains("<|im_start|>"))
         #expect(!build.text.contains("SYSTEM:"))
         #expect(!build.text.contains(String(repeating: "large cloud harness ", count: 20)))
@@ -284,6 +295,7 @@ struct LocalModelCatalogTests {
         let build = LocalProviderAdapter.buildPrompt(for: request)
 
         #expect(build.selectedToolCount == 3)
+        #expect(build.systemInstructions.contains("emit the documented single JSON tool_call"))
         #expect(build.selectedTools.map(\.name) == [
             "pdf.read", "presentation.create", "workspace.readFile"
         ])
@@ -292,6 +304,40 @@ struct LocalModelCatalogTests {
         #expect(build.text.contains("presentation.create"))
         #expect(!build.text.contains("- ssh.execute:"))
         #expect(build.text.count < 5_000)
+    }
+
+    @Test("Apple tool follow-up uses structured history and requests a natural answer")
+    @available(macOS 15.4, *)
+    func appleToolFollowUpDisablesAnotherCall() throws {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: AppleFoundationModelIdentity.remoteModelID,
+            displayName: "Apple Foundation Model",
+            limits: .init(contextTokens: 4_096, maxOutputTokens: 512),
+            capabilities: [.text, .tools]
+        )
+        let call = try ToolCall(
+            id: "apple-call",
+            toolName: "apple.automation.list",
+            argumentsJSON: Data(#"{}"#.utf8),
+            scope: .local
+        )
+        let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [("user", "列出快捷指令")],
+            toolResults: [(callID: call.id, output: "快捷指令 A")],
+            pendingToolCalls: [call],
+            toolSchemas: [ToolSchemaDescriptor(
+                name: call.toolName,
+                description: "List shortcuts"
+            )]
+        ))
+        #expect(build.selectedTools.isEmpty)
+        #expect(build.systemInstructions.contains("Reply directly in natural language"))
+        #expect(!build.text.contains("PENDING_EXTERNAL_EXECUTION"))
+        #expect(!build.text.contains("TOOL RESULT"))
     }
 
     @Test("Local capability questions can see the authoritative tool directory")
@@ -464,5 +510,16 @@ struct LocalModelCatalogTests {
             offeredToolNames: ["ssh.execute"]
         ))
         #expect(call.scope == .host(hostID))
+    }
+
+    @Test("Legacy Apple tool-result envelope renders as natural language")
+    @available(macOS 15.4, *)
+    func legacyAppleResultEnvelopeIsUnwrapped() {
+        #expect(LocalProviderAdapter.visibleAnswer(
+            from: #"{"tool":"apple.automation.list","result":"你好"}"#
+        ) == "你好")
+        #expect(LocalProviderAdapter.visibleAnswer(
+            from: #"{"tool_call":{"name":"apple.automation.list","arguments":{}}}"#
+        ).contains("tool_call"))
     }
 }

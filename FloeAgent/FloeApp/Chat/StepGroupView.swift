@@ -8,22 +8,36 @@
 import SwiftUI
 import FloeModels
 import FloePersistence
+import FloeSecurity
 
 struct StepGroupView: View {
     let events: [RunEventRecord]
     let isLatest: Bool
     let isLive: Bool
     let hasError: Bool
+    let pendingApprovals: [PendingApproval]
+    let onResolveApproval: (PendingApproval, ApprovalDecision) -> Void
     @State private var isExpanded: Bool
 
-    init(events: [RunEventRecord], isLatest: Bool, isLive: Bool, hasError: Bool) {
+    init(
+        events: [RunEventRecord],
+        isLatest: Bool,
+        isLive: Bool,
+        hasError: Bool,
+        pendingApprovals: [PendingApproval] = [],
+        onResolveApproval: @escaping (PendingApproval, ApprovalDecision) -> Void = { _, _ in }
+    ) {
         self.events = events
         self.isLatest = isLatest
         self.isLive = isLive
         self.hasError = hasError
+        self.pendingApprovals = pendingApprovals
+        self.onResolveApproval = onResolveApproval
         // Keep the transcript readable while tools stream: the newest group
         // updates this summary row instead of expanding every event inline.
-        self._isExpanded = State(initialValue: false)
+        // A human decision is the exception: open its owning tool group so
+        // the controls and reason are visible at the exact call site.
+        self._isExpanded = State(initialValue: !pendingApprovals.isEmpty)
     }
 
     private var summary: String {
@@ -52,6 +66,13 @@ struct StepGroupView: View {
                                 onRetry: nil,
                                 approvalSummary: approvalSummary(for: event)
                             )
+                            if event.kind == .toolRequest,
+                               let pending = pendingApproval(for: event) {
+                                ApprovalCardView(approval: pending) { decision in
+                                    onResolveApproval(pending, decision)
+                                }
+                                .padding(.leading, 8)
+                            }
                         }
                     }
                 }
@@ -72,6 +93,11 @@ struct StepGroupView: View {
             .onTapGesture { withAnimation(.snappy) { isExpanded.toggle() } }
         }
         .padding(.vertical, 2)
+        .onChange(of: pendingApprovals.map(\.id)) { _, approvalIDs in
+            if !approvalIDs.isEmpty {
+                withAnimation(.snappy) { isExpanded = true }
+            }
+        }
     }
 
     private func decodePayload(_ json: String) -> [String: String] {
@@ -103,6 +129,11 @@ struct StepGroupView: View {
     private func approvalSummary(for event: RunEventRecord) -> String? {
         guard let callID = callID(for: event) else { return nil }
         return approvalSummariesByCallID[callID]
+    }
+
+    private func pendingApproval(for event: RunEventRecord) -> PendingApproval? {
+        guard let callID = callID(for: event) else { return nil }
+        return pendingApprovals.first { $0.toolCall.id == callID }
     }
 
     private func isDetachedApproval(_ event: RunEventRecord) -> Bool {

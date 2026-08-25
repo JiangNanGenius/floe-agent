@@ -77,6 +77,22 @@ public enum LocalInferenceResourcePolicy {
             )
         }
         let pressure = Double(mappedBytes) / Double(physicalMemoryBytes)
+        // A large memory-mapped model can be loadable while leaving almost
+        // no instantaneous process allowance for prompt evaluation and KV
+        // growth. Keep that load permitted (iPadOS may reclaim background
+        // apps), but enter a minimum-scratch profile so the first decode does
+        // not immediately consume another large allocation. Build 17 device
+        // diagnostics showed Gemma at ~97.7% of the current allowance dying
+        // during generation, after its container loaded successfully.
+        if pressure >= 0.90 {
+            return .init(
+                tier: .constrained,
+                contextSize: 2_048,
+                batchSize: 32,
+                gpuLayers: 12,
+                maximumOutputTokens: 256
+            )
+        }
         if pressure >= 0.58 {
             return .init(
                 tier: .constrained,

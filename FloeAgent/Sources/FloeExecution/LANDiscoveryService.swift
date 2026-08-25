@@ -29,15 +29,17 @@ public struct LANDiscoveryResult: Sendable, Codable, Hashable, Identifiable {
 
 /// Thread-safe collector for NWBrowser results.
 private actor ResultCollector {
-    private var results: [LANDiscoveryResult] = []
+    private var results: [String: LANDiscoveryResult] = [:]
     private var failures: [String] = []
+    private var connections: [RetainedConnection] = []
+    private var stopped = false
 
-    func add(_ result: LANDiscoveryResult) {
-        results.append(result)
+    func upsert(_ result: LANDiscoveryResult, key: String) {
+        results[key] = result
     }
 
     func get() -> [LANDiscoveryResult] {
-        results
+        Array(results.values)
     }
 
     func recordFailure(_ message: String) {
@@ -46,6 +48,31 @@ private actor ResultCollector {
 
     func failureSummary() -> String? {
         failures.first
+    }
+
+    func retain(_ connection: RetainedConnection) {
+        guard !stopped else {
+            connection.value.cancel()
+            return
+        }
+        connections.append(connection)
+    }
+
+    func cancelConnections() {
+        stopped = true
+        connections.forEach { $0.value.cancel() }
+        connections.removeAll()
+    }
+}
+
+/// Network.framework reference types do not declare Sendable even though all
+/// access below is confined to the discovery queue. This wrapper lets the
+/// collector retain resolver connections until the bounded scan ends.
+private final class RetainedConnection: @unchecked Sendable {
+    let value: NWConnection
+
+    init(_ value: NWConnection) {
+        self.value = value
     }
 }
 
@@ -97,6 +124,12 @@ public struct LANDiscoveryService: Sendable {
             let browser = NWBrowser(for: .bonjour(type: serviceType, domain: nil), using: .tcp)
             browser.stateUpdateHandler = { state in
                 switch state {
+                case .waiting(let error):
+                    // Local Network privacy denial is normally reported as a
+                    // waiting DNS policy error, not `.failed`. Preserve it so
+                    // an empty scan explains the permission problem instead
+                    // of incorrectly claiming that no devices exist.
+                    Task { await collector.recordFailure("\(serviceType): \(error.localizedDescription)") }
                 case .failed(let error):
                     Task { await collector.recordFailure("\(serviceType): \(error.localizedDescription)") }
                 default:
@@ -107,15 +140,46 @@ public struct LANDiscoveryService: Sendable {
                 for result in newResults {
                     if case .service(let name, let type, let domain, let interface) = result.endpoint {
                         let serviceHost = "\(name).\(type).\(domain)"
+                        let resultKey = "\(name)|\(type)|\(domain)"
                         Task {
-                            await collector.add(LANDiscoveryResult(
+                            await collector.upsert(LANDiscoveryResult(
                                 name: name,
                                 host: serviceHost,
                                 port: 0,
                                 serviceType: type,
                                 domain: interface.map { "\(domain) [\($0)]" } ?? domain
-                            ))
+                            ), key: resultKey)
                         }
+
+                        // NWBrowser returns a Bonjour service endpoint, not
+                        // the usable host/port promised by the tool. Resolve
+                        // it with a bounded TCP connection and replace the
+                        // fallback service name when resolution succeeds.
+                        let connection = NWConnection(to: result.endpoint, using: .tcp)
+                        let retained = RetainedConnection(connection)
+                        connection.stateUpdateHandler = { state in
+                            switch state {
+                            case .ready:
+                                if case .hostPort(let host, let port) = connection.currentPath?.remoteEndpoint {
+                                    Task {
+                                        await collector.upsert(LANDiscoveryResult(
+                                            name: name,
+                                            host: "\(host)",
+                                            port: Int(port.rawValue),
+                                            serviceType: type,
+                                            domain: interface.map { "\(domain) [\($0)]" } ?? domain
+                                        ), key: resultKey)
+                                    }
+                                }
+                                connection.cancel()
+                            case .failed, .cancelled:
+                                connection.cancel()
+                            default:
+                                break
+                            }
+                        }
+                        Task { await collector.retain(retained) }
+                        connection.start(queue: queue)
                     }
                 }
             }
@@ -123,14 +187,17 @@ public struct LANDiscoveryService: Sendable {
             browsers.append(browser)
         }
         defer { browsers.forEach { $0.cancel() } }
-        try await Task.sleep(for: .seconds(timeoutSeconds))
-        try Task.checkCancellation()
+        do {
+            try await Task.sleep(for: .seconds(timeoutSeconds))
+            try Task.checkCancellation()
+        } catch {
+            await collector.cancelConnections()
+            throw error
+        }
+        await collector.cancelConnections()
 
-        // Deduplicate by name+host.
-        var seen = Set<String>()
         let allResults = await collector.get()
-        let unique = allResults.filter { seen.insert("\($0.name)-\($0.host)").inserted }
-            .sorted { lhs, rhs in
+        let unique = allResults.sorted { lhs, rhs in
                 if lhs.serviceType != rhs.serviceType { return lhs.serviceType < rhs.serviceType }
                 return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
             }
