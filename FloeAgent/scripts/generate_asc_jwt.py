@@ -61,12 +61,15 @@ def main() -> None:
     key_id = required_environment("ASC_KEY_ID")
     issuer_id = required_environment("ASC_ISSUER_ID")
     key_path = required_environment("ASC_PRIVATE_KEY_PATH")
+    lifetime_seconds = int(os.environ.get("ASC_TOKEN_LIFETIME_SECONDS", "1200"))
+    if not 60 <= lifetime_seconds <= 15_552_000:
+        raise SystemExit("ASC_TOKEN_LIFETIME_SECONDS is outside the supported range")
     now = int(time.time())
     header = {"alg": "ES256", "kid": key_id, "typ": "JWT"}
     payload = {
         "iss": issuer_id,
         "iat": now,
-        "exp": now + 1_200,
+        "exp": now + lifetime_seconds,
         "aud": "appstoreconnect-v1",
     }
     encoded_header = base64url(json.dumps(header, separators=(",", ":")).encode())

@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - discover
+          - monitor
           - start
           - enable-tag-and-start
           - update-and-start
@@ -27,6 +28,10 @@ on:
         type: string
       macos_version_id:
         description: ciMacOsVersions ID required for update-and-start
+        required: false
+        type: string
+      build_run_id:
+        description: ciBuildRuns ID required for monitor
         required: false
         type: string
 
@@ -57,6 +62,7 @@ jobs:
           ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           ASC_PRIVATE_KEY_PATH: ${{ runner.temp }}/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
+          ASC_TOKEN_LIFETIME_SECONDS: ${{ inputs.operation == 'monitor' && '7200' || '1200' }}
         run: |
           set -euo pipefail
           TOKEN="$(python3 FloeAgent/scripts/generate_asc_jwt.py)"
@@ -231,3 +237,48 @@ jobs:
           fi
           jq -r '.data | "xcode-cloud-build-run id=\(.id) number=\(.attributes.number) progress=\(.attributes.executionProgress) commit=\(.attributes.sourceCommit.commitSha // "pending")"' \
             "$RUNNER_TEMP/build-run.json"
+
+      - name: Monitor the selected Xcode Cloud build run
+        if: inputs.operation == 'monitor'
+        env:
+          ASC_TOKEN: ${{ steps.auth.outputs.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        run: |
+          set -euo pipefail
+          test -n "$BUILD_RUN_ID"
+          case "$BUILD_RUN_ID" in
+            *[!A-Za-z0-9:_-]*) echo "Invalid Xcode Cloud build run ID" >&2; exit 2 ;;
+          esac
+
+          previous_summary=""
+          for attempt in $(seq 1 120); do
+            curl --fail-with-body --silent --show-error --get \
+              -H "Authorization: Bearer $ASC_TOKEN" \
+              -H "Accept: application/json" \
+              --data-urlencode 'fields[ciBuildRuns]=number,createdDate,startedDate,finishedDate,sourceCommit,issueCounts,executionProgress,completionStatus,startReason,cancelReason,builds,workflow,product,sourceBranchOrTag' \
+              --data-urlencode 'fields[builds]=version,uploadedDate,processingState,buildAudienceType' \
+              --data-urlencode 'fields[ciWorkflows]=name' \
+              --data-urlencode 'fields[ciProducts]=name' \
+              --data-urlencode 'fields[scmGitReferences]=name,canonicalName,kind,isDeleted' \
+              --data-urlencode 'include=builds,workflow,product,sourceBranchOrTag' \
+              "https://api.appstoreconnect.apple.com/v1/ciBuildRuns/$BUILD_RUN_ID" \
+              > "$RUNNER_TEMP/build-run-status.json"
+
+            summary="$(jq -r '.data | "number=\(.attributes.number) progress=\(.attributes.executionProgress) completion=\(.attributes.completionStatus // "pending") commit=\(.attributes.sourceCommit.commitSha // "pending") started=\(.attributes.startedDate // "pending") finished=\(.attributes.finishedDate // "pending")"' "$RUNNER_TEMP/build-run-status.json")"
+            if test "$summary" != "$previous_summary"; then
+              echo "xcode-cloud-status $summary"
+              jq -r '.included[]? | select(.type == "builds") | "xcode-cloud-app-build id=\(.id) version=\(.attributes.version) processing=\(.attributes.processingState) audience=\(.attributes.buildAudienceType) uploaded=\(.attributes.uploadedDate)"' \
+                "$RUNNER_TEMP/build-run-status.json"
+              previous_summary="$summary"
+            fi
+
+            progress="$(jq -r '.data.attributes.executionProgress' "$RUNNER_TEMP/build-run-status.json")"
+            if test "$progress" = COMPLETE; then
+              completion="$(jq -r '.data.attributes.completionStatus' "$RUNNER_TEMP/build-run-status.json")"
+              test "$completion" = SUCCEEDED
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "Timed out waiting for Xcode Cloud build run $BUILD_RUN_ID" >&2
+          exit 1
