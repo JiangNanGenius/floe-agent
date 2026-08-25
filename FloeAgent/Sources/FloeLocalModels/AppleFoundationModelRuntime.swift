@@ -1,5 +1,6 @@
 import Foundation
 import FloeCore
+import FloeLocalModelCatalog
 import FloeModels
 import FloeProviders
 
@@ -48,6 +49,20 @@ public struct AppleFoundationToolExchange: Sendable, Equatable {
     public init(call: FloeModels.ToolCall, output: String) {
         self.call = call
         self.output = output
+    }
+}
+
+/// A prior natural-language turn reconstructed into the system model's
+/// transcript. Floe persists the canonical conversation; Foundation Models
+/// receives only this bounded projection, so a new session can continue a
+/// second user turn without retaining hidden per-run state.
+public struct AppleFoundationConversationMessage: Sendable, Equatable {
+    public let role: String
+    public let text: String
+
+    public init(role: String, text: String) {
+        self.role = role
+        self.text = text
     }
 }
 
@@ -142,6 +157,7 @@ public actor AppleFoundationModelRuntime {
         images: [AppleFoundationImageInput],
         tools: [ToolSchemaDescriptor],
         historicalTools: [ToolSchemaDescriptor] = [],
+        conversation: [AppleFoundationConversationMessage] = [],
         toolHistory: [AppleFoundationToolExchange] = [],
         forceToolCall: Bool = false,
         maxTokens: Int
@@ -163,7 +179,12 @@ public actor AppleFoundationModelRuntime {
             throw FloeError.validationFailed("Apple Foundation Models accepts at most four images per request")
         }
 
+        let traceID = UUID().uuidString
         let startedAt = ContinuousClock.now
+        let availableBefore = LocalInferenceResourcePolicy.availableMemoryBytes()
+        FloeLogger(category: .providers).info(
+            "appleFoundationStarted trace=\(traceID) history=\(conversation.count) promptCharacters=\(prompt.count) images=\(images.count) offeredTools=\(tools.count) historicalTools=\(historicalTools.count) toolResults=\(toolHistory.count) context=\(model.contextSize) availableBeforeBytes=\(availableBefore)"
+        )
         let recorder = DeferredToolCallRecorder()
         var nativeDescriptors = tools
         for descriptor in historicalTools
@@ -198,6 +219,24 @@ public actor AppleFoundationModelRuntime {
         let contextOptions = ContextOptions(
             reasoningLevel: model.capabilities.contains(.reasoning) ? .light : nil
         )
+        for message in conversation {
+            let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            switch message.role.lowercased() {
+            case "user":
+                session.transcript.append(.prompt(.init(
+                    segments: [.text(.init(content: text))],
+                    options: options,
+                    contextOptions: contextOptions
+                )))
+            case "assistant":
+                session.transcript.append(.response(.init(
+                    segments: [.text(.init(content: text))]
+                )))
+            default:
+                continue
+            }
+        }
         // A reconstructed Foundation Models transcript must preserve causal
         // order. The previous code appended toolCalls/toolOutput before the
         // prompt that caused them, then sent that prompt afterward as a new
@@ -227,7 +266,9 @@ public actor AppleFoundationModelRuntime {
                 segments: [.text(.init(content: exchange.output))]
             )))
         }
-        session.prewarm()
+        FloeLogger(category: .providers).debug(
+            "appleFoundationSessionPrepared trace=\(traceID) transcriptEntries=\(session.transcript.count)"
+        )
         var latest = ""
         var firstContentAt: ContinuousClock.Instant?
         var usageInputTokens: Int?
@@ -251,6 +292,7 @@ public actor AppleFoundationModelRuntime {
                 "Answer the user's latest request naturally using the verified tool output above. Do not repeat the tool call and do not expose tool-call JSON."
             )
         }
+        FloeLogger(category: .providers).debug("appleFoundationPreflightStarted trace=\(traceID)")
         let promptTokens = try await model.tokenCount(for: request)
         let instructionTokens = try await model.tokenCount(for: Instructions(localizedInstructions))
         let toolTokens = try await model.tokenCount(for: nativeTools)
@@ -262,12 +304,16 @@ public actor AppleFoundationModelRuntime {
             promptTokens + instructionTokens + toolTokens,
             promptTokens + transcriptTokens
         )
+        FloeLogger(category: .providers).info(
+            "appleFoundationPreflightFinished trace=\(traceID) inputTokens=\(inputTokenCount) reservedOutputTokens=\(effectiveMaxTokens) promptTokens=\(promptTokens) instructionTokens=\(instructionTokens) toolTokens=\(toolTokens) transcriptTokens=\(transcriptTokens) context=\(model.contextSize)"
+        )
         guard inputTokenCount + effectiveMaxTokens <= model.contextSize else {
             throw FloeError.validationFailed(
                 "Apple Foundation Models context is too large (\(inputTokenCount) input + \(effectiveMaxTokens) reserved, limit \(model.contextSize)); compact the conversation and retry"
             )
         }
         do {
+            FloeLogger(category: .providers).debug("appleFoundationStreamStarted trace=\(traceID)")
             for try await snapshot in session.streamResponse(
                 to: request,
                 options: options,
@@ -282,9 +328,15 @@ public actor AppleFoundationModelRuntime {
                 usageReasoningTokens = snapshot.usage.output.reasoningTokenCount
                 if firstContentAt == nil, !latest.isEmpty {
                     firstContentAt = .now
+                    FloeLogger(category: .providers).info(
+                        "appleFoundationFirstContent trace=\(traceID) ttftMs=\(Self.milliseconds(startedAt.duration(to: .now)))"
+                    )
                 }
             }
         } catch {
+            FloeLogger(category: .providers).warning(
+                "appleFoundationFailed trace=\(traceID) phase=stream message=\(String(error.localizedDescription.prefix(300))) availableAfterBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes())"
+            )
             if Task.isCancelled || error is CancellationError { throw FloeError.cancelled }
             throw Self.normalizedFoundationError(error)
         }
@@ -303,6 +355,9 @@ public actor AppleFoundationModelRuntime {
         let inputTokens = usageInputTokens ?? inputTokenCount
         let outputTokens = usageOutputTokens ?? max(1, latest.utf8.count / 4)
         let decodeMs = max(1, elapsedMs - (firstMs ?? 0))
+        FloeLogger(category: .providers).info(
+            "appleFoundationFinished trace=\(traceID) inputTokens=\(inputTokens) outputTokens=\(outputTokens) durationMs=\(elapsedMs) availableBeforeBytes=\(availableBefore) availableAfterBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes())"
+        )
         return LocalRuntimeCompletion(
             text: latest,
             inputTokens: inputTokens,
@@ -331,12 +386,16 @@ public actor AppleFoundationModelRuntime {
             + "\nRespond using the user's language when it is supported. Current locale: \(Locale.current.identifier)."
             + (tools.isEmpty ? "" : "\nIf a tool is required, emit only the exact JSON tool_call object documented in the prompt.")
         let session = LanguageModelSession(instructions: localizedInstructions)
-        session.prewarm()
         let startedAt = ContinuousClock.now
         var latest = ""
         var firstContentAt: ContinuousClock.Instant?
         do {
-            for try await snapshot in session.streamResponse(to: prompt) {
+            let legacyConversation = conversation.map {
+                "\($0.role.uppercased()): \($0.text)"
+            }.joined(separator: "\n\n")
+            let legacyPrompt = legacyConversation.isEmpty
+                ? prompt : legacyConversation + "\n\nUSER: " + prompt
+            for try await snapshot in session.streamResponse(to: legacyPrompt) {
                 latest = snapshot.content
                 if firstContentAt == nil, !latest.isEmpty { firstContentAt = .now }
             }

@@ -82,6 +82,10 @@ public struct WebSearchQuery: Hashable, Sendable {
     public var recencyDays: Int?
     public var maxResults: Int
     public var requestedProvider: String?
+    /// Per-tool Bocha summary behavior. `web.search` sets false for raw web
+    /// evidence; `web.searchAI` sets true. Nil preserves compatibility for
+    /// callers that intentionally defer to provider configuration.
+    public var summaryEnabled: Bool?
 
     public init(
         text: String,
@@ -90,7 +94,8 @@ public struct WebSearchQuery: Hashable, Sendable {
         excludedDomains: [String] = [],
         recencyDays: Int? = nil,
         maxResults: Int = 10,
-        requestedProvider: String? = nil
+        requestedProvider: String? = nil,
+        summaryEnabled: Bool? = nil
     ) {
         self.text = text
         self.mode = mode
@@ -99,6 +104,7 @@ public struct WebSearchQuery: Hashable, Sendable {
         self.recencyDays = recencyDays
         self.maxResults = maxResults
         self.requestedProvider = requestedProvider
+        self.summaryEnabled = summaryEnabled
     }
 }
 

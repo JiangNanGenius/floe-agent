@@ -190,8 +190,9 @@ public actor LocalModelRuntime {
         )
         let engine = prepared.engine
         let profile = prepared.profile
+        let availableBeforeInference = LocalInferenceResourcePolicy.availableMemoryBytes()
         FloeLogger(category: .providers).info(
-            "localInferenceStarted trace=\(traceID) model=\(modelID) promptCharacters=\(prompt.count) images=\(images.count) imageBytes=\(images.reduce(0) { $0 + $1.count }) requestedMaxTokens=\(maxTokens) effectiveMaxTokens=\(min(maxTokens, profile.maximumOutputTokens))"
+            "localInferenceStarted trace=\(traceID) model=\(modelID) promptCharacters=\(prompt.count) images=\(images.count) imageBytes=\(images.reduce(0) { $0 + $1.count }) requestedMaxTokens=\(maxTokens) effectiveMaxTokens=\(min(maxTokens, profile.maximumOutputTokens)) availableBeforeBytes=\(availableBeforeInference) physicalBytes=\(ProcessInfo.processInfo.physicalMemory) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize)"
         )
         do {
             let engineStartedAt = Date()
@@ -203,9 +204,10 @@ public actor LocalModelRuntime {
                 maxTokens: min(maxTokens, profile.maximumOutputTokens)
             )
             let endedAt = Date()
+            let availableAfterInference = LocalInferenceResourcePolicy.availableMemoryBytes()
             let prepareDurationMs = max(0, Int(engineStartedAt.timeIntervalSince(startedAt) * 1_000))
             FloeLogger(category: .providers).info(
-                "localInferenceFinished trace=\(traceID) model=\(modelID) outputCharacters=\(output.text.count) inputTokens=\(output.inputTokens) outputTokens=\(output.outputTokens) ttftMs=\(output.timeToFirstTokenMs.map { $0 + prepareDurationMs } ?? -1) tokensPerSecond=\(output.tokensPerSecond ?? -1) durationMs=\(Int(endedAt.timeIntervalSince(startedAt) * 1_000))"
+                "localInferenceFinished trace=\(traceID) model=\(modelID) outputCharacters=\(output.text.count) inputTokens=\(output.inputTokens) outputTokens=\(output.outputTokens) ttftMs=\(output.timeToFirstTokenMs.map { $0 + prepareDurationMs } ?? -1) tokensPerSecond=\(output.tokensPerSecond ?? -1) durationMs=\(Int(endedAt.timeIntervalSince(startedAt) * 1_000)) availableBeforeBytes=\(availableBeforeInference) availableAfterBytes=\(availableAfterInference) availableDeltaBytes=\(Int64(availableAfterInference) - Int64(availableBeforeInference)) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize)"
             )
             return LocalRuntimeCompletion(
                 text: output.text,
@@ -216,10 +218,11 @@ public actor LocalModelRuntime {
                 tokensPerSecond: output.tokensPerSecond
             )
         } catch {
+            let availableAfterFailure = LocalInferenceResourcePolicy.availableMemoryBytes()
             let nsError = error as NSError
             let safeMessage = String(error.localizedDescription.prefix(300))
             FloeLogger(category: .providers).warning(
-                "localInferenceFailed trace=\(traceID) model=\(modelID) domain=\(nsError.domain) code=\(nsError.code) message=\(safeMessage) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
+                "localInferenceFailed trace=\(traceID) model=\(modelID) domain=\(nsError.domain) code=\(nsError.code) message=\(safeMessage) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000)) availableBeforeBytes=\(availableBeforeInference) availableAfterBytes=\(availableAfterFailure) availableDeltaBytes=\(Int64(availableAfterFailure) - Int64(availableBeforeInference)) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize)"
             )
             throw error
         }
@@ -417,7 +420,23 @@ public struct LocalProviderAdapter: ProviderAdapter {
         credentials: ProviderCredentials
     ) -> AsyncThrowingStream<AgentEvent, Error> {
         AsyncThrowingStream { continuation in
+            let appleWatchdog: Task<Void, Never>? = if request.model.remoteModelID
+                == AppleFoundationModelIdentity.remoteModelID {
+                Task {
+                    try? await Task.sleep(for: .seconds(75))
+                    guard !Task.isCancelled else { return }
+                    FloeLogger(category: .providers).warning(
+                        "appleFoundationWatchdogExpired model=\(request.model.remoteModelID) timeoutSeconds=75"
+                    )
+                    continuation.finish(throwing: FloeError.syncUnavailable(
+                        "Apple Foundation Models did not start responding within 75 seconds; the run was stopped instead of remaining in Preparing"
+                    ))
+                }
+            } else {
+                nil
+            }
             let task = Task {
+                defer { appleWatchdog?.cancel() }
                 do {
                     guard #available(iOS 26.0, macOS 15.4, *) else {
                         throw FloeError.invalidConfiguration("Local inference requires iOS or iPadOS 26 or later")
@@ -466,12 +485,13 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         let historicalNames = Set(toolHistory.map { $0.call.toolName })
                         completion = try await AppleFoundationModelRuntime.shared.complete(
                             instructions: promptBuild.systemInstructions,
-                            prompt: prompt,
+                            prompt: promptBuild.applePrompt,
                             images: imageParts,
                             tools: promptBuild.selectedTools,
                             historicalTools: request.toolSchemas.filter {
                                 historicalNames.contains($0.name)
                             },
+                            conversation: promptBuild.appleConversation,
                             toolHistory: toolHistory,
                             forceToolCall: promptBuild.requiresToolCall,
                             maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 512), 2_048)
@@ -601,6 +621,11 @@ public struct LocalProviderAdapter: ProviderAdapter {
     struct PromptBuild: Sendable, Equatable {
         let systemInstructions: String
         let text: String
+        /// Apple Foundation Models gets a real transcript instead of one
+        /// flattened pseudo-user message. This prevents a completed first run
+        /// from poisoning or stalling the second run's session preparation.
+        let applePrompt: String
+        let appleConversation: [AppleFoundationConversationMessage]
         let selectedTools: [ToolSchemaDescriptor]
         /// All tools admitted for this local model. Native schemas remain
         /// context-bounded, while strict JSON fallback may resolve any exact
@@ -683,6 +708,31 @@ public struct LocalProviderAdapter: ProviderAdapter {
             """)
         }
 
+        var applePromptSections = sections
+        if !latestUserText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            applePromptSections.append(latestUserText)
+        }
+        let latestUserIndex = request.effectiveMessages.lastIndex(where: { $0.role == "user" })
+        let historyMessages = latestUserIndex.map { request.effectiveMessages[..<$0] }
+            ?? request.effectiveMessages[...]
+        var appleConversation: [AppleFoundationConversationMessage] = []
+        var appleHistoryCharacters = 0
+        let appleHistoryBudget = max(2_000, min(14_000, contextTokens * 2))
+        for message in historyMessages.reversed()
+            where message.role == "user" || message.role == "assistant" {
+            let raw = message.content.compactMap { part -> String? in
+                if case .text(let value) = part { return value }
+                if case .imageData = part { return "<image attached>" }
+                if case .imageURL = part { return "<image attached>" }
+                return nil
+            }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            let remaining = appleHistoryBudget - appleHistoryCharacters
+            guard remaining > 80 else { break }
+            let bounded = clipped(raw, limit: min(4_000, remaining))
+            appleConversation.insert(.init(role: message.role, text: bounded), at: 0)
+            appleHistoryCharacters += bounded.count
+        }
+
         var transcriptSections: [String] = []
         var transcriptCharacters = 0
         for message in request.effectiveMessages.reversed() where message.role != "system" {
@@ -737,6 +787,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
             // Mistral control tokens here caused double templating, exposed
             // chain-of-thought, and made native tool calls invisible.
             text: transcript,
+            applePrompt: applePromptSections.joined(separator: "\n\n"),
+            appleConversation: appleConversation,
             selectedTools: selectedTools,
             fallbackTools: availableTools,
             selectedToolCount: selectedTools.count,
@@ -756,7 +808,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
     ) -> [ToolSchemaDescriptor] {
         guard modelRemoteID != AppleFoundationModelIdentity.remoteModelID else { return tools }
         let exact: Set<String> = [
-            "web.search", "web.fetch",
+            "web.search", "web.searchAI", "web.fetch",
             "workspace.listDirectory", "workspace.readFile", "workspace.searchFiles",
             "workspace.inspectFileMetadata", "workspace.createFile", "workspace.writeFile",
             "workspace.applyPatch",

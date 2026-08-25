@@ -192,17 +192,17 @@ struct LocalModelCatalogTests {
             physicalMemoryBytes: 5_264_538_280
         )
         #expect(minimumScratch.tier == .constrained)
-        #expect(minimumScratch.contextSize == 2_048)
+        #expect(minimumScratch.contextSize == 8_192)
         #expect(minimumScratch.batchSize == 32)
-        #expect(minimumScratch.maximumOutputTokens == 256)
+        #expect(minimumScratch.maximumOutputTokens == 1_024)
 
         let constrained = LocalInferenceResourcePolicy.profile(
             mappedBytes: 5 * gib,
             physicalMemoryBytes: 8 * gib
         )
-        #expect(constrained.contextSize == 4_096)
+        #expect(constrained.contextSize == 8_192)
         #expect(constrained.tier == .constrained)
-        #expect(constrained.batchSize == 96)
+        #expect(constrained.batchSize == 48)
         #expect(constrained.gpuLayers == 16)
 
         let roomy = LocalInferenceResourcePolicy.profile(
@@ -218,9 +218,9 @@ struct LocalModelCatalogTests {
             mappedBytes: 3 * gib,
             physicalMemoryBytes: 8 * gib
         )
-        #expect(balanced.contextSize == 8_192)
+        #expect(balanced.contextSize == 12_288)
         #expect(balanced.tier == .balanced)
-        #expect(balanced.maximumOutputTokens == 1_024)
+        #expect(balanced.maximumOutputTokens == 1_536)
     }
 
     @Test("Local prompt drops the cloud harness and stays within the device context")
@@ -287,8 +287,40 @@ struct LocalModelCatalogTests {
         ))
         #expect(build.selectedTools.isEmpty)
         #expect(!build.text.contains("AVAILABLE TOOL NAMES"))
+        #expect(build.applePrompt == "你好，今天过得怎么样？")
+        #expect(build.appleConversation.isEmpty)
         #expect(build.systemInstructions.contains("ordinary conversation"))
         #expect(build.systemInstructions.contains("Respond normally and warmly"))
+    }
+
+    @Test("Apple Foundation Model reconstructs prior natural-language turns")
+    @available(macOS 15.4, *)
+    func appleConversationHistoryIsStructured() {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: AppleFoundationModelIdentity.remoteModelID,
+            displayName: "Apple Foundation Model",
+            limits: .init(contextTokens: 4_096, maxOutputTokens: 512),
+            capabilities: [.text, .tools]
+        )
+        let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [
+                ("user", "第一轮问题"),
+                ("assistant", "第一轮回答"),
+                ("user", "第二轮请生成一张图")
+            ],
+            toolSchemas: [ToolSchemaDescriptor(
+                name: "image.generate",
+                description: "Generate an image"
+            )]
+        ))
+        #expect(build.appleConversation.map(\.role) == ["user", "assistant"])
+        #expect(build.appleConversation.map(\.text) == ["第一轮问题", "第一轮回答"])
+        #expect(build.applePrompt.contains("第二轮请生成一张图"))
+        #expect(!build.applePrompt.contains("第一轮回答"))
     }
 
     @Test("Apple native tools never receive or parse the MLX JSON fallback protocol")

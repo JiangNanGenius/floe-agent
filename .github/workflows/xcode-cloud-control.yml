@@ -77,7 +77,7 @@ jobs:
         if: inputs.operation == 'discover'
         env:
           ASC_TOKEN: ${{ steps.auth.outputs.token }}
-          RELEASE_TAG: v1.4.31
+          RELEASE_TAG: v1.4.32
         run: |
           set -euo pipefail
           api_get() {

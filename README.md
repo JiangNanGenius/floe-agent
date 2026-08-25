@@ -57,7 +57,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.4.31 (build 62); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
+Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.4.32 (build 63); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
 
 ### Unsigned IPA
 
@@ -121,7 +121,7 @@ Routine bounded reads, local workspace operations, image generation/inspection, 
 
 ### Python execution
 
-Signed Floe builds bundle a fixed CPython 3.13 runtime and standard library as app resources. `exec.localPython` runs bounded source inside the app sandbox after the configured approval policy. Managed package installation accepts pure-Python packages only: archives are isolated, inspected, and reviewed by the configured package-review model before activation; native extensions, JIT, and executable payloads are rejected. For a fuller environment, pair an SSH host that has `python3`, trust its host key, select it as the task execution target, and allow the classified `ssh.execute` operation. Local Python and SSH execution both report output, stderr, timeout, truncation, cancellation, and capability failures explicitly; there is no duplicate `exec.remotePython` catalog entry.
+Signed Floe builds bundle a fixed CPython 3.13 runtime and standard library as app resources. `exec.localPython` runs bounded source inside the app sandbox after the configured approval policy. Managed package installation accepts pure-Python packages only: archives are isolated, inspected, and reviewed by the configured package-review model before activation; native extensions, JIT, and executable payloads are rejected. For NumPy, pandas, SciPy, Matplotlib and other supported binary scientific packages, the Python tool directory explicitly routes the model to create a workspace HTML artifact that runs Pyodide in the visible browser and exchanges bounded JSON with the task. A configured SSH host remains the path for native packages or a full licensed runtime. Each route reports output, timeout, cancellation and capability failures explicitly.
 
 For statistics without external packages, `exec.localNumerical` implements bounded R-, Stata- and MATLAB/Octave-compatible expressions, descriptive statistics, quantiles, correlation and simple OLS. It does not claim to bundle the proprietary Stata runtime: PyStata requires a licensed Stata installation, and native-extension packages such as `pyreadstat` must run on a configured host rather than inside the pure-Python iOS package sandbox.
 

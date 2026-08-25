@@ -253,11 +253,7 @@ private struct WebSearchProviderEditor: View {
                 }
                 if configuration.kind == .googleProgrammable { TextField("Search Engine ID", text: $engineID) }
                 if configuration.kind == .bochaWeb {
-                    Toggle("AI 摘要增强", isOn: Binding(
-                        get: { configuration.options["summaryEnabled"] != "false" },
-                        set: { configuration.options["summaryEnabled"] = $0 ? "true" : "false" }
-                    ))
-                    Text("使用同一 API Key 和官方 Web Search 接口；开启后请求结果摘要，不再调用旧的独立 AI Search 端点。")
+                    Text("保存后会同时向模型提供 web.search（普通网页结果）和 web.searchAI（Bocha AI 摘要）两个工具，不需要在设置中切换。两者共用此 API Key 和 Base URL。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

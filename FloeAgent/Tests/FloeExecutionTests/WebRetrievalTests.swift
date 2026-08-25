@@ -45,6 +45,27 @@ struct WebRetrievalTests {
         #expect(object["summary"] as? Bool == false)
     }
 
+    @Test("Bocha AI tool overrides provider setting while raw search stays separate")
+    func bochaPerToolSummaryMode() throws {
+        let configuration = WebSearchProviderConfiguration(
+            kind: .bochaWeb,
+            displayName: "Bocha Search",
+            credentialAccount: "web-search.bochaWeb",
+            options: ["summaryEnabled": "false"]
+        )
+        let request = try WebSearchService.makeRequest(
+            configuration,
+            credential: WebSearchCredential(values: ["apiKey": "shared-key"]),
+            query: WebSearchQuery(text: "Floe", summaryEnabled: true)
+        )
+        let body = try #require(request.httpBody)
+        let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(object["summary"] as? Bool == true)
+        #expect(BochaAISearchTool.name == "web.searchAI")
+        #expect(BochaAISearchTool.toolEffect == .readOnly)
+        #expect(!BochaAISearchTool.isSideEffecting)
+    }
+
     @Test("Tencent WSA request is signed with current SearchPro contract")
     func tencentRequest() throws {
         let configuration = WebSearchProviderConfiguration(
@@ -78,6 +99,7 @@ struct WebRetrievalTests {
     @Test("Search and fetch remain read-only tools")
     func readOnlyDescriptors() {
         #expect(WebSearchTool.toolEffect == .readOnly)
+        #expect(BochaAISearchTool.toolEffect == .readOnly)
         #expect(WebFetchTool.toolEffect == .readOnly)
         #expect(!WebSearchTool.isSideEffecting)
         #expect(!WebFetchTool.isSideEffecting)

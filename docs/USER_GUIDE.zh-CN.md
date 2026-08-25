@@ -2,7 +2,7 @@
 
 [English](USER_GUIDE.md) · [官方网站](https://www.floe-agent.com/) · [中文 README](../README.zh-CN.md) · [安全策略](../SECURITY.zh-CN.md)
 
-本指南适用于 Floe Agent 1.4.31 源码目标（build 62）。具体标签会随系统语言和服务商配置略有变化；分发状态仍须以 TestFlight 为准，源码标签本身不是 Apple 处理回执。
+本指南适用于 Floe Agent 1.4.32 源码目标（build 63）。具体标签会随系统语言和服务商配置略有变化；分发状态仍须以 TestFlight 为准，源码标签本身不是 Apple 处理回执。
 
 ## 1. 安全安装
 
@@ -129,9 +129,11 @@ Floe 会向快捷指令公开**立即运行 Floe 任务**和**安排 Floe 任务
 
 ## 12. 本机 Python、受管包和代码编辑
 
-签名构建包含受限 CPython 3.13。模型可以直接提出类似 `pip install marko==2.2.0` 的声明式命令；Floe 会解析包名，并在任何下载前让软件包审批模型核对它是否确实服务于用户当前已有任务。受管安装器只在隔离暂存区解析依赖，并仅激活通过哈希和静态检查的纯 Python `py3-none-any` wheel；参数旗标、URL、路径、Shell 语法、原生扩展、Mach-O/ELF、动态库、子进程和沙箱逃逸仍不可用。
+签名构建包含受限 CPython 3.13。模型可以直接提出类似 `pip install marko==2.2.0` 的声明式命令；Floe 会解析包名，并在任何下载前让软件包审批模型核对它是否确实服务于用户当前已有任务。受管安装器在 Application Support 的隔离暂存区解析依赖，并仅激活通过哈希和静态检查的纯 Python `py3-none-any` wheel；参数旗标、URL、路径、Shell 语法、原生扩展、Mach-O/ELF、动态库、子进程和沙箱逃逸仍不可用。
 
-`exec.localNumerical` 提供无需额外运行时的受限 R、Stata 和 MATLAB/Octave 兼容数值表面，包括描述统计、分位数、协方差/相关和单自变量 OLS；Stata 兼容命令包括 `generate`、`display`、`summarize`、`correlate` 和 `regress`。它不是 GNU R 或 Stata。PyStata 仍要求另行安装并授权 Stata，`pyreadstat` 则依赖本机扩展，二者都不能伪装成纯 Python 包装进 iOS 沙箱；完整 R/Stata 或 pandas/native 包应在已配置的可信 SSH 主机运行。
+对于 NumPy、pandas、SciPy、Matplotlib 等受支持的二进制科学包，`exec.localPython` 的工具描述会明确要求模型在工作区创建 HTML，使用 Floe 的可见浏览器从公开 HTTPS 加载 Pyodide，并用受限 JSON 与本地任务交换输入和结果。这是明确的 WebAssembly Python 路径，不会谎称本机 iOS `pip` 已安装原生包。Pyodide 无法提供的依赖或完整本机/授权运行时仍应转到已配置的可信 SSH 主机。
+
+`exec.localNumerical` 提供无需额外运行时的受限 R、Stata 和 MATLAB/Octave 兼容数值表面，包括描述统计、分位数、协方差/相关和单自变量 OLS；Stata 兼容命令包括 `generate`、`display`、`summarize`、`correlate` 和 `regress`。它不是 GNU R 或 Stata。PyStata 仍要求另行安装并授权 Stata，`pyreadstat` 则依赖本机扩展，二者都不能伪装成纯 Python 包装进 iOS 沙箱；完整 R/Stata 应在已配置的可信 SSH 主机运行。
 
 从工作区打开 Python、JavaScript、MJS 或 CJS 文件，可以使用带行号、语法高亮、搜索替换、符号列表、撤销/重做和受限本机运行的结构化编辑器。
 

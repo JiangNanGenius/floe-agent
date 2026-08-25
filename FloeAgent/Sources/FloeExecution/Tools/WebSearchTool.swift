@@ -62,7 +62,78 @@ public struct WebSearchTool: AgentTool {
             excludedDomains: args.excludeDomains ?? [],
             recencyDays: args.recencyDays,
             maxResults: args.maxResults ?? 10,
-            requestedProvider: args.provider
+            requestedProvider: args.provider,
+            summaryEnabled: false
+        ))
+        let payload: [String: Any] = [
+            "query": response.query,
+            "providers": response.providersUsed.map(\.rawValue),
+            "failures": response.failures,
+            "results": response.results.map { result in
+                ["citation": result.citationID, "title": result.title,
+                 "url": result.url.absoluteString, "snippet": result.snippet,
+                 "source": result.sourceName ?? "", "publishedAt": result.publishedAt ?? "",
+                 "provider": result.provider.rawValue] as [String: Any]
+            }
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        let summary = String(decoding: data, as: UTF8.self)
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return ToolExecutionOutput(summary: summary, fullOutputSHA256: digest, exitStatus: 0)
+    }
+}
+
+/// Bocha's AI-enhanced result summary is a separate capability rather than a
+/// provider-wide switch. Models can choose raw multi-provider web evidence or
+/// the Bocha summary tool on the same turn.
+public struct BochaAISearchTool: AgentTool {
+    public struct Arguments: Decodable, Sendable {
+        public var query: String
+        public var recencyDays: Int?
+        public var maxResults: Int?
+    }
+
+    public static let name = "web.searchAI"
+    public static let toolDescription =
+        "Search with the configured Bocha provider and request its AI-enhanced summary plus normalized source results. This is exposed alongside web.search; use web.search for ordinary raw or multi-provider retrieval and this tool when a synthesized Bocha answer is useful. It never opens the visual browser."
+    public static let parametersJSON = #"""
+    {
+      "type":"object",
+      "properties":{
+        "query":{"type":"string","description":"Natural-language research question"},
+        "recencyDays":{"type":"integer","minimum":1,"maximum":1825},
+        "maxResults":{"type":"integer","minimum":1,"maximum":50}
+      },
+      "required":["query"],
+      "additionalProperties":false
+    }
+    """#
+    public static let riskLabels: Set<RiskLabel> = [.networkAccess]
+    public static let isSideEffecting = false
+    public static let toolEffect: ToolEffect = .readOnly
+
+    private let service: WebSearchService
+    public init(service: WebSearchService) { self.service = service }
+
+    public func validate(_ args: Arguments) throws {
+        let query = args.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, query.utf8.count <= 2_000 else {
+            throw FloeError.validationFailed("query must contain 1-2000 UTF-8 bytes")
+        }
+        if let max = args.maxResults, !(1...50).contains(max) {
+            throw FloeError.validationFailed("maxResults must be 1-50")
+        }
+    }
+
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        let response = try await service.search(WebSearchQuery(
+            text: args.query.trimmingCharacters(in: .whitespacesAndNewlines),
+            mode: .balanced,
+            recencyDays: args.recencyDays,
+            maxResults: args.maxResults ?? 10,
+            requestedProvider: WebSearchProviderKind.bochaWeb.rawValue,
+            summaryEnabled: true
         ))
         let payload: [String: Any] = [
             "query": response.query,

@@ -156,7 +156,8 @@ public actor WebSearchService {
             // Summary enrichment is an option on the same provider/key.
             request = try post(configuration.endpoint ?? URL(string: "https://api.bochaai.com/v1/web-search")!, json: [
                 "query": query.text,
-                "summary": configuration.options["summaryEnabled"] != "false",
+                "summary": query.summaryEnabled
+                    ?? (configuration.options["summaryEnabled"] != "false"),
                 "freshness": Self.bochaFreshness(days: query.recencyDays),
                 "count": count
             ])

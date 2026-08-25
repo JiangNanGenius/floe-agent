@@ -156,7 +156,10 @@ struct RootView: View {
                 .presentationSizing(.page)
         }
         .sheet(isPresented: $router.presentedSettings) {
-            NavigationStack { SettingsRootView() }
+            // Settings owns its regular-width split navigation. Wrapping that
+            // split in another stack makes detail toolbar buttons and
+            // NavigationLinks appear enabled while their taps are dropped.
+            SettingsRootView()
                 .presentationSizing(.page)
         }
         .sheet(item: $renamingConversation) { conversation in
@@ -395,21 +398,29 @@ struct RootView: View {
 
     @ViewBuilder
     private var iPadRoot: some View {
-        if let inspectorRoute = router.inspectorRoute {
-            NavigationSplitView(columnVisibility: $router.columnVisibility) {
-                sidebarColumn
-            } content: {
+        // Keep one stable two-column split. Replacing a two-column
+        // NavigationSplitView with a three-column instance while a WKWebView
+        // is first responder can leave the old UIKit hit-test surface above
+        // the newly-created sidebar and toolbar. The inspector is an explicit
+        // trailing pane inside the stable detail column instead.
+        NavigationSplitView(columnVisibility: $router.columnVisibility) {
+            sidebarColumn
+        } detail: {
+            HStack(spacing: 0) {
                 contentColumn
-            } detail: {
-                InspectorColumnView(route: inspectorRoute)
-            }
-        } else {
-            NavigationSplitView(columnVisibility: $router.columnVisibility) {
-                sidebarColumn
-            } detail: {
-                contentColumn
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if let inspectorRoute = router.inspectorRoute {
+                    Divider()
+                    NavigationStack {
+                        InspectorColumnView(route: inspectorRoute)
+                    }
+                    .frame(minWidth: 360, idealWidth: 430, maxWidth: 520)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .accessibilityIdentifier("ipad.inspector.column")
+                }
             }
         }
+        .animation(.snappy, value: router.inspectorRoute)
     }
 
     /// Shared information architecture. NavigationSplitView projects this

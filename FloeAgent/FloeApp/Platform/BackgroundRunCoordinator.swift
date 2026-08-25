@@ -462,12 +462,13 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         case .inactive:
             // iPadOS may move directly through inactive while automatic PiP
             // begins and delay/omit the SwiftUI background callback. Request
-            // the already-prepared controller during this transition while
-            // the source view is still attached to a foreground window.
+            // the controller during this transition while the source view is
+            // still attached to a foreground window. If video synthesis is
+            // still running, the service records the deferred start instead
+            // of losing this only reliable lifecycle signal.
             if !pipSuppressedForCurrentBatch,
                !activeRuns.isEmpty,
-               environment.settingsCenter.backgroundExecution != .standard,
-               environment.backgroundVideoService.isPiPPrepared {
+               environment.settingsCenter.backgroundExecution != .standard {
                 environment.backgroundVideoService.startPreparedPictureInPicture()
             }
         @unknown default:

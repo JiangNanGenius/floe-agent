@@ -70,45 +70,45 @@ public enum LocalInferenceResourcePolicy {
         guard physicalMemoryBytes > 0 else {
             return .init(
                 tier: .constrained,
-                contextSize: 4_096,
-                batchSize: 128,
+                contextSize: 8_192,
+                batchSize: 32,
                 gpuLayers: 20,
-                maximumOutputTokens: 768
+                maximumOutputTokens: 1_024
             )
         }
         let pressure = Double(mappedBytes) / Double(physicalMemoryBytes)
         // A large memory-mapped model can be loadable while leaving almost
         // no instantaneous process allowance for prompt evaluation and KV
         // growth. Keep that load permitted (iPadOS may reclaim background
-        // apps), but enter a minimum-scratch profile so the first decode does
-        // not immediately consume another large allocation. Build 17 device
-        // diagnostics showed Gemma at ~97.7% of the current allowance dying
-        // during generation, after its container loaded successfully.
+        // apps), but keep prefill and KV precision conservative so the first
+        // decode does not immediately consume another large allocation. A 2K
+        // context made an otherwise healthy local agent unusable after one
+        // tool result, so every supported 4B model now has an 8K floor.
         if pressure >= 0.90 {
             return .init(
                 tier: .constrained,
-                contextSize: 2_048,
+                contextSize: 8_192,
                 batchSize: 32,
                 gpuLayers: 12,
-                maximumOutputTokens: 256
+                maximumOutputTokens: 1_024
             )
         }
         if pressure >= 0.58 {
             return .init(
                 tier: .constrained,
-                contextSize: 4_096,
-                batchSize: 96,
+                contextSize: 8_192,
+                batchSize: 48,
                 gpuLayers: 16,
-                maximumOutputTokens: 768
+                maximumOutputTokens: 1_024
             )
         }
         if pressure >= 0.34 {
             return .init(
                 tier: .balanced,
-                contextSize: 8_192,
-                batchSize: 128,
+                contextSize: 12_288,
+                batchSize: 96,
                 gpuLayers: 24,
-                maximumOutputTokens: 1_024
+                maximumOutputTokens: 1_536
             )
         }
         // Small Q4 models on 12-16 GB devices have enough headroom for a

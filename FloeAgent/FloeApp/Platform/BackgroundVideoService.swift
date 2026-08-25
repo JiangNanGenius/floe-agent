@@ -397,6 +397,11 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             height: size.height
         ))
         view.backgroundColor = UIColor(red: 0.035, green: 0.043, blue: 0.065, alpha: 1)
+        // The AVPlayerLayer must remain attached to a rendered, non-zero
+        // source view for PiP eligibility. A nearly transparent host keeps
+        // that contract without exposing the internal preview tile over the
+        // composer controls while Floe is in the foreground.
+        view.alpha = 0.02
         view.layer.masksToBounds = true
         view.layer.cornerRadius = 12
         view.isUserInteractionEnabled = false

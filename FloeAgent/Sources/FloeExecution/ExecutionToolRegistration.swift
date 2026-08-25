@@ -77,6 +77,7 @@ public func registerExecutionTools(
     }
     ToolCatalog.register(HTTPRequestTool.self)
     ToolCatalog.register(WebSearchTool.self)
+    ToolCatalog.register(BochaAISearchTool.self)
     ToolCatalog.register(WebFetchTool.self)
     ToolCatalog.register(NetworkScanLANTool.self)
     ToolCatalog.register(OCRTool.self)
@@ -124,6 +125,7 @@ public func registerExecutionTools(
     }
     registry.register(HTTPRequestTool(service: httpRequestService))
     registry.register(WebSearchTool(service: webSearchService))
+    registry.register(BochaAISearchTool(service: webSearchService))
     registry.register(WebFetchTool(service: httpRequestService))
     registry.register(NetworkScanLANTool(service: LANDiscoveryService()))
     registry.register(OCRTool())

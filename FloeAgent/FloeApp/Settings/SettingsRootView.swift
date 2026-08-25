@@ -96,22 +96,26 @@ struct SettingsRootView: View {
                 }
             }
         } else {
-            // iPhone: the More tab already hosts a NavigationStack, so the
-            // category list is the pushed screen and rows navigate deeper.
-            List(SettingsSection.allCases) { section in
-                NavigationLink(value: section) {
-                    Label(section.title, systemImage: section.systemImage)
+            // The settings sheet has no outer navigation container. Own the
+            // compact stack here so the same screen works both from the sheet
+            // and from More without relying on an ancestor implementation
+            // detail.
+            NavigationStack {
+                List(SettingsSection.allCases) { section in
+                    NavigationLink(value: section) {
+                        Label(section.title, systemImage: section.systemImage)
+                    }
+                    .accessibilityIdentifier("settings.section.\(section.rawValue)")
+                    .frame(minHeight: FloeTheme.minimumTarget)
                 }
-                .accessibilityIdentifier("settings.section.\(section.rawValue)")
-                .frame(minHeight: FloeTheme.minimumTarget)
-            }
-            .navigationTitle("settings.title")
-            .navigationDestination(for: SettingsSection.self) { section in
-                detailView(for: section)
-            }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("action.done") { dismiss() }
+                .navigationTitle("settings.title")
+                .navigationDestination(for: SettingsSection.self) { section in
+                    detailView(for: section)
+                }
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("action.done") { dismiss() }
+                    }
                 }
             }
         }

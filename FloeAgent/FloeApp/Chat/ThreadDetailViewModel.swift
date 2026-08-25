@@ -267,9 +267,7 @@ final class ThreadDetailViewModel: ObservableObject {
             : persistedOutput
         guard input + output > 0 else { return nil }
         let modelID = run.modelID ?? selectedModelID
-        let window = modelID.flatMap {
-            center.providerAndModel(modelID: $0)?.1.limits.contextTokens
-        } ?? 0
+        let window = center.configuredModelProfile(modelID: modelID)?.limits.contextTokens ?? 0
         let currentContext = max(
             records.last.map {
                 $0.inputTokens + $0.outputTokens

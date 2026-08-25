@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide describes the Floe Agent 1.4.31 source target (build 62). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
+This guide describes the Floe Agent 1.4.32 source target (build 63). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
 
 ## 1. Install safely
 
@@ -129,9 +129,11 @@ Floe publishes **Run Floe Task** and **Schedule Floe Task** App Intents. Add **R
 
 ## 12. Local Python, packages and code editing
 
-Signed builds include bounded CPython 3.13. The model can request a familiar declarative command such as `pip install marko==2.2.0`; Floe parses its package specs and asks the package-review model whether they are necessary for the user's existing task before any download. The managed installer resolves dependencies in quarantine and activates only pure-Python `py3-none-any` wheels after hash verification and static inspection. Flags, URLs, paths, shell syntax, native extensions, Mach-O/ELF payloads, dynamic libraries, subprocess execution and sandbox escape remain unavailable.
+Signed builds include bounded CPython 3.13. The model can request a familiar declarative command such as `pip install marko==2.2.0`; Floe parses its package specs and asks the package-review model whether they are necessary for the user's existing task before any download. The managed installer resolves dependencies in Application Support quarantine and activates only pure-Python `py3-none-any` wheels after hash verification and static inspection. Flags, URLs, paths, shell syntax, native extensions, Mach-O/ELF payloads, dynamic libraries, subprocess execution and sandbox escape remain unavailable.
 
-`exec.localNumerical` provides a bounded, dependency-free R, Stata and MATLAB/Octave compatibility surface for descriptive statistics, quantiles, covariance/correlation and one-predictor OLS. Stata-compatible commands include `generate`, `display`, `summarize`, `correlate` and `regress`. It is not GNU R or Stata. PyStata still requires a separately installed, licensed Stata runtime, while `pyreadstat` depends on native extensions; neither can masquerade as an installable pure-Python iOS package. Route full R/Stata or pandas/native-package work to a configured trusted SSH host.
+For NumPy, pandas, SciPy, Matplotlib and other supported binary scientific packages, the `exec.localPython` description tells the model to create a workspace HTML artifact, load Pyodide from public HTTPS in Floe's visible browser, and exchange bounded inputs and results with the local task as JSON. This is an explicit WebAssembly Python route, not a claim that native iOS `pip` installed the package. Use a configured trusted SSH host for packages Pyodide cannot provide or for a full native/licensed runtime.
+
+`exec.localNumerical` provides a bounded, dependency-free R, Stata and MATLAB/Octave compatibility surface for descriptive statistics, quantiles, covariance/correlation and one-predictor OLS. Stata-compatible commands include `generate`, `display`, `summarize`, `correlate` and `regress`. It is not GNU R or Stata. PyStata still requires a separately installed, licensed Stata runtime, while `pyreadstat` depends on native extensions; neither can masquerade as an installable pure-Python iOS package. Route full R/Stata to a configured trusted SSH host.
 
 Open Python, JavaScript, MJS or CJS files from the workspace to use the structured editor with line numbers, syntax highlighting, search/replace, symbols, undo/redo and bounded local execution where supported.
 

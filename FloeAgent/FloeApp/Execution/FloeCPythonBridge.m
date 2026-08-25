@@ -100,13 +100,36 @@ static BOOL FloeEnsurePython(NSError **error) {
         return NO;
     }
 
-    // Workspace packages directory: pip --target installs go here so the
-    // agent can install and import pure-Python packages. Created on first use.
-    NSString *packagesDir = [home stringByAppendingPathComponent:@"../Documents/PythonPackages"];
-    [[NSFileManager defaultManager] createDirectoryAtPath:packagesDir
-                              withIntermediateDirectories:YES
-                                               attributes:nil
-                                                    error:nil];
+    // Managed packages are mutable user data and must never be placed under
+    // the signed .app bundle. The old `python/../Documents` path still lived
+    // inside FloeAgent.app on device, so every reviewed pip request failed
+    // while creating its staging directory. Use the sandbox Application
+    // Support container and share it across every private/project workspace.
+    NSURL *applicationSupport = [[NSFileManager defaultManager]
+        URLForDirectory:NSApplicationSupportDirectory
+               inDomain:NSUserDomainMask
+      appropriateForURL:nil
+                 create:YES
+                  error:error];
+    if (!applicationSupport) {
+        [lock unlock];
+        return NO;
+    }
+    NSString *packagesDir = [[applicationSupport
+        URLByAppendingPathComponent:@"FloeAgent/PythonPackages" isDirectory:YES] path];
+    NSError *packagesError = nil;
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:packagesDir
+                                  withIntermediateDirectories:YES
+                                                   attributes:@{NSFileProtectionKey: NSFileProtectionCompleteUntilFirstUserAuthentication}
+                                                        error:&packagesError]) {
+        if (error) *error = FloePythonError(
+            5,
+            [NSString stringWithFormat:@"Could not create managed package directory: %@",
+                packagesError.localizedDescription ?: @"unknown error"]
+        );
+        [lock unlock];
+        return NO;
+    }
 
     PyPreConfig preconfig;
     PyConfig config;

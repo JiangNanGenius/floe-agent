@@ -2775,6 +2775,20 @@ final class ConversationCenter: ObservableObject {
         return (provider, model)
     }
 
+    /// Metadata lookup for historical usage presentation. Unlike
+    /// `providerAndModel`, this must continue to resolve a completed run after
+    /// the user disables that model or a transient local availability refresh
+    /// removes it from the picker.
+    func configuredModelProfile(modelID: UUID?) -> ModelProfile? {
+        guard let modelID else { return nil }
+        if let available = availableAgentModels.first(where: { $0.id == modelID }) {
+            return available
+        }
+        return configuredModelsByProvider.values.lazy
+            .flatMap { $0 }
+            .first(where: { $0.id == modelID })
+    }
+
     // MARK: - Snapshot tracking
 
     /// Polls a run's snapshot until it reaches a terminal state, keeping

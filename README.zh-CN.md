@@ -57,7 +57,7 @@ flowchart LR
 
 ### TestFlight
 
-项目会在测试组开放时通过 TestFlight 分发签名版本。当前源码目标版本为 Floe Agent 1.4.31（build 62）；只有同时通过发布门禁并能在 TestFlight 中看到的构建才算完成发布。仅有源码版本或标签不能证明 Apple 已收到或处理该构建。
+项目会在测试组开放时通过 TestFlight 分发签名版本。当前源码目标版本为 Floe Agent 1.4.32（build 63）；只有同时通过发布门禁并能在 TestFlight 中看到的构建才算完成发布。仅有源码版本或标签不能证明 Apple 已收到或处理该构建。
 
 ### 未签名 IPA
 
@@ -121,7 +121,7 @@ OpenAI 生图与图片编辑默认使用 `gpt-image-2`；Google Gemini Images �
 
 ### Python 执行
 
-Floe 的签名构建会把固定的 CPython 3.13 运行时和标准库作为 App 资源一同打包。`exec.localPython` 在 App 沙盒内运行受限源码；受管包接口会隔离下载依赖，只有通过哈希、静态检查与软件包审核的纯 Python 通用 wheel 才能激活，原生扩展、JIT、Mach-O/ELF、动态库和子进程仍不可用。需要更完整的环境时，可添加装有 `python3` 的 SSH 主机，核对并信任主机密钥，再把它选为任务执行目标并允许远程执行。两种路径都会明确返回标准输出、标准错误、超时、截断、取消和能力缺失，不能伪装为成功。
+Floe 的签名构建会把固定的 CPython 3.13 运行时和标准库作为 App 资源一同打包。`exec.localPython` 在 App 沙盒内运行受限源码；受管包接口会隔离下载依赖，只有通过哈希、静态检查与软件包审核的纯 Python 通用 wheel 才能激活，原生扩展、JIT、Mach-O/ELF、动态库和子进程仍不可用。对于 NumPy、pandas、SciPy、Matplotlib 等受支持的二进制科学包，工具目录会明确引导模型创建工作区 HTML，在可见浏览器中运行 Pyodide/WASM，并以受限 JSON 交换数据；不会谎称本机 pip 已完成安装。Pyodide 无法覆盖的原生包或完整授权运行时应转到已配置的可信 SSH 主机。各路径都会明确返回输出、超时、取消和能力缺失，不能伪装为成功。
 
 ### 归档与凭据同步
 

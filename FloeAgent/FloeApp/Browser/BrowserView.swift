@@ -15,17 +15,7 @@ struct BrowserView: View {
                 .overlay {
                     BrowserSurfaceStatus(center: center)
                 }
-                .overlay(alignment: .topTrailing) {
-                    if center.isUserControlling {
-                        Button("browser.return_to_agent") { center.returnToAgent() }
-                            .buttonStyle(.borderedProminent)
-                            .padding()
-                    } else {
-                        Button("browser.take_control") { center.takeControl() }
-                            .buttonStyle(.bordered)
-                            .padding()
-                    }
-                }
+                .clipped()
         }
         .navigationTitle("browser.title")
         .navigationBarTitleDisplayMode(.inline)
@@ -87,6 +77,22 @@ private struct BrowserAddressBar: View {
                     ? "显示网页名称；真实回环地址仅在技术信息中提供。"
                     : "输入网页地址")
             Button { center.navigateFromAddressBar() } label: { Image(systemName: "arrow.right.circle.fill") }
+            Button {
+                if center.isUserControlling {
+                    center.returnToAgent()
+                } else {
+                    center.takeControl()
+                }
+            } label: {
+                Image(systemName: center.isUserControlling
+                    ? "person.crop.circle.badge.checkmark"
+                    : "hand.tap")
+                    .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityLabel(center.isUserControlling
+                ? String(localized: "browser.return_to_agent")
+                : String(localized: "browser.take_control"))
             if center.isDisplayingLocalPreview, let technicalAddress = center.technicalAddress {
                 Menu {
                     Button {
@@ -127,6 +133,7 @@ private struct BrowserWebContainer: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let container = UIView()
         container.backgroundColor = .systemBackground
+        container.clipsToBounds = true
         return container
     }
 
@@ -143,6 +150,14 @@ private struct BrowserWebContainer: UIViewRepresentable {
                 webView.topAnchor.constraint(equalTo: container.topAnchor),
                 webView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
             ])
+        }
+    }
+
+    static func dismantleUIView(_ container: UIView, coordinator: ()) {
+        // Only detach a web view that is still owned by this representable.
+        // A newer browser column may already have reparented the shared tab.
+        container.subviews.compactMap { $0 as? WKWebView }.forEach {
+            if $0.superview === container { $0.removeFromSuperview() }
         }
     }
 }
