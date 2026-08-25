@@ -62,7 +62,6 @@ jobs:
           ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           ASC_PRIVATE_KEY_PATH: ${{ runner.temp }}/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
-          ASC_TOKEN_LIFETIME_SECONDS: ${{ inputs.operation == 'monitor' && '7200' || '1200' }}
         run: |
           set -euo pipefail
           TOKEN="$(python3 FloeAgent/scripts/generate_asc_jwt.py)"
@@ -241,8 +240,10 @@ jobs:
       - name: Monitor the selected Xcode Cloud build run
         if: inputs.operation == 'monitor'
         env:
-          ASC_TOKEN: ${{ steps.auth.outputs.token }}
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_PRIVATE_KEY_PATH: ${{ runner.temp }}/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
         run: |
           set -euo pipefail
           test -n "$BUILD_RUN_ID"
@@ -252,6 +253,8 @@ jobs:
 
           previous_summary=""
           for attempt in $(seq 1 120); do
+            ASC_TOKEN="$(python3 FloeAgent/scripts/generate_asc_jwt.py)"
+            echo "::add-mask::$ASC_TOKEN"
             curl --fail-with-body --silent --show-error --get \
               -H "Authorization: Bearer $ASC_TOKEN" \
               -H "Accept: application/json" \
