@@ -110,7 +110,7 @@ jobs:
               --data-urlencode 'fields[scmRepositories]=ownerName,repositoryName,lastAccessedDate' \
               --data-urlencode 'include=xcodeVersion,macOsVersion,repository' \
               > "$RUNNER_TEMP/workflows-$product_id.json"
-            jq -r '.data[] | "workflow id=\(.id) name=\(.attributes.name) enabled=\(.attributes.isEnabled) locked=\(.attributes.isLockedForEditing) xcode_id=\(.relationships.xcodeVersion.data.id // "none") repository_id=\(.relationships.repository.data.id // "none")"' \
+            jq -r '.data[] | "workflow id=\(.id) name=\(.attributes.name) enabled=\(.attributes.isEnabled) locked=\(.attributes.isLockedForEditing) manual_tag=\(.attributes.manualTagStartCondition != null) xcode_id=\(.relationships.xcodeVersion.data.id // "none") repository_id=\(.relationships.repository.data.id // "none")"' \
               "$RUNNER_TEMP/workflows-$product_id.json"
             jq -r '.included[]? | select(.type == "ciXcodeVersions") | "xcode id=\(.id) version=\(.attributes.version) name=\(.attributes.name)"' \
               "$RUNNER_TEMP/workflows-$product_id.json"
@@ -150,13 +150,19 @@ jobs:
             --arg macos "$MACOS_VERSION_ID" \
             '{data:{type:"ciWorkflows",id:$workflow,relationships:{xcodeVersion:{data:{type:"ciXcodeVersions",id:$xcode}},macOsVersion:{data:{type:"ciMacOsVersions",id:$macos}}}}}' \
             > "$RUNNER_TEMP/update-workflow.json"
-          curl --fail-with-body --silent --show-error \
+          http_status="$(curl --silent --show-error \
             -X PATCH \
             -H "Authorization: Bearer $ASC_TOKEN" \
             -H "Content-Type: application/json" \
             --data-binary "@$RUNNER_TEMP/update-workflow.json" \
             "https://api.appstoreconnect.apple.com/v1/ciWorkflows/$WORKFLOW_ID" \
-            > "$RUNNER_TEMP/updated-workflow.json"
+            --output "$RUNNER_TEMP/updated-workflow.json" \
+            --write-out '%{http_code}')"
+          if test "$http_status" != 200; then
+            jq -r '.errors[]? | "apple-api-error status=\(.status) code=\(.code) title=\(.title) detail=\(.detail)"' \
+              "$RUNNER_TEMP/updated-workflow.json" >&2
+            exit 1
+          fi
           jq -r '.data | "updated-workflow id=\(.id) name=\(.attributes.name) xcode_id=\(.relationships.xcodeVersion.data.id) macos_id=\(.relationships.macOsVersion.data.id)"' \
             "$RUNNER_TEMP/updated-workflow.json"
 
@@ -178,12 +184,18 @@ jobs:
             --arg reference "$GIT_REFERENCE_ID" \
             '{data:{type:"ciBuildRuns",attributes:{},relationships:{workflow:{data:{type:"ciWorkflows",id:$workflow}},sourceBranchOrTag:{data:{type:"scmGitReferences",id:$reference}}}}}' \
             > "$RUNNER_TEMP/start-build.json"
-          curl --fail-with-body --silent --show-error \
+          http_status="$(curl --silent --show-error \
             -X POST \
             -H "Authorization: Bearer $ASC_TOKEN" \
             -H "Content-Type: application/json" \
             --data-binary "@$RUNNER_TEMP/start-build.json" \
             https://api.appstoreconnect.apple.com/v1/ciBuildRuns \
-            > "$RUNNER_TEMP/build-run.json"
+            --output "$RUNNER_TEMP/build-run.json" \
+            --write-out '%{http_code}')"
+          if test "$http_status" != 201; then
+            jq -r '.errors[]? | "apple-api-error status=\(.status) code=\(.code) title=\(.title) detail=\(.detail)"' \
+              "$RUNNER_TEMP/build-run.json" >&2
+            exit 1
+          fi
           jq -r '.data | "xcode-cloud-build-run id=\(.id) number=\(.attributes.number) progress=\(.attributes.executionProgress) commit=\(.attributes.sourceCommit.commitSha // "pending")"' \
             "$RUNNER_TEMP/build-run.json"
