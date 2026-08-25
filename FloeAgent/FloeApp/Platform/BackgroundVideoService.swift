@@ -41,7 +41,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     private var startGeneration: UInt64 = 0
     private var currentAssetURL: URL?
     /// AVKit requires the source layer to be in a visible hierarchy before
-    /// PiP starts. Keep a small inline preview attached while the run is active.
+    /// PiP starts. Keep a non-trivial source host attached behind the app's
+    /// root content; it must never cover Floe controls in the foreground.
     private var inlinePreview: UIView?
     private var isProgrammaticRetraction = false
     /// Scene transitions can request PiP while the progress asset is still
@@ -385,7 +386,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         removeInlinePreview()
         // AVKit needs a genuinely visible, non-trivial source rectangle. A
         // 2-point transparent layer is treated as non-playable by some iPadOS
-        // releases and leaves isPictureInPicturePossible false forever.
+        // releases and leaves isPictureInPicturePossible false forever. Keep
+        // the source in the window's rendered hierarchy but behind the root
+        // content so users never see an in-app pseudo-PiP tile.
         let size = CGSize(width: 160, height: 90)
         let view = UIView(frame: CGRect(
             x: max(window.safeAreaInsets.left, window.bounds.width - window.safeAreaInsets.right - size.width - 12),
@@ -398,7 +401,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         view.layer.cornerRadius = 12
         view.isUserInteractionEnabled = false
         view.accessibilityElementsHidden = true
-        window.addSubview(view)
+        window.insertSubview(view, at: 0)
         inlinePreview = view
         return true
     }

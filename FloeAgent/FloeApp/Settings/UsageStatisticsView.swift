@@ -46,25 +46,23 @@ struct UsageStatisticsView: View {
                 }
                 Section("总计") {
                     LabeledContent("总输入 token") {
-                        Text("\(selectedRow(in: stats)?.inputTokens ?? stats.totalInputTokens)").foregroundStyle(.secondary)
+                        Text(TokenUnitFormatter.string(selectedRow(in: stats)?.inputTokens ?? stats.totalInputTokens)).foregroundStyle(.secondary)
                     }
                     LabeledContent("总输出 token") {
-                        Text("\(selectedRow(in: stats)?.outputTokens ?? stats.totalOutputTokens)").foregroundStyle(.secondary)
+                        Text(TokenUnitFormatter.string(selectedRow(in: stats)?.outputTokens ?? stats.totalOutputTokens)).foregroundStyle(.secondary)
                     }
                     LabeledContent("总 token") {
-                        Text("\(selectedRow(in: stats)?.totalTokens ?? stats.totalTokens)").foregroundStyle(.secondary)
+                        Text(TokenUnitFormatter.string(selectedRow(in: stats)?.totalTokens ?? stats.totalTokens)).foregroundStyle(.secondary)
                     }
                     LabeledContent("总任务数") {
                         Text("\(selectedRow(in: stats)?.runs ?? stats.totalRuns)").foregroundStyle(.secondary)
                     }
                     reportedTokenRow("缓存读取", value: selectedCacheRead(in: stats))
-                    reportedTokenRow("缓存写入", value: selectedCacheWrite(in: stats))
                     reportedTokenRow("推理 token", value: selectedReasoning(in: stats))
                     LabeledContent("缓存命中率") {
                         Text(cacheHitRate(
                             input: selectedRow(in: stats)?.inputTokens ?? stats.totalInputTokens,
-                            read: selectedCacheRead(in: stats),
-                            write: selectedCacheWrite(in: stats)
+                            read: selectedCacheRead(in: stats)
                         )).foregroundStyle(.secondary)
                     }
                     LabeledContent("平均生成速度") {
@@ -93,7 +91,7 @@ struct UsageStatisticsView: View {
                     }
                     ForEach(stats.byDay) { day in
                         LabeledContent(day.date) {
-                            Text("\(day.totalTokens) token · \(day.runs) 任务")
+                            Text("\(TokenUnitFormatter.string(day.totalTokens)) token · \(day.runs) 任务")
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -128,10 +126,6 @@ struct UsageStatisticsView: View {
         selectedRow(in: stats).map(\.cacheReadTokens) ?? stats.cacheReadTokens
     }
 
-    private func selectedCacheWrite(in stats: UsageStatistics) -> Int? {
-        selectedRow(in: stats).map(\.cacheWriteTokens) ?? stats.cacheWriteTokens
-    }
-
     private func selectedReasoning(in stats: UsageStatistics) -> Int? {
         selectedRow(in: stats).map(\.reasoningTokens) ?? stats.reasoningTokens
     }
@@ -159,16 +153,16 @@ struct UsageStatisticsView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(row.label)
                         HStack {
-                            Text("输入 \(row.inputTokens) · 输出 \(row.outputTokens)")
+                            Text("输入 \(TokenUnitFormatter.string(row.inputTokens)) · 输出 \(TokenUnitFormatter.string(row.outputTokens))")
                             Spacer()
-                            Text("\(row.totalTokens) token · \(row.runs) 任务")
+                            Text("\(TokenUnitFormatter.string(row.totalTokens)) token · \(row.runs) 任务")
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        Text("缓存读取 \(reported(row.cacheReadTokens)) · 缓存写入 \(reported(row.cacheWriteTokens)) · 推理 \(reported(row.reasoningTokens))")
+                        Text("缓存读取 \(reported(row.cacheReadTokens)) · 推理 \(reported(row.reasoningTokens))")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
-                        Text("命中率 \(cacheHitRate(input: row.inputTokens, read: row.cacheReadTokens, write: row.cacheWriteTokens)) · \(speed(row.averageTokensPerSecond)) · 首 token \(milliseconds(row.averageTimeToFirstTokenMs))")
+                        Text("命中率 \(cacheHitRate(input: row.inputTokens, read: row.cacheReadTokens)) · \(speed(row.averageTokensPerSecond)) · 首 token \(milliseconds(row.averageTimeToFirstTokenMs))")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
@@ -185,12 +179,12 @@ struct UsageStatisticsView: View {
     }
 
     private func reported(_ value: Int?) -> String {
-        value.map { "\($0) token" } ?? "未报告"
+        value.map { "\(TokenUnitFormatter.string($0)) token" } ?? "未报告"
     }
 
-    private func cacheHitRate(input: Int, read: Int?, write: Int?) -> String {
+    private func cacheHitRate(input: Int, read: Int?) -> String {
         guard let read else { return "未报告" }
-        let cacheable = input + read + (write ?? 0)
+        let cacheable = input + read
         guard cacheable > 0 else { return "未报告" }
         return (Double(read) / Double(cacheable))
             .formatted(.percent.precision(.fractionLength(1)))

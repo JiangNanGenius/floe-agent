@@ -162,6 +162,8 @@ public struct LocalPythonTool: AgentTool {
                     raise RuntimeError('Managed package directory is unavailable')
                 _specs = json.loads(\(String(reflecting: packageJSON)))
                 _parent = os.path.dirname(_target)
+                os.makedirs(_parent, exist_ok=True)
+                os.makedirs(_target, exist_ok=True)
                 _stage = tempfile.mkdtemp(prefix='floe-pip-stage-', dir=_parent)
                 _backup = tempfile.mkdtemp(prefix='floe-pip-backup-', dir=_parent)
                 _cache = os.path.join(_parent, 'PythonPackageCache')
@@ -180,6 +182,10 @@ public struct LocalPythonTool: AgentTool {
                                 _native.append(os.path.join(_root, _file))
                     if _native:
                         raise RuntimeError('Managed package contains prohibited native artifacts')
+                    _distributions = sorted(
+                        _name[:-10] for _name in os.listdir(_stage)
+                        if _name.lower().endswith('.dist-info')
+                    )
                     _installed = []
                     try:
                         for _name in os.listdir(_stage):
@@ -197,10 +203,6 @@ public struct LocalPythonTool: AgentTool {
                         for _name in os.listdir(_backup):
                             shutil.move(os.path.join(_backup, _name), os.path.join(_target, _name))
                         raise
-                    _distributions = sorted(
-                        _name[:-10] for _name in os.listdir(_stage)
-                        if _name.lower().endswith('.dist-info')
-                    )
                     print('managedPackages=' + ','.join(_specs))
                     print('resolvedDistributions=' + ','.join(_distributions))
                 finally:

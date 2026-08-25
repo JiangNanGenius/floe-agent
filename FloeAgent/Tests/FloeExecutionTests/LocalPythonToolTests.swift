@@ -74,6 +74,8 @@ struct LocalPythonToolTests {
         #expect(requests.count == 2)
         #expect(requests.first?.allowsManagedPackageInstaller == true)
         #expect(requests.first?.script.contains("marko==2.2.0") == true)
+        #expect(requests.first?.script.contains("os.makedirs(_parent, exist_ok=True)") == true)
+        #expect(requests.first?.script.contains("os.makedirs(_target, exist_ok=True)") == true)
         #expect(requests.last?.allowsManagedPackageInstaller == false)
         #expect(output.exitStatus == 0)
     }

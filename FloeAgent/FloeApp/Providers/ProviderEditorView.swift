@@ -88,6 +88,7 @@ struct ProviderEditorView: View {
 
     private var presetSection: some View {
         Section {
+            Toggle("providers.enabled", isOn: $viewModel.enabled)
             TextField("providers.display_name", text: $viewModel.displayName)
                 .textInputAutocapitalization(.words)
                 .accessibilityIdentifier("providers.display_name")
@@ -261,29 +262,41 @@ struct ProviderEditorView: View {
     }
 
     private func modelRow(_ model: ModelProfile) -> some View {
-        Button {
-            editingModel = model
-        } label: {
-            HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.displayName)
-                    .font(FloeTheme.Typography.body)
-                Text(model.remoteModelID)
-                    .font(FloeTheme.Typography.evidence)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-                if viewModel.defaultModelID == model.id {
-                    Text("model.default")
-                        .font(FloeTheme.Typography.metadata)
-                        .foregroundStyle(FloeTheme.primary)
+        HStack {
+            Button {
+                editingModel = model
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.displayName)
+                            .font(FloeTheme.Typography.body)
+                        Text(model.remoteModelID)
+                            .font(FloeTheme.Typography.evidence)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if viewModel.defaultModelID == model.id {
+                        Text("model.default")
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(FloeTheme.primary)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
                 }
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
             }
+            .buttonStyle(.plain)
+            Toggle("model.enabled", isOn: Binding(
+                get: {
+                    viewModel.candidateModels.first(where: { $0.id == model.id })?.isEnabled
+                        ?? model.isEnabled
+                },
+                set: { viewModel.setModelEnabled(model.id, isEnabled: $0) }
+            ))
+            .labelsHidden()
+            .tint(FloeTheme.primary)
+            .accessibilityIdentifier("providers.model.enabled.\(model.remoteModelID)")
         }
-        .buttonStyle(.plain)
         .contextMenu {
             Button("model.set_default") { viewModel.setDefaultModel(model.id) }
         }

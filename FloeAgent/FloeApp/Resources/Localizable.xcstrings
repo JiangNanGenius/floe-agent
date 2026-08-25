@@ -3630,6 +3630,23 @@
         }
       }
     },
+    "providers.enabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable provider"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用供应商"
+          }
+        }
+      }
+    },
     "providers.endpoint": {
       "extractionState": "manual",
       "localizations": {

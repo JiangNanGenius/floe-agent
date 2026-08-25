@@ -353,6 +353,40 @@ struct LocalModelCatalogTests {
         #expect(build.text.count < 3_000)
     }
 
+    @Test("MLX JSON fallback accepts exact tools from its authoritative safe directory")
+    @available(macOS 15.4, *)
+    func localFallbackUsesAdmissibleDirectory() throws {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "qwen3.8-4b-mlx4",
+            displayName: "Qwen local",
+            limits: .init(contextTokens: 2_048, maxOutputTokens: 256),
+            capabilities: [.text, .tools]
+        )
+        let tools = [
+            "exec.localPython", "git.status", "image.inspect", "memory.recall",
+            "web.search", "workspace.listDirectory", "workspace.readFile"
+        ].map { ToolSchemaDescriptor(name: $0, description: "Safe local tool") }
+        let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [("user", "帮我测试一下所有工具")],
+            toolSchemas: tools
+        ))
+        let selectedNames = Set(build.selectedTools.map(\.name))
+        let omitted = try #require(build.fallbackTools.first {
+            !selectedNames.contains($0.name)
+        })
+        let output = "{\"tool_call\":{\"name\":\"\(omitted.name)\",\"arguments\":{}}}"
+        let parsed = try LocalProviderAdapter.fallbackToolCall(
+            from: output,
+            modelRemoteID: model.remoteModelID,
+            selectedTools: build.fallbackTools
+        )
+        #expect(parsed?.toolName == omitted.name)
+    }
+
     @Test("MLX prompt offers only simple intent-relevant tools")
     @available(macOS 15.4, *)
     func localPromptSelectsRelevantTools() {

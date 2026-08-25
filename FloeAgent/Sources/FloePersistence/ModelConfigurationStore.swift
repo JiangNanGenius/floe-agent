@@ -96,7 +96,23 @@ public actor ModelConfigurationStore {
         for model in availableModels { try ConfigurationCodec.validate(model) }
         return try await database.writer { db in
             try ConfigurationCodec.write(provider, to: db)
-            let saved = try availableModels.map { try ConfigurationCodec.write($0, to: db) }
+            let existingEnabled = try Row.fetchAll(
+                db,
+                sql: "SELECT remote_model_id, is_enabled FROM models WHERE provider_id = ?",
+                arguments: [provider.id.uuidString]
+            ).reduce(into: [String: Bool]()) { values, row in
+                values[row["remote_model_id"]] = row["is_enabled"]
+            }
+            let saved = try availableModels.map { discovered in
+                var model = discovered
+                // Catalog refreshes update capabilities and limits, but an
+                // explicit per-model disable is a user preference and must
+                // survive every launch/reconciliation.
+                if let isEnabled = existingEnabled[model.remoteModelID] {
+                    model.isEnabled = isEnabled
+                }
+                return try ConfigurationCodec.write(model, to: db)
+            }
             let activeIDs = Set(saved.map { $0.id.uuidString })
             let existingIDs = try String.fetchAll(
                 db,

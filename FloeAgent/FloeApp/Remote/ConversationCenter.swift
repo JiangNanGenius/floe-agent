@@ -137,6 +137,10 @@ final class ConversationCenter: ObservableObject {
     @Published private(set) var providers: [ProviderProfile] = []
     /// Enabled models keyed by provider ID.
     @Published private(set) var modelsByProvider: [UUID: [ModelProfile]] = [:]
+    /// Complete configured catalog for Settings. Runtime pickers continue to
+    /// use the enabled-only collections above.
+    @Published private(set) var configuredProviders: [ProviderProfile] = []
+    @Published private(set) var configuredModelsByProvider: [UUID: [ModelProfile]] = [:]
     /// Secret-free onboarding and model-routing choices.
     @Published private(set) var modelPreferences = ModelSelectionPreferences()
 
@@ -194,8 +198,15 @@ final class ConversationCenter: ObservableObject {
         do {
             conversations = try await loadedConversations
                 .sorted { $0.updatedAt > $1.updatedAt }
-            providers = try await loadedProviders.filter(\.isEnabled)
-            let models = try await loadedModels.filter(\.isEnabled)
+            let allProviders = try await loadedProviders
+            let allModels = try await loadedModels
+            configuredProviders = allProviders
+            configuredModelsByProvider = Dictionary(grouping: allModels, by: \.providerID)
+            providers = allProviders.filter(\.isEnabled)
+            let enabledProviderIDs = Set(providers.map(\.id))
+            let models = allModels.filter {
+                $0.isEnabled && enabledProviderIDs.contains($0.providerID)
+            }
             modelsByProvider = Dictionary(grouping: models, by: \.providerID)
             modelPreferences = try await loadedPreferences
         } catch {
@@ -1232,7 +1243,16 @@ final class ConversationCenter: ObservableObject {
         }
         guard let service = runServices[expectedRunID], service.conversationID == input.conversationID else {
             try? await environment.runningInputStore.restoreQueued(id: inputID)
-            throw FloeError.validationFailed("The target run is no longer active")
+            FloeLogger(category: .app).info(
+                "steerTargetEndedQueued conversation=\(input.conversationID.uuidString) expectedRun=\(expectedRunID.uuidString) input=\(input.id.uuidString)"
+            )
+            // The run can finish between the composer choosing "steer" and
+            // the persisted promotion. Preserve the user's message as a
+            // normal queued follow-up and launch it when the conversation is
+            // terminal instead of surfacing a stale-target validation error.
+            await launchNextQueuedInput(conversationID: input.conversationID)
+            publishSession(input.conversationID)
+            return
         }
         let acceptance = await service.steer(RuntimeSteerInput(
             id: input.id,
@@ -2669,7 +2689,7 @@ final class ConversationCenter: ObservableObject {
         provider: ProviderProfile,
         models: [ModelProfile]
     ) async throws -> [ModelProfile] {
-        let previousChatIDs = Set((modelsByProvider[provider.id] ?? [])
+        let previousChatIDs = Set((configuredModelsByProvider[provider.id] ?? [])
             .filter { $0.capabilities.contains(.text) }
             .map(\.id))
         let saved = try await environment.configurationStore.saveProviderBundle(

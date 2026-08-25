@@ -38,6 +38,15 @@ struct ModelConfigurationStoreTests {
         #expect(try await store.provider(id: provider.id) != nil)
         #expect(try await store.model(id: installed.id)?.isEnabled == true)
 
+        var disabled = installed
+        disabled.isEnabled = false
+        try await store.saveModel(disabled)
+        _ = try await store.reconcileDeviceLocalProvider(
+            provider: provider,
+            availableModels: [installed]
+        )
+        #expect(try await store.model(id: installed.id)?.isEnabled == false)
+
         _ = try await store.reconcileDeviceLocalProvider(provider: provider, availableModels: [])
         #expect(try await store.model(id: installed.id)?.isEnabled == false)
     }

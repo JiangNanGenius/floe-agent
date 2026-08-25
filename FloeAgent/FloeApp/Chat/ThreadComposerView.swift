@@ -156,6 +156,7 @@ struct ThreadComposerView: View {
     var contextID: UUID? = nil
 
     @State private var isPickerPresented = false
+    @State private var isWorkspacePickerPresented = false
     @State private var isPhotoPickerPresented = false
     @State private var photoPickerTraceID: UUID?
     @State private var isCameraPresented = false
@@ -203,6 +204,19 @@ struct ThreadComposerView: View {
         .sheet(isPresented: $isPickerPresented) {
             DocumentPickerView { url in
                 Task { await registerPicked(url) }
+            }
+        }
+        .sheet(isPresented: $isWorkspacePickerPresented) {
+            NavigationStack {
+                WorkspacePickerView(center: environment.workspaceCenter) {
+                    selectedProjectID = environment.workspaceCenter.currentWorkspace?.id
+                    isWorkspacePickerPresented = false
+                }
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("action.done") { isWorkspacePickerPresented = false }
+                    }
+                }
             }
         }
         .photosPicker(
@@ -738,14 +752,18 @@ struct ThreadComposerView: View {
         Group {
             if let modelName {
                 Menu {
-                    ForEach(models) { model in
-                        Button {
-                            chooseModel(model)
-                        } label: {
-                            if selectedModelID == model.id {
-                                Label(model.displayName, systemImage: "checkmark")
-                            } else {
-                                Text(model.displayName)
+                    ForEach(modelMenuGroups) { group in
+                        Section(group.title) {
+                            ForEach(group.models) { model in
+                                Button {
+                                    chooseModel(model)
+                                } label: {
+                                    if selectedModelID == model.id {
+                                        Label(model.displayName, systemImage: "checkmark")
+                                    } else {
+                                        Text(model.displayName)
+                                    }
+                                }
                             }
                         }
                     }
@@ -762,6 +780,62 @@ struct ThreadComposerView: View {
                     .foregroundStyle(FloeTheme.pending)
             }
         }
+    }
+
+    private struct ModelMenuGroup: Identifiable {
+        let id: String
+        let title: String
+        let models: [ModelProfile]
+    }
+
+    /// Keep device-local models visibly separate, then identify every cloud
+    /// group by its configured provider instead of presenting one ambiguous
+    /// flat list of model names.
+    private var modelMenuGroups: [ModelMenuGroup] {
+        var groups: [ModelMenuGroup] = []
+        let local = models.filter {
+            $0.providerID == ProviderProfile.onDeviceProviderID
+        }
+        if !local.isEmpty {
+            groups.append(ModelMenuGroup(
+                id: "local",
+                title: "本地与 Apple Intelligence",
+                models: local.sorted(by: modelDisplayOrder)
+            ))
+        }
+        let cloud = Dictionary(grouping: models.filter {
+            $0.providerID != ProviderProfile.onDeviceProviderID
+        }, by: \.providerID)
+        let providers = environment.conversationCenter.providers
+        for providerID in cloud.keys.sorted(by: { lhs, rhs in
+            providerDisplayName(id: lhs, providers: providers)
+                .localizedCaseInsensitiveCompare(providerDisplayName(id: rhs, providers: providers))
+                == .orderedAscending
+        }) {
+            guard let providerModels = cloud[providerID] else { continue }
+            groups.append(ModelMenuGroup(
+                id: providerID.uuidString,
+                title: "云端 · \(providerDisplayName(id: providerID, providers: providers))",
+                models: providerModels.sorted(by: modelDisplayOrder)
+            ))
+        }
+        return groups
+    }
+
+    private func providerDisplayName(
+        id: UUID,
+        providers: [ProviderProfile]
+    ) -> String {
+        guard let provider = providers.first(where: { $0.id == id }) else {
+            return "未知供应商"
+        }
+        let custom = provider.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return custom.flatMap { $0.isEmpty ? nil : $0 }
+            ?? provider.kind.rawValue
+    }
+
+    private func modelDisplayOrder(_ lhs: ModelProfile, _ rhs: ModelProfile) -> Bool {
+        lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
     }
 
     private struct PendingLocalModelSwitch: Identifiable {
@@ -911,7 +985,7 @@ struct ThreadComposerView: View {
             }
             Divider()
             Button {
-                router.showInspector(.workspaceFiles)
+                isWorkspacePickerPresented = true
             } label: {
                 Label("composer.project.manage", systemImage: "folder.badge.gearshape")
             }

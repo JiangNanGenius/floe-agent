@@ -48,6 +48,9 @@ final class ProviderEditorViewModel: ObservableObject {
     /// underscores (e.g. `workspace.createFile` → `workspace_createFile`).
     /// Needed for providers like DeepSeek that enforce `^[a-zA-Z0-9_-]+$`.
     @Published var toolNameCompatibility = false
+    /// Provider-level routing switch. Disabled providers stay editable in
+    /// Settings but disappear from every runtime model picker.
+    @Published var enabled = true
     /// Discovered, existing and manually added candidates. Only IDs in
     /// selectedModelIDs are persisted by this editing session.
     @Published var candidateModels: [ModelProfile] = []
@@ -82,6 +85,7 @@ final class ProviderEditorViewModel: ObservableObject {
             self.baseURLString = existing.baseURL.absoluteString
             self.allowsPlainHTTP = existing.allowsPlainHTTP
             self.toolNameCompatibility = existing.toolNameCompatibility
+            self.enabled = existing.isEnabled
             self.nonSecretHeadersText = Self.headersText(from: existing.nonSecretHeaders)
         } else {
             self.providerID = UUID()
@@ -126,7 +130,7 @@ final class ProviderEditorViewModel: ObservableObject {
         }
         secretStatus = await secretStore.status(for: providerID, hasConfiguration: true)
         syncEnabled = await secretStore.isSyncEnabled(for: providerID)
-        let existingModels = center.modelsByProvider[providerID] ?? []
+        let existingModels = center.configuredModelsByProvider[providerID] ?? []
         candidateModels = existingModels.filter { $0.capabilities.contains(.text) }
         nativeToolStatusByModelID = Dictionary(uniqueKeysWithValues: candidateModels.map {
             ($0.id, NativeToolCapabilityProbe.initialStatus(for: $0))
@@ -159,7 +163,7 @@ final class ProviderEditorViewModel: ObservableObject {
             displayName: trimmedName.isEmpty ? nil : trimmedName,
             secretRef: secretRef,
             nonSecretHeaders: Self.parseHeaders(nonSecretHeadersText),
-            isEnabled: true,
+            isEnabled: enabled,
             allowsPlainHTTP: allowsPlainHTTP,
             toolNameCompatibility: toolNameCompatibility,
             createdAt: existing?.createdAt ?? Date(),
@@ -318,6 +322,11 @@ final class ProviderEditorViewModel: ObservableObject {
         nativeToolStatusByModelID[normalized.id] = NativeToolCapabilityProbe.initialStatus(for: normalized)
     }
 
+    func setModelEnabled(_ id: UUID, isEnabled: Bool) {
+        guard let index = candidateModels.firstIndex(where: { $0.id == id }) else { return }
+        candidateModels[index].isEnabled = isEnabled
+    }
+
     func setDefaultModel(_ id: UUID) {
         guard selectedModelIDs.contains(id) else { return }
         defaultModelID = id
@@ -400,12 +409,18 @@ final class ProviderEditorViewModel: ObservableObject {
             )
             var preferences = center.modelPreferences
             if let chosen = defaultModelID,
-               let staged = selectedModels.first(where: { $0.id == chosen }),
-               let canonical = saved.first(where: { $0.remoteModelID == staged.remoteModelID }) {
+               enabled,
+               let staged = selectedModels.first(where: { $0.id == chosen && $0.isEnabled }),
+               let canonical = saved.first(where: {
+                   $0.remoteModelID == staged.remoteModelID && $0.isEnabled
+               }) {
                 preferences.defaultAgentModelID = canonical.id
             } else if preferences.defaultAgentModelID == nil,
-                      let first = saved.first(where: { $0.capabilities.contains(.text) }) {
+                      let first = center.availableAgentModels.first {
                 preferences.defaultAgentModelID = first.id
+            } else if let current = preferences.defaultAgentModelID,
+                      !center.availableAgentModels.contains(where: { $0.id == current }) {
+                preferences.defaultAgentModelID = center.availableAgentModels.first?.id
             }
             if preferences.defaultAgentModelID != nil {
                 preferences.onboardingStatus = .completed

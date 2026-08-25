@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide describes the Floe Agent 1.4.30 source target (build 61). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
+This guide describes the Floe Agent 1.4.31 source target (build 62). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
 
 ## 1. Install safely
 
@@ -19,6 +19,8 @@ Floe Agent requires iOS or iPadOS 26 or newer. iPad is recommended for file revi
 5. Return to **New Task**. The model chip in the composer should show the selected model instead of *Not configured*.
 
 Credentials should be stored in Keychain. Diagnostics and exported reports redact credential values; do not paste an unredacted provider response into a public issue.
+
+Each provider and each model has its own routing switch. Turning one off keeps its endpoint, credential and model metadata editable in Settings while removing it from the New Task model picker. The picker groups Apple/downloaded local models separately and groups cloud models by provider, so duplicate model names remain distinguishable.
 
 ## 3. Configure auxiliary image models
 
@@ -37,6 +39,8 @@ For a dedicated image provider, choose **OpenAI** or **Google Gemini**, enter it
 Open **Settings → Local Models**. The Apple Foundation Model row is system-managed and therefore has no Floe download button, API-key field or model selector. On iOS/iPadOS 27 it reports one of the system's real states: available, unsupported device, Apple Intelligence disabled, model not ready/downloading, or another system availability failure. Resolve that reason in iOS settings and leave Floe open long enough to refresh; do not repeatedly retry while the system model is downloading.
 
 Qwen and Gemma entries are user-downloaded MLX snapshots. Download, load and benchmark are separate actions. Floe keeps one downloaded model resident at a time and checks current device headroom before mapping it. Closing background apps may increase available memory, but iPadOS can still terminate an app under pressure. If loading is rejected, retry after freeing memory or select a smaller model; if the process terminates, export the new Xcode/device or uploaded diagnostic log rather than assuming a prior crash has the same cause.
+
+An installed model can be disabled without deleting its weights. Re-enabling it makes it available to the task picker again; disabling a resident MLX model also unloads it.
 
 Local models receive a smaller, intent-ranked catalog of real Floe tools and a local-only dynamic context/compression budget. Cloud-provider context limits, compression and tool schemas are not reduced to accommodate a local model. If a local model cannot produce a valid tool call, Floe reports the parsing or capability reason instead of claiming the tool ran.
 

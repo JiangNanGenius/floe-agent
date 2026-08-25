@@ -607,7 +607,6 @@ private struct ThreadUsageFooter: View {
             .foregroundStyle(.secondary)
             HStack(spacing: 12) {
                 Text("缓存读取 \(reported(summary.cacheReadTokens))")
-                Text("缓存写入 \(reported(summary.cacheWriteTokens))")
                 Text("推理 \(reported(summary.reasoningTokens))")
             }
             .font(.caption2)
@@ -689,9 +688,12 @@ private struct ContextUsageDetails: View {
     }
 }
 
-private enum TokenUnitFormatter {
+enum TokenUnitFormatter {
     static func string(_ value: Int) -> String {
         let magnitude = abs(value)
+        if magnitude >= 1_000_000_000 {
+            return scaled(value, divisor: 1_000_000_000, suffix: "B")
+        }
         if magnitude >= 1_000_000 {
             return scaled(value, divisor: 1_000_000, suffix: "M")
         }

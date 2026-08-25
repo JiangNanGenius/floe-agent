@@ -2,6 +2,7 @@
 import SwiftUI
 import FloeCore
 import FloeLocalModels
+import FloePersistence
 
 @MainActor
 final class LocalModelsCenter: ObservableObject {
@@ -21,16 +22,61 @@ final class LocalModelsCenter: ObservableObject {
     @Published private(set) var benchmarkingIDs: Set<String> = []
     @Published private(set) var benchmarkResults: [String: LocalModelBenchmarkResult] = [:]
     @Published private(set) var appleFoundationAvailability: AppleFoundationModelAvailability = .unsupportedOS
+    @Published private(set) var enabledRemoteModelIDs: Set<String> = []
     @Published var errorMessage: String?
     let store: LocalModelStore
     let runtime: LocalModelRuntime
+    let configurationStore: ModelConfigurationStore
     var onCatalogChanged: (@Sendable () async -> Void)?
+    var onConfigurationChanged: (@Sendable () async -> Void)?
     private var downloadTasks: [String: Task<Void, Never>] = [:]
 
-    init(store: LocalModelStore, runtime: LocalModelRuntime) {
+    init(
+        store: LocalModelStore,
+        runtime: LocalModelRuntime,
+        configurationStore: ModelConfigurationStore
+    ) {
         self.store = store
         self.runtime = runtime
+        self.configurationStore = configurationStore
         Task { await refresh() }
+    }
+
+    func isEnabled(remoteModelID: String) -> Bool {
+        enabledRemoteModelIDs.contains(remoteModelID)
+    }
+
+    func setEnabled(remoteModelID: String, isEnabled: Bool) {
+        Task {
+            do {
+                var configured = try await configurationStore.models(
+                    providerID: ProviderProfile.onDeviceProviderID
+                )
+                if !configured.contains(where: { $0.remoteModelID == remoteModelID }) {
+                    await onConfigurationChanged?()
+                    configured = try await configurationStore.models(
+                        providerID: ProviderProfile.onDeviceProviderID
+                    )
+                }
+                guard var model = configured.first(where: {
+                    $0.remoteModelID == remoteModelID
+                }) else {
+                    throw FloeError.notFound("本地模型配置尚未建立，请刷新后重试")
+                }
+                model.isEnabled = isEnabled
+                try await configurationStore.saveModel(model)
+                if !isEnabled, remoteModelID != AppleFoundationModelIdentity.remoteModelID {
+                    await runtime.unload(modelID: remoteModelID)
+                    if case .ready(let id) = runtimeState, id == remoteModelID {
+                        runtimeState = .unloaded
+                    }
+                }
+                await refresh()
+                await onConfigurationChanged?()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func prepareForTask(modelID: String, includesVisionProjector: Bool = false) async throws {
@@ -113,6 +159,10 @@ final class LocalModelsCenter: ObservableObject {
         }
         installedIDs = installed
         incompatibleReasons = incompatible
+        let configuredModels = (try? await configurationStore.models(
+            providerID: ProviderProfile.onDeviceProviderID
+        )) ?? []
+        enabledRemoteModelIDs = Set(configuredModels.filter(\.isEnabled).map(\.remoteModelID))
         let resumable = await store.resumableModelIDs()
         pausedDownloads.formUnion(resumable.subtracting(activeDownloads))
         FloeLogger(category: .providers).debug(
@@ -221,6 +271,21 @@ struct LocalModelsSettingsView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
+                            Toggle("model.enabled", isOn: Binding(
+                                get: {
+                                    center.isEnabled(
+                                        remoteModelID: AppleFoundationModelIdentity.remoteModelID
+                                    )
+                                },
+                                set: {
+                                    center.setEnabled(
+                                        remoteModelID: AppleFoundationModelIdentity.remoteModelID,
+                                        isEnabled: $0
+                                    )
+                                }
+                            ))
+                            .labelsHidden()
+                            .accessibilityIdentifier("localModel.enabled.appleFoundation")
                             if center.appleFoundationAvailability.isAvailable {
                                 Label("可用", systemImage: "checkmark.circle.fill")
                                     .foregroundStyle(.green)
@@ -323,6 +388,14 @@ struct LocalModelsSettingsView: View {
                             if entry.supportsReasoning { Label("localmodels.reasoning", systemImage: "brain") }
                             if entry.supportsToolCalling { Label("localmodels.tools", systemImage: "wrench.and.screwdriver") }
                         }.font(.caption).foregroundStyle(.secondary)
+                        if center.installedIDs.contains(entry.id) {
+                            Toggle("model.enabled", isOn: Binding(
+                                get: { center.isEnabled(remoteModelID: entry.id) },
+                                set: { center.setEnabled(remoteModelID: entry.id, isEnabled: $0) }
+                            ))
+                            .tint(FloeTheme.primary)
+                            .accessibilityIdentifier("localModel.enabled.\(entry.id)")
+                        }
                         if case .failed(let id, let message) = center.runtimeState, id == entry.id {
                             Text(message).font(.caption).foregroundStyle(.red)
                         }

@@ -207,7 +207,8 @@ final class AppEnvironment: ObservableObject {
         self.localModelRuntime = LocalModelRuntime(store: localModelStore)
         self.localModelsCenter = LocalModelsCenter(
             store: localModelStore,
-            runtime: self.localModelRuntime
+            runtime: self.localModelRuntime,
+            configurationStore: configurationStore
         )
         self.fontStore = DeviceFontStore()
         self.networkStatusMonitor = NetworkStatusMonitor()
@@ -239,6 +240,9 @@ final class AppEnvironment: ObservableObject {
 
         self.localModelsCenter.onCatalogChanged = { [weak self] in
             await self?.localModelRuntime.unload(modelID: nil)
+            await self?.conversationCenter.reload()
+        }
+        self.localModelsCenter.onConfigurationChanged = { [weak self] in
             await self?.conversationCenter.reload()
         }
 

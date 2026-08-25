@@ -509,7 +509,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     if let call = try Self.fallbackToolCall(
                         from: channels.answer,
                         modelRemoteID: request.model.remoteModelID,
-                        selectedTools: promptBuild.selectedTools
+                        selectedTools: promptBuild.fallbackTools
                     ) {
                         continuation.yield(.toolRequest(call))
                         continuation.yield(.completed(.init(stopReason: .toolUse)))
@@ -602,6 +602,10 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let systemInstructions: String
         let text: String
         let selectedTools: [ToolSchemaDescriptor]
+        /// All tools admitted for this local model. Native schemas remain
+        /// context-bounded, while strict JSON fallback may resolve any exact
+        /// name from the authoritative directory shown to the model.
+        let fallbackTools: [ToolSchemaDescriptor]
         let selectedToolCount: Int
         let requiresToolCall: Bool
         let sourceCharacters: Int
@@ -734,6 +738,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
             // chain-of-thought, and made native tool calls invisible.
             text: transcript,
             selectedTools: selectedTools,
+            fallbackTools: availableTools,
             selectedToolCount: selectedTools.count,
             requiresToolCall: actionRequested && !inventoryRequested && !selectedTools.isEmpty,
             sourceCharacters: sourceCharacters
@@ -1034,7 +1039,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
 
     /// Foundation Models has a real native Tool channel. Text emitted by that
     /// model is always an answer, never a second wire protocol. MLX keeps the
-    /// strict JSON fallback, bounded to the schemas selected for this turn.
+    /// strict JSON fallback, bounded to the model's admissible authoritative
+    /// tool directory. Runtime schema validation and approval still apply.
     static func fallbackToolCall(
         from output: String,
         modelRemoteID: String,

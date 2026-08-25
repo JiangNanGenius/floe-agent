@@ -29,9 +29,9 @@ final class ProviderListViewModel: ObservableObject {
     }
 
     var providers: [ProviderProfile] {
-        center.providers.filter { provider in
+        center.configuredProviders.filter { provider in
             guard provider.kind != .local else { return false }
-            let models = center.modelsByProvider[provider.id] ?? []
+            let models = center.configuredModelsByProvider[provider.id] ?? []
             // Keep empty providers visible while they are being configured,
             // but route dedicated image-only endpoints to Auxiliary Models.
             return models.isEmpty || models.contains { $0.capabilities.contains(.text) }
@@ -39,9 +39,9 @@ final class ProviderListViewModel: ObservableObject {
     }
 
     var imageOnlyProviders: [ProviderProfile] {
-        center.providers.filter { provider in
+        center.configuredProviders.filter { provider in
             guard provider.kind != .local else { return false }
-            let models = center.modelsByProvider[provider.id] ?? []
+            let models = center.configuredModelsByProvider[provider.id] ?? []
             return !models.isEmpty
                 && !models.contains { $0.capabilities.contains(.text) }
                 && models.contains {
@@ -53,12 +53,12 @@ final class ProviderListViewModel: ObservableObject {
     }
 
     func auxiliaryModelCount(for providerID: UUID) -> Int {
-        center.modelsByProvider[providerID]?
+        center.configuredModelsByProvider[providerID]?
             .filter { !$0.capabilities.contains(.text) }.count ?? 0
     }
 
     func modelCount(for providerID: UUID) -> Int {
-        center.modelsByProvider[providerID]?
+        center.configuredModelsByProvider[providerID]?
             .filter { $0.capabilities.contains(.text) }.count ?? 0
     }
 
@@ -72,7 +72,7 @@ final class ProviderListViewModel: ObservableObject {
     /// Derives each provider's secret sync status honestly.
     private func refreshSecretStatus() async {
         var map: [UUID: SyncStatus] = [:]
-        for provider in center.providers {
+        for provider in center.configuredProviders {
             let hasSecret = provider.secretRef != nil
             map[provider.id] = await secretStore.status(
                 for: provider.id,
