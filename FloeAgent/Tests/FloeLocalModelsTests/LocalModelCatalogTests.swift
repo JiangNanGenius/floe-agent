@@ -257,14 +257,100 @@ struct LocalModelCatalogTests {
         #expect(build.text.count < 5_000)
         #expect(build.selectedToolCount == 0)
         #expect(build.text.contains("你好"))
-        #expect(build.text.contains("unrelated.tool0"))
-        #expect(build.text.contains("AVAILABLE TOOL NAMES"))
+        #expect(!build.text.contains("unrelated.tool0"))
+        #expect(!build.text.contains("AVAILABLE TOOL NAMES"))
         #expect(build.systemInstructions.contains("Think silently"))
         #expect(build.systemInstructions.contains("Reply directly in natural language"))
+        #expect(build.systemInstructions.contains("never demand a more explicit task"))
         #expect(!build.systemInstructions.contains("emit the documented single JSON tool_call"))
         #expect(!build.text.contains("<|im_start|>"))
         #expect(!build.text.contains("SYSTEM:"))
         #expect(!build.text.contains(String(repeating: "large cloud harness ", count: 20)))
+    }
+
+    @Test("Apple Foundation Model treats casual chat as a complete request")
+    @available(macOS 15.4, *)
+    func appleCasualChatDoesNotDemandAnAction() {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: AppleFoundationModelIdentity.remoteModelID,
+            displayName: "Apple Foundation Model",
+            limits: .init(contextTokens: 4_096, maxOutputTokens: 512),
+            capabilities: [.text, .tools]
+        )
+        let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [("user", "你好，今天过得怎么样？")],
+            toolSchemas: [ToolSchemaDescriptor(name: "apple.automation.list", description: "List shortcuts")]
+        ))
+        #expect(build.selectedTools.isEmpty)
+        #expect(!build.text.contains("AVAILABLE TOOL NAMES"))
+        #expect(build.systemInstructions.contains("ordinary conversation"))
+        #expect(build.systemInstructions.contains("Respond normally and warmly"))
+    }
+
+    @Test("Apple native tools never receive or parse the MLX JSON fallback protocol")
+    @available(macOS 15.4, *)
+    func appleNativeToolsDoNotUseJSONFallback() throws {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: AppleFoundationModelIdentity.remoteModelID,
+            displayName: "Apple Foundation Model",
+            limits: .init(contextTokens: 4_096, maxOutputTokens: 512),
+            capabilities: [.text, .tools]
+        )
+        let tool = ToolSchemaDescriptor(
+            name: "apple.automation.list",
+            description: "List shortcuts"
+        )
+        let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [("user", "列出快捷指令")],
+            toolSchemas: [tool]
+        ))
+        #expect(build.selectedTools.map(\.name) == [tool.name])
+        #expect(!build.text.contains("{\"tool_call\""))
+        #expect(!build.systemInstructions.contains("emit the documented single JSON"))
+
+        let printedJSON = #"{"tool_call":{"name":"apple.automation.list","arguments":{}}}"#
+        let parsed = try LocalProviderAdapter.fallbackToolCall(
+            from: printedJSON,
+            modelRemoteID: model.remoteModelID,
+            selectedTools: [tool]
+        )
+        #expect(parsed == nil)
+    }
+
+    @Test("Constrained local context admits a small tool set")
+    @available(macOS 15.4, *)
+    func constrainedLocalPromptLimitsSchemas() {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "gemma4-e4b-mlx4",
+            displayName: "Gemma local",
+            limits: .init(contextTokens: 2_048, maxOutputTokens: 256),
+            capabilities: [.text, .tools]
+        )
+        let tools = (0..<20).map { index in
+            ToolSchemaDescriptor(
+                name: "workspace.tool\(index)",
+                description: "Workspace operation \(index)",
+                parametersJSON: #"{"type":"object","properties":{"path":{"type":"string"}}}"#
+            )
+        }
+        let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [("user", "测试所有工作区工具")],
+            toolSchemas: tools
+        ))
+        #expect(build.selectedToolCount <= 4)
+        #expect(build.text.count < 3_000)
     }
 
     @Test("Local prompt offers only intent-relevant tools")

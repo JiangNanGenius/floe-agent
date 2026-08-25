@@ -3,11 +3,15 @@ import Crypto
 import FloeCore
 import FloeTools
 
-/// A bounded, dependency-free numerical evaluator for common R and
+/// A bounded, dependency-free numerical evaluator for common R, Stata and
 /// MATLAB/Octave-style expressions. This is deliberately a compatibility
-/// surface, not a bundled copy of either GPL runtime and not MathWorks MATLAB.
+/// surface, not a bundled copy of those language runtimes.
 public struct LocalNumericalCompatibilityTool: AgentTool {
-    public enum Dialect: String, Decodable, Sendable { case r, matlabCompatible }
+    public enum Dialect: String, Decodable, Sendable {
+        case r
+        case stataCompatible
+        case matlabCompatible
+    }
 
     public struct Arguments: Decodable, Sendable {
         public var dialect: Dialect
@@ -23,8 +27,8 @@ public struct LocalNumericalCompatibilityTool: AgentTool {
 
     public static let name = "exec.localNumerical"
     public static let toolDescription =
-        "Run bounded numerical code locally with common R or MATLAB/Octave-compatible syntax. This is Floe's own compatibility evaluator, not GNU R, GNU Octave, or MathWorks MATLAB. It supports scalar/vector/matrix assignment and arithmetic plus c, seq, matrix, sum, mean, sd, min, max, length, nrow, ncol, zeros, ones, eye, linspace, abs, sqrt, exp, log, sin, cos, tan and transpose. Matrix literals use commas and semicolons, for example [1,2;3,4]. It has no file, network, package, process, dynamic-code, or native-extension access. Use configured SSH/cloud execution when full language or package compatibility is required."
-    public static let parametersJSON = #"{"type":"object","properties":{"dialect":{"type":"string","enum":["r","matlabCompatible"]},"script":{"type":"string","description":"Visible numerical source, max 64 KiB"},"inputJSON":{"type":"string","description":"Optional JSON number or numeric array exposed as input"}},"required":["dialect","script"],"additionalProperties":false}"#
+        "Run bounded numerical and statistical code locally with common R, Stata-compatible, or MATLAB/Octave-compatible syntax. This is Floe's own compatibility evaluator, not GNU R, proprietary Stata, GNU Octave, or MathWorks MATLAB. It supports scalar/vector/matrix assignment and arithmetic; descriptive statistics, quantiles, covariance/correlation and simple OLS regression; and c, seq, matrix, zeros, ones, eye, linspace and common math functions. Stata-compatible commands include generate/scalar, display, summarize, correlate and one-predictor regress. summarize returns [n, mean, sample_sd, min, max]; regress returns [intercept, slope, r_squared, n]. Matrix literals use commas and semicolons, for example [1,2;3,4]. It has no file, network, package, process, dynamic-code, or native-extension access. Use configured SSH/cloud execution with a licensed Stata installation when full Stata or PyStata compatibility is required."
+    public static let parametersJSON = #"{"type":"object","properties":{"dialect":{"type":"string","enum":["r","stataCompatible","matlabCompatible"]},"script":{"type":"string","description":"Visible numerical/statistical source, max 64 KiB"},"inputJSON":{"type":"string","description":"Optional JSON number or rectangular numeric array exposed as input"}},"required":["dialect","script"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.executesLocalCode]
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
@@ -229,9 +233,18 @@ private struct NumericalLexer {
 
 private enum NumericalProgram {
     static func statements(from source: String, dialect: LocalNumericalCompatibilityTool.Dialect) throws -> [String] {
-        let commentMarker: Character = dialect == .r ? "#" : "%"
         let uncommented = source.split(separator: "\n", omittingEmptySubsequences: false).map { line in
-            String(line.prefix(while: { $0 != commentMarker }))
+            let value = String(line)
+            switch dialect {
+            case .r:
+                return String(value.prefix(while: { $0 != "#" }))
+            case .matlabCompatible:
+                return String(value.prefix(while: { $0 != "%" }))
+            case .stataCompatible:
+                let trimmed = value.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("*") { return "" }
+                return value.components(separatedBy: "//").first ?? value
+            }
         }.joined(separator: "\n")
         var result: [String] = []
         var current = ""
@@ -245,14 +258,40 @@ private enum NumericalProgram {
             guard parentheses >= 0, brackets >= 0 else { throw NumericalError.syntax("unbalanced delimiters") }
             if (character == "\n" || character == ";") && parentheses == 0 && brackets == 0 {
                 let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { result.append(trimmed) }
+                if !trimmed.isEmpty { result.append(normalized(trimmed, dialect: dialect)) }
                 current = ""
             } else { current.append(character) }
         }
         guard parentheses == 0, brackets == 0 else { throw NumericalError.syntax("unbalanced delimiters") }
         let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { result.append(trimmed) }
+        if !trimmed.isEmpty { result.append(normalized(trimmed, dialect: dialect)) }
         return result
+    }
+
+    private static func normalized(
+        _ statement: String,
+        dialect: LocalNumericalCompatibilityTool.Dialect
+    ) -> String {
+        guard dialect == .stataCompatible else { return statement }
+        let trimmed = statement.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        for prefix in ["generate ", "gen ", "scalar "] where lower.hasPrefix(prefix) {
+            return String(trimmed.dropFirst(prefix.count))
+        }
+        if lower.hasPrefix("display ") {
+            return String(trimmed.dropFirst("display ".count))
+        }
+        let words = trimmed.split(whereSeparator: \.isWhitespace).map(String.init)
+        if words.count == 2, ["summarize", "sum"].contains(words[0].lowercased()) {
+            return "summarize(\(words[1]))"
+        }
+        if words.count == 3, ["correlate", "corr"].contains(words[0].lowercased()) {
+            return "cor(\(words[1]),\(words[2]))"
+        }
+        if words.count == 3, ["regress", "reg"].contains(words[0].lowercased()) {
+            return "regress(\(words[1]),\(words[2]))"
+        }
+        return statement
     }
 
     static func assignment(in statement: String) -> (String?, String) {
@@ -429,6 +468,59 @@ private struct NumericalParser {
             guard values.count > 1 else { return NumericalValue(scalar: .nan) }
             let mean = values.reduce(0, +) / Double(values.count)
             return NumericalValue(scalar: sqrt(values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(values.count - 1)))
+        case "var", "variance":
+            let values = try one().flattened
+            guard values.count > 1 else { return NumericalValue(scalar: .nan) }
+            let mean = values.reduce(0, +) / Double(values.count)
+            return NumericalValue(scalar: values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(values.count - 1))
+        case "median":
+            return NumericalValue(scalar: percentile(try one().flattened, probability: 0.5))
+        case "quantile", "percentile":
+            guard arguments.count == 2, let probability = arguments[1].scalar,
+                  (0...1).contains(probability) else {
+                throw NumericalError.syntax("\(name) expects values and a probability from 0 through 1")
+            }
+            return NumericalValue(scalar: percentile(arguments[0].flattened, probability: probability))
+        case "cov", "covariance":
+            let pair = try paired(arguments, name: name)
+            return NumericalValue(scalar: covariance(pair.x, pair.y))
+        case "cor", "corr", "correlation":
+            let pair = try paired(arguments, name: name)
+            let denominator = sqrt(covariance(pair.x, pair.x) * covariance(pair.y, pair.y))
+            return NumericalValue(scalar: denominator == 0 ? .nan : covariance(pair.x, pair.y) / denominator)
+        case "summary", "summarize":
+            let values = try one().flattened
+            let mean = values.reduce(0, +) / Double(values.count)
+            let deviation: Double
+            if values.count > 1 {
+                deviation = sqrt(values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(values.count - 1))
+            } else {
+                deviation = .nan
+            }
+            return try NumericalValue([[
+                Double(values.count), mean, deviation, values.min()!, values.max()!
+            ]])
+        case "regress", "lm":
+            let pair = try paired(arguments, name: name)
+            // Stata order is regress(y, x). Return a compact, documented row:
+            // intercept, slope, R-squared, observation count.
+            let xMean = pair.y.reduce(0, +) / Double(pair.y.count)
+            let yMean = pair.x.reduce(0, +) / Double(pair.x.count)
+            let xVariance = pair.y.reduce(0) { $0 + ($1 - xMean) * ($1 - xMean) }
+            guard xVariance != 0 else { throw NumericalError.shape("regression predictor has zero variance") }
+            let slope = zip(pair.y, pair.x).reduce(0) {
+                $0 + ($1.0 - xMean) * ($1.1 - yMean)
+            } / xVariance
+            let intercept = yMean - slope * xMean
+            let residualSS = zip(pair.y, pair.x).reduce(0) {
+                let residual = $1.1 - (intercept + slope * $1.0)
+                return $0 + residual * residual
+            }
+            let totalSS = pair.x.reduce(0) { $0 + ($1 - yMean) * ($1 - yMean) }
+            let rSquared = totalSS == 0 ? .nan : 1 - residualSS / totalSS
+            return try NumericalValue([[
+                intercept, slope, rSquared, Double(pair.x.count)
+            ]])
         case "abs": return try one().map(Swift.abs)
         case "sqrt": return try one().map(Foundation.sqrt)
         case "exp": return try one().map(Foundation.exp)
@@ -484,6 +576,39 @@ private struct NumericalParser {
             return try NumericalValue((0..<rowCount).map { row in (0..<columnCount).map { values[(row * columnCount + $0) % values.count] } })
         default: throw NumericalError.unknown("function \(name)")
         }
+    }
+
+    private func percentile(_ values: [Double], probability: Double) -> Double {
+        let sorted = values.sorted()
+        guard sorted.count > 1 else { return sorted[0] }
+        let position = probability * Double(sorted.count - 1)
+        let lower = Int(position.rounded(.down))
+        let upper = Int(position.rounded(.up))
+        if lower == upper { return sorted[lower] }
+        return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - Double(lower))
+    }
+
+    private func paired(
+        _ arguments: [NumericalValue],
+        name: String
+    ) throws -> (x: [Double], y: [Double]) {
+        guard arguments.count == 2 else {
+            throw NumericalError.syntax("\(name) expects two vectors")
+        }
+        let x = arguments[0].flattened
+        let y = arguments[1].flattened
+        guard x.count == y.count, x.count > 1 else {
+            throw NumericalError.shape("\(name) requires equal vectors with at least two values")
+        }
+        return (x, y)
+    }
+
+    private func covariance(_ x: [Double], _ y: [Double]) -> Double {
+        let xMean = x.reduce(0, +) / Double(x.count)
+        let yMean = y.reduce(0, +) / Double(y.count)
+        return zip(x, y).reduce(0) {
+            $0 + ($1.0 - xMean) * ($1.1 - yMean)
+        } / Double(x.count - 1)
     }
 
     private mutating func binary(_ left: NumericalValue, _ right: NumericalValue, operation: NumericalToken) throws -> NumericalValue {

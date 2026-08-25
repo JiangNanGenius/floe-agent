@@ -34,6 +34,36 @@ struct LocalNumericalCompatibilityToolTests {
         #expect(output.summary.contains("1.29099444874"))
     }
 
+    @Test("R-compatible descriptive statistics quantiles and correlation run locally")
+    func rStatistics() async throws {
+        let output = try await LocalNumericalCompatibilityTool().execute(
+            .init(
+                dialect: .r,
+                script: "x <- c(1,2,3,4,5)\ny <- c(2,4,6,8,10)\nsummary(x)\nquantile(x,0.75)\ncor(x,y)\nregress(y,x)"
+            ),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(output.exitStatus == 0)
+        #expect(output.summary.contains("[5, 3, 1.58113883008, 1, 5]"))
+        #expect(output.summary.contains("4"))
+        #expect(output.summary.contains("[0, 2, 1, 5]"))
+    }
+
+    @Test("Stata-compatible common commands run without pretending to bundle Stata")
+    func stataCommands() async throws {
+        let output = try await LocalNumericalCompatibilityTool().execute(
+            .init(
+                dialect: .stataCompatible,
+                script: "* bounded Stata-compatible surface\ngenerate x = c(1,2,3,4)\ngen y = c(3,5,7,9)\nsummarize x\ncorrelate x y\nregress y x"
+            ),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(output.exitStatus == 0)
+        #expect(output.summary.contains("dialect=stataCompatible"))
+        #expect(output.summary.contains("[4, 2.5, 1.29099444874, 1, 4]"))
+        #expect(output.summary.contains("[1, 2, 1, 4]"))
+    }
+
     @Test("JSON input is numeric-only and exposed without file or network access")
     func jsonInput() async throws {
         let tool = LocalNumericalCompatibilityTool()

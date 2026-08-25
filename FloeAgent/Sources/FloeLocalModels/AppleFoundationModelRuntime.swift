@@ -179,6 +179,28 @@ public actor AppleFoundationModelRuntime {
             tools: nativeTools,
             instructions: localizedInstructions
         )
+        let effectiveMaxTokens = max(64, min(maxTokens, 2_048))
+        let options = GenerationOptions(
+            samplingMode: .greedy,
+            temperature: 0,
+            maximumResponseTokens: effectiveMaxTokens,
+            toolCallingMode: tools.isEmpty ? .disallowed : .allowed
+        )
+        let contextOptions = ContextOptions(
+            reasoningLevel: model.capabilities.contains(.reasoning) ? .light : nil
+        )
+        // A reconstructed Foundation Models transcript must preserve causal
+        // order. The previous code appended toolCalls/toolOutput before the
+        // prompt that caused them, then sent that prompt afterward as a new
+        // request. Put the compact conversation prompt first and ask for a
+        // natural continuation only after the recorded tool evidence.
+        if !toolHistory.isEmpty {
+            session.transcript.append(.prompt(.init(
+                segments: [.text(.init(content: prompt))],
+                options: options,
+                contextOptions: contextOptions
+            )))
+        }
         for exchange in toolHistory {
             let arguments = try GeneratedContent(
                 json: String(decoding: exchange.call.argumentsJSON, as: UTF8.self)
@@ -197,16 +219,6 @@ public actor AppleFoundationModelRuntime {
             )))
         }
         session.prewarm()
-        let effectiveMaxTokens = max(64, min(maxTokens, 2_048))
-        let options = GenerationOptions(
-            samplingMode: .greedy,
-            temperature: 0,
-            maximumResponseTokens: effectiveMaxTokens,
-            toolCallingMode: tools.isEmpty ? .disallowed : .allowed
-        )
-        let contextOptions = ContextOptions(
-            reasoningLevel: model.capabilities.contains(.reasoning) ? .light : nil
-        )
         var latest = ""
         var firstContentAt: ContinuousClock.Instant?
         var usageInputTokens: Int?
@@ -219,9 +231,16 @@ public actor AppleFoundationModelRuntime {
         if !attachments.isEmpty, !model.capabilities.contains(.vision) {
             throw FloeError.invalidConfiguration("Apple Foundation Model vision is not available on this device")
         }
-        let request = Prompt {
-            prompt
-            attachments
+        let request: Prompt
+        if toolHistory.isEmpty {
+            request = Prompt {
+                prompt
+                attachments
+            }
+        } else {
+            request = Prompt(
+                "Answer the user's latest request naturally using the verified tool output above. Do not repeat the tool call and do not expose tool-call JSON."
+            )
         }
         let promptTokens = try await model.tokenCount(for: request)
         let instructionTokens = try await model.tokenCount(for: Instructions(localizedInstructions))

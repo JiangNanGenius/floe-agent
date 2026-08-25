@@ -14,7 +14,7 @@
 | Security | [Security](../SECURITY.md) | [安全策略](../SECURITY.zh-CN.md) |
 | Support | [Support](../SUPPORT.md) | [支持](../SUPPORT.zh-CN.md) |
 
-Current TestFlight validation: [Floe Agent 1.4.28 (Build 59) test notes](TESTFLIGHT_1.4.28.md).
+Current TestFlight validation: [Floe Agent 1.4.29 (Build 60) test notes](TESTFLIGHT_1.4.29.md).
 
 ## Product references
 

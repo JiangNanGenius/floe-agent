@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide describes the Floe Agent 1.4.28 source target (build 59). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
+This guide describes the Floe Agent 1.4.29 source target (build 60). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
 
 ## 1. Install safely
 
@@ -39,6 +39,8 @@ Open **Settings → Local Models**. The Apple Foundation Model row is system-man
 Qwen and Gemma entries are user-downloaded MLX snapshots. Download, load and benchmark are separate actions. Floe keeps one downloaded model resident at a time and checks current device headroom before mapping it. Closing background apps may increase available memory, but iPadOS can still terminate an app under pressure. If loading is rejected, retry after freeing memory or select a smaller model; if the process terminates, export the new Xcode/device or uploaded diagnostic log rather than assuming a prior crash has the same cause.
 
 Local models receive a smaller, intent-ranked catalog of real Floe tools and a local-only dynamic context/compression budget. Cloud-provider context limits, compression and tool schemas are not reduced to accommodate a local model. If a local model cannot produce a valid tool call, Floe reports the parsing or capability reason instead of claiming the tool ran.
+
+Greetings, ordinary conversation, questions and brainstorming do not require an explicit task command. Apple Foundation Model should answer them naturally and asks for clarification only when missing information materially changes a consequential action. Downloaded MLX models prefill prompts in device-budgeted chunks and release transient Metal/KV caches after each generation while retaining model weights only for tool continuation within the active task.
 
 ## 4. Start a task
 
@@ -124,6 +126,8 @@ Floe publishes **Run Floe Task** and **Schedule Floe Task** App Intents. Add **R
 ## 12. Local Python, packages and code editing
 
 Signed builds include bounded CPython 3.13. The managed package interface may download dependencies into quarantine, but activates only pure-Python `py3-none-any` wheels after hash verification, static inspection and package review. Native extensions, Mach-O/ELF payloads, dynamic libraries, subprocess execution and sandbox escape remain unavailable. Repeated direct `pip`, shell or `subprocess` attempts are rejected with a machine-readable explanation.
+
+`exec.localNumerical` provides a bounded, dependency-free R, Stata and MATLAB/Octave compatibility surface for descriptive statistics, quantiles, covariance/correlation and one-predictor OLS. Stata-compatible commands include `generate`, `display`, `summarize`, `correlate` and `regress`. It is not GNU R or Stata. PyStata still requires a separately installed, licensed Stata runtime, while `pyreadstat` depends on native extensions; neither can masquerade as an installable pure-Python iOS package. Route full R/Stata or pandas/native-package work to a configured trusted SSH host.
 
 Open Python, JavaScript, MJS or CJS files from the workspace to use the structured editor with line numbers, syntax highlighting, search/replace, symbols, undo/redo and bounded local execution where supported.
 

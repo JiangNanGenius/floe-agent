@@ -2,7 +2,7 @@
 
 [English](USER_GUIDE.md) · [官方网站](https://www.floe-agent.com/) · [中文 README](../README.zh-CN.md) · [安全策略](../SECURITY.zh-CN.md)
 
-本指南适用于 Floe Agent 1.4.28 源码目标（build 59）。具体标签会随系统语言和服务商配置略有变化；分发状态仍须以 TestFlight 为准，源码标签本身不是 Apple 处理回执。
+本指南适用于 Floe Agent 1.4.29 源码目标（build 60）。具体标签会随系统语言和服务商配置略有变化；分发状态仍须以 TestFlight 为准，源码标签本身不是 Apple 处理回执。
 
 ## 1. 安全安装
 
@@ -39,6 +39,8 @@ API 凭据应保存在 Keychain。诊断导出会隐藏凭据值；不要把未�
 Qwen 与 Gemma 是用户主动下载的 MLX 快照，下载、加载和测速彼此独立。Floe 同一时间只让一个下载式模型驻留，并在映射权重前检查设备当时的安全内存余量。关闭后台 App 可能增加可用内存，但 iPadOS 在压力过大时仍可能终止进程。若加载被拒绝，可释放内存后重试一次或选择较小模型；若 App 被终止，应导出本次最新的 Xcode/设备日志或已上传诊断，不要用旧的不相关崩溃推断原因。
 
 本地模型会获得按意图排序、数量受限但真实可执行的 Floe 工具目录，以及只对本地模型生效的动态上下文/压缩预算。云端模型的上下文、压缩和工具 Schema 不会因为兼容本地模型而缩水。本地模型无法生成合法工具调用时，Floe 会显示解析或能力原因，不会伪装为已经执行。
+
+普通问候、闲聊、提问和头脑风暴不需要明确的“任务指令”。Apple Foundation Model 应直接自然回复；只有在缺失信息会实质改变高影响操作时才会追问。下载式 MLX 模型会按设备预算分批预填充提示，并在每轮生成后释放临时 Metal/KV 缓存；模型权重只在同一任务的工具续接期间保留。
 
 ## 4. 新建任务
 
@@ -124,6 +126,8 @@ Floe 会向快捷指令公开**立即运行 Floe 任务**和**安排 Floe 任务
 ## 12. 本机 Python、受管包和代码编辑
 
 签名构建包含受限 CPython 3.13。受管包接口可以先把依赖下载到隔离暂存区，但只有通过哈希、静态检查和软件包审核的纯 Python `py3-none-any` wheel 才能激活；原生扩展、Mach-O/ELF、动态库、子进程和沙箱逃逸仍不可用。反复直接尝试 `pip`、Shell 或 `subprocess` 会返回机器可读原因，不会循环重试。
+
+`exec.localNumerical` 提供无需额外运行时的受限 R、Stata 和 MATLAB/Octave 兼容数值表面，包括描述统计、分位数、协方差/相关和单自变量 OLS；Stata 兼容命令包括 `generate`、`display`、`summarize`、`correlate` 和 `regress`。它不是 GNU R 或 Stata。PyStata 仍要求另行安装并授权 Stata，`pyreadstat` 则依赖本机扩展，二者都不能伪装成纯 Python 包装进 iOS 沙箱；完整 R/Stata 或 pandas/native 包应在已配置的可信 SSH 主机运行。
 
 从工作区打开 Python、JavaScript、MJS 或 CJS 文件，可以使用带行号、语法高亮、搜索替换、符号列表、撤销/重做和受限本机运行的结构化编辑器。
 

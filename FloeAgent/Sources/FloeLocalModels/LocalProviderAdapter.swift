@@ -505,9 +505,10 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         timeToFirstTokenMs: completion.timeToFirstTokenMs,
                         tokensPerSecond: completion.tokensPerSecond
                     )))
-                    if let call = try Self.toolCall(
+                    if let call = try Self.fallbackToolCall(
                         from: channels.answer,
-                        offeredToolNames: Set(request.toolSchemas.map(\.name))
+                        modelRemoteID: request.model.remoteModelID,
+                        selectedTools: promptBuild.selectedTools
                     ) {
                         continuation.yield(.toolRequest(call))
                         continuation.yield(.completed(.init(stopReason: .toolUse)))
@@ -622,32 +623,52 @@ public struct LocalProviderAdapter: ProviderAdapter {
             }.joined(separator: "\n") ?? ""
         let isAppleToolFollowUp = request.model.remoteModelID
             == AppleFoundationModelIdentity.remoteModelID && !request.toolResults.isEmpty
+        let contextTokens = max(1, request.model.limits.contextTokens)
         let selectedTools = isAppleToolFollowUp ? [] : selectTools(
             request.toolSchemas,
             latestUserText: latestUserText,
-            pendingToolNames: Set(request.pendingToolCalls.map(\.toolName))
+            pendingToolNames: Set(request.pendingToolCalls.map(\.toolName)),
+            contextTokens: contextTokens
         )
+
+        let normalizedUserText = latestUserText.lowercased()
+        let actionRequested = requestsAction(normalizedUserText)
+        let inventoryRequested = requestsInventory(normalizedUserText)
+        let includeToolDirectory = inventoryRequested || actionRequested || !request.pendingToolCalls.isEmpty
+        let budgets = promptBudgets(contextTokens: contextTokens)
 
         var sections: [String] = []
         // The cloud harness carries the complete tool inventory in a system
         // message, but local turns intentionally drop that oversized system
-        // payload. Keep a compact, authoritative name-only directory on every
-        // local turn so the model can discover capabilities without paying for
-        // every schema. Intent-relevant schemas below still define the only
-        // calls it may actually emit.
-        if !request.toolSchemas.isEmpty {
+        // payload. Keep a compact, authoritative name-only directory only for
+        // actions and capability questions; injecting it into greetings made
+        // the Apple model behave like a command form instead of a chat model.
+        // Structured schemas below still define the only calls it may emit.
+        if includeToolDirectory, !request.toolSchemas.isEmpty {
             let names = request.toolSchemas.map(\.name).sorted().joined(separator: ", ")
-            sections.append("AVAILABLE TOOL NAMES (authoritative): \(clipped(names, limit: 1_600))")
+            sections.append("AVAILABLE TOOL NAMES (authoritative): \(clipped(names, limit: budgets.directoryCharacters))")
         }
         if !selectedTools.isEmpty {
             let offered = selectedTools.map { tool in
-                "- \(tool.name): \(clipped(tool.description, limit: 120))\n  parameters: \(clipped(tool.parametersJSON, limit: 900))"
+                // The same full schema is already rendered by the native MLX
+                // or Foundation Models tool interface. Repeating parameters
+                // here doubled constrained-context memory with no added
+                // authority; retain a short human-readable index only.
+                "- \(tool.name): \(clipped(tool.description, limit: 120))"
             }.joined(separator: "\n")
+            let invocationInstructions: String
+            if request.model.remoteModelID == AppleFoundationModelIdentity.remoteModelID {
+                invocationInstructions = "To call one, use only the native Foundation Models tool interface. Never print a tool call or tool result as JSON."
+            } else {
+                invocationInstructions = """
+                To call one, use the native tool interface. If the model template cannot emit a native call, return exactly one JSON object and no prose:
+                {"tool_call":{"name":"exact.offered.name","arguments":{}}}
+                """
+            }
             sections.append("""
             OFFERED TOOLS FOR THIS TURN (callable now):
             \(offered)
-            To call one, use the native tool interface. If the model template cannot emit a native call, return exactly one JSON object and no prose:
-            {"tool_call":{"name":"exact.offered.name","arguments":{}}}
+            \(invocationInstructions)
             """)
         }
 
@@ -660,7 +681,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 if case .imageURL = part { return "<image attached>" }
                 return nil
             }.joined(separator: "\n")
-            let remaining = 1_600 - transcriptCharacters
+            let remaining = budgets.transcriptCharacters - transcriptCharacters
             guard remaining > 80 else { break }
             let line = "\(message.role.uppercased()): \(clipped(raw, limit: min(800, remaining)))"
             transcriptSections.insert(line, at: 0)
@@ -670,7 +691,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
         // Tool evidence shares the same bounded history budget. Without this,
         // a tool follow-up could grow back beyond the bounded local context even
         // after the cloud system prompt had been removed.
-        var evidenceBudget = max(0, 2_000 - transcriptCharacters)
+        var evidenceBudget = max(0, budgets.evidenceCharacters - transcriptCharacters)
         if !isAppleToolFollowUp {
             for call in request.pendingToolCalls.suffix(2) where evidenceBudget > 80 {
                 let line = "ASSISTANT TOOL REQUEST \(call.id): \(call.toolName) \(String(decoding: call.argumentsJSON, as: UTF8.self))"
@@ -689,10 +710,15 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let toolInstructions: String
         if selectedTools.isEmpty {
             toolInstructions = "No tool is callable on this turn. Reply directly in natural language. Never emit tool-call JSON or wrap an ordinary answer in a tool/result object."
+        } else if request.model.remoteModelID == AppleFoundationModelIdentity.remoteModelID {
+            toolInstructions = "Use only offered native Foundation Models tools, never invent tool names, and never claim an action succeeded without a tool result. Invoke at most one tool per turn. Do not print JSON tool-call envelopes."
         } else {
             toolInstructions = "Use only offered native tools, never invent tool names, and never claim an action succeeded without a tool result. Invoke at most one tool per turn. If native tool calling is unavailable, emit the documented single JSON tool_call object with no prose. If a tool returns PENDING_EXTERNAL_EXECUTION, stop immediately without claiming completion."
         }
-        let system = "You are Floe, a concise on-device agent. Follow the latest user request. Tool execution and approval are enforced by the app. The user message contains an authoritative AVAILABLE TOOL NAMES directory and, when action is needed, an OFFERED TOOLS section. For capability questions, report exact names from that directory; never claim you cannot see it. \(toolInstructions) Think silently. Never print chain-of-thought, planning notes, drafts, self-corrections, or a 'Thinking Process' section. Return only the final answer."
+        let directoryInstructions = includeToolDirectory
+            ? "The user message contains an authoritative AVAILABLE TOOL NAMES directory and, when action is needed, an OFFERED TOOLS section. For capability questions, report exact names from that directory; never claim you cannot see it."
+            : "This is an ordinary conversation turn and no tool directory is needed."
+        let system = "You are Floe, a concise and natural on-device assistant. The latest user message may be a request or ordinary conversation. Respond normally and warmly to greetings, small talk, questions, brainstorming, opinions, and follow-ups; never demand a more explicit task merely because no tool is needed. Ask a clarifying question only when missing information materially changes a consequential action. Tool execution and approval are enforced by the app. \(directoryInstructions) \(toolInstructions) Think silently. Never print chain-of-thought, planning notes, drafts, self-corrections, or a 'Thinking Process' section. Return only the final answer."
         return PromptBuild(
             systemInstructions: system,
             // MLX receives structured system/user messages and applies the
@@ -709,18 +735,12 @@ public struct LocalProviderAdapter: ProviderAdapter {
     private static func selectTools(
         _ tools: [ToolSchemaDescriptor],
         latestUserText: String,
-        pendingToolNames: Set<String>
+        pendingToolNames: Set<String>,
+        contextTokens: Int
     ) -> [ToolSchemaDescriptor] {
         let text = latestUserText.lowercased()
-        let actionRequested = containsAny(text, [
-            "创建", "读取", "查看", "查找", "搜索", "运行", "执行", "修改", "编辑", "删除", "生成", "连接", "分析", "测试",
-            "初始化", "提交", "暂存", "克隆", "拉取", "推送", "同步", "切换分支",
-            "create", "read", "inspect", "find", "search", "run", "execute", "edit", "delete", "generate", "connect", "analyze", "test",
-            "initialize", "commit", "stage", "clone", "fetch", "pull", "push", "sync", "switch branch"
-        ])
-        let inventoryRequested = containsAny(text, [
-            "工具", "能力", "能做什么", "可以做什么", "可用", "tool", "capability", "what can you do", "available"
-        ])
+        let actionRequested = requestsAction(text)
+        let inventoryRequested = requestsInventory(text)
         let intentPrefixes: [(needles: [String], prefixes: [String])] = [
             (["文件", "目录", "文档", "pdf", "代码", "file", "folder", "document", "code"], ["workspace.", "document.", "pdf."]),
             (["图片", "照片", "图像", "视觉", "ocr", "image", "photo", "vision"], ["image."]),
@@ -767,12 +787,13 @@ public struct LocalProviderAdapter: ProviderAdapter {
             return $0.0.name < $1.0.name
         }
 
+        let budgets = promptBudgets(contextTokens: contextTokens)
         var selected: [ToolSchemaDescriptor] = []
         var schemaCharacters = 0
         for (tool, _) in scored {
             let cost = tool.name.count + min(tool.description.count, 120) + tool.parametersJSON.count + 16
-            let maximumCount = inventoryRequested ? 10 : 8
-            let maximumCharacters = inventoryRequested ? 4_800 : 3_600
+            let maximumCount = inventoryRequested ? budgets.inventoryToolCount : budgets.actionToolCount
+            let maximumCharacters = inventoryRequested ? budgets.inventorySchemaCharacters : budgets.actionSchemaCharacters
             guard selected.count < maximumCount else { break }
             guard schemaCharacters + cost <= maximumCharacters else { continue }
             selected.append(tool)
@@ -786,6 +807,65 @@ public struct LocalProviderAdapter: ProviderAdapter {
 
     private static func containsAny(_ text: String, _ needles: [String]) -> Bool {
         needles.contains(where: { text.contains($0) })
+    }
+
+    private static func requestsAction(_ text: String) -> Bool {
+        containsAny(text, [
+            "创建", "读取", "查看", "查找", "搜索", "运行", "执行", "修改", "编辑", "删除", "生成", "连接", "分析", "测试",
+            "初始化", "提交", "暂存", "克隆", "拉取", "推送", "同步", "切换分支",
+            "create", "read", "inspect", "find", "search", "run", "execute", "edit", "delete", "generate", "connect", "analyze", "test",
+            "initialize", "commit", "stage", "clone", "fetch", "pull", "push", "sync", "switch branch"
+        ])
+    }
+
+    private static func requestsInventory(_ text: String) -> Bool {
+        containsAny(text, [
+            "工具", "能力", "能做什么", "可以做什么", "可用", "tool", "capability", "what can you do", "available"
+        ])
+    }
+
+    private struct PromptBudgets {
+        let directoryCharacters: Int
+        let transcriptCharacters: Int
+        let evidenceCharacters: Int
+        let actionToolCount: Int
+        let inventoryToolCount: Int
+        let actionSchemaCharacters: Int
+        let inventorySchemaCharacters: Int
+    }
+
+    private static func promptBudgets(contextTokens: Int) -> PromptBudgets {
+        if contextTokens <= 2_048 {
+            return .init(
+                directoryCharacters: 600,
+                transcriptCharacters: 850,
+                evidenceCharacters: 900,
+                actionToolCount: 3,
+                inventoryToolCount: 4,
+                actionSchemaCharacters: 1_100,
+                inventorySchemaCharacters: 1_300
+            )
+        }
+        if contextTokens <= 4_096 {
+            return .init(
+                directoryCharacters: 1_000,
+                transcriptCharacters: 1_300,
+                evidenceCharacters: 1_400,
+                actionToolCount: 5,
+                inventoryToolCount: 6,
+                actionSchemaCharacters: 2_200,
+                inventorySchemaCharacters: 2_600
+            )
+        }
+        return .init(
+            directoryCharacters: 1_600,
+            transcriptCharacters: 1_600,
+            evidenceCharacters: 2_000,
+            actionToolCount: 8,
+            inventoryToolCount: 10,
+            actionSchemaCharacters: 3_600,
+            inventorySchemaCharacters: 4_800
+        )
     }
 
     struct OutputChannels: Sendable, Equatable {
@@ -913,6 +993,21 @@ public struct LocalProviderAdapter: ProviderAdapter {
             )
         }
         return nil
+    }
+
+    /// Foundation Models has a real native Tool channel. Text emitted by that
+    /// model is always an answer, never a second wire protocol. MLX keeps the
+    /// strict JSON fallback, bounded to the schemas selected for this turn.
+    static func fallbackToolCall(
+        from output: String,
+        modelRemoteID: String,
+        selectedTools: [ToolSchemaDescriptor]
+    ) throws -> ToolCall? {
+        guard modelRemoteID != AppleFoundationModelIdentity.remoteModelID else { return nil }
+        return try toolCall(
+            from: output,
+            offeredToolNames: Set(selectedTools.map(\.name))
+        )
     }
 
     /// Xcode 27 Foundation Models can occasionally serialize a plain answer

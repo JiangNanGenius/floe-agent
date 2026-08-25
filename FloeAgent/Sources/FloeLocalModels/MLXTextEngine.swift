@@ -83,6 +83,13 @@ public actor MLXTextEngine {
         maxTokens: Int = 1_024
     ) async throws -> LocalGenerationResult {
         guard let container else { throw LocalInferenceError.contextCreationFailed }
+        // Keep the mapped model resident across tool turns, but release Metal
+        // scratch buffers and the completed turn's KV cache before the next
+        // decode. Device diagnostics showed the process disappearing between
+        // a successful tool result and the second decode without a Swift
+        // error, which is exactly where retaining both turns' cached pages is
+        // most expensive.
+        defer { Memory.clearCache() }
         try Task.checkCancellation()
         let startedAt = Date()
         let temporaryDirectory = FileManager.default.temporaryDirectory
@@ -122,19 +129,52 @@ public actor MLXTextEngine {
         }
 
         let effectiveMaximum = min(max(1, maxTokens), resourceProfile.maximumOutputTokens)
+        let preparedInputTokens = prepared.text.tokens.dim(-1)
+        // A simple quantized cache is not rotating, so enforce the device
+        // context before asking MLX to allocate it. The prepared token shape
+        // includes chat-template overhead and native tool schemas, unlike a
+        // character estimate of the visible prompt.
+        guard preparedInputTokens + effectiveMaximum <= Int(resourceProfile.contextSize) else {
+            throw LocalInferenceError.promptTooLong
+        }
         let parameters = GenerateParameters(
             maxTokens: effectiveMaximum,
-            maxKVSize: Int(resourceProfile.contextSize),
-            // Eight-bit KV cache substantially reduces long-agent-turn memory
-            // without quantizing model weights again.
-            kvBits: 8,
+            // MLX uses RotatingKVCache whenever maxKVSize is non-nil, and that
+            // cache is not quantized by the current upstream implementation.
+            // Leave it nil so kvBits actually applies to KVCacheSimple.
+            maxKVSize: nil,
+            kvBits: resourceProfile.tier == .constrained ? 4 : 8,
             temperature: 0.55,
             topP: 0.95,
-            repetitionPenalty: 1.05
+            repetitionPenalty: 1.05,
+            // The resource policy's batch size is the prompt prefill chunk,
+            // not a decorative catalog value. Gemma's constrained profile is
+            // intentionally 32 instead of MLX's 512-token default.
+            prefillStepSize: Int(resourceProfile.batchSize)
         )
+        return try await generatePrepared(
+            container: container,
+            input: prepared,
+            parameters: parameters,
+            inputTokens: preparedInputTokens,
+            startedAt: startedAt
+        )
+    }
+
+    /// Keep the stream and its live KV cache in a nested scope. When this
+    /// helper returns (or throws), those references are destroyed before the
+    /// caller's `Memory.clearCache()` defer runs, so freed pages cannot simply
+    /// fall back into MLX's process-wide cache after it was cleared.
+    private func generatePrepared(
+        container: ModelContainer,
+        input: sending LMInput,
+        parameters: GenerateParameters,
+        inputTokens: Int,
+        startedAt: Date
+    ) async throws -> LocalGenerationResult {
         let stream: AsyncStream<Generation>
         do {
-            stream = try await container.generate(input: prepared, parameters: parameters)
+            stream = try await container.generate(input: input, parameters: parameters)
         } catch {
             throw LocalInferenceError.decodeFailed
         }
@@ -161,10 +201,6 @@ public actor MLXTextEngine {
         }
         let endedAt = Date()
         let outputTokens = info?.generationTokenCount ?? Self.estimatedTokens(text)
-        // MLX Swift 0.31.4 does not expose its prepared prompt-token count.
-        // Keep this explicitly estimated (as the rest of Floe's usage layer
-        // records) instead of depending on a newer, App-Store-ineligible API.
-        let inputTokens = Self.estimatedTokens(instructions + "\n" + prompt)
         let generationDurationMs = info.map { max(1, Int($0.generateTime * 1_000)) }
             ?? max(1, Int(endedAt.timeIntervalSince(firstTokenAt ?? startedAt) * 1_000))
         return LocalGenerationResult(

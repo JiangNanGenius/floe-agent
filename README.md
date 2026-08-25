@@ -57,7 +57,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.4.28 (build 59); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
+Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.4.29 (build 60); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
 
 ### Unsigned IPA
 
@@ -109,7 +109,7 @@ See the [English user guide](docs/USER_GUIDE.md), [简体中文使用指南](doc
 
 ### Models and image providers
 
-The system-owned Apple Foundation Model appears in **Settings → Local Models** on every device. On iOS/iPadOS 27 it uses the Foundation Models framework and reports the system's real availability state, including device eligibility, Apple Intelligence being disabled, or the model still downloading. There is no API-key or model-download setting because iOS owns both. Downloaded Qwen and Gemma MLX models are separate: Floe checks safe load headroom, keeps at most one resident model, clears runtime caches on unload/failure, and supplies a bounded catalog of real task tools.
+The system-owned Apple Foundation Model appears in **Settings → Local Models** on every device. On iOS/iPadOS 27 it uses the Foundation Models framework and reports the system's real availability state, including device eligibility, Apple Intelligence being disabled, or the model still downloading. There is no API-key or model-download setting because iOS owns both. It answers ordinary conversation directly rather than requiring every turn to be phrased as an action. Downloaded Qwen and Gemma MLX models are separate: Floe checks safe load headroom, keeps at most one resident model, uses quantized device-budgeted KV/prefill settings, releases transient MLX caches after each generation, and supplies a bounded catalog of real task tools.
 
 OpenAI image generation/editing defaults to `gpt-image-2`. Google Gemini Images includes Nano Banana Pro (`gemini-3-pro-image`). Both provider entries accept an editable Base URL for compatible proxies; generation, editing and vision remain separate roles.
 
@@ -121,7 +121,9 @@ Routine bounded reads, local workspace operations, image generation/inspection, 
 
 ### Python execution
 
-Signed Floe builds bundle a fixed CPython 3.13 runtime and standard library as app resources. `exec.localPython` runs bounded source inside the app sandbox after the configured approval policy. Managed package installation accepts pure-Python packages only: archives are isolated, inspected, and reviewed by the configured package-review model before activation; native extensions, JIT, and executable payloads are rejected. For a fuller environment, pair an SSH host that has `python3`, trust its host key, select it as the task execution target, and allow remote execution. `exec.remotePython` uses the same catastrophic-command gate and approval path as other remote commands. Both paths report output, stderr, timeout, truncation, cancellation, and capability failures explicitly.
+Signed Floe builds bundle a fixed CPython 3.13 runtime and standard library as app resources. `exec.localPython` runs bounded source inside the app sandbox after the configured approval policy. Managed package installation accepts pure-Python packages only: archives are isolated, inspected, and reviewed by the configured package-review model before activation; native extensions, JIT, and executable payloads are rejected. For a fuller environment, pair an SSH host that has `python3`, trust its host key, select it as the task execution target, and allow the classified `ssh.execute` operation. Local Python and SSH execution both report output, stderr, timeout, truncation, cancellation, and capability failures explicitly; there is no duplicate `exec.remotePython` catalog entry.
+
+For statistics without external packages, `exec.localNumerical` implements bounded R-, Stata- and MATLAB/Octave-compatible expressions, descriptive statistics, quantiles, correlation and simple OLS. It does not claim to bundle the proprietary Stata runtime: PyStata requires a licensed Stata installation, and native-extension packages such as `pyreadstat` must run on a configured host rather than inside the pure-Python iOS package sandbox.
 
 ### Archive and credential sync
 
