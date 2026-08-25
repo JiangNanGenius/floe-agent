@@ -292,6 +292,13 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             environment.backgroundVideoService.startPreparedPictureInPicture()
             return
         }
+        if environment.backgroundVideoService.isPreparingPiP {
+            // The foreground preparation already owns the source view and
+            // encoder. Mark it to start when ready; beginning again here would
+            // cancel it after the scene has lost its attachable key window.
+            environment.backgroundVideoService.startPreparedPictureInPicture()
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             await self.environment.backgroundVideoService.begin(

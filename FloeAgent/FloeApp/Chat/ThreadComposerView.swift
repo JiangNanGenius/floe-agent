@@ -163,6 +163,7 @@ struct ThreadComposerView: View {
     @State private var isAttachmentProcessing = false
     @State private var attachmentError: String?
     @State private var pendingLocalModelSwitch: PendingLocalModelSwitch?
+    @State private var pendingLocalCapabilityModel: ModelProfile?
     @State private var preparingLocalModelID: String?
     @State private var dictationPrefix = ""
     @State private var slashNotice: String?
@@ -231,18 +232,31 @@ struct ThreadComposerView: View {
             attachmentError = nil
             selectedPhoto = nil
             pendingLocalModelSwitch = nil
+            pendingLocalCapabilityModel = nil
             isPhotoPickerPresented = false
             photoPickerTraceID = nil
-            if selectedProjectID == nil {
+            if contextID == nil {
                 environment.workspaceCenter.closeCurrentWorkspace()
             }
         }
         .task(id: contextID) {
-            // A private/no-project task must not inherit a stale external
-            // security-scoped workspace from the previously viewed chat.
-            if selectedProjectID == nil {
+            // The task's immutable owner may be an external project or an
+            // app-owned private workspace. Bind either one here so the file
+            // inspector cannot remain empty while agent tools use the same
+            // private root in the background.
+            if let contextID {
+                do {
+                    try await environment.workspaceCenter.openTaskWorkspace(
+                        conversationID: contextID
+                    )
+                    attachmentError = nil
+                } catch is CancellationError {
+                    return
+                } catch {
+                    attachmentError = "工作区挂载失败：\(error.localizedDescription)"
+                }
+            } else {
                 environment.workspaceCenter.closeCurrentWorkspace()
-                attachmentError = nil
             }
         }
         .onChange(of: isRunning) { _, running in
@@ -254,6 +268,26 @@ struct ThreadComposerView: View {
             draft = dictationPrefix + separator + transcript
         }
         .onDisappear { voiceInput.stop() }
+        .confirmationDialog(
+            "切换到本地模型？",
+            isPresented: Binding(
+                get: { pendingLocalCapabilityModel != nil },
+                set: { if !$0 { pendingLocalCapabilityModel = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let model = pendingLocalCapabilityModel {
+                Button("继续切换到 \(model.displayName)") {
+                    pendingLocalCapabilityModel = nil
+                    chooseOnDeviceModel(model)
+                }
+            }
+            Button("action.cancel", role: .cancel) {
+                pendingLocalCapabilityModel = nil
+            }
+        } message: {
+            Text("本地模型使用独立的小上下文和精简工具集，适合搜索、读取文件、简单文本与本地计算；复杂浏览器自动化、SSH、云工作区和多步骤 Git 操作请继续使用云端模型。")
+        }
         .confirmationDialog(
             "切换本地模型？",
             isPresented: Binding(
@@ -741,6 +775,16 @@ struct ThreadComposerView: View {
             applyModelSelection(model)
             return
         }
+        let currentIsCloud = models.first(where: { $0.id == selectedModelID })?
+            .providerID != ProviderProfile.onDeviceProviderID
+        if currentIsCloud {
+            pendingLocalCapabilityModel = model
+            return
+        }
+        chooseOnDeviceModel(model)
+    }
+
+    private func chooseOnDeviceModel(_ model: ModelProfile) {
         if model.remoteModelID == AppleFoundationModelIdentity.remoteModelID {
             Task { @MainActor in
                 // The system model is owned by iOS and has no Floe-managed

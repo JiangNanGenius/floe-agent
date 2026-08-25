@@ -44,6 +44,10 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     /// PiP starts. Keep a small inline preview attached while the run is active.
     private var inlinePreview: UIView?
     private var isProgrammaticRetraction = false
+    /// Scene transitions can request PiP while the progress asset is still
+    /// being encoded. Remember that request instead of launching a second
+    /// preparation task that tears down the first controller.
+    private var startWhenPrepared = false
 
     /// Starts (or updates) the PiP progress video for an active run. The
     /// user keeps the app alive by floating this PiP while in background.
@@ -59,6 +63,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         guidanceImage = nil
         guidanceHints = []
         stopPiPInternal()
+        startWhenPrepared = startImmediately
         isPreparingPiP = true
         lastError = nil
         FloeLogger(category: .app).info(
@@ -69,6 +74,14 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         // session active so the system registers that capability at task start
         // instead of suspending the app the moment it backgrounds.
         configureAudioSession()
+        guard prepareInlinePreview() else {
+            lastError = "画中画需要可见的应用窗口"
+            FloeLogger(category: .app).warning(
+                "pictureInPicturePrepareFailed stage=inlinePreviewContainer generation=\(generation)"
+            )
+            deactivateAudioSession()
+            return
+        }
         guard let assetURL = await synthesizeProgressVideo(
             title: title,
             progress: initialProgress,
@@ -79,6 +92,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             FloeLogger(category: .app).error(
                 "pictureInPicturePrepareFailed stage=videoSynthesis generation=\(generation)"
             )
+            removeInlinePreview()
             deactivateAudioSession()
             return
         }
@@ -137,22 +151,24 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         // AVKit readiness is asynchronous and varies by device. Starting at
         // a fixed delay silently fails on slower iPads, so wait for the real
         // capability signal with a bounded timeout.
-        let deadline = Date().addingTimeInterval(6)
-        while !controller.isPictureInPicturePossible && Date() < deadline {
+        let deadline = Date().addingTimeInterval(10)
+        while (item.status == .unknown || !controller.isPictureInPicturePossible)
+                && Date() < deadline {
             guard generation == startGeneration, !Task.isCancelled else { return }
             try? await Task.sleep(for: .milliseconds(100))
         }
         guard generation == startGeneration else { return }
-        guard controller.isPictureInPicturePossible else {
+        guard item.status == .readyToPlay, controller.isPictureInPicturePossible else {
             lastError = "画中画尚未就绪，请保持应用在前台后重试"
+            let itemError = item.error as NSError?
             FloeLogger(category: .app).warning(
-                "pictureInPicturePrepareFailed stage=readinessTimeout generation=\(generation)"
+                "pictureInPicturePrepareFailed stage=readinessTimeout generation=\(generation) itemStatus=\(String(describing: item.status)) errorDomain=\(itemError?.domain ?? "none") errorCode=\(itemError?.code ?? 0)"
             )
             stopPiPInternal()
             return
         }
         isPiPPrepared = true
-        guard startImmediately else {
+        guard startWhenPrepared else {
             FloeLogger(category: .app).info(
                 "pictureInPicturePrepared generation=\(generation)"
             )
@@ -162,6 +178,13 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     }
 
     func startPreparedPictureInPicture() {
+        startWhenPrepared = true
+        if isPreparingPiP, pipController == nil {
+            FloeLogger(category: .app).info(
+                "pictureInPictureStartDeferred generation=\(startGeneration)"
+            )
+            return
+        }
         guard let controller = pipController,
               controller.isPictureInPicturePossible,
               !controller.isPictureInPictureActive else { return }
@@ -290,6 +313,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         isPreparingPiP = false
         isPiPPrepared = false
         isProgrammaticRetraction = false
+        startWhenPrepared = false
         deactivateAudioSession()
     }
 
@@ -348,28 +372,42 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         )
     }
 
-    private func attachInlinePreview(layer: CALayer) -> Bool {
+    private func prepareInlinePreview() -> Bool {
+        if inlinePreview?.window != nil { return true }
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
-            .first(where: { $0.activationState == .foregroundActive }),
-              let window = scene.windows.first(where: \.isKeyWindow) else { return false }
+            .first(where: {
+                $0.activationState == .foregroundActive
+                    || $0.activationState == .foregroundInactive
+            }),
+              let window = scene.windows.first(where: \.isKeyWindow)
+                ?? scene.windows.first(where: { !$0.isHidden }) else { return false }
         removeInlinePreview()
-        // AVKit requires the source layer in the active hierarchy while it
-        // prepares automatic PiP. Keep the source present without placing a
-        // distracting black preview over the conversation UI.
-        let width: CGFloat = 2
+        // AVKit needs a genuinely visible, non-trivial source rectangle. A
+        // 2-point transparent layer is treated as non-playable by some iPadOS
+        // releases and leaves isPictureInPicturePossible false forever.
+        let size = CGSize(width: 160, height: 90)
         let view = UIView(frame: CGRect(
-            x: window.safeAreaInsets.left,
-            y: window.bounds.height - window.safeAreaInsets.bottom - width,
-            width: width,
-            height: width
+            x: max(window.safeAreaInsets.left, window.bounds.width - window.safeAreaInsets.right - size.width - 12),
+            y: max(window.safeAreaInsets.top, window.bounds.height - window.safeAreaInsets.bottom - size.height - 12),
+            width: size.width,
+            height: size.height
         ))
-        view.backgroundColor = .clear
+        view.backgroundColor = UIColor(red: 0.035, green: 0.043, blue: 0.065, alpha: 1)
         view.layer.masksToBounds = true
-        layer.frame = view.bounds
-        view.layer.addSublayer(layer)
+        view.layer.cornerRadius = 12
+        view.isUserInteractionEnabled = false
+        view.accessibilityElementsHidden = true
         window.addSubview(view)
         inlinePreview = view
+        return true
+    }
+
+    private func attachInlinePreview(layer: CALayer) -> Bool {
+        guard prepareInlinePreview(), let inlinePreview else { return false }
+        inlinePreview.layer.sublayers?.forEach { $0.removeFromSuperlayer() }
+        layer.frame = inlinePreview.bounds
+        inlinePreview.layer.addSublayer(layer)
         return true
     }
 

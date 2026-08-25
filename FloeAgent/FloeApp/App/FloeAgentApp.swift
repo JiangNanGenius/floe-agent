@@ -640,41 +640,81 @@ struct RootView: View {
 /// T05: renders the real workspace file inspector through WorkspaceCenter.
 private struct InspectorColumnView: View {
     let route: AppRouter.InspectorRoute
-    @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var environment: AppEnvironment
+    @State private var workspaceMountState: WorkspaceMountState = .idle
+    @State private var workspaceMountAttempt = 0
+
+    private enum WorkspaceMountState: Equatable {
+        case idle
+        case loading
+        case mounted
+        case failed(String)
+    }
 
     var body: some View {
         Group {
-        switch route.content {
-        case .changes:
-            TaskChangesInspectorView(conversationID: route.conversationID)
-        case .workspaceFiles:
-            FileInspectorView(center: environment.workspaceCenter)
-                .background(FloeTheme.readingSurface)
-        case .browser:
-            BrowserView(center: environment.browserCenter)
-        case .terminal:
-            HostListView(center: environment.remoteSessionCenter)
-        case .progress:
-            TaskProgressInspectorView(conversationID: route.conversationID)
-        case .childAgents:
-            ChildAgentsInspectorView(conversationID: route.conversationID)
-        case .permissions:
-            TaskPermissionsInspectorView(conversationID: route.conversationID)
+            switch route.content {
+            case .changes, .workspaceFiles:
+                workspaceBackedContent
+            case .browser:
+                BrowserView(center: environment.browserCenter)
+            case .terminal:
+                HostListView(center: environment.remoteSessionCenter)
+            case .progress:
+                TaskProgressInspectorView(conversationID: route.conversationID)
+            case .childAgents:
+                ChildAgentsInspectorView(conversationID: route.conversationID)
+            case .permissions:
+                TaskPermissionsInspectorView(conversationID: route.conversationID)
+            }
         }
-        }
-        .task(id: route.id) {
+        .task(id: "\(route.id).\(workspaceMountAttempt)") {
             let conversationID = route.conversationID
             switch route.content {
             case .changes, .workspaceFiles:
-                try? await environment.workspaceCenter.openTaskWorkspace(
-                    conversationID: conversationID
-                )
+                workspaceMountState = .loading
+                do {
+                    try await environment.workspaceCenter.openTaskWorkspace(
+                        conversationID: conversationID
+                    )
+                    guard !Task.isCancelled else { return }
+                    workspaceMountState = .mounted
+                } catch is CancellationError {
+                    return
+                } catch {
+                    workspaceMountState = .failed(error.localizedDescription)
+                }
             case .browser:
                 environment.browserCenter.bind(to: conversationID)
             case .terminal, .progress, .childAgents, .permissions:
                 break
             }
+        }
+    }
+
+    @ViewBuilder
+    private var workspaceBackedContent: some View {
+        switch workspaceMountState {
+        case .mounted:
+            if route.content == .changes {
+                TaskChangesInspectorView(conversationID: route.conversationID)
+            } else {
+                FileInspectorView(center: environment.workspaceCenter)
+                    .background(FloeTheme.readingSurface)
+            }
+        case .failed(let message):
+            ContentUnavailableView {
+                Label("工作区无法挂载", systemImage: "folder.badge.questionmark")
+            } description: {
+                Text(message)
+            } actions: {
+                Button("重试") { workspaceMountAttempt += 1 }
+                    .buttonStyle(.borderedProminent)
+            }
+        case .idle, .loading:
+            ProgressView("正在挂载任务工作区…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(FloeTheme.readingSurface)
         }
     }
 }

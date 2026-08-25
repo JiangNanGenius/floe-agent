@@ -18,13 +18,15 @@ struct LocalPythonRuntimeTests {
         let outcome = await service.run(
             ScriptExecutionRequest(
                 script: """
-                import json, math, select, struct
+                import dis, json, math, select, struct, _opcode
                 packed = struct.pack('>I', input['value'])
                 print(json.dumps({
                     'answer': input['value'] * 2,
                     'sqrt': math.isqrt(1764),
                     'packed': len(packed),
-                    'select': hasattr(select, 'select')
+                    'select': hasattr(select, 'select'),
+                    'opcode': hasattr(_opcode, 'stack_effect'),
+                    'dis': hasattr(dis, 'dis')
                 }, sort_keys=True))
                 """,
                 inputJSON: #"{"value":21}"#,
@@ -38,7 +40,7 @@ struct LocalPythonRuntimeTests {
             return
         }
         #expect(stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-            == #"{"answer": 42, "packed": 4, "select": true, "sqrt": 42}"#)
+            == #"{"answer": 42, "dis": true, "opcode": true, "packed": 4, "select": true, "sqrt": 42}"#)
         #expect(stderr.isEmpty)
     }
 }

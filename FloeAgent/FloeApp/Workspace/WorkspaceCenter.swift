@@ -336,7 +336,6 @@ final class WorkspaceCenter: ObservableObject {
     /// owner. It closes the previous tree immediately so switching tasks can
     /// never flash or operate on stale files.
     func openTaskWorkspace(conversationID: UUID) async throws {
-        closeCurrentWorkspace()
         if workspaces.isEmpty || conversationWorkspaceIDs[conversationID] == nil {
             await reload()
         }
@@ -359,10 +358,16 @@ final class WorkspaceCenter: ObservableObject {
         guard let record, workspaceID != nil else {
             throw FloeError.notFound("workspace for task \(conversationID.uuidString)")
         }
+        if currentWorkspace?.id == record.id,
+           currentRootURL != nil,
+           fileService != nil {
+            return
+        }
         if record.kind == .project {
             try await openWorkspace(id: record.id)
             return
         }
+        closeCurrentWorkspace()
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,

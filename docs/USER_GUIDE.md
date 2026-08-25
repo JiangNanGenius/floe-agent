@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide describes the Floe Agent 1.4.29 source target (build 60). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
+This guide describes the Floe Agent 1.4.30 source target (build 61). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
 
 ## 1. Install safely
 
@@ -151,7 +151,7 @@ Only instruction-only or read-only low-risk packages can install automatically. 
 - **Remote tool unavailable:** confirm the host, SSH authorization, task permission, and network path.
 - **LAN scan finds nothing:** allow Local Network access in iOS Settings, stay on the same LAN, and retry. Discovery is limited to the Bonjour service types declared by the app and is not a general port scanner.
 - **Workspace preview says it is not open:** reopen the Files inspector and confirm the task has either its private workspace or the intended project binding before opening the file.
-- **Picture in Picture is black or does not start:** keep Floe in the foreground until the progress preview is prepared, then leave the app. Returning to Floe ends the active system PiP session; a later task prepares a new one. Include the PiP status and latest diagnostics when reporting a persistent black frame.
+- **Picture in Picture is black or does not start:** Floe prepares a visible progress source when the task starts and defers a background start request until AVKit reports it ready. Returning to Floe ends the active system PiP session; a later departure rebuilds and starts a fresh source. Include the PiP status and latest diagnostics when reporting a persistent black frame.
 - **A Python package will not activate:** confirm it is a pure-Python universal wheel. Packages containing native extensions remain download-and-inspect only; use a trusted SSH host for native dependencies.
 - **Voice fails or exits:** check microphone and speech-recognition permissions, audio route, and whether another app owns the input session.
 

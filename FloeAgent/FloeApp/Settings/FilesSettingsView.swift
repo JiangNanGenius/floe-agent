@@ -17,6 +17,18 @@ struct FilesSettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                NavigationLink {
+                    FilesView(center: center.environment.filesCenter)
+                } label: {
+                    Label("浏览与管理文件", systemImage: "folder")
+                }
+            } header: {
+                Text("文件管理")
+            } footer: {
+                Text("打开、预览、编辑和移除最近文件；空间统计、归档与缓存清理仍集中在“数据管理”。")
+            }
+
             Section("settings.files.workspaces") {
                 if center.workspaces.isEmpty {
                     Text("settings.files.workspaces.empty")

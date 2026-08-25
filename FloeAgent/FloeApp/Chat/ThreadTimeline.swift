@@ -157,7 +157,9 @@ enum ThreadTimelineBuilder {
         let sortedEvents = events.sorted { $0.sequence < $1.sequence }
         let terminalEvent = sortedEvents.last(where: { $0.kind == .terminal })
         let nonTerminalEvents = sortedEvents.filter {
-            $0.kind != .terminal && !isTerminalStatusEvent($0)
+            $0.kind != .terminal
+                && !isTerminalStatusEvent($0)
+                && !isStaleStatusEvent($0, currentState: run?.state)
         }
         // A tool request whose result has already arrived must not keep
         // showing "pending" next to its "success" result — that reads as a
@@ -321,6 +323,18 @@ enum ThreadTimelineBuilder {
         guard event.kind == .status else { return false }
         let state = decodePayload(event.payloadJSON)["state"] ?? ""
         return RunStateLocalizer.isTerminal(state)
+    }
+
+    /// Launch preparation is persisted for recovery, but it is not a
+    /// historical chat message. Once the run advances, retaining that row in
+    /// the timeline falsely says "preparing" while tokens or tools are
+    /// already arriving. The toolbar/live projection owns the current state.
+    private static func isStaleStatusEvent(
+        _ event: RunEventRecord,
+        currentState: String?
+    ) -> Bool {
+        guard event.kind == .status, let currentState else { return false }
+        return decodePayload(event.payloadJSON)["state"] != currentState
     }
 
     private static func decodePayload(_ json: String) -> [String: String] {

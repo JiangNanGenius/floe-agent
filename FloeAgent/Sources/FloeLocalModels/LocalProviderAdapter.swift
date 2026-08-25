@@ -473,6 +473,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                                 historicalNames.contains($0.name)
                             },
                             toolHistory: toolHistory,
+                            forceToolCall: promptBuild.requiresToolCall,
                             maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 512), 2_048)
                         )
                     } else {
@@ -602,6 +603,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let text: String
         let selectedTools: [ToolSchemaDescriptor]
         let selectedToolCount: Int
+        let requiresToolCall: Bool
         let sourceCharacters: Int
     }
 
@@ -624,8 +626,12 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let isAppleToolFollowUp = request.model.remoteModelID
             == AppleFoundationModelIdentity.remoteModelID && !request.toolResults.isEmpty
         let contextTokens = max(1, request.model.limits.contextTokens)
-        let selectedTools = isAppleToolFollowUp ? [] : selectTools(
+        let availableTools = admissibleTools(
             request.toolSchemas,
+            modelRemoteID: request.model.remoteModelID
+        )
+        let selectedTools = isAppleToolFollowUp ? [] : selectTools(
+            availableTools,
             latestUserText: latestUserText,
             pendingToolNames: Set(request.pendingToolCalls.map(\.toolName)),
             contextTokens: contextTokens
@@ -634,7 +640,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let normalizedUserText = latestUserText.lowercased()
         let actionRequested = requestsAction(normalizedUserText)
         let inventoryRequested = requestsInventory(normalizedUserText)
-        let includeToolDirectory = inventoryRequested || actionRequested || !request.pendingToolCalls.isEmpty
+        let includeToolDirectory = inventoryRequested || actionRequested
+            || !selectedTools.isEmpty || !request.pendingToolCalls.isEmpty
         let budgets = promptBudgets(contextTokens: contextTokens)
 
         var sections: [String] = []
@@ -644,8 +651,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
         // actions and capability questions; injecting it into greetings made
         // the Apple model behave like a command form instead of a chat model.
         // Structured schemas below still define the only calls it may emit.
-        if includeToolDirectory, !request.toolSchemas.isEmpty {
-            let names = request.toolSchemas.map(\.name).sorted().joined(separator: ", ")
+        if includeToolDirectory, !availableTools.isEmpty {
+            let names = availableTools.map(\.name).sorted().joined(separator: ", ")
             sections.append("AVAILABLE TOOL NAMES (authoritative): \(clipped(names, limit: budgets.directoryCharacters))")
         }
         if !selectedTools.isEmpty {
@@ -728,8 +735,31 @@ public struct LocalProviderAdapter: ProviderAdapter {
             text: transcript,
             selectedTools: selectedTools,
             selectedToolCount: selectedTools.count,
+            requiresToolCall: actionRequested && !inventoryRequested && !selectedTools.isEmpty,
             sourceCharacters: sourceCharacters
         )
+    }
+
+    /// Small MLX models are reliable with bounded read/search and simple
+    /// local execution, but often hallucinate multi-step browser, SSH, cloud
+    /// and write-heavy source-control actions. Keep Apple Foundation Models on
+    /// the native selected-tool path while presenting MLX with a smaller,
+    /// honest capability surface.
+    static func admissibleTools(
+        _ tools: [ToolSchemaDescriptor],
+        modelRemoteID: String
+    ) -> [ToolSchemaDescriptor] {
+        guard modelRemoteID != AppleFoundationModelIdentity.remoteModelID else { return tools }
+        let exact: Set<String> = [
+            "web.search", "web.fetch",
+            "workspace.listDirectory", "workspace.readFile", "workspace.searchFiles",
+            "workspace.inspectFileMetadata", "workspace.createFile", "workspace.writeFile",
+            "workspace.applyPatch",
+            "image.inspect", "image.ocr", "pdf.read", "pdf.extractText",
+            "exec.localPython", "exec.javascript", "exec.localNumerical",
+            "memory.recall", "git.status", "git.diff", "git.log"
+        ]
+        return tools.filter { exact.contains($0.name) }
     }
 
     private static func selectTools(
@@ -744,7 +774,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let intentPrefixes: [(needles: [String], prefixes: [String])] = [
             (["文件", "目录", "文档", "pdf", "代码", "file", "folder", "document", "code"], ["workspace.", "document.", "pdf."]),
             (["图片", "照片", "图像", "视觉", "ocr", "image", "photo", "vision"], ["image."]),
-            (["网页", "浏览器", "联网", "搜索", "网站", "web", "browser", "search", "url"], ["browser.", "web.", "network.http"]),
+            (["网页", "浏览器", "联网", "搜索", "网站", "天气", "预报", "web", "browser", "search", "weather", "forecast", "url"], ["web."]),
             (["python", "javascript", "js", "脚本", "计算", "运行", "execute", "script", "compute"], ["exec."]),
             (["ssh", "主机", "远程", "终端", "服务器", "host", "remote", "terminal", "server"], ["ssh."]),
             (["记忆", "memory", "偏好"], ["memory."]),
@@ -811,7 +841,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
 
     private static func requestsAction(_ text: String) -> Bool {
         containsAny(text, [
-            "创建", "读取", "查看", "查找", "搜索", "运行", "执行", "修改", "编辑", "删除", "生成", "连接", "分析", "测试",
+            "创建", "读取", "查看", "看一下", "查", "查找", "搜索", "帮我", "运行", "执行", "修改", "编辑", "删除", "生成", "连接", "分析", "测试",
             "初始化", "提交", "暂存", "克隆", "拉取", "推送", "同步", "切换分支",
             "create", "read", "inspect", "find", "search", "run", "execute", "edit", "delete", "generate", "connect", "analyze", "test",
             "initialize", "commit", "stage", "clone", "fetch", "pull", "push", "sync", "switch branch"
@@ -971,7 +1001,14 @@ public struct LocalProviderAdapter: ProviderAdapter {
             else { continue }
             guard let body = toolCallBody(in: object),
                   let rawName = body["name"] as? String else { continue }
-            let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let emittedName = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let aliases = [
+                "browser.get": "web.fetch",
+                "browser.fetch": "web.fetch",
+                "browser.search": "web.search"
+            ]
+            let name = offeredToolNames.contains(emittedName)
+                ? emittedName : (aliases[emittedName] ?? emittedName)
             guard offeredToolNames.contains(name) else { continue }
             let arguments: [String: Any]
             if let dictionary = body["arguments"] as? [String: Any] {

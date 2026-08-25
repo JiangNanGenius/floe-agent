@@ -232,7 +232,33 @@ struct ThreadTimelineTests {
             default: []
             }
         }
-        #expect(eventIDs == [1, 2])
+        // The durable launch marker is stale after streaming begins; only
+        // current content events remain in the visible timeline.
+        #expect(eventIDs == [2])
+    }
+
+    @Test("Preparing status disappears as soon as generation starts")
+    func stalePreparingStatusIsHidden() {
+        let conversationID = UUID()
+        let run = makeRun(state: "streamingModel", conversationID: conversationID)
+        let preparing = makeEvent(
+            runID: run.id,
+            sequence: 1,
+            kind: .status,
+            payload: ["state": "preparing"]
+        )
+
+        let items = ThreadTimelineBuilder.build(
+            messages: [], events: [preparing], run: run,
+            isRunning: true, liveStreamedText: "已经开始生成", liveReasoningText: "",
+            pendingApprovals: []
+        )
+
+        #expect(!items.contains { item in
+            if case .event(let event) = item { return event.id == preparing.id }
+            return false
+        })
+        #expect(items.contains { if case .liveAssistantTail = $0 { true } else { false } })
     }
 
     @Test("Terminal transition status is hidden so completion appears only after the reply")

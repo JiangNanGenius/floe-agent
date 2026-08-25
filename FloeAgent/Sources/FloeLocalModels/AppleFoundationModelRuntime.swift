@@ -143,6 +143,7 @@ public actor AppleFoundationModelRuntime {
         tools: [ToolSchemaDescriptor],
         historicalTools: [ToolSchemaDescriptor] = [],
         toolHistory: [AppleFoundationToolExchange] = [],
+        forceToolCall: Bool = false,
         maxTokens: Int
     ) async throws -> LocalRuntimeCompletion {
 #if compiler(>=6.4) && canImport(FoundationModels)
@@ -172,8 +173,15 @@ public actor AppleFoundationModelRuntime {
         let nativeTools = nativeDescriptors.compactMap { descriptor in
             Self.deferredTool(from: descriptor, recorder: recorder)
         }
-        let localizedInstructions = instructions +
-            "\nRespond using the user's language when it is supported. Current locale: \(Locale.current.identifier)."
+        if !tools.isEmpty, nativeTools.isEmpty {
+            throw FloeError.invalidConfiguration(
+                "Apple Foundation Models could not convert the selected Floe tool schemas"
+            )
+        }
+        let callableNames = nativeDescriptors.map(\.name).sorted().joined(separator: ", ")
+        let localizedInstructions = instructions
+            + "\nRespond using the user's language when it is supported. Current locale: \(Locale.current.identifier)."
+            + (callableNames.isEmpty ? "" : "\nCallable native tools: \(callableNames). Use the native tool interface when the request needs current or external information; never claim those tools are unavailable.")
         let session = LanguageModelSession(
             model: model,
             tools: nativeTools,
@@ -184,7 +192,8 @@ public actor AppleFoundationModelRuntime {
             samplingMode: .greedy,
             temperature: 0,
             maximumResponseTokens: effectiveMaxTokens,
-            toolCallingMode: tools.isEmpty ? .disallowed : .allowed
+            toolCallingMode: tools.isEmpty
+                ? .disallowed : (forceToolCall ? .required : .allowed)
         )
         let contextOptions = ContextOptions(
             reasoningLevel: model.capabilities.contains(.reasoning) ? .light : nil
@@ -621,7 +630,8 @@ private final class DynamicToolSchema: Decodable {
         if let enumValues, !enumValues.isEmpty {
             return DynamicGenerationSchema(name: name, description: description, anyOf: enumValues)
         }
-        switch type ?? (properties == nil ? "string" : "object") {
+        let inferredType = (properties != nil || schemaName != nil) ? "object" : "string"
+        switch type ?? inferredType {
         case "object":
             let required = Set(required ?? [])
             let fields = try (properties ?? [:]).sorted { $0.key < $1.key }.map { key, value in

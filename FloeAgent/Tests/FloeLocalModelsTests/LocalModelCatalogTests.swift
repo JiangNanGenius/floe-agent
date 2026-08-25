@@ -353,7 +353,7 @@ struct LocalModelCatalogTests {
         #expect(build.text.count < 3_000)
     }
 
-    @Test("Local prompt offers only intent-relevant tools")
+    @Test("MLX prompt offers only simple intent-relevant tools")
     @available(macOS 15.4, *)
     func localPromptSelectsRelevantTools() {
         let provider = LocalProviderAdapter.providerProfile
@@ -380,14 +380,15 @@ struct LocalModelCatalogTests {
 
         let build = LocalProviderAdapter.buildPrompt(for: request)
 
-        #expect(build.selectedToolCount == 3)
+        #expect(build.selectedToolCount == 2)
         #expect(build.systemInstructions.contains("emit the documented single JSON tool_call"))
         #expect(build.selectedTools.map(\.name) == [
-            "pdf.read", "presentation.create", "workspace.readFile"
+            "pdf.read", "workspace.readFile"
         ])
         #expect(build.text.contains("workspace.readFile"))
         #expect(build.text.contains("pdf.read"))
-        #expect(build.text.contains("presentation.create"))
+        #expect(!build.text.contains("presentation.create"))
+        #expect(!build.text.contains("browser.click"))
         #expect(!build.text.contains("- ssh.execute:"))
         #expect(build.text.count < 5_000)
     }
@@ -452,15 +453,14 @@ struct LocalModelCatalogTests {
 
         let build = LocalProviderAdapter.buildPrompt(for: request)
 
-        #expect(build.selectedToolCount == tools.count)
-        for tool in tools {
-            #expect(build.text.contains(tool.name))
-        }
+        #expect(build.selectedTools.map(\.name) == ["image.inspect", "workspace.readFile"])
+        #expect(!build.text.contains("ssh.execute"))
+        #expect(!build.text.contains("apple.calendar.list"))
         #expect(build.text.contains("AVAILABLE TOOL NAMES"))
         #expect(build.text.count < 5_000)
     }
 
-    @Test("Local Git requests receive real local, GitHub and cloud Git tools")
+    @Test("MLX Git requests receive only read-only local Git tools")
     @available(macOS 15.4, *)
     func localPromptSelectsGitTools() {
         let provider = LocalProviderAdapter.providerProfile
@@ -474,6 +474,8 @@ struct LocalModelCatalogTests {
         let tools = [
             ToolSchemaDescriptor(name: "workspace.readFile", description: "Read a file"),
             ToolSchemaDescriptor(name: "git.status", description: "Git status"),
+            ToolSchemaDescriptor(name: "git.diff", description: "Git diff"),
+            ToolSchemaDescriptor(name: "git.log", description: "Git log"),
             ToolSchemaDescriptor(name: "git.stage", description: "Stage changes"),
             ToolSchemaDescriptor(name: "git.commit", description: "Commit changes"),
             ToolSchemaDescriptor(name: "git.push", description: "Push changes"),
@@ -490,10 +492,12 @@ struct LocalModelCatalogTests {
             toolSchemas: tools
         ))
         #expect(local.selectedTools.contains { $0.name == "git.status" })
-        #expect(local.selectedTools.contains { $0.name == "git.stage" })
-        #expect(local.selectedTools.contains { $0.name == "git.commit" })
-        #expect(local.selectedTools.contains { $0.name == "git.push" })
-        #expect(local.selectedTools.contains { $0.name == "github.repositories" })
+        #expect(local.selectedTools.contains { $0.name == "git.diff" })
+        #expect(local.selectedTools.contains { $0.name == "git.log" })
+        #expect(!local.selectedTools.contains { $0.name == "git.stage" })
+        #expect(!local.selectedTools.contains { $0.name == "git.commit" })
+        #expect(!local.selectedTools.contains { $0.name == "git.push" })
+        #expect(!local.selectedTools.contains { $0.name == "github.repositories" })
         #expect(!local.selectedTools.contains { $0.name == "ssh.execute" })
 
         let cloud = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
@@ -502,8 +506,10 @@ struct LocalModelCatalogTests {
             messages: [("user", "检查云工作区 Git 状态并推送")],
             toolSchemas: tools
         ))
-        #expect(cloud.selectedTools.contains { $0.name == "cloudWorkspace.gitStatus" })
-        #expect(cloud.selectedTools.contains { $0.name == "cloudWorkspace.gitPush" })
+        #expect(cloud.selectedTools.contains { $0.name == "git.status" })
+        #expect(cloud.selectedTools.contains { $0.name == "git.diff" })
+        #expect(cloud.selectedTools.contains { $0.name == "git.log" })
+        #expect(!cloud.selectedTools.contains { $0.name.hasPrefix("cloudWorkspace.") })
     }
 
     @Test("Local reasoning tags are separated from the visible answer")
@@ -573,6 +579,37 @@ struct LocalModelCatalogTests {
         )
         #expect(fenced?.toolName == "workspace.readFile")
         #expect(String(decoding: try #require(fenced?.argumentsJSON), as: UTF8.self).contains("notes.md"))
+
+        let browserAlias = try LocalProviderAdapter.toolCall(
+            from: #"{"name":"browser.get","arguments":{"url":"https://example.com"}}"#,
+            offeredToolNames: ["web.fetch"]
+        )
+        #expect(browserAlias?.toolName == "web.fetch")
+    }
+
+    @Test("Apple weather questions select and require native web search")
+    @available(macOS 15.4, *)
+    func appleWeatherUsesNativeTool() {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: AppleFoundationModelIdentity.remoteModelID,
+            displayName: "Apple Foundation Model",
+            limits: .init(contextTokens: 4_096, maxOutputTokens: 512),
+            capabilities: [.text, .tools]
+        )
+        let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [("user", "你帮我查一下今天的天气")],
+            toolSchemas: [
+                ToolSchemaDescriptor(name: "web.search", description: "Search the web"),
+                ToolSchemaDescriptor(name: "browser.navigate", description: "Open a browser")
+            ]
+        ))
+        #expect(build.selectedTools.map(\.name).contains("web.search"))
+        #expect(build.requiresToolCall)
+        #expect(build.systemInstructions.contains("native Foundation Models tools"))
     }
 
     @Test("Local tool parser rejects tools not offered on the turn")
