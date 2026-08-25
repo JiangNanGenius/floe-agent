@@ -11,12 +11,21 @@ on:
         options:
           - discover
           - start
+          - update-and-start
       workflow_id:
         description: ciWorkflows ID required for start
         required: false
         type: string
       git_reference_id:
         description: scmGitReferences ID required for start
+        required: false
+        type: string
+      xcode_version_id:
+        description: ciXcodeVersions ID required for update-and-start
+        required: false
+        type: string
+      macos_version_id:
+        description: ciMacOsVersions ID required for update-and-start
         required: false
         type: string
 
@@ -81,6 +90,17 @@ jobs:
           jq -r '.included[]? | select(.type == "bundleIds") | "bundle id=\(.id) identifier=\(.attributes.identifier)"' \
             "$RUNNER_TEMP/products.json"
 
+          api_get /v1/ciXcodeVersions \
+            --data-urlencode 'limit=200' \
+            --data-urlencode 'limit[macOsVersions]=50' \
+            --data-urlencode 'fields[ciXcodeVersions]=version,name,macOsVersions' \
+            --data-urlencode 'fields[ciMacOsVersions]=version,name' \
+            --data-urlencode 'include=macOsVersions' > "$RUNNER_TEMP/xcode-versions.json"
+          jq -r '.data[] | select((.attributes.name // "") | test("Xcode 27|Latest Beta"; "i")) | "available-xcode id=\(.id) version=\(.attributes.version) name=\(.attributes.name) macos_ids=\([.relationships.macOsVersions.data[]?.id] | join(","))"' \
+            "$RUNNER_TEMP/xcode-versions.json"
+          jq -r '.included[]? | select(.type == "ciMacOsVersions") | "available-macos id=\(.id) version=\(.attributes.version) name=\(.attributes.name)"' \
+            "$RUNNER_TEMP/xcode-versions.json" | sort -u
+
           while IFS= read -r product_id; do
             api_get "/v1/ciProducts/$product_id/workflows" \
               --data-urlencode 'limit=200' \
@@ -109,8 +129,39 @@ jobs:
             done < <(jq -r '[.included[]? | select(.type == "scmRepositories") | .id] | unique[]' "$RUNNER_TEMP/workflows-$product_id.json")
           done < <(jq -r '.data[].id' "$RUNNER_TEMP/products.json")
 
+      - name: Update the explicitly selected Xcode Cloud build environment
+        if: inputs.operation == 'update-and-start'
+        env:
+          ASC_TOKEN: ${{ steps.auth.outputs.token }}
+          WORKFLOW_ID: ${{ inputs.workflow_id }}
+          XCODE_VERSION_ID: ${{ inputs.xcode_version_id }}
+          MACOS_VERSION_ID: ${{ inputs.macos_version_id }}
+        run: |
+          set -euo pipefail
+          test -n "$WORKFLOW_ID"
+          test -n "$XCODE_VERSION_ID"
+          test -n "$MACOS_VERSION_ID"
+          case "$WORKFLOW_ID:$XCODE_VERSION_ID:$MACOS_VERSION_ID" in
+            *[!A-Za-z0-9:._-]*) echo "Invalid Xcode Cloud resource ID" >&2; exit 2 ;;
+          esac
+          jq -n \
+            --arg workflow "$WORKFLOW_ID" \
+            --arg xcode "$XCODE_VERSION_ID" \
+            --arg macos "$MACOS_VERSION_ID" \
+            '{data:{type:"ciWorkflows",id:$workflow,relationships:{xcodeVersion:{data:{type:"ciXcodeVersions",id:$xcode}},macOsVersion:{data:{type:"ciMacOsVersions",id:$macos}}}}}' \
+            > "$RUNNER_TEMP/update-workflow.json"
+          curl --fail-with-body --silent --show-error \
+            -X PATCH \
+            -H "Authorization: Bearer $ASC_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary "@$RUNNER_TEMP/update-workflow.json" \
+            "https://api.appstoreconnect.apple.com/v1/ciWorkflows/$WORKFLOW_ID" \
+            > "$RUNNER_TEMP/updated-workflow.json"
+          jq -r '.data | "updated-workflow id=\(.id) name=\(.attributes.name) xcode_id=\(.relationships.xcodeVersion.data.id) macos_id=\(.relationships.macOsVersion.data.id)"' \
+            "$RUNNER_TEMP/updated-workflow.json"
+
       - name: Start the explicitly selected Xcode Cloud workflow
-        if: inputs.operation == 'start'
+        if: inputs.operation == 'start' || inputs.operation == 'update-and-start'
         env:
           ASC_TOKEN: ${{ steps.auth.outputs.token }}
           WORKFLOW_ID: ${{ inputs.workflow_id }}
