@@ -11,6 +11,7 @@ on:
         options:
           - discover
           - monitor
+          - verify-testflight
           - start
           - enable-tag-and-start
           - update-and-start
@@ -32,6 +33,10 @@ on:
         type: string
       build_run_id:
         description: ciBuildRuns ID required for monitor
+        required: false
+        type: string
+      build_id:
+        description: App Store Connect builds ID required for verify-testflight
         required: false
         type: string
 
@@ -284,4 +289,50 @@ jobs:
             sleep 30
           done
           echo "Timed out waiting for Xcode Cloud build run $BUILD_RUN_ID" >&2
+          exit 1
+
+      - name: Verify TestFlight processing and group visibility
+        if: inputs.operation == 'verify-testflight'
+        env:
+          BUILD_ID: ${{ inputs.build_id }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_PRIVATE_KEY_PATH: ${{ runner.temp }}/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
+        run: |
+          set -euo pipefail
+          test -n "$BUILD_ID"
+          case "$BUILD_ID" in
+            *[!A-Za-z0-9:_-]*) echo "Invalid App Store Connect build ID" >&2; exit 2 ;;
+          esac
+
+          for attempt in $(seq 1 60); do
+            ASC_TOKEN="$(python3 FloeAgent/scripts/generate_asc_jwt.py)"
+            echo "::add-mask::$ASC_TOKEN"
+            curl --fail-with-body --silent --show-error --get \
+              -H "Authorization: Bearer $ASC_TOKEN" \
+              -H "Accept: application/json" \
+              --data-urlencode 'fields[builds]=version,uploadedDate,processingState,buildAudienceType,betaGroups,preReleaseVersion,app' \
+              --data-urlencode 'fields[betaGroups]=name,isInternalGroup,publicLinkEnabled,publicLinkLimitEnabled,feedbackEnabled' \
+              --data-urlencode 'fields[preReleaseVersions]=version,platform' \
+              --data-urlencode 'fields[apps]=name,bundleId' \
+              --data-urlencode 'include=betaGroups,preReleaseVersion,app' \
+              "https://api.appstoreconnect.apple.com/v1/builds/$BUILD_ID" \
+              > "$RUNNER_TEMP/testflight-build.json"
+
+            processing="$(jq -r '.data.attributes.processingState' "$RUNNER_TEMP/testflight-build.json")"
+            echo "testflight-build id=$BUILD_ID version=$(jq -r '.data.attributes.version' "$RUNNER_TEMP/testflight-build.json") processing=$processing audience=$(jq -r '.data.attributes.buildAudienceType' "$RUNNER_TEMP/testflight-build.json") uploaded=$(jq -r '.data.attributes.uploadedDate' "$RUNNER_TEMP/testflight-build.json")"
+            if test "$processing" = VALID; then
+              group_count="$(jq '[.included[]? | select(.type == "betaGroups")] | length' "$RUNNER_TEMP/testflight-build.json")"
+              echo "beta-group-count=$group_count"
+              jq -r '.included[]? | select(.type == "betaGroups") | "beta-group id=\(.id) name=\(.attributes.name) internal=\(.attributes.isInternalGroup) public_link=\(.attributes.publicLinkEnabled) feedback=\(.attributes.feedbackEnabled)"' \
+                "$RUNNER_TEMP/testflight-build.json"
+              jq -r '.included[]? | select(.type == "preReleaseVersions") | "prerelease-version id=\(.id) version=\(.attributes.version) platform=\(.attributes.platform)"' \
+                "$RUNNER_TEMP/testflight-build.json"
+              test "$group_count" -gt 0
+              exit 0
+            fi
+            test "$processing" != FAILED
+            sleep 30
+          done
+          echo "Timed out waiting for TestFlight processing of $BUILD_ID" >&2
           exit 1
