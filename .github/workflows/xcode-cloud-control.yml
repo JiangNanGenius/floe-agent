@@ -1,0 +1,138 @@
+name: Xcode Cloud Control
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Inspect Xcode Cloud or start an explicitly selected workflow
+        required: true
+        default: discover
+        type: choice
+        options:
+          - discover
+          - start
+      workflow_id:
+        description: ciWorkflows ID required for start
+        required: false
+        type: string
+      git_reference_id:
+        description: scmGitReferences ID required for start
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  xcode-cloud:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out control scripts
+        uses: actions/checkout@v5
+
+      - name: Install App Store Connect API key
+        env:
+          ASC_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$ASC_API_PRIVATE_KEY_BASE64"
+          test -n "$ASC_KEY_ID"
+          echo "$ASC_API_PRIVATE_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+
+      - name: Generate short-lived API token
+        id: auth
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_PRIVATE_KEY_PATH: ${{ runner.temp }}/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
+        run: |
+          set -euo pipefail
+          TOKEN="$(python3 FloeAgent/scripts/generate_asc_jwt.py)"
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Discover Xcode Cloud products, workflows, and release tag
+        if: inputs.operation == 'discover'
+        env:
+          ASC_TOKEN: ${{ steps.auth.outputs.token }}
+          RELEASE_TAG: v1.4.28
+        run: |
+          set -euo pipefail
+          api_get() {
+            local path="$1"
+            shift
+            curl --fail-with-body --silent --show-error --get \
+              -H "Authorization: Bearer $ASC_TOKEN" \
+              -H "Accept: application/json" \
+              "https://api.appstoreconnect.apple.com$path" "$@"
+          }
+
+          api_get /v1/ciProducts \
+            --data-urlencode 'limit=200' \
+            --data-urlencode 'fields[ciProducts]=name,productType,bundleId,workflows,primaryRepositories' \
+            --data-urlencode 'include=bundleId' > "$RUNNER_TEMP/products.json"
+
+          product_count="$(jq '.data | length' "$RUNNER_TEMP/products.json")"
+          echo "Xcode Cloud products: $product_count"
+          jq -r '.data[] | "product id=\(.id) name=\(.attributes.name) type=\(.attributes.productType)"' \
+            "$RUNNER_TEMP/products.json"
+          jq -r '.included[]? | select(.type == "bundleIds") | "bundle id=\(.id) identifier=\(.attributes.identifier)"' \
+            "$RUNNER_TEMP/products.json"
+
+          while IFS= read -r product_id; do
+            api_get "/v1/ciProducts/$product_id/workflows" \
+              --data-urlencode 'limit=200' \
+              --data-urlencode 'fields[ciWorkflows]=name,description,isEnabled,isLockedForEditing,lastModifiedDate,xcodeVersion,macOsVersion,repository,manualTagStartCondition,actions' \
+              --data-urlencode 'fields[ciXcodeVersions]=version,name' \
+              --data-urlencode 'fields[ciMacOsVersions]=version,name' \
+              --data-urlencode 'fields[scmRepositories]=ownerName,repositoryName,lastAccessedDate' \
+              --data-urlencode 'include=xcodeVersion,macOsVersion,repository' \
+              > "$RUNNER_TEMP/workflows-$product_id.json"
+            jq -r '.data[] | "workflow id=\(.id) name=\(.attributes.name) enabled=\(.attributes.isEnabled) locked=\(.attributes.isLockedForEditing) xcode_id=\(.relationships.xcodeVersion.data.id // "none") repository_id=\(.relationships.repository.data.id // "none")"' \
+              "$RUNNER_TEMP/workflows-$product_id.json"
+            jq -r '.included[]? | select(.type == "ciXcodeVersions") | "xcode id=\(.id) version=\(.attributes.version) name=\(.attributes.name)"' \
+              "$RUNNER_TEMP/workflows-$product_id.json"
+            jq -r '.included[]? | select(.type == "ciMacOsVersions") | "macos id=\(.id) version=\(.attributes.version) name=\(.attributes.name)"' \
+              "$RUNNER_TEMP/workflows-$product_id.json"
+
+            while IFS= read -r repository_id; do
+              test -n "$repository_id" || continue
+              api_get "/v1/scmRepositories/$repository_id/gitReferences" \
+                --data-urlencode 'limit=200' \
+                --data-urlencode 'fields[scmGitReferences]=name,canonicalName,isDeleted,kind' \
+                > "$RUNNER_TEMP/references-$repository_id.json"
+              jq -r --arg tag "$RELEASE_TAG" \
+                '.data[] | select(.attributes.name == $tag or .attributes.canonicalName == ("refs/tags/" + $tag)) | "release-tag-reference id=\(.id) name=\(.attributes.name) canonical=\(.attributes.canonicalName) deleted=\(.attributes.isDeleted) kind=\(.attributes.kind)"' \
+                "$RUNNER_TEMP/references-$repository_id.json"
+            done < <(jq -r '[.included[]? | select(.type == "scmRepositories") | .id] | unique[]' "$RUNNER_TEMP/workflows-$product_id.json")
+          done < <(jq -r '.data[].id' "$RUNNER_TEMP/products.json")
+
+      - name: Start the explicitly selected Xcode Cloud workflow
+        if: inputs.operation == 'start'
+        env:
+          ASC_TOKEN: ${{ steps.auth.outputs.token }}
+          WORKFLOW_ID: ${{ inputs.workflow_id }}
+          GIT_REFERENCE_ID: ${{ inputs.git_reference_id }}
+        run: |
+          set -euo pipefail
+          test -n "$WORKFLOW_ID"
+          test -n "$GIT_REFERENCE_ID"
+          case "$WORKFLOW_ID:$GIT_REFERENCE_ID" in
+            *[!A-Za-z0-9:_-]*) echo "Invalid Xcode Cloud resource ID" >&2; exit 2 ;;
+          esac
+          jq -n \
+            --arg workflow "$WORKFLOW_ID" \
+            --arg reference "$GIT_REFERENCE_ID" \
+            '{data:{type:"ciBuildRuns",attributes:{},relationships:{workflow:{data:{type:"ciWorkflows",id:$workflow}},sourceBranchOrTag:{data:{type:"scmGitReferences",id:$reference}}}}}' \
+            > "$RUNNER_TEMP/start-build.json"
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer $ASC_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary "@$RUNNER_TEMP/start-build.json" \
+            https://api.appstoreconnect.apple.com/v1/ciBuildRuns \
+            > "$RUNNER_TEMP/build-run.json"
+          jq -r '.data | "xcode-cloud-build-run id=\(.id) number=\(.attributes.number) progress=\(.attributes.executionProgress) commit=\(.attributes.sourceCommit.commitSha // "pending")"' \
+            "$RUNNER_TEMP/build-run.json"
