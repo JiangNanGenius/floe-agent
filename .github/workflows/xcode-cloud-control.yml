@@ -11,6 +11,7 @@ on:
         options:
           - discover
           - start
+          - enable-tag-and-start
           - update-and-start
       workflow_id:
         description: ciWorkflows ID required for start
@@ -166,8 +167,39 @@ jobs:
           jq -r '.data | "updated-workflow id=\(.id) name=\(.attributes.name) xcode_id=\(.relationships.xcodeVersion.data.id) macos_id=\(.relationships.macOsVersion.data.id)"' \
             "$RUNNER_TEMP/updated-workflow.json"
 
+      - name: Enable manual tag selection for the selected workflow
+        if: inputs.operation == 'enable-tag-and-start'
+        env:
+          ASC_TOKEN: ${{ steps.auth.outputs.token }}
+          WORKFLOW_ID: ${{ inputs.workflow_id }}
+        run: |
+          set -euo pipefail
+          test -n "$WORKFLOW_ID"
+          case "$WORKFLOW_ID" in
+            *[!A-Za-z0-9:_-]*) echo "Invalid Xcode Cloud workflow ID" >&2; exit 2 ;;
+          esac
+          jq -n \
+            --arg workflow "$WORKFLOW_ID" \
+            '{data:{type:"ciWorkflows",id:$workflow,attributes:{manualTagStartCondition:{source:{isAllMatch:true}}}}}' \
+            > "$RUNNER_TEMP/enable-manual-tag.json"
+          http_status="$(curl --silent --show-error \
+            -X PATCH \
+            -H "Authorization: Bearer $ASC_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary "@$RUNNER_TEMP/enable-manual-tag.json" \
+            "https://api.appstoreconnect.apple.com/v1/ciWorkflows/$WORKFLOW_ID" \
+            --output "$RUNNER_TEMP/tag-enabled-workflow.json" \
+            --write-out '%{http_code}')"
+          if test "$http_status" != 200; then
+            jq -r '.errors[]? | "apple-api-error status=\(.status) code=\(.code) title=\(.title) detail=\(.detail)"' \
+              "$RUNNER_TEMP/tag-enabled-workflow.json" >&2
+            exit 1
+          fi
+          jq -r '.data | "manual-tag-enabled workflow_id=\(.id) name=\(.attributes.name) enabled=\(.attributes.isEnabled)"' \
+            "$RUNNER_TEMP/tag-enabled-workflow.json"
+
       - name: Start the explicitly selected Xcode Cloud workflow
-        if: inputs.operation == 'start' || inputs.operation == 'update-and-start'
+        if: inputs.operation == 'start' || inputs.operation == 'enable-tag-and-start' || inputs.operation == 'update-and-start'
         env:
           ASC_TOKEN: ${{ steps.auth.outputs.token }}
           WORKFLOW_ID: ${{ inputs.workflow_id }}
