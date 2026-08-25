@@ -34,7 +34,7 @@ jobs:
       attestations: write
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
-      REQUIRED_XCODE_BUILD: 27A5237l
+      REQUIRED_XCODE_VERSION: Xcode 27.0
       GH_TOKEN: ${{ github.token }}
     defaults:
       run:
@@ -51,11 +51,12 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
-      - name: Require Apple-accepted Xcode 27 beta 5
+      - name: Require Xcode 27.0 release toolchain
         run: |
           XCODE_VERSION="$(xcodebuild -version)"
           printf '%s\n' "$XCODE_VERSION"
-          printf '%s\n' "$XCODE_VERSION" | grep -F "Build version $REQUIRED_XCODE_BUILD"
+          printf '%s\n' "$XCODE_VERSION" | grep -F "$REQUIRED_XCODE_VERSION"
+          test "$(xcrun --sdk iphoneos --show-sdk-version)" = 27.0
 
       - name: Install release tooling
         run: |
@@ -191,7 +192,7 @@ jobs:
     runs-on: xcode-27
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
-      REQUIRED_XCODE_BUILD: 27A5237l
+      REQUIRED_XCODE_VERSION: Xcode 27.0
     defaults:
       run:
         working-directory: FloeAgent
@@ -202,11 +203,12 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.build-verify-release.outputs.tag }}
 
-      - name: Require Apple-accepted Xcode 27 beta 5
+      - name: Require Xcode 27.0 release toolchain
         run: |
           XCODE_VERSION="$(xcodebuild -version)"
           printf '%s\n' "$XCODE_VERSION"
-          printf '%s\n' "$XCODE_VERSION" | grep -F "Build version $REQUIRED_XCODE_BUILD"
+          printf '%s\n' "$XCODE_VERSION" | grep -F "$REQUIRED_XCODE_VERSION"
+          test "$(xcrun --sdk iphoneos --show-sdk-version)" = 27.0
 
       - name: Download the tested and attested unsigned application
         uses: actions/download-artifact@v5
