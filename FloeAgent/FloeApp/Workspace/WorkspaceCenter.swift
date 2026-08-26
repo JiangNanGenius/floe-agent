@@ -24,6 +24,23 @@ import FloeExecution
 @MainActor
 final class WorkspaceCenter: ObservableObject {
 
+    private struct RemoteDirectoryResponse: Decodable {
+        struct Entry: Decodable {
+            let name: String
+            let directory: Bool
+            let bytes: Int64
+        }
+        let entries: [Entry]
+    }
+
+    private struct RemoteFileResponse: Decodable {
+        let dataBase64: String
+
+        private enum CodingKeys: String, CodingKey {
+            case dataBase64 = "data_base64"
+        }
+    }
+
     struct WorkspaceMount: Codable, Hashable, Identifiable, Sendable {
         var id: String { name }
         var name: String
@@ -519,6 +536,92 @@ final class WorkspaceCenter: ObservableObject {
     }
 
     // MARK: - Imported, mounted, and cloud folders
+
+    /// Lists either a local directory or a linked cloud directory. Cloud
+    /// links stay live: the UI asks the remote helper through the verified
+    /// SSH tunnel instead of displaying stale local marker contents.
+    func listDirectory(relativePath: String) async throws -> DirectoryPage {
+        if let route = cloudRoute(for: relativePath) {
+            let data = try await environment.cloudWorkspaceService.request(
+                hostID: route.link.hostID,
+                port: route.link.daemonPort,
+                method: "GET",
+                endpoint: "v1/files/list",
+                queryPath: route.remotePath
+            )
+            let response = try JSONDecoder().decode(RemoteDirectoryResponse.self, from: data)
+            let base = normalizedInspectorPath(relativePath)
+            let entries = response.entries.prefix(200).map { entry in
+                FileNode(
+                    name: entry.name,
+                    relativePath: base.isEmpty ? entry.name : "\(base)/\(entry.name)",
+                    isDirectory: entry.directory,
+                    size: entry.bytes
+                )
+            }.sorted {
+                if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
+                return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+            return DirectoryPage(entries: entries, nextPageToken: nil)
+        }
+        guard let service = fileService else {
+            throw FloeError.validationFailed("No workspace is open")
+        }
+        return try service.listDirectory(relativePath, pageToken: nil)
+    }
+
+    /// Reads a bounded UTF-8 file from local storage or a linked cloud
+    /// workspace. Remote data is decoded in memory and is not mirrored into
+    /// the task directory.
+    func readFile(relativePath: String) async throws -> FileContent {
+        if let route = cloudRoute(for: relativePath) {
+            let data = try await environment.cloudWorkspaceService.request(
+                hostID: route.link.hostID,
+                port: route.link.daemonPort,
+                method: "GET",
+                endpoint: "v1/files/read",
+                queryPath: route.remotePath
+            )
+            let response = try JSONDecoder().decode(RemoteFileResponse.self, from: data)
+            guard let bytes = Data(base64Encoded: response.dataBase64),
+                  let text = String(data: bytes, encoding: .utf8) else {
+                throw FloeError.validationFailed("Remote file is not valid UTF-8 text")
+            }
+            return FileContent(
+                text: text,
+                truncated: false,
+                totalLines: text.isEmpty ? 0 : text.split(separator: "\n", omittingEmptySubsequences: false).count,
+                byteOffset: 0
+            )
+        }
+        guard let service = fileService else {
+            throw FloeError.validationFailed("No workspace is open")
+        }
+        return try service.readFile(relativePath, byteOffset: 0)
+    }
+
+    func isCloudWorkspacePath(_ relativePath: String) -> Bool {
+        cloudRoute(for: relativePath) != nil
+    }
+
+    private func cloudRoute(for relativePath: String) -> (link: CloudWorkspaceLink, remotePath: String)? {
+        let normalized = normalizedInspectorPath(relativePath)
+        for link in cloudWorkspaceLinks {
+            let prefix = "Cloud/\(link.name)"
+            guard normalized == prefix || normalized.hasPrefix(prefix + "/") else { continue }
+            let suffix = normalized == prefix
+                ? ""
+                : String(normalized.dropFirst(prefix.count + 1))
+            let remoteBase = normalizedInspectorPath(link.remotePath)
+            let remotePath = suffix.isEmpty ? remoteBase : "\(remoteBase)/\(suffix)"
+            return (link, remotePath)
+        }
+        return nil
+    }
+
+    private func normalizedInspectorPath(_ path: String) -> String {
+        path.split(separator: "/").filter { $0 != "." }.joined(separator: "/")
+    }
 
     /// Live-links a Files/iCloud directory beneath `Mounts/<name>`. The
     /// directory stays in place and is never copied or deleted by Floe.

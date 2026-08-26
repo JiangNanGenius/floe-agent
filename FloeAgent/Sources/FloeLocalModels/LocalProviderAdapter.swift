@@ -485,7 +485,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     FloeLogger(category: .providers).info(
                         "localPromptPrepared model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) sourceCharacters=\(promptBuild.sourceCharacters) promptCharacters=\(prompt.count) offeredTools=\(request.toolSchemas.count) selectedTools=\(promptBuild.selectedToolCount) omittedTools=\(max(0, request.toolSchemas.count - promptBuild.selectedToolCount))"
                     )
-                    let completion: LocalRuntimeCompletion
+                    var completion: LocalRuntimeCompletion
                     if request.model.remoteModelID == AppleFoundationModelIdentity.remoteModelID {
                         let availability = await AppleFoundationModelRuntime.shared.availability()
                         guard availability.isAvailable else {
@@ -536,7 +536,52 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         continuation.finish()
                         return
                     }
-                    let channels = Self.splitReasoning(from: completion.text)
+                    var channels = Self.splitReasoning(from: completion.text)
+                    var parsedToolCall = try Self.fallbackToolCall(
+                        from: channels.answer,
+                        modelRemoteID: request.model.remoteModelID,
+                        selectedTools: promptBuild.fallbackTools
+                    )
+                    if parsedToolCall == nil,
+                       promptBuild.requiresToolCall,
+                       request.model.remoteModelID != AppleFoundationModelIdentity.remoteModelID {
+                        FloeLogger(category: .providers).warning(
+                            "localToolInvocationRepairStarted model=\(request.model.remoteModelID) outputCharacters=\(channels.answer.count) selectedTools=\(promptBuild.selectedToolCount)"
+                        )
+                        let repair = try await runtime.completeMeasured(
+                            modelID: request.model.remoteModelID,
+                            instructions: "You must invoke exactly one offered native tool. If native invocation is unavailable, output exactly one JSON object with this shape and no prose: {\"tool_call\":{\"name\":\"exact.offered.name\",\"arguments\":{}}}. Never claim the action succeeded.",
+                            prompt: prompt + "\n\nYour previous answer did not invoke a tool. Perform the requested action now using exactly one offered tool.",
+                            images: [],
+                            tools: promptBuild.selectedTools,
+                            maxTokens: 256
+                        )
+                        completion.inputTokens += repair.inputTokens
+                        completion.outputTokens += repair.outputTokens
+                        completion.cacheReadTokens = Self.sumOptional(
+                            completion.cacheReadTokens, repair.cacheReadTokens
+                        )
+                        completion.cacheWriteTokens = Self.sumOptional(
+                            completion.cacheWriteTokens, repair.cacheWriteTokens
+                        )
+                        completion.reasoningTokens = Self.sumOptional(
+                            completion.reasoningTokens, repair.reasoningTokens
+                        )
+                        completion.totalDurationMs += repair.totalDurationMs
+                        completion.text = repair.text
+                        completion.tokensPerSecond = completion.totalDurationMs > 0
+                            ? Double(completion.outputTokens) / (Double(completion.totalDurationMs) / 1_000)
+                            : nil
+                        channels = Self.splitReasoning(from: repair.text)
+                        parsedToolCall = try Self.fallbackToolCall(
+                            from: channels.answer,
+                            modelRemoteID: request.model.remoteModelID,
+                            selectedTools: promptBuild.fallbackTools
+                        )
+                        FloeLogger(category: .providers).info(
+                            "localToolInvocationRepairFinished model=\(request.model.remoteModelID) parsed=\(parsedToolCall != nil) outputCharacters=\(channels.answer.count)"
+                        )
+                    }
                     if !channels.reasoning.isEmpty {
                         continuation.yield(.reasoningSummary(.init(text: channels.reasoning)))
                     }
@@ -550,14 +595,15 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         timeToFirstTokenMs: completion.timeToFirstTokenMs,
                         tokensPerSecond: completion.tokensPerSecond
                     )))
-                    if let call = try Self.fallbackToolCall(
-                        from: channels.answer,
-                        modelRemoteID: request.model.remoteModelID,
-                        selectedTools: promptBuild.fallbackTools
-                    ) {
+                    if let call = parsedToolCall {
                         continuation.yield(.toolRequest(call))
                         continuation.yield(.completed(.init(stopReason: .toolUse)))
                     } else {
+                        if promptBuild.requiresToolCall {
+                            throw FloeError.validationFailed(
+                                "本地模型没有形成有效的工具调用。请重试，或切换到云端模型完成这项操作。"
+                            )
+                        }
                         let visibleAnswer = Self.visibleAnswer(from: channels.answer)
                         guard !visibleAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                             throw FloeError.validationFailed(
@@ -702,6 +748,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let normalizedUserText = latestUserText.lowercased()
         let actionRequested = requestsAction(normalizedUserText)
         let inventoryRequested = requestsInventory(normalizedUserText)
+        let explicitToolExecutionRequested = requestsExplicitToolExecution(normalizedUserText)
         let includeToolDirectory = inventoryRequested || actionRequested
             || !selectedTools.isEmpty || !request.pendingToolCalls.isEmpty
         let budgets = promptBudgets(contextTokens: contextTokens)
@@ -812,7 +859,12 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let directoryInstructions = includeToolDirectory
             ? "The user message contains an authoritative AVAILABLE TOOL NAMES directory and, when action is needed, an OFFERED TOOLS section. For capability questions, report exact names from that directory; never claim you cannot see it."
             : "This is an ordinary conversation turn and no tool directory is needed."
-        let system = "You are Floe, a concise and natural on-device assistant. The latest user message may be a request or ordinary conversation. Respond normally and warmly to greetings, small talk, questions, brainstorming, opinions, and follow-ups; never demand a more explicit task merely because no tool is needed. Ask a clarifying question only when missing information materially changes a consequential action. Tool execution and approval are enforced by the app. \(directoryInstructions) \(toolInstructions) Think silently. Never print chain-of-thought, planning notes, drafts, self-corrections, or a 'Thinking Process' section. Return only the final answer."
+        let requiredInvocation = actionRequested
+            && (!inventoryRequested || explicitToolExecutionRequested)
+        let invocationPriority = requiredInvocation && !selectedTools.isEmpty
+            ? "The user explicitly requested an action. Invoke exactly one offered tool now; do not answer with a proposed call, sample JSON, or a claim that you invoked it."
+            : ""
+        let system = "You are Floe, a concise and natural on-device assistant. The latest user message may be a request or ordinary conversation. Respond normally and warmly to greetings, small talk, questions, brainstorming, opinions, and follow-ups; never demand a more explicit task merely because no tool is needed. Ask a clarifying question only when missing information materially changes a consequential action. Tool execution and approval are enforced by the app. \(directoryInstructions) \(toolInstructions) \(invocationPriority) Think silently. Never print chain-of-thought, planning notes, drafts, self-corrections, or a 'Thinking Process' section. Return only the final answer."
         return PromptBuild(
             systemInstructions: system,
             // MLX receives structured system/user messages and applies the
@@ -825,7 +877,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
             selectedTools: selectedTools,
             fallbackTools: availableTools,
             selectedToolCount: selectedTools.count,
-            requiresToolCall: actionRequested && !inventoryRequested && !selectedTools.isEmpty,
+            requiresToolCall: requiredInvocation && !selectedTools.isEmpty,
             sourceCharacters: sourceCharacters
         )
     }
@@ -935,11 +987,22 @@ public struct LocalProviderAdapter: ProviderAdapter {
 
     private static func requestsAction(_ text: String) -> Bool {
         containsAny(text, [
-            "创建", "读取", "查看", "看一下", "查", "查找", "搜索", "获取", "告诉我", "帮我", "运行", "执行", "修改", "编辑", "删除", "生成", "连接", "分析", "测试",
+            "创建", "读取", "查看", "看一下", "查", "查找", "搜索", "获取", "告诉我", "帮我", "运行", "执行", "修改", "编辑", "删除", "生成", "连接", "分析", "测试", "尝试", "试一下", "试试", "试一个",
             "当前位置", "当前地址", "我的位置", "我在哪", "定位",
             "初始化", "提交", "暂存", "克隆", "拉取", "推送", "同步", "切换分支",
             "create", "read", "inspect", "find", "search", "get", "show me", "where am i", "current location", "run", "execute", "edit", "delete", "generate", "connect", "analyze", "test",
             "initialize", "commit", "stage", "clone", "fetch", "pull", "push", "sync", "switch branch"
+        ])
+    }
+
+    /// Capability questions are normally informational, but phrases such as
+    /// “列出工具并随便试一个” contain a second, explicit execution request.
+    /// Keep that useful fuzzy instruction from being downgraded to inventory.
+    private static func requestsExplicitToolExecution(_ text: String) -> Bool {
+        containsAny(text, [
+            "调用一个", "调用一下", "随便调用", "尝试一个", "尝试一下", "随便尝试",
+            "试一个", "试一下", "试试", "测试一个", "测试一下",
+            "call one", "invoke one", "try one", "test one", "try a tool"
         ])
     }
 
@@ -1076,6 +1139,11 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let headCount = (limit - 17) * 2 / 3
         let tailCount = limit - 17 - headCount
         return String(text.prefix(headCount)) + "\n...[omitted]...\n" + String(text.suffix(tailCount))
+    }
+
+    private static func sumOptional(_ lhs: Int?, _ rhs: Int?) -> Int? {
+        guard lhs != nil || rhs != nil else { return nil }
+        return (lhs ?? 0) + (rhs ?? 0)
     }
 
     /// Small local models are not reliable JSON emitters. Accept the common

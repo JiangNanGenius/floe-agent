@@ -49,6 +49,12 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     /// being encoded. Remember that request instead of launching a second
     /// preparation task that tears down the first controller.
     private var startWhenPrepared = false
+    /// AVKit can reject the first request while the scene is between
+    /// foreground-inactive and background. Keep the prepared source alive and
+    /// retry once after that transition instead of rebuilding without a key
+    /// window (which can never succeed).
+    private var startAttemptCount = 0
+    private var startRetryTask: Task<Void, Never>?
 
     /// Starts (or updates) the PiP progress video for an active run. The
     /// user keeps the app alive by floating this PiP while in background.
@@ -64,6 +70,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         guidanceImage = nil
         guidanceHints = []
         stopPiPInternal()
+        startAttemptCount = 0
         startWhenPrepared = startImmediately
         isPreparingPiP = true
         lastError = nil
@@ -200,8 +207,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
               controller.isPictureInPicturePossible,
               !controller.isPictureInPictureActive else { return }
         FloeLogger(category: .app).info(
-            "pictureInPictureStartRequested generation=\(startGeneration) playerStatus=\(String(describing: player?.timeControlStatus)) itemStatus=\(String(describing: player?.currentItem?.status))"
+            "pictureInPictureStartRequested generation=\(startGeneration) attempt=\(startAttemptCount + 1) playerStatus=\(String(describing: player?.timeControlStatus)) itemStatus=\(String(describing: player?.currentItem?.status))"
         )
+        startAttemptCount += 1
         controller.startPictureInPicture()
     }
 
@@ -307,6 +315,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     private func stopPiPInternal() {
         refreshTask?.cancel()
         refreshTask = nil
+        startRetryTask?.cancel()
+        startRetryTask = nil
         pipController?.stopPictureInPicture()
         pipController = nil
         looper = nil
@@ -325,6 +335,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         isPiPPrepared = false
         isProgrammaticRetraction = false
         startWhenPrepared = false
+        startAttemptCount = 0
         deactivateAudioSession()
     }
 
@@ -407,11 +418,10 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             height: size.height
         ))
         view.backgroundColor = UIColor(red: 0.035, green: 0.043, blue: 0.065, alpha: 1)
-        // The AVPlayerLayer must remain attached to a rendered, non-zero
-        // source view for PiP eligibility. A nearly transparent host keeps
-        // that contract without exposing the internal preview tile over the
-        // composer controls while Floe is in the foreground.
-        view.alpha = 0.02
+        // Keep the source fully rendered. Reduced alpha can make AVKit reject
+        // the source as non-visible. It is inserted behind the app's root
+        // content, so no internal preview tile covers foreground controls.
+        view.alpha = 1
         view.layer.masksToBounds = true
         view.layer.cornerRadius = 12
         view.isUserInteractionEnabled = false
@@ -741,6 +751,9 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
         Task { @MainActor in
             self.isPiPActive = true
             self.isPreparingPiP = false
+            self.startRetryTask?.cancel()
+            self.startRetryTask = nil
+            self.startAttemptCount = 0
             self.lastError = nil
             FloeLogger(category: .app).info("pictureInPictureDidStart")
         }
@@ -760,13 +773,30 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
         _ pictureInPictureController: AVPictureInPictureController,
         failedToStartPictureInPictureWithError error: Error
     ) {
+        let controllerID = ObjectIdentifier(pictureInPictureController)
         Task { @MainActor in
             let nsError = error as NSError
             FloeLogger(category: .app).error(
-                "pictureInPictureStartFailed domain=\(nsError.domain) code=\(nsError.code)"
+                "pictureInPictureStartFailed domain=\(nsError.domain) code=\(nsError.code) attempt=\(self.startAttemptCount) description=\(nsError.localizedDescription)"
             )
             self.lastError = "画中画启动失败：\(error.localizedDescription)"
-            self.stop()
+            guard self.startWhenPrepared,
+                  self.startAttemptCount < 2,
+                  self.pipController.map(ObjectIdentifier.init) == controllerID else {
+                // Preserve the valid foreground-prepared controller. A later
+                // app departure can try it again without attempting to attach
+                // a new source view while already backgrounded.
+                self.isPiPPrepared = self.pipController != nil
+                return
+            }
+            let generation = self.startGeneration
+            self.startRetryTask?.cancel()
+            self.startRetryTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(600))
+                guard !Task.isCancelled,
+                      generation == self.startGeneration else { return }
+                self.startPreparedPictureInPicture()
+            }
         }
     }
 }

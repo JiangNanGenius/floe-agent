@@ -193,9 +193,12 @@ public extension ProviderPreset {
         .custom
     ]
 
-    /// Providers that can be configured as conversation-model endpoints.
-    /// Google Gemini Images is configured only from Auxiliary Models.
-    static let chatPresets: [ProviderPreset] = all.filter { $0.kind != .googleGemini }
+    /// Providers that can be configured as remote conversation-model
+    /// endpoints. Google Gemini Images belongs in Auxiliary Models, while
+    /// on-device models are managed by the dedicated Local Models screen.
+    static let chatPresets: [ProviderPreset] = all.filter {
+        $0.kind != .googleGemini && $0.kind != .local
+    }
 
     /// Looks up the preset matching a provider kind, defaulting to custom.
     static func preset(for kind: ProviderKind) -> ProviderPreset {

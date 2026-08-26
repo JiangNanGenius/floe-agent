@@ -123,7 +123,7 @@ struct FilePreviewView: View {
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("inspector.context.add")
             }
-            if isTextual, content != nil {
+            if isTextual, content != nil, !center.isCloudWorkspacePath(relativePath) {
                 Button {
                     isEditing = true
                 } label: {
@@ -209,7 +209,7 @@ struct FilePreviewView: View {
                 return
             }
         }
-        guard let service = center.fileService else {
+        guard center.fileService != nil else {
             loadError = String(localized: "inspector.no_workspace")
             return
         }
@@ -221,7 +221,7 @@ struct FilePreviewView: View {
             return
         }
         do {
-            content = try service.readFile(relativePath, byteOffset: 0)
+            content = try await center.readFile(relativePath: relativePath)
             await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
             if isCode, autoOpenedCodePath != relativePath {
                 autoOpenedCodePath = relativePath

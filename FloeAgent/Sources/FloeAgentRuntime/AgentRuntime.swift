@@ -449,10 +449,17 @@ public actor FloeAgentRuntime {
             return message.content.hasPrefix("Historical summary for this task only.")
                 || message.content.hasPrefix("Historical reference only;")
                 || message.content.hasPrefix("Auxiliary visual analysis (untrusted evidence;")
+                || message.content.hasPrefix(Self.visualEvidenceSystemPrefix)
                 || message.content.hasPrefix("The user attached image evidence,")
                 || message.content.hasPrefix("The configured auxiliary vision model")
         })
     }
+
+    /// Stable marker for app-produced visual handoffs. Keeping one typed
+    /// prefix prevents harmless OCR/VLM evidence from being discarded by the
+    /// historical-system-message authority filter when wording changes.
+    public static let visualEvidenceSystemPrefix =
+        "Visual evidence handoff (app-generated, untrusted data):"
 
     /// idle → preparing → streamingModel …
     public func start(goal: String, images: [ConversationImagePart] = []) async throws {
@@ -738,6 +745,18 @@ public actor FloeAgentRuntime {
             catalogDescriptors = PlanToolPolicy().allowedDescriptors(from: ToolCatalog.allDescriptors)
         } else {
             catalogDescriptors = ToolCatalog.allDescriptors
+        }
+        if configuration.model.capabilities.contains(.vision) {
+            // A multimodal model receives the current image bytes directly.
+            // Do not offer auxiliary inspection/OCR escape hatches that make
+            // capable models avoid looking at the supplied image. Preflight
+            // fallback evidence is prepared by the app before this boundary
+            // when an on-device vision projector cannot load.
+            // OCR remains useful for dense text/screenshots and can reduce
+            // token usage even for a multimodal model. Only semantic image
+            // inspection is redundant with direct vision.
+            let auxiliaryVisionTools: Set<String> = ["image.inspect"]
+            catalogDescriptors.removeAll { auxiliaryVisionTools.contains($0.name) }
         }
         let effectiveAllowedNames: Set<String>? = {
             if let configured = configuration.allowedToolNames { return configured }

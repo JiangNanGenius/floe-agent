@@ -125,7 +125,7 @@ struct BrowserProtocolTests {
             """
             <!doctype html><html><body style="margin:0">
               <button id="go" style="width:160px;height:80px">Go</button>
-              <canvas id="surface" width="300" height="180" style="display:block"></canvas>
+              <canvas id="surface" width="300" height="180" style="display:block" onclick="window.canvasClick = [event.clientX, event.clientY]"></canvas>
             </body></html>
             """,
             baseURL: URL(string: "https://example.com")!
@@ -180,6 +180,8 @@ struct BrowserProtocolTests {
             action: .click(.point(x: 20, y: 120))
         ))
         #expect(canvasFallback.status == .ok)
+        let clickCoordinates = try await webView.evaluateJavaScript("window.canvasClick") as? [NSNumber]
+        #expect(clickCoordinates?.map(\.doubleValue) == [20, 120])
     }
 
     @Test("CDP-shaped dispatch is allowlisted and reports protocol version")

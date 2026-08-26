@@ -869,18 +869,35 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
           if (target.kind === 'point' && visualFallbackReason === 'noStructuredTarget') {
             let structured = null;
             try { structured = el.closest(selector); } catch (_) {}
-            if (structured && visible(structured)) {
+            const structuredTag = String((structured && structured.tagName) || '').toLowerCase();
+            // A canvas can be observable as one structured DOM node while
+            // containing many visual-only controls. browser.click on the
+            // canvas ref cannot address those internal targets, so preserve
+            // coordinate fallback for this exact boundary.
+            if (structured && visible(structured) && structuredTag !== 'canvas') {
               return {status:'structured', ref:ensureRef(structured)};
             }
           }
-          el.scrollIntoView({block:'center', inline:'center'});
+          // A fresh screenshot point is already viewport-relative. Scrolling
+          // its hit element before dispatch changes the coordinate and was
+          // the main source of intermittent misses on long pages.
+          if (target.kind === 'element') {
+            el.scrollIntoView({block:'center', inline:'center'});
+          }
           const rect = el.getBoundingClientRect();
           const x = target.kind === 'point' ? Number(target.x) : rect.x + rect.width / 2;
           const y = target.kind === 'point' ? Number(target.y) : rect.y + rect.height / 2;
           for (const type of ['pointerover','pointerenter','pointerdown','pointerup']) {
             try { el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, clientX:x, clientY:y, pointerType:'mouse', isPrimary:true})); } catch (_) {}
           }
-          el.click();
+          if (target.kind === 'point') {
+            // HTMLElement.click() manufactures a click at (0,0), which is
+            // unusable for canvas hit-testing. Preserve the evidence-backed
+            // viewport coordinates on the actual click event.
+            el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, clientX:x, clientY:y, view:window}));
+          } else {
+            el.click();
+          }
           return {status:'ok'};
         }
         const tag = (el.tagName || '').toLowerCase();

@@ -293,6 +293,31 @@ struct LocalModelCatalogTests {
         #expect(build.systemInstructions.contains("Respond normally and warmly"))
     }
 
+    @Test("Fuzzy tool inventory request can also require one real invocation")
+    @available(macOS 15.4, *)
+    func fuzzyInventoryAndInvocationRequiresToolCall() {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "gemma4-e4b-mlx4",
+            displayName: "Gemma",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 1_024),
+            capabilities: [.text, .tools]
+        )
+        let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [("user", "你能调用哪些工具？随便尝试一个。")],
+            toolSchemas: [
+                ToolSchemaDescriptor(name: "workspace.listDirectory", description: "List files"),
+                ToolSchemaDescriptor(name: "web.search", description: "Search the web")
+            ]
+        ))
+        #expect(build.requiresToolCall)
+        #expect(!build.selectedTools.isEmpty)
+        #expect(build.systemInstructions.contains("Invoke exactly one offered tool now"))
+    }
+
     @Test("Apple Foundation Model reconstructs prior natural-language turns")
     @available(macOS 15.4, *)
     func appleConversationHistoryIsStructured() {

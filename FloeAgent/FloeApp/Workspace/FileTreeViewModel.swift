@@ -77,14 +77,14 @@ final class FileTreeViewModel: ObservableObject {
 
     /// Loads (or reloads) the first page of the root directory.
     func loadRoot() async {
-        guard let service = center.fileService else {
+        guard center.fileService != nil else {
             rootNodes = []
             return
         }
         isLoading = true
         defer { isLoading = false }
         do {
-            let page = try service.listDirectory(".", pageToken: nil)
+            let page = try await center.listDirectory(relativePath: ".")
             rootNodes = page.entries.map(Self.node(from:))
             expandedDirectoryPaths = []
             errorMessage = nil
@@ -96,9 +96,9 @@ final class FileTreeViewModel: ObservableObject {
 
     /// Lazily loads a directory's children on first disclosure.
     func loadChildren(of node: FileTreeNode) async -> [FileTreeNode] {
-        guard node.isDirectory, let service = center.fileService else { return [] }
+        guard node.isDirectory, center.fileService != nil else { return [] }
         do {
-            let page = try service.listDirectory(node.relativePath, pageToken: nil)
+            let page = try await center.listDirectory(relativePath: node.relativePath)
             return page.entries.map(Self.node(from:))
         } catch {
             errorMessage = error.localizedDescription

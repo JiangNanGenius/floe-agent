@@ -205,7 +205,7 @@ private struct BrowserClickPointTool: AgentTool {
         let fallbackReason: String
     }
     static let name = "browser.clickPoint"
-    static let toolDescription = "LAST-RESORT visual fallback after browser.observe: click viewport coordinates only when structured information is absent or insufficient. Capture a fresh browser.screenshot, inspect it when needed, then provide its sha256 and the exact fallback reason. Ordinary DOM controls with stable refs are rejected here and must use browser.click."
+    static let toolDescription = "LAST-RESORT visual fallback after browser.observe: click CSS viewport coordinates (not screenshot pixel coordinates) only when structured information is absent or insufficient. Use viewportWidth/viewportHeight from the same fresh browser.screenshot result, then provide its sha256 and the exact fallback reason. Canvas-internal controls may use this fallback; ordinary DOM controls with stable refs are rejected and must use browser.click."
     static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string"},"documentID":{"type":"string"},"x":{"type":"number","minimum":0,"maximum":10000},"y":{"type":"number","minimum":0,"maximum":10000},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"},"fallbackReason":{"type":"string","enum":["noStructuredTarget","insufficientStructuredInformation"]}},"required":["documentID","x","y","screenshotSHA256","fallbackReason"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.controlsGUI]
     static let isSideEffecting = true

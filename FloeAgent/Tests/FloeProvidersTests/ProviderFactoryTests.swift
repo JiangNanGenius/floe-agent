@@ -80,6 +80,7 @@ struct ProviderFactoryTests {
         #expect(ProviderPreset.anthropic.supportedProtocols == [.anthropicMessages])
         #expect(Set(ProviderPreset.custom.supportedProtocols) == Set(ModelProtocol.allCases))
         #expect(!ProviderPreset.chatPresets.contains { $0.kind == .googleGemini })
+        #expect(!ProviderPreset.chatPresets.contains { $0.kind == .local })
     }
 
     @Test("Factory returns a working adapter for a full provider profile")

@@ -57,7 +57,11 @@ struct ExecutionEnvironmentView: View {
             }
         }
         .navigationTitle("settings.section.execution")
-        .task { await center.load() }
+        .task {
+            async let settings: Void = center.load()
+            async let hosts: Void = center.environment.remoteSessionCenter.loadHosts()
+            _ = await (settings, hosts)
+        }
     }
 
     private func capabilityRow(name: String, state: CapabilityState) -> some View {
