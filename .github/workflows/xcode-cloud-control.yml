@@ -40,6 +40,10 @@ on:
         description: App Store Connect builds ID required for verify-testflight
         required: false
         type: string
+      release_tag:
+        description: Release tag to discover; omitted uses the version in FloeAgent/project.yml
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -78,9 +82,20 @@ jobs:
         if: inputs.operation == 'discover'
         env:
           ASC_TOKEN: ${{ steps.auth.outputs.token }}
-          RELEASE_TAG: v1.4.39
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
+          RELEASE_TAG="$RELEASE_TAG_INPUT"
+          if test -z "$RELEASE_TAG"; then
+            version="$(sed -n 's/^[[:space:]]*MARKETING_VERSION: *"\([^"]*\)".*/\1/p' FloeAgent/project.yml | head -n 1)"
+            test -n "$version"
+            RELEASE_TAG="v$version"
+          fi
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]]; then
+            echo "Invalid release tag: $RELEASE_TAG" >&2
+            exit 2
+          fi
+          echo "release-tag=$RELEASE_TAG"
           api_get() {
             local path="$1"
             shift
