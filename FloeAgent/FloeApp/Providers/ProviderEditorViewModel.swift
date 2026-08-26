@@ -230,7 +230,7 @@ final class ProviderEditorViewModel: ObservableObject {
     /// "provider unavailable" issues without exposing the key itself.
     func diagnoseKeychain() -> String {
         guard let existing, let secretRef = existing.secretRef else {
-            return "未配置 API key（secretRef 为空）"
+            return "尚未保存 API 密钥"
         }
         var results: [String] = []
         for sync in [secretRef.synchronizable, !secretRef.synchronizable] {

@@ -407,10 +407,10 @@ public actor LocalGitService {
     private static func validateRemote(_ url: URL) throws {
         guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased(),
               host == "github.com" || host.hasSuffix(".github.com") else {
-            throw FloeError.validationFailed("This release supports HTTPS GitHub remotes only")
+            throw FloeError.validationFailed("目前仅支持通过 HTTPS 连接 GitHub 仓库")
         }
         guard url.user == nil, url.password == nil else {
-            throw FloeError.validationFailed("Credentials must not be embedded in a Git remote URL")
+            throw FloeError.validationFailed("仓库地址不能包含账号或凭据，请在 GitHub 连接中单独保存")
         }
     }
 

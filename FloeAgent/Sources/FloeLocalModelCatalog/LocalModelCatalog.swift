@@ -222,11 +222,11 @@ public actor LocalModelStore {
         case insufficientDiskSpace(required: Int64, available: Int64)
         public var errorDescription: String? {
             switch self {
-            case .invalidGGUF: "The downloaded file is not a valid GGUF model."
-            case .invalidMLXSnapshot(let reason): "The downloaded MLX snapshot is invalid: \(reason)"
-            case .unexpectedArtifact(let path): "The curated model contains an unsafe artifact path: \(path)"
+            case .invalidGGUF: "下载的模型文件无法使用，请删除后重新下载。"
+            case .invalidMLXSnapshot: "下载的模型文件不完整或不兼容，请删除后重新下载。"
+            case .unexpectedArtifact: "下载内容未通过安全检查，已停止安装。"
             case .insufficientDiskSpace(let required, let available):
-                "Not enough free space (required \(required), available \(available))."
+                "设备空间不足，需要 \(ByteCountFormatter.string(fromByteCount: required, countStyle: .file))，目前可用 \(ByteCountFormatter.string(fromByteCount: available, countStyle: .file))。"
             }
         }
     }

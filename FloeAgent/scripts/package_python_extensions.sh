@@ -15,8 +15,9 @@ output_root="Vendor/PythonExtensions"
 # HTTPS, data processing and ordinary model-authored scripts. Third-party
 # binary wheels are still rejected; this list is fixed at build time.
 modules=(
-    _blake2 _csv _datetime _decimal _hashlib _json _opcode _random _sha2 _sha3
-    _socket _sqlite3 _ssl _statistics _struct array binascii math select unicodedata zlib
+    _blake2 _bz2 _csv _ctypes _datetime _decimal _hashlib _json _lzma _opcode
+    _random _sha2 _sha3 _socket _sqlite3 _ssl _statistics _struct array binascii
+    math mmap select unicodedata zlib
 )
 
 rm -rf "$output_root"

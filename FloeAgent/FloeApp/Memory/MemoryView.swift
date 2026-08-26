@@ -18,6 +18,7 @@ final class MemoryCenter: ObservableObject {
     @Published private(set) var soulAutomaticUpdates = true
     @Published private(set) var searchResults: [HybridMemoryRecallItem] = []
     @Published private(set) var isWorking = false
+    @Published private(set) var operationNotice: String?
     @Published var errorMessage: String?
 
     unowned let environment: AppEnvironment
@@ -87,6 +88,21 @@ final class MemoryCenter: ObservableObject {
         catch { errorMessage = error.localizedDescription }
     }
 
+    func delete(ids: Set<UUID>) async {
+        guard !ids.isEmpty else { return }
+        isWorking = true
+        errorMessage = nil
+        operationNotice = nil
+        defer { isWorking = false }
+        do {
+            try await environment.intelligenceStore.deleteMemories(ids: ids, syncRevision: 1)
+            await load()
+            operationNotice = "已删除 \(ids.count) 条记忆。"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func search(_ query: String) async {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { searchResults = []; return }
@@ -110,14 +126,22 @@ final class MemoryCenter: ObservableObject {
     }
 
     func quickOrganize() async {
-        isWorking = true; defer { isWorking = false }
+        isWorking = true
+        errorMessage = nil
+        operationNotice = "正在整理画像并维护长期记忆…"
+        defer { isWorking = false }
         do {
+            try await environment.intelligenceStore.maintainMemoryLifecycle()
             let generator = try modelGenerator()
             for kind in PersonalizationDocumentKind.allCases {
                 _ = try await personalizationService.generateNow(kind: kind, generator: generator)
             }
             await load()
-        } catch { errorMessage = error.localizedDescription }
+            operationNotice = "整理完成：画像已更新，长期记忆已按保留规则维护。"
+        } catch {
+            operationNotice = nil
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func modelGenerator() throws -> ModelPersonalizationGenerator {
@@ -161,6 +185,9 @@ struct MemoryView: View {
     @ObservedObject var center: MemoryCenter
     @State private var presentedSheet: MemorySheet?
     @State private var query = ""
+    @State private var isSelecting = false
+    @State private var selectedMemoryIDs: Set<UUID> = []
+    @State private var confirmsBulkDelete = false
 
     var body: some View {
         // Every host supplies the navigation container. Nesting another stack
@@ -186,6 +213,12 @@ struct MemoryView: View {
                     .accessibilityIdentifier("memory.pending")
                 }
                 if !query.isEmpty { searchSection } else { memorySection }
+                if let notice = center.operationNotice {
+                    Section {
+                        Label(notice, systemImage: center.isWorking ? "hourglass" : "checkmark.circle.fill")
+                            .foregroundStyle(center.isWorking ? Color.secondary : Color.green)
+                    }
+                }
                 if let error = center.errorMessage { Section { Text(error).foregroundStyle(.red).font(.footnote) } }
         }
         .navigationTitle("记忆与个性化")
@@ -197,11 +230,36 @@ struct MemoryView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                Button("快速整理", systemImage: "wand.and.stars") {
-                    Task { await center.quickOrganize() }
+                if center.isWorking {
+                    ProgressView().accessibilityLabel("正在处理记忆")
                 }
-                .disabled(center.isWorking)
-                Button("添加记忆", systemImage: "plus") { presentedSheet = .add }
+                if isSelecting {
+                    Button("取消") {
+                        isSelecting = false
+                        selectedMemoryIDs.removeAll()
+                    }
+                    Button("删除所选", systemImage: "trash", role: .destructive) {
+                        confirmsBulkDelete = true
+                    }
+                    .disabled(selectedMemoryIDs.isEmpty || center.isWorking)
+                } else {
+                    Button("整理记忆", systemImage: "wand.and.stars") {
+                        Task { await center.quickOrganize() }
+                    }
+                    .disabled(center.isWorking)
+                    .accessibilityHint("更新画像并维护长期记忆；完成或失败后显示结果")
+                    Menu("管理记忆", systemImage: "checklist") {
+                        Button("选择多条记忆", systemImage: "checkmark.circle") {
+                            isSelecting = true
+                        }
+                        Button("全选", systemImage: "checkmark.circle.fill") {
+                            selectedMemoryIDs = Set(center.entries.map(\.id))
+                            isSelecting = true
+                        }
+                    }
+                    .disabled(center.entries.isEmpty || center.isWorking)
+                    Button("添加记忆", systemImage: "plus") { presentedSheet = .add }
+                }
             }
         }
         .task { await center.load() }
@@ -218,6 +276,21 @@ struct MemoryView: View {
                     PendingMemoryReviewView(center: center)
                 }
             }
+        }
+        .confirmationDialog(
+            "删除所选的 \(selectedMemoryIDs.count) 条记忆？",
+            isPresented: $confirmsBulkDelete,
+            titleVisibility: .visible
+        ) {
+            Button("删除", role: .destructive) {
+                let ids = selectedMemoryIDs
+                selectedMemoryIDs.removeAll()
+                isSelecting = false
+                Task { await center.delete(ids: ids) }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("该操作会同步删除所选长期记忆，无法自动恢复。")
         }
     }
 
@@ -255,24 +328,51 @@ struct MemoryView: View {
                 }
             } else {
                 ForEach(center.entries) { entry in
-                    NavigationLink {
-                        MemoryEntryDetailView(entry: entry, center: center)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(entry.content)
-                            HStack {
-                                Text(scope(entry.scope))
-                                if entry.isPinned { Image(systemName: "pin.fill") }
-                                Text(entry.status.rawValue)
-                            }.font(.caption).foregroundStyle(.secondary)
+                    if isSelecting {
+                        Button {
+                            if selectedMemoryIDs.contains(entry.id) {
+                                selectedMemoryIDs.remove(entry.id)
+                            } else {
+                                selectedMemoryIDs.insert(entry.id)
+                            }
+                        } label: {
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: selectedMemoryIDs.contains(entry.id)
+                                    ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selectedMemoryIDs.contains(entry.id)
+                                        ? Color.accentColor : Color.secondary)
+                                memoryRow(entry)
+                            }
                         }
-                    }
-                    .swipeActions {
-                        Button("删除", role: .destructive) { Task { await center.delete(entry) } }
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                    } else {
+                        NavigationLink {
+                            MemoryEntryDetailView(entry: entry, center: center)
+                        } label: {
+                            memoryRow(entry)
+                        }
+                        .swipeActions {
+                            Button("删除", role: .destructive) { Task { await center.delete(entry) } }
+                        }
                     }
                 }
             }
         }
+    }
+
+    private func memoryRow(_ entry: MemoryEntry) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(entry.content)
+            HStack {
+                Text(scope(entry.scope))
+                if entry.isPinned { Image(systemName: "pin.fill") }
+                Text(statusLabel(entry.status))
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func personalizationRow(_ title: String, icon: String, available: Bool) -> some View {
@@ -287,6 +387,14 @@ struct MemoryView: View {
     }
     private func scope(_ scope: MemoryScope) -> String {
         switch scope { case .userProfile: "用户"; case .agentGlobal: "Agent"; case .workspace: "工作区"; case .task: "任务" }
+    }
+    private func statusLabel(_ status: MemoryEntryStatus) -> String {
+        switch status {
+        case .pending: "待确认"
+        case .active: "使用中"
+        case .rejected: "已忽略"
+        case .superseded: "已归档"
+        }
     }
 }
 

@@ -102,7 +102,7 @@ public struct LANDiscoveryService: Sendable {
         let permitted = Set(permittedServiceTypes)
         guard normalized.allSatisfy(permitted.contains) else {
             throw FloeError.validationFailed(
-                "This build can scan only its declared Bonjour service types: \(permittedServiceTypes.joined(separator: ", "))"
+                "局域网扫描目前仅支持这些服务类型：\(permittedServiceTypes.joined(separator: ", "))"
             )
         }
         return Array(Set(normalized)).sorted()

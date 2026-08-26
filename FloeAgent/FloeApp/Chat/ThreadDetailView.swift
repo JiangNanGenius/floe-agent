@@ -597,7 +597,7 @@ private struct ThreadUsageFooter: View {
             HStack(spacing: 12) {
                 Label("\(formatted(summary.inputTokens))", systemImage: "arrow.up")
                 Label("\(formatted(summary.outputTokens))", systemImage: "arrow.down")
-                Text("合计 \(formatted(summary.totalTokens)) token")
+                Text("合计 \(formatted(summary.totalTokens))")
                 if summary.isEstimatedLive {
                     Text("实时估算")
                         .foregroundStyle(.tertiary)
@@ -606,15 +606,15 @@ private struct ThreadUsageFooter: View {
             .font(FloeTheme.Typography.metadata)
             .foregroundStyle(.secondary)
             HStack(spacing: 12) {
-                Text("缓存读取 \(reported(summary.cacheReadTokens))")
-                Text("推理 \(reported(summary.reasoningTokens))")
+                Text("上下文复用 \(reported(summary.cacheReadTokens))")
+                Text("思考用量 \(reported(summary.reasoningTokens))")
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
             HStack(spacing: 12) {
-                Text("缓存命中 \(percent(summary.cacheHitRate))")
-                Text("速度 \(speed(summary.tokensPerSecond))")
-                Text("首 token \(duration(summary.timeToFirstTokenMs))")
+                Text("上下文复用率 \(percent(summary.cacheHitRate))")
+                Text("生成速度 \(speed(summary.tokensPerSecond))")
+                Text("开始响应 \(duration(summary.timeToFirstTokenMs))")
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
@@ -637,7 +637,7 @@ private struct ThreadUsageFooter: View {
     }
 
     private func speed(_ value: Double?) -> String {
-        value.map { "\($0.formatted(.number.precision(.fractionLength(1)))) token/s" } ?? "未报告"
+        value.map { "\($0.formatted(.number.precision(.fractionLength(1)))) 片段/秒" } ?? "未报告"
     }
 
     private func duration(_ value: Int?) -> String {

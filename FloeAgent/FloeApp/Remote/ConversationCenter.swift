@@ -2157,6 +2157,12 @@ final class ConversationCenter: ObservableObject {
         pendingApprovals.removeAll { conversationIDs.contains($0.conversationID) }
 
         for id in conversationIDs {
+            let ownerLabel = try await environment.conversationStore.conversation(id: id)?.title
+                ?? "已删除任务"
+            try await environment.intelligenceStore.preserveMemoriesBeforeConversationDeletion(
+                conversationID: id,
+                ownerLabel: ownerLabel
+            )
             try await environment.conversationStore.deleteConversation(id: id)
             environment.browserCenter.discard(conversationID: id)
         }

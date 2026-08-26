@@ -2,7 +2,7 @@
 
 [Website](https://www.floe-agent.com/) · [Product README](../README.md) · [中文 README](../README.zh-CN.md) · [Architecture](../docs/ARCHITECTURE_OVERVIEW.md) · [User guide](../docs/USER_GUIDE.md) · [中文使用指南](../docs/USER_GUIDE.zh-CN.md)
 
-This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for the Floe Agent 1.4.32 source target (build 63). The minimum deployment target is iOS/iPadOS 26.0 and the current database schema is v20.
+This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for the Floe Agent 1.4.33 source target (build 64). The minimum deployment target is iOS/iPadOS 26.0 and the current database schema is v21.
 
 ## Build prerequisites
 

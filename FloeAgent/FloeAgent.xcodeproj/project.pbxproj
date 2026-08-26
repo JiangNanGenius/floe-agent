@@ -41,7 +41,9 @@
 		2204AB734CAA9BD927FB3F95 /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A23E7E08860487A8333BE4F /* HostListView.swift */; };
 		232956B5D2159E67076246D5 /* _statistics.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A94DC3B96DA97D1E17F6B887 /* _statistics.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		240295D920ACB16AC985D2EF /* BackgroundVideoService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBD2CBE0215EF9478D86E581 /* BackgroundVideoService.swift */; };
+		24501BB1BDCC1E8922982E4C /* _ctypes.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DCC42125AA4BA415183B6A85 /* _ctypes.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		24D360EC17E29EC2F3B4E2AA /* ThreadTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF07847A2353D846B363915C /* ThreadTimelineTests.swift */; };
+		2552449B3F6DFD39F032C0FF /* _bz2.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 2012AC9C3BB8EE122046B60B /* _bz2.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		265F22EEB8BC48C7AF62FDCD /* PlatformBackgroundPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EF97C2442DD744CEB320A0 /* PlatformBackgroundPolicy.swift */; };
 		27855675D9ACDFE95B27B41E /* AppleCapabilitiesSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C8A30D0D7D561C3E9BE4EC0 /* AppleCapabilitiesSettingsView.swift */; };
 		2939AB869D58351E507444A9 /* _sha2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = CE19791AC2454F6739825F8F /* _sha2.xcframework */; };
@@ -59,6 +61,7 @@
 		338C444A5850EEA55FE92B63 /* HomeOverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC36D60C36B96A6BDBE81A41 /* HomeOverviewView.swift */; };
 		34485AB274BA660CE72C46D6 /* TaskScheduleSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D008574B5C037321A6B5540 /* TaskScheduleSheet.swift */; };
 		3579C243C8D17340786C7E1D /* WorkspacePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5E373AD5E7E721591E5441B /* WorkspacePickerView.swift */; };
+		362B576847A7496F5CF46F95 /* _bz2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2012AC9C3BB8EE122046B60B /* _bz2.xcframework */; };
 		38D12FDA70DBDEB3E3F91853 /* select.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 8EEDB221C5E3501DEF3F7015 /* select.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		39115D1FF0C2180535C94DCC /* FilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 940DE18872CD21D45A855A30 /* FilesView.swift */; };
 		3B82CBF4D3CB235A375369A6 /* _ssl.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3C217266DBB6D6A0C5EA9075 /* _ssl.xcframework */; };
@@ -133,6 +136,7 @@
 		944E3FB5C585C549D0629B3E /* FloeCore in Frameworks */ = {isa = PBXBuildFile; productRef = F083763A8E3CC5FC0CCEEF1A /* FloeCore */; };
 		9480F3B70B2928BD0DAD3631 /* AppleSystemTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B4E7317E7E655E86990C5D1 /* AppleSystemTools.swift */; };
 		9484845FCE5ED5231B66713F /* DataManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC74E9DDD5C02BD49675B239 /* DataManagementView.swift */; };
+		98BD8CC5877E2714FF8979F3 /* _lzma.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = CB9397357FA8DE45F2E2112C /* _lzma.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		99C54A5F72057E2F5DE439BD /* UserMessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30E546884B42CDF2BB96931B /* UserMessageBubble.swift */; };
 		9A14F4703ACB1ABC85E9FB46 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A7AA9D321701A98A3C0B09E /* ShareViewController.swift */; };
 		9AE3503A129EA99DA6997C67 /* python in Resources */ = {isa = PBXBuildFile; fileRef = 926B95CD92D851FFE3BB0DFE /* python */; };
@@ -150,6 +154,7 @@
 		A5C100B39388D49632E01BAF /* FloeCPythonBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = A011E3F62CC6B0819659AC99 /* FloeCPythonBridge.m */; };
 		A5FEE395C7135D52DF0FF81F /* _csv.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F056190E229F36B3FC87CD73 /* _csv.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A6C15214795012140B3AC46D /* CrashAndFeedbackRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C249A312D3F94BF9CBA98F76 /* CrashAndFeedbackRegressionTests.swift */; };
+		A778949A4707059C79A4E425 /* mmap.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BBD2144374FF4E9AD173B157 /* mmap.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AB3605779C6F0C4864D85CE2 /* VNCViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BA323DAAD3913411F1D5340 /* VNCViewModel.swift */; };
 		ABAF2700584FE5E93C50DA1B /* FloeImages in Frameworks */ = {isa = PBXBuildFile; productRef = EBF97B079841247A01DFCE52 /* FloeImages */; };
 		AD09F21466C778C43633A947 /* RemoteImageInspectToolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 183A97BE093D68D231492DC7 /* RemoteImageInspectToolTests.swift */; };
@@ -192,6 +197,7 @@
 		C8EB11021CF07BD709D09AA5 /* VoiceInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DCEDA85D7E0A5B195344E38 /* VoiceInput.swift */; };
 		CA9BF8F68A6F0E40E85CDE9E /* binascii.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E25201278D78378B37FF1BBD /* binascii.xcframework */; };
 		CC3A849E9F7335BCB97424A1 /* _sqlite3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5F1F13207E326EE5DC28108D /* _sqlite3.xcframework */; };
+		CCBED0E2E783C82F6A6D4CFA /* mmap.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = BBD2144374FF4E9AD173B157 /* mmap.xcframework */; };
 		CD5540C1DFBBDA6417E25427 /* binascii.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = E25201278D78378B37FF1BBD /* binascii.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		CEDE8D8AD83D823BBC4E1662 /* RemoteSessionSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F23BEA3A5A6B017F698D28 /* RemoteSessionSnapshot.swift */; };
 		D22B0A2A27F38C4AA93FC7E5 /* FloeVNC in Frameworks */ = {isa = PBXBuildFile; productRef = 8D67ACB7499F21D8B8B49FE4 /* FloeVNC */; };
@@ -215,6 +221,7 @@
 		E9F6C67D9F1DF74AD899BE08 /* unicodedata.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4953B9D281B1637B7BE2E2C7 /* unicodedata.xcframework */; };
 		EA16DBDD57899AC08A4E1310 /* zlib.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 71091AA54C5E2F667D6469A6 /* zlib.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		EA75F07AFCF7BF5BF8A40F9E /* ThreadDetailViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA10AC479B03C7D998AC448B /* ThreadDetailViewModel.swift */; };
+		EA98E269C0CE320D34AA903F /* _ctypes.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DCC42125AA4BA415183B6A85 /* _ctypes.xcframework */; };
 		EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = A6797B7DAA890D6378153058 /* Localizable.xcstrings */; };
 		EC895B8CCE64F446C1797162 /* VoiceInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6980E6E2001E2C4508A503A /* VoiceInputController.swift */; };
 		ED9E967E7858D92A307B24F6 /* AuxiliaryModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE522C8BF30B54FAD939C53C /* AuxiliaryModelsView.swift */; };
@@ -223,6 +230,7 @@
 		F2A94C7D54C7BB530508D94D /* _socket.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3CDEB34F9680F5C7DBC54628 /* _socket.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F2FA4F2EDA410E215E8DA440 /* TerminalViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 531772E03835546E29F3B7DF /* TerminalViewModel.swift */; };
 		F444F9DCEFD14D81F09899AF /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC0B76B524CD1FC5833106AE /* SpeechService.swift */; };
+		F6784CC2BD16D0D850C7B22B /* _lzma.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = CB9397357FA8DE45F2E2112C /* _lzma.xcframework */; };
 		F699556D1AC6F3CE795CD7C3 /* BackgroundExecutionSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE6C97DCAC2474410B4480C7 /* BackgroundExecutionSettingsView.swift */; };
 		F97E858A6A5915882FA5E428 /* RemoteSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F4320C0FA1D4880122D9B3B /* RemoteSettingsView.swift */; };
 		F9AE89670E3EE68F7DB18F74 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 2E443E03594FBC95E4EB48E2 /* InfoPlist.xcstrings */; };
@@ -278,11 +286,14 @@
 			files = (
 				6011EEEE797CCCCBAFE79990 /* Python.xcframework in Embed Frameworks */,
 				9BA95E066F40EBCDFE552224 /* _blake2.xcframework in Embed Frameworks */,
+				2552449B3F6DFD39F032C0FF /* _bz2.xcframework in Embed Frameworks */,
 				A5FEE395C7135D52DF0FF81F /* _csv.xcframework in Embed Frameworks */,
+				24501BB1BDCC1E8922982E4C /* _ctypes.xcframework in Embed Frameworks */,
 				AD229E781FF8EEAD58275F19 /* _datetime.xcframework in Embed Frameworks */,
 				C02543AA0E027F8278133ECB /* _decimal.xcframework in Embed Frameworks */,
 				88FFC05F3E4E386E7C26E5D9 /* _hashlib.xcframework in Embed Frameworks */,
 				BB65D78F600C5B315CFCD069 /* _json.xcframework in Embed Frameworks */,
+				98BD8CC5877E2714FF8979F3 /* _lzma.xcframework in Embed Frameworks */,
 				FAA2BBDBE71E38BA0E378507 /* _opcode.xcframework in Embed Frameworks */,
 				43C527CE147ACB5ABE71DF71 /* _random.xcframework in Embed Frameworks */,
 				C8CC648407E148C3FEFE0B18 /* _sha2.xcframework in Embed Frameworks */,
@@ -295,6 +306,7 @@
 				90D87EC430B2EDFD947DE7DB /* array.xcframework in Embed Frameworks */,
 				CD5540C1DFBBDA6417E25427 /* binascii.xcframework in Embed Frameworks */,
 				93AE4E65731A89CBCF346E33 /* math.xcframework in Embed Frameworks */,
+				A778949A4707059C79A4E425 /* mmap.xcframework in Embed Frameworks */,
 				38D12FDA70DBDEB3E3F91853 /* select.xcframework in Embed Frameworks */,
 				1DEB2C1ECE52FB4594BAB549 /* unicodedata.xcframework in Embed Frameworks */,
 				EA16DBDD57899AC08A4E1310 /* zlib.xcframework in Embed Frameworks */,
@@ -328,6 +340,7 @@
 		1C801E16B941B45C62C279A9 /* ExecutionEnvironmentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionEnvironmentView.swift; sourceTree = "<group>"; };
 		1D3E9503EC3EC7259F7C06C8 /* _decimal.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _decimal.xcframework; path = Vendor/PythonExtensions/_decimal.xcframework; sourceTree = "<group>"; };
 		1DCEDA85D7E0A5B195344E38 /* VoiceInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInput.swift; sourceTree = "<group>"; };
+		2012AC9C3BB8EE122046B60B /* _bz2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _bz2.xcframework; path = Vendor/PythonExtensions/_bz2.xcframework; sourceTree = "<group>"; };
 		20554886B0FDA45513A6ECF9 /* FloeAppTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FloeAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		219CD6341FB443743691F92D /* LocalPreviewServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPreviewServer.swift; sourceTree = "<group>"; };
 		224C3D6B873B21963949DAA8 /* SkillDreamService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillDreamService.swift; sourceTree = "<group>"; };
@@ -460,12 +473,14 @@
 		B7CA2C01CEE850FC7B6F1D6A /* ProvidersSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProvidersSettingsView.swift; sourceTree = "<group>"; };
 		BACF0650EC6E172999FEB4EC /* ThreadEventView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadEventView.swift; sourceTree = "<group>"; };
 		BB881F2DC155C2D3A5681681 /* math.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = math.xcframework; path = Vendor/PythonExtensions/math.xcframework; sourceTree = "<group>"; };
+		BBD2144374FF4E9AD173B157 /* mmap.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = mmap.xcframework; path = Vendor/PythonExtensions/mmap.xcframework; sourceTree = "<group>"; };
 		BE522C8BF30B54FAD939C53C /* AuxiliaryModelsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxiliaryModelsView.swift; sourceTree = "<group>"; };
 		C249A312D3F94BF9CBA98F76 /* CrashAndFeedbackRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashAndFeedbackRegressionTests.swift; sourceTree = "<group>"; };
 		C3B3B3E433B5BD9B6C5B1835 /* HomeLaunchpadViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeLaunchpadViewModel.swift; sourceTree = "<group>"; };
 		C43555513E313C954D2E39B3 /* ProviderListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderListViewModel.swift; sourceTree = "<group>"; };
 		C4CD5173D18CDDB6549BBD7D /* RemoteSessionCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionCenter.swift; sourceTree = "<group>"; };
 		CB4807D41A6BD7259F8D0356 /* DiagnosticsExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsExporter.swift; sourceTree = "<group>"; };
+		CB9397357FA8DE45F2E2112C /* _lzma.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _lzma.xcframework; path = Vendor/PythonExtensions/_lzma.xcframework; sourceTree = "<group>"; };
 		CC3A70A09C1A7E292DB36A43 /* TaskInspectorViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskInspectorViews.swift; sourceTree = "<group>"; };
 		CE19791AC2454F6739825F8F /* _sha2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _sha2.xcframework; path = Vendor/PythonExtensions/_sha2.xcframework; sourceTree = "<group>"; };
 		CE1EE021FED26EBFA80248B6 /* StepGroupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StepGroupView.swift; sourceTree = "<group>"; };
@@ -480,6 +495,7 @@
 		DB97B6031201DC2B9654F686 /* ProviderEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderEditorView.swift; sourceTree = "<group>"; };
 		DC33B8AF239E339094A7D999 /* BrowserURLPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserURLPolicy.swift; sourceTree = "<group>"; };
 		DC74E9DDD5C02BD49675B239 /* DataManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataManagementView.swift; sourceTree = "<group>"; };
+		DCC42125AA4BA415183B6A85 /* _ctypes.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _ctypes.xcframework; path = Vendor/PythonExtensions/_ctypes.xcframework; sourceTree = "<group>"; };
 		DFAFEA945AD87107AD86523A /* _opcode.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _opcode.xcframework; path = Vendor/PythonExtensions/_opcode.xcframework; sourceTree = "<group>"; };
 		E01FD1096C0BE9486FA630A6 /* LocalPythonRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPythonRuntimeTests.swift; sourceTree = "<group>"; };
 		E0E86FB249DA97D2FA57FBA7 /* AppRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRouter.swift; sourceTree = "<group>"; };
@@ -535,11 +551,14 @@
 			files = (
 				B81C50AA905334687754F195 /* Python.xcframework in Frameworks */,
 				B45AF4990B10532F1D1CD4CE /* _blake2.xcframework in Frameworks */,
+				362B576847A7496F5CF46F95 /* _bz2.xcframework in Frameworks */,
 				086E743FC13CE9DA2BD91D05 /* _csv.xcframework in Frameworks */,
+				EA98E269C0CE320D34AA903F /* _ctypes.xcframework in Frameworks */,
 				E93725784EDD90F8B827835E /* _datetime.xcframework in Frameworks */,
 				B1706C324EE51831A0FE5EE9 /* _decimal.xcframework in Frameworks */,
 				12F945998FD0E68D53F55EC1 /* _hashlib.xcframework in Frameworks */,
 				00AE47667869A7ECB9677A9C /* _json.xcframework in Frameworks */,
+				F6784CC2BD16D0D850C7B22B /* _lzma.xcframework in Frameworks */,
 				049E8BCE4058423CD444FC1A /* _opcode.xcframework in Frameworks */,
 				D4DECF7BF638B994E512FBF1 /* _random.xcframework in Frameworks */,
 				2939AB869D58351E507444A9 /* _sha2.xcframework in Frameworks */,
@@ -552,6 +571,7 @@
 				D3D14D3164C5FCDC4A33A2BC /* array.xcframework in Frameworks */,
 				CA9BF8F68A6F0E40E85CDE9E /* binascii.xcframework in Frameworks */,
 				6E0CE7E31A041E1ED1440133 /* math.xcframework in Frameworks */,
+				CCBED0E2E783C82F6A6D4CFA /* mmap.xcframework in Frameworks */,
 				69DBF632867883EE636A76C1 /* select.xcframework in Frameworks */,
 				E9F6C67D9F1DF74AD899BE08 /* unicodedata.xcframework in Frameworks */,
 				89D986DE42E1C09CD2DB6309 /* zlib.xcframework in Frameworks */,
@@ -896,11 +916,14 @@
 			isa = PBXGroup;
 			children = (
 				620E189ED0BE974C6B1EA3DB /* _blake2.xcframework */,
+				2012AC9C3BB8EE122046B60B /* _bz2.xcframework */,
 				F056190E229F36B3FC87CD73 /* _csv.xcframework */,
+				DCC42125AA4BA415183B6A85 /* _ctypes.xcframework */,
 				1B3181E829C356459CFA9723 /* _datetime.xcframework */,
 				1D3E9503EC3EC7259F7C06C8 /* _decimal.xcframework */,
 				8B3180D417C752DEF2005250 /* _hashlib.xcframework */,
 				65606508E8DAFCEA8327E106 /* _json.xcframework */,
+				CB9397357FA8DE45F2E2112C /* _lzma.xcframework */,
 				DFAFEA945AD87107AD86523A /* _opcode.xcframework */,
 				12C202262489FD354A0B595A /* _random.xcframework */,
 				CE19791AC2454F6739825F8F /* _sha2.xcframework */,
@@ -913,6 +936,7 @@
 				397F1DC728D743D05F510489 /* array.xcframework */,
 				E25201278D78378B37FF1BBD /* binascii.xcframework */,
 				BB881F2DC155C2D3A5681681 /* math.xcframework */,
+				BBD2144374FF4E9AD173B157 /* mmap.xcframework */,
 				7EC6304EFEA8100679656E2D /* Python.xcframework */,
 				8EEDB221C5E3501DEF3F7015 /* select.xcframework */,
 				4953B9D281B1637B7BE2E2C7 /* unicodedata.xcframework */,
@@ -1550,7 +1574,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -1565,7 +1589,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4.32;
+				MARKETING_VERSION = 1.4.33;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios;
 				PRODUCT_MODULE_NAME = FloeApp;
 				PRODUCT_NAME = "Floe Agent";
@@ -1583,7 +1607,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1594,7 +1618,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.32;
+				MARKETING_VERSION = 1.4.33;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -1666,7 +1690,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1677,7 +1701,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.32;
+				MARKETING_VERSION = 1.4.33;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";
@@ -1712,7 +1736,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1723,7 +1747,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.32;
+				MARKETING_VERSION = 1.4.33;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -1822,7 +1846,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1833,7 +1857,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.32;
+				MARKETING_VERSION = 1.4.33;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -1851,7 +1875,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -1866,7 +1890,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4.32;
+				MARKETING_VERSION = 1.4.33;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios;
 				PRODUCT_MODULE_NAME = FloeApp;
 				PRODUCT_NAME = "Floe Agent";
@@ -1885,7 +1909,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1896,7 +1920,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.32;
+				MARKETING_VERSION = 1.4.33;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -1931,7 +1955,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 64;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1942,7 +1966,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.32;
+				MARKETING_VERSION = 1.4.33;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";

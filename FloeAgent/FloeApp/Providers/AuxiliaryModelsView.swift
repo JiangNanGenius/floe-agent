@@ -33,7 +33,7 @@ struct AuxiliaryModelsView: View {
                     selection: $viewModel.packageReviewModelID,
                     models: viewModel.packageReviewCandidates
                 )
-                Text("所有受管 Python 包都会由该模型结合插件目录、包版本和任务意图进行审查；原生二进制和越权能力仍由本地规则硬性阻止。")
+                Text("安装 Python 包前，会确认它确实用于当前任务。需要额外系统权限或不适合本机运行的包仍会被阻止。")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
             } header: {

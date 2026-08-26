@@ -203,11 +203,22 @@ public actor LocalModelRuntime {
                 tools: tools,
                 maxTokens: min(maxTokens, profile.maximumOutputTokens)
             )
+            // Do not leave a multi-gigabyte mapped container resident while
+            // the harness executes a tool or renders the completed answer.
+            // Device reports showed occasional process termination precisely
+            // in that gap. A follow-up turn reloads the same pinned snapshot;
+            // reliability is more important than hiding its visible prepare
+            // phase on memory-constrained iPads.
+            if activeEngine?.key == prepared.key {
+                activeEngine = nil
+                await engine.shutdown()
+                loadState = .unloaded
+            }
             let endedAt = Date()
             let availableAfterInference = LocalInferenceResourcePolicy.availableMemoryBytes()
             let prepareDurationMs = max(0, Int(engineStartedAt.timeIntervalSince(startedAt) * 1_000))
             FloeLogger(category: .providers).info(
-                "localInferenceFinished trace=\(traceID) model=\(modelID) outputCharacters=\(output.text.count) inputTokens=\(output.inputTokens) outputTokens=\(output.outputTokens) ttftMs=\(output.timeToFirstTokenMs.map { $0 + prepareDurationMs } ?? -1) tokensPerSecond=\(output.tokensPerSecond ?? -1) durationMs=\(Int(endedAt.timeIntervalSince(startedAt) * 1_000)) availableBeforeBytes=\(availableBeforeInference) availableAfterBytes=\(availableAfterInference) availableDeltaBytes=\(Int64(availableAfterInference) - Int64(availableBeforeInference)) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize)"
+                "localInferenceFinished trace=\(traceID) model=\(modelID) outputCharacters=\(output.text.count) inputTokens=\(output.inputTokens) outputTokens=\(output.outputTokens) ttftMs=\(output.timeToFirstTokenMs.map { $0 + prepareDurationMs } ?? -1) tokensPerSecond=\(output.tokensPerSecond ?? -1) durationMs=\(Int(endedAt.timeIntervalSince(startedAt) * 1_000)) availableBeforeBytes=\(availableBeforeInference) availableAfterBytes=\(availableAfterInference) availableDeltaBytes=\(Int64(availableAfterInference) - Int64(availableBeforeInference)) tier=\(profile.tier.rawValue) context=\(profile.contextSize) batch=\(profile.batchSize) engineReleased=true"
             )
             return LocalRuntimeCompletion(
                 text: output.text,
@@ -218,6 +229,14 @@ public actor LocalModelRuntime {
                 tokensPerSecond: output.tokensPerSecond
             )
         } catch {
+            if activeEngine?.key == prepared.key {
+                activeEngine = nil
+                await engine.shutdown()
+                loadState = .failed(
+                    modelID: modelID,
+                    message: String(error.localizedDescription.prefix(300))
+                )
+            }
             let availableAfterFailure = LocalInferenceResourcePolicy.availableMemoryBytes()
             let nsError = error as NSError
             let safeMessage = String(error.localizedDescription.prefix(300))
@@ -278,12 +297,12 @@ public actor LocalModelRuntime {
                 FloeLogger(category: .providers).warning(
                     "localInferenceUnavailable trace=\(traceID) model=\(modelID) reason=notInstalled"
                 )
-                throw FloeError.notFound("Local model \(modelID) is not installed")
+                throw FloeError.notFound("这个本地模型尚未下载，请先在设置中下载")
             }
             guard let entry = CuratedLocalModelCatalog.entries.first(where: { $0.id == modelID }),
                   entry.runtimeFormat == .mlx else {
                 throw FloeError.invalidConfiguration(
-                    "This release only exposes curated MLX local models."
+                    "这个模型版本暂不受支持，请在本地模型列表中选择可用型号"
                 )
             }
             // Release the old mapping before measuring process headroom. The
@@ -429,7 +448,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         "appleFoundationWatchdogExpired model=\(request.model.remoteModelID) timeoutSeconds=75"
                     )
                     continuation.finish(throwing: FloeError.syncUnavailable(
-                        "Apple Foundation Models did not start responding within 75 seconds; the run was stopped instead of remaining in Preparing"
+                        "Apple Intelligence 模型长时间没有响应，本次任务已停止，请重试"
                     ))
                 }
             } else {
@@ -838,7 +857,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
             (["git", "github", "版本控制", "源码管理", "代码仓库", "仓库", "分支", "提交", "暂存", "克隆", "拉取", "推送",
               "source control", "repository", "repo", "branch", "commit", "stage", "clone", "fetch", "pull", "push"],
              ["git.", "github.", "cloudworkspace.git"]),
-            (["日历", "提醒", "邮件", "地图", "家庭", "快捷指令", "calendar", "reminder", "mail", "map", "home", "shortcut"], ["apple."]),
+            (["位置", "定位", "地址", "我在哪", "where am i", "current location", "location"], ["apple.location."]),
+            (["自动化", "快捷指令", "automation", "shortcut"], ["apple.automation."]),
+            (["日历", "提醒", "邮件", "地图", "家庭", "calendar", "reminder", "mail", "map", "home"], ["apple."]),
             (["表格", "图表", "网页预览", "table", "chart", "preview", "presentation"], ["presentation."]),
             (["技能", "skill"], ["skill."])
         ]
@@ -898,9 +919,10 @@ public struct LocalProviderAdapter: ProviderAdapter {
 
     private static func requestsAction(_ text: String) -> Bool {
         containsAny(text, [
-            "创建", "读取", "查看", "看一下", "查", "查找", "搜索", "帮我", "运行", "执行", "修改", "编辑", "删除", "生成", "连接", "分析", "测试",
+            "创建", "读取", "查看", "看一下", "查", "查找", "搜索", "获取", "告诉我", "帮我", "运行", "执行", "修改", "编辑", "删除", "生成", "连接", "分析", "测试",
+            "当前位置", "当前地址", "我的位置", "我在哪", "定位",
             "初始化", "提交", "暂存", "克隆", "拉取", "推送", "同步", "切换分支",
-            "create", "read", "inspect", "find", "search", "run", "execute", "edit", "delete", "generate", "connect", "analyze", "test",
+            "create", "read", "inspect", "find", "search", "get", "show me", "where am i", "current location", "run", "execute", "edit", "delete", "generate", "connect", "analyze", "test",
             "initialize", "commit", "stage", "clone", "fetch", "pull", "push", "sync", "switch branch"
         ])
     }

@@ -57,7 +57,7 @@ flowchart LR
 
 ### TestFlight
 
-项目会在测试组开放时通过 TestFlight 分发签名版本。当前源码目标版本为 Floe Agent 1.4.32（build 63）；只有同时通过发布门禁并能在 TestFlight 中看到的构建才算完成发布。仅有源码版本或标签不能证明 Apple 已收到或处理该构建。
+项目会在测试组开放时通过 TestFlight 分发签名版本。当前源码目标版本为 Floe Agent 1.4.33（build 64）；只有同时通过发布门禁并能在 TestFlight 中看到的构建才算完成发布。仅有源码版本或标签不能证明 Apple 已收到或处理该构建。
 
 ### 未签名 IPA
 
@@ -109,7 +109,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 
 ### 模型与图片服务商
 
-系统管理的 Apple Foundation Model 始终显示在**设置 → 本地模型**。在 iOS/iPadOS 27 上，它通过 Foundation Models 框架调用，并显示系统返回的真实可用状态，例如设备不支持、Apple Intelligence 未开启或系统模型仍在下载。它没有 API Key 或单独下载开关，因为模型和下载都由 iOS 管理。主动下载的 Qwen、Gemma MLX 模型则独立管理：加载前检查安全内存余量，同一时间最多驻留一个模型，卸载或失败时清理运行时缓存，并向本地模型提供经过裁剪的真实任务工具目录。
+系统管理的 Apple Foundation Model 始终显示在**设置 → 本地模型**。在 iOS/iPadOS 27 上，Floe 会显示系统返回的真实可用状态，例如设备不支持、Apple Intelligence 未开启或系统模型仍在准备。它不需要 API Key，也不由 Floe 下载。用户主动下载的 Qwen、Gemma 模型则可以分别启用或停用；Floe 会根据设备当前状态安排运行、在每轮结束后释放临时占用，并只提供这些小型模型能够可靠使用的任务工具。
 
 OpenAI 生图与图片编辑默认使用 `gpt-image-2`；Google Gemini Images 提供 Nano Banana Pro（`gemini-3-pro-image`）。两类服务商都允许修改 Base URL 以连接兼容代理；生图、编辑和识图仍是彼此独立的角色。
 
@@ -121,7 +121,7 @@ OpenAI 生图与图片编辑默认使用 `gpt-image-2`；Google Gemini Images �
 
 ### Python 执行
 
-Floe 的签名构建会把固定的 CPython 3.13 运行时和标准库作为 App 资源一同打包。`exec.localPython` 在 App 沙盒内运行受限源码；受管包接口会隔离下载依赖，只有通过哈希、静态检查与软件包审核的纯 Python 通用 wheel 才能激活，原生扩展、JIT、Mach-O/ELF、动态库和子进程仍不可用。对于 NumPy、pandas、SciPy、Matplotlib 等受支持的二进制科学包，工具目录会明确引导模型创建工作区 HTML，在可见浏览器中运行 Pyodide/WASM，并以受限 JSON 交换数据；不会谎称本机 pip 已完成安装。Pyodide 无法覆盖的原生包或完整授权运行时应转到已配置的可信 SSH 主机。各路径都会明确返回输出、超时、取消和能力缺失，不能伪装为成功。
+Floe 内置适合日常脚本、文件、压缩包、JSON、SQLite 和基础数据工作的 Python 3.13。模型可以为当前任务申请安装兼容的软件包；下载前会检查用途，安装内容也会经过安全检查。NumPy、pandas、SciPy、Matplotlib 等科学计算能力通过可见浏览器中的 WebAssembly Python 运行，并与任务交换受限数据。需要完整本机环境、商业授权或特殊系统组件的工作，仍应转到用户已经信任的 SSH 主机。无论选择哪条路径，Floe 都会明确显示成功、失败、超时或能力限制，不会把未执行的操作说成已经完成。
 
 ### 归档与凭据同步
 

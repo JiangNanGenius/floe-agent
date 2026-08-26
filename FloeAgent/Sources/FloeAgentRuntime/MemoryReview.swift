@@ -301,8 +301,10 @@ public struct MemoryCapacityPolicy: Sendable, Codable, Hashable {
         switch scope {
         case .userProfile: userProfileCharacters
         case .agentGlobal: agentGlobalCharacters
-        case .workspace: workspaceCharacters
-        case .task: taskCharacters
+        // A live task or project is its own durable memory boundary. Do not
+        // evict entries merely because it is large; deleted owners are handled
+        // by SQLiteIntelligenceStore's time-based forgetting curve instead.
+        case .workspace, .task: Int.max
         }
     }
 

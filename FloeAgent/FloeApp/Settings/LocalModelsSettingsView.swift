@@ -173,7 +173,7 @@ final class LocalModelsCenter: ObservableObject {
     private static func incompatibleMessage(mappedBytes: UInt64, availableBytes: UInt64) -> String {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .memory
-        return "当前可用内存不足：模型权重 \(formatter.string(fromByteCount: Int64(mappedBytes)))，进程可用 \(formatter.string(fromByteCount: Int64(availableBytes)))。关闭大型 App 后刷新，或选更小模型。"
+        return "当前运行空间可能不足：该模型约需 \(formatter.string(fromByteCount: Int64(mappedBytes)))，目前可用 \(formatter.string(fromByteCount: Int64(availableBytes)))。可关闭大型 App 后刷新，或选择较小的模型。"
     }
 
     func download(_ entry: LocalModelCatalogEntry) {
@@ -412,7 +412,7 @@ struct LocalModelsSettingsView: View {
                     }.padding(.vertical, 4)
                 }
             } footer: {
-                Text("模型权重不随应用内置；由用户主动下载、固定版本校验并仅保存在本机。MLX 通过 Metal 运行；同一时间只驻留一个模型，多个任务排队复用。")
+                Text("模型需要手动下载并只保存在本机。同一时间运行一个本地模型；多个任务会自动排队，减少闪退风险。")
             }
             let retiredInstalled = CuratedLocalModelCatalog.retiredEntries.filter {
                 center.installedIDs.contains($0.id)
@@ -492,12 +492,12 @@ struct LocalModelsSettingsView: View {
 
     private static func benchmarkLabel(_ result: LocalModelBenchmarkResult) -> String {
         let speed = result.tokensPerSecond.map {
-            "\($0.formatted(.number.precision(.fractionLength(1)))) token/s"
+            "\($0.formatted(.number.precision(.fractionLength(1)))) 字符片段/秒"
         } ?? "速度未测得"
         let first = result.timeToFirstTokenMs.map {
-            "首 token \((Double($0) / 1_000).formatted(.number.precision(.fractionLength(2))))s"
-        } ?? "首 token 未测得"
-        return "测速：\(speed) · \(first) · 建议并发 \(result.recommendedConcurrentTasks)"
+            "首次回复 \((Double($0) / 1_000).formatted(.number.precision(.fractionLength(2)))) 秒"
+        } ?? "首次回复耗时未测得"
+        return "体验测试：\(speed) · \(first) · 适合同时运行 \(result.recommendedConcurrentTasks) 个任务"
     }
 
     private var shouldShowAppleFoundationModel: Bool {

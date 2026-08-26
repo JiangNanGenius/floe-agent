@@ -252,11 +252,66 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     public func memories(scope: MemoryScope, status: MemoryEntryStatus? = nil) async throws -> [MemoryEntry] {
         let (scopeName, workspaceID, conversationID) = Self.scope(scope)
         return try await database.reader { db in
-            var sql = "SELECT * FROM memory_entries WHERE scope = ? AND workspace_id IS ? AND conversation_id IS ?"
-            var arguments: StatementArguments = [scopeName, workspaceID?.uuidString, conversationID?.uuidString]
+            var sql = """
+                SELECT * FROM memory_entries
+                WHERE scope = ?
+                  AND (workspace_id IS ? OR origin_workspace_id IS ?)
+                  AND (conversation_id IS ? OR origin_conversation_id IS ?)
+                """
+            var arguments: StatementArguments = [
+                scopeName,
+                workspaceID?.uuidString, workspaceID?.uuidString,
+                conversationID?.uuidString, conversationID?.uuidString
+            ]
             if let status { sql += " AND status = ?"; arguments += [status.rawValue] }
             sql += " ORDER BY is_pinned DESC, importance DESC, updated_at DESC"
             return try Row.fetchAll(db, sql: sql, arguments: arguments).map(Self.memory)
+        }
+    }
+
+    /// Detaches task-scoped memories before the conversation FK cascade while
+    /// retaining their original owner. They remain searchable, then age only
+    /// after their owner has actually been deleted.
+    public func preserveMemoriesBeforeConversationDeletion(
+        conversationID: UUID,
+        ownerLabel: String
+    ) async throws {
+        let now = Self.date(Date())
+        try await database.writer { db in
+            try db.execute(sql: """
+                UPDATE memory_entries SET
+                    origin_conversation_id = COALESCE(origin_conversation_id, conversation_id),
+                    origin_owner_label = COALESCE(origin_owner_label, ?),
+                    owner_deleted_at = COALESCE(owner_deleted_at, ?),
+                    conversation_id = NULL,
+                    retained_until = COALESCE(retained_until, ?)
+                WHERE conversation_id = ?
+                """, arguments: [String(ownerLabel.prefix(120)), now,
+                    Self.date(Date().addingTimeInterval(90 * 86_400)),
+                    conversationID.uuidString])
+        }
+    }
+
+    /// Workspace records have ON DELETE CASCADE in the published schema.
+    /// Detach memory first so deleting a project/private workspace preserves
+    /// ownership history instead of silently erasing durable memory.
+    public func preserveMemoriesBeforeWorkspaceDeletion(
+        workspaceID: UUID,
+        ownerLabel: String
+    ) async throws {
+        let now = Self.date(Date())
+        try await database.writer { db in
+            try db.execute(sql: """
+                UPDATE memory_entries SET
+                    origin_workspace_id = COALESCE(origin_workspace_id, workspace_id),
+                    origin_owner_label = COALESCE(origin_owner_label, ?),
+                    owner_deleted_at = COALESCE(owner_deleted_at, ?),
+                    workspace_id = NULL,
+                    retained_until = COALESCE(retained_until, ?)
+                WHERE workspace_id = ?
+                """, arguments: [String(ownerLabel.prefix(120)), now,
+                    Self.date(Date().addingTimeInterval(90 * 86_400)),
+                    workspaceID.uuidString])
         }
     }
 
@@ -268,25 +323,41 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     ) async throws -> [MemoryRecallItem] {
         let match = Self.ftsQuery(query)
         guard !match.isEmpty else { return [] }
-        return try await database.reader { db in
+        try await maintainMemoryLifecycle()
+        let recalled: [MemoryRecallItem] = try await database.reader { db in
             try Row.fetchAll(db, sql: """
                 SELECT m.*, bm25(memory_fts) AS rank
                 FROM memory_fts JOIN memory_entries m ON m.rowid = memory_fts.rowid
                 WHERE memory_fts MATCH ? AND m.status = 'active'
-                  AND (m.workspace_id IS NULL OR m.workspace_id = ?)
-                  AND (m.conversation_id IS NULL OR m.conversation_id = ?)
+                  AND (
+                    m.scope IN ('user', 'agent', 'task')
+                    OR m.workspace_id = ?
+                    OR m.origin_workspace_id = ?
+                  )
                   AND (m.expires_at IS NULL OR m.expires_at > ?)
-                ORDER BY m.is_pinned DESC, rank, m.importance DESC LIMIT ?
+                  AND (
+                    m.owner_deleted_at IS NULL OR m.is_pinned = 1
+                    OR m.retained_until > ?
+                    OR m.owner_deleted_at > ?
+                  )
+                ORDER BY m.is_pinned DESC,
+                    CASE WHEN m.conversation_id = ? THEN 0
+                         WHEN m.owner_deleted_at IS NULL THEN 1 ELSE 2 END,
+                    rank, m.importance DESC LIMIT ?
                 """, arguments: [
-                    match, workspaceID?.uuidString, conversationID?.uuidString,
-                    Self.date(Date()), min(20, max(1, limit))
+                    match, workspaceID?.uuidString, workspaceID?.uuidString,
+                    Self.date(Date()), Self.date(Date()),
+                    Self.date(Date().addingTimeInterval(-365 * 86_400)),
+                    conversationID?.uuidString, min(20, max(1, limit))
                 ])
-                .compactMap { row in
+                .compactMap { row -> MemoryRecallItem? in
                     guard let id = UUID(uuidString: row["id"]) else { return nil }
                     let rank: Double = row["rank"]
                     return MemoryRecallItem(id: id, content: row["content"], relevance: 1 / (1 + abs(rank)))
                 }
         }
+        try await reinforceMemories(recalled.map(\.id))
+        return recalled
     }
 
     public func saveEmbedding(_ embedding: MemoryEmbedding) async throws {
@@ -339,6 +410,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
 
     public func hybridRecall(_ request: HybridMemoryRecallRequest) async throws
         -> [HybridMemoryRecallItem] {
+        try await maintainMemoryLifecycle()
         let lexicalMatch = Self.ftsQuery(request.query)
         let lexicalRows: [HybridRecallDatabaseRow]
         if lexicalMatch.isEmpty {
@@ -349,13 +421,19 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                     SELECT m.id, m.content, m.importance, m.is_pinned, m.updated_at
                     FROM memory_fts JOIN memory_entries m ON m.rowid = memory_fts.rowid
                     WHERE memory_fts MATCH ? AND m.status = 'active'
-                      AND (m.workspace_id IS NULL OR m.workspace_id = ?)
-                      AND (m.conversation_id IS NULL OR m.conversation_id = ?)
+                      AND (m.scope IN ('user', 'agent', 'task')
+                           OR m.workspace_id = ? OR m.origin_workspace_id = ?)
                       AND (m.expires_at IS NULL OR m.expires_at > ?)
-                    ORDER BY bm25(memory_fts), m.is_pinned DESC, m.importance DESC
+                      AND (m.owner_deleted_at IS NULL OR m.is_pinned = 1
+                           OR m.retained_until > ? OR m.owner_deleted_at > ?)
+                    ORDER BY CASE WHEN m.conversation_id = ? THEN 0
+                                  WHEN m.owner_deleted_at IS NULL THEN 1 ELSE 2 END,
+                             bm25(memory_fts), m.is_pinned DESC, m.importance DESC
                     LIMIT 50
                     """, arguments: [lexicalMatch, request.workspaceID?.uuidString,
-                        request.conversationID?.uuidString, Self.date(Date())])
+                        request.workspaceID?.uuidString, Self.date(Date()), Self.date(Date()),
+                        Self.date(Date().addingTimeInterval(-365 * 86_400)),
+                        request.conversationID?.uuidString])
                     .compactMap(Self.hybridRow)
             }
         }
@@ -375,13 +453,16 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                     WHERE e.modality = ? AND e.model_identifier = ?
                       AND e.model_revision = ? AND e.dimensions = ?
                       AND m.status = 'active'
-                      AND (m.workspace_id IS NULL OR m.workspace_id = ?)
-                      AND (m.conversation_id IS NULL OR m.conversation_id = ?)
+                      AND (m.scope IN ('user', 'agent', 'task')
+                           OR m.workspace_id = ? OR m.origin_workspace_id = ?)
                       AND (m.expires_at IS NULL OR m.expires_at > ?)
+                      AND (m.owner_deleted_at IS NULL OR m.is_pinned = 1
+                           OR m.retained_until > ? OR m.owner_deleted_at > ?)
                     LIMIT 2000
                     """, arguments: [request.modality.rawValue, modelIdentifier, modelRevision,
                         queryVector.count, request.workspaceID?.uuidString,
-                        request.conversationID?.uuidString, Self.date(Date())])
+                        request.workspaceID?.uuidString, Self.date(Date()), Self.date(Date()),
+                        Self.date(Date().addingTimeInterval(-365 * 86_400))])
                     .compactMap { row in
                         guard let candidate = Self.hybridRow(row) else { return nil }
                         let blob: Data = row["vector_blob"]
@@ -412,17 +493,83 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             candidate.semanticSimilarity = similarity
             fused[row.id] = candidate
         }
-        return MemoryReciprocalRankFusion.fuse(Array(fused.values), limit: request.limit)
+        let results = MemoryReciprocalRankFusion.fuse(Array(fused.values), limit: request.limit)
+        try await reinforceMemories(results.map(\.id))
+        return results
+    }
+
+    /// Recall temporarily strengthens orphaned memories. Active task and
+    /// workspace memories are intentionally unlimited and never enter this
+    /// aging path; only memories whose owner was deleted are compacted.
+    private func reinforceMemories(_ ids: [UUID]) async throws {
+        guard !ids.isEmpty else { return }
+        let now = Date()
+        let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+        var mutableArguments = StatementArguments([
+            Self.date(now), Self.date(now.addingTimeInterval(90 * 86_400))
+        ])
+        for id in ids {
+            mutableArguments += [id.uuidString]
+        }
+        let arguments = mutableArguments
+        try await database.writer { db in
+            try db.execute(sql: """
+                UPDATE memory_entries SET
+                    last_recalled_at = ?, retained_until = ?,
+                    recall_count = recall_count + 1,
+                    importance = MIN(1.0, importance + 0.05)
+                WHERE id IN (\(placeholders))
+                """, arguments: arguments)
+        }
+    }
+
+    /// Forgetting curve for deleted owners: vectors are released after 180
+    /// days without reinforcement, and unpinned memories become search-only
+    /// superseded records after one year. Text is retained for audit and can
+    /// still be restored manually instead of being destructively erased.
+    public func maintainMemoryLifecycle(now: Date = Date()) async throws {
+        let vectorCutoff = Self.date(now.addingTimeInterval(-180 * 86_400))
+        let archiveCutoff = Self.date(now.addingTimeInterval(-365 * 86_400))
+        let nowText = Self.date(now)
+        try await database.writer { db in
+            try db.execute(sql: """
+                DELETE FROM memory_embeddings
+                WHERE memory_id IN (
+                    SELECT id FROM memory_entries
+                    WHERE owner_deleted_at IS NOT NULL AND is_pinned = 0
+                      AND owner_deleted_at < ?
+                      AND (retained_until IS NULL OR retained_until < ?)
+                )
+                """, arguments: [vectorCutoff, nowText])
+            try db.execute(sql: """
+                UPDATE memory_entries SET status = 'superseded'
+                WHERE owner_deleted_at IS NOT NULL AND is_pinned = 0
+                  AND owner_deleted_at < ?
+                  AND (retained_until IS NULL OR retained_until < ?)
+                  AND status = 'active'
+                """, arguments: [archiveCutoff, nowText])
+        }
     }
 
     public func deleteMemory(id: UUID, syncRevision: Int64) async throws {
+        try await deleteMemories(ids: [id], syncRevision: syncRevision)
+    }
+
+    public func deleteMemories(ids: Set<UUID>, syncRevision: Int64) async throws {
+        guard !ids.isEmpty else { return }
+        let deletedAt = Self.date(Date())
         try await database.writer { db in
-            try db.execute(sql: "DELETE FROM memory_entries WHERE id = ?", arguments: [id.uuidString])
-            try db.execute(sql: """
-                INSERT INTO memory_tombstones (memory_id, deleted_at, sync_revision)
-                VALUES (?, ?, ?) ON CONFLICT(memory_id) DO UPDATE SET
-                deleted_at=excluded.deleted_at, sync_revision=excluded.sync_revision
-                """, arguments: [id.uuidString, Self.date(Date()), syncRevision])
+            for id in ids {
+                try db.execute(
+                    sql: "DELETE FROM memory_entries WHERE id = ?",
+                    arguments: [id.uuidString]
+                )
+                try db.execute(sql: """
+                    INSERT INTO memory_tombstones (memory_id, deleted_at, sync_revision)
+                    VALUES (?, ?, ?) ON CONFLICT(memory_id) DO UPDATE SET
+                    deleted_at=excluded.deleted_at, sync_revision=excluded.sync_revision
+                    """, arguments: [id.uuidString, deletedAt, syncRevision])
+            }
         }
     }
 
@@ -531,10 +678,14 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         let scopeName: String = row["scope"]
         let workspace: String? = row["workspace_id"]
         let conversation: String? = row["conversation_id"]
+        let originWorkspace: String? = row["origin_workspace_id"]
+        let originConversation: String? = row["origin_conversation_id"]
         let scope: MemoryScope
-        if scopeName == "workspace", let workspace, let id = UUID(uuidString: workspace) {
+        if scopeName == "workspace", let owner = workspace ?? originWorkspace,
+           let id = UUID(uuidString: owner) {
             scope = .workspace(id)
-        } else if scopeName == "task", let conversation, let id = UUID(uuidString: conversation) {
+        } else if scopeName == "task", let owner = conversation ?? originConversation,
+                  let id = UUID(uuidString: owner) {
             scope = .task(id)
         } else {
             scope = scopeName == "user" ? .userProfile : .agentGlobal

@@ -24,8 +24,13 @@ if [ "$actual_sha256" != "$expected_sha256" ]; then
     exit 1
 fi
 
-if [ ! -d "$extract_dir/Python.xcframework" ]; then
+runtime_probe="$extract_dir/Python.xcframework/ios-arm64/lib/python3.13/ensurepip/_bundled/pip-25.1.1-py3-none-any.whl"
+if [ ! -f "$runtime_probe" ]; then
     mkdir -p "$extract_dir"
+    # A cancelled/cleaned build can leave the top-level directory behind.
+    # Validate a pinned payload file rather than mistaking that shell for a
+    # complete runtime extraction.
+    find "$extract_dir" -depth -mindepth 1 -delete
     tar -xzf "$archive_path" -C "$extract_dir"
 fi
 

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import GRDB
 @testable import FloeAgentRuntime
 @testable import FloePersistence
 
@@ -113,6 +114,94 @@ struct PersonalizationMemoryTests {
         #expect(Set(results.map(\.id)) == Set([apple.id, banana.id]))
         #expect(results.contains { $0.id == banana.id && $0.lexicalRank != nil })
         #expect(results.contains { $0.id == apple.id && $0.semanticRank != nil })
+    }
+
+    @Test("Deleted-task memory keeps ownership, crosses tasks, and is reinforced on recall")
+    func deletedTaskMemoryLifecycle() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let conversations = SQLiteConversationStore(database: database)
+        let store = SQLiteIntelligenceStore(database: database)
+        let sourceTaskID = UUID()
+        let otherTaskID = UUID()
+        try await conversations.saveConversation(.init(
+            id: sourceTaskID,
+            title: "Source research",
+            createdAt: Date(),
+            updatedAt: Date()
+        ))
+        let memory = MemoryEntry(
+            scope: .task(sourceTaskID),
+            status: .active,
+            content: "Use the violet release checklist",
+            confidence: 1,
+            importance: 0.7,
+            sourceKind: .explicitUserRequest
+        )
+        try await store.saveMemory(memory, evidence: [])
+        try await store.preserveMemoriesBeforeConversationDeletion(
+            conversationID: sourceTaskID,
+            ownerLabel: "Source research"
+        )
+        try await conversations.deleteConversation(id: sourceTaskID)
+
+        let owned = try await store.memories(scope: .task(sourceTaskID), status: .active)
+        #expect(owned.map(\.id) == [memory.id])
+        let recalled = try await store.hybridRecall(.init(
+            query: "violet release",
+            conversationID: otherTaskID,
+            limit: 6
+        ))
+        #expect(recalled.contains { $0.id == memory.id })
+        let reinforcement: (Int, String?) = try await database.reader { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT recall_count, last_recalled_at FROM memory_entries WHERE id = ?",
+                arguments: [memory.id.uuidString]
+            ) else { return (-1, nil) }
+            return (row["recall_count"], row["last_recalled_at"])
+        }
+        #expect(reinforcement.0 == 1)
+        #expect(reinforcement.1 != nil)
+    }
+
+    @Test("Live task and workspace memories are not evicted by size")
+    func liveOwnerMemoryCapacity() {
+        let policy = MemoryCapacityPolicy(
+            userProfileCharacters: 10,
+            agentGlobalCharacters: 10,
+            workspaceCharacters: 10,
+            taskCharacters: 10
+        )
+        #expect(policy.activeCharacterLimit(for: .workspace(UUID())) == Int.max)
+        #expect(policy.activeCharacterLimit(for: .task(UUID())) == Int.max)
+        #expect(policy.activeCharacterLimit(for: .userProfile) == 10)
+    }
+
+    @Test("Batch memory deletion records every tombstone in one operation")
+    func batchMemoryDeletion() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = SQLiteIntelligenceStore(database: database)
+        let first = MemoryEntry(scope: .userProfile, status: .active,
+            content: "First batch memory", confidence: 1, importance: 0.5,
+            sourceKind: .explicitUserRequest)
+        let second = MemoryEntry(scope: .userProfile, status: .active,
+            content: "Second batch memory", confidence: 1, importance: 0.5,
+            sourceKind: .explicitUserRequest)
+        try await store.saveMemory(first, evidence: [])
+        try await store.saveMemory(second, evidence: [])
+
+        try await store.deleteMemories(ids: [first.id, second.id], syncRevision: 7)
+
+        #expect(try await store.memories(scope: .userProfile, status: .active).isEmpty)
+        let tombstones = try await database.reader { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM memory_tombstones
+                WHERE sync_revision = 7 AND memory_id IN (?, ?)
+                """, arguments: [first.id.uuidString, second.id.uuidString]) ?? 0
+        }
+        #expect(tombstones == 2)
     }
 
     @Test("sensitive and conflicting candidates require confirmation")

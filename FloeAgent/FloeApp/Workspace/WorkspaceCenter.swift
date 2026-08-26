@@ -172,6 +172,10 @@ final class WorkspaceCenter: ObservableObject {
         if currentWorkspace?.id == id {
             closeCurrentWorkspace()
         }
+        try await environment.intelligenceStore.preserveMemoriesBeforeWorkspaceDeletion(
+            workspaceID: id,
+            ownerLabel: deleting?.name ?? "已删除工作区"
+        )
         try await store.deleteWorkspace(id: id)
         if let deleting, deleting.kind == .privateTask {
             try removePrivateWorkspaceDirectory(deleting)

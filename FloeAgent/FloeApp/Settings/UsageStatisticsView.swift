@@ -45,21 +45,21 @@ struct UsageStatisticsView: View {
                     }
                 }
                 Section("总计") {
-                    LabeledContent("总输入 token") {
+                    LabeledContent("输入用量") {
                         Text(TokenUnitFormatter.string(selectedRow(in: stats)?.inputTokens ?? stats.totalInputTokens)).foregroundStyle(.secondary)
                     }
-                    LabeledContent("总输出 token") {
+                    LabeledContent("输出用量") {
                         Text(TokenUnitFormatter.string(selectedRow(in: stats)?.outputTokens ?? stats.totalOutputTokens)).foregroundStyle(.secondary)
                     }
-                    LabeledContent("总 token") {
+                    LabeledContent("总用量") {
                         Text(TokenUnitFormatter.string(selectedRow(in: stats)?.totalTokens ?? stats.totalTokens)).foregroundStyle(.secondary)
                     }
                     LabeledContent("总任务数") {
                         Text("\(selectedRow(in: stats)?.runs ?? stats.totalRuns)").foregroundStyle(.secondary)
                     }
-                    reportedTokenRow("缓存读取", value: selectedCacheRead(in: stats))
-                    reportedTokenRow("推理 token", value: selectedReasoning(in: stats))
-                    LabeledContent("缓存命中率") {
+                    reportedTokenRow("上下文复用", value: selectedCacheRead(in: stats))
+                    reportedTokenRow("思考用量", value: selectedReasoning(in: stats))
+                    LabeledContent("上下文复用率") {
                         Text(cacheHitRate(
                             input: selectedRow(in: stats)?.inputTokens ?? stats.totalInputTokens,
                             read: selectedCacheRead(in: stats)
@@ -68,7 +68,7 @@ struct UsageStatisticsView: View {
                     LabeledContent("平均生成速度") {
                         Text(speed(selectedSpeed(in: stats))).foregroundStyle(.secondary)
                     }
-                    LabeledContent("平均首 token") {
+                    LabeledContent("平均开始响应") {
                         Text(milliseconds(selectedTTFT(in: stats))).foregroundStyle(.secondary)
                     }
                     LabeledContent("平均响应耗时") {
@@ -78,12 +78,12 @@ struct UsageStatisticsView: View {
                 Section("近 30 天") {
                     if stats.byDay.isEmpty {
                         ContentUnavailableView("还没有可统计的任务", systemImage: "chart.bar",
-                            description: Text("新任务完成后会在这里显示提供商返回的 token 用量。"))
+                            description: Text("新任务完成后会在这里显示模型返回的用量。"))
                     } else {
                         Chart(stats.byDay) { day in
                             BarMark(
                                 x: .value("日期", day.date),
-                                y: .value("token", day.totalTokens)
+                                y: .value("用量", day.totalTokens)
                             )
                             .foregroundStyle(FloeTheme.primary)
                         }
@@ -91,7 +91,7 @@ struct UsageStatisticsView: View {
                     }
                     ForEach(stats.byDay) { day in
                         LabeledContent(day.date) {
-                            Text("\(TokenUnitFormatter.string(day.totalTokens)) token · \(day.runs) 任务")
+                            Text("\(TokenUnitFormatter.string(day.totalTokens)) · \(day.runs) 任务")
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -155,14 +155,14 @@ struct UsageStatisticsView: View {
                         HStack {
                             Text("输入 \(TokenUnitFormatter.string(row.inputTokens)) · 输出 \(TokenUnitFormatter.string(row.outputTokens))")
                             Spacer()
-                            Text("\(TokenUnitFormatter.string(row.totalTokens)) token · \(row.runs) 任务")
+                            Text("\(TokenUnitFormatter.string(row.totalTokens)) · \(row.runs) 任务")
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        Text("缓存读取 \(reported(row.cacheReadTokens)) · 推理 \(reported(row.reasoningTokens))")
+                        Text("上下文复用 \(reported(row.cacheReadTokens)) · 思考用量 \(reported(row.reasoningTokens))")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
-                        Text("命中率 \(cacheHitRate(input: row.inputTokens, read: row.cacheReadTokens)) · \(speed(row.averageTokensPerSecond)) · 首 token \(milliseconds(row.averageTimeToFirstTokenMs))")
+                        Text("复用率 \(cacheHitRate(input: row.inputTokens, read: row.cacheReadTokens)) · \(speed(row.averageTokensPerSecond)) · 开始响应 \(milliseconds(row.averageTimeToFirstTokenMs))")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
@@ -179,7 +179,7 @@ struct UsageStatisticsView: View {
     }
 
     private func reported(_ value: Int?) -> String {
-        value.map { "\(TokenUnitFormatter.string($0)) token" } ?? "未报告"
+        value.map(TokenUnitFormatter.string) ?? "未报告"
     }
 
     private func cacheHitRate(input: Int, read: Int?) -> String {
@@ -191,7 +191,7 @@ struct UsageStatisticsView: View {
     }
 
     private func speed(_ value: Double?) -> String {
-        value.map { "\($0.formatted(.number.precision(.fractionLength(1)))) token/s" }
+        value.map { "\($0.formatted(.number.precision(.fractionLength(1)))) 片段/秒" }
             ?? "未报告"
     }
 

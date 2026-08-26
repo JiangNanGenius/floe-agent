@@ -357,6 +357,32 @@ struct LocalModelCatalogTests {
         #expect(parsed == nil)
     }
 
+    @Test("Apple current-location intent requires the one native location tool")
+    @available(macOS 15.4, *)
+    func appleLocationIntentSelectsNativeTool() {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: AppleFoundationModelIdentity.remoteModelID,
+            displayName: "Apple Foundation Model",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 1_024),
+            capabilities: [.text, .tools]
+        )
+        let tools = [
+            ToolSchemaDescriptor(name: "apple.location.current", description: "Get current location"),
+            ToolSchemaDescriptor(name: "apple.automation.list", description: "List automations")
+        ]
+        let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [("user", "我的当前位置是哪里？")],
+            toolSchemas: tools
+        ))
+        #expect(build.selectedTools.map(\.name) == ["apple.location.current"])
+        #expect(build.requiresToolCall)
+        #expect(build.systemInstructions.contains("native Foundation Models tools"))
+    }
+
     @Test("Constrained local context admits a small tool set")
     @available(macOS 15.4, *)
     func constrainedLocalPromptLimitsSchemas() {

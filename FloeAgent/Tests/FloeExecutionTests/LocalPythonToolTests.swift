@@ -17,6 +17,9 @@ struct LocalPythonToolTests {
         #expect(LocalPythonTool.parametersJSON.contains("pipCommand"))
         #expect(LocalPythonTool.toolDescription.contains("packagePurpose"))
         #expect(LocalPythonTool.parametersJSON.contains("packageCapabilities"))
+        #expect(LocalPythonTool.toolDescription.contains("Pyodide"))
+        #expect(LocalPythonTool.toolDescription.contains("WebAssembly"))
+        #expect(LocalPythonTool.toolDescription.contains("mmap"))
     }
 
     @Test("declarative pip commands use the reviewed package path")
