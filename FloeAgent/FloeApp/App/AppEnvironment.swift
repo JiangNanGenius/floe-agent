@@ -229,7 +229,13 @@ final class AppEnvironment: ObservableObject {
         let pythonService = remoteServices.python
         let sshCommandService = remoteServices.ssh
         self.sshCommandService = sshCommandService
-        let cloudWorkspaceService = CloudWorkspaceService(ssh: sshCommandService)
+        let remoteAgentReadiness = RemoteAgentReadinessCoordinator(
+            manager: RemoteAgentInstaller(service: sshCommandService)
+        )
+        let cloudWorkspaceService = CloudWorkspaceService(
+            ssh: sshCommandService,
+            readiness: remoteAgentReadiness
+        )
         self.cloudWorkspaceService = cloudWorkspaceService
         self.cloudWorkspaceCleanupQueue = CloudWorkspaceCleanupQueue(service: cloudWorkspaceService)
         let localPythonService = CPythonServiceFactory.make()
@@ -252,7 +258,8 @@ final class AppEnvironment: ObservableObject {
         // registered here in one place, in a deterministic order.
         registerAllAgentTools(
             localPythonService: localPythonService,
-            sshCommandService: sshCommandService
+            sshCommandService: sshCommandService,
+            cloudWorkspaceService: cloudWorkspaceService
         )
         FloeShortcutsRuntime.shared.install(environment: self)
     }
@@ -262,7 +269,8 @@ final class AppEnvironment: ObservableObject {
     /// model's tool catalog.
     private func registerAllAgentTools(
         localPythonService: LocalPythonService?,
-        sshCommandService: SSHCommandService?
+        sshCommandService: SSHCommandService?,
+        cloudWorkspaceService: CloudWorkspaceService?
     ) {
         // Workspace file tools (T04/T05).
         registerWorkspaceTools(rootProvider: WorkspaceCenter.toolRootProvider)
@@ -287,6 +295,7 @@ final class AppEnvironment: ObservableObject {
         registerExecutionTools(
             localPythonService: localPythonService,
             sshCommandService: sshCommandService,
+            cloudWorkspaceService: cloudWorkspaceService,
             remoteHostStore: remoteHostStore,
             webSearchService: WebSearchService(configurations: WebSearchSettingsCenter.resolvedConfigurations),
             includeOnDeviceJavaScript: true

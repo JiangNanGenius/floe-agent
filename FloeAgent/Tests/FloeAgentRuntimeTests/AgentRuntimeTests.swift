@@ -746,6 +746,29 @@ struct AgentRuntimeTests {
         #expect(await runtime.state.name == "completed")
     }
 
+    @Test("Resume pairs an interrupted tool call before requesting the provider")
+    func resumePairsInterruptedToolCall() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+        let call = try TestFixtures.toolCall(id: "interrupted-call")
+        let runtime = makeRuntime(adapter: adapter)
+        let checkpoint = AgentCheckpoint(
+            runID: UUID(),
+            conversationID: UUID(),
+            state: .preparing(.init(goal: "resume safely")),
+            messages: [ConversationMessage(role: "user", content: "resume safely")],
+            pendingToolCalls: [call],
+            pendingToolResults: []
+        )
+
+        try await runtime.resume(from: checkpoint)
+
+        let request = try #require(adapter.requests.first)
+        #expect(request.pendingToolCalls.map(\.id) == [call.id])
+        #expect(request.toolResults.map(\.callID) == [call.id])
+        #expect(request.toolResults.first?.output.contains("outcome is unknown") == true)
+    }
+
     @Test("Tool results are checkpointed with the execution ledger")
     func toolResultCheckpointIncludesLedger() async throws {
         let adapter = MockAdapter()

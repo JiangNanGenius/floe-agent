@@ -43,7 +43,7 @@ public struct SSHExecTool: AgentTool {
 
     public static let name = "ssh.execute"
     public static let toolDescription =
-        "Run a command on a paired SSH target. Floe first performs read-only target classification so Linux, macOS, Windows, NAS/OpenWrt and switch/router/firewall CLIs use different strategies. Automatic mode uses a disposable, non-privileged Ubuntu task container on Linux when Docker/Podman is available; select host only for an explicitly authorized host-administration task such as runtime setup, firewall, services or OS configuration. Network devices receive native CLI commands and never Linux shell commands. Use ssh.inspectTarget before planning vendor-specific changes."
+        "Run a command on a paired SSH target. Floe first performs read-only target classification so Linux, macOS, Windows, NAS/OpenWrt and switch/router/firewall CLIs use different strategies. Automatic mode uses a disposable, non-privileged Ubuntu task container on Linux when Docker/Podman is available; select host only for an explicitly authorized host-administration task such as runtime setup, package sources, directories, firewall, services or OS configuration. Authorized Linux/NAS host commands run as durable guardian tasks and survive SSH or network reconnection. If the result state is running, continue the returned taskID with ssh.taskStatus; never dispatch the command again. Network devices receive native CLI commands and never Linux shell commands. Use ssh.inspectTarget before planning vendor-specific changes."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -155,5 +155,92 @@ public struct SSHExecTool: AgentTool {
     private static func output(_ text: String, exitStatus: Int32) -> ToolExecutionOutput {
         let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
         return ToolExecutionOutput(summary: text, fullOutputSHA256: digest, exitStatus: exitStatus)
+    }
+}
+
+/// Reads or waits for a durable guardian command that was already dispatched
+/// by `ssh.execute`. It never starts, repeats, or mutates a command.
+public struct SSHRemoteTaskStatusTool: AgentTool {
+    public struct Arguments: Decodable, Sendable {
+        public var taskID: String
+        public var hostID: String?
+        public var waitSeconds: Double?
+        public var maxOutputBytes: Int?
+
+        public init(
+            taskID: String,
+            hostID: String? = nil,
+            waitSeconds: Double? = nil,
+            maxOutputBytes: Int? = nil
+        ) {
+            self.taskID = taskID
+            self.hostID = hostID
+            self.waitSeconds = waitSeconds
+            self.maxOutputBytes = maxOutputBytes
+        }
+    }
+
+    public static let name = "ssh.taskStatus"
+    public static let toolDescription =
+        "Reconnect to a durable remote guardian task returned by ssh.execute and read its current state/output without running the command again. Use when ssh.execute returns state=running or after a network interruption."
+    public static let parametersJSON = #"""
+    {
+      "type": "object",
+      "properties": {
+        "taskID": {"type": "string", "description": "Exact guardian taskID returned by ssh.execute"},
+        "hostID": {"type": "string", "description": "Optional UUID of the same paired host"},
+        "waitSeconds": {"type": "number", "description": "Wait for completion before returning (default 15, max 120)"},
+        "maxOutputBytes": {"type": "integer", "description": "Output cap in bytes (default 65536, max 262144)"}
+      },
+      "required": ["taskID"],
+      "additionalProperties": false
+    }
+    """#
+    public static let riskLabels: Set<RiskLabel> = [.networkAccess]
+    public static let isSideEffecting = false
+    public static let toolEffect: ToolEffect = .readOnly
+
+    private let remoteAgent: RemoteAgentTaskService
+
+    public init(remoteAgent: RemoteAgentTaskService) {
+        self.remoteAgent = remoteAgent
+    }
+
+    public func validate(_ args: Arguments) throws {
+        guard RemoteAgentTaskService.isValidTaskID(args.taskID) else {
+            throw FloeError.validationFailed("taskID is invalid")
+        }
+        if let hostID = args.hostID, UUID(uuidString: hostID) == nil {
+            throw FloeError.validationFailed("hostID must be a UUID when provided")
+        }
+        if let wait = args.waitSeconds, wait < 0 {
+            throw FloeError.validationFailed("waitSeconds must be >= 0")
+        }
+        if let cap = args.maxOutputBytes, cap <= 0 {
+            throw FloeError.validationFailed("maxOutputBytes must be > 0")
+        }
+    }
+
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        let result = try await remoteAgent.status(
+            taskID: args.taskID,
+            hostID: args.hostID.flatMap(UUID.init(uuidString:)),
+            wait: min(args.waitSeconds ?? 15, SSHExecTool.maxTimeout),
+            maxOutputBytes: min(args.maxOutputBytes ?? SSHExecTool.defaultMaxOutputBytes, SSHExecTool.maxOutputBytesCap),
+            cancellation: context.cancellation
+        )
+        var summary = "transport=remoteGuardian taskID=\(result.taskID) state=\(result.state) exitCode=\(result.exitCode)"
+        if let duration = result.duration {
+            let formattedDuration = String(format: "%.2f", duration)
+            summary += " duration=\(formattedDuration)s"
+        }
+        if !result.output.isEmpty { summary += "\noutput:\n\(result.output)" }
+        let digest = SHA256.hash(data: Data(summary.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        return ToolExecutionOutput(
+            summary: summary,
+            fullOutputSHA256: digest,
+            exitStatus: result.exitCode
+        )
     }
 }

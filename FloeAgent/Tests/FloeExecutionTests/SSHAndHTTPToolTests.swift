@@ -17,6 +17,16 @@ struct SSHAndHTTPToolTests {
         #expect(SSHExecTool.riskLabels.contains(.executesRemoteCommand))
     }
 
+    @Test("ssh.taskStatus is a read-only guardian continuation tool")
+    func sshTaskStatusDescriptor() {
+        #expect(SSHRemoteTaskStatusTool.name == "ssh.taskStatus")
+        #expect(!SSHRemoteTaskStatusTool.isSideEffecting)
+        #expect(SSHRemoteTaskStatusTool.toolEffect == .readOnly)
+        #expect(SSHRemoteTaskStatusTool.riskLabels == [.networkAccess])
+        #expect(RemoteAgentTaskService.isValidTaskID("run-123.task_456"))
+        #expect(!RemoteAgentTaskService.isValidTaskID("../bad/task"))
+    }
+
     @Test("ssh.execute maps a successful command result")
     func sshSuccess() async throws {
         let hostID = UUID()

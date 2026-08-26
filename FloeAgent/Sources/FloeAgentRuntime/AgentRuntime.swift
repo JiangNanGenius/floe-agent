@@ -482,7 +482,8 @@ public actor FloeAgentRuntime {
         }
         await transition(to: .cancelling)
         // 1. Stop the model stream (URLSessionTask cancel → SSE terminates).
-        streamTask?.cancel()
+        let activeRunTask = streamTask
+        activeRunTask?.cancel()
         streamTask = nil
         // 2. Stop the in-flight tool cooperatively.
         cancellationToken.cancel()
@@ -502,7 +503,13 @@ public actor FloeAgentRuntime {
         }
         pauseTask?.cancel()
         pauseTask = nil
-        // 4. Persist and park.
+        // 4. Let an in-flight executor publish its cancelled/tool result
+        // before the final checkpoint is written. Previously cancellation
+        // checkpointed immediately and the executor could finish one actor
+        // turn later, leaving a provider tool_call without its required tool
+        // result. Recovery then failed at the provider boundary with a 400.
+        await activeRunTask?.value
+        // 5. Persist and park.
         do {
             try await writeCheckpoint()
             await transition(to: .checkpointed(AgentState.CheckpointRef(
@@ -585,6 +592,7 @@ public actor FloeAgentRuntime {
         grants = checkpoint.approvals
         executedIdempotencyKeys = checkpoint.idempotencyKeys
         executionLedger = HarnessExecutionLedger(records: checkpoint.executionLedgerEntries ?? [])
+        repairInterruptedToolPairs()
         resumedFromCheckpoint = true
         // A checkpoint is a committed tool-result boundary. Never carry a
         // cancelled provider stream's partial prose into the replay turn.
@@ -602,6 +610,26 @@ public actor FloeAgentRuntime {
         let goal = messages.last(where: { $0.role == "user" })?.content ?? ""
         await transition(to: .preparing(AgentState.PreparingInfo(goal: goal, resumedFromCheckpoint: true)))
         await runModelTurn()
+    }
+
+    /// Provider protocols require every assistant tool call to be followed by
+    /// one result. A force-quit or suspension can occur after a remote command
+    /// was dispatched but before its result was committed. Pair that orphaned
+    /// call with an explicit unknown-outcome result so recovery is valid and
+    /// the model verifies remote state instead of blindly repeating a write.
+    private func repairInterruptedToolPairs() {
+        var pairedIDs = Set(pendingToolResults.map(\.callID))
+        for call in pendingToolCalls where !pairedIDs.contains(call.id) {
+            let result = executionLedger.recoveredResult(for: call) ?? ToolResult(
+                callID: call.id,
+                status: .failed,
+                outputSummary: "Execution was interrupted before its result was committed. The real-world outcome is unknown; inspect current state before deciding whether any action should be retried.",
+                outputDigest: ""
+            )
+            pendingToolResults.append(result)
+            pairedIDs.insert(call.id)
+            executionLedger.record(call: call, result: result)
+        }
     }
 
     /// Human decision arriving for a `.waitingApproval` tool call.

@@ -161,6 +161,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "workspace.moveItem", "document.createDocument",
             "browser.observe", "browser.events", "browser.wait", "browser.navigate",
             "network.scanLAN",
+            "ssh.taskStatus",
             "apple.calendar.list", "apple.reminders.list", "apple.maps.search",
             "apple.home.list", "apple.watch.status", "apple.location.current",
             "apple.automation.list",

@@ -32,6 +32,7 @@ public func registerExecutionTools(
     service: any ScriptExecutionService = JavaScriptExecutionService(),
     localPythonService: LocalPythonService? = nil,
     sshCommandService: SSHCommandService? = nil,
+    cloudWorkspaceService: CloudWorkspaceService? = nil,
     remoteHostStore: RemoteHostStore? = nil,
     httpRequestService: HTTPRequestService = HTTPRequestService(),
     webSearchService: WebSearchService = WebSearchService(),
@@ -50,6 +51,7 @@ public func registerExecutionTools(
     }
     if sshCommandService != nil {
         ToolCatalog.register(SSHExecTool.self)
+        ToolCatalog.register(SSHRemoteTaskStatusTool.self)
         ToolCatalog.register(SSHInspectTargetTool.self)
         ToolCatalog.register(SSHBootstrapExecutionHostTool.self)
         ToolCatalog.register(SSHBootstrapRemoteAgentTool.self)
@@ -96,11 +98,18 @@ public func registerExecutionTools(
         registry.register(LocalPythonTool(service: localPythonService))
     }
     if let sshCommandService {
-        let cloudWorkspaceService = CloudWorkspaceService(ssh: sshCommandService)
+        let cloudWorkspaceService = cloudWorkspaceService ?? CloudWorkspaceService(
+            ssh: sshCommandService,
+            readiness: RemoteAgentReadinessCoordinator(
+                manager: RemoteAgentInstaller(service: sshCommandService)
+            )
+        )
+        let remoteAgent = RemoteAgentTaskService(client: cloudWorkspaceService)
         registry.register(SSHExecTool(
             service: sshCommandService,
-            remoteAgent: RemoteAgentTaskService(client: cloudWorkspaceService)
+            remoteAgent: remoteAgent
         ))
+        registry.register(SSHRemoteTaskStatusTool(remoteAgent: remoteAgent))
         registry.register(SSHInspectTargetTool(service: sshCommandService))
         registry.register(SSHBootstrapExecutionHostTool(service: sshCommandService))
         registry.register(SSHBootstrapRemoteAgentTool(service: sshCommandService))

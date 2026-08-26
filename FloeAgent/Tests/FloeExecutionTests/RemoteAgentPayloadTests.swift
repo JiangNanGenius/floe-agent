@@ -1,6 +1,53 @@
 import Foundation
 import Testing
 @testable import FloeExecution
+import FloeSSH
+import FloeTools
+
+private actor FakeRemoteAgentManager: RemoteAgentManaging {
+    let hostID = UUID()
+    var installedVersion: String
+    var checkCount = 0
+    var updateCount = 0
+
+    init(installedVersion: String) {
+        self.installedVersion = installedVersion
+    }
+
+    func check(
+        hostID: UUID?,
+        cancellation: CancellationToken?
+    ) async throws -> RemoteAgentInstaller.Result {
+        checkCount += 1
+        try? await Task.sleep(for: .milliseconds(30))
+        return .init(
+            hostID: hostID ?? self.hostID,
+            targetKind: .linux,
+            version: installedVersion,
+            exitCode: 0,
+            output: "checked"
+        )
+    }
+
+    func installOrUpdate(
+        hostID: UUID?,
+        cancellation: CancellationToken?
+    ) async throws -> RemoteAgentInstaller.Result {
+        updateCount += 1
+        installedVersion = RemoteAgentPayload.version
+        return .init(
+            hostID: hostID ?? self.hostID,
+            targetKind: .linux,
+            version: installedVersion,
+            exitCode: 0,
+            output: "updated"
+        )
+    }
+
+    func counts() -> (checks: Int, updates: Int) {
+        (checkCount, updateCount)
+    }
+}
 
 @Suite("Bundled remote agent payload")
 struct RemoteAgentPayloadTests {
@@ -22,5 +69,35 @@ struct RemoteAgentPayloadTests {
         let second = RemoteAgentTaskService.taskID(runID: runID, toolCallID: "call-7")
         #expect(first == second)
         #expect(first.count < 128)
+    }
+
+    @Test("First helper use upgrades a stale host and later uses are cached")
+    func readinessUpgradesThenCaches() async throws {
+        let manager = FakeRemoteAgentManager(installedVersion: "0.9.0")
+        let readiness = RemoteAgentReadinessCoordinator(manager: manager)
+
+        let first = try await readiness.ensureReady(hostID: nil)
+        let second = try await readiness.ensureReady(hostID: nil)
+        let counts = await manager.counts()
+
+        #expect(first.action == .updated)
+        #expect(first.version == RemoteAgentPayload.version)
+        #expect(second.action == .cached)
+        #expect(counts.checks == 1)
+        #expect(counts.updates == 1)
+    }
+
+    @Test("Concurrent first uses share one guardian version check")
+    func readinessCoalescesConcurrentChecks() async throws {
+        let manager = FakeRemoteAgentManager(installedVersion: RemoteAgentPayload.version)
+        let readiness = RemoteAgentReadinessCoordinator(manager: manager)
+
+        async let first = readiness.ensureReady(hostID: nil)
+        async let second = readiness.ensureReady(hostID: nil)
+        _ = try await (first, second)
+        let counts = await manager.counts()
+
+        #expect(counts.checks == 1)
+        #expect(counts.updates == 0)
     }
 }

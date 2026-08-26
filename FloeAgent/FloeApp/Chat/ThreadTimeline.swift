@@ -164,14 +164,6 @@ enum ThreadTimelineBuilder {
                 && !isTerminalStatusEvent($0)
                 && !isStaleStatusEvent($0, currentState: run?.state)
         }
-        // A tool request whose result has already arrived must not keep
-        // showing "pending" next to its "success" result — that reads as a
-        // hang. Match by the call id now persisted on both events.
-        let completedToolCallIDs = Set(sortedEvents
-            .filter { $0.kind == .toolResult }
-            .compactMap { decodePayload($0.payloadJSON)["id"] }
-            .filter { !$0.isEmpty })
-
         var finalReplyRendered = false
         var currentStepGroup: [RunEventRecord] = []
         var guidedMessages = run.map { currentRun in
@@ -220,10 +212,15 @@ enum ThreadTimelineBuilder {
                 }
                 continue
             }
-            if event.kind == .toolRequest,
-               let callID = decodePayload(event.payloadJSON)["id"],
-               completedToolCallIDs.contains(callID) {
-                continue
+            // A new provider turn begins after the preceding tool result.
+            // Keep its reasoning above the next invocation instead of
+            // appending it below the tool that produced the result. The
+            // request row remains in the group even after completion: the
+            // card pairs it with the result by call ID so one disclosure owns
+            // the exact input command, approval, output and duration.
+            if event.kind == .reasoning,
+               currentStepGroup.last?.kind == .toolResult {
+                flushStepGroup()
             }
             // Group consecutive reasoning/tool events into a collapsible
             // stepGroup. userMessage/assistantText breaks the group.

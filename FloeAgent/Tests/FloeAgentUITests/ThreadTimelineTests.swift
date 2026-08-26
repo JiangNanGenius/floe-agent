@@ -114,6 +114,69 @@ struct ThreadTimelineTests {
         if let group, let reply { #expect(group < reply) }
     }
 
+    @Test("Completed tool keeps its request so the card can show exact input and output")
+    func completedToolKeepsRequestAndResultTogether() {
+        let conversationID = UUID()
+        let run = makeRun(state: "completed", conversationID: conversationID)
+        let request = makeEvent(
+            runID: run.id, sequence: 1, kind: .toolRequest,
+            payload: [
+                "tool": "ssh.execute", "id": "ssh-1", "status": "pending",
+                "input": #"{"command":"uname -a"}"#
+            ]
+        )
+        let result = makeEvent(
+            runID: run.id, sequence: 2, kind: .toolResult,
+            payload: [
+                "tool": "ssh.execute", "id": "ssh-1", "status": "ok",
+                "summary": "exitCode=0\\nstdout:\\nLinux"
+            ]
+        )
+
+        let items = ThreadTimelineBuilder.build(
+            messages: [], events: [request, result], run: run,
+            isRunning: false, liveStreamedText: "", liveReasoningText: "",
+            pendingApprovals: []
+        )
+
+        let groups = items.compactMap { item -> [RunEventRecord]? in
+            if case .stepGroup(let events, _) = item { return events }
+            return nil
+        }
+        #expect(groups.count == 1)
+        #expect(groups.first?.map(\.kind) == [.toolRequest, .toolResult])
+    }
+
+    @Test("Reasoning after a tool result starts the next step group")
+    func nextTurnReasoningStartsNewStepGroup() {
+        let conversationID = UUID()
+        let run = makeRun(state: "streamingModel", conversationID: conversationID)
+        let events = [
+            makeEvent(runID: run.id, sequence: 1, kind: .toolRequest,
+                      payload: ["tool": "ssh.execute", "id": "ssh-1"]),
+            makeEvent(runID: run.id, sequence: 2, kind: .toolResult,
+                      payload: ["tool": "ssh.execute", "id": "ssh-1", "status": "ok"]),
+            makeEvent(runID: run.id, sequence: 3, kind: .reasoning,
+                      payload: ["text": "检查结果后决定下一步"]),
+            makeEvent(runID: run.id, sequence: 4, kind: .toolRequest,
+                      payload: ["tool": "workspace.readFile", "id": "read-2"])
+        ]
+
+        let items = ThreadTimelineBuilder.build(
+            messages: [], events: events, run: run,
+            isRunning: true, liveStreamedText: "", liveReasoningText: "",
+            pendingApprovals: []
+        )
+        let groups = items.compactMap { item -> [RunEventRecord]? in
+            if case .stepGroup(let events, _) = item { return events }
+            return nil
+        }
+
+        #expect(groups.count == 2)
+        #expect(groups[0].map(\.sequence) == [1, 2])
+        #expect(groups[1].map(\.sequence) == [3, 4])
+    }
+
     @Test("Legacy runs without assistantText fall back to the persisted message before terminal")
     func legacyFallbackBeforeTerminal() {
         let conversationID = UUID()

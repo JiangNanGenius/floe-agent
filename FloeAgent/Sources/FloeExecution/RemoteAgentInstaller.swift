@@ -15,6 +15,20 @@ public struct RemoteAgentInstaller: Sendable {
         public let output: String
 
         public var succeeded: Bool { exitCode == 0 }
+
+        public init(
+            hostID: UUID,
+            targetKind: RemoteTargetKind,
+            version: String,
+            exitCode: Int32,
+            output: String
+        ) {
+            self.hostID = hostID
+            self.targetKind = targetKind
+            self.version = version
+            self.exitCode = exitCode
+            self.output = output
+        }
     }
 
     private let service: SSHCommandService
@@ -179,5 +193,122 @@ public struct RemoteAgentInstaller: Sendable {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         return object["version"] as? String
+    }
+}
+
+/// Small seam used by the readiness gate and its tests. The production
+/// implementation is `RemoteAgentInstaller`; no credentials or installer
+/// output are retained by the gate.
+public protocol RemoteAgentManaging: Sendable {
+    func check(
+        hostID: UUID?,
+        cancellation: CancellationToken?
+    ) async throws -> RemoteAgentInstaller.Result
+
+    func installOrUpdate(
+        hostID: UUID?,
+        cancellation: CancellationToken?
+    ) async throws -> RemoteAgentInstaller.Result
+}
+
+extension RemoteAgentInstaller: RemoteAgentManaging {}
+
+/// Ensures the host helper bundled with this app build is ready before any
+/// helper-backed operation crosses the tunnel. Verification is once per host
+/// and app process; concurrent first uses share one check/update task instead
+/// of racing multiple atomic replacements.
+public actor RemoteAgentReadinessCoordinator {
+    public struct Readiness: Sendable, Equatable {
+        public enum Action: String, Sendable {
+            case verified
+            case updated
+            case cached
+        }
+
+        public let hostID: UUID
+        public let version: String
+        public let action: Action
+    }
+
+    private let manager: any RemoteAgentManaging
+    private var verifiedHostVersions: [String: String] = [:]
+    private var verifiedHostIDs: [String: UUID] = [:]
+    private var inFlight: [String: Task<Readiness, Error>] = [:]
+
+    public init(manager: any RemoteAgentManaging) {
+        self.manager = manager
+    }
+
+    public func ensureReady(
+        hostID: UUID?,
+        cancellation: CancellationToken? = nil
+    ) async throws -> Readiness {
+        let key = hostID?.uuidString.lowercased() ?? "default"
+        if verifiedHostVersions[key] == RemoteAgentPayload.version,
+           let verifiedHostID = verifiedHostIDs[key] {
+            return Readiness(
+                hostID: verifiedHostID,
+                version: RemoteAgentPayload.version,
+                action: .cached
+            )
+        }
+        if let existing = inFlight[key] {
+            return try await existing.value
+        }
+
+        let manager = self.manager
+        let task = Task<Readiness, Error> {
+            if let checked = try? await manager.check(
+                hostID: hostID,
+                cancellation: cancellation
+            ), checked.succeeded,
+               checked.version == RemoteAgentPayload.version {
+                return Readiness(
+                    hostID: checked.hostID,
+                    version: checked.version,
+                    action: .verified
+                )
+            }
+
+            let updated = try await manager.installOrUpdate(
+                hostID: hostID,
+                cancellation: cancellation
+            )
+            guard updated.succeeded,
+                  updated.version == RemoteAgentPayload.version else {
+                throw FloeError.validationFailed(
+                    "Floe remote guardian update did not reach bundled version \(RemoteAgentPayload.version)"
+                )
+            }
+            return Readiness(
+                hostID: updated.hostID,
+                version: updated.version,
+                action: .updated
+            )
+        }
+        inFlight[key] = task
+        do {
+            let readiness = try await task.value
+            inFlight[key] = nil
+            verifiedHostVersions[key] = readiness.version
+            verifiedHostIDs[key] = readiness.hostID
+            verifiedHostVersions[readiness.hostID.uuidString.lowercased()] = readiness.version
+            verifiedHostIDs[readiness.hostID.uuidString.lowercased()] = readiness.hostID
+            return readiness
+        } catch {
+            inFlight[key] = nil
+            throw error
+        }
+    }
+
+    public func invalidate(hostID: UUID? = nil) {
+        if let hostID {
+            let key = hostID.uuidString.lowercased()
+            verifiedHostVersions.removeValue(forKey: key)
+            verifiedHostIDs.removeValue(forKey: key)
+        } else {
+            verifiedHostVersions.removeAll(keepingCapacity: true)
+            verifiedHostIDs.removeAll(keepingCapacity: true)
+        }
     }
 }

@@ -17,11 +17,17 @@ public actor CloudWorkspaceService {
 
     private let ssh: SSHCommandService
     private let advanced: AdvancedRemoteClient
+    private let readiness: RemoteAgentReadinessCoordinator?
     private var connections: [UUID: Connection] = [:]
 
-    public init(ssh: SSHCommandService, advanced: AdvancedRemoteClient = AdvancedRemoteClient()) {
+    public init(
+        ssh: SSHCommandService,
+        advanced: AdvancedRemoteClient = AdvancedRemoteClient(),
+        readiness: RemoteAgentReadinessCoordinator? = nil
+    ) {
         self.ssh = ssh
         self.advanced = advanced
+        self.readiness = readiness
     }
 
     public func request(
@@ -55,14 +61,26 @@ public actor CloudWorkspaceService {
         queryPath: String? = nil,
         body: Data? = nil
     ) async throws -> Data {
-        // Once a device has an advanced link, routine operations must not
-        // silently fall back to port 22. A failed mTLS request is surfaced so
-        // the user can explicitly repair/re-enrol through SSH.
+        // An enrolled advanced link is an explicit no-port-22 transport
+        // choice. Never turn an mTLS request into an implicit SSH update or
+        // fallback; advanced-link repair remains a separate user action.
         if let hostID, await AdvancedRemoteLinkStore.shared.link(hostID: hostID) != nil {
             return try await advanced.requestJSON(
                 hostID: hostID, method: method, endpoint: endpoint,
                 queryPath: queryPath, body: body
             )
+        }
+        // App and helper are a paired protocol. Before the first helper use
+        // in this app process, check the installed version and atomically
+        // upgrade/rollback through verified SSH when it is stale or missing.
+        // Subsequent requests use the readiness actor's per-host cache.
+        if let readiness {
+            let status = try await readiness.ensureReady(hostID: hostID)
+            if status.action == .updated,
+               let stale = connections.removeValue(forKey: status.hostID) {
+                await stale.forwarder.close()
+                await stale.session.close()
+            }
         }
         let (resolvedID, connection) = try await connection(hostID: hostID, port: port)
         var components = URLComponents(url: connection.baseURL.appendingPathComponent(endpoint), resolvingAgainstBaseURL: false)

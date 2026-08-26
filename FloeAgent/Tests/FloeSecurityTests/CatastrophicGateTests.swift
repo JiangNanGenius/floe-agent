@@ -439,6 +439,7 @@ struct ApprovalPolicyTests {
         for (name, arguments) in [
             ("ssh.listHosts", #"{}"#),
             ("ssh.inspectTarget", #"{}"#),
+            ("ssh.taskStatus", #"{"taskID":"run-123.task_456"}"#),
             ("ssh.bootstrapExecutionHost", #"{"apply":false}"#),
             ("ssh.bootstrapFloeRemoteAgent", #"{"operation":"check"}"#)
         ] {

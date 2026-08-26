@@ -13,6 +13,20 @@ public struct RemoteAgentTaskService: Sendable {
         public var output: String
         public var exitCode: Int32
         public var duration: TimeInterval?
+
+        public init(
+            taskID: String,
+            state: String,
+            output: String,
+            exitCode: Int32,
+            duration: TimeInterval?
+        ) {
+            self.taskID = taskID
+            self.state = state
+            self.output = output
+            self.exitCode = exitCode
+            self.duration = duration
+        }
     }
 
     private let client: CloudWorkspaceService
@@ -42,21 +56,54 @@ public struct RemoteAgentTaskService: Sendable {
             cancellation: cancellation
         )
 
-        let deadline = Date().addingTimeInterval(max(1, timeout))
+        do {
+            return try await status(
+                taskID: taskID,
+                hostID: hostID,
+                wait: timeout,
+                maxOutputBytes: maxOutputBytes,
+                cancellation: cancellation
+            )
+        } catch let error as FloeError where error == .cancelled {
+            // Stopping the original ssh.execute owns cancellation of the
+            // remote child. A later read-only ssh.taskStatus cancellation
+            // deliberately does not mutate the durable task.
+            _ = try? await client.requestJSON(
+                hostID: hostID,
+                method: "POST",
+                endpoint: "v1/tasks/\(taskID)/cancel",
+                body: Data("{}".utf8)
+            )
+            throw error
+        }
+    }
+
+    /// Reconnects to an existing durable guardian task without dispatching
+    /// its command again. This is the continuation path returned by
+    /// `ssh.execute` when a command outlives one model/tool turn.
+    public func status(
+        taskID: String,
+        hostID: UUID?,
+        wait: TimeInterval,
+        maxOutputBytes: Int,
+        cancellation: CancellationToken
+    ) async throws -> Result {
+        guard Self.isValidTaskID(taskID) else {
+            throw FloeError.validationFailed("Invalid remote guardian task id")
+        }
+        let deadline = Date().addingTimeInterval(max(0, wait))
         var lastTransportError: Error?
-        while Date() < deadline {
+        repeat {
             if cancellation.isCancelled {
-                _ = try? await client.requestJSON(
-                    hostID: hostID,
-                    method: "POST",
-                    endpoint: "v1/tasks/\(taskID)/cancel",
-                    body: Data("{}".utf8)
-                )
                 throw FloeError.cancelled
             }
             do {
-                let data = try await client.requestJSON(
-                    hostID: hostID, method: "GET", endpoint: "v1/tasks/\(taskID)"
+                let data = try await retryingRequest(
+                    hostID: hostID,
+                    method: "GET",
+                    endpoint: "v1/tasks/\(taskID)",
+                    body: nil,
+                    cancellation: cancellation
                 )
                 let record = try Self.object(data)
                 let state = record["state"] as? String ?? "unknown"
@@ -64,7 +111,8 @@ public struct RemoteAgentTaskService: Sendable {
                     let log = try await readOutput(
                         hostID: hostID,
                         taskID: taskID,
-                        maxOutputBytes: maxOutputBytes
+                        maxOutputBytes: maxOutputBytes,
+                        cancellation: cancellation
                     )
                     return Result(
                         taskID: taskID,
@@ -76,17 +124,27 @@ public struct RemoteAgentTaskService: Sendable {
                 }
                 lastTransportError = nil
             } catch {
+                if cancellation.isCancelled { throw FloeError.cancelled }
                 lastTransportError = error
             }
+            guard Date() < deadline else { break }
             try? await Task.sleep(for: .milliseconds(lastTransportError == nil ? 400 : 900))
-        }
+        } while Date() < deadline
         if let lastTransportError {
             throw lastTransportError
         }
+        let partial = (try? await readOutput(
+            hostID: hostID,
+            taskID: taskID,
+            maxOutputBytes: maxOutputBytes,
+            cancellation: cancellation
+        )) ?? ""
         return Result(
             taskID: taskID,
             state: "running",
-            output: "Remote guardian task is still running; reconnect with the same task id.",
+            output: partial.isEmpty
+                ? "Remote guardian task is still running. Use ssh.taskStatus with this taskID; do not dispatch the command again."
+                : partial,
             exitCode: 124,
             duration: nil
         )
@@ -114,11 +172,18 @@ public struct RemoteAgentTaskService: Sendable {
         throw lastError ?? FloeError.internalError("Remote guardian request failed")
     }
 
-    private func readOutput(hostID: UUID?, taskID: String, maxOutputBytes: Int) async throws -> String {
-        let data = try await client.requestJSON(
+    private func readOutput(
+        hostID: UUID?,
+        taskID: String,
+        maxOutputBytes: Int,
+        cancellation: CancellationToken
+    ) async throws -> String {
+        let data = try await retryingRequest(
             hostID: hostID,
             method: "GET",
-            endpoint: "v1/tasks/\(taskID)/events"
+            endpoint: "v1/tasks/\(taskID)/events",
+            body: nil,
+            cancellation: cancellation
         )
         let object = try Self.object(data)
         guard let encoded = object["data_base64"] as? String,
@@ -137,5 +202,12 @@ public struct RemoteAgentTaskService: Sendable {
         let digest = SHA256.hash(data: Data(toolCallID.utf8))
             .map { String(format: "%02x", $0) }.joined()
         return "\(runID.uuidString.lowercased())-\(digest.prefix(24))"
+    }
+
+    static func isValidTaskID(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 128 else { return false }
+        return value.unicodeScalars.allSatisfy {
+            CharacterSet.alphanumerics.contains($0) || "_.-".unicodeScalars.contains($0)
+        }
     }
 }

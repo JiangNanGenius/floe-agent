@@ -11,7 +11,7 @@ import subprocess, tempfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 ROOT = pathlib.Path(os.environ.get("FLOE_CLOUD_ROOT", "~/.floe/cloud-workspaces")).expanduser().resolve()
 STATE = pathlib.Path(os.environ.get("FLOE_STATE_ROOT", "~/.local/state/floe-agent")).expanduser().resolve()
 CONFIG = pathlib.Path(os.environ.get("FLOE_CONFIG_ROOT", "~/.config/floe-agent")).expanduser().resolve()
