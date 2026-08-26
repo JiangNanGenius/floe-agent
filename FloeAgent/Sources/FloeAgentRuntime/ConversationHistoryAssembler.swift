@@ -33,7 +33,11 @@ public struct ConversationHistoryAssembler: Sendable {
         excludingMessageID: UUID? = nil
     ) async throws -> [ConversationMessage] {
         let persisted = try await store.messages(conversationID: conversationID)
-            .filter { $0.id != excludingMessageID && $0.role != "goalContinuation" }
+            .filter {
+                $0.id != excludingMessageID
+                    && $0.role != "goalContinuation"
+                    && !Self.isLegacyWorkspaceContextNotice($0)
+            }
         let selected = Array(persisted.suffix(maximumMessages))
         let omitted = Array(persisted.dropLast(selected.count))
         var recent: [ConversationMessage] = []
@@ -71,6 +75,15 @@ public struct ConversationHistoryAssembler: Sendable {
         let summary = Self.historicalSummary(omitted)
         guard bytes + summary.utf8.count <= maximumBytes else { return recent }
         return [ConversationMessage(role: "system", content: summary)] + recent
+    }
+
+    /// Builds before 1.4.39 incorrectly persisted an inspector toast as a
+    /// user message. Keep those rows out of both provider history and the
+    /// visible timeline; the real AttachmentRef remains durable.
+    public static func isLegacyWorkspaceContextNotice(_ message: PersistedMessage) -> Bool {
+        guard message.role == "user" else { return false }
+        return message.content.hasPrefix("已将工作区文件加入上下文：")
+            || message.content.hasPrefix("Added workspace file to context: ")
     }
 
     /// Resolves staged image attachments for a runtime steer. Non-images,

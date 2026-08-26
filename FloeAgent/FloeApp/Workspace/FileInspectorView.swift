@@ -29,6 +29,7 @@ struct FileInspectorView: View {
     @State private var showCloudWorkspaceLink = false
     @State private var exportURL: URL?
     @State private var inspectorMode: InspectorMode = .files
+    @State private var contextNotice: String?
     /// Prevents the tree's restoration task from reopening the file during
     /// the short async window in which the cleared selection is persisted.
     @State private var isClosingPreview = false
@@ -94,14 +95,8 @@ struct FileInspectorView: View {
     @ViewBuilder
     private func inspectorBody(_ workspace: WorkspaceRecord) -> some View {
         if let previewPath {
-            FilePreviewView(
-                relativePath: previewPath,
-                center: center,
-                onAddToContext: { addToContext(previewPath) }
-            )
-            .id(previewPath)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
                     Button {
                         closePreview()
                     } label: {
@@ -109,6 +104,37 @@ struct FileInspectorView: View {
                     }
                     .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                     .accessibilityLabel("inspector.back")
+                    Text((previewPath as NSString).lastPathComponent)
+                        .font(FloeTheme.Typography.section)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Button {
+                        router.hideInspector()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                    .accessibilityLabel("inspector.close")
+                }
+                .padding(.horizontal, 8)
+                Divider()
+                FilePreviewView(
+                    relativePath: previewPath,
+                    center: center,
+                    onAddToContext: { addToContext(previewPath) }
+                )
+                .id(previewPath)
+            }
+            .overlay(alignment: .bottom) {
+                if let contextNotice {
+                    Label(contextNotice, systemImage: "checkmark.circle.fill")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.success)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(.bottom, 12)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
         } else {
@@ -280,14 +306,21 @@ struct FileInspectorView: View {
         }
     }
 
-    /// Adds the file to the current conversation context: persists an
-    /// attachment reference (relative path + metadata only) and a context
-    /// message part, and links the conversation to the workspace.
+    /// Adds the durable attachment without fabricating a user chat bubble.
+    /// Feedback stays in the workspace pane where the action occurred.
     private func addToContext(_ relativePath: String) {
-        Task { await center.addFileToConversationContext(
-            relativePath: relativePath,
-            conversationID: router.selectedConversationID
-        ) }
+        Task {
+            let added = await center.addFileToConversationContext(
+                relativePath: relativePath,
+                conversationID: router.selectedConversationID
+            )
+            guard added else { return }
+            withAnimation(.snappy) {
+                contextNotice = "已加入任务上下文"
+            }
+            try? await Task.sleep(for: .seconds(2))
+            withAnimation(.snappy) { contextNotice = nil }
+        }
     }
 }
 

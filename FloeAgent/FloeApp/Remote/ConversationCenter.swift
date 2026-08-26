@@ -345,7 +345,7 @@ final class ConversationCenter: ObservableObject {
                 _ = try? await environment.runStore.appendEvent(
                     runID: run.id,
                     kind: .status,
-                    payloadJSON: #"{"state":"interrupted"}"#
+                    payloadJSON: #"{"state":"interrupted","reason":"应用重新启动，先前运行已安全中断"}"#
                 )
                 logger.info(
                     "launchRecoveryInterrupted run=\(run.id.uuidString) conversation=\(conversation.id.uuidString) previousState=\(run.state)"
@@ -1715,7 +1715,8 @@ final class ConversationCenter: ObservableObject {
         case ("checkpointed", _):
             environment.backgroundRunCoordinator.didSuspend(
                 runID: runID,
-                message: "等待你完成接管后继续"
+                message: (await service.snapshot()).checkpointReason
+                    ?? "任务已保存，等待你继续"
             )
         case (_, .success):
             environment.backgroundRunCoordinator.didFinish(
@@ -2505,7 +2506,7 @@ final class ConversationCenter: ObservableObject {
         if suspended {
             environment.backgroundRunCoordinator.didSuspend(
                 runID: service.runID,
-                message: "等待你完成接管后继续"
+                message: snapshot.checkpointReason ?? "任务已保存，等待你继续"
             )
         } else {
             environment.backgroundRunCoordinator.didFinish(
@@ -3008,6 +3009,7 @@ final class ConversationCenter: ObservableObject {
         case "verifying": ("正在复核答案", 88)
         case "completed": ("已完成", 100)
         case "failed": ("运行失败", 100)
+        case "checkpointed": (snapshot.checkpointReason ?? "任务已暂停", 70)
         default: ("正在运行", 20)
         }
         environment.backgroundRunCoordinator.didUpdateProgress(

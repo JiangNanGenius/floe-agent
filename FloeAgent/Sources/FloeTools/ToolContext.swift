@@ -7,6 +7,9 @@ import FloeModels
 /// Per-execution context handed to every tool.
 public struct ToolContext: Sendable {
     public var runID: UUID
+    /// Durable provider call identifier. Remote/durable tools use it as an
+    /// idempotency key so reconnecting never starts the same action twice.
+    public var toolCallID: String?
     /// Approval grant under which this execution proceeds. `nil` only for
     /// non-side-effecting tools.
     public var approvalGrantID: UUID?
@@ -29,6 +32,7 @@ public struct ToolContext: Sendable {
 
     public init(
         runID: UUID,
+        toolCallID: String? = nil,
         approvalGrantID: UUID? = nil,
         scope: ToolScope = .local,
         activeSkillIDs: Set<String> = [],
@@ -39,6 +43,7 @@ public struct ToolContext: Sendable {
         childBudget: ChildBudgetContext? = nil
     ) {
         self.runID = runID
+        self.toolCallID = toolCallID
         self.approvalGrantID = approvalGrantID
         self.scope = scope
         self.activeSkillIDs = activeSkillIDs

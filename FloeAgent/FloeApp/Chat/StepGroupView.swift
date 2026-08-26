@@ -47,7 +47,12 @@ struct StepGroupView: View {
             let payload = decodePayload($0.payloadJSON)
             return payload["tool"] ?? payload["name"] ?? "工具"
         } ?? "思考"
-        let status = lastTool.map { decodePayload($0.payloadJSON)["status"] ?? "" } ?? ""
+        let status = lastTool.map { event in
+            if event.kind == .toolRequest {
+                return requestStatus(for: event) ?? "pending"
+            }
+            return decodePayload(event.payloadJSON)["status"] ?? ""
+        } ?? ""
         return "\(count) 个步骤 · 最后：\(lastName)\(status.isEmpty ? "" : " (\(status))")"
     }
 
@@ -56,7 +61,7 @@ struct StepGroupView: View {
             if isExpanded {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(events) { event in
-                        if isDetachedApproval(event) {
+                        if isDetachedApproval(event) || isPairedToolResult(event) {
                             EmptyView()
                         } else {
                             ThreadEventView(
@@ -64,7 +69,9 @@ struct StepGroupView: View {
                                 isLive: isLive,
                                 hasError: hasError,
                                 onRetry: nil,
-                                approvalSummary: approvalSummary(for: event)
+                                approvalSummary: approvalSummary(for: event),
+                                toolRequestStatus: requestStatus(for: event),
+                                toolRequestResultPayloadJSON: matchingResult(for: event)?.payloadJSON
                             )
                             if event.kind == .toolRequest,
                                let pending = pendingApproval(for: event) {
@@ -134,6 +141,29 @@ struct StepGroupView: View {
     private func pendingApproval(for event: RunEventRecord) -> PendingApproval? {
         guard let callID = callID(for: event) else { return nil }
         return pendingApprovals.first { $0.toolCall.id == callID }
+    }
+
+    private func requestStatus(for event: RunEventRecord) -> String? {
+        guard event.kind == .toolRequest else { return nil }
+        if let result = matchingResult(for: event) {
+            return decodePayload(result.payloadJSON)["status"] ?? "completed"
+        }
+        if pendingApproval(for: event) != nil { return "pending" }
+        return isLive ? "running" : "failed"
+    }
+
+    private func matchingResult(for event: RunEventRecord) -> RunEventRecord? {
+        guard event.kind == .toolRequest, let requestID = callID(for: event) else { return nil }
+        return events.last { candidate in
+            candidate.kind == .toolResult && callID(for: candidate) == requestID
+        }
+    }
+
+    private func isPairedToolResult(_ event: RunEventRecord) -> Bool {
+        guard event.kind == .toolResult, let resultID = callID(for: event) else { return false }
+        return events.contains { candidate in
+            candidate.kind == .toolRequest && callID(for: candidate) == resultID
+        }
     }
 
     private func isDetachedApproval(_ event: RunEventRecord) -> Bool {

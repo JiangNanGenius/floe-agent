@@ -183,6 +183,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
         if Self.isReadOnlySSHBootstrap(action) { return true }
         if Self.isExplicitlyAuthorizedSSHBootstrap(action) { return true }
         if Self.isExplicitlyAuthorizedSandboxedSSH(action) { return true }
+        if Self.isExplicitlyAuthorizedHostMaintenance(action) { return true }
         if action.toolCall.toolName == "image.svgDocument",
            let object = try? JSONSerialization.jsonObject(with: action.toolCall.argumentsJSON) as? [String: Any],
            object["operation"] as? String == "inspect" { return true }
@@ -335,6 +336,33 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "remote environment", "container test"
         ].contains(where: goal.contains)
         return asksForToolDiagnostics || asksForEnvironmentWork
+    }
+
+    /// A direct request to install, repair, update or prepare a named remote
+    /// environment authorizes the ordinary host commands needed to finish
+    /// that task as one workflow. The catastrophic gate still runs first, so
+    /// this cannot authorize root/home erasure, disks, reboot, or firewall
+    /// flushes. Explicit denials always win.
+    private static func isExplicitlyAuthorizedHostMaintenance(_ action: ProposedAction) -> Bool {
+        guard action.toolCall.toolName == "ssh.execute",
+              let object = action.argumentObject,
+              (object["executionMode"] as? String)?.lowercased() == "host",
+              let command = object["command"] as? String,
+              !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return false }
+        let goal = action.userGoal.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !goal.isEmpty else { return false }
+        let denials = [
+            "不要执行", "别执行", "不要安装", "别安装", "不要修改", "别修改",
+            "do not execute", "don't execute", "do not install", "do not modify"
+        ]
+        guard !denials.contains(where: goal.contains) else { return false }
+        return [
+            "安装", "部署", "配置", "准备环境", "搭建环境", "修复环境", "更新环境",
+            "换源", "软件源", "依赖", "清理锁", "清理目录", "vnc", "docker",
+            "install", "deploy", "configure", "prepare", "set up", "setup",
+            "repair", "upgrade", "update", "package source", "dependency"
+        ].contains(where: goal.contains)
     }
 
     /// Automatic routing can resolve to a real macOS or Windows host, so it

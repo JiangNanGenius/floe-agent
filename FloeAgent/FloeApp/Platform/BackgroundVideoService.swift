@@ -242,6 +242,15 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             try? await Task.sleep(for: .milliseconds(800))
             guard !Task.isCancelled else { return }
             guard let self, generation == self.startGeneration else { return }
+            // Never empty or replace the AVQueuePlayer while PiP owns it.
+            // AVKit treats that short empty queue as end-of-playback and
+            // closes the floating window at ordinary run-stage boundaries.
+            guard !self.isPiPActive else {
+                FloeLogger(category: .app).debug(
+                    "pictureInPictureVisualRefreshDeferred reason=activePlayback generation=\(generation)"
+                )
+                return
+            }
             await self.refreshVideo(
                 title: title,
                 progress: progress,
@@ -280,14 +289,14 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         guidanceHints: [GuidanceHint],
         generation: UInt64
     ) async {
-        guard isPiPActive, let player else { return }
+        guard !isPiPActive, let player else { return }
         guard let assetURL = await synthesizeProgressVideo(
             title: title,
             progress: progress,
             guidanceImage: guidanceImage,
             guidanceHints: guidanceHints
         ) else { return }
-        guard !Task.isCancelled, generation == startGeneration, isPiPActive else {
+        guard !Task.isCancelled, generation == startGeneration, !isPiPActive else {
             try? FileManager.default.removeItem(at: assetURL)
             return
         }
@@ -348,6 +357,18 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             isProgrammaticRetraction = false
             isPiPActive = false
             FloeLogger(category: .app).info("pictureInPictureRetractionCompleted")
+            let generation = startGeneration
+            refreshTask?.cancel()
+            refreshTask = Task { @MainActor [weak self] in
+                guard let self, generation == self.startGeneration else { return }
+                await self.refreshVideo(
+                    title: self.currentTitle,
+                    progress: self.currentProgress,
+                    guidanceImage: self.guidanceImage,
+                    guidanceHints: self.guidanceHints,
+                    generation: generation
+                )
+            }
             return
         }
         refreshTask?.cancel()

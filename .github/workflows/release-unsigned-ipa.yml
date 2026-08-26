@@ -118,7 +118,7 @@ jobs:
 
       - name: Package the matching Floe remote agent
         run: |
-          scripts/package_remote_agent.sh release-assets 1.3.0
+          scripts/package_remote_agent.sh release-assets 1.4.0
 
       - name: Build unsigned device application
         run: |

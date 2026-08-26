@@ -236,6 +236,7 @@ private struct ArtifactImageView: View {
                 FullScreenArtifactImage(image: image, fileURL: fileURL)
             }
         }
+        .onChange(of: artifact.id) { _, _ in showingFullScreen = false }
     }
 
     private func loadVerifiedImage() {
@@ -282,39 +283,44 @@ private struct FullScreenArtifactImage: View {
     @State private var lastScale: CGFloat = 1
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Color.black.ignoresSafeArea()
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-                .scaleEffect(scale)
-                .gesture(
-                    MagnifyGesture()
-                        .onChanged { value in
-                            scale = min(6, max(1, lastScale * value.magnification))
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .scaleEffect(scale)
+                    .gesture(
+                        MagnifyGesture()
+                            .onChanged { value in
+                                scale = min(6, max(1, lastScale * value.magnification))
+                            }
+                            .onEnded { _ in lastScale = scale }
+                    )
+                    .onTapGesture(count: 2) {
+                        withAnimation(.snappy) {
+                            scale = scale > 1 ? 1 : 2.5
+                            lastScale = scale
                         }
-                        .onEnded { _ in lastScale = scale }
-                )
-                .onTapGesture(count: 2) {
-                    withAnimation(.snappy) {
-                        scale = scale > 1 ? 1 : 2.5
-                        lastScale = scale
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .toolbarBackground(.black.opacity(0.72), for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("完成") { dismiss() }
+                        .foregroundStyle(.white)
+                        .frame(minHeight: FloeTheme.minimumTarget)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    ShareLink(item: fileURL) {
+                        Label("保存或共享图片", systemImage: "square.and.arrow.up")
+                            .labelStyle(.iconOnly)
+                            .foregroundStyle(.white)
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            HStack(spacing: 12) {
-                ShareLink(item: fileURL) {
-                    Image(systemName: "square.and.arrow.up")
-                }
-                Button { dismiss() } label: {
-                    Image(systemName: "xmark")
-                }
             }
-            .font(.title3.weight(.semibold))
-            .foregroundStyle(.white)
-            .padding(14)
-            .background(.black.opacity(0.55), in: Capsule())
-            .padding()
         }
     }
 }

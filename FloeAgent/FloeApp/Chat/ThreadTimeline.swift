@@ -27,6 +27,7 @@
 import Foundation
 import FloeModels
 import FloePersistence
+import FloeAgentRuntime
 
 /// One row of the unified thread timeline.
 enum ThreadTimelineItem: Identifiable, Hashable {
@@ -112,7 +113,9 @@ enum ThreadTimelineBuilder {
         }
         let represented = Set(sortedRuns.map(\.id))
         let taskLevel = messages.filter {
-            $0.role != "goalContinuation" && $0.runID.map(represented.contains) != true
+            $0.role != "goalContinuation"
+                && $0.runID.map(represented.contains) != true
+                && !ConversationHistoryAssembler.isLegacyWorkspaceContextNotice($0)
         }
         result += taskLevel.map { message in
             message.role == "user"

@@ -96,11 +96,14 @@ public func registerExecutionTools(
         registry.register(LocalPythonTool(service: localPythonService))
     }
     if let sshCommandService {
-        registry.register(SSHExecTool(service: sshCommandService))
+        let cloudWorkspaceService = CloudWorkspaceService(ssh: sshCommandService)
+        registry.register(SSHExecTool(
+            service: sshCommandService,
+            remoteAgent: RemoteAgentTaskService(client: cloudWorkspaceService)
+        ))
         registry.register(SSHInspectTargetTool(service: sshCommandService))
         registry.register(SSHBootstrapExecutionHostTool(service: sshCommandService))
         registry.register(SSHBootstrapRemoteAgentTool(service: sshCommandService))
-        let cloudWorkspaceService = CloudWorkspaceService(ssh: sshCommandService)
         registry.register(CloudWorkspaceListTool(service: cloudWorkspaceService))
         registry.register(CloudWorkspaceReadTool(service: cloudWorkspaceService))
         registry.register(CloudWorkspaceWriteTool(service: cloudWorkspaceService))

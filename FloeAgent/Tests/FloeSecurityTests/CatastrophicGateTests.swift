@@ -543,6 +543,16 @@ struct ApprovalPolicyTests {
             mode: "host",
             goal: "帮我测试一下所有的工具"
         )).permitsExecution))
+        #expect(try await policy.decide(proposed(
+            mode: "host",
+            goal: "帮我安装并配置 VNC 环境",
+            command: "apt-get update && apt-get install -y tigervnc-standalone-server"
+        )).permitsExecution)
+        #expect(try await policy.decide(proposed(
+            mode: "host",
+            goal: "修复环境，清理旧的任务目录后重新安装",
+            command: "rm -rf /tmp/floe-vnc-stage && mkdir -p /tmp/floe-vnc-stage"
+        )).permitsExecution)
         #expect(!(try await policy.decide(proposed(
             mode: nil,
             goal: "准备远程执行环境",

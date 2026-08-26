@@ -63,6 +63,30 @@ struct ConversationHistoryAssemblerTests {
         #expect(history[1].content == "message-4")
     }
 
+    @Test("Legacy workspace context notices are not model turns")
+    func filtersLegacyWorkspaceContextNotice() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = SQLiteConversationStore(database: database)
+        let conversationID = UUID()
+        try await store.saveConversation(ConversationRecord(
+            id: conversationID, title: "Context", createdAt: Date(), updatedAt: Date()
+        ))
+        try await store.appendMessage(PersistedMessage(
+            id: UUID(), conversationID: conversationID, role: "user",
+            content: "已将工作区文件加入上下文：report.pdf", createdAt: Date()
+        ))
+        try await store.appendMessage(PersistedMessage(
+            id: UUID(), conversationID: conversationID, role: "user",
+            content: "请总结报告", createdAt: Date().addingTimeInterval(1)
+        ))
+
+        let history = try await ConversationHistoryAssembler(store: store)
+            .build(conversationID: conversationID)
+
+        #expect(history.map(\.content) == ["请总结报告"])
+    }
+
     @Test("App-owned staged images are inlined after the picker scope closes")
     func inlinesApplicationSupportImage() throws {
         let root = FileManager.default.temporaryDirectory

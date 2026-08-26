@@ -248,7 +248,13 @@ final class ThreadDetailViewModel: ObservableObject {
     }
 
     var continuationDetail: String {
-        "继续原任务和原消息，不会新建重复任务；已经完成的工具步骤会被复用。"
+        let reason = events.reversed().compactMap { event -> String? in
+            guard event.kind == .status else { return nil }
+            let payload = ConversationCenter.decodePayload(event.payloadJSON)
+            return payload["reason"]?.isEmpty == false ? payload["reason"] : nil
+        }.first
+        let recovery = "继续原任务和原消息，不会新建重复任务；已经完成的工具步骤会被复用。"
+        return reason.map { "\($0)\n\(recovery)" } ?? recovery
     }
 
     var usageSummary: ThreadUsageSummary? {

@@ -32,11 +32,34 @@ public actor CloudWorkspaceService {
         queryPath: String? = nil,
         body: [String: String]? = nil
     ) async throws -> Data {
+        let encodedBody: Data?
+        if let body { encodedBody = try JSONEncoder().encode(body) }
+        else { encodedBody = nil }
+        return try await requestJSON(
+            hostID: hostID,
+            port: port,
+            method: method,
+            endpoint: endpoint,
+            queryPath: queryPath,
+            body: encodedBody
+        )
+    }
+
+    /// Sends nested JSON to the durable remote agent. The ordinary workspace
+    /// API uses flat string maps; durable jobs also carry a structured target.
+    public func requestJSON(
+        hostID: UUID?,
+        port: Int = RemoteAgentPayload.defaultPort,
+        method: String,
+        endpoint: String,
+        queryPath: String? = nil,
+        body: Data? = nil
+    ) async throws -> Data {
         // Once a device has an advanced link, routine operations must not
         // silently fall back to port 22. A failed mTLS request is surfaced so
         // the user can explicitly repair/re-enrol through SSH.
         if let hostID, await AdvancedRemoteLinkStore.shared.link(hostID: hostID) != nil {
-            return try await advanced.request(
+            return try await advanced.requestJSON(
                 hostID: hostID, method: method, endpoint: endpoint,
                 queryPath: queryPath, body: body
             )
@@ -51,12 +74,27 @@ public actor CloudWorkspaceService {
         request.setValue("Bearer \(connection.token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
-            request.httpBody = try JSONEncoder().encode(body)
+            request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            // A dead tunnel must not poison the cache. The next poll opens a
+            // fresh verified SSH session and resumes the same durable task.
+            if let stale = connections.removeValue(forKey: resolvedID) {
+                await stale.forwarder.close()
+                await stale.session.close()
+            }
+            throw error
+        }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            connections.removeValue(forKey: resolvedID)
+            if let stale = connections.removeValue(forKey: resolvedID) {
+                await stale.forwarder.close()
+                await stale.session.close()
+            }
             let detail = String(decoding: data.prefix(2_048), as: UTF8.self)
             throw FloeError.validationFailed("Cloud workspace request failed: \(detail)")
         }

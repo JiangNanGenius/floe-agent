@@ -2,7 +2,7 @@
 
 [English](USER_GUIDE.md) · [官方网站](https://www.floe-agent.com/) · [中文 README](../README.zh-CN.md) · [安全策略](../SECURITY.zh-CN.md)
 
-本指南适用于 Floe Agent 1.4.38 源码目标（build 69）。具体标签会随系统语言和服务商配置略有变化；分发状态仍须以 TestFlight 为准，源码标签本身不是 Apple 处理回执。
+本指南适用于 Floe Agent 1.4.39 源码目标（build 70）。具体标签会随系统语言和服务商配置略有变化；分发状态仍须以 TestFlight 为准，源码标签本身不是 Apple 处理回执。
 
 ## 1. 安全安装
 

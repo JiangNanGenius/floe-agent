@@ -139,6 +139,25 @@ public actor AdvancedRemoteClient {
     public init(store: AdvancedRemoteLinkStore = .shared) { self.store = store }
 
     public func request(hostID: UUID, method: String, endpoint: String, queryPath: String? = nil, body: [String: String]? = nil) async throws -> Data {
+        let encodedBody: Data?
+        if let body { encodedBody = try JSONEncoder().encode(body) }
+        else { encodedBody = nil }
+        return try await requestJSON(
+            hostID: hostID,
+            method: method,
+            endpoint: endpoint,
+            queryPath: queryPath,
+            body: encodedBody
+        )
+    }
+
+    public func requestJSON(
+        hostID: UUID,
+        method: String,
+        endpoint: String,
+        queryPath: String? = nil,
+        body: Data? = nil
+    ) async throws -> Data {
         guard let link = await store.link(hostID: hostID) else { throw FloeError.notFound("Advanced remote link") }
         let credentials = try await store.credentials(for: link)
         guard var components = URLComponents(string: "https://\(link.endpoint):\(link.port)/\(endpoint)") else { throw FloeError.validationFailed("Invalid advanced-link endpoint") }
@@ -146,7 +165,7 @@ public actor AdvancedRemoteClient {
         guard let url = components.url else { throw FloeError.validationFailed("Invalid advanced-link URL") }
         var request = URLRequest(url: url); request.httpMethod = method; request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let body { request.httpBody = try JSONEncoder().encode(body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        if let body { request.httpBody = body; request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         #if canImport(Security)
         let delegate = MutualTLSDelegate(pkcs12: credentials.0, password: credentials.1, serverCA: credentials.2)
         let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)

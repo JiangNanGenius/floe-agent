@@ -37,6 +37,7 @@ public actor ConversationRunService {
         /// The exact runtime payload awaiting approval. UI code must display
         /// this value rather than reconstructing authority from an event.
         public var pendingApproval: AgentState.WaitingApproval?
+        public var checkpointReason: String?
 
         public init(
             runID: UUID,
@@ -46,7 +47,8 @@ public actor ConversationRunService {
             reasoningText: String = "",
             hasProviderActivity: Bool = false,
             isTerminal: Bool,
-            pendingApproval: AgentState.WaitingApproval? = nil
+            pendingApproval: AgentState.WaitingApproval? = nil,
+            checkpointReason: String? = nil
         ) {
             self.runID = runID
             self.conversationID = conversationID
@@ -56,6 +58,7 @@ public actor ConversationRunService {
             self.hasProviderActivity = hasProviderActivity
             self.isTerminal = isTerminal
             self.pendingApproval = pendingApproval
+            self.checkpointReason = checkpointReason
         }
     }
 
@@ -255,6 +258,12 @@ public actor ConversationRunService {
         } else {
             pendingApproval = nil
         }
+        let checkpointReason: String?
+        if case .checkpointed(let reference) = latestState {
+            checkpointReason = reference.reason
+        } else {
+            checkpointReason = nil
+        }
         return Snapshot(
             runID: runID,
             conversationID: conversationID,
@@ -263,7 +272,8 @@ public actor ConversationRunService {
             reasoningText: reasoningText,
             hasProviderActivity: hasProviderActivity,
             isTerminal: isTerminal(latestState),
-            pendingApproval: pendingApproval
+            pendingApproval: pendingApproval,
+            checkpointReason: checkpointReason
         )
     }
 
@@ -489,9 +499,20 @@ public actor ConversationRunService {
         // about what was last. Failed/checkpointed runs still need a terminal
         // status because they have no provider completion event.
         if isTerminal(state), !Self.isCompleted(state) {
+            let reason: String
+            if case .checkpointed(let reference) = state {
+                reason = reference.reason ?? "任务已保存检查点"
+            } else if case .failed(let failure) = state {
+                reason = failure.message
+            } else {
+                reason = ""
+            }
             _ = try? await runStore.appendEvent(
                 runID: runID, kind: .status,
-                payloadJSON: #"{"state":"\#(state.name)"}"#
+                payloadJSON: Self.jsonPayload([
+                    "state": state.name,
+                    "reason": reason
+                ])
             )
         }
         switch state {
@@ -501,8 +522,10 @@ public actor ConversationRunService {
         case .failed(let failure):
             eventChannel.yield(.terminal(.failed(message: failure.message, recoverable: failure.isRecoverable)))
             eventChannel.finish()
-        case .checkpointed:
-            eventChannel.yield(.terminal(.interrupted(reason: "checkpointed")))
+        case .checkpointed(let reference):
+            eventChannel.yield(.terminal(.interrupted(
+                reason: reference.reason ?? "任务已保存检查点"
+            )))
             eventChannel.finish()
         default:
             break
@@ -565,9 +588,18 @@ public actor ConversationRunService {
             }
             eventChannel.yield(.toolLifecycle(.requested(call)))
             toolNames[call.id] = call.toolName
+            let input = SecretRedactor.redact(String(
+                decoding: call.argumentsJSON.prefix(32 * 1_024),
+                as: UTF8.self
+            ), secret: secretForRedaction)
             _ = try? await runStore.appendEvent(
                 runID: runID, kind: .toolRequest,
-                payloadJSON: Self.jsonPayload(["tool": call.toolName, "id": call.id])
+                payloadJSON: Self.jsonPayload([
+                    "tool": call.toolName,
+                    "id": call.id,
+                    "input": input,
+                    "status": "pending"
+                ])
             )
         case .toolResult(let result):
             eventChannel.yield(.toolLifecycle(.finished(result)))

@@ -29,10 +29,18 @@ public enum AgentState: Sendable, Codable, Hashable {
     public struct CheckpointRef: Sendable, Codable, Hashable {
         public var checkpointURL: URL?
         public var createdAt: Date
+        /// Product-facing reason why execution parked. Optional keeps older
+        /// checkpoint files decodable.
+        public var reason: String?
 
-        public init(checkpointURL: URL? = nil, createdAt: Date = Date()) {
+        public init(
+            checkpointURL: URL? = nil,
+            createdAt: Date = Date(),
+            reason: String? = nil
+        ) {
             self.checkpointURL = checkpointURL
             self.createdAt = createdAt
+            self.reason = reason
         }
     }
 

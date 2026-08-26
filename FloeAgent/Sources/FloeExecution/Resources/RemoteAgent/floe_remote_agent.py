@@ -11,7 +11,7 @@ import subprocess, tempfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 ROOT = pathlib.Path(os.environ.get("FLOE_CLOUD_ROOT", "~/.floe/cloud-workspaces")).expanduser().resolve()
 STATE = pathlib.Path(os.environ.get("FLOE_STATE_ROOT", "~/.local/state/floe-agent")).expanduser().resolve()
 CONFIG = pathlib.Path(os.environ.get("FLOE_CONFIG_ROOT", "~/.config/floe-agent")).expanduser().resolve()
@@ -275,8 +275,15 @@ def launch_task(body, device_id):
     if kind == "container": argv = ["docker", "exec", valid_id(target.get("container", ""), "container"), "sh", "-lc", command]
     elif kind == "host" and body.get("explicit_host_authority") is True: argv = ["sh", "-lc", command]
     else: raise ValueError("target must be a container, or explicitly authorized host execution")
-    task_id, directory = str(uuid.uuid4()), None
-    directory = task_dir(task_id); directory.mkdir(mode=0o700)
+    requested_id=body.get("task_id")
+    task_id=valid_id(requested_id,"task id") if requested_id else str(uuid.uuid4())
+    directory = task_dir(task_id)
+    if directory.exists():
+        record=task_record(task_id)
+        expected=hashlib.sha256(command.encode()).hexdigest()
+        if record.get("command_sha256")!=expected: raise ValueError("task id already belongs to another command")
+        return record
+    directory.mkdir(mode=0o700)
     runner = directory / "runner.py"
     runner.write_text("import json,os,subprocess,sys,time\nargv=json.loads(sys.argv[1]); started=time.time()\nwith open(sys.argv[2],'ab',buffering=0) as out:\n p=subprocess.Popen(argv,stdout=out,stderr=subprocess.STDOUT,start_new_session=True); open(sys.argv[4],'w').write(str(p.pid)); code=p.wait()\n tmp=sys.argv[3]+'.tmp'; open(tmp,'w').write(json.dumps({'state':'succeeded' if code==0 else 'failed','exit_code':code,'ended_at':time.time(),'duration':time.time()-started})); os.replace(tmp,sys.argv[3])\n")
     wrapper = subprocess.Popen(["python3", str(runner), json.dumps(argv), str(directory/"events.log"), str(directory/"result.json"), str(directory/"child.pid")], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)

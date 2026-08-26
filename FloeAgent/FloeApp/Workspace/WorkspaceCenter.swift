@@ -852,21 +852,21 @@ final class WorkspaceCenter: ObservableObject {
 
     // MARK: - Conversation context
 
-    /// Attaches a workspace file to a conversation's context: persists an
-    /// attachment reference (workspace-relative path + metadata only, never
-    /// the body) and a context message part, and links the conversation to
-    /// the workspace so approval scopes can resolve it.
+    /// Attaches a workspace file to a conversation's context. The attachment
+    /// reference is durable, but this is not a user utterance and must never
+    /// be appended to the chat transcript as a synthetic message.
+    @discardableResult
     func addFileToConversationContext(
         relativePath: String,
         conversationID: UUID?
-    ) async {
+    ) async -> Bool {
         guard let service = fileService, let workspace = currentWorkspace else {
             actionError = String(localized: "inspector.no_workspace")
-            return
+            return false
         }
         guard let conversationID else {
             actionError = String(localized: "inspector.context.no_conversation")
-            return
+            return false
         }
         do {
             let metadata = try service.metadata(relativePath)
@@ -880,7 +880,7 @@ final class WorkspaceCenter: ObservableObject {
             ].joined(separator: "|")
             guard !contextAttachmentKeysInFlight.contains(attachmentKey) else {
                 actionError = nil
-                return
+                return true
             }
             contextAttachmentKeysInFlight.insert(attachmentKey)
             defer { contextAttachmentKeysInFlight.remove(attachmentKey) }
@@ -893,7 +893,7 @@ final class WorkspaceCenter: ObservableObject {
                     && $0.sha256.caseInsensitiveCompare(metadata.sha256) == .orderedSame
             }) else {
                 actionError = nil
-                return
+                return true
             }
             let attachment = AttachmentRef(
                 conversationID: conversationID,
@@ -907,20 +907,11 @@ final class WorkspaceCenter: ObservableObject {
                 relativePath: relativePath
             )
             try await environment.conversationStore.saveAttachment(attachment)
-            let message = PersistedMessage(
-                id: UUID(),
-                conversationID: conversationID,
-                role: "user",
-                content: String(
-                    format: String(localized: "inspector.context.added_format"),
-                    relativePath
-                ),
-                createdAt: Date()
-            )
-            try await environment.conversationStore.appendMessage(message)
             actionError = nil
+            return true
         } catch {
             actionError = error.localizedDescription
+            return false
         }
     }
 

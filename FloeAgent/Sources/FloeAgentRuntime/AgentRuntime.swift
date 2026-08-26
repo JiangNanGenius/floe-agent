@@ -505,7 +505,9 @@ public actor FloeAgentRuntime {
         // 4. Persist and park.
         do {
             try await writeCheckpoint()
-            await transition(to: .checkpointed(AgentState.CheckpointRef()))
+            await transition(to: .checkpointed(AgentState.CheckpointRef(
+                reason: "任务已由用户停止，当前进度已保存"
+            )))
         } catch {
             await transition(to: .failed(AgentState.AgentFailure(
                 message: "Checkpoint write failed during cancel: \(error.localizedDescription)"
@@ -545,7 +547,9 @@ public actor FloeAgentRuntime {
         guard case .paused = state else { return }
         do {
             try await writeCheckpoint()
-            await transition(to: .checkpointed(AgentState.CheckpointRef()))
+            await transition(to: .checkpointed(AgentState.CheckpointRef(
+                reason: "暂停等待已超时，当前进度已保存"
+            )))
         } catch {
             await transition(to: .failed(AgentState.AgentFailure(
                 message: "Checkpoint write failed: \(error.localizedDescription)"
@@ -558,7 +562,9 @@ public actor FloeAgentRuntime {
     /// preparing on disk (replay boundary).
     public func checkpoint() async throws {
         try await writeCheckpoint()
-        await transition(to: .checkpointed(AgentState.CheckpointRef()))
+        await transition(to: .checkpointed(AgentState.CheckpointRef(
+            reason: "任务已保存检查点，等待继续"
+        )))
     }
 
     /// Writes a recovery point without changing the live state. Used by the
@@ -1416,6 +1422,7 @@ public actor FloeAgentRuntime {
 
         let context = ToolContext(
             runID: runID,
+            toolCallID: call.id,
             approvalGrantID: grant.id,
             scope: call.scope,
             activeSkillIDs: configuration.activeSkillIDs,
@@ -1587,6 +1594,7 @@ public actor FloeAgentRuntime {
             let childBudget = await makeChildBudget(for: call)
             let context = ToolContext(
                 runID: runID,
+                toolCallID: call.id,
                 approvalGrantID: grant.id,
                 scope: call.scope,
                 activeSkillIDs: configuration.activeSkillIDs,
@@ -1702,7 +1710,11 @@ public actor FloeAgentRuntime {
             modelTurnContinuationRequested = false
             do {
                 try await writeCheckpoint()
-                await transition(to: .checkpointed(AgentState.CheckpointRef()))
+                await transition(to: .checkpointed(AgentState.CheckpointRef(
+                    reason: result.outputSummary.isEmpty
+                        ? "工具需要你完成操作后继续"
+                        : result.outputSummary
+                )))
             } catch {
                 await failRun(
                     message: "Unable to save the browser takeover checkpoint: \(error.localizedDescription)",

@@ -72,9 +72,11 @@ public struct SSHExecTool: AgentTool {
     static let maxOutputBytesCap = 256 * 1024
 
     private let service: SSHCommandService
+    private let remoteAgent: RemoteAgentTaskService?
 
-    public init(service: SSHCommandService) {
+    public init(service: SSHCommandService, remoteAgent: RemoteAgentTaskService? = nil) {
         self.service = service
+        self.remoteAgent = remoteAgent
     }
 
     public func validate(_ args: Arguments) throws {
@@ -100,6 +102,26 @@ public struct SSHExecTool: AgentTool {
 
         let hostID = args.hostID.flatMap(UUID.init(uuidString:))
         do {
+            if args.executionMode == .host,
+               let remoteAgent,
+               let toolCallID = context.toolCallID {
+                let durable = try await remoteAgent.runHost(
+                    command: args.command,
+                    hostID: hostID,
+                    runID: context.runID,
+                    toolCallID: toolCallID,
+                    timeout: min(args.timeout ?? Self.defaultTimeout, Self.maxTimeout),
+                    maxOutputBytes: min(args.maxOutputBytes ?? Self.defaultMaxOutputBytes, Self.maxOutputBytesCap),
+                    cancellation: context.cancellation
+                )
+                var summary = "transport=remoteGuardian taskID=\(durable.taskID) state=\(durable.state) exitCode=\(durable.exitCode)"
+                if let duration = durable.duration {
+                    let formattedDuration = String(format: "%.2f", duration)
+                    summary += " duration=\(formattedDuration)s"
+                }
+                if !durable.output.isEmpty { summary += "\noutput:\n\(durable.output)" }
+                return Self.output(summary, exitStatus: durable.exitCode)
+            }
             let routed = try await service.runRouted(
                 command: args.command,
                 hostID: hostID,
@@ -119,6 +141,8 @@ public struct SSHExecTool: AgentTool {
             return Self.output(summary, exitStatus: result.exitCode)
         } catch SSHExecError.cancelled {
             throw FloeError.cancelled
+        } catch let error as FloeError where error == .cancelled {
+            throw error
         } catch SSHExecError.timedOut {
             return Self.output("status=timedOut", exitStatus: 124)
         } catch let error as RemotePythonError {

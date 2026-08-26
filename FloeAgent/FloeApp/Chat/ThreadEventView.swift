@@ -26,12 +26,23 @@ struct ThreadEventView: View {
     var onRetry: (() -> Void)? = nil
     /// Approval result/reason associated with this tool call ID.
     var approvalSummary: String? = nil
+    /// Derived by the owning step group from the live run and matching
+    /// approval. Request rows cannot infer this from their persisted event.
+    var toolRequestStatus: String? = nil
+    /// Final payload for the same call ID. This lets one expandable invocation
+    /// own its arguments, approval, output, artifacts, and duration.
+    var toolRequestResultPayloadJSON: String? = nil
 
     @State private var isExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var payload: [String: String] {
         ConversationCenter.decodePayload(event.payloadJSON)
+    }
+
+    private var toolRequestResultPayload: [String: String] {
+        guard let toolRequestResultPayloadJSON else { return [:] }
+        return ConversationCenter.decodePayload(toolRequestResultPayloadJSON)
     }
 
     var body: some View {
@@ -100,21 +111,16 @@ struct ThreadEventView: View {
         case .toolRequest:
             ToolCallCardView(
                 name: payload["tool"] ?? event.kind.rawValue,
-                status: "pending",
+                status: toolRequestStatus ?? payload["status"] ?? "pending",
                 inputSummary: payload["input"] ?? payload["summary"],
-                approvalSummary: approvalSummary
+                resultSummary: toolRequestResultPayload["summary"],
+                approvalSummary: approvalSummary,
+                duration: duration(from: toolRequestResultPayload),
+                artifacts: artifacts(from: toolRequestResultPayload)
             )
 
         case .toolResult:
             let status = payload["status"] ?? "ok"
-            let artifacts: [ToolArtifactReference] = {
-                guard let encoded = payload["artifactRefsJSON"],
-                      let data = encoded.data(using: .utf8) else { return [] }
-                return (try? JSONDecoder().decode(
-                    [ToolArtifactReference].self,
-                    from: data
-                )) ?? []
-            }()
             ToolCallCardView(
                 name: payload["tool"]
                     ?? String(localized: "tool.result"),
@@ -122,9 +128,8 @@ struct ThreadEventView: View {
                 inputSummary: payload["input"],
                 resultSummary: payload["summary"],
                 approvalSummary: approvalSummary,
-                duration: payload["durationMs"].flatMap(Double.init)
-                    .map { $0 / 1000 },
-                artifacts: artifacts
+                duration: duration(from: payload),
+                artifacts: artifacts(from: payload)
             )
 
         case .approval:
@@ -176,6 +181,19 @@ struct ThreadEventView: View {
         }
     }
 
+    private func duration(from payload: [String: String]) -> TimeInterval? {
+        payload["durationMs"].flatMap(Double.init).map { $0 / 1_000 }
+    }
+
+    private func artifacts(from payload: [String: String]) -> [ToolArtifactReference] {
+        guard let encoded = payload["artifactRefsJSON"],
+              let data = encoded.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode(
+            [ToolArtifactReference].self,
+            from: data
+        )) ?? []
+    }
+
     private var usageBody: some View {
         HStack(spacing: 12) {
             Label(payload["input"] ?? "0", systemImage: "arrow.up")
@@ -193,14 +211,21 @@ struct ThreadEventView: View {
     /// never interprets machine names itself (§6.2).
     private var statusBody: some View {
         let state = payload["state"] ?? ""
-        return HStack(spacing: 8) {
-            if RunStateLocalizer.isLoading(stateName: state, hasError: hasError) {
-                ProgressView()
-                    .controlSize(.small)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                if RunStateLocalizer.isLoading(stateName: state, hasError: hasError) {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text(RunStateLocalizer.title(for: state))
+                    .font(FloeTheme.Typography.body)
+                    .foregroundStyle(RunStateLocalizer.color(for: state))
             }
-            Text(RunStateLocalizer.title(for: state))
-                .font(FloeTheme.Typography.body)
-                .foregroundStyle(RunStateLocalizer.color(for: state))
+            if let reason = payload["reason"], !reason.isEmpty {
+                Text(reason)
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
