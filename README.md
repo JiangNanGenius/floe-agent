@@ -57,7 +57,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.4.35 (build 66); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
+Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.4.36 (build 67); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
 
 ### Unsigned IPA
 
@@ -109,7 +109,7 @@ See the [English user guide](docs/USER_GUIDE.md), [简体中文使用指南](doc
 
 ### Models and image providers
 
-The system-owned Apple Foundation Model appears in **Settings → Local Models** on every device. On iOS/iPadOS 27 it uses the Foundation Models framework and reports the system's real availability state, including device eligibility, Apple Intelligence being disabled, or the model still downloading. There is no API-key or model-download setting because iOS owns both. It answers ordinary conversation directly rather than requiring every turn to be phrased as an action. Downloaded Qwen and Gemma MLX models are separate: Floe checks safe load headroom, keeps at most one resident model, uses quantized device-budgeted KV/prefill settings, releases transient MLX caches after each generation, and supplies a bounded catalog of real task tools.
+The system-owned Apple Foundation Model appears in **Settings → Local Models** on every device. On iOS/iPadOS 27 it uses the Foundation Models framework and reports the system's real availability state, including device eligibility, Apple Intelligence being disabled, or the model still downloading. There is no API-key or model-download setting because iOS owns both. It answers ordinary conversation directly rather than requiring every turn to be phrased as an action. Downloaded Qwen and Gemma MLX models are separate: Floe checks safe load headroom, keeps at most one resident model, uses quantized device-budgeted KV/prefill settings, releases transient MLX caches after each generation, and supplies a bounded catalog of real task tools. All on-device models run in text-only mode to avoid loading a vision projector. Attached images are transcribed with Apple Vision OCR into a task-workspace text file; PDF inspection, rendering and OCR remain available, while semantic `image.inspect` is reserved for compatible cloud models.
 
 OpenAI image generation/editing defaults to `gpt-image-2`. Google Gemini Images includes Nano Banana Pro (`gemini-3-pro-image`). Both provider entries accept an editable Base URL for compatible proxies; generation, editing and vision remain separate roles.
 

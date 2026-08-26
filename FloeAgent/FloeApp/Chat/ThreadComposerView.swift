@@ -302,9 +302,9 @@ struct ThreadComposerView: View {
         } message: {
             if pendingLocalCapabilityModel?.remoteModelID
                 == AppleFoundationModelIdentity.remoteModelID {
-                Text("Apple Foundation Model 目前只支持自然语言聊天和 Apple 设备能力。网页、文件、Python、浏览器、SSH、云工作区、Git 等其他 Floe 工具在此模型下不可用；需要这些能力时请使用云端模型或已下载的本地模型。")
+                Text("Apple Foundation Model 目前只支持文字聊天和 Apple 设备能力。附图会先由系统 OCR 转成工作区文字，不支持图片语义理解；网页、Python、浏览器、SSH、云工作区、Git 等其他 Floe 工具在此模型下不可用。")
             } else {
-                Text("本地模型使用独立的动态上下文和精简工具集，适合搜索、读取文件、简单文本与本地计算；复杂浏览器自动化、SSH、云工作区和多步骤 Git 操作请继续使用云端模型。")
+                Text("本地模型仅处理文字，不加载视觉组件，也不会获得 image.inspect。附图会由系统 OCR 转成工作区文字文件；它适合搜索、文件读取、PDF 文字处理与本地计算，视觉理解和复杂操作请使用云端模型。")
             }
         }
         .confirmationDialog(

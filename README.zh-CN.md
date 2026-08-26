@@ -57,7 +57,7 @@ flowchart LR
 
 ### TestFlight
 
-项目会在测试组开放时通过 TestFlight 分发签名版本。当前源码目标版本为 Floe Agent 1.4.35（build 66）；只有同时通过发布门禁并能在 TestFlight 中看到的构建才算完成发布。仅有源码版本或标签不能证明 Apple 已收到或处理该构建。
+项目会在测试组开放时通过 TestFlight 分发签名版本。当前源码目标版本为 Floe Agent 1.4.36（build 67）；只有同时通过发布门禁并能在 TestFlight 中看到的构建才算完成发布。仅有源码版本或标签不能证明 Apple 已收到或处理该构建。
 
 ### 未签名 IPA
 
@@ -109,7 +109,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 
 ### 模型与图片服务商
 
-系统管理的 Apple Foundation Model 始终显示在**设置 → 本地模型**。在 iOS/iPadOS 27 上，Floe 会显示系统返回的真实可用状态，例如设备不支持、Apple Intelligence 未开启或系统模型仍在准备。它不需要 API Key，也不由 Floe 下载。用户主动下载的 Qwen、Gemma 模型则可以分别启用或停用；Floe 会根据设备当前状态安排运行、在每轮结束后释放临时占用，并只提供这些小型模型能够可靠使用的任务工具。
+系统管理的 Apple Foundation Model 始终显示在**设置 → 本地模型**。在 iOS/iPadOS 27 上，Floe 会显示系统返回的真实可用状态，例如设备不支持、Apple Intelligence 未开启或系统模型仍在准备。它不需要 API Key，也不由 Floe 下载。用户主动下载的 Qwen、Gemma 模型则可以分别启用或停用；Floe 会根据设备当前状态安排运行、在每轮结束后释放临时占用，并只提供这些小型模型能够可靠使用的任务工具。所有设备端模型都按纯文字模式运行，不再加载视觉组件；附图由 Apple Vision OCR 转成任务工作区文字文件。PDF 检查、页面渲染和 OCR 仍可使用，语义识图 `image.inspect` 只提供给兼容的云端模型。
 
 OpenAI 生图与图片编辑默认使用 `gpt-image-2`；Google Gemini Images 提供 Nano Banana Pro（`gemini-3-pro-image`）。两类服务商都允许修改 Base URL 以连接兼容代理；生图、编辑和识图仍是彼此独立的角色。
 

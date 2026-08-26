@@ -88,7 +88,7 @@ struct LocalModelCatalogTests {
         #expect(qwen38?.artifacts.contains { $0.path == "model.safetensors" } == true)
         #expect(qwen38?.license == "Apache-2.0")
         #expect(qwen38?.parameterBillions == 4)
-        #expect(qwen38?.supportsVision == true)
+        #expect(qwen38?.supportsVision == false)
         #expect(qwen38?.supportsReasoning == true)
 
         let gemma4 = CuratedLocalModelCatalog.entries.first {
@@ -98,7 +98,7 @@ struct LocalModelCatalogTests {
         #expect(gemma4?.license == "Gemma")
         #expect(gemma4?.parameterBillions == 4.5)
         #expect(gemma4?.approximateDownloadBytes == 5_179_239_349)
-        #expect(gemma4?.supportsVision == true)
+        #expect(gemma4?.supportsVision == false)
         #expect(gemma4?.supportsReasoning == true)
     }
 
@@ -482,6 +482,7 @@ struct LocalModelCatalogTests {
             messages: [("user", "帮我测试一下所有工具")],
             toolSchemas: tools
         ))
+        #expect(!build.fallbackTools.contains(where: { $0.name == "image.inspect" }))
         let selectedNames = Set(build.selectedTools.map(\.name))
         let omitted = try #require(build.fallbackTools.first {
             !selectedNames.contains($0.name)
@@ -508,7 +509,9 @@ struct LocalModelCatalogTests {
         )
         let tools = [
             ToolSchemaDescriptor(name: "workspace.readFile", description: "Read a file"),
-            ToolSchemaDescriptor(name: "pdf.read", description: "Read a PDF"),
+            ToolSchemaDescriptor(name: "document.pdf.inspect", description: "Read PDF text"),
+            ToolSchemaDescriptor(name: "document.pdf.render", description: "Render a scanned PDF page"),
+            ToolSchemaDescriptor(name: "image.ocr", description: "OCR a rendered PDF page"),
             ToolSchemaDescriptor(name: "presentation.create", description: "Create a chart"),
             ToolSchemaDescriptor(name: "browser.click", description: "Click browser"),
             ToolSchemaDescriptor(name: "ssh.execute", description: "Run SSH")
@@ -516,19 +519,21 @@ struct LocalModelCatalogTests {
         let request = ProviderStreamRequest(
             provider: provider,
             model: model,
-            messages: [("user", "读取 PDF 并生成图表")],
+            messages: [("user", "读取 PDF，需要时渲染并 OCR")],
             toolSchemas: tools
         )
 
         let build = LocalProviderAdapter.buildPrompt(for: request)
 
-        #expect(build.selectedToolCount == 2)
+        #expect(build.selectedToolCount == 4)
         #expect(build.systemInstructions.contains("emit the documented single JSON tool_call"))
         #expect(build.selectedTools.map(\.name) == [
-            "pdf.read", "workspace.readFile"
+            "document.pdf.inspect", "document.pdf.render", "image.ocr", "workspace.readFile"
         ])
         #expect(build.text.contains("workspace.readFile"))
-        #expect(build.text.contains("pdf.read"))
+        #expect(build.text.contains("document.pdf.inspect"))
+        #expect(build.text.contains("document.pdf.render"))
+        #expect(build.text.contains("image.ocr"))
         #expect(!build.text.contains("presentation.create"))
         #expect(!build.text.contains("browser.click"))
         #expect(!build.text.contains("- ssh.execute:"))
@@ -582,6 +587,7 @@ struct LocalModelCatalogTests {
         )
         let tools = [
             ToolSchemaDescriptor(name: "workspace.readFile", description: "Read a file"),
+            ToolSchemaDescriptor(name: "image.ocr", description: "Read text in an image"),
             ToolSchemaDescriptor(name: "image.inspect", description: "Inspect an image"),
             ToolSchemaDescriptor(name: "ssh.execute", description: "Run SSH"),
             ToolSchemaDescriptor(name: "apple.calendar.list", description: "List calendar events")
@@ -595,11 +601,37 @@ struct LocalModelCatalogTests {
 
         let build = LocalProviderAdapter.buildPrompt(for: request)
 
-        #expect(build.selectedTools.map(\.name) == ["image.inspect", "workspace.readFile"])
+        #expect(build.selectedTools.map(\.name) == ["image.ocr", "workspace.readFile"])
+        #expect(!build.text.contains("image.inspect"))
         #expect(!build.text.contains("ssh.execute"))
         #expect(!build.text.contains("apple.calendar.list"))
         #expect(build.text.contains("AVAILABLE TOOL NAMES"))
         #expect(build.text.count < 5_000)
+    }
+
+    @Test("App runtime and adapter share the text-only local tool boundary")
+    @available(macOS 15.4, *)
+    func localRuntimeToolBoundary() {
+        let offered: Set<String> = [
+            "workspace.readFile", "image.ocr", "image.inspect",
+            "document.pdf.inspect", "document.pdf.render",
+            "browser.screenshot", "apple.location.current"
+        ]
+
+        let mlx = LocalProviderAdapter.admissibleToolNames(
+            from: offered,
+            modelRemoteID: "qwen3.5-4b-mlx4"
+        )
+        #expect(mlx == [
+            "workspace.readFile", "image.ocr",
+            "document.pdf.inspect", "document.pdf.render"
+        ])
+
+        let apple = LocalProviderAdapter.admissibleToolNames(
+            from: offered,
+            modelRemoteID: AppleFoundationModelIdentity.remoteModelID
+        )
+        #expect(apple == ["apple.location.current"])
     }
 
     @Test("MLX Git requests receive only read-only local Git tools")

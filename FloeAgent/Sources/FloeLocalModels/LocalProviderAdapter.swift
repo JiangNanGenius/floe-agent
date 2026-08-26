@@ -152,7 +152,9 @@ public actor LocalModelRuntime {
         defer { releaseInferenceSlot() }
         _ = try await prepareEngine(
             modelID: modelID,
-            wantsVision: includesVisionProjector,
+            // Public on-device inference is text-only. Never map the vision
+            // projector even if an older caller still requests it.
+            wantsVision: false,
             traceID: UUID().uuidString
         )
     }
@@ -180,9 +182,14 @@ public actor LocalModelRuntime {
         await acquireInferenceSlot()
         defer { releaseInferenceSlot() }
         try Task.checkCancellation()
+        guard images.isEmpty else {
+            throw FloeError.validationFailed(
+                "当前本地模型仅支持文字；图片会先通过系统 OCR 转成工作区文字文件。"
+            )
+        }
         let traceID = UUID().uuidString
         let startedAt = Date()
-        let wantsVision = !images.isEmpty
+        let wantsVision = false
         let prepared = try await prepareEngine(
             modelID: modelID,
             wantsVision: wantsVision,
@@ -460,28 +467,22 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     guard #available(iOS 26.0, macOS 15.4, *) else {
                         throw FloeError.invalidConfiguration("Local inference requires iOS or iPadOS 26 or later")
                     }
+                    let latestUserHasImage = request.effectiveMessages
+                        .last(where: { $0.role == "user" })?
+                        .content.contains(where: { part in
+                            switch part {
+                            case .imageData, .imageURL: return true
+                            case .text: return false
+                            }
+                        }) ?? false
+                    guard !latestUserHasImage else {
+                        throw FloeError.validationFailed(
+                            "当前本地模型仅支持文字；图片会先通过系统 OCR 转成工作区文字文件。"
+                        )
+                    }
                     let promptBuild = Self.buildPrompt(for: request)
                     let prompt = promptBuild.text
-                    // Only the current user turn carries raw image bytes into
-                    // MLX/Foundation Models. Replaying every historical photo
-                    // on each follow-up multiplied projector memory and made a
-                    // recovered run repeat expensive visual preprocessing.
-                    let imageParts = request.effectiveMessages.last(where: { $0.role == "user" })?
-                        .content.compactMap {
-                        part -> AppleFoundationImageInput? in
-                        switch part {
-                        case .imageData(_, let base64):
-                            guard let data = Data(base64Encoded: base64) else { return nil }
-                            return .data(data)
-                        case .imageURL(let url):
-                            // Attachment import resolves network/iCloud sources before the
-                            // provider boundary. Do not let a local model perform hidden I/O.
-                            guard url.isFileURL else { return nil }
-                            return .file(url)
-                        case .text:
-                            return nil
-                        }
-                        } ?? []
+                    let imageParts: [AppleFoundationImageInput] = []
                     FloeLogger(category: .providers).info(
                         "localPromptPrepared model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) sourceCharacters=\(promptBuild.sourceCharacters) promptCharacters=\(prompt.count) offeredTools=\(request.toolSchemas.count) selectedTools=\(promptBuild.selectedToolCount) omittedTools=\(max(0, request.toolSchemas.count - promptBuild.selectedToolCount))"
                     )
@@ -660,8 +661,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 mappedBytes: mappedBytes,
                 physicalMemoryBytes: LocalInferenceResourcePolicy.availableMemoryBytes()
             )
-            var capabilities: ModelCapabilities = [.text, .tools, .approval]
-            if entry.supportsVision { capabilities.insert(.vision) }
+            let capabilities: ModelCapabilities = [.text, .tools, .approval]
             models.append(ModelProfile(
                 id: entry.profileID,
                 providerID: provider.id,
@@ -894,17 +894,31 @@ public struct LocalProviderAdapter: ProviderAdapter {
         if modelRemoteID == AppleFoundationModelIdentity.remoteModelID {
             return tools.filter { $0.name.hasPrefix("apple.") }
         }
-        let exact: Set<String> = [
+        return tools.filter { mlxAdmissibleToolNames.contains($0.name) }
+    }
+
+    /// The app runtime uses the same list before composing its generic tool
+    /// inventory, so a local model never sees visual/browser capabilities
+    /// that the adapter will later remove.
+    public static func admissibleToolNames(
+        from names: Set<String>,
+        modelRemoteID: String
+    ) -> Set<String> {
+        if modelRemoteID == AppleFoundationModelIdentity.remoteModelID {
+            return Set(names.filter { $0.hasPrefix("apple.") })
+        }
+        return names.intersection(mlxAdmissibleToolNames)
+    }
+
+    private static let mlxAdmissibleToolNames: Set<String> = [
             "web.search", "web.searchAI", "web.fetch",
             "workspace.listDirectory", "workspace.readFile", "workspace.searchFiles",
             "workspace.inspectFileMetadata", "workspace.createFile", "workspace.writeFile",
             "workspace.applyPatch",
-            "image.inspect", "image.ocr", "pdf.read", "pdf.extractText",
+            "image.ocr", "document.pdf.inspect", "document.pdf.render",
             "exec.localPython", "exec.javascript", "exec.localNumerical",
             "memory.recall", "git.status", "git.diff", "git.log"
-        ]
-        return tools.filter { exact.contains($0.name) }
-    }
+    ]
 
     private static func selectTools(
         _ tools: [ToolSchemaDescriptor],
@@ -933,7 +947,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
         ]
         let fallbackNames: Set<String> = [
             "workspace.listDirectory", "workspace.readFile", "web.search",
-            "image.inspect", "exec.localPython", "memory.recall"
+            "image.ocr", "exec.localPython", "memory.recall"
         ]
         let scored = tools.compactMap { tool -> (ToolSchemaDescriptor, Int)? in
             if pendingToolNames.contains(tool.name) { return (tool, 10_000) }

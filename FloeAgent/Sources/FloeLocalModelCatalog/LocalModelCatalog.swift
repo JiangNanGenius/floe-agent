@@ -136,7 +136,7 @@ public enum CuratedLocalModelCatalog {
                 .init("vocab.json", byteCount: 6_722_759)
             ],
             parameterBillions: 4,
-            approximateDownloadBytes: 3_061_129_077, supportsVision: true,
+            approximateDownloadBytes: 3_061_129_077, supportsVision: false,
             supportsReasoning: true, supportsToolCalling: true, license: "Apache-2.0"
         ),
         .init(
@@ -159,7 +159,7 @@ public enum CuratedLocalModelCatalog {
             ],
             parameterBillions: 4,
             approximateDownloadBytes: 3_054_405_054,
-            supportsVision: true,
+            supportsVision: false,
             supportsReasoning: true,
             supportsToolCalling: true,
             license: "Apache-2.0"
@@ -183,7 +183,7 @@ public enum CuratedLocalModelCatalog {
             ],
             parameterBillions: 4.5,
             approximateDownloadBytes: 5_179_239_349,
-            supportsVision: true,
+            supportsVision: false,
             supportsReasoning: true,
             supportsToolCalling: true,
             license: "Gemma"

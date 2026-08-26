@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide describes the Floe Agent 1.4.35 source target (build 66). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
+This guide describes the Floe Agent 1.4.36 source target (build 67). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
 
 ## 1. Install safely
 
@@ -42,7 +42,7 @@ Qwen and Gemma entries are user-downloaded MLX snapshots. Download, load and ben
 
 An installed model can be disabled without deleting its weights. Re-enabling it makes it available to the task picker again; disabling a resident MLX model also unloads it.
 
-Local models receive a smaller, intent-ranked catalog of real Floe tools and a local-only dynamic context/compression budget. Cloud-provider context limits, compression and tool schemas are not reduced to accommodate a local model. If a local model cannot produce a valid tool call, Floe reports the parsing or capability reason instead of claiming the tool ran.
+Local models receive a smaller, intent-ranked catalog of real Floe tools and a local-only dynamic context/compression budget. Cloud-provider context limits, compression and tool schemas are not reduced to accommodate a local model. On-device inference is text-only and never maps a vision projector. Floe transcribes attached images with Apple Vision OCR, saves the bounded handoff under the task workspace's **OCR** folder, and supplies that text to the conversation. PDF text inspection, page rendering and OCR remain available; semantic `image.inspect` and visual browser tools are not exposed to local models. If OCR finds no readable text, Floe states the limit instead of guessing what the image contains. If a local model cannot produce a valid tool call, Floe reports the parsing or capability reason instead of claiming the tool ran.
 
 Greetings, ordinary conversation, questions and brainstorming do not require an explicit task command. Apple Foundation Model should answer them naturally and asks for clarification only when missing information materially changes a consequential action. Downloaded MLX models prefill prompts in device-budgeted chunks and release transient Metal/KV caches after each generation while retaining model weights only for tool continuation within the active task.
 
