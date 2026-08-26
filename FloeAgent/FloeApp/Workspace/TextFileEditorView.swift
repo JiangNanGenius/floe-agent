@@ -22,6 +22,10 @@ struct TextFileEditorView: View {
     @ObservedObject var center: WorkspaceCenter
     /// Called after a successful save so the caller can refresh.
     var onSaved: () -> Void = {}
+    /// The full workspace IDE owns dismissal and file navigation itself.
+    var embeddedInIDE = false
+    /// Lets the IDE guard file switches and dismissal while edits are dirty.
+    var onDirtyChange: (Bool) -> Void = { _ in }
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -44,8 +48,7 @@ struct TextFileEditorView: View {
 
     /// Whether this file is Markdown and should offer preview + formatting.
     private var isMarkdown: Bool {
-        let ext = (relativePath as NSString).pathExtension.lowercased()
-        return ext == "md" || ext == "markdown"
+        WorkspaceFileType.isMarkdown(relativePath)
     }
 
     private var codeLanguage: CodeLanguage? {
@@ -110,9 +113,11 @@ struct TextFileEditorView: View {
                     .frame(minHeight: FloeTheme.minimumTarget)
                 }
             }
-            ToolbarItem(placement: .cancellationAction) {
-                Button("inspector.editor.cancel") { dismiss() }
-                    .frame(minHeight: FloeTheme.minimumTarget)
+            if !embeddedInIDE {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("inspector.editor.cancel") { dismiss() }
+                        .frame(minHeight: FloeTheme.minimumTarget)
+                }
             }
             if let language = codeLanguage {
                 ToolbarItemGroup(placement: .topBarLeading) {
@@ -121,6 +126,7 @@ struct TextFileEditorView: View {
                     } label: {
                         Label("查找替换", systemImage: "magnifyingglass")
                     }
+                    .keyboardShortcut("f", modifiers: .command)
                     Menu {
                         ForEach(codeSymbols(language), id: \.offset) { symbol in
                             Button(symbol.label) { select(offset: symbol.offset) }
@@ -139,12 +145,14 @@ struct TextFileEditorView: View {
                     } label: {
                         Label("重做", systemImage: "arrow.uturn.forward")
                     }
-                    Button {
-                        Task { await run(language) }
-                    } label: {
-                        if isRunning { ProgressView() } else { Label("运行", systemImage: "play.fill") }
+                    if language.runnableToolName != nil {
+                        Button {
+                            Task { await run(language) }
+                        } label: {
+                            if isRunning { ProgressView() } else { Label("运行", systemImage: "play.fill") }
+                        }
+                        .disabled(isRunning || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
-                    .disabled(isRunning || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
             ToolbarItem(placement: .confirmationAction) {
@@ -158,6 +166,7 @@ struct TextFileEditorView: View {
                     }
                 }
                 .disabled(!isDirty || isSaving)
+                .keyboardShortcut("s", modifiers: .command)
                 .frame(minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("inspector.editor.save")
             }
@@ -181,6 +190,9 @@ struct TextFileEditorView: View {
             }
         }
         .task { await load() }
+        .onChange(of: isDirty) { _, dirty in
+            onDirtyChange(dirty)
+        }
         .alert(item: $center.conflict) { conflict in
             Alert(
                 title: Text("inspector.conflict.title"),
@@ -290,7 +302,7 @@ struct TextFileEditorView: View {
     private func run(_ language: CodeLanguage) async {
         isRunning = true
         defer { isRunning = false }
-        let toolName = language == .python ? "exec.localPython" : "exec.javascript"
+        guard let toolName = language.runnableToolName else { return }
         guard let runner = ToolRunnerRegistry.shared.runner(named: toolName) else {
             runOutput = CodeRunOutput(title: "无法运行", text: "此构建未包含 \(language.displayName) 运行时。")
             return
@@ -408,13 +420,14 @@ struct TextFileEditorView: View {
             return
         }
         do {
-            let content = try service.readFile(relativePath, byteOffset: 0)
+            let content = try service.readFileForEditing(relativePath)
             let metadata = try service.metadata(relativePath)
             text = content.text
             originalText = content.text
             baseMtime = metadata.mtime
             baseSHA256 = metadata.sha256
             loadError = nil
+            onDirtyChange(false)
         } catch {
             loadError = error.localizedDescription
         }
@@ -434,8 +447,11 @@ struct TextFileEditorView: View {
             baseMtime = outcome.mtime
             baseSHA256 = outcome.sha256
             saveError = nil
+            onDirtyChange(false)
             onSaved()
-            dismiss()
+            if !embeddedInIDE {
+                dismiss()
+            }
         } catch let error as WorkspaceToolError {
             if case .conflict = error {
                 // The center already surfaced the conflict alert.
@@ -495,45 +511,136 @@ private struct MarkdownAwareTextView: UIViewRepresentable {
 }
 
 private enum CodeLanguage: Equatable {
+    case swift
     case python
-    case javascript
+    case javascript(displayName: String)
+    case json
+    case shell
+    case cFamily(displayName: String)
+    case markup(displayName: String)
+    case stylesheet
+    case configuration(displayName: String)
+    case sql
+    case generic(displayName: String)
 
     init?(relativePath: String) {
-        switch (relativePath as NSString).pathExtension.lowercased() {
+        let ext = WorkspaceFileType.pathExtension(for: relativePath)
+        switch ext {
+        case "swift": self = .swift
         case "py": self = .python
-        case "js", "mjs", "cjs": self = .javascript
+        case "js", "mjs", "cjs", "jsx": self = .javascript(displayName: "JavaScript")
+        case "ts", "tsx": self = .javascript(displayName: "TypeScript")
+        case "json", "jsonc": self = .json
+        case "sh", "bash", "zsh", "fish": self = .shell
+        case "c", "h", "m": self = .cFamily(displayName: "C / Objective-C")
+        case "mm", "cc", "cpp", "cxx", "hpp": self = .cFamily(displayName: "C++")
+        case "html", "htm", "xml", "vue", "svelte": self = .markup(displayName: ext.uppercased())
+        case "css", "scss": self = .stylesheet
+        case "yaml", "yml": self = .configuration(displayName: "YAML")
+        case "toml": self = .configuration(displayName: "TOML")
+        case "properties", "ini", "conf": self = .configuration(displayName: "Configuration")
+        case "sql": self = .sql
+        case "rs": self = .generic(displayName: "Rust")
+        case "go": self = .generic(displayName: "Go")
+        case "java": self = .generic(displayName: "Java")
+        case "kt", "kts": self = .generic(displayName: "Kotlin")
+        case "rb": self = .generic(displayName: "Ruby")
+        case "php": self = .generic(displayName: "PHP")
+        case "pl": self = .generic(displayName: "Perl")
+        case "lua": self = .generic(displayName: "Lua")
+        case "dart": self = .generic(displayName: "Dart")
+        case "gradle": self = .generic(displayName: "Gradle")
         default: return nil
         }
     }
 
-    var displayName: String { self == .python ? "Python" : "JavaScript" }
-    var icon: String { self == .python ? "chevron.left.forwardslash.chevron.right" : "curlybraces" }
+    var displayName: String {
+        switch self {
+        case .swift: "Swift"
+        case .python: "Python"
+        case .javascript(let displayName), .cFamily(let displayName),
+             .markup(let displayName), .configuration(let displayName),
+             .generic(let displayName): displayName
+        case .json: "JSON"
+        case .shell: "Shell"
+        case .stylesheet: "CSS"
+        case .sql: "SQL"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .swift: "swift"
+        case .python: "chevron.left.forwardslash.chevron.right"
+        case .json, .javascript: "curlybraces"
+        case .shell: "terminal"
+        default: "doc.text"
+        }
+    }
 
     var keywords: [String] {
         switch self {
+        case .swift:
+            return ["actor", "any", "as", "associatedtype", "async", "await", "break", "case", "catch", "class", "continue", "default", "defer", "deinit", "do", "else", "enum", "extension", "false", "fileprivate", "for", "func", "guard", "if", "import", "in", "init", "inout", "internal", "is", "isolated", "let", "nil", "nonisolated", "open", "private", "protocol", "public", "repeat", "return", "self", "some", "static", "struct", "subscript", "super", "switch", "throw", "throws", "true", "try", "typealias", "var", "where", "while"]
         case .python:
             return ["and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "False", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True", "try", "while", "with", "yield"]
         case .javascript:
-            return ["async", "await", "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete", "do", "else", "export", "extends", "false", "finally", "for", "from", "function", "if", "import", "in", "instanceof", "let", "new", "null", "of", "return", "static", "super", "switch", "this", "throw", "true", "try", "typeof", "undefined", "var", "void", "while", "with", "yield"]
+            return ["async", "await", "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete", "do", "else", "enum", "export", "extends", "false", "finally", "for", "from", "function", "if", "implements", "import", "in", "instanceof", "interface", "let", "new", "null", "of", "private", "protected", "public", "return", "static", "super", "switch", "this", "throw", "true", "try", "type", "typeof", "undefined", "var", "void", "while", "with", "yield"]
+        case .cFamily:
+            return ["auto", "bool", "break", "case", "catch", "char", "class", "const", "continue", "default", "delete", "do", "double", "else", "enum", "extern", "false", "float", "for", "if", "import", "include", "inline", "int", "long", "namespace", "new", "nullptr", "private", "protected", "public", "return", "short", "signed", "sizeof", "static", "struct", "switch", "template", "this", "throw", "true", "try", "typedef", "typename", "union", "unsigned", "using", "virtual", "void", "volatile", "while"]
+        case .shell:
+            return ["case", "do", "done", "elif", "else", "esac", "export", "fi", "for", "function", "if", "in", "local", "readonly", "select", "then", "until", "while"]
+        case .sql:
+            return ["ALTER", "AND", "AS", "ASC", "BEGIN", "BY", "CASE", "CREATE", "DELETE", "DESC", "DISTINCT", "DROP", "ELSE", "END", "FROM", "GROUP", "HAVING", "IN", "INDEX", "INSERT", "INTO", "IS", "JOIN", "LIMIT", "NOT", "NULL", "ON", "OR", "ORDER", "SELECT", "TABLE", "THEN", "UNION", "UPDATE", "VALUES", "WHEN", "WHERE"]
+        default:
+            return []
+        }
+    }
+
+    fileprivate var usesHashComments: Bool {
+        switch self {
+        case .python, .shell, .configuration: true
+        default: false
+        }
+    }
+
+    fileprivate var usesMarkupComments: Bool {
+        if case .markup = self { return true }
+        return false
+    }
+
+    fileprivate var runnableToolName: String? {
+        switch self {
+        case .python: "exec.localPython"
+        case .javascript: "exec.javascript"
+        default: nil
         }
     }
 
     func symbols(in source: String) -> [(offset: Int, label: String)] {
         let pattern: String
+        let nameGroup: Int
         switch self {
         case .python:
             pattern = #"(?m)^\s*(?:async\s+)?(class|def)\s+([A-Za-z_][A-Za-z0-9_]*)"#
+            nameGroup = 2
         case .javascript:
-            pattern = #"(?m)^\s*(?:(?:export\s+)?(?:async\s+)?(class|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)|(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:\([^\n]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>)"#
+            pattern = #"(?m)^\s*(?:export\s+)?(?:async\s+)?(class|function|interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)"#
+            nameGroup = 2
+        case .swift:
+            pattern = #"(?m)^\s*(?:(?:public|private|internal|fileprivate|open|final|static|nonisolated)\s+)*(actor|class|struct|enum|protocol|func)\s+([A-Za-z_][A-Za-z0-9_]*)"#
+            nameGroup = 2
+        default:
+            return []
         }
         guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
         let nsSource = source as NSString
         return expression.matches(in: source, range: NSRange(location: 0, length: nsSource.length)).compactMap { match in
-            let kindRange = match.range(at: 1)
-            let namedRange = match.range(at: 2).location != NSNotFound ? match.range(at: 2) : match.range(at: 3)
-            guard namedRange.location != NSNotFound else { return nil }
-            let name = nsSource.substring(with: namedRange)
-            let kind = kindRange.location == NSNotFound ? "function" : nsSource.substring(with: kindRange)
+            guard match.numberOfRanges > nameGroup,
+                  match.range(at: 1).location != NSNotFound,
+                  match.range(at: nameGroup).location != NSNotFound else { return nil }
+            let kind = nsSource.substring(with: match.range(at: 1))
+            let name = nsSource.substring(with: match.range(at: nameGroup))
             return (match.range.location, "\(kind) \(name)")
         }
     }
@@ -582,6 +689,8 @@ private struct StructuredCodeTextView: UIViewRepresentable {
         view.isEditable = true
         view.isScrollEnabled = true
         view.alwaysBounceVertical = true
+        view.alwaysBounceHorizontal = true
+        view.showsHorizontalScrollIndicator = true
         view.delegate = context.coordinator
         view.text = text
         context.coordinator.highlight(view)
@@ -641,13 +750,24 @@ private struct StructuredCodeTextView: UIViewRepresentable {
             let source = view.text ?? ""
             let selection = view.selectedRange
             let full = NSRange(location: 0, length: (source as NSString).length)
+            let baseAttributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedSystemFont(ofSize: 15, weight: .regular),
+                .foregroundColor: UIColor.label
+            ]
             let attributed = NSMutableAttributedString(
                 string: source,
-                attributes: [
-                    .font: UIFont.monospacedSystemFont(ofSize: 15, weight: .regular),
-                    .foregroundColor: UIColor.label
-                ]
+                attributes: baseAttributes
             )
+            // Keep typing responsive for unusually large source files. They
+            // retain the editor, line numbers and horizontal scrolling while
+            // syntax color is intentionally bounded to 512 Ki UTF-16 units.
+            guard full.length <= 512 * 1024 else {
+                view.attributedText = attributed
+                view.typingAttributes = baseAttributes
+                view.selectedRange = selection
+                view.setNeedsDisplay()
+                return
+            }
             func apply(_ pattern: String, color: UIColor, options: NSRegularExpression.Options = []) {
                 guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return }
                 regex.enumerateMatches(in: source, range: full) { match, _, _ in
@@ -655,15 +775,20 @@ private struct StructuredCodeTextView: UIViewRepresentable {
                 }
             }
             let words = parent.language.keywords.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
-            apply("\\b(?:\(words))\\b", color: .systemPurple)
+            if !words.isEmpty {
+                apply("\\b(?:\(words))\\b", color: .systemPurple, options: parent.language == .sql ? [.caseInsensitive] : [])
+            }
             apply(#"\b(?:0[xX][0-9a-fA-F]+|\d+(?:\.\d+)?)\b"#, color: .systemBlue)
             apply(#"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'"#, color: .systemRed)
-            if parent.language == .python {
+            if parent.language.usesMarkupComments {
+                apply(#"<!--[\s\S]*?-->"#, color: .systemGreen)
+            } else if parent.language.usesHashComments {
                 apply(#"(?m)#.*$"#, color: .systemGreen)
             } else {
                 apply(#"(?m)//.*$|/\*[\s\S]*?\*/"#, color: .systemGreen)
             }
             view.attributedText = attributed
+            view.typingAttributes = baseAttributes
             view.selectedRange = selection
             view.setNeedsDisplay()
         }
@@ -675,12 +800,18 @@ private final class LineNumberTextView: UITextView {
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
-        textContainerInset = UIEdgeInsets(top: 12, left: gutterWidth + 8, bottom: 12, right: 12)
+        configure()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        configure()
+    }
+
+    private func configure() {
         textContainerInset = UIEdgeInsets(top: 12, left: gutterWidth + 8, bottom: 12, right: 12)
+        textContainer.widthTracksTextView = false
+        textContainer.size = CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
     }
 
     override func draw(_ rect: CGRect) {
@@ -691,13 +822,17 @@ private final class LineNumberTextView: UITextView {
         context.fill(CGRect(x: contentOffset.x, y: rect.minY, width: gutterWidth, height: rect.height))
 
         let glyphRange = layoutManager.glyphRange(forBoundingRect: bounds, in: textContainer)
+        guard glyphRange.length > 0 else {
+            context.restoreGState()
+            return
+        }
+        let firstCharacter = layoutManager.characterIndexForGlyph(at: glyphRange.location)
+        let firstPrefix = (text as NSString).substring(to: min(firstCharacter, (text as NSString).length))
+        var line = firstPrefix.reduce(1) { $1 == "\n" ? $0 + 1 : $0 }
         var glyphIndex = glyphRange.location
         while glyphIndex < NSMaxRange(glyphRange) {
             var lineGlyphRange = NSRange()
             let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &lineGlyphRange)
-            let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
-            let prefix = (text as NSString).substring(to: min(charIndex, (text as NSString).length))
-            let line = prefix.reduce(1) { $1 == "\n" ? $0 + 1 : $0 }
             let value = "\(line)" as NSString
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: UIFont.monospacedSystemFont(ofSize: 11, weight: .regular),
@@ -711,6 +846,7 @@ private final class LineNumberTextView: UITextView {
                 ),
                 withAttributes: attributes
             )
+            line += 1
             glyphIndex = NSMaxRange(lineGlyphRange)
         }
         context.restoreGState()

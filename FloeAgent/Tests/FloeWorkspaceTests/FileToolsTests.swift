@@ -161,6 +161,43 @@ struct FileToolsTests {
         #expect(!second.truncated)
     }
 
+    @Test("editor reads the complete text instead of a truncated tool window")
+    func editorReadsCompleteText() throws {
+        let fixture = try makeFixture()
+        let big = String(repeating: "let value = 42\n", count: 8_000)
+        try fixture.write("large.swift", big)
+
+        let service = try fixture.environment.makeService()
+        let content = try service.readFileForEditing("large.swift")
+
+        #expect(content.text == big)
+        #expect(!content.truncated)
+        #expect(content.byteOffset == 0)
+        #expect(content.totalLines == 8_000)
+    }
+
+    @Test("editor rejects files that cannot be safely written in full")
+    func editorRejectsOversizedWrite() throws {
+        let fixture = try makeFixture()
+        try fixture.write("too-large.txt", String(repeating: "x", count: 129))
+        let service = WorkspaceFileService(guard: WorkspacePathGuard(
+            rootURL: fixture.root,
+            maxReadBytes: 1_024,
+            maxWriteBytes: 128
+        ))
+
+        do {
+            _ = try service.readFileForEditing("too-large.txt")
+            Issue.record("expected tooLarge")
+        } catch let error as WorkspaceToolError {
+            guard case .tooLarge(let limit) = error else {
+                Issue.record("expected tooLarge, got \(error)")
+                return
+            }
+            #expect(limit == 128)
+        }
+    }
+
     @Test("readFile on a directory fails with isDirectory")
     func readFileDirectory() async throws {
         let fixture = try makeFixture()

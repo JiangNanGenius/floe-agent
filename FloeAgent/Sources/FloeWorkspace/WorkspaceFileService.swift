@@ -255,6 +255,44 @@ public struct WorkspaceFileService: Sendable {
         return FileContent(text: text, truncated: truncated, totalLines: totalLines, byteOffset: clampedOffset)
     }
 
+    /// Reads a complete UTF-8-compatible text file for interactive editing.
+    ///
+    /// Agent reads stay chunked at 64 KiB, but an editor must never save a
+    /// truncated window over the original file. Editable files therefore use
+    /// the stricter of the workspace read and write limits and fail closed
+    /// when the complete contents cannot be loaded and saved safely.
+    public func readFileForEditing(
+        _ path: String,
+        cancellation: CancellationToken? = nil
+    ) throws -> FileContent {
+        try cancellation?.throwIfCancelled()
+        let url = try guardResolver.resolve(path)
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            throw WorkspaceToolError.notFound(path)
+        }
+        guard !isDirectory.boolValue else {
+            throw WorkspaceToolError.isDirectory(path)
+        }
+        try guardResolver.assertReadableSize(url)
+
+        let data = try Data(floeContentsOf: url)
+        guard data.count <= guardResolver.maxWriteBytes else {
+            throw WorkspaceToolError.tooLarge(limit: guardResolver.maxWriteBytes)
+        }
+        guard Self.looksLikeText(data) else {
+            throw WorkspaceToolError.invalidArguments("file is not editable text: \(path)")
+        }
+
+        let text = String(decoding: data, as: UTF8.self)
+        return FileContent(
+            text: text,
+            truncated: false,
+            totalLines: Self.lineCount(of: text),
+            byteOffset: 0
+        )
+    }
+
     // MARK: - Search
 
     /// Case-insensitive substring search over text files beneath `path`

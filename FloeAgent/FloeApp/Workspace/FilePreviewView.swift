@@ -25,10 +25,12 @@ struct FilePreviewView: View {
     @EnvironmentObject private var router: AppRouter
     /// Called when the user adds this file to the conversation context.
     var onAddToContext: (() -> Void)? = nil
+    /// Disabled when the preview is already hosted inside WorkspaceIDEView.
+    var allowsIDEExpansion = true
 
     @State private var content: FileContent?
     @State private var loadError: String?
-    @State private var isEditing = false
+    @State private var isIDEPresented = false
     @State private var quickLookURL: URL?
     @State private var previewError: String?
     @State private var autoOpenedCodePath: String?
@@ -55,11 +57,12 @@ struct FilePreviewView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
         .task(id: relativePath) { await load() }
-        .sheet(isPresented: $isEditing) {
-            NavigationStack {
-                TextFileEditorView(relativePath: relativePath, center: center) {
-                    Task { await load() }
-                }
+        .fullScreenCover(isPresented: $isIDEPresented) {
+            WorkspaceIDEView(
+                initialRelativePath: relativePath,
+                center: center
+            ) {
+                Task { await load() }
             }
         }
         .sheet(item: $quickLookURL) { url in
@@ -79,27 +82,19 @@ struct FilePreviewView: View {
     }
 
     private var isMarkdown: Bool {
-        let ext = (relativePath as NSString).pathExtension.lowercased()
-        return ext == "md" || ext == "markdown"
+        WorkspaceFileType.isMarkdown(relativePath)
     }
 
     private var isHTML: Bool {
-        let ext = (relativePath as NSString).pathExtension.lowercased()
-        return ext == "html" || ext == "htm"
+        WorkspaceFileType.isHTML(relativePath)
     }
 
     private var isCode: Bool {
-        let ext = (relativePath as NSString).pathExtension.lowercased()
-        return ["py", "js", "mjs", "cjs"].contains(ext)
+        WorkspaceFileType.isCode(relativePath)
     }
 
     private var isTextual: Bool {
-        let ext = (relativePath as NSString).pathExtension.lowercased()
-        return [
-            "txt", "md", "markdown", "json", "swift", "py", "js", "ts",
-            "c", "h", "cpp", "html", "htm", "css", "xml", "yaml", "yml",
-            "toml", "sh", "log", "csv"
-        ].contains(ext)
+        WorkspaceFileType.isText(relativePath)
     }
 
     @ToolbarContentBuilder
@@ -123,14 +118,17 @@ struct FilePreviewView: View {
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("inspector.context.add")
             }
-            if isTextual, content != nil, !center.isCloudWorkspacePath(relativePath) {
+            if allowsIDEExpansion,
+               isTextual,
+               content != nil,
+               !center.isCloudWorkspacePath(relativePath) {
                 Button {
-                    isEditing = true
+                    isIDEPresented = true
                 } label: {
-                    Label("inspector.preview.edit", systemImage: "pencil")
+                    Label("在编辑器中打开", systemImage: "arrow.up.left.and.arrow.down.right")
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("inspector.preview.edit")
+                .accessibilityLabel("在编辑器中打开")
             }
             if !isTextual, quickLookAvailable {
                 Button {
@@ -225,7 +223,7 @@ struct FilePreviewView: View {
             await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
             if isCode, autoOpenedCodePath != relativePath {
                 autoOpenedCodePath = relativePath
-                isEditing = true
+                isIDEPresented = true
             }
         } catch let error as WorkspaceToolError {
             loadError = error.errorDescription ?? error.localizedDescription
