@@ -143,6 +143,10 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         player = queue
         playerLayer = layer
         looper = AVPlayerLooper(player: queue, templateItem: item)
+        // AVPlayerLooper enqueues a copy of its template item. The template
+        // itself never becomes the queue's active item and can remain
+        // `.unknown` forever; Build 23 waited on that inactive object for ten
+        // seconds and then discarded an otherwise valid PiP controller.
         controller.delegate = self
         controller.canStartPictureInPictureAutomaticallyFromInline = true
         controller.requiresLinearPlayback = true
@@ -153,17 +157,23 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         // a fixed delay silently fails on slower iPads, so wait for the real
         // capability signal with a bounded timeout.
         let deadline = Date().addingTimeInterval(10)
-        while (item.status == .unknown || !controller.isPictureInPicturePossible)
+        var playbackItem = queue.currentItem
+        while (playbackItem == nil
+                || playbackItem?.status == .unknown
+                || !controller.isPictureInPicturePossible)
                 && Date() < deadline {
             guard generation == startGeneration, !Task.isCancelled else { return }
             try? await Task.sleep(for: .milliseconds(100))
+            playbackItem = queue.currentItem
         }
         guard generation == startGeneration else { return }
-        guard item.status == .readyToPlay, controller.isPictureInPicturePossible else {
+        guard let playbackItem,
+              playbackItem.status == .readyToPlay,
+              controller.isPictureInPicturePossible else {
             lastError = "画中画尚未就绪，请保持应用在前台后重试"
-            let itemError = item.error as NSError?
+            let itemError = playbackItem?.error as NSError?
             FloeLogger(category: .app).warning(
-                "pictureInPicturePrepareFailed stage=readinessTimeout generation=\(generation) itemStatus=\(String(describing: item.status)) errorDomain=\(itemError?.domain ?? "none") errorCode=\(itemError?.code ?? 0)"
+                "pictureInPicturePrepareFailed stage=readinessTimeout generation=\(generation) itemStatus=\(String(describing: playbackItem?.status)) possible=\(controller.isPictureInPicturePossible) errorDomain=\(itemError?.domain ?? "none") errorCode=\(itemError?.code ?? 0)"
             )
             stopPiPInternal()
             return

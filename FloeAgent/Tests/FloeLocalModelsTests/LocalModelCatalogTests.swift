@@ -383,6 +383,31 @@ struct LocalModelCatalogTests {
         #expect(build.systemInstructions.contains("native Foundation Models tools"))
     }
 
+    @Test("Apple Foundation Model exposes only one Apple-owned tool")
+    @available(macOS 15.4, *)
+    func appleModelRejectsThirdPartyFloeTools() {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: AppleFoundationModelIdentity.remoteModelID,
+            displayName: "Apple Foundation Model",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 1_024),
+            capabilities: [.text, .tools]
+        )
+        let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [("user", "告诉我当前位置，再读取工作区文件")],
+            toolSchemas: [
+                ToolSchemaDescriptor(name: "apple.location.current", description: "Get current location"),
+                ToolSchemaDescriptor(name: "workspace.readFile", description: "Read a file"),
+                ToolSchemaDescriptor(name: "web.search", description: "Search the web")
+            ]
+        ))
+        #expect(build.fallbackTools.map(\.name) == ["apple.location.current"])
+        #expect(build.selectedTools.map(\.name) == ["apple.location.current"])
+    }
+
     @Test("Constrained local context admits a small tool set")
     @available(macOS 15.4, *)
     func constrainedLocalPromptLimitsSchemas() {

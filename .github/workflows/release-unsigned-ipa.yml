@@ -402,7 +402,12 @@ jobs:
           cat > release-notes.md <<EOF
           ## Floe Agent $VERSION (build $BUILD)
 
-          This commit passed the shared Swift and simulator release gates, was uploaded to TestFlight, and produced the accompanying unsigned IPA.
+          - 本地模型的图片理解现在只处理当前一轮附件；视觉模型无法加载时会自动转为辅助识别，避免任务无回复或重复处理旧图片。
+          - Apple Foundation Model 的能力边界更加清楚，并改善了连续对话、Apple 工具调用和定位等待状态。
+          - 画中画会等待真实播放内容就绪，切出 Floe 时能更可靠地显示后台任务进度。
+          - 扩充设备端 Python 标准能力，并为科学计算提供清楚的 Pyodide WebAssembly 路径。
+
+          此版本已通过共享 Swift 与模拟器发布检查，并上传至 TestFlight；随附可审计的未签名 IPA。
 
           > [!WARNING]
           > The GitHub IPA is unsigned and cannot be installed directly. Inspect it, verify its SHA-256, then sign it with your own certificate. It is not the App Store package.

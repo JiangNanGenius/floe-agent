@@ -88,6 +88,10 @@ targets:
     dependencies:
       - framework: Vendor/Python.xcframework
         embed: true
+      - framework: Vendor/PythonExtensions/_asyncio.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_bisect.xcframework
+        embed: true
       - framework: Vendor/PythonExtensions/_blake2.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/_bz2.xcframework
@@ -100,13 +104,21 @@ targets:
         embed: true
       - framework: Vendor/PythonExtensions/_decimal.xcframework
         embed: true
+      - framework: Vendor/PythonExtensions/_elementtree.xcframework
+        embed: true
       - framework: Vendor/PythonExtensions/_hashlib.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_heapq.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/_json.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/_lzma.xcframework
         embed: true
+      - framework: Vendor/PythonExtensions/_md5.xcframework
+        embed: true
       - framework: Vendor/PythonExtensions/_opcode.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_pickle.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/_random.xcframework
         embed: true
@@ -124,15 +136,27 @@ targets:
         embed: true
       - framework: Vendor/PythonExtensions/_struct.xcframework
         embed: true
+      - framework: Vendor/PythonExtensions/_uuid.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_zoneinfo.xcframework
+        embed: true
       - framework: Vendor/PythonExtensions/array.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/binascii.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/fcntl.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/math.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/mmap.xcframework
         embed: true
+      - framework: Vendor/PythonExtensions/pyexpat.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/resource.xcframework
+        embed: true
       - framework: Vendor/PythonExtensions/select.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/termios.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/unicodedata.xcframework
         embed: true
@@ -188,8 +212,8 @@ targets:
         SWIFT_VERSION: "6.0"
         SWIFT_OBJC_BRIDGING_HEADER: FloeApp/Execution/FloeApp-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.4.33"
-        CURRENT_PROJECT_VERSION: "64"
+        MARKETING_VERSION: "1.4.34"
+        CURRENT_PROJECT_VERSION: "65"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
         ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -235,8 +259,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.33"
-        CURRENT_PROJECT_VERSION: "64"
+        MARKETING_VERSION: "1.4.34"
+        CURRENT_PROJECT_VERSION: "65"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -280,8 +304,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.33"
-        CURRENT_PROJECT_VERSION: "64"
+        MARKETING_VERSION: "1.4.34"
+        CURRENT_PROJECT_VERSION: "65"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -320,8 +344,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.33"
-        CURRENT_PROJECT_VERSION: "64"
+        MARKETING_VERSION: "1.4.34"
+        CURRENT_PROJECT_VERSION: "65"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:

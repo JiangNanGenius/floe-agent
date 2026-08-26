@@ -31,6 +31,23 @@ private enum AuxiliaryVisionStreamResult: Sendable {
     case timedOut
 }
 
+private actor AuxiliaryVisionResultLatch {
+    private var result: AuxiliaryVisionStreamResult?
+    private var waiter: CheckedContinuation<AuxiliaryVisionStreamResult, Never>?
+
+    func wait() async -> AuxiliaryVisionStreamResult {
+        if let result { return result }
+        return await withCheckedContinuation { waiter = $0 }
+    }
+
+    func resolve(_ value: AuxiliaryVisionStreamResult) {
+        guard result == nil else { return }
+        result = value
+        waiter?.resume(returning: value)
+        waiter = nil
+    }
+}
+
 /// A human-decision prompt surfaced by a run in `.waitingApproval`. Wraps
 /// the runtime's waiting payload with the tool descriptor's deterministic
 /// risk labels so the approval card can show scope and rationale.
@@ -1013,7 +1030,8 @@ final class ConversationCenter: ObservableObject {
     private func visualEvidence(
         images: [ConversationImagePart],
         userRequest: String,
-        primaryModel: ModelProfile
+        primaryModel: ModelProfile,
+        preferPrimaryVision: Bool = true
     ) async -> (images: [ConversationImagePart], context: [ConversationMessage]) {
         let traceID = UUID().uuidString
         guard !images.isEmpty else {
@@ -1025,15 +1043,17 @@ final class ConversationCenter: ObservableObject {
         FloeLogger(category: .app).info(
             "visualEvidenceStarted trace=\(traceID) count=\(images.count) encodedCharacters=\(images.reduce(0) { $0 + $1.base64.count }) primaryModel=\(primaryModel.id.uuidString) primaryVision=\(primaryModel.capabilities.contains(.vision))"
         )
-        let configuredAuxiliary = auxiliaryVisionProviderAndModel()
         let primaryIsLocal = primaryModel.providerID == ProviderProfile.onDeviceProviderID
-        let shouldKeepLocalTextEngineResident = primaryIsLocal
-            && configuredAuxiliary?.0.kind != .local
-        if primaryModel.capabilities.contains(.vision), !shouldKeepLocalTextEngineResident {
+        if preferPrimaryVision, primaryModel.capabilities.contains(.vision) {
             FloeLogger(category: .app).info(
                 "visualEvidenceReady trace=\(traceID) route=primaryInline count=\(images.count)"
             )
             return (images, [])
+        }
+        let configuredAuxiliary = auxiliaryVisionProviderAndModel().flatMap { candidate in
+            // A failed local VLM must not be selected again as its own
+            // fallback. Use a distinct auxiliary model or deterministic OCR.
+            candidate.1.id == primaryModel.id ? nil : candidate
         }
         guard let (provider, model) = configuredAuxiliary else {
             if let ocr = await onDeviceOCRContext(images) {
@@ -1387,7 +1407,7 @@ final class ConversationCenter: ObservableObject {
                     progress: 16
                 )
             }
-            let visual = await self.visualEvidence(
+            var visual = await self.visualEvidence(
                 images: images,
                 userRequest: goal,
                 primaryModel: model
@@ -1410,16 +1430,45 @@ final class ConversationCenter: ObservableObject {
                         includesVisionProjector: !visual.images.isEmpty
                     )
                 } catch {
-                    await self.finishDeferredLaunchFailure(
-                        runID: runID,
-                        conversationID: conversationID,
-                        error: error
-                    )
-                    await self.environment.localModelRuntime.releaseForTask(
-                        taskID: runID,
-                        reason: "launchFailed"
-                    )
-                    return .failure(error)
+                    if !visual.images.isEmpty {
+                        FloeLogger(category: .app).warning(
+                            "localVisionPrepareFallback run=\(runID.uuidString) model=\(model.remoteModelID) message=\(String(error.localizedDescription.prefix(300)))"
+                        )
+                        visual = await self.visualEvidence(
+                            images: images,
+                            userRequest: goal,
+                            primaryModel: model,
+                            preferPrimaryVision: false
+                        )
+                        do {
+                            try await self.environment.localModelsCenter.prepareForTask(
+                                modelID: model.remoteModelID,
+                                includesVisionProjector: false
+                            )
+                        } catch {
+                            await self.finishDeferredLaunchFailure(
+                                runID: runID,
+                                conversationID: conversationID,
+                                error: error
+                            )
+                            await self.environment.localModelRuntime.releaseForTask(
+                                taskID: runID,
+                                reason: "launchFailedAfterVisionFallback"
+                            )
+                            return .failure(error)
+                        }
+                    } else {
+                        await self.finishDeferredLaunchFailure(
+                            runID: runID,
+                            conversationID: conversationID,
+                            error: error
+                        )
+                        await self.environment.localModelRuntime.releaseForTask(
+                            taskID: runID,
+                            reason: "launchFailed"
+                        )
+                        return .failure(error)
+                    }
                 }
             }
             guard !Task.isCancelled,
@@ -2276,6 +2325,16 @@ final class ConversationCenter: ObservableObject {
                 modelID: model.remoteModelID
             )
         }
+        let resumedImages = checkpoint == nil ? (current?.images ?? []) : []
+        // A resumed run may be recovering from a VLM allocation failure. Do
+        // not feed the same large projector input back into the model; derive
+        // bounded evidence through a distinct auxiliary model or Apple OCR.
+        let resumedVisual = await visualEvidence(
+            images: resumedImages,
+            userRequest: record.goal,
+            primaryModel: model,
+            preferPrimaryVision: false
+        )
         let service = await runService(
             for: record.conversationID,
             provider: provider,
@@ -2284,8 +2343,8 @@ final class ConversationCenter: ObservableObject {
             executionMode: mode,
             workspaceID: environment.workspaceCenter.workspaceID(for: record.conversationID),
             memoryQuery: record.goal,
-            conversationHistory: history,
-            currentUserImages: checkpoint == nil ? (current?.images ?? []) : []
+            conversationHistory: history + resumedVisual.context,
+            currentUserImages: resumedVisual.images
         )
         try await environment.runStore.updateRunState(id: record.id, state: "preparing", endedAt: nil)
         _ = try? await environment.runStore.appendEvent(
@@ -2569,7 +2628,7 @@ final class ConversationCenter: ObservableObject {
             forKey: Self.auxiliaryVisionReasoningDefaultsKey
         )
         FloeLogger(category: .app).info(
-            "imageInspectStarted trace=\(traceID) provider=\(provider.id.uuidString) model=\(model.id.uuidString) mime=\(mimeType) encodedCharacters=\(base64.count) promptCharacters=\(prompt.count) reasoning=\(visionReasoningEnabled ? "low" : "disabled") timeoutSeconds=60"
+            "imageInspectStarted trace=\(traceID) provider=\(provider.id.uuidString) model=\(model.id.uuidString) mime=\(mimeType) encodedCharacters=\(base64.count) promptCharacters=\(prompt.count) reasoning=\(visionReasoningEnabled ? "low" : "disabled") timeoutSeconds=30"
         )
         let parts: [ProviderContentPart] = [
             .text(prompt),
@@ -2589,47 +2648,55 @@ final class ConversationCenter: ObservableObject {
         // task group's @Sendable closures.
         let adapter = providerAdapter(for: provider)
         let credentials = resolveCredentials(for: provider)
-        let outcome = await withTaskGroup(
-            of: AuxiliaryVisionStreamResult.self,
-            returning: AuxiliaryVisionStreamResult.self
-        ) { group in
-            group.addTask {
-                var text = ""
-                var receivedFirstText = false
-                do {
-                    for try await event in adapter.stream(
-                        request: request,
-                        credentials: credentials
-                    ) {
-                        if case .textDelta(let delta) = event {
-                            if !receivedFirstText {
-                                receivedFirstText = true
-                                FloeLogger(category: .app).info(
-                                    "imageInspectFirstOutput trace=\(traceID) model=\(model.id.uuidString)"
-                                )
-                            }
-                            text += delta.text
-                            if text.count >= 4000 { break }
+        let latch = AuxiliaryVisionResultLatch()
+        let streamTask = Task {
+            var text = ""
+            var receivedFirstText = false
+            do {
+                for try await event in adapter.stream(
+                    request: request,
+                    credentials: credentials
+                ) {
+                    if case .textDelta(let delta) = event {
+                        if !receivedFirstText {
+                            receivedFirstText = true
+                            FloeLogger(category: .app).info(
+                                "imageInspectFirstOutput trace=\(traceID) model=\(model.id.uuidString)"
+                            )
                         }
+                        text += delta.text
+                        if text.count >= 4000 { break }
                     }
-                } catch {
-                    let nsError = error as NSError
-                    return .failed(
-                        domain: nsError.domain,
-                        code: nsError.code,
-                        message: String(error.localizedDescription.prefix(500))
-                    )
                 }
-                return .response(text)
+                await latch.resolve(.response(text))
+            } catch {
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    await latch.resolve(.response(trimmed))
+                    return
+                }
+                let nsError = error as NSError
+                await latch.resolve(.failed(
+                    domain: nsError.domain,
+                    code: nsError.code,
+                    message: String(error.localizedDescription.prefix(500))
+                ))
             }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(60))
-                return .timedOut
-            }
-            let first = await group.next() ?? .timedOut
-            group.cancelAll()
-            return first
         }
+        let timeoutTask = Task {
+            try? await Task.sleep(for: .seconds(30))
+            guard !Task.isCancelled else { return }
+            await latch.resolve(.timedOut)
+        }
+        let outcome = await withTaskCancellationHandler {
+            await latch.wait()
+        } onCancel: {
+            streamTask.cancel()
+            timeoutTask.cancel()
+            Task { await latch.resolve(.timedOut) }
+        }
+        streamTask.cancel()
+        timeoutTask.cancel()
         let durationMs = Int(Date().timeIntervalSince(startedAt) * 1_000)
         switch outcome {
         case .response(let description):
@@ -2645,9 +2712,9 @@ final class ConversationCenter: ObservableObject {
             return .failure(.provider(domain: domain, code: code, message: message))
         case .timedOut:
             FloeLogger(category: .app).warning(
-                "imageInspectTimedOut trace=\(traceID) model=\(model.id.uuidString) timeoutSeconds=60 durationMs=\(durationMs)"
+                "imageInspectTimedOut trace=\(traceID) model=\(model.id.uuidString) timeoutSeconds=30 durationMs=\(durationMs)"
             )
-            return .failure(.timedOut(seconds: 60))
+            return .failure(.timedOut(seconds: 30))
         }
     }
 

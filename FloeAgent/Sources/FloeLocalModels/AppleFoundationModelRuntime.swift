@@ -213,8 +213,11 @@ public actor AppleFoundationModelRuntime {
             samplingMode: .greedy,
             temperature: 0,
             maximumResponseTokens: effectiveMaxTokens,
-            toolCallingMode: tools.isEmpty
-                ? .disallowed : (forceToolCall ? .required : .allowed)
+            // `.required` could leave the system model waiting indefinitely
+            // when a dynamically bridged tool was selected. The prompt still
+            // asks for the one exact capability, while `.allowed` lets the
+            // model fail naturally instead of wedging the session.
+            toolCallingMode: tools.isEmpty ? .disallowed : .allowed
         )
         let contextOptions = ContextOptions(
             reasoningLevel: model.capabilities.contains(.reasoning) ? .light : nil

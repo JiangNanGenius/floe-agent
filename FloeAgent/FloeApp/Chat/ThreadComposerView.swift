@@ -300,7 +300,12 @@ struct ThreadComposerView: View {
                 pendingLocalCapabilityModel = nil
             }
         } message: {
-            Text("本地模型使用独立的小上下文和精简工具集，适合搜索、读取文件、简单文本与本地计算；复杂浏览器自动化、SSH、云工作区和多步骤 Git 操作请继续使用云端模型。")
+            if pendingLocalCapabilityModel?.remoteModelID
+                == AppleFoundationModelIdentity.remoteModelID {
+                Text("Apple Foundation Model 目前只支持自然语言聊天和 Apple 设备能力。网页、文件、Python、浏览器、SSH、云工作区、Git 等其他 Floe 工具在此模型下不可用；需要这些能力时请使用云端模型或已下载的本地模型。")
+            } else {
+                Text("本地模型使用独立的动态上下文和精简工具集，适合搜索、读取文件、简单文本与本地计算；复杂浏览器自动化、SSH、云工作区和多步骤 Git 操作请继续使用云端模型。")
+            }
         }
         .confirmationDialog(
             "切换本地模型？",
@@ -847,6 +852,11 @@ struct ThreadComposerView: View {
     private func chooseModel(_ model: ModelProfile) {
         guard model.providerID == ProviderProfile.onDeviceProviderID else {
             applyModelSelection(model)
+            return
+        }
+        if model.remoteModelID == AppleFoundationModelIdentity.remoteModelID,
+           selectedModelID != model.id {
+            pendingLocalCapabilityModel = model
             return
         }
         let currentIsCloud = models.first(where: { $0.id == selectedModelID })?

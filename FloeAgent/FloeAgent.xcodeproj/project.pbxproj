@@ -13,6 +13,7 @@
 		0508FA44AF2D75EF015ADA06 /* _sha3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 855EFD5014DCA004E8103D32 /* _sha3.xcframework */; };
 		0698EEE9614E076C9AFEED3A /* FeedbackReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 533B35B37CF7B7268AEB05B9 /* FeedbackReportView.swift */; };
 		075390C32FF78D04726E9561 /* MemoryDreamService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16D569760F69C04D0B6C33D1 /* MemoryDreamService.swift */; };
+		07BF0D2F6B4B3DE0CA9F6303 /* fcntl.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EE446478DBD5263458338578 /* fcntl.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		086E743FC13CE9DA2BD91D05 /* _csv.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F056190E229F36B3FC87CD73 /* _csv.xcframework */; };
 		089D513D837438C091ED08A0 /* FloeSkills in Frameworks */ = {isa = PBXBuildFile; productRef = 5B057579F6C5787F1EF9F172 /* FloeSkills */; };
 		08CF2008E624ABD269C22C9F /* ImageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69C64CCB64B5B7C45F45C253 /* ImageEditorView.swift */; };
@@ -22,10 +23,12 @@
 		0F1C7B7F861DC76B9B119C05 /* AuxiliarySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6856FC02F7D3AA8406FFAE9D /* AuxiliarySettingsView.swift */; };
 		0F303F4875B02B64A9475FBC /* TaskInspectorViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC3A70A09C1A7E292DB36A43 /* TaskInspectorViews.swift */; };
 		0FC797D1A81F3651D0D3BFBF /* DocumentPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6361867E119C80F4DB74A23 /* DocumentPickerView.swift */; };
+		100AA7E13F179C31AD5A127A /* _elementtree.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C962FC08AA34E0D75F5600E4 /* _elementtree.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1025E15EE1084740B1DB0D0A /* ApprovalCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B2CC51635FB2F20F5C41CA1 /* ApprovalCardView.swift */; };
 		107D9B448A471CEDBE9E0FF6 /* PrivacySecurityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A18EF17B949C9C5817F9DCE9 /* PrivacySecurityView.swift */; };
 		1108F93F3CEE73E9893D390B /* DiffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05CD3FCDF6CC1F08B06B9119 /* DiffView.swift */; };
 		11A8872D302E2CA8A8E4F628 /* SkillsCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C7A649C2A6EC1875B18948E /* SkillsCenter.swift */; };
+		12A74443BD1FC0A4931E3858 /* _heapq.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0C8D36E30CA45FCB1EA234B4 /* _heapq.xcframework */; };
 		12F945998FD0E68D53F55EC1 /* _hashlib.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8B3180D417C752DEF2005250 /* _hashlib.xcframework */; };
 		144C0751E522D91EB3EAD196 /* ThreadDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17F136474D0FB91E6F810317 /* ThreadDetailView.swift */; };
 		17C3C71EDCDEDB585CA63FF8 /* SettingsActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B115F54C03CD39CDBDCABC /* SettingsActions.swift */; };
@@ -37,6 +40,7 @@
 		1BE8EAF7BEFC52CFA4846703 /* SkillDreamService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 224C3D6B873B21963949DAA8 /* SkillDreamService.swift */; };
 		1DAE6DE83A3980067040AF3F /* FloeLocalModels in Frameworks */ = {isa = PBXBuildFile; productRef = A0ED3E17200948E8978373F2 /* FloeLocalModels */; };
 		1DEB2C1ECE52FB4594BAB549 /* unicodedata.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4953B9D281B1637B7BE2E2C7 /* unicodedata.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		1E05D8457E28FCCBFB3AEC55 /* termios.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3C2891331FDB42F816478E56 /* termios.xcframework */; };
 		200FF4205A0D8FB439E16371 /* BrowserProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 734621A9EFCDFAC074872173 /* BrowserProtocolTests.swift */; };
 		2204AB734CAA9BD927FB3F95 /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A23E7E08860487A8333BE4F /* HostListView.swift */; };
 		232956B5D2159E67076246D5 /* _statistics.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A94DC3B96DA97D1E17F6B887 /* _statistics.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -77,12 +81,15 @@
 		4439885B5FEC7EBB773C2D97 /* BrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B79C8C2B8701925AEC218168 /* BrowserView.swift */; };
 		448125A55DDC627D8D972046 /* HomeChatSeparationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D9BCACE744F05C27341A43 /* HomeChatSeparationTests.swift */; };
 		44F125A88372998BD75A01C9 /* uuid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 7EB83CE4E7FCE787665DFBBB /* uuid.min.js */; };
+		460E577E2CEF8945AA055F27 /* _md5.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 538FB08A4DD774D6AEFCF28F /* _md5.xcframework */; };
 		4707D8E92893B0ED9C62F8F9 /* FloeCore in Frameworks */ = {isa = PBXBuildFile; productRef = 8C092D204147366710DA8E8D /* FloeCore */; };
 		485FA2BD9ACADB87C7D16913 /* ProviderEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 857283D5BF6E741DD727418D /* ProviderEditorViewModel.swift */; };
 		49D4CE5A1CDB89F7EC6BBFEE /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B8826D4AB351DBF9CFF40AD /* TerminalView.swift */; };
 		4ADD4F72F382289B6D7101CB /* SSHSessionOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 605587D767C978B8023F0DE2 /* SSHSessionOwner.swift */; };
 		4C2AB5B8C64EC6493BF92520 /* ScreenShareCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A82429B0BF7E6E52C6B4A8C /* ScreenShareCenter.swift */; };
 		4C337AC9C80DE98A41054F60 /* BackgroundRunCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D916CCF8A7BB2EDB41913DD /* BackgroundRunCoordinator.swift */; };
+		50BD5CED8F06FC57DAFB3DED /* _heapq.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 0C8D36E30CA45FCB1EA234B4 /* _heapq.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		50D04ECF856C858F6A84FEAB /* _asyncio.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 28E0216FA93D4EE0E28FC155 /* _asyncio.xcframework */; };
 		51FC0B9E3FDE98C725F6BA0E /* ConversationListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66624FE4F8480041F7602716 /* ConversationListViewModel.swift */; };
 		53B0B28D58E300B08FE02EF0 /* GeneralSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E788D879DCEB044587CF121 /* GeneralSettingsView.swift */; };
 		53C5DF929A29A202B41358EA /* ApprovalModelBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 436B2C5C853B7C60DCEF2059 /* ApprovalModelBackend.swift */; };
@@ -91,12 +98,14 @@
 		59878DE003DC7D51B58A1669 /* ProviderListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4A0E75544F5FA28387CB77B /* ProviderListView.swift */; };
 		5AE108D9A18E2DF3B4591CDA /* lodash.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 981B8A91A33287F0FDC3129C /* lodash.min.js */; };
 		5B7645F8BEC4BA09E98FA7CA /* FloeWorkspace in Frameworks */ = {isa = PBXBuildFile; productRef = 88998EEAC884C7033D8C41A8 /* FloeWorkspace */; };
+		5BB16BB6CFB30F1E04FF60DB /* termios.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3C2891331FDB42F816478E56 /* termios.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		5BB820EF2110E8C73542D2C2 /* FloeExecution in Frameworks */ = {isa = PBXBuildFile; productRef = 59DBBD5C35D97EBB383798F6 /* FloeExecution */; };
 		5C200D5807BA7B433E39BBB9 /* FilesCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A3792AECF660ADFEA7D4B8 /* FilesCenter.swift */; };
 		5C43AAAD15BA2B49F67B71D4 /* CPythonLocalRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37342E477B47F8A9B76D15B6 /* CPythonLocalRuntime.swift */; };
 		5CAEB9CA0E2CAD0ED3CF5C2A /* BroadcastPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C474665A34C09CEF3EA600B /* BroadcastPickerView.swift */; };
 		5D9232A405C85062BDDB69D8 /* OnboardingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CB28627E88075511A391819 /* OnboardingViewModel.swift */; };
 		5E947BB83381A4621C72C7F6 /* HomeChatVoiceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E280242F651031E86A80A21 /* HomeChatVoiceUITests.swift */; };
+		5EA814A1C794BD7B9937E81F /* _elementtree.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C962FC08AA34E0D75F5600E4 /* _elementtree.xcframework */; };
 		6011EEEE797CCCCBAFE79990 /* Python.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7EC6304EFEA8100679656E2D /* Python.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6045112F9A180B4BE2084A67 /* SyncSettingsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E47EC0D4490B49AD44060DE /* SyncSettingsUITests.swift */; };
 		60E0C3F854C4FA5869FA041D /* SyncSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38EF13B22EE01FC77116294D /* SyncSettingsView.swift */; };
@@ -107,19 +116,27 @@
 		671CC44587B45BA2A401FD33 /* ThreadEventView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BACF0650EC6E172999FEB4EC /* ThreadEventView.swift */; };
 		6746445A87576F1AE979702A /* SkillsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583BB494E657BD1BC7481C75 /* SkillsView.swift */; };
 		69DBF632867883EE636A76C1 /* select.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8EEDB221C5E3501DEF3F7015 /* select.xcframework */; };
+		6A87718ACF4469761EF2A023 /* _pickle.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 69539A226361C83F15C72B91 /* _pickle.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6B0D3A07EB93CDB1FF10B326 /* FloeSync in Frameworks */ = {isa = PBXBuildFile; productRef = CB9AC1549FA61B1132625EA1 /* FloeSync */; };
 		6CC9C3F3F49E9B42F280C04F /* FeedbackUploadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 515EFE93A7878B464ECA3848 /* FeedbackUploadService.swift */; };
 		6E0CE7E31A041E1ED1440133 /* math.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB881F2DC155C2D3A5681681 /* math.xcframework */; };
+		6E438B5B53DA64FF688B9F37 /* _bisect.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 11A3C519D44D0DD95F0EA208 /* _bisect.xcframework */; };
 		6EFA9ED6557018D9EC2EFFC6 /* FileTreeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86BFC8770B049F008476B6C8 /* FileTreeViewModel.swift */; };
 		6FC89A1BACBA33278669A2C9 /* CameraPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D8FAEF1503644BD831B03F7 /* CameraPickerView.swift */; };
 		7019692CCE4AC0CD840E1152 /* RichArtifactView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ADAB596B28C48F18A0D1196 /* RichArtifactView.swift */; };
 		70B0244D522DFFA14861A337 /* FloeScreenShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E388FA201B460E867D612C38 /* FloeScreenShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		7101B340769CDF8AEBEB0171 /* fcntl.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EE446478DBD5263458338578 /* fcntl.xcframework */; };
 		72F687318496A3451661FD31 /* dayjs.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 5A836CC647019173A92D3490 /* dayjs.min.js */; };
+		7578741B058DEF9D48EA4BC4 /* _zoneinfo.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 16AE359A986EE7EC10118E7B /* _zoneinfo.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		75B75F5F8C25D5B60B5E4541 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 37BB930D0175C1FF7EE714EE /* Assets.xcassets */; };
+		787BD004FDBDE668FCB85A2A /* _uuid.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EBFC00F1FCA508F70838C348 /* _uuid.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		79513D3F13F2694F56459286 /* FloeModels in Frameworks */ = {isa = PBXBuildFile; productRef = 6D3CC5A66BC37258D46FDF3D /* FloeModels */; };
+		7AF822628DBEFE38ACA05194 /* _bisect.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 11A3C519D44D0DD95F0EA208 /* _bisect.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		7B44A496EC3A28601170695B /* AppRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0E86FB249DA97D2FA57FBA7 /* AppRouter.swift */; };
 		7BB5CA51824E786287F252A8 /* TextFileEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9882EA32564305D017F2566 /* TextFileEditorView.swift */; };
+		7C8242E3BE460533DA26F51C /* _zoneinfo.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 16AE359A986EE7EC10118E7B /* _zoneinfo.xcframework */; };
 		7C8518294F67702219A7CA5D /* TaskChangesInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE529725CBA54629E95EA4F0 /* TaskChangesInspectorView.swift */; };
+		7C9BBE2BC1FD0E734C478463 /* _md5.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 538FB08A4DD774D6AEFCF28F /* _md5.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		7E68D5161A58FBD3F6C55FAF /* ErrorEventView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBF4EA91353CD8A801DCA98A /* ErrorEventView.swift */; };
 		878398C628C1FBE1C8F9311E /* _statistics.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A94DC3B96DA97D1E17F6B887 /* _statistics.xcframework */; };
 		88B730D8D33C92B2D1F5A906 /* StepGroupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE1EE021FED26EBFA80248B6 /* StepGroupView.swift */; };
@@ -127,6 +144,7 @@
 		89B023C074580181D49D192A /* ModelPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADE9E409B66EBC3967853B86 /* ModelPickerView.swift */; };
 		89D986DE42E1C09CD2DB6309 /* zlib.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 71091AA54C5E2F667D6469A6 /* zlib.xcframework */; };
 		8BDBF9D426DD621EA4ECB830 /* FloeGit in Frameworks */ = {isa = PBXBuildFile; productRef = E6A81719803BDDE4E13451F3 /* FloeGit */; };
+		8D7C4CF1B8FC0F1CCEF94B1D /* pyexpat.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 59EFDCF31C5526A1B589BE5B /* pyexpat.xcframework */; };
 		8F40177268113AACE1405851 /* AppDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF5F8AFB4D253F079EA5CF84 /* AppDestination.swift */; };
 		90D87EC430B2EDFD947DE7DB /* array.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 397F1DC728D743D05F510489 /* array.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		912A144E85A4C312537582FC /* SetupGuideUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */; };
@@ -137,6 +155,7 @@
 		9480F3B70B2928BD0DAD3631 /* AppleSystemTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B4E7317E7E655E86990C5D1 /* AppleSystemTools.swift */; };
 		9484845FCE5ED5231B66713F /* DataManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC74E9DDD5C02BD49675B239 /* DataManagementView.swift */; };
 		98BD8CC5877E2714FF8979F3 /* _lzma.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = CB9397357FA8DE45F2E2112C /* _lzma.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		993A04071E9FB880BC5727C3 /* _uuid.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EBFC00F1FCA508F70838C348 /* _uuid.xcframework */; };
 		99C54A5F72057E2F5DE439BD /* UserMessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30E546884B42CDF2BB96931B /* UserMessageBubble.swift */; };
 		9A14F4703ACB1ABC85E9FB46 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A7AA9D321701A98A3C0B09E /* ShareViewController.swift */; };
 		9AE3503A129EA99DA6997C67 /* python in Resources */ = {isa = PBXBuildFile; fileRef = 926B95CD92D851FFE3BB0DFE /* python */; };
@@ -159,12 +178,14 @@
 		ABAF2700584FE5E93C50DA1B /* FloeImages in Frameworks */ = {isa = PBXBuildFile; productRef = EBF97B079841247A01DFCE52 /* FloeImages */; };
 		AD09F21466C778C43633A947 /* RemoteImageInspectToolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 183A97BE093D68D231492DC7 /* RemoteImageInspectToolTests.swift */; };
 		AD229E781FF8EEAD58275F19 /* _datetime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1B3181E829C356459CFA9723 /* _datetime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AD61CEFDA09B1A33794EB76D /* resource.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5F3B002E69704278C46E0A12 /* resource.xcframework */; };
 		AE62B83850265049A67A47F4 /* FilePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A421102C6F73CB0DCC678535 /* FilePreviewView.swift */; };
 		AECD7DC7E8D774BD10F71607 /* SampleHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35C112647BD8DF8C99E18D89 /* SampleHandler.swift */; };
 		B030CB108442D9B3CEA7F61B /* HostEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 085605503DC285FC91B0449B /* HostEditorView.swift */; };
 		B122E4C91387683F2EDBC728 /* FileTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42E25ED52EAD56B5234BCA43 /* FileTreeView.swift */; };
 		B1706C324EE51831A0FE5EE9 /* _decimal.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1D3E9503EC3EC7259F7C06C8 /* _decimal.xcframework */; };
 		B2196F0D1CCA995A3F4F8C0D /* FloeTools in Frameworks */ = {isa = PBXBuildFile; productRef = 8E8F4CD97A741A8F515EC80E /* FloeTools */; };
+		B2EFAC62B0DD7A4420F4B579 /* _asyncio.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 28E0216FA93D4EE0E28FC155 /* _asyncio.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B30C1248DF0B9FE004549E3F /* ConversationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA165A2C7BD607DB6F26AD7B /* ConversationListView.swift */; };
 		B45AF4990B10532F1D1CD4CE /* _blake2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 620E189ED0BE974C6B1EA3DB /* _blake2.xcframework */; };
 		B81C50AA905334687754F195 /* Python.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7EC6304EFEA8100679656E2D /* Python.xcframework */; };
@@ -188,6 +209,7 @@
 		C5BCA4D53959F1B96E82F8B1 /* ExecutionEnvironmentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C801E16B941B45C62C279A9 /* ExecutionEnvironmentView.swift */; };
 		C5EDFDCD3E6C6D784D9F4ECC /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6AFF9D3E17B2962EAE99225 /* AppEnvironment.swift */; };
 		C5EF7D89863A823AEC36B81F /* FloeAgentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */; };
+		C6C8CB20E5F26468E3AD36B2 /* _pickle.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 69539A226361C83F15C72B91 /* _pickle.xcframework */; };
 		C6CD25F689A569EBCC25BDF6 /* marked.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 35BE65ADB5F2AA44F63AFCDB /* marked.min.js */; };
 		C7B7EEE61A3D6CEC98A41E7B /* AssistantMessageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31D98DFED3D114A699F77361 /* AssistantMessageView.swift */; };
 		C7DCF8C350C6328A24F07225 /* LocalSkillCreator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7846CD1BBE3A01E9CFE5CDFE /* LocalSkillCreator.swift */; };
@@ -228,7 +250,9 @@
 		EF38B4329039226E8A757EE4 /* HostListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104F2ACE88D931C8C54A6787 /* HostListViewModel.swift */; };
 		EFB8B154A44004A6D4A9366C /* RunStateLocalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E112A159AE387A7219A69172 /* RunStateLocalizer.swift */; };
 		F2A94C7D54C7BB530508D94D /* _socket.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3CDEB34F9680F5C7DBC54628 /* _socket.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		F2AAFBF6B82F2153828BC49E /* pyexpat.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 59EFDCF31C5526A1B589BE5B /* pyexpat.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F2FA4F2EDA410E215E8DA440 /* TerminalViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 531772E03835546E29F3B7DF /* TerminalViewModel.swift */; };
+		F39A0A18A023F65041E2E333 /* resource.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5F3B002E69704278C46E0A12 /* resource.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F444F9DCEFD14D81F09899AF /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC0B76B524CD1FC5833106AE /* SpeechService.swift */; };
 		F6784CC2BD16D0D850C7B22B /* _lzma.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = CB9397357FA8DE45F2E2112C /* _lzma.xcframework */; };
 		F699556D1AC6F3CE795CD7C3 /* BackgroundExecutionSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE6C97DCAC2474410B4480C7 /* BackgroundExecutionSettingsView.swift */; };
@@ -285,16 +309,22 @@
 			dstSubfolderSpec = 10;
 			files = (
 				6011EEEE797CCCCBAFE79990 /* Python.xcframework in Embed Frameworks */,
+				B2EFAC62B0DD7A4420F4B579 /* _asyncio.xcframework in Embed Frameworks */,
+				7AF822628DBEFE38ACA05194 /* _bisect.xcframework in Embed Frameworks */,
 				9BA95E066F40EBCDFE552224 /* _blake2.xcframework in Embed Frameworks */,
 				2552449B3F6DFD39F032C0FF /* _bz2.xcframework in Embed Frameworks */,
 				A5FEE395C7135D52DF0FF81F /* _csv.xcframework in Embed Frameworks */,
 				24501BB1BDCC1E8922982E4C /* _ctypes.xcframework in Embed Frameworks */,
 				AD229E781FF8EEAD58275F19 /* _datetime.xcframework in Embed Frameworks */,
 				C02543AA0E027F8278133ECB /* _decimal.xcframework in Embed Frameworks */,
+				100AA7E13F179C31AD5A127A /* _elementtree.xcframework in Embed Frameworks */,
 				88FFC05F3E4E386E7C26E5D9 /* _hashlib.xcframework in Embed Frameworks */,
+				50BD5CED8F06FC57DAFB3DED /* _heapq.xcframework in Embed Frameworks */,
 				BB65D78F600C5B315CFCD069 /* _json.xcframework in Embed Frameworks */,
 				98BD8CC5877E2714FF8979F3 /* _lzma.xcframework in Embed Frameworks */,
+				7C9BBE2BC1FD0E734C478463 /* _md5.xcframework in Embed Frameworks */,
 				FAA2BBDBE71E38BA0E378507 /* _opcode.xcframework in Embed Frameworks */,
+				6A87718ACF4469761EF2A023 /* _pickle.xcframework in Embed Frameworks */,
 				43C527CE147ACB5ABE71DF71 /* _random.xcframework in Embed Frameworks */,
 				C8CC648407E148C3FEFE0B18 /* _sha2.xcframework in Embed Frameworks */,
 				9FF83450C60A97AEFB3FC5D0 /* _sha3.xcframework in Embed Frameworks */,
@@ -303,11 +333,17 @@
 				6557760A3B71DB9B473F461E /* _ssl.xcframework in Embed Frameworks */,
 				232956B5D2159E67076246D5 /* _statistics.xcframework in Embed Frameworks */,
 				93EC91B1C5DF8EEC49FB6914 /* _struct.xcframework in Embed Frameworks */,
+				787BD004FDBDE668FCB85A2A /* _uuid.xcframework in Embed Frameworks */,
+				7578741B058DEF9D48EA4BC4 /* _zoneinfo.xcframework in Embed Frameworks */,
 				90D87EC430B2EDFD947DE7DB /* array.xcframework in Embed Frameworks */,
 				CD5540C1DFBBDA6417E25427 /* binascii.xcframework in Embed Frameworks */,
+				07BF0D2F6B4B3DE0CA9F6303 /* fcntl.xcframework in Embed Frameworks */,
 				93AE4E65731A89CBCF346E33 /* math.xcframework in Embed Frameworks */,
 				A778949A4707059C79A4E425 /* mmap.xcframework in Embed Frameworks */,
+				F2AAFBF6B82F2153828BC49E /* pyexpat.xcframework in Embed Frameworks */,
+				F39A0A18A023F65041E2E333 /* resource.xcframework in Embed Frameworks */,
 				38D12FDA70DBDEB3E3F91853 /* select.xcframework in Embed Frameworks */,
+				5BB16BB6CFB30F1E04FF60DB /* termios.xcframework in Embed Frameworks */,
 				1DEB2C1ECE52FB4594BAB549 /* unicodedata.xcframework in Embed Frameworks */,
 				EA16DBDD57899AC08A4E1310 /* zlib.xcframework in Embed Frameworks */,
 			);
@@ -323,11 +359,14 @@
 		0ADAB596B28C48F18A0D1196 /* RichArtifactView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichArtifactView.swift; sourceTree = "<group>"; };
 		0B2D5DED5D4B408F395DC2A4 /* FloeApp-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "FloeApp-Bridging-Header.h"; sourceTree = "<group>"; };
 		0B303CF6C9E42EF5BD06E96A /* FloeWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FloeWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		0C8D36E30CA45FCB1EA234B4 /* _heapq.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _heapq.xcframework; path = Vendor/PythonExtensions/_heapq.xcframework; sourceTree = "<group>"; };
 		104F2ACE88D931C8C54A6787 /* HostListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListViewModel.swift; sourceTree = "<group>"; };
 		105C43DC4C517D5A6A445B8B /* AgentPermissionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentPermissionsView.swift; sourceTree = "<group>"; };
+		11A3C519D44D0DD95F0EA208 /* _bisect.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _bisect.xcframework; path = Vendor/PythonExtensions/_bisect.xcframework; sourceTree = "<group>"; };
 		12C202262489FD354A0B595A /* _random.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _random.xcframework; path = Vendor/PythonExtensions/_random.xcframework; sourceTree = "<group>"; };
 		14B115F54C03CD39CDBDCABC /* SettingsActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsActions.swift; sourceTree = "<group>"; };
 		15EA4020964BCD69B527952F /* DraftTaskPermissionsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DraftTaskPermissionsSheet.swift; sourceTree = "<group>"; };
+		16AE359A986EE7EC10118E7B /* _zoneinfo.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _zoneinfo.xcframework; path = Vendor/PythonExtensions/_zoneinfo.xcframework; sourceTree = "<group>"; };
 		16D569760F69C04D0B6C33D1 /* MemoryDreamService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryDreamService.swift; sourceTree = "<group>"; };
 		17F136474D0FB91E6F810317 /* ThreadDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadDetailView.swift; sourceTree = "<group>"; };
 		183A97BE093D68D231492DC7 /* RemoteImageInspectToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageInspectToolTests.swift; sourceTree = "<group>"; };
@@ -345,6 +384,7 @@
 		219CD6341FB443743691F92D /* LocalPreviewServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPreviewServer.swift; sourceTree = "<group>"; };
 		224C3D6B873B21963949DAA8 /* SkillDreamService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillDreamService.swift; sourceTree = "<group>"; };
 		27BD00E30D4F02142C2C3B51 /* FloeShare.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FloeShare.entitlements; sourceTree = "<group>"; };
+		28E0216FA93D4EE0E28FC155 /* _asyncio.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _asyncio.xcframework; path = Vendor/PythonExtensions/_asyncio.xcframework; sourceTree = "<group>"; };
 		2A7AA9D321701A98A3C0B09E /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		2C4FE642486885CDD514009A /* ImportantFileShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportantFileShortcutTests.swift; sourceTree = "<group>"; };
 		2CB28627E88075511A391819 /* OnboardingViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViewModel.swift; sourceTree = "<group>"; };
@@ -367,6 +407,7 @@
 		397F1DC728D743D05F510489 /* array.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = array.xcframework; path = Vendor/PythonExtensions/array.xcframework; sourceTree = "<group>"; };
 		3BAA7AD6EAE3979E983C9E76 /* FloeShare.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FloeShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		3C217266DBB6D6A0C5EA9075 /* _ssl.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _ssl.xcframework; path = Vendor/PythonExtensions/_ssl.xcframework; sourceTree = "<group>"; };
+		3C2891331FDB42F816478E56 /* termios.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = termios.xcframework; path = Vendor/PythonExtensions/termios.xcframework; sourceTree = "<group>"; };
 		3C8A30D0D7D561C3E9BE4EC0 /* AppleCapabilitiesSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleCapabilitiesSettingsView.swift; sourceTree = "<group>"; };
 		3CDEB34F9680F5C7DBC54628 /* _socket.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _socket.xcframework; path = Vendor/PythonExtensions/_socket.xcframework; sourceTree = "<group>"; };
 		3D916CCF8A7BB2EDB41913DD /* BackgroundRunCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRunCoordinator.swift; sourceTree = "<group>"; };
@@ -387,11 +428,14 @@
 		52EAF0302B89FA6FFFD6A697 /* HostKeyTrustSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyTrustSheet.swift; sourceTree = "<group>"; };
 		531772E03835546E29F3B7DF /* TerminalViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalViewModel.swift; sourceTree = "<group>"; };
 		533B35B37CF7B7268AEB05B9 /* FeedbackReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedbackReportView.swift; sourceTree = "<group>"; };
+		538FB08A4DD774D6AEFCF28F /* _md5.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _md5.xcframework; path = Vendor/PythonExtensions/_md5.xcframework; sourceTree = "<group>"; };
 		583BB494E657BD1BC7481C75 /* SkillsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsView.swift; sourceTree = "<group>"; };
 		58FD2460881B6EAAD9966732 /* VoiceInputLive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputLive.swift; sourceTree = "<group>"; };
+		59EFDCF31C5526A1B589BE5B /* pyexpat.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pyexpat.xcframework; path = Vendor/PythonExtensions/pyexpat.xcframework; sourceTree = "<group>"; };
 		5A836CC647019173A92D3490 /* dayjs.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = dayjs.min.js; sourceTree = "<group>"; };
 		5BA323DAAD3913411F1D5340 /* VNCViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VNCViewModel.swift; sourceTree = "<group>"; };
 		5F1F13207E326EE5DC28108D /* _sqlite3.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _sqlite3.xcframework; path = Vendor/PythonExtensions/_sqlite3.xcframework; sourceTree = "<group>"; };
+		5F3B002E69704278C46E0A12 /* resource.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = resource.xcframework; path = Vendor/PythonExtensions/resource.xcframework; sourceTree = "<group>"; };
 		605587D767C978B8023F0DE2 /* SSHSessionOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHSessionOwner.swift; sourceTree = "<group>"; };
 		620E189ED0BE974C6B1EA3DB /* _blake2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _blake2.xcframework; path = Vendor/PythonExtensions/_blake2.xcframework; sourceTree = "<group>"; };
 		65606508E8DAFCEA8327E106 /* _json.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _json.xcframework; path = Vendor/PythonExtensions/_json.xcframework; sourceTree = "<group>"; };
@@ -400,6 +444,7 @@
 		67421D0E0C3D4BF46F4ACE46 /* DiagnosticsAboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsAboutView.swift; sourceTree = "<group>"; };
 		680DDD4B4A4B0E26F99D2209 /* MarkdownRendererView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownRendererView.swift; sourceTree = "<group>"; };
 		6856FC02F7D3AA8406FFAE9D /* AuxiliarySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxiliarySettingsView.swift; sourceTree = "<group>"; };
+		69539A226361C83F15C72B91 /* _pickle.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _pickle.xcframework; path = Vendor/PythonExtensions/_pickle.xcframework; sourceTree = "<group>"; };
 		699FBAE02E34D628B5FC48B7 /* iPhoneBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPhoneBackgroundPolicy.swift; sourceTree = "<group>"; };
 		69C64CCB64B5B7C45F45C253 /* ImageEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageEditorView.swift; sourceTree = "<group>"; };
 		6B429A0789887E0740567D60 /* MoreViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreViewModel.swift; sourceTree = "<group>"; };
@@ -479,6 +524,7 @@
 		C3B3B3E433B5BD9B6C5B1835 /* HomeLaunchpadViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeLaunchpadViewModel.swift; sourceTree = "<group>"; };
 		C43555513E313C954D2E39B3 /* ProviderListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderListViewModel.swift; sourceTree = "<group>"; };
 		C4CD5173D18CDDB6549BBD7D /* RemoteSessionCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionCenter.swift; sourceTree = "<group>"; };
+		C962FC08AA34E0D75F5600E4 /* _elementtree.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _elementtree.xcframework; path = Vendor/PythonExtensions/_elementtree.xcframework; sourceTree = "<group>"; };
 		CB4807D41A6BD7259F8D0356 /* DiagnosticsExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsExporter.swift; sourceTree = "<group>"; };
 		CB9397357FA8DE45F2E2112C /* _lzma.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _lzma.xcframework; path = Vendor/PythonExtensions/_lzma.xcframework; sourceTree = "<group>"; };
 		CC3A70A09C1A7E292DB36A43 /* TaskInspectorViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskInspectorViews.swift; sourceTree = "<group>"; };
@@ -507,7 +553,9 @@
 		EA10AC479B03C7D998AC448B /* ThreadDetailViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadDetailViewModel.swift; sourceTree = "<group>"; };
 		EB400574B41454793B7461C2 /* iPadBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPadBackgroundPolicy.swift; sourceTree = "<group>"; };
 		EBF4EA91353CD8A801DCA98A /* ErrorEventView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorEventView.swift; sourceTree = "<group>"; };
+		EBFC00F1FCA508F70838C348 /* _uuid.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _uuid.xcframework; path = Vendor/PythonExtensions/_uuid.xcframework; sourceTree = "<group>"; };
 		EC0B76B524CD1FC5833106AE /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
+		EE446478DBD5263458338578 /* fcntl.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = fcntl.xcframework; path = Vendor/PythonExtensions/fcntl.xcframework; sourceTree = "<group>"; };
 		F056190E229F36B3FC87CD73 /* _csv.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _csv.xcframework; path = Vendor/PythonExtensions/_csv.xcframework; sourceTree = "<group>"; };
 		F0878619F1F1230D0EC1AF2D /* ThreadComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadComposerView.swift; sourceTree = "<group>"; };
 		F154C825E0923E5172D956C7 /* FeedbackTokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedbackTokenStore.swift; sourceTree = "<group>"; };
@@ -550,16 +598,22 @@
 			buildActionMask = 2147483647;
 			files = (
 				B81C50AA905334687754F195 /* Python.xcframework in Frameworks */,
+				50D04ECF856C858F6A84FEAB /* _asyncio.xcframework in Frameworks */,
+				6E438B5B53DA64FF688B9F37 /* _bisect.xcframework in Frameworks */,
 				B45AF4990B10532F1D1CD4CE /* _blake2.xcframework in Frameworks */,
 				362B576847A7496F5CF46F95 /* _bz2.xcframework in Frameworks */,
 				086E743FC13CE9DA2BD91D05 /* _csv.xcframework in Frameworks */,
 				EA98E269C0CE320D34AA903F /* _ctypes.xcframework in Frameworks */,
 				E93725784EDD90F8B827835E /* _datetime.xcframework in Frameworks */,
 				B1706C324EE51831A0FE5EE9 /* _decimal.xcframework in Frameworks */,
+				5EA814A1C794BD7B9937E81F /* _elementtree.xcframework in Frameworks */,
 				12F945998FD0E68D53F55EC1 /* _hashlib.xcframework in Frameworks */,
+				12A74443BD1FC0A4931E3858 /* _heapq.xcframework in Frameworks */,
 				00AE47667869A7ECB9677A9C /* _json.xcframework in Frameworks */,
 				F6784CC2BD16D0D850C7B22B /* _lzma.xcframework in Frameworks */,
+				460E577E2CEF8945AA055F27 /* _md5.xcframework in Frameworks */,
 				049E8BCE4058423CD444FC1A /* _opcode.xcframework in Frameworks */,
+				C6C8CB20E5F26468E3AD36B2 /* _pickle.xcframework in Frameworks */,
 				D4DECF7BF638B994E512FBF1 /* _random.xcframework in Frameworks */,
 				2939AB869D58351E507444A9 /* _sha2.xcframework in Frameworks */,
 				0508FA44AF2D75EF015ADA06 /* _sha3.xcframework in Frameworks */,
@@ -568,11 +622,17 @@
 				3B82CBF4D3CB235A375369A6 /* _ssl.xcframework in Frameworks */,
 				878398C628C1FBE1C8F9311E /* _statistics.xcframework in Frameworks */,
 				B93C7FCE8F74476DCA7A1536 /* _struct.xcframework in Frameworks */,
+				993A04071E9FB880BC5727C3 /* _uuid.xcframework in Frameworks */,
+				7C8242E3BE460533DA26F51C /* _zoneinfo.xcframework in Frameworks */,
 				D3D14D3164C5FCDC4A33A2BC /* array.xcframework in Frameworks */,
 				CA9BF8F68A6F0E40E85CDE9E /* binascii.xcframework in Frameworks */,
+				7101B340769CDF8AEBEB0171 /* fcntl.xcframework in Frameworks */,
 				6E0CE7E31A041E1ED1440133 /* math.xcframework in Frameworks */,
 				CCBED0E2E783C82F6A6D4CFA /* mmap.xcframework in Frameworks */,
+				8D7C4CF1B8FC0F1CCEF94B1D /* pyexpat.xcframework in Frameworks */,
+				AD61CEFDA09B1A33794EB76D /* resource.xcframework in Frameworks */,
 				69DBF632867883EE636A76C1 /* select.xcframework in Frameworks */,
+				1E05D8457E28FCCBFB3AEC55 /* termios.xcframework in Frameworks */,
 				E9F6C67D9F1DF74AD899BE08 /* unicodedata.xcframework in Frameworks */,
 				89D986DE42E1C09CD2DB6309 /* zlib.xcframework in Frameworks */,
 				4707D8E92893B0ED9C62F8F9 /* FloeCore in Frameworks */,
@@ -915,16 +975,22 @@
 		8A4A949589D4B5E4B2D18F79 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				28E0216FA93D4EE0E28FC155 /* _asyncio.xcframework */,
+				11A3C519D44D0DD95F0EA208 /* _bisect.xcframework */,
 				620E189ED0BE974C6B1EA3DB /* _blake2.xcframework */,
 				2012AC9C3BB8EE122046B60B /* _bz2.xcframework */,
 				F056190E229F36B3FC87CD73 /* _csv.xcframework */,
 				DCC42125AA4BA415183B6A85 /* _ctypes.xcframework */,
 				1B3181E829C356459CFA9723 /* _datetime.xcframework */,
 				1D3E9503EC3EC7259F7C06C8 /* _decimal.xcframework */,
+				C962FC08AA34E0D75F5600E4 /* _elementtree.xcframework */,
 				8B3180D417C752DEF2005250 /* _hashlib.xcframework */,
+				0C8D36E30CA45FCB1EA234B4 /* _heapq.xcframework */,
 				65606508E8DAFCEA8327E106 /* _json.xcframework */,
 				CB9397357FA8DE45F2E2112C /* _lzma.xcframework */,
+				538FB08A4DD774D6AEFCF28F /* _md5.xcframework */,
 				DFAFEA945AD87107AD86523A /* _opcode.xcframework */,
+				69539A226361C83F15C72B91 /* _pickle.xcframework */,
 				12C202262489FD354A0B595A /* _random.xcframework */,
 				CE19791AC2454F6739825F8F /* _sha2.xcframework */,
 				855EFD5014DCA004E8103D32 /* _sha3.xcframework */,
@@ -933,12 +999,18 @@
 				3C217266DBB6D6A0C5EA9075 /* _ssl.xcframework */,
 				A94DC3B96DA97D1E17F6B887 /* _statistics.xcframework */,
 				B7B559ED19BFCC88432C6828 /* _struct.xcframework */,
+				EBFC00F1FCA508F70838C348 /* _uuid.xcframework */,
+				16AE359A986EE7EC10118E7B /* _zoneinfo.xcframework */,
 				397F1DC728D743D05F510489 /* array.xcframework */,
 				E25201278D78378B37FF1BBD /* binascii.xcframework */,
+				EE446478DBD5263458338578 /* fcntl.xcframework */,
 				BB881F2DC155C2D3A5681681 /* math.xcframework */,
 				BBD2144374FF4E9AD173B157 /* mmap.xcframework */,
+				59EFDCF31C5526A1B589BE5B /* pyexpat.xcframework */,
 				7EC6304EFEA8100679656E2D /* Python.xcframework */,
+				5F3B002E69704278C46E0A12 /* resource.xcframework */,
 				8EEDB221C5E3501DEF3F7015 /* select.xcframework */,
+				3C2891331FDB42F816478E56 /* termios.xcframework */,
 				4953B9D281B1637B7BE2E2C7 /* unicodedata.xcframework */,
 				71091AA54C5E2F667D6469A6 /* zlib.xcframework */,
 			);
@@ -1574,7 +1646,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 64;
+				CURRENT_PROJECT_VERSION = 65;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -1589,7 +1661,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4.33;
+				MARKETING_VERSION = 1.4.34;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios;
 				PRODUCT_MODULE_NAME = FloeApp;
 				PRODUCT_NAME = "Floe Agent";
@@ -1607,7 +1679,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 64;
+				CURRENT_PROJECT_VERSION = 65;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1618,7 +1690,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.33;
+				MARKETING_VERSION = 1.4.34;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -1690,7 +1762,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 64;
+				CURRENT_PROJECT_VERSION = 65;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1701,7 +1773,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.33;
+				MARKETING_VERSION = 1.4.34;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";
@@ -1736,7 +1808,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
-				CURRENT_PROJECT_VERSION = 64;
+				CURRENT_PROJECT_VERSION = 65;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1747,7 +1819,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.33;
+				MARKETING_VERSION = 1.4.34;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -1846,7 +1918,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 64;
+				CURRENT_PROJECT_VERSION = 65;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1857,7 +1929,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.33;
+				MARKETING_VERSION = 1.4.34;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -1875,7 +1947,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 64;
+				CURRENT_PROJECT_VERSION = 65;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -1890,7 +1962,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4.33;
+				MARKETING_VERSION = 1.4.34;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios;
 				PRODUCT_MODULE_NAME = FloeApp;
 				PRODUCT_NAME = "Floe Agent";
@@ -1909,7 +1981,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 64;
+				CURRENT_PROJECT_VERSION = 65;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1920,7 +1992,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.33;
+				MARKETING_VERSION = 1.4.34;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -1955,7 +2027,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
-				CURRENT_PROJECT_VERSION = 64;
+				CURRENT_PROJECT_VERSION = 65;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1966,7 +2038,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.33;
+				MARKETING_VERSION = 1.4.34;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";

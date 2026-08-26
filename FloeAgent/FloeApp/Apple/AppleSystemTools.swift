@@ -429,28 +429,67 @@ private final class CurrentLocationBroker: NSObject {
     static let shared = CurrentLocationBroker()
     private let manager = CLLocationManager()
     private var continuation: CheckedContinuation<SendableLocation, Error>?
+    private var timeoutTask: Task<Void, Never>?
     override init() { super.init(); manager.delegate = self }
 
     func current() async throws -> SendableLocation {
-        if let continuation { continuation.resume(throwing: FloeError.validationFailed("A location request is already active")); self.continuation = nil }
-        return try await withCheckedThrowingContinuation { continuation in
-            self.continuation = continuation
-            manager.requestWhenInUseAuthorization()
-            manager.requestLocation()
+        guard continuation == nil else {
+            throw FloeError.validationFailed("A location request is already active")
         }
+        guard CLLocationManager.locationServicesEnabled() else {
+            throw FloeError.validationFailed("Location Services are disabled")
+        }
+        if manager.authorizationStatus == .denied || manager.authorizationStatus == .restricted {
+            throw FloeError.validationFailed("Location permission was denied")
+        }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+                if manager.authorizationStatus == .notDetermined {
+                    manager.requestWhenInUseAuthorization()
+                }
+                manager.requestLocation()
+                timeoutTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(15))
+                    guard !Task.isCancelled else { return }
+                    self?.finish(throwing: FloeError.syncUnavailable(
+                        "Location did not become available within 15 seconds"
+                    ))
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.finish(throwing: FloeError.cancelled)
+            }
+        }
+    }
+
+    private func finish(returning value: SendableLocation) {
+        guard let continuation else { return }
+        self.continuation = nil
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        continuation.resume(returning: value)
+    }
+
+    private func finish(throwing error: any Error) {
+        guard let continuation else { return }
+        self.continuation = nil
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        continuation.resume(throwing: error)
     }
 }
 
 extension CurrentLocationBroker: @preconcurrency CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let value = locations.last else { return }
-        continuation?.resume(returning: SendableLocation(latitude: value.coordinate.latitude, longitude: value.coordinate.longitude, accuracy: value.horizontalAccuracy, timestamp: value.timestamp))
-        continuation = nil
+        finish(returning: SendableLocation(latitude: value.coordinate.latitude, longitude: value.coordinate.longitude, accuracy: value.horizontalAccuracy, timestamp: value.timestamp))
     }
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: any Error) { continuation?.resume(throwing: error); continuation = nil }
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: any Error) { finish(throwing: error) }
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         if manager.authorizationStatus == .denied || manager.authorizationStatus == .restricted {
-            continuation?.resume(throwing: FloeError.validationFailed("Location permission was denied")); continuation = nil
+            finish(throwing: FloeError.validationFailed("Location permission was denied"))
         }
     }
 }

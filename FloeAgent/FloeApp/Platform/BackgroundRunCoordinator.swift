@@ -60,6 +60,15 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     }
 
     func didStart(conversationID: UUID, runID: UUID, title: String) {
+        // Session publication and launch recovery can report the same durable
+        // run more than once. Re-preparing PiP for that duplicate stopped the
+        // player that was still loading, so no generation ever reached ready.
+        guard activeRuns[runID] == nil else {
+            FloeLogger(category: .app).debug(
+                "backgroundRunStartIgnored run=\(runID.uuidString) reason=alreadyActive"
+            )
+            return
+        }
         // Ask for notification permission in direct response to starting the
         // first task, never during a cold app launch. This keeps onboarding,
         // App Intents discovery and settings inspection free of an unrelated

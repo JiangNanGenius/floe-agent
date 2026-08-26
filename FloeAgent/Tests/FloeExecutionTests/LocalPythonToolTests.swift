@@ -20,6 +20,8 @@ struct LocalPythonToolTests {
         #expect(LocalPythonTool.toolDescription.contains("Pyodide"))
         #expect(LocalPythonTool.toolDescription.contains("WebAssembly"))
         #expect(LocalPythonTool.toolDescription.contains("mmap"))
+        #expect(LocalPythonTool.toolDescription.contains("pyexpat"))
+        #expect(LocalPythonTool.toolDescription.contains("multiprocessing"))
     }
 
     @Test("declarative pip commands use the reviewed package path")

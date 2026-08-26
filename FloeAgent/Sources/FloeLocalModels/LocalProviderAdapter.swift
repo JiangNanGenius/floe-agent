@@ -442,10 +442,10 @@ public struct LocalProviderAdapter: ProviderAdapter {
             let appleWatchdog: Task<Void, Never>? = if request.model.remoteModelID
                 == AppleFoundationModelIdentity.remoteModelID {
                 Task {
-                    try? await Task.sleep(for: .seconds(75))
+                    try? await Task.sleep(for: .seconds(30))
                     guard !Task.isCancelled else { return }
                     FloeLogger(category: .providers).warning(
-                        "appleFoundationWatchdogExpired model=\(request.model.remoteModelID) timeoutSeconds=75"
+                        "appleFoundationWatchdogExpired model=\(request.model.remoteModelID) timeoutSeconds=30"
                     )
                     continuation.finish(throwing: FloeError.syncUnavailable(
                         "Apple Intelligence 模型长时间没有响应，本次任务已停止，请重试"
@@ -462,7 +462,12 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     }
                     let promptBuild = Self.buildPrompt(for: request)
                     let prompt = promptBuild.text
-                    let imageParts = request.effectiveMessages.flatMap(\.content).compactMap {
+                    // Only the current user turn carries raw image bytes into
+                    // MLX/Foundation Models. Replaying every historical photo
+                    // on each follow-up multiplied projector memory and made a
+                    // recovered run repeat expensive visual preprocessing.
+                    let imageParts = request.effectiveMessages.last(where: { $0.role == "user" })?
+                        .content.compactMap {
                         part -> AppleFoundationImageInput? in
                         switch part {
                         case .imageData(_, let base64):
@@ -476,7 +481,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         case .text:
                             return nil
                         }
-                    }
+                        } ?? []
                     FloeLogger(category: .providers).info(
                         "localPromptPrepared model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) sourceCharacters=\(promptBuild.sourceCharacters) promptCharacters=\(prompt.count) offeredTools=\(request.toolSchemas.count) selectedTools=\(promptBuild.selectedToolCount) omittedTools=\(max(0, request.toolSchemas.count - promptBuild.selectedToolCount))"
                     )
@@ -581,12 +586,14 @@ public struct LocalProviderAdapter: ProviderAdapter {
         var appleCapabilities: ModelCapabilities = [.text, .approval]
         var appleReasoning: ModelReasoningEffort? = .automatic
         var appleSuffix = "（不可用：" + AppleFoundationModelRuntime.unavailableMessage(for: appleAvailability) + "）"
-        if case .available(let contextTokens, let supportsVision, let supportsTools, let supportsReasoning) = appleAvailability {
+        if case .available(let contextTokens, _, let supportsTools, let supportsReasoning) = appleAvailability {
             appleLimits = .init(
                 contextTokens: contextTokens,
                 maxOutputTokens: min(2_048, max(256, contextTokens / 4))
             )
-            if supportsVision { appleCapabilities.insert(.vision) }
+            // Build 23 device evidence returned ModelManagerError 1001 for
+            // direct Apple image input. Keep image attachments on Floe's
+            // auxiliary/OCR path until the OS model reports this reliably.
             if supportsTools { appleCapabilities.insert(.tools) }
             appleReasoning = supportsReasoning ? .low : .automatic
             appleSuffix = ""
@@ -678,12 +685,19 @@ public struct LocalProviderAdapter: ProviderAdapter {
             request.toolSchemas,
             modelRemoteID: request.model.remoteModelID
         )
-        let selectedTools = isAppleToolFollowUp ? [] : selectTools(
+        let rankedTools = isAppleToolFollowUp ? [] : selectTools(
             availableTools,
             latestUserText: latestUserText,
             pendingToolNames: Set(request.pendingToolCalls.map(\.toolName)),
             contextTokens: contextTokens
         )
+        // Dynamic Foundation Models schemas are intentionally limited to one
+        // exact Apple capability per turn. Build 23 logs showed five schemas
+        // entering a stream that never produced its first token.
+        let selectedTools = request.model.remoteModelID
+            == AppleFoundationModelIdentity.remoteModelID
+            ? Array(rankedTools.prefix(1))
+            : rankedTools
 
         let normalizedUserText = latestUserText.lowercased()
         let actionRequested = requestsAction(normalizedUserText)
@@ -818,14 +832,16 @@ public struct LocalProviderAdapter: ProviderAdapter {
 
     /// Small MLX models are reliable with bounded read/search and simple
     /// local execution, but often hallucinate multi-step browser, SSH, cloud
-    /// and write-heavy source-control actions. Keep Apple Foundation Models on
-    /// the native selected-tool path while presenting MLX with a smaller,
-    /// honest capability surface.
+    /// and write-heavy source-control actions. Apple Foundation Models are
+    /// deliberately limited to Apple-owned capabilities until Floe can bridge
+    /// third-party execution into one native Foundation Models session.
     static func admissibleTools(
         _ tools: [ToolSchemaDescriptor],
         modelRemoteID: String
     ) -> [ToolSchemaDescriptor] {
-        guard modelRemoteID != AppleFoundationModelIdentity.remoteModelID else { return tools }
+        if modelRemoteID == AppleFoundationModelIdentity.remoteModelID {
+            return tools.filter { $0.name.hasPrefix("apple.") }
+        }
         let exact: Set<String> = [
             "web.search", "web.searchAI", "web.fetch",
             "workspace.listDirectory", "workspace.readFile", "workspace.searchFiles",
