@@ -118,7 +118,7 @@ jobs:
 
       - name: Package the matching Floe remote agent
         run: |
-          scripts/package_remote_agent.sh release-assets 1.4.0
+          scripts/package_remote_agent.sh release-assets 1.4.1
 
       - name: Build unsigned device application
         run: |
@@ -402,10 +402,10 @@ jobs:
           cat > release-notes.md <<EOF
           ## Floe Agent $VERSION (build $BUILD)
 
-          - 本地模型的图片理解现在只处理当前一轮附件；视觉模型无法加载时会自动转为辅助识别，避免任务无回复或重复处理旧图片。
-          - Apple Foundation Model 的能力边界更加清楚，并改善了连续对话、Apple 工具调用和定位等待状态。
-          - 画中画会等待真实播放内容就绪，切出 Floe 时能更可靠地显示后台任务进度。
-          - 扩充设备端 Python 标准能力，并为科学计算提供清楚的 Pyodide WebAssembly 路径。
+          - 修复任务停止与恢复时的执行账本竞态，恢复后会复用已经完成的工具结果，不会盲目重跑。
+          - 工具卡片现在在同一展开区域显示准确参数、审批、执行状态、结果与耗时；下一步思考会进入新的步骤分组。
+          - 远程守护程序在首次使用前自动核验并更新，网络中断后可按原任务 ID 重连查询，不会重复发送命令。
+          - 守护程序更新到 1.4.1，并新增只读的远程任务状态工具，改善长时间 SSH、安装和环境准备任务的连续性。
 
           此版本已通过共享 Swift 与模拟器发布检查，并上传至 TestFlight；随附可审计的未签名 IPA。
 
