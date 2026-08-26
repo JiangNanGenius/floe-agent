@@ -11,6 +11,7 @@ on:
         options:
           - discover
           - monitor
+          - inspect-issues
           - verify-testflight
           - start
           - enable-tag-and-start
@@ -290,6 +291,48 @@ jobs:
           done
           echo "Timed out waiting for Xcode Cloud build run $BUILD_RUN_ID" >&2
           exit 1
+
+      - name: Inspect issues for the selected Xcode Cloud build run
+        if: inputs.operation == 'inspect-issues'
+        env:
+          ASC_TOKEN: ${{ steps.auth.outputs.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        run: |
+          set -euo pipefail
+          test -n "$BUILD_RUN_ID"
+          case "$BUILD_RUN_ID" in
+            *[!A-Za-z0-9:_-]*) echo "Invalid Xcode Cloud build run ID" >&2; exit 2 ;;
+          esac
+          api_get() {
+            local path="$1"
+            shift
+            curl --fail-with-body --silent --show-error --get \
+              -H "Authorization: Bearer $ASC_TOKEN" \
+              -H "Accept: application/json" \
+              "https://api.appstoreconnect.apple.com$path" "$@"
+          }
+
+          api_get "/v1/ciBuildRuns/$BUILD_RUN_ID/actions" \
+            --data-urlencode 'limit=200' \
+            --data-urlencode 'fields[ciBuildActions]=name,actionType,startedDate,finishedDate,issueCounts,executionProgress,completionStatus,isRequiredToPass' \
+            > "$RUNNER_TEMP/build-actions.json"
+
+          jq -r '.data[] | "xcode-cloud-action id=\(.id) name=\(.attributes.name) type=\(.attributes.actionType) progress=\(.attributes.executionProgress) completion=\(.attributes.completionStatus // "pending") required=\(.attributes.isRequiredToPass) issues=\(.attributes.issueCounts // {})"' \
+            "$RUNNER_TEMP/build-actions.json"
+
+          issue_count=0
+          while IFS= read -r action_id; do
+            api_get "/v1/ciBuildActions/$action_id/issues" \
+              --data-urlencode 'limit=200' \
+              --data-urlencode 'fields[ciIssues]=issueType,message,fileSource,category' \
+              > "$RUNNER_TEMP/issues-$action_id.json"
+            count="$(jq '.data | length' "$RUNNER_TEMP/issues-$action_id.json")"
+            issue_count=$((issue_count + count))
+            jq -r --arg action "$action_id" '.data[] | "xcode-cloud-issue action=\($action) type=\(.attributes.issueType) category=\(.attributes.category // "") message=\(.attributes.message) fileSource=\((.attributes.fileSource // {}) | @json)"' \
+              "$RUNNER_TEMP/issues-$action_id.json"
+          done < <(jq -r '.data[].id' "$RUNNER_TEMP/build-actions.json")
+          echo "xcode-cloud-issue-count=$issue_count"
+          test "$issue_count" -gt 0
 
       - name: Verify TestFlight processing and group visibility
         if: inputs.operation == 'verify-testflight'
