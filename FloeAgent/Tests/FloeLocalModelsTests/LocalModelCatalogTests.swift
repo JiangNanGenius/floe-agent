@@ -704,7 +704,7 @@ struct LocalModelCatalogTests {
         #expect(browserAlias?.toolName == "web.fetch")
     }
 
-    @Test("Apple weather questions select and require native web search")
+    @Test("Apple weather questions do not expose third-party web tools")
     @available(macOS 15.4, *)
     func appleWeatherUsesNativeTool() {
         let provider = LocalProviderAdapter.providerProfile
@@ -724,9 +724,10 @@ struct LocalModelCatalogTests {
                 ToolSchemaDescriptor(name: "browser.navigate", description: "Open a browser")
             ]
         ))
-        #expect(build.selectedTools.map(\.name).contains("web.search"))
-        #expect(build.requiresToolCall)
-        #expect(build.systemInstructions.contains("native Foundation Models tools"))
+        #expect(build.fallbackTools.isEmpty)
+        #expect(build.selectedTools.isEmpty)
+        #expect(!build.requiresToolCall)
+        #expect(build.systemInstructions.contains("No tool is callable"))
     }
 
     @Test("Local tool parser rejects tools not offered on the turn")
