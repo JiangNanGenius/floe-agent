@@ -196,6 +196,10 @@ struct BrowserArtifactReference: Sendable, Codable, Hashable {
     var mimeType: String
     var byteCount: Int
     var sha256: String
+    /// Encoded screenshot dimensions. Visual click coordinates are expressed
+    /// in this pixel space and converted back to the page's CSS viewport.
+    var pixelWidth: Int
+    var pixelHeight: Int
 }
 
 struct BrowserFailure: Sendable, Codable, Hashable {

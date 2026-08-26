@@ -125,7 +125,22 @@ struct BrowserProtocolTests {
             """
             <!doctype html><html><body style="margin:0">
               <button id="go" style="width:160px;height:80px">Go</button>
-              <canvas id="surface" width="300" height="180" style="display:block" onclick="window.canvasClick = [event.clientX, event.clientY]"></canvas>
+              <div id="counter">Clicked: 0</div>
+              <canvas id="surface" width="300" height="180" style="display:block"></canvas>
+              <script>
+                const canvas = document.getElementById('surface');
+                const context = canvas.getContext('2d');
+                context.beginPath(); context.arc(150, 90, 45, 0, Math.PI * 2); context.fill();
+                canvas.addEventListener('click', event => {
+                  const rect = canvas.getBoundingClientRect();
+                  const x = event.clientX - rect.left;
+                  const y = event.clientY - rect.top;
+                  window.canvasClick = [event.clientX, event.clientY];
+                  if ((x - 150) ** 2 + (y - 90) ** 2 <= 45 ** 2) {
+                    document.getElementById('counter').textContent = 'Clicked: 1';
+                  }
+                });
+              </script>
             </body></html>
             """,
             baseURL: URL(string: "https://example.com")!
@@ -146,6 +161,17 @@ struct BrowserProtocolTests {
         let page = try #require(screenshot.page)
         let artifact = try #require(page.screenshotArtifact)
         let button = try #require(page.nodes.first(where: { $0.role == "button" }))
+        func screenshotPoint(cssX: Double, cssY: Double, artifact: BrowserArtifactReference) -> (Double, Double) {
+            (
+                cssX / page.viewportWidth * Double(artifact.pixelWidth),
+                cssY / page.viewportHeight * Double(artifact.pixelHeight)
+            )
+        }
+        let buttonPoint = screenshotPoint(
+            cssX: button.bounds.x + button.bounds.width / 2,
+            cssY: button.bounds.y + button.bounds.height / 2,
+            artifact: artifact
+        )
 
         let structuredPoint = await center.execute(BrowserCommand(
             sessionID: center.sessionID,
@@ -154,8 +180,8 @@ struct BrowserProtocolTests {
             visualEvidenceSHA256: artifact.sha256,
             visualFallbackReason: "noStructuredTarget",
             action: .click(.point(
-                x: button.bounds.x + button.bounds.width / 2,
-                y: button.bounds.y + button.bounds.height / 2
+                x: buttonPoint.0,
+                y: buttonPoint.1
             ))
         ))
         #expect(structuredPoint.status == .blocked)
@@ -171,17 +197,39 @@ struct BrowserProtocolTests {
         #expect(missingEvidence.status == .blocked)
         #expect(missingEvidence.message?.contains("fresh screenshot") == true)
 
+        let canvasPoint = screenshotPoint(cssX: 150, cssY: 188, artifact: artifact)
         let canvasFallback = await center.execute(BrowserCommand(
             sessionID: center.sessionID,
             tabID: tabID,
             expectedDocumentID: page.documentID,
             visualEvidenceSHA256: artifact.sha256,
             visualFallbackReason: "noStructuredTarget",
-            action: .click(.point(x: 20, y: 120))
+            action: .click(.point(x: canvasPoint.0, y: canvasPoint.1))
         ))
         #expect(canvasFallback.status == .ok)
-        let clickCoordinates = try await webView.evaluateJavaScript("window.canvasClick") as? [NSNumber]
-        #expect(clickCoordinates?.map(\.doubleValue) == [20, 120])
+        let clickCoordinates = try #require(
+            try await webView.evaluateJavaScript("window.canvasClick") as? [NSNumber]
+        )
+        #expect(clickCoordinates.count == 2)
+        if clickCoordinates.count == 2 {
+            #expect(abs(clickCoordinates[0].doubleValue - 150) < 1)
+            #expect(abs(clickCoordinates[1].doubleValue - 188) < 1)
+        }
+        let counter = try await webView.evaluateJavaScript("document.getElementById('counter').textContent") as? String
+        #expect(counter == "Clicked: 1")
+
+        let postArtifact = try #require(canvasFallback.page?.screenshotArtifact)
+        let missPoint = screenshotPoint(cssX: 10, cssY: 108, artifact: postArtifact)
+        let unconfirmed = await center.execute(BrowserCommand(
+            sessionID: center.sessionID,
+            tabID: tabID,
+            expectedDocumentID: page.documentID,
+            visualEvidenceSHA256: postArtifact.sha256,
+            visualFallbackReason: "noStructuredTarget",
+            action: .click(.point(x: missPoint.0, y: missPoint.1))
+        ))
+        #expect(unconfirmed.status == .failed)
+        #expect(unconfirmed.error?.code == "no-observable-effect")
     }
 
     @Test("CDP-shaped dispatch is allowlisted and reports protocol version")

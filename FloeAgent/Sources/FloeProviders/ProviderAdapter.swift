@@ -596,6 +596,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             model: request.model.remoteModelID,
             messages: messages,
             tools: tools.isEmpty ? nil : tools,
+            toolChoice: tools.isEmpty ? nil : "auto",
             maxTokens: request.model.limits.configuredMaxOutputTokens,
             thinking: reasoning.thinkingType.map(ChatRequest.Thinking.init(type:)),
             reasoningEffort: reasoning.reasoningEffort,

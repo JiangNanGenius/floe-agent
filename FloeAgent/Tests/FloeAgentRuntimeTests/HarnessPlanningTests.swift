@@ -117,6 +117,14 @@ struct HarnessPlanningTests {
         #expect(prompt.count < 1_000)
     }
 
+    @Test("empty activation ledger forbids invented tool evidence")
+    func emptyActivationLedgerPrompt() throws {
+        let prompt = try #require(HarnessExecutionLedger().promptBlock())
+        #expect(prompt.contains("No structured tool call has executed"))
+        #expect(prompt.contains("unsupported"))
+        #expect(prompt.contains("screenshot"))
+    }
+
     @Test("Plan policy exposes and executes read-only tools only")
     func planToolPolicy() async throws {
         let read = ToolCatalog.Descriptor(

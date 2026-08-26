@@ -75,6 +75,33 @@ struct RequestContractTests {
         )
         let object = try jsonObject(body)
         #expect(object["tools"] == nil)
+        #expect(object["tool_choice"] == nil)
+    }
+
+    @Test("OpenAI-compatible chat explicitly enables native tool selection")
+    func chatAdapterEnablesNativeToolSelection() throws {
+        let providerID = UUID()
+        let request = ProviderStreamRequest(
+            provider: ProviderProfile(
+                id: providerID,
+                kind: .custom,
+                wireProtocol: .openAIChatCompletions,
+                baseURL: URL(string: "https://example.com/v1")!
+            ),
+            model: ModelProfile(
+                providerID: providerID,
+                remoteModelID: "tool-model",
+                displayName: "Tool Model",
+                limits: ModelLimits(contextTokens: 8_192, maxOutputTokens: 512)
+            ),
+            toolSchemas: [
+                .init(name: "browser.observe", description: "Observe", parametersJSON: schema)
+            ]
+        )
+
+        let body = OpenAIChatCompletionsAdapter().buildBody(from: request)
+        let object = try jsonObject(body)
+        #expect(object["tool_choice"] as? String == "auto")
     }
 
     @Test("Anthropic system messages use the top-level system field")

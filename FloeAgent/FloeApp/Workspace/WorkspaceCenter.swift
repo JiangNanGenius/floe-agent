@@ -106,6 +106,9 @@ final class WorkspaceCenter: ObservableObject {
     /// Invalidates completions from older asynchronous open requests. SwiftUI
     /// pickers can change selection again while bookmark refresh is awaiting.
     private var openGeneration: UInt64 = 0
+    /// Makes “add to context” idempotent across rapid taps and SwiftUI task
+    /// re-entry. Durable attachment metadata provides the relaunch check.
+    private var contextAttachmentKeysInFlight: Set<String> = []
 
     /// Maximum size of the agent instruction file body (16 KiB).
     static let instructionsMaxBytes = 16 * 1024
@@ -867,6 +870,31 @@ final class WorkspaceCenter: ObservableObject {
         }
         do {
             let metadata = try service.metadata(relativePath)
+            guard workspaceID(for: conversationID) == workspace.id else {
+                throw FloeError.validationFailed("File is outside this task's fixed workspace")
+            }
+            let attachmentKey = [
+                conversationID.uuidString.lowercased(),
+                relativePath,
+                metadata.sha256.lowercased()
+            ].joined(separator: "|")
+            guard !contextAttachmentKeysInFlight.contains(attachmentKey) else {
+                actionError = nil
+                return
+            }
+            contextAttachmentKeysInFlight.insert(attachmentKey)
+            defer { contextAttachmentKeysInFlight.remove(attachmentKey) }
+
+            let existing = try await environment.conversationStore.attachments(
+                conversationID: conversationID
+            )
+            guard !existing.contains(where: {
+                $0.relativePath == relativePath
+                    && $0.sha256.caseInsensitiveCompare(metadata.sha256) == .orderedSame
+            }) else {
+                actionError = nil
+                return
+            }
             let attachment = AttachmentRef(
                 conversationID: conversationID,
                 kind: .document,
@@ -890,9 +918,6 @@ final class WorkspaceCenter: ObservableObject {
                 createdAt: Date()
             )
             try await environment.conversationStore.appendMessage(message)
-            guard workspaceID(for: conversationID) == workspace.id else {
-                throw FloeError.validationFailed("File is outside this task's fixed workspace")
-            }
             actionError = nil
         } catch {
             actionError = error.localizedDescription

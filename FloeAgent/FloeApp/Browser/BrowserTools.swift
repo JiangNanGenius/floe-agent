@@ -205,7 +205,7 @@ private struct BrowserClickPointTool: AgentTool {
         let fallbackReason: String
     }
     static let name = "browser.clickPoint"
-    static let toolDescription = "LAST-RESORT visual fallback after browser.observe: click CSS viewport coordinates (not screenshot pixel coordinates) only when structured information is absent or insufficient. Use viewportWidth/viewportHeight from the same fresh browser.screenshot result, then provide its sha256 and the exact fallback reason. Canvas-internal controls may use this fallback; ordinary DOM controls with stable refs are rejected and must use browser.click."
+    static let toolDescription = "LAST-RESORT visual fallback after browser.observe: click x/y in the exact pixel coordinate space of the fresh browser.screenshot artifact. Provide that screenshot's sha256 and the exact fallback reason. Floe converts screenshot pixels to the page's CSS viewport and reports success only when a post-click screenshot or page state shows an observable change. Canvas-internal controls may use this fallback; ordinary DOM controls with stable refs are rejected and must use browser.click."
     static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string"},"documentID":{"type":"string"},"x":{"type":"number","minimum":0,"maximum":10000},"y":{"type":"number","minimum":0,"maximum":10000},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"},"fallbackReason":{"type":"string","enum":["noStructuredTarget","insufficientStructuredInformation"]}},"required":["documentID","x","y","screenshotSHA256","fallbackReason"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.controlsGUI]
     static let isSideEffecting = true
@@ -214,7 +214,7 @@ private struct BrowserClickPointTool: AgentTool {
     func validate(_ args: Arguments) throws {
         guard !args.documentID.isEmpty, args.x.isFinite, args.y.isFinite,
               (0...10_000).contains(args.x), (0...10_000).contains(args.y) else {
-            throw FloeError.validationFailed("documentID and bounded viewport coordinates are required")
+            throw FloeError.validationFailed("documentID and bounded screenshot pixel coordinates are required")
         }
         guard args.screenshotSHA256.count == 64,
               args.screenshotSHA256.allSatisfy(\.isHexDigit) else {

@@ -792,8 +792,19 @@ public actor FloeAgentRuntime {
             contentMessages.append(ProviderMessage(role: "system", content: [.text(pressure)]))
         }
         if let ledger = executionLedger.promptBlock() {
-            legacyMessages.append((role: "system", content: ledger))
-            contentMessages.append(ProviderMessage(role: "system", content: [.text(ledger)]))
+            // Keep one leading system envelope. Some OpenAI-compatible
+            // providers become less reliable when a second system message is
+            // inserted after the user turn.
+            if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
+                legacyMessages[index].content += "\n\n\(ledger)"
+                contentMessages[index].content.append(.text("\n\n\(ledger)"))
+            } else {
+                legacyMessages.insert((role: "system", content: ledger), at: 0)
+                contentMessages.insert(
+                    ProviderMessage(role: "system", content: [.text(ledger)]),
+                    at: 0
+                )
+            }
         }
         if configuration.model.capabilities.contains(.vision) {
             let evidence = pendingToolResults.flatMap(\.artifacts)

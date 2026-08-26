@@ -19,6 +19,11 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         var documentID: String
         var sha256: String
         var capturedAt: Date
+        var pixelWidth: Int
+        var pixelHeight: Int
+        var viewportWidth: Double
+        var viewportHeight: Double
+        var revision: Int
     }
     struct Tab: Identifiable {
         let id: UUID
@@ -294,17 +299,76 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
                 let artifact = try await saveSnapshot(of: tab.webView)
                 var result = await observeResult(command, tabID: tabID, cursor: nil)
                 result.page?.screenshotArtifact = artifact
-                if let currentIndex = tabs.firstIndex(where: { $0.id == tabID }) {
+                if let page = result.page,
+                   let currentIndex = tabs.firstIndex(where: { $0.id == tabID }) {
                     tabs[currentIndex].visualFallbackEvidence = VisualFallbackEvidence(
                         documentID: tabs[currentIndex].documentID,
                         sha256: artifact.sha256.lowercased(),
-                        capturedAt: Date()
+                        capturedAt: Date(),
+                        pixelWidth: artifact.pixelWidth,
+                        pixelHeight: artifact.pixelHeight,
+                        viewportWidth: page.viewportWidth,
+                        viewportHeight: page.viewportHeight,
+                        revision: page.revision
                     )
                 }
                 return result
             case .click(let target):
-                if case .point = target {
-                    try validateVisualFallback(command, in: tab)
+                if case .point(let x, let y) = target {
+                    let evidence = try validateVisualFallback(command, in: tab)
+                    guard x >= 0, y >= 0,
+                          x < Double(evidence.pixelWidth),
+                          y < Double(evidence.pixelHeight) else {
+                        throw BrowserPolicyError.blocked(
+                            "Visual click coordinates are outside the referenced screenshot"
+                        )
+                    }
+                    let cssTarget = BrowserTarget.point(
+                        x: x / Double(evidence.pixelWidth) * evidence.viewportWidth,
+                        y: y / Double(evidence.pixelHeight) * evidence.viewportHeight
+                    )
+                    try await perform(
+                        target: cssTarget,
+                        in: tab,
+                        operation: "click",
+                        text: nil,
+                        submit: false,
+                        visualFallbackReason: command.visualFallbackReason
+                    )
+                    // Synthetic WebKit pointer dispatch is not proof that the
+                    // intended visual target accepted the action. Capture the
+                    // viewport again and require an observable state change.
+                    try? await Task.sleep(for: .milliseconds(250))
+                    let postArtifact = try await saveSnapshot(of: tab.webView)
+                    var result = await observeResult(command, tabID: tabID, cursor: nil)
+                    result.page?.screenshotArtifact = postArtifact
+                    let changed = result.page.map {
+                        $0.documentID != evidence.documentID
+                            || $0.revision > evidence.revision
+                            || postArtifact.sha256.lowercased() != evidence.sha256
+                    } ?? false
+                    if let page = result.page,
+                       let currentIndex = tabs.firstIndex(where: { $0.id == tabID }) {
+                        tabs[currentIndex].visualFallbackEvidence = VisualFallbackEvidence(
+                            documentID: page.documentID,
+                            sha256: postArtifact.sha256.lowercased(),
+                            capturedAt: Date(),
+                            pixelWidth: postArtifact.pixelWidth,
+                            pixelHeight: postArtifact.pixelHeight,
+                            viewportWidth: page.viewportWidth,
+                            viewportHeight: page.viewportHeight,
+                            revision: page.revision
+                        )
+                    }
+                    if changed {
+                        result.message = "Visual click produced an observable page change; the returned screenshot is post-click evidence."
+                    } else {
+                        let message = "Visual click produced no observable page change; the target was not confirmed. Use the returned post-click screenshot to choose a different point or hand control to the user."
+                        result.status = .failed
+                        result.message = message
+                        result.error = BrowserFailure(code: "no-observable-effect", message: message)
+                    }
+                    return result
                 }
                 try await perform(
                     target: target,
@@ -508,7 +572,10 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         )
     }
 
-    private func validateVisualFallback(_ command: BrowserCommand, in tab: Tab) throws {
+    private func validateVisualFallback(
+        _ command: BrowserCommand,
+        in tab: Tab
+    ) throws -> VisualFallbackEvidence {
         guard let reason = command.visualFallbackReason,
               ["noStructuredTarget", "insufficientStructuredInformation"].contains(reason) else {
             throw BrowserPolicyError.blocked(
@@ -521,11 +588,16 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
               let evidence = tab.visualFallbackEvidence,
               evidence.documentID == tab.documentID,
               evidence.sha256 == expectedDigest,
+              evidence.pixelWidth > 0,
+              evidence.pixelHeight > 0,
+              evidence.viewportWidth > 0,
+              evidence.viewportHeight > 0,
               Date().timeIntervalSince(evidence.capturedAt) <= 120 else {
             throw BrowserPolicyError.blocked(
                 "Coordinate fallback requires a fresh screenshot from the current page"
             )
         }
+        return evidence
     }
 
     private func observeResult(_ command: BrowserCommand, tabID: UUID?, cursor: Int?) async -> BrowserResult {
@@ -551,8 +623,8 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
                 url: tab.webView.url?.absoluteString ?? "",
                 title: tab.webView.title ?? "",
                 isLoading: tab.webView.isLoading,
-                viewportWidth: tab.webView.bounds.width,
-                viewportHeight: tab.webView.bounds.height,
+                viewportWidth: probe.viewportWidth,
+                viewportHeight: probe.viewportHeight,
                 scrollX: Double(tab.webView.scrollView.contentOffset.x),
                 scrollY: Double(tab.webView.scrollView.contentOffset.y),
                 tabs: tabSnapshots(),
@@ -574,7 +646,13 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     ) async throws -> ProbeSnapshot {
         let script = """
         const protocol = globalThis.__floeProtocol;
-        if (!protocol) return {revision:0, nodes:[], nextCursor:null};
+        if (!protocol) return {
+          revision:0,
+          viewportWidth:Math.max(1, Number(window.innerWidth) || 1),
+          viewportHeight:Math.max(1, Number(window.innerHeight) || 1),
+          nodes:[],
+          nextCursor:null
+        };
         return protocol.snapshot(documentID, cursor, limit);
         """
         let value = try await webView.callAsyncJavaScript(
@@ -584,7 +662,13 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             contentWorld: contentWorld
         )
         guard JSONSerialization.isValidJSONObject(value as Any) else {
-            return ProbeSnapshot(revision: 0, nodes: [], nextCursor: nil)
+            return ProbeSnapshot(
+                revision: 0,
+                viewportWidth: max(1, webView.bounds.width),
+                viewportHeight: max(1, webView.bounds.height),
+                nodes: [],
+                nextCursor: nil
+            )
         }
         let data = try JSONSerialization.data(withJSONObject: value as Any)
         return try JSONDecoder().decode(ProbeSnapshot.self, from: data)
@@ -854,6 +938,8 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         const end = Math.min(nodes.length, start + count);
         return {
           revision,
+          viewportWidth: Math.max(1, Number(window.innerWidth) || 1),
+          viewportHeight: Math.max(1, Number(window.innerHeight) || 1),
           nodes: nodes.slice(start, end).map(serialize),
           nextCursor: end < nodes.length ? end : null
         };
@@ -969,7 +1055,15 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         let name = "\(id.uuidString).jpg"
         try data.write(to: artifactDirectory.appendingPathComponent(name), options: .atomic)
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        return BrowserArtifactReference(id: id, relativePath: "BrowserArtifacts/\(name)", mimeType: "image/jpeg", byteCount: data.count, sha256: digest)
+        return BrowserArtifactReference(
+            id: id,
+            relativePath: "BrowserArtifacts/\(name)",
+            mimeType: "image/jpeg",
+            byteCount: data.count,
+            sha256: digest,
+            pixelWidth: image.cgImage?.width ?? Int(image.size.width * image.scale),
+            pixelHeight: image.cgImage?.height ?? Int(image.size.height * image.scale)
+        )
     }
 
     /// Screenshot evidence is ephemeral. Keep a bounded recent set and
@@ -1021,6 +1115,8 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
 
 private struct ProbeSnapshot: Decodable {
     var revision: Int
+    var viewportWidth: Double
+    var viewportHeight: Double
     var nodes: [BrowserNode]
     var nextCursor: Int?
 }

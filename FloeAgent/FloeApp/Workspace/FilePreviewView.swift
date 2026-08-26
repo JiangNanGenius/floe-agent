@@ -33,7 +33,6 @@ struct FilePreviewView: View {
     @State private var isIDEPresented = false
     @State private var quickLookURL: URL?
     @State private var previewError: String?
-    @State private var autoOpenedCodePath: String?
 
     var body: some View {
         Group {
@@ -87,10 +86,6 @@ struct FilePreviewView: View {
 
     private var isHTML: Bool {
         WorkspaceFileType.isHTML(relativePath)
-    }
-
-    private var isCode: Bool {
-        WorkspaceFileType.isCode(relativePath)
     }
 
     private var isTextual: Bool {
@@ -221,10 +216,6 @@ struct FilePreviewView: View {
         do {
             content = try await center.readFile(relativePath: relativePath)
             await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
-            if isCode, autoOpenedCodePath != relativePath {
-                autoOpenedCodePath = relativePath
-                isIDEPresented = true
-            }
         } catch let error as WorkspaceToolError {
             loadError = error.errorDescription ?? error.localizedDescription
         } catch {

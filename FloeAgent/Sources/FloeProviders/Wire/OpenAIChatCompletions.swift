@@ -12,6 +12,9 @@ public struct ChatRequest: Sendable, Codable, Hashable {
     public var messages: [Message]
     /// Omitted entirely when the selected model has tool calling disabled.
     public var tools: [ToolDefinition]?
+    /// Explicitly advertises native tool selection to OpenAI-compatible
+    /// providers. Omitted together with `tools` for text-only models.
+    public var toolChoice: String?
     public var maxTokens: Int?
     public var thinking: Thinking?
     public var reasoningEffort: String?
@@ -25,6 +28,7 @@ public struct ChatRequest: Sendable, Codable, Hashable {
         model: String,
         messages: [Message],
         tools: [ToolDefinition]? = nil,
+        toolChoice: String? = nil,
         maxTokens: Int? = nil,
         thinking: Thinking? = nil,
         reasoningEffort: String? = nil,
@@ -35,6 +39,7 @@ public struct ChatRequest: Sendable, Codable, Hashable {
         self.model = model
         self.messages = messages
         self.tools = tools
+        self.toolChoice = toolChoice
         self.maxTokens = maxTokens
         self.thinking = thinking
         self.reasoningEffort = reasoningEffort
@@ -213,6 +218,7 @@ public struct ChatRequest: Sendable, Codable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case model, messages, tools, thinking, stream
+        case toolChoice = "tool_choice"
         case maxTokens = "max_tokens"
         case reasoningEffort = "reasoning_effort"
         case enableThinking = "enable_thinking"
