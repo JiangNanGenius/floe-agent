@@ -43,6 +43,7 @@ targets:
         NSRemindersFullAccessUsageDescription: Floe accesses reminders only when you ask the agent to read or edit them.
         NSLocationWhenInUseUsageDescription: Floe uses your location only for a map or location task you request.
         NSCameraUsageDescription: Floe opens the camera only when you choose to capture an image for a task.
+        NSFaceIDUsageDescription: Floe uses Face ID only to confirm when you enable unrestricted task access or unlock protected settings.
         NSPhotoLibraryUsageDescription: Floe opens your photo library only when you choose an image for a task.
         NSPhotoLibraryAddUsageDescription: Floe saves generated or edited images only when you ask it to save them to Photos.
         NSHomeKitUsageDescription: Floe accesses your Home only when you enable Home tools and request an automation action.
@@ -213,8 +214,8 @@ targets:
         SWIFT_VERSION: "6.0"
         SWIFT_OBJC_BRIDGING_HEADER: FloeApp/Execution/FloeApp-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.4.42"
-        CURRENT_PROJECT_VERSION: "73"
+        MARKETING_VERSION: "1.4.43"
+        CURRENT_PROJECT_VERSION: "74"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
         ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -260,8 +261,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.42"
-        CURRENT_PROJECT_VERSION: "73"
+        MARKETING_VERSION: "1.4.43"
+        CURRENT_PROJECT_VERSION: "74"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -305,8 +306,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.42"
-        CURRENT_PROJECT_VERSION: "73"
+        MARKETING_VERSION: "1.4.43"
+        CURRENT_PROJECT_VERSION: "74"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -345,8 +346,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.42"
-        CURRENT_PROJECT_VERSION: "73"
+        MARKETING_VERSION: "1.4.43"
+        CURRENT_PROJECT_VERSION: "74"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:

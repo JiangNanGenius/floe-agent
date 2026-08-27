@@ -106,7 +106,6 @@ struct TaskPermissionsInspectorView: View {
     let conversationID: UUID?
     var isLocalModel: Bool? = nil
     @EnvironmentObject private var environment: AppEnvironment
-    @EnvironmentObject private var conversationCenter: ConversationCenter
     @State private var policy: TaskPolicy?
     @State private var isSaving = false
     @State private var errorMessage: String?
@@ -223,7 +222,7 @@ struct TaskPermissionsInspectorView: View {
             resolvedIsLocalModel = isLocalModel
         } else if let modelID = (try? await environment.runStore
             .runs(conversationID: conversationID))?.first?.modelID {
-            resolvedIsLocalModel = conversationCenter
+            resolvedIsLocalModel = environment.conversationCenter
                 .providerAndModel(modelID: modelID)?.0.kind == .local
         } else {
             resolvedIsLocalModel = false
@@ -243,7 +242,7 @@ struct TaskPermissionsInspectorView: View {
         // mid-edit, or the DB is momentarily locked) surfaces as an inline
         // error instead of crashing the inspector.
         do {
-            try await conversationCenter.updateTaskPolicy(policy)
+            try await environment.conversationCenter.updateTaskPolicy(policy)
             self.policy = policy
             errorMessage = nil
             didSave = true

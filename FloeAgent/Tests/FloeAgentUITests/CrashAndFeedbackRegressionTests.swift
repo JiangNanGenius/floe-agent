@@ -9,6 +9,14 @@ import Testing
 
 @Suite("FloeApp crash and feedback regressions")
 struct CrashAndFeedbackRegressionTests {
+    @Test("Face ID access has a packaged privacy explanation")
+    func faceIDUsageDescriptionExists() throws {
+        let explanation = try #require(
+            Bundle.main.object(forInfoDictionaryKey: "NSFaceIDUsageDescription") as? String
+        )
+        #expect(!explanation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
     @Test("Continued processing submits a concrete registered identifier")
     func continuedIdentifierIsConcrete() {
         let identifier = BackgroundTaskKind.continued.submissionIdentifier

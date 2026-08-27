@@ -26,6 +26,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Floe uses Bluetooth only when you ask it to connect to a nearby BLE serial device.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_home-assistant._tcp</string>
@@ -39,14 +41,14 @@
 	<string>Floe accesses calendars only when you ask the agent to read or edit events.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Floe opens the camera only when you choose to capture an image for a task.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Floe uses Face ID only to confirm when you enable unrestricted task access or unlock protected settings.</string>
 	<key>NSHomeKitUsageDescription</key>
 	<string>Floe accesses your Home only when you enable Home tools and request an automation action.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Floe scans your local network only when you ask the agent to discover nearby services and devices.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Floe uses your location only for a map or location task you request.</string>
-	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Floe uses Bluetooth only when you ask it to connect to a nearby BLE serial device.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Floe uses the microphone only while you dictate a message.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
