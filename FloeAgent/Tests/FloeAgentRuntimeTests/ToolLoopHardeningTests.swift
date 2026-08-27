@@ -550,8 +550,9 @@ struct ToolLoopHardeningTests {
             ])
         )
 
-        #expect(message.contains("browser.observe plus stable element refs first"))
-        #expect(message.contains("only when structured information is unavailable or insufficient"))
+        #expect(message.contains("browser.observe and stable DOM refs first"))
+        #expect(message.contains("When DOM structure is insufficient"))
+        #expect(message.contains("browser.clickVisualText"))
         #expect(message.contains("fresh evidence from the current page"))
     }
 }
