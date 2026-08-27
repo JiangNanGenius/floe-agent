@@ -445,6 +445,12 @@ final class ConversationCenter: ObservableObject {
         }
         let taskPolicy = (try? await workspaceStore.taskPolicy(conversationID: conversationID))
             ?? TaskPolicy(conversationID: conversationID)
+        // Snapshot both compiled and runtime-provided descriptors for this
+        // run. Standard remote MCP tools register through ToolRunnerRegistry;
+        // using the static catalog here would silently hide them before the
+        // provider request even though the executor can run them.
+        let catalogExecutor = CatalogToolExecutor()
+        let availableDescriptors = catalogExecutor.allDescriptors
         let skills = await environment.skillsCenter.runtimeSelection()
         let personalization = await runtimePersonalizationContext(
             query: memoryQuery,
@@ -465,8 +471,8 @@ final class ConversationCenter: ObservableObject {
                 || taskPolicy.remoteExecutionAllowed == false
             guard hasExplicitRestriction else { return nil }
             var names = taskPolicy.allowedToolNames
-                ?? Set(ToolCatalog.allDescriptors.map(\.name))
-            for descriptor in ToolCatalog.allDescriptors {
+                ?? Set(availableDescriptors.map(\.name))
+            for descriptor in availableDescriptors {
                 let risks = Set(descriptor.riskLabels)
                 let denied = (taskPolicy.networkAllowed == false && risks.contains(.networkAccess))
                     || (taskPolicy.approvalMode == "readOnly" && descriptor.effect != .readOnly)
@@ -488,12 +494,12 @@ final class ConversationCenter: ObservableObject {
             }
         }()
         let appleEnabledTools = AppleCapabilityPreferences.filteredToolNames(
-            from: ToolCatalog.allDescriptors
+            from: availableDescriptors
         )
         allowedToolNames = allowedToolNames.map { $0.intersection(appleEnabledTools) }
             ?? appleEnabledTools
         if taskRootLease == nil {
-            let nonWorkspace = Set(ToolCatalog.allDescriptors.lazy
+            let nonWorkspace = Set(availableDescriptors.lazy
                 .map(\.name)
                 .filter { !$0.hasPrefix("workspace.") && !$0.hasPrefix("preview.") })
             allowedToolNames = allowedToolNames.map { $0.intersection(nonWorkspace) }
@@ -501,7 +507,7 @@ final class ConversationCenter: ObservableObject {
         }
         if provider.kind == .local {
             let offered = allowedToolNames
-                ?? Set(ToolCatalog.allDescriptors.map(\.name))
+                ?? Set(availableDescriptors.map(\.name))
             allowedToolNames = LocalProviderAdapter.admissibleToolNames(
                 from: offered,
                 modelRemoteID: model.remoteModelID
@@ -528,7 +534,7 @@ final class ConversationCenter: ObservableObject {
                 model: model,
                 adapter: providerAdapter(for: provider),
                 credentials: credentials,
-                executor: CatalogToolExecutor()
+                executor: catalogExecutor
             ),
             for: runID
         )
@@ -536,7 +542,7 @@ final class ConversationCenter: ObservableObject {
             configuration: configuration,
             adapter: providerAdapter(for: provider),
             policy: await approvalPolicy(for: taskPolicy, primaryModel: model),
-            executor: CatalogToolExecutor(),
+            executor: catalogExecutor,
             credentials: credentials,
             gate: environment.catastrophicGate,
             checkpointStore: environment.checkpointStore,

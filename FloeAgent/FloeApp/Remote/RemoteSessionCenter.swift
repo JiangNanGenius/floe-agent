@@ -406,17 +406,26 @@ final class RemoteSessionCenter: ObservableObject {
 
     private func resolveSecret(_ reference: SecretReference) async throws -> Data {
         // The reference's keychainAccount encodes the scope (host.<uuid> or
-        // provider.<uuid>). Resolve through the Keychain at the call site.
-        let store = KeychainStore(
+        // provider.<uuid>). Credentials may have been saved before the user
+        // changed the iCloud Keychain preference, so read both namespaces.
+        let preferredStore = KeychainStore(
             service: "org.floeagent.ios.secrets",
             synchronizable: reference.synchronizable
         )
-        return try store.read(account: reference.keychainAccount)
+        do {
+            return try preferredStore.read(account: reference.keychainAccount)
+        } catch KeychainStoreError.itemNotFound {
+            let fallbackStore = KeychainStore(
+                service: "org.floeagent.ios.secrets",
+                synchronizable: !reference.synchronizable
+            )
+            return try fallbackStore.read(account: reference.keychainAccount)
+        }
     }
 
     private func resolveOptionalSecret(_ reference: SecretReference?) async throws -> Data? {
         guard let reference else { return nil }
-        return try? await resolveSecret(reference)
+        return try await resolveSecret(reference)
     }
 }
 

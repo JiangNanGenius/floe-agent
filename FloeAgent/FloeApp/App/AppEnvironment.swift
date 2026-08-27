@@ -24,6 +24,7 @@ import FloeProviders
 import FloeAgentRuntime
 import FloeLocalModels
 import FloeGit
+import FloeTools
 import CloudKit
 
 /// Owns the app's long-lived services and stores. Created once at launch and
@@ -109,6 +110,7 @@ final class AppEnvironment: ObservableObject {
     private lazy var _screenShareCenter = ScreenShareCenter(conversationCenter: _conversationCenter)
     private lazy var _backgroundVideoService = BackgroundVideoService()
     private lazy var _webSearchSettingsCenter = WebSearchSettingsCenter()
+    private lazy var _mcpSettingsCenter = MCPSettingsCenter.shared
 
     var conversationCenter: ConversationCenter { _conversationCenter }
     var remoteSessionCenter: RemoteSessionCenter { _remoteSessionCenter }
@@ -152,6 +154,7 @@ final class AppEnvironment: ObservableObject {
         return service
     }
     var webSearchSettingsCenter: WebSearchSettingsCenter { _webSearchSettingsCenter }
+    var mcpSettingsCenter: MCPSettingsCenter { _mcpSettingsCenter }
 
     // MARK: State
 
@@ -335,6 +338,10 @@ final class AppEnvironment: ObservableObject {
         registerVNCTools { [weak remoteSessionCenter] in
             await remoteSessionCenter?.activeVNCSession()
         }
+        // Standard remote MCP servers are configuration-driven tool sources.
+        // Activation only discovers JSON schemas and registers namespaced
+        // runners; no server code is downloaded or executed by the app.
+        mcpSettingsCenter.activate()
     }
 
     /// Builds the remote-Python service against the shared host store.

@@ -55,7 +55,8 @@ public struct AnyAgentTool: Sendable {
 }
 
 /// Runtime registry of executable tool runners, keyed by catalog name.
-/// Thread-safe; registrations happen once at app startup.
+/// Thread-safe. Native tools register at app startup; bounded external tool
+/// sources such as MCP may replace their own namespaced entries at runtime.
 public final class ToolRunnerRegistry: @unchecked Sendable {
     /// Shared process-wide registry used by `CatalogToolExecutor`.
     public static let shared = ToolRunnerRegistry()
@@ -83,5 +84,29 @@ public final class ToolRunnerRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return runners[name]
+    }
+
+    /// Returns the executable descriptor for a runtime-provided tool.
+    public func descriptor(named name: String) -> ToolCatalog.Descriptor? {
+        lock.lock()
+        defer { lock.unlock() }
+        return runners[name]?.descriptor
+    }
+
+    /// All currently executable runtime descriptors, sorted for deterministic
+    /// provider requests and diagnostics.
+    public var allDescriptors: [ToolCatalog.Descriptor] {
+        lock.lock()
+        defer { lock.unlock() }
+        return runners.values.map(\.descriptor).sorted { $0.name < $1.name }
+    }
+
+    /// Removes runtime entries owned by one dynamic source. Native callers do
+    /// not use this; MCP refresh/disconnect uses a stable namespaced prefix so
+    /// one server cannot remove another server's tools.
+    public func unregister(where shouldRemove: (String) -> Bool) {
+        lock.lock()
+        runners = runners.filter { !shouldRemove($0.key) }
+        lock.unlock()
     }
 }

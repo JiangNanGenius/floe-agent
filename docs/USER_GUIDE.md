@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide describes the Floe Agent 1.4.42 source target (build 73). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
+This guide describes the Floe Agent 1.4.45 source target (build 76). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
 
 ## 1. Install safely
 
@@ -146,14 +146,22 @@ For NumPy, pandas, SciPy, Matplotlib and other supported binary scientific packa
 
 Open Python, JavaScript, MJS or CJS files from the workspace to use the structured editor with line numbers, syntax highlighting, search/replace, symbols, undo/redo and bounded local execution where supported.
 
-## 13. Install and create Skills
+## 13. Use the workspace canvas and standard MCP
+
+Open a workspace's Files inspector and choose **Canvas**. Each workspace owns at most one native canvas project, and that project can contain multiple canvases. The current native surface supports movable text notes, freehand drawing, panning, zooming, renaming and deleting individual canvases, and atomic local persistence. Canvas content stays with the workspace and is not silently published to a global asset library.
+
+The canvas is deliberately a focused editing surface, not a second unrestricted browser. When sourced material is needed, return to the workspace task and let the ordinary Agent use `web.search` and `web.fetch`; browser control is not part of the canvas path. Results can then be saved into the workspace and arranged on the canvas. Standard MCP is disabled for canvas by default.
+
+To connect a standard remote tool server, open **Skills → Standard MCP** and add a Streamable HTTP endpoint. Floe supports no-auth, Bearer token, and custom-header authentication; secret values are stored in Keychain rather than server metadata. Each server and discovered tool can be enabled independently. Remote tools use a server-specific namespace, remain subject to the current task's local permission and approval policy, and treat server descriptions and outputs as untrusted data. Enabling **Allow canvas use** records an explicit opt-in for later canvas-agent workflows; it does not grant ordinary task authority or bypass approval.
+
+## 14. Install and create Skills
 
 - **Skill Creator** builds a local declarative instruction package.
 - **Skill Finder** downloads an HTTPS candidate, uses a selected model to normalize it for iOS, then runs deterministic validation and compatibility checks.
 
 Only instruction-only or read-only low-risk packages can install automatically. Scripts, network/browser access, writes, remote execution, credentials, uploads, capability expansion, and replacements require user confirmation. Scripts are visible source recipes; the App Store build does not dynamically execute them as local plugins.
 
-## 14. Troubleshoot
+## 15. Troubleshoot
 
 - **Model not configured:** add a provider and select a default Agent model.
 - **Apple Foundation Model unavailable:** read the exact reason under **Settings → Local Models**. It requires an eligible device, iOS/iPadOS 27, Apple Intelligence enabled, and the system model ready.
@@ -172,7 +180,7 @@ Only instruction-only or read-only low-risk packages can install automatically. 
 
 Export a redacted diagnostics report from **Settings → Privacy & Security** when filing a reproducible bug. See [Support](../SUPPORT.md) for the report checklist and [Security](../SECURITY.md) for private vulnerability reporting.
 
-## 15. Manage data, fonts, archives, and synced credentials
+## 16. Manage data, fonts, archives, and synced credentials
 
 Open **Settings → Data Management** to inspect Floe's total footprint, installed app size, user data, safely reclaimable space, and categories for local models, private workspaces, fonts, attachments, generated content, browser artifacts, checkpoints, database and other data. Safe Cleanup removes only rebuildable caches and temporary items left for at least one hour. It does not remove workspaces, documents, models, fonts, attachments, the database, or credentials.
 

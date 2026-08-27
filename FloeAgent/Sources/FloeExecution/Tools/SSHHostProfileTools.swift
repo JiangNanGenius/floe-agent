@@ -30,15 +30,34 @@ public struct SSHListHostsTool: AgentTool {
                   ) else { return false }
             return auth != .none
         }?.id
-        let hosts = storedHosts.map { host in
+        let hosts: [[String: Any]] = storedHosts.map { host in
             let auth = try? JSONDecoder().decode(SSHAuthMethod.self, from: Data(host.authJSON.utf8))
+            var endpoints = (try? JSONDecoder().decode(
+                [VNCEndpoint].self,
+                from: Data((host.vncEndpointsJSON ?? "[]").utf8)
+            )) ?? []
+            if endpoints.isEmpty, let legacyJSON = host.vncEndpointJSON,
+               let legacy = try? JSONDecoder().decode(VNCEndpoint.self, from: Data(legacyJSON.utf8)) {
+                endpoints = [legacy]
+            }
+            let vncConnections: [[String: Any]] = endpoints.map { endpoint in
+                ["id": endpoint.id.uuidString,
+                 "displayName": endpoint.displayName,
+                 "transport": endpoint.transport.rawValue,
+                 "host": endpoint.host,
+                 "port": endpoint.port,
+                 "passwordConfigured": endpoint.passwordRef != nil]
+            }
+            let auxiliary = (try? JSONSerialization.jsonObject(
+                with: Data((host.auxiliaryConnectionsJSON ?? "[]").utf8)
+            )) as? [Any] ?? []
             return ["id": host.id.uuidString, "name": host.displayName, "address": host.address,
-                    "port": String(host.port), "user": host.user, "default": String(host.id == defaultID),
-                    "sshEnabled": String(auth.map { $0 != .none } ?? false),
+                    "port": host.port, "user": host.user, "default": host.id == defaultID,
+                    "sshEnabled": auth.map { $0 != .none } ?? false,
                     "deviceKind": host.deviceKind ?? "unspecified",
-                    "remoteExecutionEnvironment": String(host.isRemoteExecutionEnvironment ?? true),
-                    "vncConnections": host.vncEndpointsJSON ?? (host.vncEndpointJSON.map { "[\($0)]" } ?? "[]"),
-                    "otherConnections": host.auxiliaryConnectionsJSON ?? "[]"]
+                    "remoteExecutionEnvironment": host.isRemoteExecutionEnvironment ?? true,
+                    "vncConnections": vncConnections,
+                    "otherConnections": auxiliary]
         }
         FloeLogger(category: .ssh).info(
             "sshHostListFinished trace=\(traceID) count=\(hosts.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
@@ -216,7 +235,21 @@ public struct SSHUpdateHostTool: AgentTool {
         FloeLogger(category: .ssh).info(
             "sshHostUpdateFinished trace=\(traceID) host=\(id.uuidString) fields=\(changedFields.joined(separator: ",")) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
         )
-        let data = try JSONSerialization.data(withJSONObject: ["updated": true, "hostID": id.uuidString], options: [.sortedKeys])
+        var response: [String: Any] = ["updated": true, "hostID": id.uuidString]
+        if args.vncConnections != nil {
+            let saved = ((try? JSONDecoder().decode(
+                [VNCEndpoint].self,
+                from: Data((host.vncEndpointsJSON ?? "[]").utf8)
+            )) ?? [])
+            response["vncConnections"] = saved.map { endpoint in
+                ["id": endpoint.id.uuidString,
+                 "displayName": endpoint.displayName,
+                 "passwordConfigured": endpoint.passwordRef != nil]
+            }
+            response["credentialUpdated"] = false
+            response["credentialNote"] = "This tool preserves existing VNC credentials but cannot create or replace them. Use the device editor for any connection that reports passwordConfigured=false."
+        }
+        let data = try JSONSerialization.data(withJSONObject: response, options: [.sortedKeys])
         return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self), fullOutputSHA256: digest(data), exitStatus: 0)
     }
 }

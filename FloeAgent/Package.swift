@@ -191,7 +191,10 @@ let package = Package(
 
         .target(
             name: "FloeTools",
-            dependencies: ["FloeCore", "FloeModels"],
+            dependencies: [
+                "FloeCore", "FloeModels",
+                .product(name: "Crypto", package: "swift-crypto")
+            ],
             path: "Sources/FloeTools",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

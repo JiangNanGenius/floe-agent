@@ -155,6 +155,11 @@ struct OnboardingView: View {
                     detail: "setup.features.workspaces.detail"
                 )
                 setupFeature(
+                    "square.and.pencil",
+                    title: "setup.features.canvas.title",
+                    detail: "setup.features.canvas.detail"
+                )
+                setupFeature(
                     "checkmark.shield",
                     title: "setup.features.safety.title",
                     detail: "setup.features.safety.detail"
@@ -386,6 +391,7 @@ struct OnboardingView: View {
                     Label("setup.summary.auxiliary", systemImage: "eye")
                     Label("setup.summary.apple_search", systemImage: "apple.logo")
                     Label("setup.summary.remote_background", systemImage: "server.rack")
+                    Label("setup.summary.canvas_mcp", systemImage: "square.and.pencil")
                     Label("setup.summary.sync_diagnostics", systemImage: "stethoscope")
                 }
                 .font(FloeTheme.Typography.metadata)

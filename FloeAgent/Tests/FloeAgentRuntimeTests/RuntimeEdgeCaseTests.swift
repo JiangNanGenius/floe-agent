@@ -188,7 +188,9 @@ struct AgentRuntimeEdgeTests {
         await runtime.cancel() // second cancel must not crash or duplicate
         try await startTask.value
         #expect(await runtime.state.name == "checkpointed")
-        #expect(store.saved.count == 1)
+        // One model-dispatch boundary plus one cancellation boundary. The
+        // second cancel remains a no-op and adds no third checkpoint.
+        #expect(store.saved.count == 2)
     }
 
     @Test("resume() from a checkpoint while idle runs to completion")

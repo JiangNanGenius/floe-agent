@@ -7097,11 +7097,25 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "后台持续运行" } }
       }
     },
+    "setup.features.canvas.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Each workspace includes a native infinite canvas for notes, sketches, and visual planning. Standard MCP servers remain optional and are disabled for canvas by default." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "每个工作区都可使用原生无限画布整理文本、手绘与视觉规划；标准 MCP 为可选能力，默认不会开放给画布。" } }
+      }
+    },
+    "setup.features.canvas.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Native infinite canvas" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原生无限画布" } }
+      }
+    },
     "setup.features.connections.detail": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Enable web search, Apple capabilities, or SSH hosts only for the workflows you use." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "按需启用联网搜索、Apple 能力和 SSH 主机，模型会在任务中组合使用。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Enable web search, Apple capabilities, remote devices, or standard MCP servers only for the workflows you use." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "按需启用联网搜索、Apple 能力、远程设备或标准 MCP，模型会在任务中组合使用。" } }
       }
     },
     "setup.features.connections.title": {
@@ -7214,6 +7228,13 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Enable Apple capabilities and web search as needed" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "按需启用 Apple 能力与联网搜索" } }
+      }
+    },
+    "setup.summary.canvas_mcp": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Open a workspace canvas or add an optional standard MCP server" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "打开工作区无限画布，或按需添加标准 MCP 服务器" } }
       }
     },
     "setup.summary.auxiliary": {

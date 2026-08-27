@@ -2,7 +2,7 @@
 
 [README](../README.md) · [简体中文 README](../README.zh-CN.md) · [User guide](USER_GUIDE.md)
 
-This page is the current 1.4.33 map. Older audit and delivery documents are historical evidence and may use superseded schema versions or navigation names.
+This page is the current 1.4.45 map. Older audit and delivery documents are historical evidence and may use superseded schema versions or navigation names.
 
 ## Domain vocabulary / 领域术语
 
@@ -54,9 +54,15 @@ New-task persistence is atomic: conversation, workspace ownership, run, user mes
 
 ## Context assembly
 
-`ConversationHistoryAssembler` combines recent verbatim messages with sourced compression records, tool evidence, user decisions, attachments, plan, goal, scoped memory, workspace instructions, and effective task policy. Historical content cannot modify current permissions. Checkpoint format v2 records orchestration fields plus a bounded execution ledger. Recovery removes unfinished stream fields, restores completed tool evidence, and resumes from a safe boundary without replaying successful identical calls.
+`ConversationHistoryAssembler` combines recent verbatim messages with sourced compression records, tool evidence, user decisions, attachments, plan, goal, scoped memory, workspace instructions, and effective task policy. Historical content cannot modify current permissions. Checkpoint format v3 records orchestration fields, a bounded execution ledger, and the exact lifecycle phase of every pending tool call. Recovery removes unfinished stream fields, restores completed evidence, distinguishes a recorded-but-not-dispatched call from an unknown external outcome, and never silently replays a successful identical call.
 
 Cloud and local context policies are independent. Cloud adapters retain the configured provider context, compression and full allowed tool schema. Local adapters choose a dynamic device-safe context and an intent-ranked subset of real compiled tools, then use a strict JSON fallback when a small model does not emit a native structured call.
+
+## Harness settlement and recovery
+
+Every provider tool batch has three visible boundaries: request recording, executor dispatch, and result commitment. Floe executes an approved batch, reconciles every result back into provider order, updates the full execution ledger and lifecycle set, writes one batch-settlement checkpoint, and only then publishes result UI or starts the next provider turn. A crash therefore cannot expose a later tool result while leaving the durable batch at an earlier index.
+
+`HarnessInvariant` verifies ordered call/result pairing, unique lifecycle IDs, legal lifecycle monotonicity, immutable tool identity and authorization identity, and the absence of orphan lifecycle records. A model-dispatch checkpoint stores a stable prompt digest before provider I/O. Critical timeline records retry and fail closed rather than being discarded with `try?`; final assistant content and terminal state remain ordered. Loop protection uses an exact fingerprint inside the current progress epoch, so changed arguments, changed evidence, a successful mutation, an explicit wait, or new user direction resets the detector instead of consuming a global tool-round allowance.
 
 ## Browser boundary
 
@@ -95,3 +101,17 @@ Provider schema filtering reduces accidental requests; executor-side authorizati
 | `FloeSSH`, `FloeExecution`, `FloeVNC` | Authorized remote execution and visible computer control. |
 | `FloeSkills` | Declarative package validation, compatibility, provenance, and per-run tool ceiling. |
 | `FloeApp` | Native iPhone/iPad interface, browser sessions, voice, notifications, and lifecycle coordination. |
+
+## Creative mode and asset architecture
+
+The first public-beta Creative Mode surface is a Workspace-owned native infinite-canvas MVP, not a replacement for the existing Task/Run/Workspace model. Floe remains chat-first: ordinary Chat continues through the existing hierarchy. The current canvas stores one project per Workspace with multiple user-facing canvas documents, movable text, freehand strokes, pan and zoom. The broader artifact library, project-context projection and dedicated Canvas Agent described below remain staged expansion work and are not implied by the MVP.
+
+Images, videos, audio, documents, prompts, screenshots, and design outputs use one shared `CreativeArtifact` lifecycle. Project artifacts are the default destination. A user may explicitly promote an image to the global long-term `ImageLibraryAsset`; every Conversation/Run can read and hybrid-search these images. Videos, audio, and canvas documents remain project or conversation artifacts unless exported elsewhere. Media blobs are stored separately from canvas JSON and retained or garbage-collected by reference checks. Recent, favorites, date, type, and search are derived views rather than physical folders.
+
+The same media-generation service is available to ordinary Chat, Creative Mode, and Workspace. LLM providers cover both ordinary text models and vision-capable models; vision is a model capability, not a separate provider type. All video models are added and maintained under the existing Model Providers settings; Auxiliary Models stores the default video model used by Agent calls. A user-initiated Canvas generation may temporarily choose any enabled compatible video model without changing that default. The surface changes the default context and result destination; it does not create a second video-generation or model-settings implementation. Existing provider/model settings, Conversation/Run progress, task cancellation, approvals, data management, Skills, and Workspace export boundaries remain shared.
+
+Every Run records a project context snapshot containing optional Workspace and CanvasProject IDs, selected CanvasDocument/node/artifact IDs, explicitly authorized project-context document IDs and versions, allowed asset scopes, and the active surface. Ordinary chat can read the global long-term image library through search and sees its existing Workspace/file context. A Run in CanvasProject sees the selected CanvasDocument(s), canvas artifacts, and selected planning/background documents in read-only form; it does not see ordinary chat code or arbitrary Workspace files. The Workspace parent provides the existing chat hierarchy, the single canvas entry, navigation, and this bounded project-context projection; it does not provide a shared Agent. Canvas writes, image-library promotion, media export, and deletion remain scoped and reviewable.
+
+Standard MCP servers are optional external tool sources for the ordinary Agent, not a canvas bridge and not a new Agent type. Floe supports the current remote Streamable HTTP tools protocol and the previous session-based Streamable HTTP revision. Servers may require no credential, a user-provided bearer token, or a custom authentication header; secrets remain in Keychain. Interactive OAuth, deprecated HTTP+SSE endpoints, and a remote stdio bridge are not part of the first public beta. Canvas runs do not receive MCP tools by default; a user may explicitly allow an individual server for canvas use, after which the current canvas surface and task policy still filter its tools. Canvas Agent has bounded `web.search` and `web.fetch` access for discovering public references and fetching an explicit URL, but no browser navigation, clicking, login, or computer-control tools. Imported web material retains source and license status. MCP schemas and results are untrusted data; they cannot download or execute code on iOS, expose uncompiled native APIs, or bypass Floe approvals, data-sharing consent, audit, cancellation, and execution-ledger checks.
+
+The complete interaction, data model, video generation reuse, Pencil plan, AI/MCP boundary, existing component reuse, menu/settings reuse, rollout phases, and release gates are documented in [Creative mode, canvas and asset architecture](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.zh-CN.md).

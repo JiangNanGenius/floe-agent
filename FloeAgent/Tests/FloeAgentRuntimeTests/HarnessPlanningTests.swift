@@ -65,6 +65,10 @@ struct HarnessPlanningTests {
         #expect(prompt.contains("Context continuity protocol"))
         #expect(prompt.contains("resume the latest unfinished task directly"))
         #expect(prompt.contains("Failure and retry protocol"))
+        #expect(prompt.contains("Step settlement protocol"))
+        #expect(prompt.contains("Wait for the paired structured result"))
+        #expect(prompt.contains("Never place the next-step reasoning inside the preceding tool's result"))
+        #expect(prompt.contains("If dispatch occurred but no result was committed"))
         #expect(prompt.contains("do not restart the task"))
         #expect(!prompt.contains("call the native `plan.submit`"))
     }

@@ -27,6 +27,7 @@ struct FileInspectorView: View {
     @State private var showMountPicker = false
     @State private var showImportPicker = false
     @State private var showCloudWorkspaceLink = false
+    @State private var showCanvas = false
     @State private var exportURL: URL?
     @State private var inspectorMode: InspectorMode = .files
     @State private var contextNotice: String?
@@ -81,6 +82,11 @@ struct FileInspectorView: View {
         }
         .sheet(isPresented: $showCloudWorkspaceLink) {
             CloudWorkspaceLinkSheet(center: center)
+        }
+        .fullScreenCover(isPresented: $showCanvas) {
+            if let workspace = center.currentWorkspace {
+                WorkspaceCanvasView(workspace: workspace)
+            }
         }
         .sheet(isPresented: Binding(
             get: { exportURL != nil },
@@ -161,6 +167,15 @@ struct FileInspectorView: View {
             }
             .navigationTitle("inspector.files")
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showCanvas = true
+                    } label: {
+                        Label("画布", systemImage: "rectangle.and.pencil.and.ellipsis")
+                    }
+                    .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                    .accessibilityHint("打开这个工作区唯一的画布入口")
+                }
                 if workspace.kind == .privateTask {
                     ToolbarItem(placement: .topBarTrailing) {
                         workspaceActions

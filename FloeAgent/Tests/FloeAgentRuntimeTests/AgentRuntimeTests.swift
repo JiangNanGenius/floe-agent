@@ -144,6 +144,29 @@ final class FailingCheckpointStore: CheckpointStore, @unchecked Sendable {
     func load(runID: UUID) async throws -> AgentCheckpoint? { nil }
 }
 
+final class SecondSaveFailingCheckpointStore: CheckpointStore, @unchecked Sendable {
+    private let storage = AsyncLock<(saveCount: Int, checkpoints: [AgentCheckpoint])>((0, []))
+
+    func save(_ checkpoint: AgentCheckpoint) async throws {
+        let count = storage.withLock { state -> Int in
+            state.saveCount += 1
+            if state.saveCount < 2 { state.checkpoints.append(checkpoint) }
+            return state.saveCount
+        }
+        if count >= 2 {
+            throw NSError(
+                domain: "FloeAgentRuntimeTests.Checkpoint",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "tool dispatch checkpoint unavailable"]
+            )
+        }
+    }
+
+    func load(runID: UUID) async throws -> AgentCheckpoint? {
+        storage.withLock { $0.checkpoints.last { $0.runID == runID } }
+    }
+}
+
 final class RecordingApprovalBackend: ModelApprovalPolicy.DecisionBackend, @unchecked Sendable {
     private let storage = AsyncLock<[ProposedAction]>([])
     var actions: [ProposedAction] { storage.withLock { $0 } }
@@ -383,7 +406,8 @@ struct AgentRuntimeTests {
         ]
         let executor = MockExecutor()
         registerEcho(in: executor)
-        let runtime = makeRuntime(adapter: adapter, executor: executor)
+        let store = MockCheckpointStore()
+        let runtime = makeRuntime(adapter: adapter, executor: executor, store: store)
 
         try await runtime.start(goal: "echo twice in one turn")
 
@@ -391,6 +415,16 @@ struct AgentRuntimeTests {
         #expect(adapter.requests.count == 2)
         #expect(adapter.requests[1].pendingToolCalls.map(\.id) == [first.id, second.id])
         #expect(adapter.requests[1].toolResults.map(\.callID) == [first.id, second.id])
+        #expect(!store.saved.contains {
+            $0.pendingToolCalls.count == 2 && $0.pendingToolResults.count == 1
+        })
+        #expect(store.saved.contains {
+            $0.pendingToolCalls.map(\.id) == [first.id, second.id]
+                && $0.pendingToolResults.map(\.callID) == [first.id, second.id]
+                && ($0.toolLifecycleEntries ?? []).filter {
+                    [first.id, second.id].contains($0.callID)
+                }.allSatisfy { $0.phase == .resultCommitted }
+        })
     }
 
     @Test("Duplicate tool-call IDs fail closed before approval or execution")
@@ -515,7 +549,9 @@ struct AgentRuntimeTests {
             executor: executor,
             policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
             audit: audit,
-            store: FailingCheckpointStore()
+            // The model-dispatch barrier succeeds; the second save is the
+            // side-effect pre-dispatch barrier under test.
+            store: SecondSaveFailingCheckpointStore()
         )
 
         try await runtime.start(goal: "perform one write")
@@ -640,9 +676,9 @@ struct AgentRuntimeTests {
         let state = await runtime.state
         #expect(state.name == "checkpointed")
         #expect(sink.transitions.contains("cancelling"))
-        #expect(store.saved.count == 1)
+        #expect(store.saved.count == 2)
         // Persisted state downgrades to preparing.
-        #expect(store.saved[0].state.name == "preparing")
+        #expect(store.saved.last?.state.name == "preparing")
         _ = adapter
     }
 
@@ -667,7 +703,7 @@ struct AgentRuntimeTests {
 
     // MARK: Checkpoint / resume
 
-    @Test("Checkpoint v2 golden: format is stable and decode-validates")
+    @Test("Checkpoint v3 golden: format is stable and decode-validates")
     func checkpointGolden() async throws {
         let runID = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
         let conversationID = UUID(uuidString: "55555555-5555-5555-5555-555555555555")!
@@ -691,7 +727,7 @@ struct AgentRuntimeTests {
         let data = try checkpoint.encoded()
         // Golden field assertions (stable contract for v1 readers).
         let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        #expect(object["formatVersion"] as? Int == 2)
+        #expect(object["formatVersion"] as? Int == 3)
         #expect(object["schemaVersion"] as? Int == 1)
         #expect(object["runID"] as? String == runID.uuidString)
         // Round-trip decode.
@@ -796,6 +832,32 @@ struct AgentRuntimeTests {
         #expect(request.toolResults.first?.output.contains("outcome is unknown") == true)
     }
 
+    @Test("Resume distinguishes a recorded call that never crossed dispatch")
+    func resumeRepairsNotStartedToolWithoutUnknownOutcome() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+        let call = try TestFixtures.toolCall(id: "recorded-not-dispatched")
+        let runtime = makeRuntime(adapter: adapter)
+        let checkpoint = AgentCheckpoint(
+            runID: UUID(),
+            conversationID: UUID(),
+            state: .preparing(.init(goal: "resume safely")),
+            messages: [ConversationMessage(role: "user", content: "resume safely")],
+            pendingToolCalls: [call],
+            toolLifecycleEntries: [AgentToolLifecycleEntry(
+                callID: call.id,
+                toolName: call.toolName,
+                phase: .recorded
+            )]
+        )
+
+        try await runtime.resume(from: checkpoint)
+
+        let request = try #require(adapter.requests.first)
+        #expect(request.toolResults.first?.output.contains("never dispatched") == true)
+        #expect(request.toolResults.first?.output.contains("outcome is unknown") == false)
+    }
+
     @Test("Tool results are checkpointed with the execution ledger")
     func toolResultCheckpointIncludesLedger() async throws {
         let adapter = MockAdapter()
@@ -811,6 +873,9 @@ struct AgentRuntimeTests {
         try await runtime.start(goal: "persist result boundary")
 
         #expect(store.saved.contains { !$0.executionLedgerEntries!.isEmpty })
+        #expect(store.saved.contains {
+            $0.toolLifecycleEntries?.contains { $0.phase == .resultCommitted } == true
+        })
     }
 
     @Test("Provider server error fails the run as recoverable")

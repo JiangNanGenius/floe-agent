@@ -120,6 +120,32 @@ struct ToolRunnerRegistryTests {
         #expect(output?.summary == "second")
     }
 
+    @Test("Runtime descriptors are visible and namespaced removal is bounded")
+    func runtimeDescriptorsAndRemoval() {
+        let registry = ToolRunnerRegistry()
+        let first = ToolCatalog.Descriptor(
+            name: "mcp.alpha.search", riskLabels: [], isSideEffecting: false
+        )
+        let second = ToolCatalog.Descriptor(
+            name: "mcp.beta.search", riskLabels: [], isSideEffecting: false
+        )
+        registry.register(AnyAgentTool(
+            descriptor: first,
+            run: { _, _ in ToolExecutionOutput(summary: "alpha", fullOutputSHA256: "") }
+        ))
+        registry.register(AnyAgentTool(
+            descriptor: second,
+            run: { _, _ in ToolExecutionOutput(summary: "beta", fullOutputSHA256: "") }
+        ))
+
+        #expect(registry.descriptor(named: first.name)?.name == first.name)
+        #expect(registry.allDescriptors.map(\.name) == [first.name, second.name])
+
+        registry.unregister { $0.hasPrefix("mcp.alpha.") }
+        #expect(registry.runner(named: first.name) == nil)
+        #expect(registry.runner(named: second.name) != nil)
+    }
+
     // MARK: Execution closed loop through CatalogToolExecutor
 
     @Test("CatalogToolExecutor runs a registered runner end to end")
@@ -137,6 +163,61 @@ struct ToolRunnerRegistryTests {
         let expectedDigest = SHA256.hash(data: Data("hi".utf8))
             .map { String(format: "%02x", $0) }.joined()
         #expect(result.outputDigest == expectedDigest)
+    }
+
+    @Test("CatalogToolExecutor exposes a runtime-only descriptor")
+    func executorExposesRuntimeDescriptor() {
+        let registry = ToolRunnerRegistry()
+        let descriptor = ToolCatalog.Descriptor(
+            name: "mcp.example.lookup", riskLabels: [], isSideEffecting: false
+        )
+        registry.register(AnyAgentTool(
+            descriptor: descriptor,
+            run: { _, _ in ToolExecutionOutput(summary: "ok", fullOutputSHA256: "") }
+        ))
+        let executor = CatalogToolExecutor(runners: registry)
+
+        #expect(executor.descriptor(named: descriptor.name)?.name == descriptor.name)
+        #expect(executor.allDescriptors.contains { $0.name == descriptor.name })
+    }
+
+    @Test("CatalogToolExecutor rejects a runner replaced after approval")
+    func executorRejectsChangedAuthority() async throws {
+        let registry = ToolRunnerRegistry()
+        let original = ToolCatalog.Descriptor(
+            name: "mcp.example.mutate",
+            toolDescription: "Original operation",
+            parametersJSON: #"{"type":"object","additionalProperties":false}"#,
+            riskLabels: [.networkAccess, .modifiesRemoteSystem],
+            isSideEffecting: true
+        )
+        registry.register(AnyAgentTool(
+            descriptor: original,
+            run: { _, _ in ToolExecutionOutput(summary: "original", fullOutputSHA256: "") }
+        ))
+        let approvedIdentity = original.authorizationIdentity
+
+        let replacement = ToolCatalog.Descriptor(
+            name: original.name,
+            toolDescription: "Replacement operation",
+            parametersJSON: #"{"type":"object","additionalProperties":true}"#,
+            riskLabels: [.networkAccess, .modifiesRemoteSystem],
+            isSideEffecting: true
+        )
+        registry.register(AnyAgentTool(
+            descriptor: replacement,
+            run: { _, _ in ToolExecutionOutput(summary: "replacement", fullOutputSHA256: "") }
+        ))
+
+        let executor = CatalogToolExecutor(runners: registry)
+        let call = try makeCall(original.name)
+        let result = try await executor.execute(
+            call,
+            expectedAuthorizationIdentity: approvedIdentity,
+            context: makeContext()
+        )
+        #expect(result.status == .denied)
+        #expect(result.outputSummary.contains("authority changed"))
     }
 
     @Test("Descriptor present but no runner → structured failure")

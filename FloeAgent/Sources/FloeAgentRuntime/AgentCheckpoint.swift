@@ -37,6 +37,39 @@ public struct AgentExecutionLedgerEntry: Sendable, Codable, Hashable {
     }
 }
 
+/// Durable execution boundary for one structured tool call. `recorded` and
+/// `approved` prove that no external action started; `dispatched` means a
+/// crash may have happened after the request crossed the executor boundary;
+/// `resultCommitted` proves the paired result reached a recovery checkpoint.
+public enum AgentToolLifecyclePhase: String, Sendable, Codable, Hashable {
+    case recorded
+    case approved
+    case dispatched
+    case resultCommitted
+}
+
+public struct AgentToolLifecycleEntry: Sendable, Codable, Hashable {
+    public var callID: String
+    public var toolName: String
+    public var authorizationIdentity: String?
+    public var phase: AgentToolLifecyclePhase
+    public var updatedAt: Date
+
+    public init(
+        callID: String,
+        toolName: String,
+        authorizationIdentity: String? = nil,
+        phase: AgentToolLifecyclePhase,
+        updatedAt: Date = Date()
+    ) {
+        self.callID = callID
+        self.toolName = toolName
+        self.authorizationIdentity = authorizationIdentity
+        self.phase = phase
+        self.updatedAt = updatedAt
+    }
+}
+
 /// Serializable snapshot of an agent run, written on cancellation, app
 /// suspension, or explicit user pause timeout.
 public struct AgentCheckpoint: Sendable, Codable, Hashable {
@@ -73,9 +106,12 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// Bounded evidence of tool attempts already completed in this run.
     /// Optional so V1/V2 checkpoints written before Build 53 remain readable.
     public var executionLedgerEntries: [AgentExecutionLedgerEntry]?
+    /// Exact dispatch boundary for pending calls. Optional so older
+    /// checkpoints remain decodable and are repaired conservatively.
+    public var toolLifecycleEntries: [AgentToolLifecycleEntry]?
 
     /// Current checkpoint file format.
-    public static let currentFormatVersion = 2
+    public static let currentFormatVersion = 3
     /// Current GRDB schema version.
     public static let currentSchemaVersion = 1
 
@@ -99,7 +135,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         activeChildRunIDs: [UUID]? = nil,
         parentIterationCount: Int? = nil,
         totalIterationCount: Int? = nil,
-        executionLedgerEntries: [AgentExecutionLedgerEntry]? = nil
+        executionLedgerEntries: [AgentExecutionLedgerEntry]? = nil,
+        toolLifecycleEntries: [AgentToolLifecycleEntry]? = nil
     ) {
         self.formatVersion = formatVersion
         self.runID = runID
@@ -121,6 +158,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         self.parentIterationCount = parentIterationCount
         self.totalIterationCount = totalIterationCount
         self.executionLedgerEntries = executionLedgerEntries
+        self.toolLifecycleEntries = toolLifecycleEntries
     }
 
     public func encoded() throws -> Data {

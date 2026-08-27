@@ -122,6 +122,7 @@ struct HostListView: View {
             ForEach(viewModel.hosts) { host in
                 HostRow(
                     host: host,
+                    center: center,
                     sessions: viewModel.sessions(for: host.id),
                     isConnecting: viewModel.connectingHostID == host.id,
                     isUpdatingAgent: viewModel.updatingAgentHostID == host.id,
@@ -162,6 +163,7 @@ struct HostListView: View {
 /// One host row: name/address, session status, connect buttons.
 private struct HostRow: View {
     let host: RemoteHostProfile
+    let center: RemoteSessionCenter
     let sessions: [RemoteSessionSnapshot]
     let isConnecting: Bool
     let isUpdatingAgent: Bool
@@ -195,6 +197,15 @@ private struct HostRow: View {
                 }
             }
             HStack(spacing: 12) {
+                NavigationLink {
+                    HostEditorView(center: center, existing: host)
+                } label: {
+                    Label("编辑", systemImage: "pencil")
+                        .font(FloeTheme.Typography.metadata)
+                }
+                .buttonStyle(.bordered)
+                .frame(minHeight: FloeTheme.minimumTarget)
+
                 if host.hasSSHConnection {
                     Button {
                         onConnectTerminal()

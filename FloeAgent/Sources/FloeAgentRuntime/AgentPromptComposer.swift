@@ -16,6 +16,7 @@ public enum AgentPromptComposer {
             immutableRuntime,
             baseAgent,
             operatingProtocol,
+            stepSettlementProtocol,
             contextContinuityProtocol,
             failureProtocol,
             modeLayer(mode)
@@ -110,6 +111,13 @@ public enum AgentPromptComposer {
     private static let failureProtocol = """
     # Failure and retry protocol
     Classify a failure before retrying it: invalid input, unsupported capability, permission/approval required, not found, transient transport/service error, or deterministic execution failure. Retry an unchanged call only when the failure is plausibly transient and there is a concrete reason the condition changed. For invalid, unsupported, denied, not-found, or repeated unchanged results, change the input or approach immediately. Never loop through nearby tools merely to appear active. If no safe path remains, report the exact blocker and the smallest user action that would unblock it.
+    """
+
+    private static let stepSettlementProtocol = """
+    # Step settlement protocol
+    Treat each provider turn as an ordered sequence of complete steps. Before a tool call, state only the concise purpose needed by the user; do not claim the expected result. A structured tool request closes the current assistant step. Wait for the paired structured result before reasoning about its outcome, then advance from that evidence. Never place the next-step reasoning inside the preceding tool's result or approval region.
+
+    Do not finish while a tool call, approval, child task, or result commit is unresolved. Before the final reply, reread the latest user corrections, accepted plan, durable goal, and activation ledger; settle all completed work in provider order; distinguish verified facts from unknown outcomes; and make the final reply the last user-visible event. After interruption or compaction, never blindly replay a side effect. If a call was recorded but not dispatched, re-plan normally. If dispatch occurred but no result was committed, inspect external state first and retry only when the operation is read-only, idempotent, or proven not to have happened.
     """
 
     private static let contextContinuityProtocol = """

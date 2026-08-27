@@ -12,12 +12,23 @@ public struct ApprovalScope: Sendable, Codable, Hashable {
     public var paths: [String]
     /// Single-use grants are burned after one execution.
     public var singleUse: Bool
+    /// Digest of the descriptor/runner authority approved by policy. Older
+    /// checkpoints decode this as nil and may only reuse it for compiled
+    /// native tools, never for replaceable dynamic sources.
+    public var toolAuthorizationIdentity: String?
 
-    public init(toolName: String, hostID: UUID? = nil, paths: [String] = [], singleUse: Bool = true) {
+    public init(
+        toolName: String,
+        hostID: UUID? = nil,
+        paths: [String] = [],
+        singleUse: Bool = true,
+        toolAuthorizationIdentity: String? = nil
+    ) {
         self.toolName = toolName
         self.hostID = hostID
         self.paths = paths
         self.singleUse = singleUse
+        self.toolAuthorizationIdentity = toolAuthorizationIdentity
     }
 }
 

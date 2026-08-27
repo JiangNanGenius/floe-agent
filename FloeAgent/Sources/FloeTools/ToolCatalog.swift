@@ -2,6 +2,7 @@
 
 import Foundation
 import FloeCore
+import Crypto
 
 /// Registry of every tool the agent may invoke. Tools are compiled in;
 /// there is no dynamic loading, download, or plugin mechanism.
@@ -34,6 +35,25 @@ public enum ToolCatalog {
             self.effect = effect ?? (isSideEffecting ? .mutating : .readOnly)
             self.requiresHostScope = requiresHostScope
                 ?? !riskLabels.isDisjoint(with: [.executesRemoteCommand, .modifiesRemoteSystem])
+        }
+
+        /// Stable identity of the exact authority shown to policy and the
+        /// provider. Approval grants bind to this digest so replacing a
+        /// dynamic runner under the same name cannot inherit old authority.
+        public var authorizationIdentity: String {
+            let risks = riskLabels.map(\.rawValue).sorted().joined(separator: ",")
+            let material = [
+                name,
+                toolDescription,
+                parametersJSON,
+                risks,
+                isSideEffecting ? "side-effecting" : "read-only",
+                effect.rawValue,
+                requiresHostScope ? "host" : "local"
+            ].joined(separator: "\u{1f}")
+            return SHA256.hash(data: Data(material.utf8))
+                .map { String(format: "%02x", $0) }
+                .joined()
         }
 
         /// A malformed tool schema must never make every provider request

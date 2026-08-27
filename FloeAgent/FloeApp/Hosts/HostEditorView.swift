@@ -190,8 +190,27 @@ struct HostEditorView: View {
                     .autocorrectionDisabled()
                     TextField("hosts.vnc_port", value: $connection.port, format: .number)
                         .keyboardType(.numberPad)
-                    SecureField("hosts.vnc_password", text: $connection.password)
+                    SecureField(
+                        connection.existingPasswordRef == nil
+                            ? "设置 VNC 密码"
+                            : "输入新密码以替换已保存密码",
+                        text: $connection.password
+                    )
                         .textInputAutocapitalization(.never)
+                    Label(
+                        connection.existingPasswordRef == nil
+                            ? "未配置密码"
+                            : "密码已安全保存",
+                        systemImage: connection.existingPasswordRef == nil
+                            ? "exclamationmark.triangle"
+                            : "checkmark.shield"
+                    )
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(
+                        connection.existingPasswordRef == nil
+                            ? FloeTheme.destructive
+                            : Color.secondary
+                    )
                 }
             }
             Button {

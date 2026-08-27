@@ -15,9 +15,10 @@ import FloeSecurity
 
 /// Coordinates a single agent run: starts the runtime, persists the event
 /// thread, usage, errors and checkpoints, and exposes live state to the UI.
-/// One instance per run. All store writes are best-effort and never block
-/// the agent loop — persistence failure surfaces as a recorded error event,
-/// not a crashed run.
+/// One instance per run. Streaming telemetry remains best-effort, while
+/// interaction boundaries (assistant steps, tool calls/results and the final
+/// answer/terminal pair) are retried and fail closed. A run must never claim
+/// durable completion after losing the answer that future turns depend on.
 public actor ConversationRunService {
 
     /// Live view of the run for the UI.
@@ -104,6 +105,10 @@ public actor ConversationRunService {
     private var unpublishedReasoningText = ""
     private var reasoningPushTask: Task<Void, Never>?
     private var recoveryPointTask: Task<Void, Never>?
+    /// Set when a completion-critical write still fails after bounded retry.
+    /// The runtime may already have reached `.completed`, but the service
+    /// projects a recoverable failure instead of publishing a false success.
+    private var durabilityFailure: String?
     private var hasProviderActivity = false
     private var latestState: AgentState = .idle
     private var isReviewingApproval = false
@@ -389,7 +394,7 @@ public actor ConversationRunService {
         await flushReasoning()
         await flushAssistantSegment()
         let messageID = UUID()
-        try? await conversationStore.appendMessage(PersistedMessage(
+        let persisted = await appendMessageReliably(PersistedMessage(
             id: messageID,
             conversationID: conversationID,
             role: "assistant",
@@ -397,7 +402,8 @@ public actor ConversationRunService {
             createdAt: Date(),
             parts: [MessagePart(messageID: messageID, partIndex: 0, kind: .text, text: text)],
             runID: runID
-        ))
+        ), boundary: "assistantStep")
+        guard persisted else { return }
         lastCompletedAssistantStepText = text
         streamedText = ""
         reasoningText = ""
@@ -480,25 +486,34 @@ public actor ConversationRunService {
     }
 
     private func handleTransition(_ state: AgentState) async {
-        latestState = state
+        let projectedState: AgentState
+        if case .completed = state, let durabilityFailure {
+            projectedState = .failed(.init(
+                message: durabilityFailure,
+                isRecoverable: true
+            ))
+        } else {
+            projectedState = state
+        }
+        latestState = projectedState
         if case .verifying = state {
             verificationDraftPersisted = true
         }
-        eventChannel.yield(.stateChanged(Self.harnessState(state)))
-        logger.debug("Run \(runID.uuidString) transitioned to \(state.name)")
-        logger.info("runStateChanged run=\(runID.uuidString) state=\(state.name)")
+        eventChannel.yield(.stateChanged(Self.harnessState(projectedState)))
+        logger.debug("Run \(runID.uuidString) transitioned to \(projectedState.name)")
+        logger.info("runStateChanged run=\(runID.uuidString) state=\(projectedState.name)")
         if case .executingTool(let info) = state {
             toolStartDates[info.toolCall.id] = info.startedAt
             eventChannel.yield(.toolLifecycle(.started(info.toolCall)))
         }
-        if isTerminal(state) {
+        if isTerminal(projectedState) {
             flushAnswerPush()
             await flushReasoning()
             resourceAccessCleanup?()
             resourceAccessCleanup = nil
         }
-        let endedAt: Date? = isTerminal(state) ? Date() : nil
-        try? await runStore.updateRunState(id: runID, state: state.name, endedAt: endedAt)
+        let endedAt: Date? = isTerminal(projectedState) ? Date() : nil
+        try? await runStore.updateRunState(id: runID, state: projectedState.name, endedAt: endedAt)
         if case .waitingApproval(let waiting) = state {
             eventChannel.yield(.approvalRequested(ApprovalRequestSnapshot(
                 toolCall: waiting.toolCall,
@@ -513,11 +528,11 @@ public actor ConversationRunService {
         // append a later status row that would make the durable sequence lie
         // about what was last. Failed/checkpointed runs still need a terminal
         // status because they have no provider completion event.
-        if isTerminal(state), !Self.isCompleted(state) {
+        if isTerminal(projectedState), !Self.isCompleted(projectedState) {
             let reason: String
-            if case .checkpointed(let reference) = state {
+            if case .checkpointed(let reference) = projectedState {
                 reason = reference.reason ?? "任务已保存检查点"
-            } else if case .failed(let failure) = state {
+            } else if case .failed(let failure) = projectedState {
                 reason = failure.message
             } else {
                 reason = ""
@@ -525,12 +540,12 @@ public actor ConversationRunService {
             _ = try? await runStore.appendEvent(
                 runID: runID, kind: .status,
                 payloadJSON: Self.jsonPayload([
-                    "state": state.name,
+                    "state": projectedState.name,
                     "reason": reason
                 ])
             )
         }
-        switch state {
+        switch projectedState {
         case .completed:
             eventChannel.yield(.terminal(.completed))
             eventChannel.finish()
@@ -607,14 +622,16 @@ public actor ConversationRunService {
                 decoding: call.argumentsJSON.prefix(32 * 1_024),
                 as: UTF8.self
             ), secret: secretForRedaction)
-            _ = try? await runStore.appendEvent(
+            _ = await appendEventReliably(
                 runID: runID, kind: .toolRequest,
                 payloadJSON: Self.jsonPayload([
                     "tool": call.toolName,
                     "id": call.id,
                     "input": input,
                     "status": "pending"
-                ])
+                ]),
+                boundary: "toolRequest",
+                completionCritical: false
             )
         case .toolResult(let result):
             eventChannel.yield(.toolLifecycle(.finished(result)))
@@ -636,9 +653,11 @@ public actor ConversationRunService {
                 // nested JSON and must be verified by digest before use.
                 persisted["artifactRefsJSON"] = encoded
             }
-            _ = try? await runStore.appendEvent(
+            _ = await appendEventReliably(
                 runID: runID, kind: .toolResult,
-                payloadJSON: Self.jsonPayload(persisted)
+                payloadJSON: Self.jsonPayload(persisted),
+                boundary: "toolResult",
+                completionCritical: false
             )
         case .usage(let report):
             eventChannel.yield(.usageChanged(UsageSnapshot(
@@ -718,7 +737,7 @@ public actor ConversationRunService {
             // render above the final answer.
             if !streamedText.isEmpty {
                 let messageID = UUID()
-                try? await conversationStore.appendMessage(PersistedMessage(
+                let finalMessagePersisted = await appendMessageReliably(PersistedMessage(
                     id: messageID,
                     conversationID: conversationID,
                     role: "assistant",
@@ -726,8 +745,10 @@ public actor ConversationRunService {
                     createdAt: Date(),
                     parts: [MessagePart(messageID: messageID, partIndex: 0, kind: .text, text: streamedText)],
                     runID: runID
-                ))
-                logger.info("finalMessagePersisted run=\(runID.uuidString) messageID=\(messageID.uuidString)")
+                ), boundary: "finalAssistant", completionCritical: true)
+                if finalMessagePersisted {
+                    logger.info("finalMessagePersisted run=\(runID.uuidString) messageID=\(messageID.uuidString)")
+                }
             } else if !verificationDraftPersisted {
                 // The provider reported a stop reason without any final
                 // text. That is an honest failure surface, not a silent
@@ -740,11 +761,17 @@ public actor ConversationRunService {
             } else {
                 logger.info("finalAnswerVerified run=\(runID.uuidString) result=confirmed")
             }
-            _ = try? await runStore.appendEvent(
-                runID: runID, kind: .terminal,
-                payloadJSON: Self.jsonPayload(["stopReason": completion.stopReason.rawValue])
-            )
-            logger.info("terminalPersisted run=\(runID.uuidString) stopReason=\(completion.stopReason.rawValue)")
+            if durabilityFailure == nil {
+                let terminalPersisted = await appendEventReliably(
+                    runID: runID, kind: .terminal,
+                    payloadJSON: Self.jsonPayload(["stopReason": completion.stopReason.rawValue]),
+                    boundary: "terminal",
+                    completionCritical: true
+                )
+                if terminalPersisted {
+                    logger.info("terminalPersisted run=\(runID.uuidString) stopReason=\(completion.stopReason.rawValue)")
+                }
+            }
             if conversationMode == .plan {
                 let planText = streamedText.isEmpty && verificationDraftPersisted
                     ? lastCompletedAssistantStepText
@@ -783,10 +810,12 @@ public actor ConversationRunService {
         flushAnswerPush()
         let text = unflushedAssistantSegment
         unflushedAssistantSegment = ""
-        _ = try? await runStore.appendEvent(
+        _ = await appendEventReliably(
             runID: runID,
             kind: .assistantText,
-            payloadJSON: Self.jsonPayload(["text": text])
+            payloadJSON: Self.jsonPayload(["text": text]),
+            boundary: "assistantText",
+            completionCritical: true
         )
     }
 
@@ -800,6 +829,61 @@ public actor ConversationRunService {
             kind: .reasoning,
             payloadJSON: Self.jsonPayload(["text": text])
         )
+    }
+
+    /// Durable interaction boundaries use a short bounded retry so a transient
+    /// SQLite busy/I/O edge does not silently create an incomplete timeline.
+    /// The retry never replays a provider or tool side effect.
+    @discardableResult
+    private func appendEventReliably(
+        runID: UUID,
+        kind: RunEventRecord.Kind,
+        payloadJSON: String,
+        boundary: String,
+        completionCritical: Bool
+    ) async -> Bool {
+        var lastError: Error?
+        for attempt in 1...3 {
+            do {
+                _ = try await runStore.appendEvent(
+                    runID: runID,
+                    kind: kind,
+                    payloadJSON: payloadJSON
+                )
+                return true
+            } catch {
+                lastError = error
+                if attempt < 3 { try? await Task.sleep(for: .milliseconds(25 * attempt)) }
+            }
+        }
+        let errorDescription = lastError?.localizedDescription ?? "unknown persistence error"
+        let message = "Unable to persist \(boundary) after retry: \(errorDescription)"
+        logger.error("durableBoundaryFailed run=\(runID.uuidString) boundary=\(boundary)")
+        if completionCritical { durabilityFailure = message }
+        return false
+    }
+
+    @discardableResult
+    private func appendMessageReliably(
+        _ message: PersistedMessage,
+        boundary: String,
+        completionCritical: Bool = true
+    ) async -> Bool {
+        var lastError: Error?
+        for attempt in 1...3 {
+            do {
+                try await conversationStore.appendMessage(message)
+                return true
+            } catch {
+                lastError = error
+                if attempt < 3 { try? await Task.sleep(for: .milliseconds(25 * attempt)) }
+            }
+        }
+        let errorDescription = lastError?.localizedDescription ?? "unknown persistence error"
+        let detail = "Unable to persist \(boundary) after retry: \(errorDescription)"
+        logger.error("durableMessageFailed run=\(runID.uuidString) boundary=\(boundary)")
+        if completionCritical { durabilityFailure = detail }
+        return false
     }
 
     /// Coalesces answer deltas to one UI publication per display frame while

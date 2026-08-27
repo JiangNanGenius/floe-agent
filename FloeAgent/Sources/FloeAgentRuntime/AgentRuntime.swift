@@ -85,9 +85,40 @@ public protocol ToolExecutor: Sendable {
     /// Executes one validated, approved tool call. Must honor cancellation
     /// through `context.cancellation`.
     func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult
+    /// Executes only if the live runner still has the authority identity that
+    /// policy approved. Dynamic registries override this atomically.
+    func execute(
+        _ call: ToolCall,
+        expectedAuthorizationIdentity: String?,
+        context: ToolContext
+    ) async throws -> ToolResult
     /// Risk labels for a tool, from the catalog. Unknown tools return nil
     /// and are rejected before policy evaluation.
     func descriptor(named name: String) -> ToolCatalog.Descriptor?
+    /// Descriptors visible to this executor. Native executors merge compiled
+    /// tools with bounded runtime sources such as namespaced MCP tools.
+    var allDescriptors: [ToolCatalog.Descriptor] { get }
+}
+
+public extension ToolExecutor {
+    var allDescriptors: [ToolCatalog.Descriptor] { ToolCatalog.allDescriptors }
+
+    func execute(
+        _ call: ToolCall,
+        expectedAuthorizationIdentity: String?,
+        context: ToolContext
+    ) async throws -> ToolResult {
+        if let expectedAuthorizationIdentity,
+           descriptor(named: call.toolName)?.authorizationIdentity != expectedAuthorizationIdentity {
+            return ToolResult(
+                callID: call.id,
+                status: .denied,
+                outputSummary: "Tool authority changed after approval; review the updated tool before retrying",
+                outputDigest: ""
+            )
+        }
+        return try await execute(call, context: context)
+    }
 }
 
 /// Default executor bridging the compile-time catalog and the runtime
@@ -102,15 +133,42 @@ public struct CatalogToolExecutor: ToolExecutor {
     }
 
     public func descriptor(named name: String) -> ToolCatalog.Descriptor? {
-        ToolCatalog.descriptor(named: name)
+        ToolCatalog.descriptor(named: name) ?? runners.descriptor(named: name)
+    }
+
+    public var allDescriptors: [ToolCatalog.Descriptor] {
+        var merged = Dictionary(
+            uniqueKeysWithValues: ToolCatalog.allDescriptors.map { ($0.name, $0) }
+        )
+        for descriptor in runners.allDescriptors {
+            merged[descriptor.name] = descriptor
+        }
+        return merged.values.sorted { $0.name < $1.name }
     }
 
     public func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
+        try await execute(call, expectedAuthorizationIdentity: nil, context: context)
+    }
+
+    public func execute(
+        _ call: ToolCall,
+        expectedAuthorizationIdentity: String?,
+        context: ToolContext
+    ) async throws -> ToolResult {
         guard let runner = runners.runner(named: call.toolName) else {
             return ToolResult(
                 callID: call.id,
                 status: .failed,
                 outputSummary: "No runner registered for tool '\(call.toolName)'",
+                outputDigest: ""
+            )
+        }
+        if let expectedAuthorizationIdentity,
+           runner.descriptor.authorizationIdentity != expectedAuthorizationIdentity {
+            return ToolResult(
+                callID: call.id,
+                status: .denied,
+                outputSummary: "Tool authority changed after approval; review the updated tool before retrying",
                 outputDigest: ""
             )
         }
@@ -284,6 +342,9 @@ public actor FloeAgentRuntime {
     private var contextOverflowRecoveryCount = 0
     private var loopGuard = ToolLoopGuard()
     private var executionLedger = HarnessExecutionLedger()
+    /// Durable per-call boundaries distinguish a request that never started
+    /// from one whose real-world outcome became unknown during interruption.
+    private var toolLifecycleByCallID: [String: AgentToolLifecycleEntry] = [:]
     /// True only after this runtime has loaded a persisted checkpoint. The
     /// recovery ledger is intentionally used to deduplicate calls at this
     /// boundary; a normal fresh run may legitimately observe the same path
@@ -543,6 +604,10 @@ public actor FloeAgentRuntime {
         guard case .paused = state else { return }
         pauseTask?.cancel()
         pauseTask = nil
+        // Time was intentionally allowed to pass. Treat the resumed step as
+        // a fresh progress epoch so a prior unchanged observation cannot
+        // terminate a legitimate post-wait verification route.
+        loopGuard.advanceProgressEpoch()
         await transition(to: .preparing(AgentState.PreparingInfo(
             goal: messages.last(where: { $0.role == "user" })?.content ?? "",
             resumedFromCheckpoint: false
@@ -592,6 +657,16 @@ public actor FloeAgentRuntime {
         grants = checkpoint.approvals
         executedIdempotencyKeys = checkpoint.idempotencyKeys
         executionLedger = HarnessExecutionLedger(records: checkpoint.executionLedgerEntries ?? [])
+        toolLifecycleByCallID = Dictionary(
+            uniqueKeysWithValues: (checkpoint.toolLifecycleEntries ?? []).map { ($0.callID, $0) }
+        )
+        // Older checkpoints may already contain a complete provider pair but
+        // predate lifecycle metadata. Normalize those pairs before enforcing
+        // the v3 provider/checkpoint invariants.
+        let restoredResultIDs = Set(pendingToolResults.map(\.callID))
+        for call in pendingToolCalls where restoredResultIDs.contains(call.id) {
+            setToolLifecycle(call: call, phase: .resultCommitted)
+        }
         repairInterruptedToolPairs()
         resumedFromCheckpoint = true
         // A checkpoint is a committed tool-result boundary. Never carry a
@@ -620,16 +695,42 @@ public actor FloeAgentRuntime {
     private func repairInterruptedToolPairs() {
         var pairedIDs = Set(pendingToolResults.map(\.callID))
         for call in pendingToolCalls where !pairedIDs.contains(call.id) {
-            let result = executionLedger.recoveredResult(for: call) ?? ToolResult(
-                callID: call.id,
-                status: .failed,
-                outputSummary: "Execution was interrupted before its result was committed. The real-world outcome is unknown; inspect current state before deciding whether any action should be retried.",
-                outputDigest: ""
-            )
+            let lifecycle = toolLifecycleByCallID[call.id]
+            let result: ToolResult
+            if let recovered = executionLedger.recoveredResult(for: call) {
+                result = recovered
+            } else if lifecycle?.phase == .recorded || lifecycle?.phase == .approved {
+                result = ToolResult(
+                    callID: call.id,
+                    status: .failed,
+                    outputSummary: "The tool call was recorded but never dispatched. No external action started; re-plan from current state without treating this as a failed side effect.",
+                    outputDigest: ""
+                )
+            } else {
+                let retryGuidance = executor.descriptor(named: call.toolName)?.isSideEffecting == false
+                    ? "This tool is read-only, so it may be retried only if fresh evidence is still needed."
+                    : "Inspect current external state before deciding whether any action should be retried."
+                result = ToolResult(
+                    callID: call.id,
+                    status: .failed,
+                    outputSummary: "Execution was interrupted after dispatch but before its result was committed. The real-world outcome is unknown. \(retryGuidance)",
+                    outputDigest: ""
+                )
+            }
             pendingToolResults.append(result)
             pairedIDs.insert(call.id)
             executionLedger.record(call: call, result: result)
+            setToolLifecycle(call: call, phase: .resultCommitted)
         }
+        // Provider protocols require results in the same order as their
+        // assistant tool calls. Older checkpoints may have persisted a
+        // complete but out-of-order set; normalize it before the boundary
+        // invariant is enforced.
+        let resultByCallID = Dictionary(
+            pendingToolResults.map { ($0.callID, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        pendingToolResults = pendingToolCalls.compactMap { resultByCallID[$0.id] }
     }
 
     /// Human decision arriving for a `.waitingApproval` tool call.
@@ -694,6 +795,9 @@ public actor FloeAgentRuntime {
             normalized.content = trimmed
             pendingSteers.append(normalized)
             acceptedSteerIDs.insert(input.id)
+            // Fresh user guidance is explicit progress. Previous unchanged
+            // retry evidence must not block the newly steered route.
+            loopGuard.advanceProgressEpoch()
             return .accepted
         case .idle, .cancelling, .checkpointed, .verifying, .completed, .failed:
             return .rejected(reason: "The target run is no longer accepting guidance")
@@ -808,9 +912,9 @@ public actor FloeAgentRuntime {
             && !isFinalizingWithoutTools
         var catalogDescriptors: [ToolCatalog.Descriptor]
         if configuration.conversationMode == .plan {
-            catalogDescriptors = PlanToolPolicy().allowedDescriptors(from: ToolCatalog.allDescriptors)
+            catalogDescriptors = PlanToolPolicy().allowedDescriptors(from: executor.allDescriptors)
         } else {
-            catalogDescriptors = ToolCatalog.allDescriptors
+            catalogDescriptors = executor.allDescriptors
         }
         if configuration.model.capabilities.contains(.vision) {
             // A multimodal model receives the current image bytes directly.
@@ -872,6 +976,18 @@ public actor FloeAgentRuntime {
                 )
             }
         }
+        let providerInvariantViolations = HarnessInvariantRegistry.validateProviderBoundary(
+            calls: pendingToolCalls,
+            results: pendingToolResults,
+            lifecycleByCallID: toolLifecycleByCallID
+        )
+        guard providerInvariantViolations.isEmpty else {
+            await failRun(
+                message: "Harness invariant failed before model dispatch: \(HarnessInvariantRegistry.summary(providerInvariantViolations))",
+                recoverable: true
+            )
+            return
+        }
         if configuration.model.capabilities.contains(.vision) {
             let evidence = pendingToolResults.flatMap(\.artifacts)
                 .compactMap(Self.providerImageEvidence)
@@ -907,6 +1023,21 @@ public actor FloeAgentRuntime {
                 )
             ] : []) : []
         )
+        logger.info(
+            "promptAssembly run=\(runID.uuidString) digest=\(Self.promptAssemblyDigest(messages: legacyMessages, descriptors: catalogDescriptors)) tools=\(request.toolSchemas.count) pendingCalls=\(request.pendingToolCalls.count) pendingResults=\(request.toolResults.count) mode=\(configuration.conversationMode.rawValue)"
+        )
+        // The exact prompt/tool-result boundary must be recoverable before a
+        // provider request is allowed onto the wire. This prevents a restart
+        // from silently falling behind the context that the model received.
+        do {
+            try await writeCheckpoint()
+        } catch {
+            await failRun(
+                message: "Unable to save the model-dispatch recovery checkpoint: \(error.localizedDescription)",
+                recoverable: true
+            )
+            return
+        }
         pendingToolResults.removeAll(keepingCapacity: true)
         pendingToolCalls.removeAll(keepingCapacity: true)
         responseReasoning = ""
@@ -1299,8 +1430,14 @@ public actor FloeAgentRuntime {
         // matching calls in this activation instead of asking for the same
         // authority on every SSH/bootstrap step. The catastrophic gate above
         // still evaluates every concrete command, including reused grants.
+        let authorizationIdentity = descriptor.authorizationIdentity
         if let reusableGrant = grants.last(where: {
-            !$0.scope.singleUse && !$0.isExpired() && Self.scopePermits($0.scope, call: call)
+            !$0.scope.singleUse && !$0.isExpired()
+                && Self.scopePermits(
+                    $0.scope,
+                    call: call,
+                    currentAuthorizationIdentity: authorizationIdentity
+                )
         }) {
             logger.info(
                 "toolDecision run=\(runID.uuidString) tool=\(call.toolName) policy=\(reusableGrant.policyName) decision=reuseGrant"
@@ -1354,7 +1491,9 @@ public actor FloeAgentRuntime {
         switch decision {
         case .allow(let scope, let expiresAt):
             return .approved(grant: ApprovalGrant(
-                scope: scope, expiresAt: expiresAt, policyName: policy.policyName
+                scope: Self.bind(scope, to: authorizationIdentity),
+                expiresAt: expiresAt,
+                policyName: policy.policyName
             ))
         case .deny(let reason):
             return .denied(reason: reason, decision: "deny:\(reason)")
@@ -1369,7 +1508,11 @@ public actor FloeAgentRuntime {
             }
             switch humanDecision {
             case .allow(let scope, let expiresAt):
-                return .approved(grant: ApprovalGrant(scope: scope, expiresAt: expiresAt, policyName: "human"))
+                return .approved(grant: ApprovalGrant(
+                    scope: Self.bind(scope, to: authorizationIdentity),
+                    expiresAt: expiresAt,
+                    policyName: "human"
+                ))
             case .deny(let denyReason):
                 return .denied(reason: denyReason, decision: "deny:human:\(denyReason)")
             case .escalateToHuman, .stopped:
@@ -1432,7 +1575,13 @@ public actor FloeAgentRuntime {
         grant: ApprovalGrant,
         emitTransition: Bool = true
     ) async -> ToolResult {
-        guard !grant.isExpired(), Self.scopePermits(grant.scope, call: call) else {
+        guard let descriptor = executor.descriptor(named: call.toolName),
+              !grant.isExpired(),
+              Self.scopePermits(
+                grant.scope,
+                call: call,
+                currentAuthorizationIdentity: descriptor.authorizationIdentity
+              ) else {
             let result = ToolResult(
                 callID: call.id,
                 status: .denied,
@@ -1457,11 +1606,17 @@ public actor FloeAgentRuntime {
             await transition(to: .executingTool(AgentState.ExecutingInfo(toolCall: call)))
         }
 
+        setToolLifecycle(
+            call: call,
+            phase: .dispatched,
+            authorizationIdentity: descriptor.authorizationIdentity
+        )
+
         // Commit the exact provider history, approval grant and pending call
         // before crossing a side-effect boundary. If persistence is
         // unavailable we must not dispatch the action: recovery could
         // otherwise replay a write whose real-world outcome is unknown.
-        if executor.descriptor(named: call.toolName)?.isSideEffecting != false {
+        if descriptor.isSideEffecting {
             do {
                 try await writeCheckpoint()
             } catch {
@@ -1472,7 +1627,6 @@ public actor FloeAgentRuntime {
                     outputDigest: ""
                 )
                 await audit(toolCall: call, result: result, decision: "deny:checkpoint-failed")
-                await emit(.toolResult(result))
                 return result
             }
         }
@@ -1495,7 +1649,11 @@ public actor FloeAgentRuntime {
         )
         let result: ToolResult
         do {
-            result = try await executor.execute(call, context: context)
+            result = try await executor.execute(
+                call,
+                expectedAuthorizationIdentity: grant.scope.toolAuthorizationIdentity,
+                context: context
+            )
         } catch let error as FloeError where error == .cancelled {
             result = ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
         } catch is CancellationError {
@@ -1515,7 +1673,6 @@ public actor FloeAgentRuntime {
         if !call.idempotencyKey.isEmpty {
             executedIdempotencyKeys.insert(call.idempotencyKey)
         }
-        await emit(.toolResult(result))
         return result
     }
 
@@ -1542,18 +1699,34 @@ public actor FloeAgentRuntime {
         }
         var approvedByID: [String: ApprovalGrant] = [:]
         var resultsByID: [String: ToolResult] = [:]
+        var budgetWasExhausted = false
+
+        // Record the complete provider batch first. Even if the iteration
+        // budget expires during resolution, every structured call must still
+        // receive exactly one result.
+        for call in calls {
+            pendingToolCalls.append(call)
+            setToolLifecycle(call: call, phase: .recorded)
+        }
 
         // Phase 1 — resolve serially (approval escalation blocks).
         for call in calls {
-            // Every provider tool call must be paired with one result in the
-            // next request, including the run-scoped plan hand-off.
-            pendingToolCalls.append(call)
+            if budgetWasExhausted {
+                let skipped = ToolResult(
+                    callID: call.id,
+                    status: .failed,
+                    outputSummary: "Not dispatched because the activation iteration budget was already exhausted.",
+                    outputDigest: ""
+                )
+                await audit(toolCall: call, result: skipped, decision: "deny:harness-budget")
+                resultsByID[call.id] = skipped
+                continue
+            }
             if resumedFromCheckpoint,
                let recovered = executionLedger.recoveredResult(for: call) {
                 // A provider can regenerate a completed call after a stream
                 // interruption. Preserve the provider pairing, but do not
                 // cross the executor/approval boundary a second time.
-                await emit(.toolResult(recovered))
                 resultsByID[call.id] = recovered
                 continue
             }
@@ -1568,6 +1741,11 @@ public actor FloeAgentRuntime {
             case .approved(let grant):
                 grants.append(grant)
                 approvedByID[call.id] = grant
+                setToolLifecycle(
+                    call: call,
+                    phase: .approved,
+                    authorizationIdentity: grant.scope.toolAuthorizationIdentity
+                )
             case .denied(let reason, let decision):
                 let result = ToolResult(callID: call.id, status: .denied, outputSummary: reason, outputDigest: "")
                 await audit(toolCall: call, result: result, decision: decision)
@@ -1584,9 +1762,8 @@ public actor FloeAgentRuntime {
                     outputDigest: ""
                 )
                 await audit(toolCall: call, result: exhausted, decision: "deny:harness-budget")
-                await emit(.toolResult(exhausted))
-                await beginForcedFinalization(with: exhausted, stopReason: .budgetLimited)
-                return
+                resultsByID[call.id] = exhausted
+                budgetWasExhausted = true
             }
         }
 
@@ -1622,11 +1799,77 @@ public actor FloeAgentRuntime {
             }
         }
 
-        // Phase 3 — resume once per result.
+        // Phase 3 — settle the whole provider batch as one durable step.
+        // Individual checkpoints here are unsafe: if [read, read, write,
+        // read] finishes and the process dies after committing only the first
+        // result, recovery would correctly mark the other already-executed
+        // calls outcome-unknown and force redundant verification. Commit the
+        // complete ordered call/result set before publishing any result card
+        // or asking the provider for the next step.
+        var orderedResults: [(call: ToolCall, result: ToolResult)] = []
+        var needsUserResult: ToolResult?
+        var noProgressDetected = false
         for call in calls {
-            if let result = resultsByID[call.id] {
-                await resumeStream(with: result, after: call)
+            var result = resultsByID[call.id] ?? ToolResult(
+                callID: call.id,
+                status: .failed,
+                outputSummary: "Harness failed to settle this tool call; no result was produced.",
+                outputDigest: ""
+            )
+            if result.status == .needsUser {
+                needsUserResult = needsUserResult ?? result
+            } else if let guardrail = loopGuard.record(
+                call: call,
+                result: result,
+                isSideEffecting: executor.descriptor(named: call.toolName)?.isSideEffecting == true
+            ) {
+                noProgressDetected = noProgressDetected || guardrail.shouldStop
+                result.outputSummary += "\n\nHarness warning: \(guardrail.message)"
             }
+            pendingToolResults.append(result)
+            executionLedger.record(call: call, result: result)
+            setToolLifecycle(call: call, phase: .resultCommitted)
+            orderedResults.append((call, result))
+        }
+        do {
+            try await writeCheckpoint()
+        } catch {
+            await failRun(
+                message: "Unable to save the tool-batch settlement checkpoint: \(error.localizedDescription)",
+                recoverable: true
+            )
+            return
+        }
+
+        // Publication follows persistence and preserves provider order.
+        for item in orderedResults {
+            await emit(.toolResult(item.result))
+        }
+
+        if let needsUserResult {
+            waitingForUserAction = true
+            modelTurnContinuationRequested = false
+            do {
+                await transition(to: .checkpointed(AgentState.CheckpointRef(
+                    reason: needsUserResult.outputSummary.isEmpty
+                        ? "工具需要你完成操作后继续"
+                        : needsUserResult.outputSummary
+                )))
+                try await writeCheckpoint()
+            } catch {
+                await failRun(
+                    message: "Unable to save the user-action checkpoint: \(error.localizedDescription)",
+                    recoverable: true
+                )
+            }
+            return
+        }
+        if budgetWasExhausted {
+            await beginForcedFinalization(with: nil, stopReason: .budgetLimited)
+        } else if noProgressDetected {
+            await beginForcedFinalization(with: nil, stopReason: .noProgress)
+        } else {
+            modelTurnContinuationRequested = true
         }
     }
 
@@ -1668,16 +1911,50 @@ public actor FloeAgentRuntime {
             toRun.append((call, grant, context))
         }
 
+        if !toRun.isEmpty {
+            for (call, grant, _) in toRun {
+                setToolLifecycle(
+                    call: call,
+                    phase: .dispatched,
+                    authorizationIdentity: grant.scope.toolAuthorizationIdentity
+                )
+            }
+            do {
+                try await writeCheckpoint()
+            } catch {
+                var failedResults: [(call: ToolCall, result: ToolResult)] = []
+                for item in calls {
+                    let failed = ToolResult(
+                        callID: item.call.id,
+                        status: .failed,
+                        outputSummary: "Read-only tool not dispatched because its recovery checkpoint could not be saved: \(error.localizedDescription)",
+                        outputDigest: ""
+                    )
+                    await audit(
+                        toolCall: item.call,
+                        result: failed,
+                        decision: "deny:checkpoint-failed"
+                    )
+                    failedResults.append((item.call, failed))
+                }
+                return failedResults
+            }
+        }
+
         let executor = self.executor
         let results = await withTaskGroup(
             of: (String, ToolResult).self,
             returning: [String: ToolResult].self
         ) { group in
-            for (call, _, context) in toRun {
+            for (call, grant, context) in toRun {
                 group.addTask {
                     let result: ToolResult
                     do {
-                        result = try await executor.execute(call, context: context)
+                        result = try await executor.execute(
+                            call,
+                            expectedAuthorizationIdentity: grant.scope.toolAuthorizationIdentity,
+                            context: context
+                        )
                     } catch {
                         result = ToolResult(
                             callID: call.id,
@@ -1714,7 +1991,6 @@ public actor FloeAgentRuntime {
             if !call.idempotencyKey.isEmpty {
                 executedIdempotencyKeys.insert(call.idempotencyKey)
             }
-            await emit(.toolResult(result))
             out.append((call, result))
         }
         return out
@@ -1747,55 +2023,6 @@ public actor FloeAgentRuntime {
                 await ledger.finishChild(id: childID)
             }
         )
-    }
-
-    /// streamingModel ← toolResult: queues the result and starts the next
-    /// model turn.
-    private func resumeStream(with result: ToolResult, after call: ToolCall) async {
-        pendingToolResults.append(result)
-        executionLedger.record(call: call, result: result)
-        // The result is now the durable replay boundary. Persist it before
-        // asking the provider for another turn so a suspension cannot roll
-        // back to the pre-execution checkpoint and dispatch the same tool.
-        do {
-            try await writeCheckpoint()
-        } catch {
-            await failRun(
-                message: "Unable to save the tool-result recovery checkpoint: \(error.localizedDescription)",
-                recoverable: true
-            )
-            return
-        }
-        if result.status == .needsUser {
-            waitingForUserAction = true
-            modelTurnContinuationRequested = false
-            do {
-                try await writeCheckpoint()
-                await transition(to: .checkpointed(AgentState.CheckpointRef(
-                    reason: result.outputSummary.isEmpty
-                        ? "工具需要你完成操作后继续"
-                        : result.outputSummary
-                )))
-            } catch {
-                await failRun(
-                    message: "Unable to save the browser takeover checkpoint: \(error.localizedDescription)",
-                    recoverable: true
-                )
-            }
-            return
-        }
-        // A batch can contain multiple results. Once any member requests a
-        // user action, later completions must not restart the provider turn.
-        guard !waitingForUserAction else { return }
-        if let guardrail = loopGuard.record(call: call, result: result) {
-            if guardrail.shouldStop {
-                await beginForcedFinalization(with: nil, stopReason: .noProgress)
-                return
-            }
-            pendingToolResults[pendingToolResults.count - 1].outputSummary +=
-                "\n\nHarness warning: \(guardrail.message)"
-        }
-        modelTurnContinuationRequested = true
     }
 
     private func beginForcedFinalization(
@@ -1919,9 +2146,92 @@ public actor FloeAgentRuntime {
             contextCompaction: latestContextCompaction,
             parentIterationCount: iterationSnapshot.parent,
             totalIterationCount: iterationSnapshot.total,
-            executionLedgerEntries: executionLedger.checkpointRecords()
+            executionLedgerEntries: executionLedger.checkpointRecords(),
+            toolLifecycleEntries: toolLifecycleByCallID.values.sorted {
+                if $0.updatedAt == $1.updatedAt { return $0.callID < $1.callID }
+                return $0.updatedAt < $1.updatedAt
+            }
         )
+        let invariantViolations = HarnessInvariantRegistry.validateCheckpoint(checkpoint)
+        guard invariantViolations.isEmpty else {
+            throw FloeError.validationFailed(
+                "Harness checkpoint invariant failed: \(HarnessInvariantRegistry.summary(invariantViolations))"
+            )
+        }
         try await checkpointStore.save(checkpoint)
+    }
+
+    private func setToolLifecycle(
+        call: ToolCall,
+        phase: AgentToolLifecyclePhase,
+        authorizationIdentity: String? = nil
+    ) {
+        let prior = toolLifecycleByCallID[call.id]
+        if let prior {
+            guard prior.toolName == call.toolName else {
+                logger.error(
+                    "toolLifecycleIdentityMismatch run=\(runID.uuidString) call=\(call.id) expected=\(prior.toolName) actual=\(call.toolName)"
+                )
+                return
+            }
+            guard Self.lifecycleOrder(phase) >= Self.lifecycleOrder(prior.phase) else {
+                logger.error(
+                    "toolLifecyclePhaseRegression run=\(runID.uuidString) call=\(call.id) from=\(prior.phase.rawValue) to=\(phase.rawValue)"
+                )
+                return
+            }
+            if let priorIdentity = prior.authorizationIdentity,
+               let authorizationIdentity,
+               priorIdentity != authorizationIdentity {
+                logger.error(
+                    "toolLifecycleAuthorizationChanged run=\(runID.uuidString) call=\(call.id)"
+                )
+                return
+            }
+        }
+        toolLifecycleByCallID[call.id] = AgentToolLifecycleEntry(
+            callID: call.id,
+            toolName: call.toolName,
+            authorizationIdentity: authorizationIdentity ?? prior?.authorizationIdentity,
+            phase: phase,
+            updatedAt: Date()
+        )
+        // Keep the checkpoint bounded while retaining every currently pending
+        // call and the most recent completed boundaries.
+        if toolLifecycleByCallID.count > 64 {
+            let pendingIDs = Set(pendingToolCalls.map(\.id))
+            let removable = toolLifecycleByCallID.values
+                .filter { !pendingIDs.contains($0.callID) && $0.phase == .resultCommitted }
+                .sorted { $0.updatedAt < $1.updatedAt }
+            for entry in removable.prefix(toolLifecycleByCallID.count - 64) {
+                toolLifecycleByCallID.removeValue(forKey: entry.callID)
+            }
+        }
+    }
+
+    private static func lifecycleOrder(_ phase: AgentToolLifecyclePhase) -> Int {
+        switch phase {
+        case .recorded: 0
+        case .approved: 1
+        case .dispatched: 2
+        case .resultCommitted: 3
+        }
+    }
+
+    private static func promptAssemblyDigest(
+        messages: [(role: String, content: String)],
+        descriptors: [ToolCatalog.Descriptor]
+    ) -> String {
+        var material = messages.map { "\($0.role):\($0.content)" }.joined(separator: "\n")
+        material += descriptors.sorted { $0.name < $1.name }.map {
+            "\n\($0.name):\($0.authorizationIdentity)"
+        }.joined()
+        return String(
+            SHA256.hash(data: Data(material.utf8))
+                .map { String(format: "%02x", $0) }
+                .joined()
+                .prefix(16)
+        )
     }
 
     // MARK: Audit
@@ -1980,8 +2290,26 @@ public actor FloeAgentRuntime {
         }
     }
 
-    private static func scopePermits(_ scope: ApprovalScope, call: ToolCall) -> Bool {
+    private static func bind(_ scope: ApprovalScope, to authorizationIdentity: String) -> ApprovalScope {
+        var bound = scope
+        bound.toolAuthorizationIdentity = authorizationIdentity
+        return bound
+    }
+
+    private static func scopePermits(
+        _ scope: ApprovalScope,
+        call: ToolCall,
+        currentAuthorizationIdentity: String
+    ) -> Bool {
         guard scope.toolName == call.toolName else { return false }
+        if let approvedIdentity = scope.toolAuthorizationIdentity {
+            guard approvedIdentity == currentAuthorizationIdentity else { return false }
+        } else {
+            // Backward-compatible checkpoints may omit the digest. Only
+            // compiled tools have stable process authority; dynamic runners
+            // must receive a fresh, identity-bound approval after upgrade.
+            guard ToolCatalog.descriptor(named: call.toolName) != nil else { return false }
+        }
         switch call.scope {
         case .local:
             // Local tools have no host/path scope — path confinement is enforced
@@ -2081,98 +2409,54 @@ private struct ToolLoopGuardrailDecision {
 /// canonical arguments and observable results rather than call IDs, which
 /// providers commonly regenerate on every retry.
 private struct ToolLoopGuard {
-    private var previousExactFingerprint: String?
-    private var exactFailureCount = 0
-    private var previousFailedTool: String?
-    private var sameToolFailureCount = 0
-    private var previousProgressFingerprint: String?
-    private var idempotentNoProgressCount = 0
-    private var globalOutcomeCounts: [String: Int] = [:]
-    private var globalFailedCallCounts: [String: Int] = [:]
-    private var globalFailureIntentCounts: [String: Int] = [:]
+    private var outcomeCountsInEpoch: [String: Int] = [:]
+    private var lastOutcomeByRoute: [String: String] = [:]
+
+    mutating func advanceProgressEpoch() {
+        outcomeCountsInEpoch.removeAll(keepingCapacity: true)
+    }
 
     mutating func record(
         call: ToolCall,
-        result: ToolResult
+        result: ToolResult,
+        isSideEffecting: Bool
     ) -> ToolLoopGuardrailDecision? {
         let arguments = Self.canonicalDigest(call.argumentsJSON)
         let observableOutput = result.outputDigest.isEmpty
             ? Self.digest(Data(result.outputSummary.utf8))
             : result.outputDigest.lowercased()
-        let exact = "\(call.toolName)|\(arguments)|\(result.status.rawValue)|\(observableOutput)"
-        let progress = "\(call.toolName)|\(arguments)|\(observableOutput)"
-        let failed = result.status != .ok
-        let callFingerprint = "\(call.toolName)|\(arguments)"
-        globalOutcomeCounts[exact, default: 0] += 1
-        if failed {
-            globalFailedCallCounts[callFingerprint, default: 0] += 1
-            let intent = Self.failureIntentFingerprint(call: call, summary: result.outputSummary)
-            globalFailureIntentCounts[intent, default: 0] += 1
+        let route = "\(call.toolName)|\(arguments)"
+        let outcome = "\(result.status.rawValue)|\(observableOutput)"
+
+        defer { lastOutcomeByRoute[route] = outcome }
+
+        // A successful mutation, an explicit wait, or a materially changed
+        // observation establishes progress and opens a fresh epoch. This
+        // keeps the guard focused on unchanged retries instead of imposing a
+        // hidden total-round limit on productive agent work.
+        let isExplicitWait = call.toolName == "wait" || call.toolName.hasSuffix(".wait")
+        if result.status == .ok,
+           (isSideEffecting || isExplicitWait) {
+            advanceProgressEpoch()
+            return nil
+        }
+        if let previous = lastOutcomeByRoute[route], previous != outcome {
+            advanceProgressEpoch()
+            return nil
         }
 
-        if failed, exact == previousExactFingerprint {
-            exactFailureCount += 1
-        } else {
-            previousExactFingerprint = failed ? exact : nil
-            exactFailureCount = failed ? 1 : 0
-        }
-
-        if failed, call.toolName == previousFailedTool {
-            sameToolFailureCount += 1
-        } else {
-            previousFailedTool = failed ? call.toolName : nil
-            sameToolFailureCount = failed ? 1 : 0
-        }
-
-        if progress == previousProgressFingerprint {
-            idempotentNoProgressCount += 1
-        } else {
-            previousProgressFingerprint = progress
-            idempotentNoProgressCount = 1
-        }
-
-        let failureIntent = Self.failureIntentFingerprint(call: call, summary: result.outputSummary)
-        if failed, globalFailureIntentCounts[failureIntent, default: 0] >= 3 {
+        let exact = "\(route)|\(outcome)"
+        outcomeCountsInEpoch[exact, default: 0] += 1
+        if outcomeCountsInEpoch[exact, default: 0] >= 3 {
             return ToolLoopGuardrailDecision(
                 shouldStop: true,
-                message: "The same operation target reached the same failure three times, including equivalent tools or cosmetically changed arguments. Stop this route and preserve the failure evidence for continuation."
+                message: "The same tool, canonical arguments, status, and observable result repeated three times without intervening progress. Stop only this unchanged retry route; preserve the evidence and synthesize or choose materially different arguments."
             )
         }
-        if globalOutcomeCounts[exact, default: 0] >= 3 {
-            return ToolLoopGuardrailDecision(
-                shouldStop: true,
-                message: "The same tool call produced the same result three times in this activation; stop retrying and synthesize or choose a genuinely different approach."
-            )
-        }
-        if globalFailedCallCounts[callFingerprint, default: 0] >= 3 || sameToolFailureCount >= 3 {
-            return ToolLoopGuardrailDecision(
-                shouldStop: true,
-                message: "The same tool continued failing without a successful alternative."
-            )
-        }
-        if idempotentNoProgressCount >= 4 {
-            return ToolLoopGuardrailDecision(
-                shouldStop: true,
-                message: "Repeated idempotent calls produced no observable progress."
-            )
-        }
-        if globalOutcomeCounts[exact, default: 0] == 2
-            || (failed && globalFailureIntentCounts[failureIntent, default: 0] == 2) {
+        if outcomeCountsInEpoch[exact, default: 0] == 2 {
             return ToolLoopGuardrailDecision(
                 shouldStop: false,
-                message: "This exact call already produced the same result twice in this activation; do not repeat it again."
-            )
-        }
-        if sameToolFailureCount == 2 {
-            return ToolLoopGuardrailDecision(
-                shouldStop: false,
-                message: "This operation has now failed twice. Read the exact error, preserve what it proves, and switch to a genuinely different route instead of making a cosmetic retry."
-            )
-        }
-        if idempotentNoProgressCount == 2 {
-            return ToolLoopGuardrailDecision(
-                shouldStop: false,
-                message: "The previous identical call produced the same result and should not be repeated."
+                message: "This exact tool, canonical argument set, status, and observable result has already repeated. Do not issue the unchanged call again; different arguments or a different error remain valid progress."
             )
         }
         return nil
@@ -2187,48 +2471,6 @@ private struct ToolLoopGuard {
             return digest(data)
         }
         return digest(canonical)
-    }
-
-    /// Groups retries by user-visible operation family, stable target, and a
-    /// normalized error. Request IDs, timestamps, counters and regenerated
-    /// call IDs no longer let the same failed intent evade the loop guard.
-    private static func failureIntentFingerprint(call: ToolCall, summary: String) -> String {
-        let family: String
-        if call.toolName.hasPrefix("image.") || call.toolName.hasPrefix("browser.") {
-            family = "visual-read"
-        } else if call.toolName.hasPrefix("workspace.") {
-            family = "workspace"
-        } else if call.toolName.hasPrefix("exec.") {
-            family = "execution"
-        } else {
-            family = call.toolName
-        }
-        let target = stableTarget(from: call.argumentsJSON)
-        let normalizedError = summary.lowercased()
-            .replacingOccurrences(
-                of: #"[0-9a-f]{8}-[0-9a-f-]{27,}"#,
-                with: "<id>",
-                options: .regularExpression
-            )
-            .replacingOccurrences(
-                of: #"\b\d+(?:\.\d+)?\b"#,
-                with: "<n>",
-                options: .regularExpression
-            )
-            .split(whereSeparator: { $0.isWhitespace })
-            .joined(separator: " ")
-        return digest(Data("\(family)|\(target)|\(normalizedError)".utf8))
-    }
-
-    private static func stableTarget(from arguments: Data) -> String {
-        guard let object = try? JSONSerialization.jsonObject(with: arguments)
-            as? [String: Any] else { return canonicalDigest(arguments) }
-        let targetKeys = ["path", "url", "query", "file", "filename", "command", "imagePath"]
-        let values = targetKeys.compactMap { key -> String? in
-            guard let value = object[key] else { return nil }
-            return "\(key)=\(String(describing: value).lowercased())"
-        }
-        return values.isEmpty ? canonicalDigest(arguments) : values.joined(separator: "|")
     }
 
     private static func digest(_ data: Data) -> String {

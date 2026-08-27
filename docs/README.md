@@ -8,13 +8,14 @@
 | --- | --- | --- |
 | Install and use | [User guide](USER_GUIDE.md) | [使用指南](USER_GUIDE.zh-CN.md) |
 | Current architecture | [Architecture overview](ARCHITECTURE_OVERVIEW.md) | 同一文档提供双语术语 |
+| Creative mode and asset architecture | [Creative mode, canvas and library plan](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.zh-CN.md) | 聊天优先、项目主页、画布/普通绘画子模式、图片/视频生成、资料库与 Workspace 融合计划 |
 | Product definition | [Product](../PRODUCT.md) | 关键定位包含双语说明 |
 | Design direction | [Design](../DESIGN.md) | 当前工作台与交互原则 |
 | Contribute | [Contributing](../CONTRIBUTING.md) | [贡献指南](../CONTRIBUTING.zh-CN.md) |
 | Security | [Security](../SECURITY.md) | [安全策略](../SECURITY.zh-CN.md) |
 | Support | [Support](../SUPPORT.md) | [支持](../SUPPORT.zh-CN.md) |
 
-Current TestFlight candidate: [Floe Agent 1.4.42 (Build 73) test notes](TESTFLIGHT_1.4.42.md). Availability must be confirmed from App Store Connect evidence.
+Current TestFlight candidate: [Floe Agent 1.4.45 (Build 76) test notes](TESTFLIGHT_1.4.45.md). Availability must be confirmed from App Store Connect evidence.
 
 ## Product references
 

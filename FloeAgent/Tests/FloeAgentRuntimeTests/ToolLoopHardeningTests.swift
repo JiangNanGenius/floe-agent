@@ -30,10 +30,14 @@ private final class LoopingAdapter: ProviderAdapter, @unchecked Sendable {
         request: ProviderStreamRequest,
         credentials: ProviderCredentials
     ) -> AsyncThrowingStream<AgentEvent, Error> {
-        storage.withLock { $0.append(request) }
-        // Unique id per turn → unique idempotency key per turn.
+        let index = storage.withLock { requests -> Int in
+            requests.append(request)
+            return requests.count
+        }
+        // Unique deterministic id per turn keeps result-pairing invariants
+        // testable while still exercising the independent iteration budget.
         let call = try! ToolCall( // literals only; cannot fail
-            id: "loop_\(UUID().uuidString)",
+            id: "loop_\(index)",
             toolName: "test.echo",
             argumentsJSON: Data("{}".utf8),
             scope: .local
@@ -84,8 +88,8 @@ struct ToolLoopHardeningTests {
         })
     }
 
-    @Test("non-consecutive identical outcomes still trip no-progress guard")
-    func nonConsecutiveNoProgressStops() async throws {
+    @Test("non-consecutive identical outcomes in one epoch still trip no-progress guard")
+    func nonConsecutiveNoProgressWithinOneEpochStops() async throws {
         let adapter = MockAdapter()
         let calls = try [
             ToolCall(id: "echo-1", toolName: "test.echo", argumentsJSON: Data("{}".utf8), scope: .local),
@@ -134,8 +138,49 @@ struct ToolLoopHardeningTests {
         #expect(completion.stopReason == .noProgress)
     }
 
-    @Test("equivalent visual inspection failures stop after three attempts")
-    func equivalentVisualFailuresStop() async throws {
+    @Test("a successful mutation opens a new no-progress epoch")
+    func successfulMutationResetsNoProgressEpoch() async throws {
+        let adapter = MockAdapter()
+        let calls = try [
+            ToolCall(id: "echo-1", toolName: "test.echo", argumentsJSON: Data("{}".utf8), scope: .local),
+            ToolCall(id: "echo-2", toolName: "test.echo", argumentsJSON: Data("{}".utf8), scope: .local),
+            ToolCall(id: "write-1", toolName: "test.write", argumentsJSON: Data("{}".utf8), scope: .local),
+            ToolCall(id: "echo-3", toolName: "test.echo", argumentsJSON: Data("{}".utf8), scope: .local),
+            ToolCall(id: "echo-4", toolName: "test.echo", argumentsJSON: Data("{}".utf8), scope: .local)
+        ]
+        adapter.script = calls.map { [.toolRequest($0)] }
+            + [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        executor.descriptors["test.write"] = ToolCatalog.Descriptor(
+            name: "test.write",
+            riskLabels: [],
+            isSideEffecting: true
+        )
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: ModelApprovalPolicy(backend: RecordingApprovalBackend()),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "repeat reads only after real progress")
+
+        #expect(executor.executedCalls.count == calls.count)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected ordinary completion after mutation reset")
+            return
+        }
+        #expect(completion.stopReason == .endTurn)
+    }
+
+    @Test("different visual tools are not collapsed into one failed operation")
+    func differentVisualFailuresRemainIndependent() async throws {
         let adapter = MockAdapter()
         let tools = ["image.inspect", "image.ocr", "browser.observe"]
         let arguments = Data(#"{"path":"Attachments/a.png"}"#.utf8)
@@ -182,10 +227,55 @@ struct ToolLoopHardeningTests {
 
         #expect(executor.executedCalls.count == 3)
         guard case .completed(let completion) = await runtime.state else {
-            Issue.record("expected completed no-progress finalization")
+            Issue.record("expected ordinary completion")
             return
         }
-        #expect(completion.stopReason == .noProgress)
+        #expect(completion.stopReason == .endTurn)
+    }
+
+    @Test("same tool may continue when arguments or errors materially change")
+    func changingArgumentsAndErrorsRemainProgress() async throws {
+        let adapter = MockAdapter()
+        let calls = try (1...4).map { index in
+            try ToolCall(
+                id: "changing-\(index)",
+                toolName: "test.echo",
+                argumentsJSON: Data(#"{"attempt":\#(index)}"#.utf8),
+                scope: .local
+            )
+        }
+        adapter.script = calls.map { [.toolRequest($0)] }
+            + [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        executor.results = calls.enumerated().map { index, call in
+            ToolResult(
+                callID: call.id,
+                status: .failed,
+                outputSummary: "different failure \(index + 1)",
+                outputDigest: "failure-\(index + 1)"
+            )
+        }
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 8
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "adapt using materially different inputs")
+
+        #expect(executor.executedCalls.count == calls.count)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected ordinary completion")
+            return
+        }
+        #expect(completion.stopReason == .endTurn)
     }
 
     @Test("Pseudo function-call text is rendered but never executed")
@@ -310,7 +400,7 @@ struct ToolLoopHardeningTests {
         // boundary exercised by the tests above.
         executor.results = (1...maxSteps).map { index in
             ToolResult(
-                callID: "loop-\(index)",
+                callID: "loop_\(index)",
                 status: .ok,
                 outputSummary: "progress \(index)",
                 outputDigest: "digest-\(index)"
@@ -353,7 +443,7 @@ struct ToolLoopHardeningTests {
         registerEcho(in: executor)
         executor.results = (1...maxSteps).map { index in
             ToolResult(
-                callID: "audit-\(index)",
+                callID: "loop_\(index)",
                 status: .ok,
                 outputSummary: "progress \(index)",
                 outputDigest: "audit-digest-\(index)"

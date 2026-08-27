@@ -88,6 +88,10 @@ public struct PlanEnforcingToolExecutor: ToolExecutor {
         underlying.descriptor(named: name)
     }
 
+    public var allDescriptors: [ToolCatalog.Descriptor] {
+        underlying.allDescriptors
+    }
+
     public func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
         if let denial = policy.denialResult(call: call, descriptor: underlying.descriptor(named: call.toolName)) {
             return denial
