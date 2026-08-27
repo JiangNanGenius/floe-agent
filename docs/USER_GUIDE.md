@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide describes the Floe Agent 1.4.40 source target (build 71). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
+This guide describes the Floe Agent 1.4.41 source target (build 72). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
 
 ## 1. Install safely
 
@@ -94,8 +94,7 @@ The task timeline shows assistant output, reasoning previews, tool requests, too
 - **Browser** for the task's visible web session;
 - **Terminal/Host** for an authorized execution target;
 - **Progress** for phases, checkpoints, and budget;
-- **Child Agents** for independent child-run status and cancellation;
-- **Permissions** for the task's effective policy.
+- **Child Agents** for independent child-run status and cancellation.
 
 Switching tasks clears task-specific inspector references so one task cannot accidentally display another task's browser or files.
 
@@ -111,7 +110,9 @@ An element reference is bound to a document ID. After navigation or a major DOM 
 
 Effective authority is the intersection of the global ceiling, workspace defaults, task overrides, available device/host capabilities, and any time-bounded grant. The provider receives only allowed tool schemas, and the executor checks authority again.
 
-Routine bounded reads, workspace inspection, image generation/inspection, OCR, read-only PDF operations and local-network discovery bypass approval-model latency. Bounded preparation on an explicitly selected SSH host and ordinary workspace/Git operations can reuse a matching task or session grant. Deleting data, entering credentials, uploading files, browser login/payment, broad remote mutation and catastrophic commands still require explicit review. Git force-push, destructive reset/clean and history rewriting are not exposed.
+Change the current task's permission only from the permission control below the chat composer. A selection saves automatically; there is no second Save action. It can also be changed while a task is running: the new mode immediately re-evaluates a waiting tool and applies to subsequent calls. The upper-right menu and inspector no longer duplicate this control. **Settings → Agent & Permissions** manages defaults for new tasks and existing temporary grants.
+
+Routine bounded reads, workspace inspection, image generation/inspection, OCR, read-only PDF operations and local-network discovery bypass approval-model latency. Once the user explicitly requests installation, deployment, environment repair, a Floe guardian update, or preparation on a selected SSH host, ordinary system packages, package-source changes, dependency repair, and Floe's verified atomic guardian update inherit that task authority instead of interrupting for every command. Deleting data, entering credentials, uploading files, browser login/payment, ambiguous broad remote mutation and catastrophic commands still require explicit review. Git force-push, destructive reset/clean and history rewriting are not exposed.
 
 Approval is based on the user's stated goal and the concrete tool target, not on a brittle keyword match. A broad request such as “test all tools” permits safe diagnostics and bounded non-destructive checks, but does not authorize deletion, credential access, arbitrary remote commands, model-policy changes or persisted personal-data writes. Approval results and reasons appear inside the corresponding expanded tool call rather than as a detached chat message.
 

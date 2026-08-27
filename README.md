@@ -102,7 +102,7 @@ See the [English user guide](docs/USER_GUIDE.md), [简体中文使用指南](doc
 | New Task | Choose a model, workspace, execution target, skills, and task permissions before the first message. |
 | Task thread | Continue the same conversation across runs and inspect reasoning, tools, evidence, questions, and approvals. |
 | Task Center | Filter running, waiting, approval-required, failed, completed, and scheduled tasks. |
-| Inspector | Review changes, files, browser, terminal/host, progress, child agents, and permissions. It is collapsed by default. |
+| Inspector | Review changes, files, browser, terminal/host, progress, and child agents. It is collapsed by default; current-task permissions live only below the chat composer. |
 | Visible browser | Automate a real `WKWebView`, then hand control to the user for login, QR codes, verification, uploads, or other trusted interaction. |
 | Source Control | Review repository status, diffs and history; stage, commit, branch and synchronize without destructive reset, clean, force-push or history rewriting. |
 | Settings | Configure providers, auxiliary models, task defaults, execution, files, sync, remote hosts, data controls, and diagnostics. |
@@ -117,7 +117,7 @@ OpenAI image generation/editing defaults to `gpt-image-2`. Google Gemini Images 
 
 Private task workspaces are created and bound atomically with the first message. Project workspaces retain their explicit Files scope. The Files inspector includes a lightweight Source Control tab, while **Settings → GitHub & Source Control** stores a fine-grained GitHub token only in the device Keychain and supports listing, cloning and creating repositories.
 
-Routine bounded reads, local workspace operations, image generation/inspection, OCR, read-only PDF work and LAN discovery do not wait for an approval-model round trip. Consequential writes are evaluated by scope and intent. Destructive changes, credentials, uploads, payments, broad remote commands and force/history-rewriting Git operations remain blocked or explicitly reviewed. A broad request such as “test all tools” can authorize safe diagnostics, but cannot silently expand into destructive or credential-bearing tests.
+Routine bounded reads, local workspace operations, image generation/inspection, OCR, read-only PDF work and LAN discovery do not wait for an approval-model round trip. The composer permission control saves immediately and can change a live task. Once the user requests installation, deployment, environment repair, or a Floe guardian update, ordinary system packages, package-source changes, dependency repair, and Floe's verified atomic guardian update do not interrupt for command-by-command approval. Destructive changes, credentials, uploads, payments, ambiguous broad remote commands and force/history-rewriting Git operations remain blocked or explicitly reviewed. A broad request such as “test all tools” can authorize safe diagnostics, but cannot silently expand into destructive or credential-bearing tests.
 
 ### Python execution
 

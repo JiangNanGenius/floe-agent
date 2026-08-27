@@ -208,6 +208,18 @@ struct ApprovalPolicyTests {
         }
     }
 
+    @Test("Live policy wrapper uses the newly selected task mode")
+    func dynamicPolicyUpdate() async throws {
+        let policy = DynamicApprovalPolicy(HumanApprovalPolicy())
+        guard case .escalateToHuman = try await policy.decide(action()) else {
+            Issue.record("Ask mode must initially require the user")
+            return
+        }
+        policy.update(to: TaskFullAccessPolicy())
+        #expect(policy.policyName == "full-access")
+        #expect(try await policy.decide(action()).permitsExecution)
+    }
+
     @Test("Full access permits task actions after the catastrophic gate")
     func taskFullAccessSensitiveBoundary() async throws {
         let policy = TaskFullAccessPolicy()
@@ -457,6 +469,68 @@ struct ApprovalPolicyTests {
             )
             #expect(try await policy.decide(action).permitsExecution)
         }
+        #expect(await backend.callCount() == 0)
+    }
+
+    @Test("Verified Floe guardian maintenance never asks again")
+    func guardianMaintenanceIsAutomatic() async throws {
+        actor Backend: ModelApprovalPolicy.DecisionBackend {
+            private(set) var calls = 0
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+                calls += 1
+                return .escalateToHuman(reason: "unexpected review")
+            }
+            func callCount() -> Int { calls }
+        }
+        let backend = Backend()
+        let hostID = UUID()
+        let call = try ToolCall(
+            id: "guardian-update",
+            toolName: "ssh.bootstrapFloeRemoteAgent",
+            argumentsJSON: Data(#"{"operation":"installOrUpdate"}"#.utf8),
+            scope: .host(hostID)
+        )
+        let action = ProposedAction(
+            toolCall: call,
+            riskLabels: ["executesRemoteCommand", "modifiesRemoteSystem"],
+            userGoal: "继续",
+            recentContext: "user: 请更新守护程序\nassistant: 我会先检查版本",
+            hostAndPathScope: call.scope
+        )
+        let policy = AutomaticApprovalPolicy(backend: backend)
+        #expect(!policy.requiresModelReview(action))
+        #expect(try await policy.decide(action).permitsExecution)
+        #expect(await backend.callCount() == 0)
+    }
+
+    @Test("Prior user environment authority survives a short continue message")
+    func hostMaintenanceUsesPriorUserAuthority() async throws {
+        actor Backend: ModelApprovalPolicy.DecisionBackend {
+            private(set) var calls = 0
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+                calls += 1
+                return .escalateToHuman(reason: "unexpected review")
+            }
+            func callCount() -> Int { calls }
+        }
+        let backend = Backend()
+        let hostID = UUID()
+        let call = try ToolCall(
+            id: "apt-source",
+            toolName: "ssh.execute",
+            argumentsJSON: Data(#"{"command":"sudo apt-get update","executionMode":"host"}"#.utf8),
+            scope: .host(hostID)
+        )
+        let action = ProposedAction(
+            toolCall: call,
+            riskLabels: ["executesRemoteCommand", "modifiesRemoteSystem"],
+            userGoal: "继续",
+            recentContext: "user: 把软件源换好并安装运行环境\nassistant: 正在准备",
+            hostAndPathScope: call.scope
+        )
+        let policy = AutomaticApprovalPolicy(backend: backend)
+        #expect(!policy.requiresModelReview(action))
+        #expect(try await policy.decide(action).permitsExecution)
         #expect(await backend.callCount() == 0)
     }
 

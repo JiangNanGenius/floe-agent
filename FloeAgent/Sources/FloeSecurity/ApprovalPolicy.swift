@@ -46,6 +46,43 @@ public protocol ApprovalReviewRouting: Sendable {
     func requiresModelReview(_ action: ProposedAction) -> Bool
 }
 
+/// A run keeps one stable policy reference while task permissions can change
+/// from the composer. Replacing the wrapped value makes the next tool
+/// decision observe the new mode without cancelling or recreating the run.
+public final class DynamicApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var wrapped: any ApprovalPolicy
+
+    public init(_ policy: any ApprovalPolicy) {
+        wrapped = policy
+    }
+
+    public var policyName: String { snapshot().policyName }
+
+    public func update(to policy: any ApprovalPolicy) {
+        lock.lock()
+        wrapped = policy
+        lock.unlock()
+    }
+
+    public func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+        let policy = snapshot()
+        return try await policy.decide(action)
+    }
+
+    public func requiresModelReview(_ action: ProposedAction) -> Bool {
+        let policy = snapshot()
+        return (policy as? any ApprovalReviewRouting)?.requiresModelReview(action)
+            ?? (policy.policyName == "approval-model")
+    }
+
+    private func snapshot() -> any ApprovalPolicy {
+        lock.lock()
+        defer { lock.unlock() }
+        return wrapped
+    }
+}
+
 /// Policy 1: every side-effecting action waits for the user.
 public struct HumanApprovalPolicy: ApprovalPolicy {
     public let policyName = "human"
@@ -161,7 +198,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "workspace.moveItem", "document.createDocument",
             "browser.observe", "browser.events", "browser.wait", "browser.navigate",
             "network.scanLAN",
-            "ssh.taskStatus",
+            "ssh.taskStatus", "ssh.bootstrapFloeRemoteAgent",
             "apple.calendar.list", "apple.reminders.list", "apple.maps.search",
             "apple.home.list", "apple.watch.status", "apple.location.current",
             "apple.automation.list",
@@ -282,9 +319,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             return false
         }
         guard isApplying else { return false }
-        let goal = action.userGoal
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
+        let goal = Self.userAuthorityText(for: action)
         guard !goal.isEmpty else { return false }
         let denials = [
             "不要安装", "别安装", "不要部署", "别部署", "不同意", "不授权",
@@ -297,8 +332,10 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
         ].contains(where: goal.contains)
         let directInstallRequest = [
             "安装", "部署", "配置环境", "准备环境", "搭建环境", "更新远程",
+            "更新守护", "升级守护", "守护程序", "远程助手",
             "install", "deploy", "set up", "setup", "configure the environment",
-            "prepare the environment", "update the remote"
+            "prepare the environment", "update the remote", "update guardian",
+            "upgrade guardian", "remote agent"
         ].contains(where: goal.contains)
         return explicitConsent || directInstallRequest
     }
@@ -320,7 +357,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
                 || (mode == "automatic" && isClearlyReadOnlySSHDiagnostic(command))
         else { return false }
 
-        let goal = action.userGoal.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let goal = Self.userAuthorityText(for: action)
         guard !goal.isEmpty else { return false }
         let denials = [
             "不要执行", "别执行", "不要测试", "别测试", "不要安装", "别安装",
@@ -351,7 +388,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
               let command = object["command"] as? String,
               !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return false }
-        let goal = action.userGoal.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let goal = Self.userAuthorityText(for: action)
         guard !goal.isEmpty else { return false }
         let denials = [
             "不要执行", "别执行", "不要安装", "别安装", "不要修改", "别修改",
@@ -360,10 +397,38 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
         guard !denials.contains(where: goal.contains) else { return false }
         return [
             "安装", "部署", "配置", "准备环境", "搭建环境", "修复环境", "更新环境",
-            "换源", "软件源", "依赖", "清理锁", "清理目录", "vnc", "docker",
+            "换源", "软件源", "依赖", "系统包", "软件包", "清理锁", "清理目录",
+            "守护程序", "远程助手", "vnc", "docker",
             "install", "deploy", "configure", "prepare", "set up", "setup",
-            "repair", "upgrade", "update", "package source", "dependency"
+            "repair", "upgrade", "update", "package source", "system package",
+            "dependency", "guardian", "remote agent"
         ].contains(where: goal.contains)
+    }
+
+    /// A short follow-up such as “继续” does not erase the explicit authority
+    /// already given in the same task. Only prior user lines are considered;
+    /// assistant text and tool output can never grant permission.
+    private static func userAuthorityText(for action: ProposedAction) -> String {
+        let current = action.userGoal
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let continuationPhrases: Set<String> = [
+            "继续", "接着做", "继续做", "可以", "好的", "好", "确认", "授权",
+            "continue", "go ahead", "proceed", "ok", "okay", "approved"
+        ]
+        guard continuationPhrases.contains(current) else { return current }
+        let priorUserLines = action.recentContext
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .compactMap { line -> String? in
+                let text = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard text.lowercased().hasPrefix("user:") else { return nil }
+                return String(text.dropFirst(5))
+            }
+            .suffix(6)
+        return ([current] + priorUserLines)
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
     }
 
     /// Automatic routing can resolve to a real macOS or Windows host, so it

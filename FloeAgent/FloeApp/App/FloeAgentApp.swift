@@ -542,12 +542,6 @@ struct RootView: View {
             } label: {
                 Label("重命名", systemImage: "pencil")
             }
-            Button {
-                router.openConversation(conversation.id)
-                router.showInspector(.permissions)
-            } label: {
-                Label("任务权限", systemImage: "lock.shield")
-            }
             Menu("移动到项目") {
                 ForEach(environment.workspaceCenter.projectWorkspaces) { workspace in
                     Button(workspace.name) {

@@ -411,7 +411,6 @@ struct ThreadDetailView: View {
                 inspectorButton("终端/主机", icon: "terminal", content: .terminal)
                 inspectorButton("进度", icon: "chart.bar", content: .progress)
                 inspectorButton("子 Agent", icon: "person.2", content: .childAgents)
-                inspectorButton("权限", icon: "lock.shield", content: .permissions)
                 if router.inspectorVisible {
                     Divider()
                     Button("收起检查器", systemImage: "sidebar.right") { router.hideInspector() }

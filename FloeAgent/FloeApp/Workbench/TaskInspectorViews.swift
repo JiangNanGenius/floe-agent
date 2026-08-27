@@ -110,7 +110,6 @@ struct TaskPermissionsInspectorView: View {
     @State private var policy: TaskPolicy?
     @State private var isSaving = false
     @State private var errorMessage: String?
-    @State private var isConfirmingFullAccess = false
     @State private var didSave = false
     @State private var resolvedIsLocalModel = false
 
@@ -143,12 +142,15 @@ struct TaskPermissionsInspectorView: View {
                     }
                 }
                 Section {
-                    Button { Task { await save() } } label: {
-                        if isSaving { ProgressView() }
-                        else if didSave { Label("已保存", systemImage: "checkmark.circle.fill") }
-                        else { Text("保存任务权限") }
+                    if isSaving {
+                        Label("正在保存…", systemImage: "arrow.triangle.2.circlepath")
+                    } else if didSave {
+                        Label("已保存并应用到当前任务", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    } else {
+                        Text("修改会自动保存，并立即应用到当前运行的下一次工具调用。")
+                            .foregroundStyle(.secondary)
                     }
-                        .disabled(isSaving)
                 } footer: {
                     Text("任务仍受工作区和工具范围限制；灾难性命令始终阻止。")
                 }
@@ -159,14 +161,6 @@ struct TaskPermissionsInspectorView: View {
         }
         .navigationTitle("权限")
         .task(id: conversationID) { await load() }
-        .alert("确认完全访问？", isPresented: $isConfirmingFullAccess) {
-            Button("取消", role: .cancel) {}
-            Button("继续并验证身份", role: .destructive) {
-                Task { await authenticateFullAccess() }
-            }
-        } message: {
-            Text("启用后，本任务内的文件、网络、凭据、远程命令和网页操作会自动执行；灾难性命令仍始终阻止，软件包安装仍需源码审查。")
-        }
     }
 
     private var approvalModeBinding: Binding<String> {
@@ -175,9 +169,10 @@ struct TaskPermissionsInspectorView: View {
             set: { value in
                 if value == TaskApprovalMode.fullAccess.rawValue {
                     guard !resolvedIsLocalModel else { return }
-                    isConfirmingFullAccess = true
+                    Task { await authenticateFullAccess() }
                 } else {
                     policy?.approvalMode = value
+                    Task { await save() }
                 }
             }
         )
@@ -186,7 +181,7 @@ struct TaskPermissionsInspectorView: View {
     private var modeExplanation: String {
         switch policy?.resolvedApprovalMode ?? .ask {
         case .ask: "读取自动运行，副作用操作会先询问。"
-        case .automatic: "低风险与沙箱内 Python 自动批准；软件包安装交由审查模型，浏览器、远程执行和高风险操作仍会询问。"
+        case .automatic: "以完成当前任务为目标自动放行范围内的常规步骤；审批模型只在目标不明确、权限明显扩大或存在高风险后果时介入。"
         case .fullAccess: "本任务工具自动执行；灾难性命令始终阻止，软件包安装仍需模型审查。"
         }
     }
@@ -197,7 +192,10 @@ struct TaskPermissionsInspectorView: View {
             let allowed = try await DeviceOwnerAuthenticator.authenticate(
                 reason: "确认本任务启用完全访问权限"
             )
-            if allowed { policy?.approvalMode = TaskApprovalMode.fullAccess.rawValue }
+            if allowed {
+                policy?.approvalMode = TaskApprovalMode.fullAccess.rawValue
+                await save()
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -209,7 +207,10 @@ struct TaskPermissionsInspectorView: View {
     ) -> Binding<Value> {
         Binding(
             get: { policy?[keyPath: keyPath] ?? fallback },
-            set: { value in policy?[keyPath: keyPath] = value }
+            set: { value in
+                policy?[keyPath: keyPath] = value
+                Task { await save() }
+            }
         )
     }
 
@@ -246,8 +247,10 @@ struct TaskPermissionsInspectorView: View {
             self.policy = policy
             errorMessage = nil
             didSave = true
-            try? await Task.sleep(for: .seconds(2))
-            didSave = false
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(2))
+                didSave = false
+            }
         } catch {
             errorMessage = error.localizedDescription
             FloeLogger(category: .app).error("taskPolicySaveFailed conversation=\(policy.conversationID.uuidString) error=\(error.localizedDescription)")

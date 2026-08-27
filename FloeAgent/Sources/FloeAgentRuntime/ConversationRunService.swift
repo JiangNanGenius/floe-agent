@@ -67,6 +67,9 @@ public actor ConversationRunService {
     public nonisolated let runID: UUID
     /// Conversation identity. Immutable; non-isolated for the same reason.
     public nonisolated let conversationID: UUID
+    /// Model identity used to rebuild the effective policy when permissions
+    /// change during this run.
+    public nonisolated let primaryModel: ModelProfile
     /// Push channel for UI projections. Durable writes remain coalesced, but
     /// token/reasoning display no longer polls actor snapshots at 20 Hz.
     public nonisolated let eventChannel = HarnessEventChannel(bufferLimit: 512)
@@ -83,6 +86,7 @@ public actor ConversationRunService {
     /// When false the run-context system message omits the tool list so the
     /// model does not hallucinate pseudo `<tool_call>` markup it cannot execute.
     private let modelSupportsTools: Bool
+    private let dynamicApprovalPolicy: DynamicApprovalPolicy
     private let logger = FloeLogger(category: .runtime)
     private var streamedText = ""
     /// Text generated since the previous durable interaction boundary.
@@ -201,6 +205,7 @@ public actor ConversationRunService {
     ) {
         self.runID = runID
         self.conversationID = configuration.conversationID
+        self.primaryModel = configuration.model
         self.conversationStore = conversationStore
         self.runStore = runStore
         self.runningInputStore = runningInputStore
@@ -213,13 +218,15 @@ public actor ConversationRunService {
         self.secretForRedaction = credentials.apiKey
         self.streamedTextLimitBytes = configuration.model.limits.clientOutputSafetyBytes
         self.modelSupportsTools = configuration.model.capabilities.contains(.tools)
+        let dynamicApprovalPolicy = DynamicApprovalPolicy(policy)
+        self.dynamicApprovalPolicy = dynamicApprovalPolicy
         // The sink forwards into the service via closures so callbacks reach
         // the actor without an access-level or retain-cycle problem.
         let forwarder = SinkForwarder()
         self.runtime = FloeAgentRuntime(
             configuration: configuration,
             adapter: adapter,
-            policy: policy,
+            policy: dynamicApprovalPolicy,
             executor: executor,
             credentials: credentials,
             gate: gate,
@@ -356,6 +363,14 @@ public actor ConversationRunService {
     /// Resolves a pending human approval.
     public func resolveApproval(_ decision: ApprovalDecision) async {
         await runtime.resolveApproval(decision)
+    }
+
+    /// Applies a composer permission change to this live run. If the run is
+    /// already parked on an approval card, the runtime immediately
+    /// re-evaluates that exact call under the new policy.
+    public func updateApprovalPolicy(_ policy: any ApprovalPolicy) async {
+        dynamicApprovalPolicy.update(to: policy)
+        await runtime.approvalPolicyDidChange()
     }
 
     /// Adds guidance to this exact active run. The runtime consumes it only

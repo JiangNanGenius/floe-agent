@@ -643,6 +643,38 @@ public actor FloeAgentRuntime {
         }
     }
 
+    /// Re-evaluates an already visible approval after the user changes the
+    /// task mode from the composer. An unchanged human/escalation result
+    /// leaves the card in place; allow/deny/stopped resumes the suspended
+    /// continuation exactly once.
+    public func approvalPolicyDidChange() async {
+        guard case .waitingApproval(let waiting) = state,
+              approvalContinuation != nil,
+              let descriptor = executor.descriptor(named: waiting.toolCall.toolName)
+        else { return }
+        let action = ProposedAction(
+            toolCall: waiting.toolCall,
+            riskLabels: Set(descriptor.riskLabels.map(\.rawValue)),
+            userGoal: messages.last(where: { $0.role == "user" })?.content ?? "",
+            recentContext: Self.approvalContext(from: messages),
+            hostAndPathScope: waiting.toolCall.scope
+        )
+        let decision: ApprovalDecision
+        do {
+            decision = try await policy.decide(action)
+        } catch {
+            return
+        }
+        guard case .waitingApproval(let current) = state,
+              current.toolCall.id == waiting.toolCall.id else { return }
+        switch decision {
+        case .allow, .deny, .stopped:
+            await resolveApproval(decision)
+        case .escalateToHuman:
+            break
+        }
+    }
+
     /// Registers guidance for the active run without interrupting a model
     /// stream or in-flight tool. `expectedRunID` prevents a UI race from
     /// steering a newer run after the displayed run changed.

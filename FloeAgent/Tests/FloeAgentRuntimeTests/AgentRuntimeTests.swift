@@ -473,6 +473,33 @@ struct AgentRuntimeTests {
         #expect(sink.transitions.contains("executingTool"))
     }
 
+    @Test("Changing task permission mid-run re-evaluates the pending tool")
+    func livePermissionChangeResumesPendingTool() async throws {
+        let adapter = MockAdapter()
+        let call = try TestFixtures.toolCall(id: "call_live_permission")
+        adapter.script = [
+            [.toolRequest(call)],
+            [.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor, sideEffecting: true)
+        let policy = DynamicApprovalPolicy(HumanApprovalPolicy())
+        let runtime = makeRuntime(
+            adapter: adapter,
+            executor: executor,
+            policy: policy
+        )
+
+        let startTask = Task { try await runtime.start(goal: "do it") }
+        try await waitForState("waitingApproval", in: runtime)
+        policy.update(to: TaskFullAccessPolicy())
+        await runtime.approvalPolicyDidChange()
+        try await startTask.value
+
+        #expect(executor.executedCalls.count == 1)
+        #expect(await runtime.state.name == "completed")
+    }
+
     @Test("Side-effecting tool is not dispatched when its preflight checkpoint fails")
     func sideEffectRequiresDurableCheckpoint() async throws {
         let adapter = MockAdapter()

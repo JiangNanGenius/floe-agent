@@ -2169,6 +2169,16 @@ final class ConversationCenter: ObservableObject {
         var normalized = policy
         normalized.updatedAt = Date()
         try await SQLiteWorkspaceStore(database: environment.database).saveTaskPolicy(normalized)
+        let liveServices = runServices.values.filter {
+            $0.conversationID == normalized.conversationID
+        }
+        for service in liveServices {
+            let nextPolicy = await approvalPolicy(
+                for: normalized,
+                primaryModel: service.primaryModel
+            )
+            await service.updateApprovalPolicy(nextPolicy)
+        }
         publishSession(normalized.conversationID)
     }
 
