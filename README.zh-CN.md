@@ -1,8 +1,9 @@
 <div align="center">
   <img src="docs/images/floe-agent-icon.png" width="112" alt="Floe Agent 应用图标">
-  <h1>Floe Agent</h1>
-  <p><strong>你的模型，你的文件，你的电脑。</strong></p>
-  <p>面向 iPhone 与 iPad 的原生、私有、自带密钥 AI Agent 工作空间。</p>
+  <h1>Floe Agent for iPhone &amp; iPad</h1>
+  <p><strong>Floe — Native iOS AI Agent</strong></p>
+  <p>你的模型，你的文件，你的电脑。</p>
+  <p>面向 iPhone 与 iPad 原生打造的私有、自带密钥 AI Agent 工作空间。</p>
   <p>
     <a href="README.md">English</a> ·
     <a href="https://www.floe-agent.com/">官方网站</a> ·
