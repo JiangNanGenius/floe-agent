@@ -221,7 +221,9 @@ public actor MCPRemoteClient {
             let config = URLSessionConfiguration.ephemeral
             config.timeoutIntervalForRequest = configuration.timeoutSeconds
             config.timeoutIntervalForResource = configuration.timeoutSeconds
+#if !os(Linux)
             config.waitsForConnectivity = true
+#endif
             config.httpMaximumConnectionsPerHost = 2
             let delegate = MCPNoRedirectSessionDelegate()
             self.sessionDelegate = delegate
@@ -492,6 +494,28 @@ public actor MCPRemoteClient {
             request.setValue(credential, forHTTPHeaderField: configuration.credentialHeaderName)
         }
 
+        #if os(Linux)
+        // FoundationNetworking does not currently expose AsyncBytes. Linux is
+        // a compile/test target rather than an app runtime, so retain the same
+        // response contract with data(for:) and enforce the byte cap before
+        // parsing or returning any server-controlled content.
+        let (rawData, rawResponse) = try await session.data(for: request)
+        guard let response = rawResponse as? HTTPURLResponse else {
+            throw MCPClientError.invalidResponse("HTTP response is unavailable")
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            if response.statusCode == 401 || response.statusCode == 403 {
+                throw MCPClientError.authenticationRequired
+            }
+            let errorData = rawData.prefix(1_024)
+            let body = String(decoding: errorData, as: UTF8.self)
+            throw MCPClientError.httpError(status: response.statusCode, body: body)
+        }
+        guard rawData.count <= Self.maximumResponseBytes,
+              response.expectedContentLength <= Int64(Self.maximumResponseBytes) else {
+            throw MCPClientError.responseTooLarge(Self.maximumResponseBytes)
+        }
+        #else
         let (bytes, rawResponse) = try await session.bytes(for: request)
         guard let response = rawResponse as? HTTPURLResponse else {
             throw MCPClientError.invalidResponse("HTTP response is unavailable")
@@ -522,6 +546,7 @@ public actor MCPRemoteClient {
             }
             rawData.append(byte)
         }
+        #endif
         if acceptsEmptyResponse && rawData.isEmpty { return (Data("{}".utf8), response) }
         let contentType = response.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
         let data = contentType.contains("text/event-stream")
