@@ -5,6 +5,7 @@ import Foundation
 import SwiftUI
 import WebKit
 import CryptoKit
+import FloeCore
 
 @MainActor
 final class BrowserSessionCenter: NSObject, ObservableObject {
@@ -24,6 +25,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         var viewportWidth: Double
         var viewportHeight: Double
         var revision: Int
+        var visualTextRegions: [VisualTextRegion]
     }
     struct Tab: Identifiable {
         let id: UUID
@@ -297,8 +299,10 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
                 return await observeResult(command, tabID: tabID, cursor: cursor)
             case .screenshot:
                 let artifact = try await saveSnapshot(of: tab.webView)
+                let visualTextRegions = try recognizeVisualText(in: artifact)
                 var result = await observeResult(command, tabID: tabID, cursor: nil)
                 result.page?.screenshotArtifact = artifact
+                result.page?.visualTextRegions = visualTextRegions
                 if let page = result.page,
                    let currentIndex = tabs.firstIndex(where: { $0.id == tabID }) {
                     tabs[currentIndex].visualFallbackEvidence = VisualFallbackEvidence(
@@ -309,11 +313,24 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
                         pixelHeight: artifact.pixelHeight,
                         viewportWidth: page.viewportWidth,
                         viewportHeight: page.viewportHeight,
-                        revision: page.revision
+                        revision: page.revision,
+                        visualTextRegions: visualTextRegions
                     )
                 }
                 return result
-            case .click(let target):
+            case .click(let requestedTarget):
+                let target: BrowserTarget
+                if case .visualText(let reference) = requestedTarget {
+                    let evidence = try validateVisualFallback(command, in: tab)
+                    guard let region = evidence.visualTextRegions.first(where: { $0.reference == reference }) else {
+                        throw BrowserPolicyError.blocked(
+                            "The visual text reference is absent or stale; capture a new browser screenshot"
+                        )
+                    }
+                    target = .point(x: Double(region.centerX), y: Double(region.centerY))
+                } else {
+                    target = requestedTarget
+                }
                 if case .point(let x, let y) = target {
                     let evidence = try validateVisualFallback(command, in: tab)
                     guard x >= 0, y >= 0,
@@ -340,8 +357,10 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
                     // viewport again and require an observable state change.
                     try? await Task.sleep(for: .milliseconds(250))
                     let postArtifact = try await saveSnapshot(of: tab.webView)
+                    let postVisualTextRegions = try recognizeVisualText(in: postArtifact)
                     var result = await observeResult(command, tabID: tabID, cursor: nil)
                     result.page?.screenshotArtifact = postArtifact
+                    result.page?.visualTextRegions = postVisualTextRegions
                     let changed = result.page.map {
                         $0.documentID != evidence.documentID
                             || $0.revision > evidence.revision
@@ -357,7 +376,8 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
                             pixelHeight: postArtifact.pixelHeight,
                             viewportWidth: page.viewportWidth,
                             viewportHeight: page.viewportHeight,
-                            revision: page.revision
+                            revision: page.revision,
+                            visualTextRegions: postVisualTextRegions
                         )
                     }
                     if changed {
@@ -542,6 +562,10 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             targetObject = ["kind": "element", "ref": ref, "documentID": documentID]
         case .point(let x, let y):
             targetObject = ["kind": "point", "x": x, "y": y]
+        case .visualText:
+            throw BrowserPolicyError.blocked(
+                "Visual text references must be resolved from fresh screenshot evidence"
+            )
         }
         let value = try await tab.webView.callAsyncJavaScript(
             script,
@@ -1063,6 +1087,15 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             sha256: digest,
             pixelWidth: image.cgImage?.width ?? Int(image.size.width * image.scale),
             pixelHeight: image.cgImage?.height ?? Int(image.size.height * image.scale)
+        )
+    }
+
+    private func recognizeVisualText(in artifact: BrowserArtifactReference) throws -> [VisualTextRegion] {
+        let filename = (artifact.relativePath as NSString).lastPathComponent
+        return try VisualTextRecognizer.recognize(
+            imageData: Data(contentsOf: artifactDirectory.appendingPathComponent(filename)),
+            pixelWidth: artifact.pixelWidth,
+            pixelHeight: artifact.pixelHeight
         )
     }
 

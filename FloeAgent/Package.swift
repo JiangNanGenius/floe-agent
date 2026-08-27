@@ -542,6 +542,16 @@ let package = Package(
         ),
 
         .testTarget(
+            name: "FloeVNCTests",
+            dependencies: ["FloeVNC", "FloeTools", "FloeCore"],
+            path: "Tests/FloeVNCTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+
+        .testTarget(
             name: "FloeMarkdownTests",
             dependencies: ["FloeMarkdown"],
             path: "Tests/FloeMarkdownTests",

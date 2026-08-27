@@ -1073,7 +1073,10 @@ public actor ConversationRunService {
                     : "Available tools: \(toolNames.joined(separator: ", "))"
             )
             if toolNames.contains("browser.observe") && toolNames.contains("browser.screenshot") {
-                lines.append("Browser interaction policy: read and act through browser.observe plus stable element refs first. Use browser.screenshot, image.inspect, and browser.clickPoint only when structured information is unavailable or insufficient; coordinate fallback must use fresh evidence from the current page.")
+                lines.append("Browser interaction policy: use browser.observe and stable DOM refs first. When DOM structure is insufficient, use browser.screenshot and prefer its on-device OCR visualTextRegions with browser.clickVisualText. Use browser.clickPoint only when neither DOM refs nor OCR text anchors identify the target. Every visual fallback must use fresh evidence from the current page and verify the returned post-action screenshot.")
+            }
+            if toolNames.contains("vnc.observe") && toolNames.contains("vnc.click") {
+                lines.append("VNC interaction policy: call vnc.observe first and prefer its OCR-backed recognizedText references with vnc.clickElement. Use exact screenshot framebuffer-pixel coordinates only when no suitable reference exists. Perform one bounded action, then inspect the returned post-action screenshot. inputDispatched=true only confirms protocol delivery; never claim task success without visual evidence. RFB does not provide native control roles or a DOM, so do not invent them.")
             }
             lines.append("Tool inventory rule: when asked what tools are available, use only the exact names above and their supplied schemas. Never invent, rename, or imply an unavailable tool; state capability limits directly.")
         } else {

@@ -989,7 +989,8 @@ public actor FloeAgentRuntime {
         guard artifact.mimeType == "image/jpeg" || artifact.mimeType == "image/png",
               artifact.byteCount > 0, artifact.byteCount <= 8 * 1024 * 1024,
               (artifact.relativePath.hasPrefix("BrowserArtifacts/")
-                || artifact.relativePath.hasPrefix("GeneratedImages/")),
+                || artifact.relativePath.hasPrefix("GeneratedImages/")
+                || artifact.relativePath.hasPrefix("VNCArtifacts/")),
               !artifact.relativePath.split(separator: "/").contains("..")
         else { return nil }
         guard let support = try? FileManager.default.url(

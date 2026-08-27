@@ -8,6 +8,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import Combine
 import FloeVNC
 
 /// View model for the VNC screen.
@@ -18,10 +19,14 @@ final class VNCViewModel: ObservableObject {
 
     let sessionID: UUID
     let center: RemoteSessionCenter
+    private var centerObservation: AnyCancellable?
 
     init(sessionID: UUID, center: RemoteSessionCenter) {
         self.sessionID = sessionID
         self.center = center
+        centerObservation = center.objectWillChange.sink { [weak self] _ in
+            Task { @MainActor [weak self] in self?.objectWillChange.send() }
+        }
     }
 
     var snapshot: RemoteSessionSnapshot? {
@@ -31,6 +36,10 @@ final class VNCViewModel: ObservableObject {
     /// The live VNC session for the viewer (owned by the center).
     var session: VNCSession? {
         center.vncSession(for: sessionID)
+    }
+
+    var connectionState: VNCSessionState {
+        center.vncConnectionState(for: sessionID)
     }
 
     func refreshFPS() {

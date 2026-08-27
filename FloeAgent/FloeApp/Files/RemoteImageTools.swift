@@ -29,12 +29,12 @@ struct RemoteImageInspectTool: AgentTool {
 
     static let name = "image.inspect"
     static let toolDescription =
-        "Use the configured AI vision model to understand an image semantically. Use this instead of OCR for photos, diagrams, charts, UI state, browser screenshots, or images extracted from PDFs. Accepts a workspace-relative image/PDF path, or a BrowserArtifacts/GeneratedImages path plus the sha256 returned by the producing tool. For PDFs, page is 1-based. OCR remains available when exact text transcription is the only goal."
+        "Use the configured AI vision model to understand an image semantically. Use this instead of OCR for photos, diagrams, charts, UI state, browser/VNC screenshots, or images extracted from PDFs. Accepts a workspace-relative image/PDF path, or a BrowserArtifacts/VNCArtifacts/GeneratedImages path plus the sha256 returned by the producing tool. For PDFs, page is 1-based. OCR remains available when exact text transcription is the only goal."
     static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
-        "path": {"type": "string", "description": "Workspace-relative image/PDF path, or BrowserArtifacts/GeneratedImages artifact path"},
+        "path": {"type": "string", "description": "Workspace-relative image/PDF path, or BrowserArtifacts/VNCArtifacts/GeneratedImages artifact path"},
         "question": {"type": "string", "description": "What visual facts the agent needs from this image"},
         "page": {"type": "integer", "minimum": 1, "description": "1-based PDF page; omit for ordinary images"},
         "sha256": {"type": "string", "description": "Required for BrowserArtifacts/GeneratedImages paths; copy from the producing tool result"}
@@ -92,10 +92,10 @@ struct RemoteImageInspectTool: AgentTool {
         if let page = args.page, page < 1 {
             throw FloeError.validationFailed("page must be 1 or greater")
         }
-        if Self.isBrowserArtifact(path) {
+        if Self.isVisualToolArtifact(path) {
             guard let digest = args.sha256?.lowercased(), Self.isSHA256(digest) else {
                 throw FloeError.validationFailed(
-                    "BrowserArtifacts paths require the sha256 from the producing tool result"
+                    "Browser/VNC artifact paths require the sha256 from the producing tool result"
                 )
             }
         }
@@ -175,7 +175,7 @@ struct RemoteImageInspectTool: AgentTool {
     ) throws -> (data: Data, url: URL) {
         let url: URL
         let usesArtifactStore: Bool
-        if Self.isBrowserArtifact(path) {
+        if Self.isVisualToolArtifact(path) {
             usesArtifactStore = true
             guard let root = artifactRootProvider() else {
                 throw FloeError.notFound("Floe artifact storage")
@@ -318,8 +318,8 @@ struct RemoteImageInspectTool: AgentTool {
         return url
     }
 
-    private static func isBrowserArtifact(_ path: String) -> Bool {
-        path.hasPrefix("BrowserArtifacts/")
+    private static func isVisualToolArtifact(_ path: String) -> Bool {
+        path.hasPrefix("BrowserArtifacts/") || path.hasPrefix("VNCArtifacts/")
     }
 
     private static func isGeneratedArtifactNamespace(_ path: String) -> Bool {

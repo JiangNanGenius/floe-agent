@@ -257,9 +257,19 @@ final class RemoteSessionCenter: ObservableObject {
         vncOwners[sessionID]?.session
     }
 
-    /// The first connected VNC session the agent can drive (nil = none open).
-    func activeVNCSession() -> VNCSession? {
-        vncOwners.values.compactMap(\.session).first
+    /// The first genuinely connected VNC session the agent can drive.
+    /// A session still negotiating credentials is never exposed to tools.
+    func activeVNCSession() -> VNCSessionHandle? {
+        vncOwners.first(where: { _, owner in
+            guard case .connected = owner.connectionState else { return false }
+            return owner.session?.isConnected == true
+        }).flatMap { id, owner in
+            owner.session.map { VNCSessionHandle(id: id, session: $0) }
+        }
+    }
+
+    func vncConnectionState(for sessionID: UUID) -> VNCSessionState {
+        vncOwners[sessionID]?.connectionState ?? .disconnected
     }
 
     /// Current FPS for a VNC session.
@@ -327,9 +337,6 @@ final class RemoteSessionCenter: ObservableObject {
         }
         vncOwners[sessionID] = owner
         vncSession.connect()
-        try await environment.remoteSessionRegistry.updateState(
-            id: sessionID, state: .connected, lastHeartbeatAt: Date()
-        )
         await refreshSnapshots()
         return sessionID
     }

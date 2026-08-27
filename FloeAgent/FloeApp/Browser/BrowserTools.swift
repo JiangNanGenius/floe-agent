@@ -160,7 +160,7 @@ private struct BrowserObserveTool: AgentTool {
 private struct BrowserScreenshotTool: AgentTool {
     struct Arguments: Decodable, Sendable { let tabID: UUID? }
     static let name = "browser.screenshot"
-    static let toolDescription = "Capture the current viewport when visual meaning is requested or browser.observe is unavailable or semantically insufficient. Text-only models should pass the returned BrowserArtifacts path and sha256 to image.inspect. A fresh screenshot digest is mandatory before browser.clickPoint fallback."
+    static let toolDescription = "Capture the current viewport when browser.observe is unavailable or semantically insufficient. Returns on-device OCR visualTextRegions with text-N references and exact screenshot-pixel bounds. Prefer browser.clickVisualText for a matching text anchor; use browser.clickPoint only when neither DOM refs nor text anchors identify the target."
     static let riskLabels: Set<RiskLabel> = [.sendsDataToProvider]
     static let isSideEffecting = false
     static let toolEffect: ToolEffect = .readOnly
@@ -168,6 +168,41 @@ private struct BrowserScreenshotTool: AgentTool {
     func validate(_ args: Arguments) throws {}
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try await environment.run(action: .screenshot, tabID: args.tabID)
+    }
+}
+
+private struct BrowserClickVisualTextTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        let tabID: UUID?
+        let documentID: String
+        let reference: String
+        let screenshotSHA256: String
+    }
+    static let name = "browser.clickVisualText"
+    static let toolDescription = "Click an OCR-backed text-N reference from the latest browser.screenshot when no semantic DOM ref represents that visible text. The reference is bound to the current document and screenshot digest; a post-click screenshot must show an observable change."
+    static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string"},"documentID":{"type":"string"},"reference":{"type":"string","pattern":"^text-[1-9][0-9]*$"},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"}},"required":["documentID","reference","screenshotSHA256"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.controlsGUI]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+    let environment: BrowserToolEnvironment
+    func validate(_ args: Arguments) throws {
+        guard !args.documentID.isEmpty,
+              args.reference.range(of: #"^text-[1-9][0-9]*$"#, options: .regularExpression) != nil,
+              args.screenshotSHA256.count == 64,
+              args.screenshotSHA256.allSatisfy(\.isHexDigit) else {
+            throw FloeError.validationFailed(
+                "documentID, a text-N reference, and its fresh screenshot sha256 are required"
+            )
+        }
+    }
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await environment.run(
+            action: .click(.visualText(reference: args.reference)),
+            tabID: args.tabID,
+            documentID: args.documentID,
+            visualEvidenceSHA256: args.screenshotSHA256,
+            visualFallbackReason: "insufficientStructuredInformation"
+        )
     }
 }
 
@@ -291,6 +326,7 @@ func registerBrowserTools(center: BrowserSessionCenter, registry: ToolRunnerRegi
     ToolCatalog.register(BrowserEventsTool.self)
     ToolCatalog.register(BrowserWaitTool.self)
     ToolCatalog.register(BrowserScreenshotTool.self)
+    ToolCatalog.register(BrowserClickVisualTextTool.self)
     ToolCatalog.register(BrowserClickTool.self)
     ToolCatalog.register(BrowserClickPointTool.self)
     ToolCatalog.register(BrowserTypeTool.self)
@@ -300,6 +336,7 @@ func registerBrowserTools(center: BrowserSessionCenter, registry: ToolRunnerRegi
     registry.register(BrowserEventsTool(environment: environment))
     registry.register(BrowserWaitTool(environment: environment))
     registry.register(BrowserScreenshotTool(environment: environment))
+    registry.register(BrowserClickVisualTextTool(environment: environment))
     registry.register(BrowserClickTool(environment: environment))
     registry.register(BrowserClickPointTool(environment: environment))
     registry.register(BrowserTypeTool(environment: environment))

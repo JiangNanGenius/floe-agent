@@ -245,7 +245,8 @@ private struct ArtifactImageView: View {
               !artifact.relativePath.hasPrefix("/"),
               !artifact.relativePath.split(separator: "/").contains(".."),
               artifact.relativePath.hasPrefix("GeneratedImages/") ||
-                artifact.relativePath.hasPrefix("BrowserArtifacts/"),
+                artifact.relativePath.hasPrefix("BrowserArtifacts/") ||
+                artifact.relativePath.hasPrefix("VNCArtifacts/"),
               let support = FileManager.default.urls(
                 for: .applicationSupportDirectory,
                 in: .userDomainMask

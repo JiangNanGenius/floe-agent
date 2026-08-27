@@ -435,14 +435,13 @@ final class ConversationCenter: ObservableObject {
         var workspaceAttachmentPaths = taskRootLease.map {
             importRunAttachments(currentUserAttachments, into: $0.url)
         } ?? []
-        if provider.kind == .local,
-           let root = taskRootLease?.url,
-           let ocrPath = persistLocalOCRHandoff(
+        if let root = taskRootLease?.url,
+           let evidencePath = persistVisualEvidenceHandoff(
                from: conversationHistory,
                runID: runID,
                root: root
            ) {
-            workspaceAttachmentPaths.append(ocrPath)
+            workspaceAttachmentPaths.append(evidencePath)
         }
         let taskPolicy = (try? await workspaceStore.taskPolicy(conversationID: conversationID))
             ?? TaskPolicy(conversationID: conversationID)
@@ -894,23 +893,22 @@ final class ConversationCenter: ObservableObject {
         return imported
     }
 
-    /// Saves app-produced OCR evidence next to the original attachment. The
-    /// local model sees only this bounded UTF-8 file and can revisit it with
-    /// ordinary workspace tools without retaining image tensors.
-    private func persistLocalOCRHandoff(
+    /// Saves the bounded visual handoff next to the original attachment. A
+    /// text-only primary model receives this UTF-8 evidence in its prompt and
+    /// can revisit it through ordinary workspace tools without image tensors.
+    private func persistVisualEvidenceHandoff(
         from messages: [ConversationMessage],
         runID: UUID,
         root: URL
     ) -> String? {
         let evidence = messages.compactMap { message -> String? in
             guard message.role == "system",
-                  message.content.hasPrefix(FloeAgentRuntime.visualEvidenceSystemPrefix),
-                  message.content.contains("preprocessed by on-device OCR") else { return nil }
+                  message.content.hasPrefix(FloeAgentRuntime.visualEvidenceSystemPrefix) else { return nil }
             return message.content
         }.joined(separator: "\n\n")
         guard !evidence.isEmpty else { return nil }
 
-        let directory = "OCR"
+        let directory = "VisualEvidence"
         let path = "\(directory)/attachment-\(runID.uuidString).md"
         do {
             let service = WorkspaceFileService(
@@ -919,16 +917,16 @@ final class ConversationCenter: ObservableObject {
             try? service.createDirectory(directory)
             _ = try service.createFile(
                 path,
-                content: "# 附件 OCR 文字\n\n\(String(evidence.prefix(16_000)))\n"
+                content: "# 附件视觉证据\n\n\(String(evidence.prefix(16_000)))\n"
             )
             FloeLogger(category: .app).info(
-                "localOCRWorkspaceFileCreated run=\(runID.uuidString) path=\(path) characters=\(evidence.count)"
+                "visualEvidenceWorkspaceFileCreated run=\(runID.uuidString) path=\(path) characters=\(evidence.count)"
             )
             return path
         } catch {
             let nsError = error as NSError
             FloeLogger(category: .app).warning(
-                "localOCRWorkspaceFileFailed run=\(runID.uuidString) domain=\(nsError.domain) code=\(nsError.code)"
+                "visualEvidenceWorkspaceFileFailed run=\(runID.uuidString) domain=\(nsError.domain) code=\(nsError.code)"
             )
             return nil
         }
@@ -1100,37 +1098,20 @@ final class ConversationCenter: ObservableObject {
         FloeLogger(category: .app).info(
             "visualEvidenceStarted trace=\(traceID) count=\(images.count) encodedCharacters=\(images.reduce(0) { $0 + $1.base64.count }) primaryModel=\(primaryModel.id.uuidString) primaryVision=\(primaryModel.capabilities.contains(.vision))"
         )
-        let primaryIsLocal = primaryModel.providerID == ProviderProfile.onDeviceProviderID
         if preferPrimaryVision, primaryModel.capabilities.contains(.vision) {
             FloeLogger(category: .app).info(
                 "visualEvidenceReady trace=\(traceID) route=primaryInline count=\(images.count)"
             )
             return (images, [])
         }
-        // Device-local models are deliberately text-only. Convert attached
-        // images with Apple Vision and hand the text to the model; never route
-        // the original bytes into MLX/Foundation Models or load a projector.
-        if primaryIsLocal {
-            if let ocr = await onDeviceOCRContext(images) {
-                FloeLogger(category: .app).info(
-                    "visualEvidenceReady trace=\(traceID) route=localOnDeviceOCR"
-                )
-                return ([], [ConversationMessage(
-                    role: "system",
-                    content: "\(FloeAgentRuntime.visualEvidenceSystemPrefix)\n\(ocr)"
-                )])
-            }
-            FloeLogger(category: .app).warning(
-                "visualEvidenceUnavailable trace=\(traceID) reason=localOCREmpty count=\(images.count)"
-            )
-            return ([], [ConversationMessage(
-                role: "system",
-                content: "\(FloeAgentRuntime.visualEvidenceSystemPrefix)\nThe selected local model is text-only. On-device OCR found no readable text in the attached image. State this limitation directly; do not claim to see visual content and do not call image.inspect."
-            )])
-        }
+        // A text-only primary model never receives raw image parts. Route the
+        // image through a distinct configured vision model first, regardless
+        // of whether the primary model is cloud or on-device. This keeps local
+        // inference text-only while still providing semantic image evidence.
+        let primaryIsLocal = primaryModel.providerID == ProviderProfile.onDeviceProviderID
         let configuredAuxiliary = auxiliaryVisionProviderAndModel().flatMap { candidate in
-            // A failed local VLM must not be selected again as its own
-            // fallback. Use a distinct auxiliary model or deterministic OCR.
+            // Never select the text-only primary row as its own visual helper,
+            // including legacy rows whose capabilities were synced incorrectly.
             candidate.1.id == primaryModel.id ? nil : candidate
         }
         guard let (provider, model) = configuredAuxiliary else {
@@ -1146,7 +1127,7 @@ final class ConversationCenter: ObservableObject {
             )
             return ([], [ConversationMessage(
                 role: "system",
-                content: "\(FloeAgentRuntime.visualEvidenceSystemPrefix)\nThe user attached image evidence, but no compatible automatic visual-analysis model is configured and on-device OCR produced no usable evidence. The original image is available at the exact path listed in the workspace attachment context. If semantic inspection is needed, call image.inspect with that path; do not use browser, Python, or directory-search loops to rediscover it."
+                content: "\(FloeAgentRuntime.visualEvidenceSystemPrefix)\nThe selected model is text-only. No distinct compatible auxiliary vision model is configured, and on-device OCR found no usable text. Tell the user that this image cannot be understood in the current configuration. Do not claim to see it and do not call browser, Python, image.inspect, or directory-search tools to rediscover it."
             )])
         }
         FloeLogger(category: .app).info(
@@ -1175,6 +1156,8 @@ final class ConversationCenter: ObservableObject {
                         base64: image.base64,
                         mimeType: image.mimeType,
                         prompt: prompt,
+                        provider: provider,
+                        model: model,
                         traceID: "\(traceID).\(index + 1)"
                     ))
                 }
@@ -1205,23 +1188,29 @@ final class ConversationCenter: ObservableObject {
         let failedCount = indexedDescriptions.reduce(into: 0) { count, item in
             if case .failure = item.1 { count += 1 }
         }
+        let firstFailure = indexedDescriptions.compactMap { item -> AuxiliaryVisionFailure? in
+            guard case .failure(let failure) = item.1 else { return nil }
+            return failure
+        }.first
         FloeLogger(category: .app).info(
             "visualEvidenceAuxiliaryFinished trace=\(traceID) model=\(model.id.uuidString) durationMs=\(durationMs) succeeded=\(indexedDescriptions.count - failedCount) failed=\(failedCount) characters=\(description.count) concurrency=\(min(3, boundedImages.count))"
         )
         guard !description.isEmpty else {
             if let ocr = await onDeviceOCRContext(images) {
                 FloeLogger(category: .app).info("visualEvidenceReady trace=\(traceID) route=onDeviceOCRAfterAuxiliary")
+                let reason = firstFailure?.userMessage ?? "辅助视觉模型没有返回可用内容"
                 return ([], [ConversationMessage(
                     role: "system",
-                    content: "\(FloeAgentRuntime.visualEvidenceSystemPrefix)\n\(ocr)"
+                    content: "\(FloeAgentRuntime.visualEvidenceSystemPrefix)\nSemantic image analysis was unavailable (\(reason)); the app safely fell back to on-device OCR.\n\(ocr)"
                 )])
             }
             FloeLogger(category: .app).warning(
                 "visualEvidenceUnavailable trace=\(traceID) reason=auxiliaryEmpty model=\(model.id.uuidString)"
             )
+            let reason = firstFailure?.userMessage ?? "辅助视觉模型没有返回可用内容"
             return ([], [ConversationMessage(
                 role: "system",
-                content: "\(FloeAgentRuntime.visualEvidenceSystemPrefix)\nThe automatic auxiliary visual-analysis request returned no usable evidence and on-device OCR also found nothing. The original image is available at the exact path listed in the workspace attachment context. Call image.inspect with that path for one semantic retry; do not use browser, Python, or directory-search loops to rediscover it."
+                content: "\(FloeAgentRuntime.visualEvidenceSystemPrefix)\nThe selected model is text-only. Automatic auxiliary visual analysis failed (\(reason)), and on-device OCR found no usable text. Tell the user this exact limitation. Do not claim to see the image and do not call browser, Python, image.inspect, or directory-search tools to retry the same unavailable route."
             )])
         }
         FloeLogger(category: .app).info(
@@ -2719,6 +2708,28 @@ final class ConversationCenter: ObservableObject {
             )
             return .failure(.noConfiguredModel)
         }
+        return await describeImageResult(
+            base64: base64,
+            mimeType: mimeType,
+            prompt: prompt,
+            provider: provider,
+            model: model,
+            traceID: traceID
+        )
+    }
+
+    /// Executes against the exact helper selected by the caller. Attachment
+    /// preprocessing may run concurrently with settings refreshes; resolving
+    /// the helper again per image can otherwise split one batch across models
+    /// or accidentally route back to the text-only primary model.
+    private func describeImageResult(
+        base64: String,
+        mimeType: String,
+        prompt: String,
+        provider: ProviderProfile,
+        model: ModelProfile,
+        traceID: String
+    ) async -> AuxiliaryVisionResult {
         let startedAt = Date()
         let visionReasoningEnabled = UserDefaults.standard.bool(
             forKey: Self.auxiliaryVisionReasoningDefaultsKey

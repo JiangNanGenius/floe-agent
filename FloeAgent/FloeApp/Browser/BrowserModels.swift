@@ -2,6 +2,7 @@
 
 #if canImport(SwiftUI) && canImport(WebKit)
 import Foundation
+import FloeCore
 
 enum BrowserAction: Sendable, Codable, Hashable {
     case protocolInfo
@@ -37,6 +38,7 @@ enum BrowserWaitCondition: Sendable, Codable, Hashable {
 
 enum BrowserTarget: Sendable, Codable, Hashable {
     case element(ref: String, documentID: String)
+    case visualText(reference: String)
     case point(x: Double, y: Double)
 }
 
@@ -186,6 +188,7 @@ struct PageSnapshot: Sendable, Codable, Hashable {
     var scrollY: Double
     var tabs: [BrowserTabSnapshot]
     var nodes: [BrowserNode]
+    var visualTextRegions: [VisualTextRegion] = []
     var nextCursor: Int?
     var screenshotArtifact: BrowserArtifactReference?
 }

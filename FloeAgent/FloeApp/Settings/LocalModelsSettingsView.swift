@@ -412,7 +412,7 @@ struct LocalModelsSettingsView: View {
                     }.padding(.vertical, 4)
                 }
             } footer: {
-                Text("模型需要手动下载并只保存在本机。本地推理仅处理文字，不加载视觉组件；图片先由系统 OCR 转成工作区文字文件，多个任务会自动排队。")
+                Text("模型需要手动下载并只保存在本机。本地推理仅处理文字，不加载视觉组件；图片先由辅助读图模型生成摘要，辅助模型不可用时再由系统 OCR 转成工作区文字文件。多个任务会自动排队。")
             }
             let retiredInstalled = CuratedLocalModelCatalog.retiredEntries.filter {
                 center.installedIDs.contains($0.id)

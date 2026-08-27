@@ -5,7 +5,7 @@
 // Wraps the committed VNCViewer with a status bar (state + FPS), a
 // disconnect affordance, and a persistent emergency stop. The session is
 // owned by RemoteSessionCenter, so dismissing this view does NOT kill it.
-// VNC always runs over the SSH loopback forwarder, never a public listener.
+// VNC may connect directly or through the verified SSH loopback forwarder.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -104,8 +104,16 @@ struct VNCView: View {
     }
 
     private var statusText: String {
+        if case .failed(let reason) = viewModel.connectionState {
+            return reason
+        }
         guard let state = viewModel.snapshot?.record.state else {
-            return String(localized: "state.unknown")
+            switch viewModel.connectionState {
+            case .connecting: return String(localized: "session.connecting")
+            case .connected: return String(localized: "session.connected")
+            case .disconnected: return String(localized: "state.disconnected")
+            case .failed(let reason): return reason
+            }
         }
         switch state {
         case .connected: return String(localized: "session.connected")
@@ -117,12 +125,13 @@ struct VNCView: View {
     }
 
     private var statusColor: Color {
+        if case .failed = viewModel.connectionState { return FloeTheme.destructive }
         switch viewModel.snapshot?.record.state {
-        case .connected: FloeTheme.success
-        case .connecting: FloeTheme.primary
-        case .suspended: FloeTheme.pending
-        case .disconnected: FloeTheme.destructive
-        default: FloeTheme.unknown
+        case .connected: return FloeTheme.success
+        case .connecting: return FloeTheme.primary
+        case .suspended: return FloeTheme.pending
+        case .disconnected: return FloeTheme.destructive
+        default: return FloeTheme.unknown
         }
     }
 }

@@ -27,6 +27,7 @@ struct ThreadDetailView: View {
     @State private var showingPermissionsSheet = false
     @State private var showingUsageDetails = false
     @State private var selectedImportantFile: ImportantFileShortcut?
+    @State private var showsReturnToLatest = false
 
     init(conversationID: UUID, center: ConversationCenter) {
         _viewModel = StateObject(
@@ -231,8 +232,9 @@ struct ThreadDetailView: View {
 
     private var threadScroll: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
+            ZStack(alignment: .bottomTrailing) {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
                     // The unified timeline: user goal → run events in stored
                     // sequence → live tail → approvals → terminal last.
                     // "Completed" can never float above the final reply.
@@ -245,26 +247,58 @@ struct ThreadDetailView: View {
                         ThreadUsageFooter(summary: usage)
                     }
 
-                    if viewModel.events.isEmpty && viewModel.messages.isEmpty {
-                        ContentUnavailableView {
-                            Label("thread.empty", systemImage: "text.bubble")
-                        } description: {
-                            Text("thread.empty.hint")
+                        if viewModel.events.isEmpty && viewModel.messages.isEmpty {
+                            ContentUnavailableView {
+                                Label("thread.empty", systemImage: "text.bubble")
+                            } description: {
+                                Text("thread.empty.hint")
+                            }
                         }
+
+                        Color.clear
+                            .frame(height: 1)
+                            .id("thread-latest-anchor")
+                    }
+                    .padding()
+                }
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    let distance = geometry.contentSize.height
+                        - geometry.contentOffset.y
+                        - geometry.containerSize.height
+                    return distance > 180
+                } action: { _, isAwayFromLatest in
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        showsReturnToLatest = isAwayFromLatest
                     }
                 }
-                .padding()
+
+                if showsReturnToLatest {
+                    Button {
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.24)) {
+                            proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
+                        }
+                        showsReturnToLatest = false
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 38, height: 38)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .buttonBorderShape(.circle)
+                    .padding(.trailing, 14)
+                    .padding(.bottom, 12)
+                    .accessibilityLabel("回到最新消息")
+                    .accessibilityHint("滚动到对话的最新消息")
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
             .onChange(of: viewModel.liveStreamedText.count) { _, _ in
-                // Follow the streaming tail smoothly without yanking the
-                // scroll position on every cluster — only while the tail
-                // is the live bottom of the thread. Persisted-event growth
-                // deliberately does NOT auto-scroll, so the user can review
-                // reasoning, tool calls, and earlier output mid-thread
-                // without being dragged back to the bottom.
-                guard viewModel.showsLiveTail,
+                // Follow only when the user has not intentionally scrolled
+                // away to inspect earlier reasoning or tool output.
+                guard !showsReturnToLatest,
+                      viewModel.showsLiveTail,
                       !viewModel.liveStreamedText.isEmpty else { return }
-                proxy.scrollTo(ThreadTimelineItem.liveAssistantTail.id, anchor: .bottom)
+                proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
             }
         }
     }

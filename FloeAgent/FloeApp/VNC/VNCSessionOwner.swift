@@ -59,6 +59,24 @@ final class VNCSessionOwner {
                 guard let self else { return }
                 self.connectionState = state
                 self.framesPerSecond = session.measuredFramesPerSecond
+                let durableState: RemoteSessionRecord.State
+                let heartbeat: Date?
+                switch state {
+                case .connecting:
+                    durableState = .connecting
+                    heartbeat = nil
+                case .connected:
+                    durableState = .connected
+                    heartbeat = Date()
+                case .disconnected, .failed:
+                    durableState = .disconnected
+                    heartbeat = Date()
+                }
+                try? await self.registry.updateState(
+                    id: self.sessionID,
+                    state: durableState,
+                    lastHeartbeatAt: heartbeat
+                )
                 self.onStateChange?()
             }
         }

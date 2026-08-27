@@ -1,5 +1,13 @@
 import Foundation
+import Crypto
+import FloeCore
 import RoyalVNCKit
+
+#if canImport(CoreGraphics) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
+#endif
 
 public enum VNCSessionState: Sendable, Hashable {
     case disconnected
@@ -12,12 +20,17 @@ public enum VNCSessionState: Sendable, Hashable {
 /// thread-safe callback surface suitable for UIKit/SwiftUI renderers.
 public final class VNCSession: NSObject, VNCConnectionDelegate, @unchecked Sendable {
     private let lock = NSLock()
+    private let logger = FloeLogger(category: .vnc)
     private let password: String?
     private var connection: VNCConnection?
     private var framebuffer: VNCFramebuffer?
     private var frameHandler: ((VNCFramebuffer) -> Void)?
     private var stateHandler: ((VNCSessionState) -> Void)?
     private var frameTimes: [ContinuousClock.Instant] = []
+    private var state: VNCSessionState = .disconnected
+    private var frameRevision: UInt64 = 0
+    private var visualEvidence: VNCVisualEvidence?
+    private var structuredEvidence: VNCStructuredEvidence?
 
     public init(host: String, port: UInt16, password: String?) {
         self.password = password
@@ -64,6 +77,77 @@ public final class VNCSession: NSObject, VNCConnectionDelegate, @unchecked Senda
         lock.withLock { framebuffer }
     }
 
+    public var currentState: VNCSessionState { lock.withLock { state } }
+
+    public var isConnected: Bool {
+        if case .connected = currentState { return true }
+        return false
+    }
+
+    public var currentFrameRevision: UInt64 { lock.withLock { frameRevision } }
+
+    public var currentVisualEvidence: VNCVisualEvidence? {
+        lock.withLock { visualEvidence }
+    }
+
+    public func rememberVisualEvidence(_ evidence: VNCVisualEvidence) {
+        lock.withLock { visualEvidence = evidence }
+    }
+
+    public var currentStructuredEvidence: VNCStructuredEvidence? {
+        lock.withLock { structuredEvidence }
+    }
+
+    public func rememberStructuredEvidence(_ evidence: VNCStructuredEvidence) {
+        lock.withLock { structuredEvidence = evidence }
+    }
+
+    /// Encodes an immutable copy of the latest remote framebuffer. The model
+    /// must use the returned pixel dimensions and digest for coordinate input.
+    public func captureJPEG(compressionQuality: Double = 0.78) throws -> VNCFrameCapture {
+        guard isConnected else {
+            throw FloeError.validationFailed("VNC session is not connected")
+        }
+        let snapshot = lock.withLock { (framebuffer, frameRevision) }
+        guard let framebuffer = snapshot.0 else {
+            throw FloeError.validationFailed("VNC has not received a framebuffer yet")
+        }
+#if canImport(CoreGraphics) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
+        guard let image = framebuffer.cgImage else {
+            throw FloeError.validationFailed("VNC framebuffer is not ready to capture")
+        }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data, UTType.jpeg.identifier as CFString, 1, nil
+        ) else {
+            throw FloeError.internalError("Could not create VNC screenshot encoder")
+        }
+        CGImageDestinationAddImage(
+            destination,
+            image,
+            [kCGImageDestinationLossyCompressionQuality: max(0.2, min(0.95, compressionQuality))] as CFDictionary
+        )
+        guard CGImageDestinationFinalize(destination) else {
+            throw FloeError.internalError("Could not encode VNC screenshot")
+        }
+        let encoded = data as Data
+        guard !encoded.isEmpty, encoded.count <= 8 * 1_024 * 1_024 else {
+            throw FloeError.validationFailed("VNC screenshot exceeds 8 MiB")
+        }
+        let digest = SHA256.hash(data: encoded).map { String(format: "%02x", $0) }.joined()
+        return VNCFrameCapture(
+            data: encoded,
+            sha256: digest,
+            pixelWidth: image.width,
+            pixelHeight: image.height,
+            revision: snapshot.1,
+            capturedAt: Date()
+        )
+#else
+        throw FloeError.invalidConfiguration("VNC screenshots are unavailable on this platform")
+#endif
+    }
+
     public var measuredFramesPerSecond: Double {
         lock.withLock {
             guard frameTimes.count >= 2,
@@ -87,6 +171,42 @@ public final class VNCSession: NSObject, VNCConnectionDelegate, @unchecked Senda
     public func send(_ key: VNCKeyCode) {
         connection?.keyDown(key)
         connection?.keyUp(key)
+    }
+
+    public func send(namedKey name: String) throws {
+        let key: VNCKeyCode
+        switch name.lowercased() {
+        case "return", "enter": key = .return
+        case "tab": key = .tab
+        case "escape", "esc": key = .escape
+        case "space": key = .space
+        case "backspace", "delete": key = .delete
+        case "forwarddelete": key = .forwardDelete
+        case "left": key = .leftArrow
+        case "right": key = .rightArrow
+        case "up": key = .upArrow
+        case "down": key = .downArrow
+        case "pageup": key = .pageUp
+        case "pagedown": key = .pageDown
+        case "home": key = .home
+        case "end": key = .end
+        case "insert": key = .insert
+        case "f1": key = .f1
+        case "f2": key = .f2
+        case "f3": key = .f3
+        case "f4": key = .f4
+        case "f5": key = .f5
+        case "f6": key = .f6
+        case "f7": key = .f7
+        case "f8": key = .f8
+        case "f9": key = .f9
+        case "f10": key = .f10
+        case "f11": key = .f11
+        case "f12": key = .f12
+        default:
+            throw FloeError.validationFailed("Unsupported VNC key: \(name)")
+        }
+        send(key)
     }
 
     public func send(text: String) {
@@ -115,8 +235,17 @@ public final class VNCSession: NSObject, VNCConnectionDelegate, @unchecked Senda
         credentialFor authenticationType: VNCAuthenticationType,
         completion: @escaping (VNCCredential?) -> Void
     ) {
-        _ = authenticationType
-        completion(password.map(VNCPasswordCredential.init(password:)))
+        logger.info(
+            "vncCredentialRequested requiresUsername=\(authenticationType.requiresUsername) requiresPassword=\(authenticationType.requiresPassword) passwordPresent=\(password != nil)"
+        )
+        guard !authenticationType.requiresUsername,
+              authenticationType.requiresPassword,
+              let password else {
+            logger.warning("vncCredentialUnsupported requiresUsername=\(authenticationType.requiresUsername)")
+            completion(nil)
+            return
+        }
+        completion(VNCPasswordCredential(password: password))
     }
 
     public func connection(_ connection: VNCConnection, didCreateFramebuffer framebuffer: VNCFramebuffer) {
@@ -146,6 +275,9 @@ public final class VNCSession: NSObject, VNCConnectionDelegate, @unchecked Senda
     private func publish(_ framebuffer: VNCFramebuffer) {
         let handler = lock.withLock {
             self.framebuffer = framebuffer
+            frameRevision &+= 1
+            visualEvidence = nil
+            structuredEvidence = nil
             let now = ContinuousClock.now
             frameTimes.append(now)
             let cutoff = now.advanced(by: .seconds(-2))
@@ -156,9 +288,50 @@ public final class VNCSession: NSObject, VNCConnectionDelegate, @unchecked Senda
     }
 
     private func emit(state: VNCSessionState) {
-        let handler = lock.withLock { stateHandler }
+        let handler = lock.withLock {
+            self.state = state
+            return stateHandler
+        }
+        switch state {
+        case .connecting: logger.info("vncState=connecting")
+        case .connected: logger.info("vncState=connected")
+        case .disconnected: logger.info("vncState=disconnected")
+        case .failed(let reason): logger.error("vncState=failed reason=\(reason)")
+        }
         handler?(state)
     }
+}
+
+public struct VNCFrameCapture: Sendable {
+    public let data: Data
+    public let sha256: String
+    public let pixelWidth: Int
+    public let pixelHeight: Int
+    public let revision: UInt64
+    public let capturedAt: Date
+}
+
+public struct VNCVisualEvidence: Sendable, Hashable {
+    public let sha256: String
+    public let pixelWidth: Int
+    public let pixelHeight: Int
+    public let revision: UInt64
+    public let capturedAt: Date
+
+    public init(capture: VNCFrameCapture) {
+        sha256 = capture.sha256
+        pixelWidth = capture.pixelWidth
+        pixelHeight = capture.pixelHeight
+        revision = capture.revision
+        capturedAt = capture.capturedAt
+    }
+}
+
+public struct VNCStructuredEvidence: Sendable, Hashable {
+    public let screenshotSHA256: String
+    public let revision: UInt64
+    public let capturedAt: Date
+    public let elements: [VisualTextRegion]
 }
 
 #if canImport(SwiftUI) && canImport(UIKit) && canImport(MetalKit)
@@ -234,7 +407,6 @@ private final class RemoteMetalView: MTKView, MTKViewDelegate, UIKeyInput {
 
     func detach() {
         session.onFrame(nil)
-        session.disconnect()
     }
 
     func draw(in view: MTKView) {
