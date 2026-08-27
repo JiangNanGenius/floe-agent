@@ -22,21 +22,48 @@ final class HostEditorViewModel: ObservableObject {
         var id: String { rawValue }
     }
 
+    struct VNCConnectionDraft: Identifiable, Hashable {
+        var id: UUID
+        var displayName: String
+        var transport: VNCTransport
+        var host: String
+        var port: Int
+        var password: String = ""
+        var existingPasswordRef: SecretReference?
+    }
+
+    struct AuxiliaryConnectionDraft: Identifiable, Hashable {
+        var id: UUID
+        var displayName: String
+        var kind: RemoteAuxiliaryConnectionKind
+        var host: String = ""
+        var port: Int = 23
+        var bluetoothPeripheralID: String = ""
+        var bluetoothServiceUUID: String = ""
+        var bluetoothWriteCharacteristicUUID: String = ""
+        var bluetoothNotifyCharacteristicUUID: String = ""
+    }
+
     // MARK: - Editable fields
 
     @Published var displayName: String = ""
     @Published var address: String = ""
     @Published var port: Int = 22
     @Published var user: String = ""
+    @Published var isSSHEnabled = true {
+        didSet {
+            if !isSSHEnabled { isRemoteExecutionEnvironment = false }
+        }
+    }
     @Published var authKind: AuthKind = .password
     /// The secret body, held only transiently until saved to Keychain.
     @Published var secretInput: String = ""
     @Published var pinnedFingerprint: String = ""
     @Published var usePinnedPolicy = false
-    // Optional VNC endpoint.
-    @Published var hasVNC = false
-    @Published var vncPort: Int = 5900
-    @Published var vncPassword: String = ""
+    @Published var deviceKind: RemoteDeviceKind = .unspecified
+    @Published var isRemoteExecutionEnvironment = true
+    @Published var vncConnections: [VNCConnectionDraft] = []
+    @Published var auxiliaryConnections: [AuxiliaryConnectionDraft] = []
 
     @Published private(set) var isSaving = false
     @Published private(set) var isRevealingSecret = false
@@ -57,15 +84,31 @@ final class HostEditorViewModel: ObservableObject {
             address = existing.address
             port = existing.port
             user = existing.user
+            deviceKind = existing.deviceKind
+            isRemoteExecutionEnvironment = existing.isRemoteExecutionEnvironment
             if case .pinned(let fingerprint) = existing.hostKeyPolicy {
                 usePinnedPolicy = true
                 pinnedFingerprint = fingerprint
             }
-            if let vnc = existing.vncEndpoint {
-                hasVNC = true
-                vncPort = vnc.port
+            vncConnections = existing.vncEndpoints.map {
+                VNCConnectionDraft(
+                    id: $0.id, displayName: $0.displayName,
+                    transport: $0.transport, host: $0.host, port: $0.port,
+                    existingPasswordRef: $0.passwordRef
+                )
+            }
+            auxiliaryConnections = existing.auxiliaryConnections.map {
+                AuxiliaryConnectionDraft(
+                    id: $0.id, displayName: $0.displayName, kind: $0.kind,
+                    host: $0.host ?? "", port: $0.port ?? ($0.kind == .telnet ? 23 : 0),
+                    bluetoothPeripheralID: $0.bluetoothPeripheralID?.uuidString ?? "",
+                    bluetoothServiceUUID: $0.bluetoothServiceUUID ?? "",
+                    bluetoothWriteCharacteristicUUID: $0.bluetoothWriteCharacteristicUUID ?? "",
+                    bluetoothNotifyCharacteristicUUID: $0.bluetoothNotifyCharacteristicUUID ?? ""
+                )
             }
             switch existing.auth {
+            case .none: isSSHEnabled = false
             case .password: authKind = .password
             case .importedKey: authKind = .importedKey
             case .deviceGeneratedKey: authKind = .deviceKey
@@ -74,9 +117,37 @@ final class HostEditorViewModel: ObservableObject {
     }
 
     var canSave: Bool {
-        !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let named = !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard named else { return false }
+        guard isSSHEnabled else {
+            return !vncConnections.isEmpty || !auxiliaryConnections.isEmpty
+        }
+        return !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && (1...65535).contains(port)
+    }
+
+    func addVNCConnection() {
+        vncConnections.append(VNCConnectionDraft(
+            id: UUID(), displayName: "VNC \(vncConnections.count + 1)",
+            transport: .direct, host: address, port: 5900
+        ))
+    }
+
+    func removeVNCConnection(id: UUID) {
+        vncConnections.removeAll { $0.id == id }
+    }
+
+    func addAuxiliaryConnection(kind: RemoteAuxiliaryConnectionKind) {
+        auxiliaryConnections.append(AuxiliaryConnectionDraft(
+            id: UUID(),
+            displayName: kind == .telnet ? "Telnet" : (kind == .tcp ? "TCP" : "BLE 串口"),
+            kind: kind, host: address, port: kind == .telnet ? 23 : 0
+        ))
+    }
+
+    func removeAuxiliaryConnection(id: UUID) {
+        auxiliaryConnections.removeAll { $0.id == id }
     }
 
     /// Reveals an already-persisted credential only after one centralized
@@ -119,10 +190,9 @@ final class HostEditorViewModel: ObservableObject {
         errorMessage = nil
         do {
             let auth = try await persistAuth()
-            let vncEndpoint = try await buildVNCEndpoint()
-            if !hasVNC, existing?.vncEndpoint != nil {
-                try? await secretStore.deleteSecret(scope: .hostVNC(hostID))
-            }
+            let vncEndpoints = try await buildVNCEndpoints()
+            await deleteRemovedVNCSecrets(retaining: Set(vncEndpoints.map(\.id)))
+            let auxiliaryConnections = try buildAuxiliaryConnections()
             let policy: HostKeyPolicy = usePinnedPolicy
                 ? .pinned(fingerprintSHA256: pinnedFingerprint)
                 : .trustOnFirstUse
@@ -134,12 +204,18 @@ final class HostEditorViewModel: ObservableObject {
                 user: user.trimmingCharacters(in: .whitespacesAndNewlines),
                 auth: auth,
                 hostKeyPolicy: policy,
-                vncEndpoint: vncEndpoint
+                deviceKind: deviceKind,
+                isRemoteExecutionEnvironment: isRemoteExecutionEnvironment,
+                vncEndpoints: vncEndpoints,
+                auxiliaryConnections: auxiliaryConnections
             )
             try await center.saveHost(profile)
+            if !isSSHEnabled {
+                try? await secretStore.deleteSecret(scope: .hostSSH(hostID))
+            }
             // Clear the transient secret from view state after persisting.
             secretInput = ""
-            vncPassword = ""
+            for index in vncConnections.indices { vncConnections[index].password = "" }
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -153,6 +229,7 @@ final class HostEditorViewModel: ObservableObject {
     /// auth method. Reuses the existing reference when no new secret was
     /// entered (edit without changing the secret).
     private func persistAuth() async throws -> SSHAuthMethod {
+        guard isSSHEnabled else { return .none }
         let entered = secretInput.trimmingCharacters(in: .whitespacesAndNewlines)
         if entered.isEmpty, let existing {
             return existing.auth // keep existing reference
@@ -176,21 +253,64 @@ final class HostEditorViewModel: ObservableObject {
         }
     }
 
-    private func buildVNCEndpoint() async throws -> VNCEndpoint? {
-        guard hasVNC else { return nil }
-        var passwordRef: SecretReference?
-        let password = vncPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !password.isEmpty, let data = password.data(using: .utf8) {
-            try await secretStore.storeSecret(data, scope: .hostVNC(hostID))
-            let synchronizable = SyncControlPreferences.load().savedCredentialsEnabled
-            passwordRef = SecretReference(
-                keychainAccount: "host.vnc.\(hostID.uuidString)",
-                synchronizable: synchronizable
+    private func buildVNCEndpoints() async throws -> [VNCEndpoint] {
+        var endpoints: [VNCEndpoint] = []
+        for draft in vncConnections {
+            var passwordRef = draft.existingPasswordRef
+            let password = draft.password.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !password.isEmpty, let data = password.data(using: .utf8) {
+                try await secretStore.storeSecret(
+                    data, scope: .hostVNCConnection(hostID: hostID, connectionID: draft.id)
+                )
+                passwordRef = SecretReference(
+                    keychainAccount: "host.vnc.\(hostID.uuidString).\(draft.id.uuidString)",
+                    synchronizable: SyncControlPreferences.load().savedCredentialsEnabled
+                )
+            }
+            let endpoint = VNCEndpoint(
+                id: draft.id,
+                displayName: draft.displayName.trimmed,
+                transport: draft.transport,
+                host: draft.host.trimmed,
+                port: draft.port,
+                passwordRef: passwordRef
             )
-        } else if let existing, let endpoint = existing.vncEndpoint {
-            passwordRef = endpoint.passwordRef
+            try endpoint.validate()
+            endpoints.append(endpoint)
         }
-        return VNCEndpoint(host: "localhost", port: vncPort, passwordRef: passwordRef)
+        return endpoints
     }
+
+    private func buildAuxiliaryConnections() throws -> [RemoteAuxiliaryConnection] {
+        try auxiliaryConnections.map { draft in
+            let connection = RemoteAuxiliaryConnection(
+                id: draft.id,
+                displayName: draft.displayName.trimmed,
+                kind: draft.kind,
+                host: draft.kind == .bluetoothSerial ? nil : draft.host.trimmed,
+                port: draft.kind == .bluetoothSerial ? nil : draft.port,
+                bluetoothPeripheralID: UUID(uuidString: draft.bluetoothPeripheralID),
+                bluetoothServiceUUID: draft.bluetoothServiceUUID.trimmed.nilIfEmpty,
+                bluetoothWriteCharacteristicUUID: draft.bluetoothWriteCharacteristicUUID.trimmed.nilIfEmpty,
+                bluetoothNotifyCharacteristicUUID: draft.bluetoothNotifyCharacteristicUUID.trimmed.nilIfEmpty
+            )
+            try connection.validate()
+            return connection
+        }
+    }
+
+    private func deleteRemovedVNCSecrets(retaining ids: Set<UUID>) async {
+        guard let existing else { return }
+        for endpoint in existing.vncEndpoints where !ids.contains(endpoint.id) {
+            try? await secretStore.deleteSecret(
+                scope: .hostVNCConnection(hostID: hostID, connectionID: endpoint.id)
+            )
+        }
+    }
+}
+
+private extension String {
+    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 #endif

@@ -45,6 +45,8 @@
 	<string>Floe scans your local network only when you ask the agent to discover nearby services and devices.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Floe uses your location only for a map or location task you request.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Floe uses Bluetooth only when you ask it to connect to a nearby BLE serial device.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Floe uses the microphone only while you dictate a message.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

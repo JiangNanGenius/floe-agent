@@ -75,6 +75,7 @@ final class AppEnvironment: ObservableObject {
     let sshCommandService: SSHCommandService
     let cloudWorkspaceService: CloudWorkspaceService
     let cloudWorkspaceCleanupQueue: CloudWorkspaceCleanupQueue
+    let bluetoothSerialService: CoreBluetoothSerialService
     /// Bundled CPython capability. Unavailable only when the reproducible
     /// runtime bootstrap was intentionally omitted from the build.
     let localPythonProbe: FloeExecution.LocalPythonCapabilityProbe
@@ -230,7 +231,25 @@ final class AppEnvironment: ObservableObject {
         let sshCommandService = remoteServices.ssh
         self.sshCommandService = sshCommandService
         let remoteAgentReadiness = RemoteAgentReadinessCoordinator(
-            manager: RemoteAgentInstaller(service: sshCommandService)
+            manager: RemoteAgentInstaller(service: sshCommandService),
+            eligibility: { hostID in
+                let hosts = try await hostStore.hosts()
+                let selected = hostID.flatMap { requested in hosts.first { $0.id == requested } }
+                    ?? hosts.first {
+                        guard $0.isRemoteExecutionEnvironment ?? true,
+                              let auth = try? JSONDecoder().decode(
+                                SSHAuthMethod.self,
+                                from: Data($0.authJSON.utf8)
+                              ) else { return false }
+                        return auth != .none
+                    }
+                guard let selected else { return false }
+                guard let auth = try? JSONDecoder().decode(
+                    SSHAuthMethod.self,
+                    from: Data(selected.authJSON.utf8)
+                ) else { return false }
+                return (selected.isRemoteExecutionEnvironment ?? true) && auth != .none
+            }
         )
         let cloudWorkspaceService = CloudWorkspaceService(
             ssh: sshCommandService,
@@ -238,6 +257,7 @@ final class AppEnvironment: ObservableObject {
         )
         self.cloudWorkspaceService = cloudWorkspaceService
         self.cloudWorkspaceCleanupQueue = CloudWorkspaceCleanupQueue(service: cloudWorkspaceService)
+        self.bluetoothSerialService = CoreBluetoothSerialService()
         let localPythonService = CPythonServiceFactory.make()
         self.remotePythonProbe = FloeExecution.RemotePythonProbe(service: pythonService)
         self.localPythonProbe = FloeExecution.LocalPythonCapabilityProbe(
@@ -297,6 +317,7 @@ final class AppEnvironment: ObservableObject {
             sshCommandService: sshCommandService,
             cloudWorkspaceService: cloudWorkspaceService,
             remoteHostStore: remoteHostStore,
+            bluetoothSerialService: bluetoothSerialService,
             webSearchService: WebSearchService(configurations: WebSearchSettingsCenter.resolvedConfigurations),
             includeOnDeviceJavaScript: true
         )
@@ -354,7 +375,14 @@ final class AppEnvironment: ObservableObject {
         }
 
         let defaultHostProvider: RemotePythonService.DefaultHostProvider = {
-            try await hostStore.hosts().first?.id
+            try await hostStore.hosts().first { stored in
+                guard stored.isRemoteExecutionEnvironment ?? true,
+                      let auth = try? JSONDecoder().decode(
+                        SSHAuthMethod.self,
+                        from: Data(stored.authJSON.utf8)
+                      ) else { return false }
+                return auth != .none
+            }?.id
         }
 
         let python = RemotePythonService(

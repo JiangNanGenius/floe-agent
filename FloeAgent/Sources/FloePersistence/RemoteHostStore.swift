@@ -52,7 +52,11 @@ public actor RemoteHostStore {
         jumpChainJSON: String,
         hostKeyPolicy: String,
         allowsLegacyAlgorithms: Bool,
-        vncEndpointJSON: String?
+        vncEndpointJSON: String?,
+        deviceKind: String = "unspecified",
+        isRemoteExecutionEnvironment: Bool = true,
+        vncEndpointsJSON: String? = nil,
+        auxiliaryConnectionsJSON: String? = nil
     ) async throws {
         let now = Self.encode(Date())
         try await database.writer { db in
@@ -61,8 +65,10 @@ public actor RemoteHostStore {
                     INSERT INTO hosts (
                         id, display_name, address, port, user, auth_json,
                         jump_chain_json, host_key_policy, allows_legacy_algorithms,
-                        vnc_endpoint_json, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        vnc_endpoint_json, device_kind,
+                        is_remote_execution_environment, vnc_endpoints_json,
+                        auxiliary_connections_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         display_name = excluded.display_name,
                         address = excluded.address,
@@ -73,12 +79,17 @@ public actor RemoteHostStore {
                         host_key_policy = excluded.host_key_policy,
                         allows_legacy_algorithms = excluded.allows_legacy_algorithms,
                         vnc_endpoint_json = excluded.vnc_endpoint_json,
+                        device_kind = excluded.device_kind,
+                        is_remote_execution_environment = excluded.is_remote_execution_environment,
+                        vnc_endpoints_json = excluded.vnc_endpoints_json,
+                        auxiliary_connections_json = excluded.auxiliary_connections_json,
                         updated_at = excluded.updated_at
                     """,
                 arguments: [
                     id.uuidString, displayName, address, port, user, authJSON,
                     jumpChainJSON, hostKeyPolicy, allowsLegacyAlgorithms,
-                    vncEndpointJSON, now, now
+                    vncEndpointJSON, deviceKind, isRemoteExecutionEnvironment,
+                    vncEndpointsJSON, auxiliaryConnectionsJSON, now, now
                 ]
             )
         }
@@ -145,11 +156,20 @@ public actor RemoteHostStore {
         public var hostKeyPolicy: String
         public var allowsLegacyAlgorithms: Bool
         public var vncEndpointJSON: String?
+        /// Optional for CloudKit compatibility with records created before v22.
+        public var deviceKind: String?
+        public var isRemoteExecutionEnvironment: Bool?
+        public var vncEndpointsJSON: String?
+        public var auxiliaryConnectionsJSON: String?
 
         public init(
             id: UUID, displayName: String, address: String, port: Int, user: String,
             authJSON: String, jumpChainJSON: String, hostKeyPolicy: String,
-            allowsLegacyAlgorithms: Bool, vncEndpointJSON: String?
+            allowsLegacyAlgorithms: Bool, vncEndpointJSON: String?,
+            deviceKind: String? = nil,
+            isRemoteExecutionEnvironment: Bool? = nil,
+            vncEndpointsJSON: String? = nil,
+            auxiliaryConnectionsJSON: String? = nil
         ) {
             self.id = id
             self.displayName = displayName
@@ -161,6 +181,10 @@ public actor RemoteHostStore {
             self.hostKeyPolicy = hostKeyPolicy
             self.allowsLegacyAlgorithms = allowsLegacyAlgorithms
             self.vncEndpointJSON = vncEndpointJSON
+            self.deviceKind = deviceKind
+            self.isRemoteExecutionEnvironment = isRemoteExecutionEnvironment
+            self.vncEndpointsJSON = vncEndpointsJSON
+            self.auxiliaryConnectionsJSON = auxiliaryConnectionsJSON
         }
     }
 
@@ -192,7 +216,11 @@ public actor RemoteHostStore {
             port: host.port, user: host.user, authJSON: host.authJSON,
             jumpChainJSON: host.jumpChainJSON, hostKeyPolicy: host.hostKeyPolicy,
             allowsLegacyAlgorithms: host.allowsLegacyAlgorithms,
-            vncEndpointJSON: host.vncEndpointJSON
+            vncEndpointJSON: host.vncEndpointJSON,
+            deviceKind: host.deviceKind ?? "unspecified",
+            isRemoteExecutionEnvironment: host.isRemoteExecutionEnvironment ?? true,
+            vncEndpointsJSON: host.vncEndpointsJSON,
+            auxiliaryConnectionsJSON: host.auxiliaryConnectionsJSON
         )
     }
 
@@ -217,7 +245,11 @@ public actor RemoteHostStore {
             jumpChainJSON: row["jump_chain_json"],
             hostKeyPolicy: row["host_key_policy"],
             allowsLegacyAlgorithms: row["allows_legacy_algorithms"],
-            vncEndpointJSON: row["vnc_endpoint_json"]
+            vncEndpointJSON: row["vnc_endpoint_json"],
+            deviceKind: row["device_kind"],
+            isRemoteExecutionEnvironment: row["is_remote_execution_environment"],
+            vncEndpointsJSON: row["vnc_endpoints_json"],
+            auxiliaryConnectionsJSON: row["auxiliary_connections_json"]
         )
     }
 

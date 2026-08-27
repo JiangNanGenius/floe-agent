@@ -59,11 +59,11 @@ final class HostListViewModel: ObservableObject {
 
     /// Opens a VNC session to the host. Returns the session ID.
     @discardableResult
-    func connectVNC(to host: RemoteHostProfile) async -> UUID? {
+    func connectVNC(to host: RemoteHostProfile, endpoint: VNCEndpoint) async -> UUID? {
         connectingHostID = host.id
         defer { connectingHostID = nil }
         do {
-            return try await center.connectVNC(to: host)
+            return try await center.connectVNC(to: host, endpoint: endpoint)
         } catch {
             errorMessage = error.localizedDescription
             return nil

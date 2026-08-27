@@ -218,6 +218,7 @@ extension RemoteAgentInstaller: RemoteAgentManaging {}
 /// and app process; concurrent first uses share one check/update task instead
 /// of racing multiple atomic replacements.
 public actor RemoteAgentReadinessCoordinator {
+    public typealias Eligibility = @Sendable (UUID?) async throws -> Bool
     public struct Readiness: Sendable, Equatable {
         public enum Action: String, Sendable {
             case verified
@@ -231,18 +232,28 @@ public actor RemoteAgentReadinessCoordinator {
     }
 
     private let manager: any RemoteAgentManaging
+    private let eligibility: Eligibility
     private var verifiedHostVersions: [String: String] = [:]
     private var verifiedHostIDs: [String: UUID] = [:]
     private var inFlight: [String: Task<Readiness, Error>] = [:]
 
-    public init(manager: any RemoteAgentManaging) {
+    public init(
+        manager: any RemoteAgentManaging,
+        eligibility: @escaping Eligibility = { _ in true }
+    ) {
         self.manager = manager
+        self.eligibility = eligibility
     }
 
     public func ensureReady(
         hostID: UUID?,
         cancellation: CancellationToken? = nil
     ) async throws -> Readiness {
+        guard try await eligibility(hostID) else {
+            throw FloeError.validationFailed(
+                "This device is not enabled as a remote execution environment, so Floe will not install or update its guardian."
+            )
+        }
         let key = hostID?.uuidString.lowercased() ?? "default"
         if verifiedHostVersions[key] == RemoteAgentPayload.version,
            let verifiedHostID = verifiedHostIDs[key] {

@@ -127,7 +127,7 @@ struct HostListView: View {
                     isUpdatingAgent: viewModel.updatingAgentHostID == host.id,
                     isPairingAgent: viewModel.pairingAgentHostID == host.id,
                     onConnectTerminal: { connectTerminal(host) },
-                    onConnectVNC: { connectVNC(host) },
+                    onConnectVNC: { endpoint in connectVNC(host, endpoint: endpoint) },
                     onUpdateAgent: { agentUpdateCandidate = host },
                     onPairAdvancedLink: { advancedLinkCandidate = host }
                 )
@@ -150,9 +150,9 @@ struct HostListView: View {
         }
     }
 
-    private func connectVNC(_ host: RemoteHostProfile) {
+    private func connectVNC(_ host: RemoteHostProfile, endpoint: VNCEndpoint) {
         Task {
-            if let sessionID = await viewModel.connectVNC(to: host) {
+            if let sessionID = await viewModel.connectVNC(to: host, endpoint: endpoint) {
                 activeVNCSession = sessionID
             }
         }
@@ -167,7 +167,7 @@ private struct HostRow: View {
     let isUpdatingAgent: Bool
     let isPairingAgent: Bool
     let onConnectTerminal: () -> Void
-    let onConnectVNC: () -> Void
+    let onConnectVNC: (VNCEndpoint) -> Void
     let onUpdateAgent: () -> Void
     let onPairAdvancedLink: () -> Void
 
@@ -177,11 +177,16 @@ private struct HostRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(host.displayName.isEmpty ? host.address : host.displayName)
                         .font(FloeTheme.Typography.body)
-                    Text("\(host.user)@\(host.address):\(host.port)")
+                    Text(host.hasSSHConnection
+                        ? "SSH · \(host.user)@\(host.address):\(host.port)"
+                        : "未配置 SSH")
                         .font(FloeTheme.Typography.evidence)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
+                Text(deviceSummary)
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
                 Spacer()
                 if isConnecting || isUpdatingAgent || isPairingAgent {
                     ProgressView()
@@ -190,18 +195,29 @@ private struct HostRow: View {
                 }
             }
             HStack(spacing: 12) {
-                Button {
-                    onConnectTerminal()
-                } label: {
-                    Label("hosts.terminal", systemImage: "terminal")
-                        .font(FloeTheme.Typography.metadata)
-                }
-                .buttonStyle(.bordered)
-                .frame(minHeight: FloeTheme.minimumTarget)
-
-                if host.vncEndpoint != nil {
+                if host.hasSSHConnection {
                     Button {
-                        onConnectVNC()
+                        onConnectTerminal()
+                    } label: {
+                        Label("hosts.terminal", systemImage: "terminal")
+                            .font(FloeTheme.Typography.metadata)
+                    }
+                    .buttonStyle(.bordered)
+                    .frame(minHeight: FloeTheme.minimumTarget)
+                }
+
+                if !host.vncEndpoints.isEmpty {
+                    Menu {
+                        ForEach(host.vncEndpoints) { endpoint in
+                            Button {
+                                onConnectVNC(endpoint)
+                            } label: {
+                                Label(
+                                    endpoint.displayName,
+                                    systemImage: endpoint.transport == .direct ? "network" : "lock.shield"
+                                )
+                            }
+                        }
                     } label: {
                         Label("hosts.vnc", systemImage: "display")
                             .font(FloeTheme.Typography.metadata)
@@ -210,26 +226,47 @@ private struct HostRow: View {
                     .frame(minHeight: FloeTheme.minimumTarget)
                 }
 
-                Button {
-                    onUpdateAgent()
-                } label: {
-                    Label("更新守护程序", systemImage: "arrow.triangle.2.circlepath")
-                        .font(FloeTheme.Typography.metadata)
+                if host.isRemoteExecutionEnvironment && host.hasSSHConnection {
+                    Button {
+                        onUpdateAgent()
+                    } label: {
+                        Label("更新守护程序", systemImage: "arrow.triangle.2.circlepath")
+                            .font(FloeTheme.Typography.metadata)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isConnecting || isUpdatingAgent || isPairingAgent)
+                    .frame(minHeight: FloeTheme.minimumTarget)
                 }
-                .buttonStyle(.bordered)
-                .disabled(isConnecting || isUpdatingAgent || isPairingAgent)
-                .frame(minHeight: FloeTheme.minimumTarget)
 
-                Button(action: onPairAdvancedLink) {
-                    Label("配对高级链路", systemImage: "lock.shield")
-                        .font(FloeTheme.Typography.metadata)
+                if host.hasSSHConnection {
+                    Button(action: onPairAdvancedLink) {
+                        Label("配对高级链路", systemImage: "lock.shield")
+                            .font(FloeTheme.Typography.metadata)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isConnecting || isUpdatingAgent || isPairingAgent)
+                    .frame(minHeight: FloeTheme.minimumTarget)
                 }
-                .buttonStyle(.bordered)
-                .disabled(isConnecting || isUpdatingAgent || isPairingAgent)
-                .frame(minHeight: FloeTheme.minimumTarget)
             }
         }
         .padding(.vertical, 4)
+    }
+
+    private var deviceSummary: String {
+        let type: String = switch host.deviceKind {
+        case .unspecified: ""
+        case .linux: "Linux"
+        case .mac: "Mac"
+        case .windows: "Windows"
+        case .nas: "NAS"
+        case .router: "路由器"
+        case .switchDevice: "交换机"
+        case .appliance: "网络设备"
+        case .other: "其他设备"
+        }
+        let role = host.isRemoteExecutionEnvironment ? "远端执行环境" : "调试目标"
+        let extra = host.auxiliaryConnections.map { $0.kind.rawValue }.joined(separator: " · ")
+        return [type, role, extra].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 }
 

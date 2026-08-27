@@ -8,7 +8,8 @@ import Foundation
 import FloeCore
 import FloePersistence
 
-/// Configuration for one SSH host.
+/// Configuration for one remote device. SSH is optional; VNC, Telnet, raw
+/// TCP and BLE serial connections may exist independently.
 public struct RemoteHostProfile: Sendable, Codable, Identifiable, Hashable {
     /// Maximum jump chain depth enforced at validation.
     public static let maxJumpHops = 5
@@ -22,7 +23,14 @@ public struct RemoteHostProfile: Sendable, Codable, Identifiable, Hashable {
     public var jumpChain: [JumpHop]
     public var hostKeyPolicy: HostKeyPolicy
     public var allowsLegacyAlgorithms: Bool
-    public var vncEndpoint: VNCEndpoint?
+    public var deviceKind: RemoteDeviceKind
+    public var isRemoteExecutionEnvironment: Bool
+    public var vncEndpoints: [VNCEndpoint]
+    public var auxiliaryConnections: [RemoteAuxiliaryConnection]
+
+    /// Compatibility projection for older call sites and synced profiles.
+    public var vncEndpoint: VNCEndpoint? { vncEndpoints.first }
+    public var hasSSHConnection: Bool { auth != .none }
 
     public init(
         id: UUID = UUID(),
@@ -34,7 +42,11 @@ public struct RemoteHostProfile: Sendable, Codable, Identifiable, Hashable {
         jumpChain: [JumpHop] = [],
         hostKeyPolicy: HostKeyPolicy = .trustOnFirstUse,
         allowsLegacyAlgorithms: Bool = false,
-        vncEndpoint: VNCEndpoint? = nil
+        deviceKind: RemoteDeviceKind = .unspecified,
+        isRemoteExecutionEnvironment: Bool = true,
+        vncEndpoint: VNCEndpoint? = nil,
+        vncEndpoints: [VNCEndpoint]? = nil,
+        auxiliaryConnections: [RemoteAuxiliaryConnection] = []
     ) {
         self.id = id
         self.displayName = displayName
@@ -45,27 +57,57 @@ public struct RemoteHostProfile: Sendable, Codable, Identifiable, Hashable {
         self.jumpChain = jumpChain
         self.hostKeyPolicy = hostKeyPolicy
         self.allowsLegacyAlgorithms = allowsLegacyAlgorithms
-        self.vncEndpoint = vncEndpoint
+        self.deviceKind = deviceKind
+        self.isRemoteExecutionEnvironment = isRemoteExecutionEnvironment
+        self.vncEndpoints = vncEndpoints ?? vncEndpoint.map { [$0] } ?? []
+        self.auxiliaryConnections = auxiliaryConnections
     }
 
     public func validate() throws {
-        guard !address.isEmpty else {
-            throw FloeError.validationFailed("Host address required")
-        }
-        guard (1...65535).contains(port) else {
-            throw FloeError.validationFailed("Port must be 1-65535")
-        }
-        guard !user.isEmpty else {
-            throw FloeError.validationFailed("SSH user required")
+        if auth != .none {
+            guard !address.isEmpty else {
+                throw FloeError.validationFailed("SSH address required")
+            }
+            guard (1...65535).contains(port) else {
+                throw FloeError.validationFailed("SSH port must be 1-65535")
+            }
+            guard !user.isEmpty else {
+                throw FloeError.validationFailed("SSH user required")
+            }
+        } else if isRemoteExecutionEnvironment {
+            throw FloeError.validationFailed("A remote execution environment requires SSH")
         }
         guard jumpChain.count <= Self.maxJumpHops else {
             throw FloeError.validationFailed("Jump chain exceeds \(Self.maxJumpHops) hops")
         }
+        for endpoint in vncEndpoints {
+            try endpoint.validate()
+        }
+        for connection in auxiliaryConnections {
+            try connection.validate()
+        }
     }
+}
+
+/// Optional product-facing device classification. It is descriptive only;
+/// configured protocols and live probing remain the capability authority.
+public enum RemoteDeviceKind: String, Sendable, Codable, CaseIterable, Hashable {
+    case unspecified
+    case linux
+    case mac
+    case windows
+    case nas
+    case router
+    case switchDevice
+    case appliance
+    case other
 }
 
 /// SSH authentication. Secrets live in the Keychain; only references here.
 public enum SSHAuthMethod: Sendable, Codable, Hashable {
+    /// Device metadata exists without an SSH connection. This is valid for
+    /// VNC-only, Telnet/TCP-only and BLE serial devices.
+    case none
     case password(SecretReference)
     case importedKey(SecretReference, keyType: SSHKeyType)
     case deviceGeneratedKey(SecretReference, keyType: SSHKeyType)
@@ -100,17 +142,120 @@ public struct JumpHop: Sendable, Codable, Hashable {
     }
 }
 
-/// Optional VNC endpoint reachable over the SSH connection.
-public struct VNCEndpoint: Sendable, Codable, Hashable {
+public enum VNCTransport: String, Sendable, Codable, CaseIterable, Hashable {
+    case direct
+    case sshTunnel
+}
+
+/// One named VNC connection. A device may expose direct and SSH-tunnel
+/// endpoints at the same time.
+public struct VNCEndpoint: Sendable, Codable, Hashable, Identifiable {
+    public var id: UUID
+    public var displayName: String
+    public var transport: VNCTransport
     public var host: String
     public var port: Int
     /// Reference to the VNC password in the Keychain.
     public var passwordRef: SecretReference?
 
-    public init(host: String = "localhost", port: Int = 5900, passwordRef: SecretReference? = nil) {
+    public init(
+        id: UUID = UUID(),
+        displayName: String = "VNC",
+        transport: VNCTransport = .sshTunnel,
+        host: String = "localhost",
+        port: Int = 5900,
+        passwordRef: SecretReference? = nil
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.transport = transport
         self.host = host
         self.port = port
         self.passwordRef = passwordRef
+    }
+
+    public func validate() throws {
+        guard !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FloeError.validationFailed("VNC address required")
+        }
+        guard (1...65535).contains(port) else {
+            throw FloeError.validationFailed("VNC port must be 1-65535")
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, displayName, transport, host, port, passwordRef
+    }
+
+    /// Old profiles contained only host/port/passwordRef and always meant an
+    /// SSH tunnel. Missing fields deliberately decode to that behavior.
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        displayName = try values.decodeIfPresent(String.self, forKey: .displayName) ?? "VNC"
+        transport = try values.decodeIfPresent(VNCTransport.self, forKey: .transport) ?? .sshTunnel
+        host = try values.decodeIfPresent(String.self, forKey: .host) ?? "localhost"
+        port = try values.decodeIfPresent(Int.self, forKey: .port) ?? 5900
+        passwordRef = try values.decodeIfPresent(SecretReference.self, forKey: .passwordRef)
+    }
+}
+
+public enum RemoteAuxiliaryConnectionKind: String, Sendable, Codable, CaseIterable, Hashable {
+    case telnet
+    case tcp
+    case bluetoothSerial
+}
+
+/// Non-SSH connection metadata. No secret body is ever stored here.
+public struct RemoteAuxiliaryConnection: Sendable, Codable, Hashable, Identifiable {
+    public var id: UUID
+    public var displayName: String
+    public var kind: RemoteAuxiliaryConnectionKind
+    public var host: String?
+    public var port: Int?
+    public var bluetoothPeripheralID: UUID?
+    public var bluetoothServiceUUID: String?
+    public var bluetoothWriteCharacteristicUUID: String?
+    public var bluetoothNotifyCharacteristicUUID: String?
+
+    public init(
+        id: UUID = UUID(),
+        displayName: String,
+        kind: RemoteAuxiliaryConnectionKind,
+        host: String? = nil,
+        port: Int? = nil,
+        bluetoothPeripheralID: UUID? = nil,
+        bluetoothServiceUUID: String? = nil,
+        bluetoothWriteCharacteristicUUID: String? = nil,
+        bluetoothNotifyCharacteristicUUID: String? = nil
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.kind = kind
+        self.host = host
+        self.port = port
+        self.bluetoothPeripheralID = bluetoothPeripheralID
+        self.bluetoothServiceUUID = bluetoothServiceUUID
+        self.bluetoothWriteCharacteristicUUID = bluetoothWriteCharacteristicUUID
+        self.bluetoothNotifyCharacteristicUUID = bluetoothNotifyCharacteristicUUID
+    }
+
+    public func validate() throws {
+        switch kind {
+        case .telnet, .tcp:
+            guard let host, !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw FloeError.validationFailed("TCP/Telnet address required")
+            }
+            guard let port, (1...65535).contains(port) else {
+                throw FloeError.validationFailed("TCP/Telnet port must be 1-65535")
+            }
+        case .bluetoothSerial:
+            guard bluetoothPeripheralID != nil,
+                  bluetoothServiceUUID?.isEmpty == false,
+                  bluetoothWriteCharacteristicUUID?.isEmpty == false else {
+                throw FloeError.validationFailed("BLE serial peripheral, service and write characteristic are required")
+            }
+        }
     }
 }
 
@@ -191,9 +336,19 @@ public extension RemoteHostProfile {
         let decoder = JSONDecoder()
         let auth = try decoder.decode(SSHAuthMethod.self, from: Data(stored.authJSON.utf8))
         let jumpChain = try decoder.decode([JumpHop].self, from: Data(stored.jumpChainJSON.utf8))
-        let vncEndpoint = try stored.vncEndpointJSON.flatMap {
-            try decoder.decode(VNCEndpoint.self, from: Data($0.utf8))
+        let vncEndpoints: [VNCEndpoint]
+        if let json = stored.vncEndpointsJSON,
+           let decoded = try? decoder.decode([VNCEndpoint].self, from: Data(json.utf8)),
+           !decoded.isEmpty {
+            vncEndpoints = decoded
+        } else if let json = stored.vncEndpointJSON {
+            vncEndpoints = [try decoder.decode(VNCEndpoint.self, from: Data(json.utf8))]
+        } else {
+            vncEndpoints = []
         }
+        let auxiliaryConnections = try stored.auxiliaryConnectionsJSON.flatMap {
+            try decoder.decode([RemoteAuxiliaryConnection].self, from: Data($0.utf8))
+        } ?? []
         let policy: HostKeyPolicy
         if stored.hostKeyPolicy.hasPrefix("pinned:") {
             policy = .pinned(fingerprintSHA256: String(stored.hostKeyPolicy.dropFirst("pinned:".count)))
@@ -210,7 +365,10 @@ public extension RemoteHostProfile {
             jumpChain: jumpChain,
             hostKeyPolicy: policy,
             allowsLegacyAlgorithms: stored.allowsLegacyAlgorithms,
-            vncEndpoint: vncEndpoint
+            deviceKind: RemoteDeviceKind(rawValue: stored.deviceKind ?? "") ?? .unspecified,
+            isRemoteExecutionEnvironment: stored.isRemoteExecutionEnvironment ?? true,
+            vncEndpoints: vncEndpoints,
+            auxiliaryConnections: auxiliaryConnections
         )
     }
 }

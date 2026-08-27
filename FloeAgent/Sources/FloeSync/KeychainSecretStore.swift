@@ -17,6 +17,7 @@ public struct KeychainSecretStore: Sendable {
         case provider(UUID)
         case hostSSH(UUID)
         case hostVNC(UUID)
+        case hostVNCConnection(hostID: UUID, connectionID: UUID)
         case approvalModel
     }
 
@@ -110,7 +111,7 @@ public struct KeychainSecretStore: Sendable {
             return
         }
         switch scope {
-        case .hostSSH, .hostVNC:
+        case .hostSSH, .hostVNC, .hostVNCConnection:
             if SyncControlPreferences.load().savedCredentialsEnabled {
                 try store.store(account: account, secret: secret)
                 try? KeychainStore(service: store.service, synchronizable: false)
@@ -193,6 +194,8 @@ public struct KeychainSecretStore: Sendable {
         case .provider(let id): return "provider.\(id.uuidString)"
         case .hostSSH(let id): return "host.ssh.\(id.uuidString)"
         case .hostVNC(let id): return "host.vnc.\(id.uuidString)"
+        case .hostVNCConnection(let hostID, let connectionID):
+            return "host.vnc.\(hostID.uuidString).\(connectionID.uuidString)"
         case .approvalModel: return "approval-model"
         }
     }

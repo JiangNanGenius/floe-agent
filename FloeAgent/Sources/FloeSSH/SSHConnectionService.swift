@@ -25,6 +25,7 @@ public struct HostKeyChallenge: Sendable, Hashable, Identifiable {
 }
 
 public enum SSHConnectionError: Error, Sendable, LocalizedError {
+    case sshNotConfigured
     case hostKeyRejected(HostKeyChallenge)
     case hostKeyChanged(expected: String, received: String)
     case invalidCredential
@@ -33,6 +34,7 @@ public enum SSHConnectionError: Error, Sendable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
+        case .sshNotConfigured: "This device does not have an SSH connection configured."
         case .hostKeyRejected: "The SSH host key was not trusted."
         case .hostKeyChanged(let expected, let received):
             "SSH host key changed. Expected \(expected), received \(received)."
@@ -67,6 +69,7 @@ public final class SSHConnectionService: SSHConnectionServiceProtocol, @unchecke
         hostKeyDecision: @escaping HostKeyDecisionHandler
     ) async throws -> SSHSessionHandle {
         try profile.validate()
+        guard profile.auth != .none else { throw SSHConnectionError.sshNotConfigured }
         try await persist(profile)
 
         var clients: [SSHClient] = []
@@ -165,6 +168,8 @@ public final class SSHConnectionService: SSHConnectionServiceProtocol, @unchecke
         credentialResolver: SSHCredentialResolver
     ) async throws -> AuthenticationFactory {
         switch auth {
+        case .none:
+            throw SSHConnectionError.sshNotConfigured
         case .password(let reference):
             let data = try await credentialResolver(reference)
             guard let password = String(data: data, encoding: .utf8) else {
@@ -230,7 +235,11 @@ public final class SSHConnectionService: SSHConnectionServiceProtocol, @unchecke
             jumpChainJSON: try string(profile.jumpChain),
             hostKeyPolicy: policy,
             allowsLegacyAlgorithms: profile.allowsLegacyAlgorithms,
-            vncEndpointJSON: try profile.vncEndpoint.map(string)
+            vncEndpointJSON: try profile.vncEndpoint.map(string),
+            deviceKind: profile.deviceKind.rawValue,
+            isRemoteExecutionEnvironment: profile.isRemoteExecutionEnvironment,
+            vncEndpointsJSON: try string(profile.vncEndpoints),
+            auxiliaryConnectionsJSON: try string(profile.auxiliaryConnections)
         )
     }
 }

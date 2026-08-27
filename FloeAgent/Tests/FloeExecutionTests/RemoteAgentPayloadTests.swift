@@ -100,4 +100,20 @@ struct RemoteAgentPayloadTests {
         #expect(counts.checks == 1)
         #expect(counts.updates == 0)
     }
+
+    @Test("Guardian is not installed on a device that is only a management target")
+    func readinessHonorsExecutionEnvironmentSwitch() async {
+        let manager = FakeRemoteAgentManager(installedVersion: "0.9.0")
+        let readiness = RemoteAgentReadinessCoordinator(
+            manager: manager,
+            eligibility: { _ in false }
+        )
+
+        await #expect(throws: (any Error).self) {
+            _ = try await readiness.ensureReady(hostID: UUID())
+        }
+        let counts = await manager.counts()
+        #expect(counts.checks == 0)
+        #expect(counts.updates == 0)
+    }
 }

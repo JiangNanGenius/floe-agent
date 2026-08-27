@@ -72,23 +72,27 @@ final class RemoteSessionCenter: ObservableObject {
         let stored = (try? await hostStore.hosts()) ?? []
         hosts = stored.compactMap { try? RemoteHostProfile(stored: $0) }
         for host in hosts {
-            let authMetadata: (SecretReference, CredentialKind, Bool) = switch host.auth {
+            let authMetadata: (SecretReference, CredentialKind, Bool)? = switch host.auth {
+            case .none: nil
             case .password(let ref): (ref, .sshPassword, false)
             case .importedKey(let ref, _): (ref, .sshPrivateKey, false)
             case .deviceGeneratedKey(let ref, _): (ref, .sshPrivateKey, true)
             }
-            let (reference, kind, deviceBound) = authMetadata
-            try? await environment.credentialVault.registerExisting(
-                account: reference.keychainAccount, kind: kind,
-                label: host.displayName, hostID: host.id,
-                synchronizable: reference.synchronizable, deviceBound: deviceBound
-            )
-            if let vnc = host.vncEndpoint?.passwordRef {
+            if let (reference, kind, deviceBound) = authMetadata {
                 try? await environment.credentialVault.registerExisting(
-                    account: vnc.keychainAccount, kind: .vncPassword,
-                    label: "\(host.displayName) VNC", hostID: host.id,
-                    synchronizable: vnc.synchronizable
+                    account: reference.keychainAccount, kind: kind,
+                    label: host.displayName, hostID: host.id,
+                    synchronizable: reference.synchronizable, deviceBound: deviceBound
                 )
+            }
+            for endpoint in host.vncEndpoints {
+                if let vnc = endpoint.passwordRef {
+                    try? await environment.credentialVault.registerExisting(
+                        account: vnc.keychainAccount, kind: .vncPassword,
+                        label: "\(host.displayName) \(endpoint.displayName)", hostID: host.id,
+                        synchronizable: vnc.synchronizable
+                    )
+                }
             }
         }
     }
@@ -113,7 +117,11 @@ final class RemoteSessionCenter: ObservableObject {
             allowsLegacyAlgorithms: profile.allowsLegacyAlgorithms,
             vncEndpointJSON: try profile.vncEndpoint.map {
                 String(decoding: try encoder.encode($0), as: UTF8.self)
-            }
+            },
+            deviceKind: profile.deviceKind.rawValue,
+            isRemoteExecutionEnvironment: profile.isRemoteExecutionEnvironment,
+            vncEndpointsJSON: String(decoding: try encoder.encode(profile.vncEndpoints), as: UTF8.self),
+            auxiliaryConnectionsJSON: String(decoding: try encoder.encode(profile.auxiliaryConnections), as: UTF8.self)
         )
         if let stored = try await hostStore.host(id: profile.id) {
             try await environment.configurationSync.saveRemoteHost(stored)
@@ -122,6 +130,7 @@ final class RemoteSessionCenter: ObservableObject {
     }
 
     func deleteHost(id: UUID) async throws {
+        let profile = hosts.first { $0.id == id }
         let credentials = try await environment.credentialStore.records(owner: nil)
             .filter { $0.hostID == id }
         try await environment.configurationSync.deleteRemoteHost(id: id)
@@ -129,6 +138,11 @@ final class RemoteSessionCenter: ObservableObject {
         await environment.credentialVault.drainDeletionQueue()
         try? await secretStore.deleteSecret(scope: .hostSSH(id))
         try? await secretStore.deleteSecret(scope: .hostVNC(id))
+        for endpoint in profile?.vncEndpoints ?? [] {
+            try? await secretStore.deleteSecret(
+                scope: .hostVNCConnection(hostID: id, connectionID: endpoint.id)
+            )
+        }
         await loadHosts()
     }
 
@@ -253,12 +267,12 @@ final class RemoteSessionCenter: ObservableObject {
         vncOwners[sessionID]?.framesPerSecond ?? 0
     }
 
-    // MARK: - VNC over SSH (always through the loopback forwarder)
+    // MARK: - VNC direct or over verified SSH
 
-    /// Connects VNC to a host through the SSH loopback forwarder.
+    /// Connects one selected VNC profile directly or through SSH.
     @discardableResult
-    func connectVNC(to host: RemoteHostProfile) async throws -> UUID {
-        guard let endpoint = host.vncEndpoint else {
+    func connectVNC(to host: RemoteHostProfile, endpoint selected: VNCEndpoint? = nil) async throws -> UUID {
+        guard let endpoint = selected ?? host.vncEndpoint else {
             throw FloeError.invalidConfiguration("Host has no VNC endpoint")
         }
         let sessionID = UUID()
@@ -268,34 +282,44 @@ final class RemoteSessionCenter: ObservableObject {
         try await environment.remoteSessionRegistry.upsert(record)
         sessions[sessionID] = RemoteSessionSnapshot.derive(record: record)
 
-        let handle = try await sshService.connect(
-            profile: host,
-            credentialResolver: { [weak self] ref in
-                guard let self else { throw SSHConnectionError.invalidCredential }
-                return try await self.resolveSecret(ref)
-            },
-            hostKeyDecision: { [weak self] challenge in
-                guard let self else { return false }
-                return await self.hostKeyDecision(challenge)
-            }
-        )
-        let forwarder = try await LoopbackSSHForwarder.start(
-            session: handle,
-            targetHost: endpoint.host,
-            targetPort: endpoint.port
-        )
-        guard let local = forwarder.endpoint else {
-            throw FloeError.internalError("Loopback forwarder has no endpoint")
-        }
         let password = try await resolveOptionalSecret(endpoint.passwordRef)
             .flatMap { String(data: $0, encoding: .utf8) }
-        let vncSession = VNCSession(host: local.host, port: local.port, password: password)
         let owner = VNCSessionOwner(
             sessionID: sessionID,
             hostID: host.id,
             registry: environment.remoteSessionRegistry
         )
-        owner.attach(forwarder: forwarder, session: vncSession)
+        let vncSession: VNCSession
+        switch endpoint.transport {
+        case .direct:
+            guard let remotePort = UInt16(exactly: endpoint.port) else {
+                throw FloeError.validationFailed("VNC port must be 1-65535")
+            }
+            vncSession = VNCSession(host: endpoint.host, port: remotePort, password: password)
+            owner.attach(session: vncSession)
+        case .sshTunnel:
+            let handle = try await sshService.connect(
+                profile: host,
+                credentialResolver: { [weak self] ref in
+                    guard let self else { throw SSHConnectionError.invalidCredential }
+                    return try await self.resolveSecret(ref)
+                },
+                hostKeyDecision: { [weak self] challenge in
+                    guard let self else { return false }
+                    return await self.hostKeyDecision(challenge)
+                }
+            )
+            let forwarder = try await LoopbackSSHForwarder.start(
+                session: handle,
+                targetHost: endpoint.host,
+                targetPort: endpoint.port
+            )
+            guard let local = forwarder.endpoint else {
+                throw FloeError.internalError("Loopback forwarder has no endpoint")
+            }
+            vncSession = VNCSession(host: local.host, port: local.port, password: password)
+            owner.attach(forwarder: forwarder, session: vncSession)
+        }
         owner.onStateChange = { [weak self] in
             Task { @MainActor [weak self] in
                 await self?.refreshSnapshots()

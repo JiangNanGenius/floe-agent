@@ -4682,6 +4682,23 @@
         }
       }
     },
+    "settings.diagnostics.github_project": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View Project on GitHub"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 GitHub 查看项目"
+          }
+        }
+      }
+    },
     "settings.diagnostics.capabilities": {
       "extractionState": "manual",
       "localizations": {

@@ -34,6 +34,7 @@ public func registerExecutionTools(
     sshCommandService: SSHCommandService? = nil,
     cloudWorkspaceService: CloudWorkspaceService? = nil,
     remoteHostStore: RemoteHostStore? = nil,
+    bluetoothSerialService: (any BluetoothSerialServicing)? = nil,
     httpRequestService: HTTPRequestService = HTTPRequestService(),
     webSearchService: WebSearchService = WebSearchService(),
     includeOnDeviceJavaScript: Bool = false,
@@ -76,6 +77,15 @@ public func registerExecutionTools(
     if remoteHostStore != nil {
         ToolCatalog.register(SSHListHostsTool.self)
         ToolCatalog.register(SSHUpdateHostTool.self)
+        ToolCatalog.register(RemoteConnectionOpenTool.self)
+        ToolCatalog.register(RemoteConnectionExchangeTool.self)
+        ToolCatalog.register(RemoteConnectionCloseTool.self)
+    }
+    if bluetoothSerialService != nil, remoteHostStore != nil {
+        ToolCatalog.register(BluetoothSerialScanTool.self)
+        ToolCatalog.register(BluetoothSerialOpenTool.self)
+        ToolCatalog.register(BluetoothSerialExchangeTool.self)
+        ToolCatalog.register(BluetoothSerialCloseTool.self)
     }
     ToolCatalog.register(HTTPRequestTool.self)
     ToolCatalog.register(WebSearchTool.self)
@@ -134,6 +144,16 @@ public func registerExecutionTools(
     if let remoteHostStore {
         registry.register(SSHListHostsTool(store: remoteHostStore))
         registry.register(SSHUpdateHostTool(store: remoteHostStore))
+        let rawConnections = RawRemoteConnectionService()
+        registry.register(RemoteConnectionOpenTool(service: rawConnections, store: remoteHostStore))
+        registry.register(RemoteConnectionExchangeTool(service: rawConnections))
+        registry.register(RemoteConnectionCloseTool(service: rawConnections))
+    }
+    if let bluetoothSerialService, let remoteHostStore {
+        registry.register(BluetoothSerialScanTool(service: bluetoothSerialService))
+        registry.register(BluetoothSerialOpenTool(service: bluetoothSerialService, store: remoteHostStore))
+        registry.register(BluetoothSerialExchangeTool(service: bluetoothSerialService))
+        registry.register(BluetoothSerialCloseTool(service: bluetoothSerialService))
     }
     registry.register(HTTPRequestTool(service: httpRequestService))
     registry.register(WebSearchTool(service: webSearchService))

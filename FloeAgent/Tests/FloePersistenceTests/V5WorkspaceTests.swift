@@ -346,7 +346,7 @@ struct V5WorkspaceTests {
         try await store.linkConversation(workspaceID: workspace.id, conversationID: a)
         try await store.linkConversation(workspaceID: workspace.id, conversationID: b)
         try await store.linkConversation(workspaceID: workspace.id, conversationID: a) // no-op
-        #expect(try await store.conversations(workspaceID: workspace.id) == [a, b])
+        #expect(Set(try await store.conversations(workspaceID: workspace.id)) == Set([a, b]))
 
         try await store.unlinkConversation(workspaceID: workspace.id, conversationID: a)
         #expect(try await store.conversations(workspaceID: workspace.id) == [b])

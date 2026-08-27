@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide describes the Floe Agent 1.4.41 source target (build 72). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
+This guide describes the Floe Agent 1.4.42 source target (build 73). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
 
 ## 1. Install safely
 
@@ -70,6 +70,14 @@ Attach files or images, write the request, and send. The draft becomes a persist
 Open the workspace Files inspector and select **Source Control**. A non-repository workspace can be initialized in place. For a repository you can inspect status, per-file diffs and recent commits; stage all changes; commit; create or switch branches; fetch; fast-forward pull; and push. Floe intentionally omits destructive reset/clean, force-push and history rewriting.
 
 Open **Settings → GitHub & Source Control** to connect a fine-grained GitHub token. The token is validated against GitHub, stored only in the device Keychain, and never added to a remote URL, repository file, log or model prompt. After connection you can list accessible repositories, clone one into a subfolder of the current workspace, or create a public/private repository. Grant only the repository permissions needed for the intended operations.
+
+### Remote devices and multiple connections
+
+Open **Settings → Hosts & Remote Sessions** to save a remote device. One device can contain SSH, direct VNC, VNC through an SSH tunnel, Telnet, raw TCP and BLE GATT serial connections at the same time. Device type is optional descriptive metadata; configured protocols and live connection probing are the capability authority.
+
+Only an SSH device with **Use as remote execution environment** enabled receives automatic Floe guardian checks, installation and updates before guardian-backed work. With the switch off, it remains a management or debugging target and Floe does not force-install the guardian. The model may read and edit non-secret device and connection metadata; passwords and keys still enter through the secure UI and remain in Keychain.
+
+When the user explicitly supplies an address, port or BLE GATT identifiers in the conversation, the model can open a task-only temporary Telnet, TCP or BLE serial session without saving a device. Temporary connections are not synced and automatically close after 30 minutes. Telnet and raw TCP are unencrypted and should be used only on a trusted network or inside an existing secure tunnel. iOS does not expose arbitrary classic Bluetooth SPP to normal apps, so Floe supports BLE GATT serial characteristics; MFi accessories still depend on their published vendor protocol.
 
 ## 5. Continue the same conversation
 

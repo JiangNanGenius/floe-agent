@@ -33,6 +33,10 @@ struct DiagnosticsAboutView: View {
                     Text(appBuild).foregroundStyle(.secondary)
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
+                Link(destination: projectURL) {
+                    Label("settings.diagnostics.github_project", systemImage: "arrow.up.right.square")
+                }
+                .frame(minHeight: FloeTheme.minimumTarget)
                 LabeledContent("settings.diagnostics.db_version") {
                     Text("\(center.databaseUserVersion)")
                         .foregroundStyle(.secondary)
@@ -197,6 +201,10 @@ struct DiagnosticsAboutView: View {
     private var appBuild: String {
         Bundle.main.infoDictionary?["CFBundleVersion"] as? String
             ?? String(localized: "settings.diagnostics.unknown")
+    }
+
+    private var projectURL: URL {
+        URL(string: "https://github.com/JiangNanGenius/floe-agent")!
     }
 
     /// Device info for diagnostics (optional, off by default).

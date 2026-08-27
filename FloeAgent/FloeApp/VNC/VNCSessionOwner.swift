@@ -2,10 +2,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// Owns the LoopbackSSHForwarder + VNCSession for one VNC session, OUTSIDE
-// the view lifecycle. VNC always connects through the SSH loopback
-// forwarder (never a public listener). Tracks FPS and owns the emergency
-// stop path. Views render snapshots; they never hold these handles.
+// Owns an optional LoopbackSSHForwarder + VNCSession for one VNC session,
+// OUTSIDE the view lifecycle. Direct VNC has no forwarder; tunneled VNC
+// retains the verified SSH forwarder here.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
@@ -41,6 +40,13 @@ final class VNCSessionOwner {
     /// Installs the connected forwarder + VNC session and starts observing.
     func attach(forwarder: LoopbackSSHForwarder, session: VNCSession) {
         self.forwarder = forwarder
+        self.session = session
+        installStateObservation()
+    }
+
+    /// Installs a direct VNC session without manufacturing an SSH tunnel.
+    func attach(session: VNCSession) {
+        self.forwarder = nil
         self.session = session
         installStateObservation()
     }

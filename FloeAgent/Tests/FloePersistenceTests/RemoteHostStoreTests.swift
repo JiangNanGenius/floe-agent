@@ -78,4 +78,37 @@ struct RemoteHostStoreTests {
         ))
         #expect(loaded.fingerprintSHA256 == "SHA256:replacement")
     }
+
+    @Test("Remote device connection metadata round trips")
+    func remoteDeviceMetadata() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = RemoteHostStore(database: database)
+        let id = UUID()
+        let vnc = #"[{"displayName":"Direct","host":"switch.local","id":"11111111-2222-3333-4444-555555555555","port":5900,"transport":"direct"}]"#
+        let auxiliary = #"[{"displayName":"Console","host":"switch.local","id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","kind":"telnet","port":23}]"#
+
+        try await store.saveHost(
+            id: id,
+            displayName: "Core switch",
+            address: "",
+            port: 22,
+            user: "",
+            authJSON: #"{"none":{}}"#,
+            jumpChainJSON: "[]",
+            hostKeyPolicy: "trustOnFirstUse",
+            allowsLegacyAlgorithms: false,
+            vncEndpointJSON: nil,
+            deviceKind: "switchDevice",
+            isRemoteExecutionEnvironment: false,
+            vncEndpointsJSON: vnc,
+            auxiliaryConnectionsJSON: auxiliary
+        )
+
+        let loaded = try #require(await store.host(id: id))
+        #expect(loaded.deviceKind == "switchDevice")
+        #expect(loaded.isRemoteExecutionEnvironment == false)
+        #expect(loaded.vncEndpointsJSON == vnc)
+        #expect(loaded.auxiliaryConnectionsJSON == auxiliary)
+    }
 }

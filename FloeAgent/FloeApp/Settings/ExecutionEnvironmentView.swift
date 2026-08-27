@@ -45,7 +45,9 @@ struct ExecutionEnvironmentView: View {
                     }
                 )) {
                     Text("settings.exec.target.local").tag(ExecutionTargetPreference.local)
-                    ForEach(center.environment.remoteSessionCenter.hosts) { host in
+                    ForEach(center.environment.remoteSessionCenter.hosts.filter {
+                        $0.isRemoteExecutionEnvironment && $0.hasSSHConnection
+                    }) { host in
                         Text(host.displayName).tag(ExecutionTargetPreference.host(host.id))
                     }
                 }
