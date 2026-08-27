@@ -5,6 +5,12 @@
 import Crypto
 import Foundation
 import FloeCore
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+#if canImport(CoreFoundation)
+import CoreFoundation
+#endif
 
 public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable {
     public enum Authentication: String, Codable, Sendable, CaseIterable {
