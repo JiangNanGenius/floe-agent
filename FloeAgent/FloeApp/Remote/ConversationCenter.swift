@@ -3230,6 +3230,7 @@ final class ConversationCenter: ObservableObject {
                 switch event {
                 case .stateChanged, .toolLifecycle, .approvalRequested,
                      .approvalReviewChanged,
+                     .livenessChanged, .providerAttemptChanged,
                      .contextCompacted, .planChanged, .goalChanged,
                      .childRunChanged, .userInputConsumed, .terminal:
                     let snapshot = await service.snapshot()

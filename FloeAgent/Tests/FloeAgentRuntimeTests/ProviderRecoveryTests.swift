@@ -105,7 +105,7 @@ struct ProviderRecoveryTests {
         executor.descriptors[call.toolName] = .init(
             name: call.toolName,
             riskLabels: [],
-            isSideEffecting: true
+            isSideEffecting: false
         )
         let runtime = FloeAgentRuntime(
             configuration: configuration(),

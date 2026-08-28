@@ -273,7 +273,9 @@ struct ConversationRunServiceTests {
         let events = try await runStore.events(runID: service.runID)
         #expect(events.contains { $0.kind == .terminal })
         #expect(!events.contains {
-            $0.kind == .status && !$0.payloadJSON.contains("state")
+            $0.kind == .status
+                && !$0.payloadJSON.contains("state")
+                && !$0.payloadJSON.contains("providerAttempt")
         })
         // After a tool turn the run must still persist the final reply as
         // an assistantText event ahead of terminal.
@@ -394,7 +396,8 @@ struct ConversationRunServiceTests {
             configuration: FloeAgentRuntime.Configuration(
                 conversationID: conversationID,
                 provider: TestFixtures.localhostProvider(),
-                model: TestFixtures.testModel(providerID: UUID())
+                model: TestFixtures.testModel(providerID: UUID()),
+                maxProviderRetries: 0
             ),
             adapter: adapter,
             policy: HumanApprovalPolicy(),

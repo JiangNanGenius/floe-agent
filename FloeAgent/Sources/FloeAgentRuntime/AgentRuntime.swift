@@ -1460,6 +1460,12 @@ public actor FloeAgentRuntime {
                 // streamingModel → compacting → one retry.
                 await transition(to: .compacting)
                 await compactHistory(force: true)
+                // Context compaction intentionally changes the request. It is
+                // not a transport retry and therefore must not replay the
+                // pre-compaction dispatch envelope.
+                providerRetryRequest = nil
+                latestProviderDispatchEnvelope = nil
+                restoredProviderDispatchEnvelope = nil
                 modelTurnContinuationRequested = true
             case .cancelled:
                 break // cancel() owns the transition.
@@ -2391,6 +2397,10 @@ public actor FloeAgentRuntime {
         let error = AgentEvent.NormalizedError(kind: .network, providerMessage: message)
         await emit(.error(error))
         await handleProviderFailure(error)
+        // A stalled AsyncStream may never finish on its own. Cancel the
+        // exact in-flight consumer after reserving the retry boundary so
+        // runModelTurn can advance to the scheduled reconnect.
+        streamTask?.cancel()
         providerWatchdogTask?.cancel()
         return false
     }

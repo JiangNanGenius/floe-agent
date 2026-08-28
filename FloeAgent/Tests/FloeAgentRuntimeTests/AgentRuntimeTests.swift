@@ -243,7 +243,10 @@ struct AgentRuntimeTests {
                 provider: provider,
                 model: model ?? TestFixtures.testModel(providerID: provider.id),
                 pauseTimeout: 0.1,
-                verifyFinalAnswer: verifyFinalAnswer
+                verifyFinalAnswer: verifyFinalAnswer,
+                providerRetryBaseDelay: 0,
+                providerRetryMaxDelay: 0,
+                providerRetryJitterRatio: 0
             ),
             adapter: adapter,
             policy: policy,
@@ -953,7 +956,9 @@ struct AgentRuntimeTests {
     @Test("Provider server error fails the run as recoverable")
     func serverErrorFails() async throws {
         let adapter = MockAdapter()
-        adapter.script = [[.error(AgentEvent.NormalizedError(kind: .server, providerMessage: "boom"))]]
+        adapter.script = Array(repeating: [
+            .error(AgentEvent.NormalizedError(kind: .server, providerMessage: "boom"))
+        ], count: 4)
         let runtime = makeRuntime(adapter: adapter)
         try await runtime.start(goal: "go")
         let state = await runtime.state
@@ -968,10 +973,10 @@ struct AgentRuntimeTests {
     @Test("contextOverflow routes through compacting back to streamingModel")
     func compactionCycle() async throws {
         let adapter = MockAdapter()
-        adapter.script = [[
-            .error(AgentEvent.NormalizedError(kind: .contextOverflow, providerMessage: "too long")),
-            .completed(AgentEvent.CompletionInfo(stopReason: .endTurn))
-        ]]
+        adapter.script = [
+            [.error(AgentEvent.NormalizedError(kind: .contextOverflow, providerMessage: "too long"))],
+            [.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]
+        ]
         let sink = MockSink()
         let runtime = makeRuntime(adapter: adapter, sink: sink)
         try await runtime.start(goal: "go")
