@@ -33,7 +33,7 @@ public enum SecretRedactor {
         // Redact the value by field name regardless of length so timeline
         // diagnostics never echo it back.
         result = replace(
-            #"(?i)(["']?(?:password|passwd|passphrase)["']?\s*:\s*["'])[^"']*(["'])"#,
+            #"(?i)(["']?(?:password|passwd|passphrase|credentialInput)["']?\s*:\s*["'])[^"']*(["'])"#,
             in: result,
             with: "$1\(replacement)$2"
         )

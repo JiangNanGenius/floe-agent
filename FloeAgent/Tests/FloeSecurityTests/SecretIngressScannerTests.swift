@@ -13,6 +13,31 @@ struct SecretIngressScannerTests {
         #expect(result.sanitizedText.contains("⟨credential:"))
     }
 
+    @Test("Captures explicit English and Chinese is/为 password wording")
+    func explicitIsWording() {
+        let input = "password is ssh-secret\n密码为vnc-密码"
+        let result = SecretIngressScanner.scan(input)
+        #expect(result.captures.count == 2)
+        #expect(!result.sanitizedText.contains("ssh-secret"))
+        #expect(!result.sanitizedText.contains("vnc-密码"))
+    }
+
+    @Test("Captures quoted passwords containing spaces")
+    func quotedPassword() {
+        let input = "password: \"correct horse battery staple\""
+        let result = SecretIngressScanner.scan(input)
+        #expect(result.captures.count == 1)
+        #expect(!result.sanitizedText.contains("correct horse battery staple"))
+    }
+
+    @Test("Leaves password-related prose without a supplied value intact")
+    func avoidsFalsePositives() {
+        let input = "密码是什么？\npassword is required\n请打开 password manager"
+        let result = SecretIngressScanner.scan(input)
+        #expect(result.captures.isEmpty)
+        #expect(result.sanitizedText == input)
+    }
+
     @Test("Private key blocks never remain in persisted text")
     func privateKey() {
         let input = """

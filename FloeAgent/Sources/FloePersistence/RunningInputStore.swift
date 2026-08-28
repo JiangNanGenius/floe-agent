@@ -4,6 +4,7 @@ import Foundation
 import GRDB
 import FloeCore
 import FloeModels
+import FloeSecurity
 
 public protocol RunningInputStore: Sendable {
     func enqueue(_ input: PendingUserInput) async throws -> PendingUserInput
@@ -27,7 +28,9 @@ public actor SQLiteRunningInputStore: RunningInputStore {
     public init(database: DatabaseManager) { self.database = database }
 
     public func enqueue(_ input: PendingUserInput) async throws -> PendingUserInput {
-        let trimmed = input.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = SecretIngressScanner.scan(
+            input.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        ).sanitizedText
         guard !trimmed.isEmpty else { throw FloeError.validationFailed("Input must not be empty") }
         return try await database.writer { db in
             let count = try Int.fetchOne(db, sql: """
@@ -68,7 +71,9 @@ public actor SQLiteRunningInputStore: RunningInputStore {
     }
 
     public func updateContent(id: UUID, content: String) async throws {
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = SecretIngressScanner.scan(
+            content.trimmingCharacters(in: .whitespacesAndNewlines)
+        ).sanitizedText
         guard !trimmed.isEmpty else { throw FloeError.validationFailed("Input must not be empty") }
         try await database.writer { db in
             try db.execute(sql: """

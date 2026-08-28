@@ -8,7 +8,7 @@ import FloeTools
 
 @Suite("FloeExecution saved host tools")
 struct SSHHostProfileToolTests {
-    @Test("Model host editor stores VNC passwords through the secure writer")
+    @Test("Model host editor stores VNC credentialInput through the secure writer")
     func storesVNCPasswordAndReturnsOnlyMetadata() async throws {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
@@ -43,7 +43,7 @@ struct SSHHostProfileToolTests {
         )
         let arguments = try JSONDecoder().decode(
             SSHUpdateHostTool.Arguments.self,
-            from: Data(#"{"hostID":"\#(hostID.uuidString)","vncConnections":[{"id":"\#(connectionID.uuidString)","displayName":"Direct desktop","transport":"direct","host":"lab.local","port":5900,"password":"⟨credential:00000000-0000-0000-0000-000000000001⟩"}]}"#.utf8)
+            from: Data(#"{"hostID":"\#(hostID.uuidString)","vncConnections":[{"id":"\#(connectionID.uuidString)","displayName":"Direct desktop","transport":"direct","host":"lab.local","port":5900,"credentialInput":"⟨credential:00000000-0000-0000-0000-000000000001⟩"}]}"#.utf8)
         )
 
         try tool.validate(arguments)
@@ -66,7 +66,17 @@ struct SSHHostProfileToolTests {
         #expect(endpoints.first?.passwordRef?.keychainAccount == "host.vnc.\(hostID.uuidString).\(connectionID.uuidString)")
     }
 
-    @Test("Model host editor rejects raw VNC passwords before persistence")
+    @Test("Legacy password field remains placeholder-only compatible")
+    func acceptsLegacyPasswordPlaceholder() throws {
+        let hostID = UUID()
+        let arguments = try JSONDecoder().decode(
+            SSHUpdateHostTool.Arguments.self,
+            from: Data(#"{"hostID":"\#(hostID.uuidString)","vncConnections":[{"displayName":"Direct desktop","transport":"direct","host":"lab.local","port":5900,"password":"⟨credential:00000000-0000-0000-0000-000000000001⟩"}]}"#.utf8)
+        )
+        #expect(arguments.vncConnections?.first?.credentialInput == "⟨credential:00000000-0000-0000-0000-000000000001⟩")
+    }
+
+    @Test("Model host editor rejects raw VNC credentialInput before persistence")
     func rejectsRawVNCPassword() async throws {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
@@ -81,7 +91,7 @@ struct SSHHostProfileToolTests {
         )
         let arguments = try JSONDecoder().decode(
             SSHUpdateHostTool.Arguments.self,
-            from: Data(#"{"hostID":"\#(hostID.uuidString)","vncConnections":[{"displayName":"Direct desktop","transport":"direct","host":"lab.local","port":5900,"password":"raw-secret"}]}"#.utf8)
+            from: Data(#"{"hostID":"\#(hostID.uuidString)","vncConnections":[{"displayName":"Direct desktop","transport":"direct","host":"lab.local","port":5900,"credentialInput":"raw-secret"}]}"#.utf8)
         )
 
         #expect(throws: FloeError.self) {

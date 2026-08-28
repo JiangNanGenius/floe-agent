@@ -332,13 +332,9 @@ final class AppEnvironment: ObservableObject {
             sshCommandService: sshCommandService,
             cloudWorkspaceService: cloudWorkspaceService,
             remoteHostStore: remoteHostStore,
-            vncPasswordWriter: { hostID, connectionID, password in
-                let prefix = "⟨credential:"
-                guard let placeholder = String(data: password, encoding: .utf8),
-                      placeholder.hasPrefix(prefix), placeholder.hasSuffix("⟩"),
-                      let credentialID = UUID(uuidString: String(
-                        placeholder.dropFirst(prefix.count).dropLast()
-                      )) else {
+            vncPasswordWriter: { hostID, connectionID, credentialInput in
+                guard let placeholder = String(data: credentialInput, encoding: .utf8),
+                      let credentialID = SecretIngressScanner.credentialID(from: placeholder) else {
                     throw FloeError.validationFailed(
                         "Raw VNC passwords are not accepted by model tools"
                     )

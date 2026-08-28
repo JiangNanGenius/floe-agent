@@ -1115,10 +1115,17 @@ final class ConversationCenter: ObservableObject {
         _ captures: [CapturedSecret],
         prepared: PreparedRun
     ) async {
-        guard !captures.isEmpty else { return }
         let owner: CredentialOwner = prepared.workspace.kind == .project
             ? .workspace(prepared.workspace.id)
             : .conversation(prepared.conversation.id)
+        await captureIngressSecrets(captures, owner: owner)
+    }
+
+    private func captureIngressSecrets(
+        _ captures: [CapturedSecret],
+        owner: CredentialOwner
+    ) async {
+        guard !captures.isEmpty else { return }
         for capture in captures {
             let lower = capture.label.lowercased()
             let kind: CredentialKind = lower.contains("private key")
@@ -1345,10 +1352,18 @@ final class ConversationCenter: ObservableObject {
         executionMode: AgentExecutionMode,
         attachments: [AttachmentRef]
     ) async throws {
+        let ingress = SecretIngressScanner.scan(content.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !ingress.sanitizedText.isEmpty else {
+            throw FloeError.validationFailed("Input must not be empty")
+        }
+        await captureIngressSecrets(
+            ingress.captures,
+            owner: workspaceID.map(CredentialOwner.workspace) ?? .conversation(conversationID)
+        )
         let input = try await environment.runningInputStore.enqueue(PendingUserInput(
             conversationID: conversationID,
             targetRunID: expectedRunID,
-            content: content,
+            content: ingress.sanitizedText,
             mode: mode,
             attachments: attachments,
             selectedModelID: selectedModelID,
@@ -1363,7 +1378,17 @@ final class ConversationCenter: ObservableObject {
 
     func editPendingInput(id: UUID, content: String) async throws {
         let value = try await environment.runningInputStore.input(id: id)
-        try await environment.runningInputStore.updateContent(id: id, content: content)
+        let ingress = SecretIngressScanner.scan(content.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !ingress.sanitizedText.isEmpty else {
+            throw FloeError.validationFailed("Input must not be empty")
+        }
+        if let value {
+            await captureIngressSecrets(
+                ingress.captures,
+                owner: value.workspaceID.map(CredentialOwner.workspace) ?? .conversation(value.conversationID)
+            )
+        }
+        try await environment.runningInputStore.updateContent(id: id, content: ingress.sanitizedText)
         if let value { publishSession(value.conversationID) }
     }
 

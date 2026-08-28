@@ -5,11 +5,14 @@ import FloeTools
 import FloePersistence
 import FloeSSH
 
-public typealias VNCPasswordWriter = @Sendable (
+public typealias VNCCredentialWriter = @Sendable (
     _ hostID: UUID,
     _ connectionID: UUID,
-    _ password: Data
+    _ credentialInput: Data
 ) async throws -> SecretReference
+
+/// Source-compatible alias for integrations that still use the old name.
+public typealias VNCPasswordWriter = VNCCredentialWriter
 
 public typealias VNCPasswordDeleter = @Sendable (
     _ hostID: UUID,
@@ -89,8 +92,33 @@ public struct SSHUpdateHostTool: AgentTool {
             /// A credential-vault placeholder resolved directly into Keychain.
             /// Raw secrets are rejected so they cannot enter tool-call history
             /// or a recovery checkpoint.
-            public var password: String?
+            public var credentialInput: String?
             public var clearPassword: Bool?
+
+            private enum CodingKeys: String, CodingKey {
+                case id, displayName, transport, host, port
+                case credentialInput, password, clearPassword
+            }
+
+            public init(from decoder: any Decoder) throws {
+                let values = try decoder.container(keyedBy: CodingKeys.self)
+                id = try values.decodeIfPresent(String.self, forKey: .id)
+                displayName = try values.decode(String.self, forKey: .displayName)
+                transport = try values.decode(VNCTransport.self, forKey: .transport)
+                host = try values.decode(String.self, forKey: .host)
+                port = try values.decode(Int.self, forKey: .port)
+                let current = try values.decodeIfPresent(String.self, forKey: .credentialInput)
+                let legacy = try values.decodeIfPresent(String.self, forKey: .password)
+                if let current, let legacy, current != legacy {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .credentialInput,
+                        in: values,
+                        debugDescription: "credentialInput and legacy password disagree"
+                    )
+                }
+                credentialInput = current ?? legacy
+                clearPassword = try values.decodeIfPresent(Bool.self, forKey: .clearPassword)
+            }
         }
 
         public struct AuxiliaryConnection: Decodable, Sendable {
@@ -117,8 +145,8 @@ public struct SSHUpdateHostTool: AgentTool {
         public var auxiliaryConnections: [AuxiliaryConnection]?
     }
     public static let name = "ssh.updateHost"
-    public static let toolDescription = "Edit a saved device and its connection profiles. Use ssh.listHosts first. Device kind is optional descriptive metadata and never overrides configured protocols. You may add direct or SSH-tunnel VNC, Telnet, TCP and BLE serial metadata. Omitted fields are preserved; supplied connection arrays replace that connection group. Only include a VNC password as the exact Floe credential placeholder supplied in the conversation (for example ⟨credential:UUID⟩); raw passwords are rejected and never enter tool history. Floe resolves the placeholder directly into Keychain and never returns the secret. Leave password and clearPassword omitted to preserve an existing credential."
-    public static let parametersJSON = #"{"type":"object","properties":{"hostID":{"type":"string"},"displayName":{"type":"string"},"address":{"type":"string"},"port":{"type":"integer","minimum":1,"maximum":65535},"user":{"type":"string"},"isSSHEnabled":{"type":"boolean"},"deviceKind":{"type":"string","enum":["unspecified","linux","mac","windows","nas","router","switchDevice","appliance","other"]},"isRemoteExecutionEnvironment":{"type":"boolean"},"vncConnections":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"displayName":{"type":"string"},"transport":{"type":"string","enum":["direct","sshTunnel"]},"host":{"type":"string"},"port":{"type":"integer","minimum":1,"maximum":65535},"password":{"type":"string"},"clearPassword":{"type":"boolean"}},"required":["displayName","transport","host","port"],"additionalProperties":false}},"auxiliaryConnections":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"displayName":{"type":"string"},"kind":{"type":"string","enum":["telnet","tcp","bluetoothSerial"]},"host":{"type":"string"},"port":{"type":"integer","minimum":1,"maximum":65535},"bluetoothPeripheralID":{"type":"string"},"bluetoothServiceUUID":{"type":"string"},"bluetoothWriteCharacteristicUUID":{"type":"string"},"bluetoothNotifyCharacteristicUUID":{"type":"string"}},"required":["displayName","kind"],"additionalProperties":false}}},"required":["hostID"],"additionalProperties":false}"#
+    public static let toolDescription = "Edit a saved device and its connection profiles. Use ssh.listHosts first. Device kind is optional descriptive metadata and never overrides configured protocols. You may add direct or SSH-tunnel VNC, Telnet, TCP and BLE serial metadata. Omitted fields are preserved; supplied connection arrays replace that connection group. For a new VNC credential, pass credentialInput as the exact Floe placeholder captured from the user's message (for example ⟨credential:UUID⟩). The legacy password field is accepted for compatibility but is also placeholder-only. Raw passwords are rejected before the writer, and the placeholder is resolved directly into Keychain; the secret is never returned. Leave credentialInput and clearPassword omitted to preserve an existing credential."
+    public static let parametersJSON = #"{"type":"object","properties":{"hostID":{"type":"string"},"displayName":{"type":"string"},"address":{"type":"string"},"port":{"type":"integer","minimum":1,"maximum":65535},"user":{"type":"string"},"isSSHEnabled":{"type":"boolean"},"deviceKind":{"type":"string","enum":["unspecified","linux","mac","windows","nas","router","switchDevice","appliance","other"]},"isRemoteExecutionEnvironment":{"type":"boolean"},"vncConnections":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"displayName":{"type":"string"},"transport":{"type":"string","enum":["direct","sshTunnel"]},"host":{"type":"string"},"port":{"type":"integer","minimum":1,"maximum":65535},"credentialInput":{"type":"string","description":"Floe credential placeholder only"},"password":{"type":"string","description":"Deprecated compatibility field; placeholder only"},"clearPassword":{"type":"boolean"}},"required":["displayName","transport","host","port"],"additionalProperties":false}},"auxiliaryConnections":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"displayName":{"type":"string"},"kind":{"type":"string","enum":["telnet","tcp","bluetoothSerial"]},"host":{"type":"string"},"port":{"type":"integer","minimum":1,"maximum":65535},"bluetoothPeripheralID":{"type":"string"},"bluetoothServiceUUID":{"type":"string"},"bluetoothWriteCharacteristicUUID":{"type":"string"},"bluetoothNotifyCharacteristicUUID":{"type":"string"}},"required":["displayName","kind"],"additionalProperties":false}}},"required":["hostID"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.persistsPersonalData, .networkAccess]
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
@@ -151,11 +179,11 @@ public struct SSHUpdateHostTool: AgentTool {
             if let id = endpoint.id, UUID(uuidString: id) == nil {
                 throw FloeError.validationFailed("VNC connection id must be a UUID")
             }
-            if endpoint.clearPassword == true, endpoint.password?.isEmpty == false {
+            if endpoint.clearPassword == true, endpoint.credentialInput?.isEmpty == false {
                 throw FloeError.validationFailed("A VNC connection cannot set and clear its password together")
             }
-            if let password = endpoint.password, !password.isEmpty {
-                guard Self.credentialID(from: password) != nil else {
+            if let credentialInput = endpoint.credentialInput, !credentialInput.isEmpty {
+                guard Self.credentialID(from: credentialInput) != nil else {
                     throw FloeError.validationFailed(
                         "VNC passwords must use the credential placeholder captured from the user's message"
                     )
@@ -254,8 +282,8 @@ public struct SSHUpdateHostTool: AgentTool {
                 if value.clearPassword == true {
                     passwordReference = nil
                     if previousReference != nil { removedCredentialIDs.insert(connectionID) }
-                } else if let password = value.password, !password.isEmpty,
-                          let data = password.data(using: .utf8), let passwordWriter {
+                } else if let credentialInput = value.credentialInput, !credentialInput.isEmpty,
+                          let data = credentialInput.data(using: .utf8), let passwordWriter {
                     passwordReference = try await passwordWriter(id, connectionID, data)
                     updatedCredentialCount += 1
                 }

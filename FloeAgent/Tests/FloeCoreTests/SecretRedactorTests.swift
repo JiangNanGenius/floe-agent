@@ -46,6 +46,14 @@ struct SecretRedactorTests {
         #expect(output.contains(SecretRedactor.replacement))
     }
 
+    @Test("Credential input fields are masked by name")
+    func credentialInputMasked() {
+        let input = #"{"credentialInput":"abc123!"}"#
+        let output = SecretRedactor.redact(input)
+        #expect(!output.contains("abc123!"))
+        #expect(output.contains(SecretRedactor.replacement))
+    }
+
     @Test("Non-secret text is left intact")
     func plainTextIntact() {
         let input = "rate limit exceeded, retry after 30 seconds"
