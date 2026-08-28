@@ -6,6 +6,8 @@
 	<array>
 		<string>org.floeagent.ios.refresh</string>
 		<string>org.floeagent.ios.processing</string>
+		<string>org.floeagent.ios.media-refresh</string>
+		<string>org.floeagent.ios.media-processing</string>
 		<string>org.floeagent.ios.continued.*</string>
 	</array>
 	<key>CFBundleDevelopmentRegion</key>

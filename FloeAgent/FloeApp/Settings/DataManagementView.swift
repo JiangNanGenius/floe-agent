@@ -4,6 +4,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import FloeCore
+import FloePersistence
 
 struct DataManagementView: View {
     let environment: AppEnvironment
@@ -13,6 +14,19 @@ struct DataManagementView: View {
     @State private var isCleaning = false
     @State private var confirmsCleanup = false
     @State private var cleanupResult: Int64?
+    @AppStorage("creative.canvas.sync.enabled") private var canvasSyncEnabled = true
+    @State private var creativeStorage: CreativeStorageSummary?
+    @State private var isReleasingCloudSpace = false
+    @State private var orphanedAssetCount = 0
+    @State private var orphanedAssetBytes: Int64 = 0
+
+    private struct CreativeStorageSummary {
+        let local: Int64
+        let cloud: Int64
+        let pendingDownload: Int64
+        let pendingRelease: Int64
+        let releaseCount: Int
+    }
 
     var body: some View {
         Form {
@@ -45,6 +59,36 @@ struct DataManagementView: View {
                         )
                     }
                 }
+            }
+
+            Section {
+                Toggle("跨设备同步画布", isOn: $canvasSyncEnabled)
+                if let creativeStorage {
+                    StorageUsageRow(title: "本机素材", icon: "iphone", bytes: creativeStorage.local)
+                    StorageUsageRow(title: "云端素材", icon: "icloud", bytes: creativeStorage.cloud)
+                    StorageUsageRow(title: "待下载", icon: "arrow.down.circle", bytes: creativeStorage.pendingDownload)
+                    StorageUsageRow(title: "待释放", icon: "trash.circle", bytes: creativeStorage.pendingRelease)
+                    if creativeStorage.releaseCount > 0 {
+                        Button {
+                            Task { await releaseCloudSpace() }
+                        } label: {
+                            HStack {
+                                Label("立即重试释放云端空间", systemImage: "icloud.slash")
+                                Spacer()
+                                if isReleasingCloudSpace { ProgressView() }
+                            }
+                        }
+                        .disabled(isReleasingCloudSpace)
+                    }
+                    LabeledContent("未引用素材") {
+                        Text("\(orphanedAssetCount) 项 · \(ByteCountFormatter.string(fromByteCount: orphanedAssetBytes, countStyle: .file))")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("创意空间")
+            } footer: {
+                Text("总开关和画布自身开关都开启时才会同步。关闭同步不会删除云端副本；永久删除素材会进入待释放队列，并以 CloudKit 删除确认结果为准。")
             }
 
             Section("管理") {
@@ -91,7 +135,20 @@ struct DataManagementView: View {
         }
         .navigationTitle("数据管理")
         .refreshable { await reload() }
-        .task { await reload() }
+        .task {
+            importCanvasSyncPreferenceFromCloud()
+            NSUbiquitousKeyValueStore.default.synchronize()
+            await reload()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSUbiquitousKeyValueStore.didChangeExternallyNotification
+        )) { _ in
+            importCanvasSyncPreferenceFromCloud()
+        }
+        .onChange(of: canvasSyncEnabled) { _, value in
+            NSUbiquitousKeyValueStore.default.set(value, forKey: "creative.canvas.sync.enabled")
+            NSUbiquitousKeyValueStore.default.synchronize()
+        }
         .confirmationDialog("执行安全清理？", isPresented: $confirmsCleanup, titleVisibility: .visible) {
             Button("清理", role: .destructive) { Task { await clean() } }
             Button("取消", role: .cancel) {}
@@ -104,6 +161,17 @@ struct DataManagementView: View {
         guard !isLoading else { return }
         isLoading = true
         snapshot = await AppStorageInspector.snapshot()
+        if let value = try? await environment.creativeAssetStore.storageSummary() {
+            creativeStorage = CreativeStorageSummary(
+                local: value.local, cloud: value.cloud,
+                pendingDownload: value.pendingDownload,
+                pendingRelease: value.pendingRelease, releaseCount: value.releaseCount
+            )
+        }
+        if let orphans = try? await environment.creativeAssetStore.orphanedAssets() {
+            orphanedAssetCount = orphans.count
+            orphanedAssetBytes = orphans.reduce(0) { $0 + $1.byteCount }
+        }
         isLoading = false
     }
 
@@ -113,6 +181,21 @@ struct DataManagementView: View {
         cleanupResult = await AppStorageInspector.cleanSafeCaches()
         snapshot = await AppStorageInspector.snapshot()
         isCleaning = false
+    }
+
+    private func releaseCloudSpace() async {
+        guard !isReleasingCloudSpace else { return }
+        isReleasingCloudSpace = true
+        await environment.canvasCloudAssetService.releasePending()
+        await reload()
+        isReleasingCloudSpace = false
+    }
+
+    private func importCanvasSyncPreferenceFromCloud() {
+        let cloud = NSUbiquitousKeyValueStore.default
+        guard cloud.object(forKey: "creative.canvas.sync.enabled") != nil else { return }
+        let remoteValue = cloud.bool(forKey: "creative.canvas.sync.enabled")
+        if canvasSyncEnabled != remoteValue { canvasSyncEnabled = remoteValue }
     }
 }
 

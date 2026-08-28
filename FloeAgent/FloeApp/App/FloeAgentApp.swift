@@ -23,10 +23,14 @@ final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
         handleEventsForBackgroundURLSession identifier: String,
         completionHandler: @escaping () -> Void
     ) {
-        LocalModelBackgroundEvents.shared.register(
-            identifier: identifier,
-            completion: completionHandler
-        )
+        if identifier == MediaArtifactDownloadCoordinator.sessionIdentifier {
+            MediaArtifactBackgroundEvents.shared.register(completionHandler)
+        } else {
+            LocalModelBackgroundEvents.shared.register(
+                identifier: identifier,
+                completion: completionHandler
+            )
+        }
     }
 }
 
@@ -124,8 +128,15 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) {
             environment.voiceInput.handleAudioRouteChange($0)
         }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSUbiquitousKeyValueStore.didChangeExternallyNotification
+        )) { _ in
+            Self.importCanvasSyncPreferenceFromCloud()
+        }
         .task(id: environment.persistenceReady) {
             guard environment.persistenceReady else { return }
+            Self.importCanvasSyncPreferenceFromCloud()
+            NSUbiquitousKeyValueStore.default.synchronize()
             // Repair only rows left by a previous process before settings or
             // UI reloads can yield to a newly-created run.
             await environment.conversationCenter.reconcileInterruptedRunsOnLaunch()
@@ -208,6 +219,13 @@ struct RootView: View {
         }
         .preferredColorScheme(resolvedColorScheme)
         .environment(\.locale, resolvedLocale)
+    }
+
+    private static func importCanvasSyncPreferenceFromCloud() {
+        let cloud = NSUbiquitousKeyValueStore.default
+        let key = "creative.canvas.sync.enabled"
+        guard cloud.object(forKey: key) != nil else { return }
+        UserDefaults.standard.set(cloud.bool(forKey: key), forKey: key)
     }
 
     /// Maps the appearance preference to a concrete color scheme (nil = follow

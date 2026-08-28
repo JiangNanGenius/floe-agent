@@ -4,8 +4,10 @@ import SwiftUI
 import UIKit
 import UserNotifications
 import BackgroundTasks
+import CryptoKit
 import FloeCore
 import FloePersistence
+import FloeProviders
 
 extension Notification.Name {
     static let floeOpenConversation = Notification.Name("org.floeagent.open-conversation")
@@ -32,6 +34,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private var lease: BackgroundExecutionLease?
     private var refreshWork: Task<Void, Never>?
     private var processingWork: Task<Void, Never>?
+    private var mediaRefreshWork: Task<Void, Never>?
+    private var mediaProcessingWork: Task<Void, Never>?
     private var pipCarouselTask: Task<Void, Never>?
     /// SwiftUI reports lifecycle independently for every window. Reconcile
     /// those reports before touching the app-wide PiP surface so a secondary
@@ -39,6 +43,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private var scenePhases: [String: ScenePhase] = [:]
     private var effectiveScenePhase: ScenePhase = .active
     private var activeProcessingTaskID: UUID?
+    private lazy var mediaDownloads = MediaArtifactDownloadCoordinator(database: environment.database)
     @available(iOS 26.0, *)
     private var continuedTask: BGContinuedProcessingTask?
 
@@ -55,6 +60,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         BackgroundPolicyRegistry.shared.installProcessingTaskHandler { [weak self] task in
             self?.acceptProcessingTask(task)
+        }
+        BackgroundPolicyRegistry.shared.installMediaRefreshTaskHandler { [weak self] task in
+            self?.acceptMediaRefreshTask(task)
+        }
+        BackgroundPolicyRegistry.shared.installMediaProcessingTaskHandler { [weak self] task in
+            self?.acceptMediaProcessingTask(task)
         }
         UNUserNotificationCenter.current().delegate = self
     }
@@ -464,6 +475,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             lease = nil
             Task { [weak self] in
                 await self?.environment.conversationCenter.resumeSafeRunsAfterForeground()
+                await self?.reconcilePendingMediaJobs()
                 await self?.runDueSchedules()
                 // ④ catch-up dream on foreground resume (gated internally).
                 await self?.environment.memoryDreamService.deepDream()
@@ -522,6 +534,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         processingWork = Task { [weak self, weak task] in
             guard let self else { return }
+            await self.reconcilePendingMediaJobs()
+            await self.environment.canvasCloudAssetService.releasePending()
             // ③ deep sleep: regenerate profile/SOUL when due and distill
             // memory from the most recent conversation.
             await self.environment.memoryDreamService.deepDream()
@@ -535,7 +549,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private func scheduleMemoryDeepSleep() {
         let request = BGProcessingTaskRequest(identifier: BackgroundTaskKind.processing.rawValue)
         request.requiresNetworkConnectivity = true
-        request.requiresExternalPower = true
+        // Media results may expire before the device is connected to power.
+        // The same processing slot therefore stays network-only; memory work
+        // is opportunistic after urgent media reconciliation.
+        request.requiresExternalPower = false
         try? BGTaskScheduler.shared.submit(request)
     }
 
@@ -549,6 +566,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         refreshWork = Task { [weak self, weak task] in
             guard let self else { return }
+            await self.reconcilePendingMediaJobs()
+            await self.environment.canvasCloudAssetService.releasePending()
             await self.runDueSchedules()
             let cancelled = Task.isCancelled
             task?.setTaskCompleted(success: !cancelled)
@@ -556,8 +575,129 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
     }
 
+    private func acceptMediaRefreshTask(_ task: BGAppRefreshTask) {
+        mediaRefreshWork?.cancel()
+        task.expirationHandler = { [weak self, weak task] in
+            Task { @MainActor in
+                self?.mediaRefreshWork?.cancel()
+                task?.setTaskCompleted(success: false)
+            }
+        }
+        mediaRefreshWork = Task { [weak self, weak task] in
+            guard let self else { return }
+            await self.reconcilePendingMediaJobs()
+            let cancelled = Task.isCancelled
+            task?.setTaskCompleted(success: !cancelled)
+            self.mediaRefreshWork = nil
+        }
+    }
+
+    private func acceptMediaProcessingTask(_ task: BGProcessingTask) {
+        mediaProcessingWork?.cancel()
+        task.expirationHandler = { [weak self, weak task] in
+            Task { @MainActor in
+                self?.mediaProcessingWork?.cancel()
+                task?.setTaskCompleted(success: false)
+            }
+        }
+        mediaProcessingWork = Task { [weak self, weak task] in
+            guard let self else { return }
+            await self.reconcilePendingMediaJobs()
+            await self.environment.canvasCloudAssetService.releasePending()
+            let cancelled = Task.isCancelled
+            task?.setTaskCompleted(success: !cancelled)
+            self.mediaProcessingWork = nil
+        }
+    }
+
     func reconcileSchedulesAfterLaunch() async {
+        await reconcilePendingMediaJobs()
         await runDueSchedules()
+    }
+
+    /// The app owns exactly one background URLSession for generated media.
+    /// Reusing it avoids two delegates competing for the same persistent
+    /// session identifier during launch restoration.
+    func startMediaArtifactDownload(jobID: UUID, remoteURL: URL) async {
+        await mediaDownloads.start(jobID: jobID, remoteURL: remoteURL)
+    }
+
+    /// One reconciliation path shared by launch, foreground, refresh and
+    /// processing wakeups. Provider task IDs are already durable before this
+    /// method runs, so cancellation can only delay progress, not lose work.
+    func reconcilePendingMediaJobs(now: Date = Date()) async {
+        let store = MediaGenerationJobStore(database: environment.database)
+        guard let jobs = try? await store.dueJobs(at: now) else { return }
+        for job in jobs where !Task.isCancelled {
+            guard let provider = try? await environment.configurationStore.provider(id: job.providerID),
+                  let model = try? await environment.configurationStore.model(id: job.modelID),
+                  let adapter = VideoProviderAdapterFactory().adapter(for: provider),
+                  let taskID = job.providerTaskID else { continue }
+            let apiKey = job.credentialReference.flatMap { reference in
+                try? environment.keychain.read(account: reference.keychainAccount)
+            }.flatMap { String(data: $0, encoding: .utf8) }
+            do {
+                let status = try await adapter.status(
+                    taskID: taskID, modelRemoteID: model.remoteModelID,
+                    provider: provider, credentials: ProviderCredentials(apiKey: apiKey)
+                )
+                switch status.state {
+                case .completed:
+                    guard let resultURL = status.resultURL else {
+                        _ = try await store.transition(id: job.id, to: .failed) {
+                            $0.lastError = "供应商报告完成，但没有返回可下载的视频地址。"
+                        }
+                        continue
+                    }
+                    let retainedState: MediaGenerationJobState = job.state == .downloading
+                        ? .downloading : .completed
+                    let completed = try await store.transition(id: job.id, to: retainedState) {
+                        $0.lastPolledAt = now
+                        $0.resultURL = resultURL
+                        $0.resultURLExpiresAt = status.resultURLExpiresAt
+                        $0.nextPollAt = nil
+                    }
+                    if completed.state != .downloading {
+                        _ = try await store.transition(id: completed.id, to: .downloading)
+                    }
+                    await mediaDownloads.start(jobID: job.id, remoteURL: resultURL)
+                case .failed, .cancelled, .expired:
+                    _ = try await store.transition(id: job.id, to: status.state) {
+                        $0.lastPolledAt = now
+                        $0.lastError = status.error
+                        $0.nextPollAt = nil
+                    }
+                default:
+                    _ = try await store.transition(id: job.id, to: .running) {
+                        $0.lastPolledAt = now
+                        $0.retryCount = 0
+                        $0.lastError = nil
+                        $0.nextPollAt = Self.nextMediaPollDate(job: $0, now: now)
+                    }
+                }
+            } catch {
+                _ = try? await store.transition(id: job.id, to: job.state) {
+                    $0.lastPolledAt = now
+                    $0.retryCount += 1
+                    $0.lastError = error.localizedDescription
+                    let delay = min(30 * 60.0, pow(2, Double(min($0.retryCount, 8))) * 15)
+                    $0.nextPollAt = now.addingTimeInterval(delay)
+                }
+            }
+        }
+        if let next = (try? await store.dueJobs(at: .distantFuture, limit: 100))?
+            .compactMap(\.nextPollAt).min() {
+            BackgroundPolicyRegistry.shared.scheduleMediaRefresh(
+                earliest: max(next, Date().addingTimeInterval(60))
+            )
+        }
+    }
+
+    nonisolated private static func nextMediaPollDate(job: MediaGenerationJob, now: Date) -> Date {
+        if let estimate = job.estimatedCompletionAt, estimate > now {
+            return min(estimate, now.addingTimeInterval(5 * 60))
+        }
+        return now.addingTimeInterval(60)
     }
 
     private func runDueSchedules() async {
@@ -602,6 +742,324 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 userInfo: ["conversationID": id]
             )
         }
+    }
+}
+
+final class MediaArtifactBackgroundEvents: @unchecked Sendable {
+    static let shared = MediaArtifactBackgroundEvents()
+    private let lock = NSLock()
+    private var completion: (() -> Void)?
+
+    private init() {}
+
+    func register(_ completion: @escaping () -> Void) {
+        lock.lock(); self.completion = completion; lock.unlock()
+    }
+
+    func finish() {
+        lock.lock()
+        let callback = completion
+        completion = nil
+        lock.unlock()
+        DispatchQueue.main.async { callback?() }
+    }
+}
+
+@MainActor
+final class MediaGenerationService {
+    private unowned let environment: AppEnvironment
+
+    init(environment: AppEnvironment) { self.environment = environment }
+
+    func generateImage(
+        prompt: String,
+        options: ImageGenerationOptions = .init()
+    ) async throws -> CanvasAssetReference {
+        let center = environment.conversationCenter
+        guard let (provider, model) = center.auxiliaryProviderAndModel(for: .generate),
+              let adapter = ImageProviderAdapterFactory().adapter(for: provider),
+              adapter.supports(.generate, for: provider) else {
+            throw FloeError.invalidConfiguration("请先在辅助模型中选择可用的生图模型。")
+        }
+        let result = try await adapter.perform(
+            RemoteImageRequest(
+                operation: .generate, prompt: prompt,
+                sizeHint: options.size ?? options.aspectRatio,
+                count: max(1, min(options.count, 4)),
+                modelRemoteID: model.remoteModelID
+            ),
+            provider: provider,
+            credentials: center.resolveCredentials(for: provider)
+        )
+        guard let data = result.images.first else {
+            throw RemoteImageError.invalidResponse("供应商没有返回图片。")
+        }
+        guard data.count <= 24 * 1_024 * 1_024 else {
+            throw FloeError.validationFailed("生成图片超过 24 MiB。")
+        }
+        let assetID = UUID()
+        let isPNG = data.starts(with: [0x89, 0x50, 0x4E, 0x47])
+        let fileExtension = isPNG ? "png" : "jpg"
+        let relativePath = "Materials/\(assetID.uuidString)-generated.\(fileExtension)"
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true
+        )
+        let destination = support.appendingPathComponent("FloeAgent/\(relativePath)")
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try data.write(to: destination, options: .atomic)
+        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        try await environment.creativeAssetStore.save(CreativeAssetRecord(
+            id: assetID, contentHash: hash, kind: .image,
+            displayName: "生成图片", mimeType: isPNG ? "image/png" : "image/jpeg",
+            localRelativePath: relativePath, cloudRecordName: nil,
+            byteCount: Int64(data.count), sourceURL: nil,
+            license: nil, tags: ["生成内容"], referenceCount: 0,
+            createdAt: Date(), updatedAt: Date()
+        ))
+        return CanvasAssetReference(
+            id: assetID, contentHash: hash,
+            localRelativePath: relativePath,
+            mimeType: isPNG ? "image/png" : "image/jpeg",
+            byteCount: Int64(data.count), sourceURL: nil,
+            license: nil
+        )
+    }
+
+    /// Submits a video job using a write-before-publish protocol. The returned
+    /// job always has a durable provider task ID and can be reconciled after a
+    /// process death before the UI reports that generation started.
+    func submitVideo(
+        modelID: UUID, canvasID: UUID, documentID: UUID,
+        sourceNodeIDs: [UUID], resultNodeID: UUID,
+        request: RemoteVideoRequest
+    ) async throws -> MediaGenerationJob {
+        guard let model = try await environment.configurationStore.model(id: modelID),
+              let provider = try await environment.configurationStore.provider(id: model.providerID),
+              let adapter = VideoProviderAdapterFactory().adapter(for: provider) else {
+            throw RemoteVideoError.unsupportedProvider
+        }
+        let store = MediaGenerationJobStore(database: environment.database)
+        let requestJSON = try JSONEncoder().encode(request)
+        var job = MediaGenerationJob(
+            providerID: provider.id, modelID: model.id, mediaKind: .video,
+            credentialReference: provider.secretRef, canvasID: canvasID,
+            documentID: documentID, sourceNodeIDs: sourceNodeIDs,
+            resultNodeID: resultNodeID, requestJSON: requestJSON
+        )
+        try await store.save(job)
+        let key = provider.secretRef.flatMap { try? environment.keychain.read(account: $0.keychainAccount) }
+            .flatMap { String(data: $0, encoding: .utf8) }
+        do {
+            let submission = try await adapter.submit(
+                request, provider: provider, credentials: ProviderCredentials(apiKey: key)
+            )
+            job.providerTaskID = submission.providerTaskID
+            job.state = .submitted
+            job.estimatedCompletionAt = submission.estimatedCompletionAt
+            job.resultRetentionExpiresAt = submission.resultRetentionExpiresAt
+            job.resultURL = submission.resultURL
+            job.resultURLExpiresAt = submission.resultURLExpiresAt
+            if submission.resultURL != nil {
+                job.state = .downloading
+                job.nextPollAt = nil
+            } else {
+                job.nextPollAt = Date().addingTimeInterval(30)
+            }
+            job.updatedAt = Date()
+            try await store.save(job)
+            if let resultURL = submission.resultURL {
+                await environment.backgroundRunCoordinator.startMediaArtifactDownload(
+                    jobID: job.id, remoteURL: resultURL
+                )
+            }
+            BackgroundPolicyRegistry.shared.requestContinuedProcessing()
+            BackgroundPolicyRegistry.shared.scheduleMediaRefresh(
+                earliest: job.nextPollAt ?? Date().addingTimeInterval(60)
+            )
+            BackgroundPolicyRegistry.shared.scheduleMediaProcessing(
+                earliest: Date().addingTimeInterval(60)
+            )
+            return job
+        } catch {
+            _ = try? await store.transition(id: job.id, to: .failed) {
+                $0.lastError = error.localizedDescription
+            }
+            throw error
+        }
+    }
+
+    func cancelVideo(jobID: UUID) async throws {
+        let store = MediaGenerationJobStore(database: environment.database)
+        guard let job = try await store.job(id: jobID) else {
+            throw MediaGenerationJobStoreError.missingJob(jobID)
+        }
+        guard !job.state.isTerminal else { return }
+        guard let taskID = job.providerTaskID,
+              let provider = try await environment.configurationStore.provider(id: job.providerID),
+              let adapter = VideoProviderAdapterFactory().adapter(for: provider) else {
+            throw RemoteVideoError.unsupportedProvider
+        }
+        let key = job.credentialReference.flatMap {
+            try? environment.keychain.read(account: $0.keychainAccount)
+        }.flatMap { String(data: $0, encoding: .utf8) }
+        try await adapter.cancel(
+            taskID: taskID,
+            provider: provider,
+            credentials: ProviderCredentials(apiKey: key)
+        )
+        _ = try await store.transition(id: jobID, to: .cancelled) {
+            $0.nextPollAt = nil
+            $0.lastError = nil
+        }
+    }
+
+    /// A retry is always a new provider job so the original terminal record
+    /// remains auditable. Callers must obtain explicit user confirmation first
+    /// because the provider may charge for the new submission.
+    func retryVideo(jobID: UUID) async throws -> MediaGenerationJob {
+        let store = MediaGenerationJobStore(database: environment.database)
+        guard let original = try await store.job(id: jobID) else {
+            throw MediaGenerationJobStoreError.missingJob(jobID)
+        }
+        let request = try JSONDecoder().decode(RemoteVideoRequest.self, from: original.requestJSON)
+        return try await submitVideo(
+            modelID: original.modelID,
+            canvasID: original.canvasID,
+            documentID: original.documentID,
+            sourceNodeIDs: original.sourceNodeIDs,
+            resultNodeID: original.resultNodeID,
+            request: request
+        )
+    }
+}
+
+/// Background network-process owner for short-lived provider result URLs.
+/// Files move into the durable material library before a job becomes ready.
+final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    static let sessionIdentifier = "org.floeagent.media-artifacts"
+
+    private let database: DatabaseManager
+    private lazy var session: URLSession = {
+        let configuration = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
+        configuration.sessionSendsLaunchEvents = true
+        configuration.isDiscretionary = false
+        configuration.allowsExpensiveNetworkAccess = true
+        return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+    }()
+
+    init(database: DatabaseManager) {
+        self.database = database
+        super.init()
+        _ = session
+    }
+
+    func start(jobID: UUID, remoteURL: URL) async {
+        guard remoteURL.scheme?.lowercased() == "https",
+              remoteURL.user == nil, remoteURL.password == nil,
+              remoteURL.host != nil, !remoteURL.isLocalOrPrivateNetwork else {
+            await fail(jobID: jobID, message: "供应商返回了不安全的下载地址。")
+            return
+        }
+        let tasks = await session.allTasks
+        if tasks.contains(where: { $0.taskDescription == jobID.uuidString }) { return }
+        let task = session.downloadTask(with: remoteURL)
+        task.taskDescription = jobID.uuidString
+        task.priority = URLSessionTask.highPriority
+        task.resume()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        guard let raw = downloadTask.taskDescription, let jobID = UUID(uuidString: raw) else { return }
+        do {
+            let support = try FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: true
+            )
+            let directory = support.appendingPathComponent("FloeAgent/Materials", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let assetID = UUID()
+            let extensionName = downloadTask.response?.suggestedFilename
+                .flatMap { URL(fileURLWithPath: $0).pathExtension }
+                .flatMap { $0.isEmpty ? nil : $0 } ?? "mp4"
+            let destination = directory.appendingPathComponent("\(assetID.uuidString)-generated.\(extensionName)")
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.moveItem(at: location, to: destination)
+            Task {
+                let store = MediaGenerationJobStore(database: database)
+                let data = try? Data(contentsOf: destination, options: .mappedIfSafe)
+                let hash = data.map {
+                    SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined()
+                } ?? assetID.uuidString
+                let size = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+                    .map(Int64.init) ?? 0
+                let assetStore = CreativeAssetStore(database: database)
+                try? await assetStore.save(CreativeAssetRecord(
+                    id: assetID, contentHash: hash, kind: .video,
+                    displayName: destination.deletingPathExtension().lastPathComponent,
+                    mimeType: downloadTask.response?.mimeType ?? "video/mp4",
+                    localRelativePath: "Materials/\(destination.lastPathComponent)",
+                    cloudRecordName: nil, byteCount: size,
+                    sourceURL: downloadTask.originalRequest?.url,
+                    license: nil, tags: ["生成内容"], referenceCount: 0,
+                    createdAt: Date(), updatedAt: Date()
+                ))
+                _ = try? await store.transition(id: jobID, to: .ready) {
+                    $0.localAssetID = assetID
+                    $0.lastError = nil
+                }
+                await Self.postCompletionNotification(jobID: jobID)
+            }
+        } catch {
+            Task { await fail(jobID: jobID, message: error.localizedDescription) }
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        guard let error, let raw = task.taskDescription, let jobID = UUID(uuidString: raw) else { return }
+        Task { await fail(jobID: jobID, message: error.localizedDescription) }
+    }
+
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        MediaArtifactBackgroundEvents.shared.finish()
+    }
+
+    private func fail(jobID: UUID, message: String) async {
+        let store = MediaGenerationJobStore(database: database)
+        guard let job = try? await store.job(id: jobID) else { return }
+        let now = Date()
+        if let expires = job.resultURLExpiresAt, expires <= now {
+            _ = try? await store.transition(id: jobID, to: .expired) { $0.lastError = message }
+        } else {
+            _ = try? await store.transition(id: jobID, to: job.state) {
+                $0.retryCount += 1
+                $0.lastError = message
+                $0.nextPollAt = now.addingTimeInterval(min(30 * 60, pow(2, Double(min($0.retryCount, 8))) * 15))
+            }
+        }
+    }
+
+    private static func postCompletionNotification(jobID: UUID) async {
+        let content = UNMutableNotificationContent()
+        content.title = "视频已准备好"
+        content.body = "生成结果已保存到素材库，并会在画布中恢复。"
+        content.sound = .default
+        content.userInfo = ["mediaJobID": jobID.uuidString]
+        try? await UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "media.\(jobID.uuidString)", content: content, trigger: nil
+        ))
     }
 }
 #endif

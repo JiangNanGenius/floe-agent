@@ -30,6 +30,35 @@ struct ModelPickerView: View {
     var body: some View {
         NavigationStack {
             List {
+                if !viewModel.officialMediaPresets.isEmpty {
+                    Section("官方模型") {
+                        ForEach(viewModel.officialMediaPresets) { descriptor in
+                            Button {
+                                viewModel.addOfficialMediaPreset(descriptor)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(descriptor.displayName)
+                                            .foregroundStyle(.primary)
+                                        Text(descriptor.remoteModelID)
+                                            .font(FloeTheme.Typography.evidence)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if viewModel.candidateModels.contains(where: {
+                                        $0.remoteModelID == descriptor.remoteModelID
+                                            && viewModel.selectedModelIDs.contains($0.id)
+                                    }) {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(FloeTheme.primary)
+                                    } else {
+                                        Image(systemName: "plus.circle")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 if !filteredModels.isEmpty {
                     Section("providers.discovered") {
                         ForEach(filteredModels) { model in

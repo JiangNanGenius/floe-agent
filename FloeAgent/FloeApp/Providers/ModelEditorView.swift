@@ -70,22 +70,26 @@ struct ModelEditorView: View {
                         Text("model.reasoning.hint")
                     }
                 }
-                Section {
-                    TokenLimitPicker(
-                        title: "model.context_tokens",
-                        value: $model.limits.contextTokens,
-                        presets: [32_768, 65_536, 131_072, 262_144, 1_048_576]
-                    )
-                    TokenLimitPicker(
-                        title: "model.max_output_tokens",
-                        value: $model.limits.maxOutputTokens,
-                        presets: [4_096, 8_192, 16_384, 32_768, 65_536],
-                        allowsEmpty: true
-                    )
-                } header: {
-                    Text("model.section.limits")
-                } footer: {
-                    Text("model.limits.hint")
+                if serviceRole == .conversation {
+                    Section {
+                        TokenLimitPicker(
+                            title: "model.context_tokens",
+                            value: $model.limits.contextTokens,
+                            presets: [32_768, 65_536, 131_072, 262_144, 1_048_576]
+                        )
+                        TokenLimitPicker(
+                            title: "model.max_output_tokens",
+                            value: $model.limits.maxOutputTokens,
+                            presets: [4_096, 8_192, 16_384, 32_768, 65_536],
+                            allowsEmpty: true
+                        )
+                    } header: {
+                        Text("model.section.limits")
+                    } footer: {
+                        Text("model.limits.hint")
+                    }
+                } else {
+                    mediaCapabilitySummary
                 }
             }
             .navigationTitle("model.settings")
@@ -113,9 +117,11 @@ struct ModelEditorView: View {
                     }
                     .disabled(model.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || model.remoteModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                              || model.limits.contextTokens <= 0 || model.limits.maxOutputTokens < 0
-                              || (model.limits.maxOutputTokens > 0
-                                  && model.limits.maxOutputTokens > model.limits.contextTokens))
+                              || (serviceRole == .conversation && (
+                                model.limits.contextTokens <= 0 || model.limits.maxOutputTokens < 0
+                                || (model.limits.maxOutputTokens > 0
+                                    && model.limits.maxOutputTokens > model.limits.contextTokens)
+                              )))
                 }
             }
         }
@@ -152,6 +158,50 @@ struct ModelEditorView: View {
             get: { model.effectiveReasoningEffort },
             set: { model.reasoningEffort = $0 == .automatic ? nil : $0 }
         )
+    }
+
+    @ViewBuilder
+    private var mediaCapabilitySummary: some View {
+        let providerFamily = mediaProviderFamily
+        let kind: MediaKind = serviceRole == .video ? .video : .image
+        let presets = providerFamily.map { OfficialMediaModelCatalog.models(provider: $0, kind: kind) } ?? []
+        let descriptor = presets.first { $0.remoteModelID == model.remoteModelID }
+        Section {
+            if let descriptor {
+                if !descriptor.supportedAspectRatios.isEmpty {
+                    LabeledContent("支持比例", value: descriptor.supportedAspectRatios.joined(separator: "、"))
+                }
+                if !descriptor.supportedDurations.isEmpty {
+                    LabeledContent("支持时长", value: descriptor.supportedDurations.map { "\($0) 秒" }.joined(separator: "、"))
+                }
+                if !descriptor.supportedQualities.isEmpty {
+                    LabeledContent("质量", value: descriptor.supportedQualities.joined(separator: "、"))
+                }
+                if descriptor.maximumReferenceAssets > 0 {
+                    LabeledContent("参考素材", value: "最多 \(descriptor.maximumReferenceAssets) 个")
+                }
+                if descriptor.supportsAudio { Label("支持音频", systemImage: "speaker.wave.2") }
+                if descriptor.supportsWatermark { Label("支持水印设置", systemImage: "seal") }
+                if descriptor.supportsSeed { Label("支持随机种子", systemImage: "dice") }
+                if descriptor.supportsPromptOptimization { Label("支持提示词优化", systemImage: "wand.and.stars") }
+            } else {
+                Text("这是高级自定义媒体模型。尺寸、比例、时长和质量会在生成时按端点实际能力填写。")
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text(serviceRole == .video ? "视频能力" : "图片能力")
+        } footer: {
+            Text("媒体模型按官方接口能力配置，不使用对话上下文或输出 Token 设置。")
+        }
+    }
+
+    private var mediaProviderFamily: MediaProviderFamily? {
+        let id = model.remoteModelID.lowercased()
+        if id.contains("gpt-image") { return .openAI }
+        if id.contains("gemini") || id.contains("veo") { return .googleGemini }
+        if id.contains("seedream") || id.contains("seedance") || id.contains("doubao") { return .volcengineArk }
+        if id.contains("wan") || id.contains("qwen-image") { return .alibabaModelStudio }
+        return nil
     }
 }
 

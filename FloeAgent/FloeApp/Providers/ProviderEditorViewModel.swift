@@ -131,6 +131,23 @@ final class ProviderEditorViewModel: ObservableObject {
         selectedPreset.supportsModelDiscovery
     }
 
+    var officialMediaPresets: [MediaModelDescriptor] {
+        guard serviceRole != .conversation else { return [] }
+        let family: MediaProviderFamily?
+        switch selectedPreset.kind {
+        case .openAI: family = .openAI
+        case .googleGemini: family = .googleGemini
+        case .volcengineArk: family = .volcengineArk
+        case .alibabaStudio: family = .alibabaModelStudio
+        case .anthropic, .local, .custom: family = nil
+        }
+        guard let family else { return [] }
+        return OfficialMediaModelCatalog.models(
+            provider: family,
+            kind: serviceRole == .video ? .video : .image
+        )
+    }
+
     /// Loads the current secret-sync state for an existing provider.
     func load() async {
         guard existing != nil else {
@@ -396,6 +413,14 @@ final class ProviderEditorViewModel: ObservableObject {
         selectedModelIDs.insert(model.id)
     }
 
+    func addOfficialMediaPreset(_ descriptor: MediaModelDescriptor) {
+        if let existing = candidateModels.first(where: { $0.remoteModelID == descriptor.remoteModelID }) {
+            selectedModelIDs.insert(existing.id)
+            return
+        }
+        addManualModel(remoteID: descriptor.remoteModelID, displayName: descriptor.displayName)
+    }
+
     private static func presets(for role: ProviderServiceRole) -> [ProviderPreset] {
         switch role {
         case .conversation:
@@ -403,7 +428,7 @@ final class ProviderEditorViewModel: ObservableObject {
         case .image:
             [.openAIResponses, .volcengineArk, .alibabaStudio, .googleGemini, .custom]
         case .video:
-            [.openAIResponses, .volcengineArk, .googleGemini, .custom]
+            [.volcengineArk, .alibabaStudio, .googleGemini, .custom]
         }
     }
 

@@ -107,6 +107,13 @@ final class AppEnvironment: ObservableObject {
     private lazy var _skillDreamService = SkillDreamService(environment: self)
     private lazy var _speechService = SpeechService()
     private lazy var _backgroundRunCoordinator = BackgroundRunCoordinator(environment: self)
+    private lazy var _mediaGenerationService = MediaGenerationService(environment: self)
+    private lazy var _creativeAssetStore = CreativeAssetStore(database: database)
+    private lazy var _canvasSyncOperationStore = CanvasSyncOperationStore(database: database)
+    private lazy var _canvasCloudAssetService = CanvasCloudAssetService(
+        store: _creativeAssetStore,
+        operationStore: _canvasSyncOperationStore
+    )
     private lazy var _screenShareCenter = ScreenShareCenter(conversationCenter: _conversationCenter)
     private lazy var _backgroundVideoService = BackgroundVideoService()
     private lazy var _webSearchSettingsCenter = WebSearchSettingsCenter()
@@ -126,6 +133,10 @@ final class AppEnvironment: ObservableObject {
     var skillDreamService: SkillDreamService { _skillDreamService }
     var speechService: SpeechService { _speechService }
     var backgroundRunCoordinator: BackgroundRunCoordinator { _backgroundRunCoordinator }
+    var mediaGenerationService: MediaGenerationService { _mediaGenerationService }
+    var creativeAssetStore: CreativeAssetStore { _creativeAssetStore }
+    var canvasSyncOperationStore: CanvasSyncOperationStore { _canvasSyncOperationStore }
+    var canvasCloudAssetService: CanvasCloudAssetService { _canvasCloudAssetService }
     var screenShareCenter: ScreenShareCenter {
         let center = _screenShareCenter
         if center.onGuidanceChanged == nil {

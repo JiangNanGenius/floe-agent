@@ -38,11 +38,37 @@ public final class iPadBackgroundPolicy: PlatformBackgroundPolicy, @unchecked Se
             }
             Task { @MainActor in BackgroundPolicyRegistry.shared.handleProcessingTask(task) }
         }
+        _ = BackgroundTaskRegistrar.register(identifier: BackgroundTaskKind.mediaRefresh.rawValue) { task in
+            guard let task = task as? BGAppRefreshTask else {
+                task.setTaskCompleted(success: false); return
+            }
+            Task { @MainActor in BackgroundPolicyRegistry.shared.handleMediaRefreshTask(task) }
+        }
+        _ = BackgroundTaskRegistrar.register(identifier: BackgroundTaskKind.mediaProcessing.rawValue) { task in
+            guard let task = task as? BGProcessingTask else {
+                task.setTaskCompleted(success: false); return
+            }
+            Task { @MainActor in BackgroundPolicyRegistry.shared.handleMediaProcessingTask(task) }
+        }
     }
 
     public func scheduleRefresh(earliest: Date) {
         let request = BGAppRefreshTaskRequest(identifier: BackgroundTaskKind.refresh.rawValue)
         request.earliestBeginDate = earliest
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
+    public func scheduleMediaRefresh(earliest: Date) {
+        let request = BGAppRefreshTaskRequest(identifier: BackgroundTaskKind.mediaRefresh.rawValue)
+        request.earliestBeginDate = earliest
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
+    public func scheduleMediaProcessing(earliest: Date) {
+        let request = BGProcessingTaskRequest(identifier: BackgroundTaskKind.mediaProcessing.rawValue)
+        request.earliestBeginDate = earliest
+        request.requiresNetworkConnectivity = true
+        request.requiresExternalPower = false
         try? BGTaskScheduler.shared.submit(request)
     }
 

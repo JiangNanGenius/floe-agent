@@ -13,6 +13,10 @@ public enum BackgroundTaskKind: String, Sendable, CaseIterable {
     case refresh = "org.floeagent.ios.refresh"
     /// BGProcessingTask — audit compaction.
     case processing = "org.floeagent.ios.processing"
+    /// Media-only polling. Kept separate from config refresh and memory work.
+    case mediaRefresh = "org.floeagent.ios.media-refresh"
+    /// Media recovery/download preparation and urgent cloud release work.
+    case mediaProcessing = "org.floeagent.ios.media-processing"
     /// BGContinuedProcessingTask (iOS 26+) — foreground-initiated exports,
     /// image batches, remote bulk commands, with Live Activity progress.
     case continued = "org.floeagent.ios.continued.*"
@@ -115,6 +119,10 @@ public protocol PlatformBackgroundPolicy: Sendable {
     /// Schedules the next app-refresh wakeup.
     func scheduleRefresh(earliest: Date)
 
+    func scheduleMediaRefresh(earliest: Date)
+
+    func scheduleMediaProcessing(earliest: Date)
+
     /// Requests continued background processing for a foreground-initiated
     /// workload (iOS 26 BGContinuedProcessingTask with BGProcessingTask
     /// fallback).
@@ -141,6 +149,8 @@ public final class BackgroundPolicyRegistry {
     private var continuedTaskHandler: ((BGContinuedProcessingTask) -> Void)?
     private var refreshTaskHandler: ((BGAppRefreshTask) -> Void)?
     private var processingTaskHandler: ((BGProcessingTask) -> Void)?
+    private var mediaRefreshTaskHandler: ((BGAppRefreshTask) -> Void)?
+    private var mediaProcessingTaskHandler: ((BGProcessingTask) -> Void)?
 
     private init() {}
 
@@ -158,6 +168,14 @@ public final class BackgroundPolicyRegistry {
 
     public func scheduleRefresh(earliest: Date) {
         policy?.scheduleRefresh(earliest: earliest)
+    }
+
+    public func scheduleMediaRefresh(earliest: Date) {
+        policy?.scheduleMediaRefresh(earliest: earliest)
+    }
+
+    public func scheduleMediaProcessing(earliest: Date = Date()) {
+        policy?.scheduleMediaProcessing(earliest: earliest)
     }
 
     public func installRefreshTaskHandler(_ handler: @escaping (BGAppRefreshTask) -> Void) {
@@ -198,6 +216,30 @@ public final class BackgroundPolicyRegistry {
             return
         }
         processingTaskHandler(task)
+    }
+
+    public func installMediaRefreshTaskHandler(_ handler: @escaping (BGAppRefreshTask) -> Void) {
+        mediaRefreshTaskHandler = handler
+    }
+
+    public func handleMediaRefreshTask(_ task: BGAppRefreshTask) {
+        guard let mediaRefreshTaskHandler else {
+            task.setTaskCompleted(success: false)
+            return
+        }
+        mediaRefreshTaskHandler(task)
+    }
+
+    public func installMediaProcessingTaskHandler(_ handler: @escaping (BGProcessingTask) -> Void) {
+        mediaProcessingTaskHandler = handler
+    }
+
+    public func handleMediaProcessingTask(_ task: BGProcessingTask) {
+        guard let mediaProcessingTaskHandler else {
+            task.setTaskCompleted(success: false)
+            return
+        }
+        mediaProcessingTaskHandler(task)
     }
 
     public func beginShortCompletion(name: String) -> BackgroundExecutionLease? {
