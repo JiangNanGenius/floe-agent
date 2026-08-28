@@ -8,7 +8,7 @@ struct MediaGenerationJobStoreTests {
     @Test func migrationAndCrashRecoveryKeepProviderTaskIdentity() async throws {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
-        #expect(try await database.userVersion() == 27)
+        #expect(try await database.userVersion() == DatabaseManager.currentSchemaVersion)
 
         let configuration = ModelConfigurationStore(database: database)
         let provider = ProviderProfile(

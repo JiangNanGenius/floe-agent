@@ -2728,6 +2728,10 @@ final class ConversationCenter: ObservableObject {
         enabledAgentModels.filter(\.isVisibleInPrimaryPicker)
     }
 
+    var canvasAssistantModels: [ModelProfile] {
+        enabledAgentModels.filter { $0.capabilities.contains(.tools) }
+    }
+
     var imageModels: [ModelProfile] {
         let enabledProviderIDs = Set(providers.map(\.id))
         return modelsByProvider.values.flatMap { $0 }
@@ -2798,6 +2802,42 @@ final class ConversationCenter: ObservableObject {
         return (provider, model)
     }
 
+    /// Canvas uses its own stable routes so switching the chat model never
+    /// silently changes how a drawing is interpreted or which agent operates
+    /// on the board.
+    func canvasAssistantProviderAndModel() -> (ProviderProfile, ModelProfile)? {
+        let preferredID = modelPreferences.canvasAgentModelID
+            ?? modelPreferences.defaultAgentModelID
+        guard let model = preferredID.flatMap({ id in
+            enabledAgentModels.first(where: {
+                $0.id == id && $0.capabilities.contains(.tools)
+            })
+        }) ?? enabledAgentModels.first(where: { $0.capabilities.contains(.tools) }),
+              let provider = providers.first(where: { $0.id == model.providerID })
+        else { return nil }
+        return (provider, model)
+    }
+
+    func canvasVisionProviderAndModel() -> (ProviderProfile, ModelProfile)? {
+        let preferredID = modelPreferences.canvasVisionModelID
+            ?? modelPreferences.visionModelID
+        guard let model = preferredID.flatMap({ id in
+            visionModels.first(where: { $0.id == id })
+        }) ?? visionModels.first,
+              let provider = providers.first(where: { $0.id == model.providerID })
+        else { return nil }
+        return (provider, model)
+    }
+
+    func canvasVisionDestinationName() -> String? {
+        guard let (provider, model) = canvasVisionProviderAndModel() else { return nil }
+        let customName = provider.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let providerName = customName.flatMap { $0.isEmpty ? nil : $0 }
+            ?? provider.baseURL.host
+            ?? provider.kind.rawValue
+        return "\(model.displayName)（\(providerName)）"
+    }
+
     func screenAnalysisDestinationName() -> String? {
         guard let (provider, model) = auxiliaryVisionProviderAndModel() else { return nil }
         let customName = provider.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2845,6 +2885,28 @@ final class ConversationCenter: ObservableObject {
             mimeType: mimeType,
             prompt: prompt,
             traceID: UUID().uuidString
+        )
+    }
+
+    func describeCanvasImageResult(
+        base64: String,
+        mimeType: String,
+        prompt: String
+    ) async -> AuxiliaryVisionResult {
+        let traceID = UUID().uuidString
+        guard let (provider, model) = canvasVisionProviderAndModel() else {
+            FloeLogger(category: .app).warning(
+                "canvasVisionUnavailable trace=\(traceID) reason=noVisionCandidate"
+            )
+            return .failure(.noConfiguredModel)
+        }
+        return await describeImageResult(
+            base64: base64,
+            mimeType: mimeType,
+            prompt: prompt,
+            provider: provider,
+            model: model,
+            traceID: traceID
         )
     }
 

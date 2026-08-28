@@ -18,7 +18,13 @@ public enum AuxiliaryImageMode: String, Sendable, Codable, CaseIterable, Hashabl
 public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
     public var onboardingStatus: OnboardingStatus
     public var defaultAgentModelID: UUID?
+    /// Optional Canvas-specific assistant route. Nil inherits the ordinary
+    /// Agent default so a new user can open Canvas without extra setup.
+    public var canvasAgentModelID: UUID?
     public var visionModelID: UUID?
+    /// Optional Canvas-specific visual understanding route. Nil inherits the
+    /// auxiliary vision model selected above.
+    public var canvasVisionModelID: UUID?
     public var approvalModelID: UUID?
     /// Tool-free model used for managed Python package review. On-device
     /// format and sandbox checks remain authoritative.
@@ -36,7 +42,9 @@ public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
     public init(
         onboardingStatus: OnboardingStatus = .unseen,
         defaultAgentModelID: UUID? = nil,
+        canvasAgentModelID: UUID? = nil,
         visionModelID: UUID? = nil,
+        canvasVisionModelID: UUID? = nil,
         approvalModelID: UUID? = nil,
         packageReviewModelID: UUID? = nil,
         auxiliaryImageMode: AuxiliaryImageMode = .shared,
@@ -49,7 +57,9 @@ public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
     ) {
         self.onboardingStatus = onboardingStatus
         self.defaultAgentModelID = defaultAgentModelID
+        self.canvasAgentModelID = canvasAgentModelID
         self.visionModelID = visionModelID
+        self.canvasVisionModelID = canvasVisionModelID
         self.approvalModelID = approvalModelID
         self.packageReviewModelID = packageReviewModelID
         self.auxiliaryImageMode = auxiliaryImageMode

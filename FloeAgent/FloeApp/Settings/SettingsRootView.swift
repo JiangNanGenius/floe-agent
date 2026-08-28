@@ -13,7 +13,7 @@ import FloeCore
 
 /// One settings category in the settings center.
 enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case general, personalization, providers, auxiliary, localModels, webSearch, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sourceControl, sync, remote, usage, dataManagement, diagnostics
+    case general, personalization, providers, auxiliary, localModels, canvas, webSearch, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sourceControl, sync, remote, usage, dataManagement, diagnostics
 
     var id: String { rawValue }
 
@@ -25,6 +25,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .auxiliary: "settings.section.auxiliary"
         case .webSearch: "websearch.title"
         case .localModels: "localmodels.title"
+        case .canvas: "画布"
         case .permissions: "settings.section.permissions"
         case .appleCapabilities: "Apple 能力"
         case .privacy: "settings.section.privacy"
@@ -48,6 +49,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .auxiliary: "photo.badge.plus"
         case .webSearch: "magnifyingglass"
         case .localModels: "cpu"
+        case .canvas: "scribble.variable"
         case .permissions: "checkmark.shield"
         case .appleCapabilities: "apple.logo"
         case .privacy: "hand.raised"
@@ -136,6 +138,8 @@ struct SettingsRootView: View {
             WebSearchSettingsView(center: environment.webSearchSettingsCenter)
         case .localModels:
             LocalModelsSettingsView(center: environment.localModelsCenter)
+        case .canvas:
+            CanvasSettingsView(center: environment.conversationCenter)
         case .permissions:
             AgentPermissionsView(center: environment.settingsCenter)
         case .appleCapabilities:
@@ -167,6 +171,97 @@ struct SettingsRootView: View {
         case .diagnostics:
             DiagnosticsAboutView(center: environment.settingsCenter)
         }
+    }
+}
+
+private struct CanvasSettingsView: View {
+    @ObservedObject var center: ConversationCenter
+    @AppStorage("creative.canvas.sync.enabled") private var syncEnabled = true
+    @State private var preferences = CanvasPreferences.load()
+
+    var body: some View {
+        Form {
+            Section("模型") {
+                Picker("画布助手模型", selection: agentModelBinding) {
+                    Text("继承 Agent 默认模型").tag(Optional<UUID>.none)
+                    ForEach(center.canvasAssistantModels) { model in
+                        Text(model.displayName).tag(Optional(model.id))
+                    }
+                }
+                Picker("画面理解模型", selection: visionModelBinding) {
+                    Text("继承辅助视觉模型").tag(Optional<UUID>.none)
+                    ForEach(center.visionModels) { model in
+                        Text(model.displayName).tag(Optional(model.id))
+                    }
+                }
+                LabeledContent("当前理解路径") {
+                    Text(center.canvasVisionDestinationName() ?? "尚未配置")
+                        .foregroundStyle(.secondary)
+                }
+                Text("画布助手负责搜索、读取素材与调用生成工具；画面理解模型负责识别笔迹、草图和非多模态模型无法读取的视觉内容。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Apple Pencil") {
+                Picker("双击 Pencil", selection: $preferences.doubleTapAction) {
+                    Text("切换橡皮").tag(CanvasDoubleTapAction.toggleEraser)
+                    Text("打开画笔菜单").tag(CanvasDoubleTapAction.showToolPalette)
+                    Text("新建卡片").tag(CanvasDoubleTapAction.createCard)
+                }
+                Toggle("允许手指绘画", isOn: $preferences.fingerDrawingEnabled)
+                LabeledContent("默认粗细") {
+                    Slider(value: $preferences.pencilWidth, in: 1...18, step: 0.5)
+                        .frame(maxWidth: 260)
+                }
+            }
+
+            Section("理解与整理") {
+                Picker("默认整理方式", selection: $preferences.understandingMode) {
+                    Text("自动判断").tag(CanvasInkUnderstandingMode.automatic)
+                    Text("文字").tag(CanvasInkUnderstandingMode.text)
+                    Text("卡片").tag(CanvasInkUnderstandingMode.cards)
+                    Text("图表").tag(CanvasInkUnderstandingMode.diagram)
+                }
+                Toggle("整理后保留原笔迹", isOn: $preferences.preserveInkAfterConversion)
+                Text("只有在你点“理解并整理”或接受“转为卡片”建议时才会转换，原始手写不会被自动替换。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("画布") {
+                Toggle("显示网格", isOn: $preferences.showGrid)
+                Toggle("吸附到网格", isOn: $preferences.snapToGrid)
+                Toggle("跨设备同步画布", isOn: $syncEnabled)
+                Text("关闭同步只停止传输，不会删除已上传的画布或素材。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("画布")
+        .onChange(of: preferences) { _, value in value.save() }
+    }
+
+    private var agentModelBinding: Binding<UUID?> {
+        Binding(
+            get: { center.modelPreferences.canvasAgentModelID },
+            set: { modelID in
+                var value = center.modelPreferences
+                value.canvasAgentModelID = modelID
+                Task { try? await center.saveModelPreferences(value) }
+            }
+        )
+    }
+
+    private var visionModelBinding: Binding<UUID?> {
+        Binding(
+            get: { center.modelPreferences.canvasVisionModelID },
+            set: { modelID in
+                var value = center.modelPreferences
+                value.canvasVisionModelID = modelID
+                Task { try? await center.saveModelPreferences(value) }
+            }
+        )
     }
 }
 #endif

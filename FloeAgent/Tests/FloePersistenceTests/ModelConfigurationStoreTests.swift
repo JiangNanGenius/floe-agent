@@ -384,14 +384,18 @@ struct ModelConfigurationStoreTests {
         let preferences = ModelSelectionPreferences(
             onboardingStatus: .completed,
             defaultAgentModelID: agent.id,
+            canvasAgentModelID: agent.id,
             visionModelID: vision.id,
+            canvasVisionModelID: vision.id,
             auxiliaryImageMode: .shared,
             sharedImageModelID: image.id,
             defaultVideoModelID: video.id
         )
         try await store.savePreferences(preferences)
         #expect(try await store.preferences().defaultAgentModelID == agent.id)
+        #expect(try await store.preferences().canvasAgentModelID == agent.id)
         #expect(try await store.preferences().visionModelID == vision.id)
+        #expect(try await store.preferences().canvasVisionModelID == vision.id)
         #expect(try await store.preferences().sharedImageModelID == image.id)
         #expect(try await store.preferences().defaultVideoModelID == video.id)
 
@@ -400,6 +404,12 @@ struct ModelConfigurationStoreTests {
 
         try await store.deleteModel(id: video.id)
         #expect(try await store.preferences().defaultVideoModelID == nil)
+
+        try await store.deleteModel(id: agent.id)
+        #expect(try await store.preferences().canvasAgentModelID == nil)
+
+        try await store.deleteModel(id: vision.id)
+        #expect(try await store.preferences().canvasVisionModelID == nil)
     }
 
     @Test("Onboarding status persists independently from unfinished configuration")

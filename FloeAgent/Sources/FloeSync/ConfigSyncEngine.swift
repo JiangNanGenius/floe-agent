@@ -784,7 +784,9 @@ public actor ConfigSyncEngine {
         guard let configurationStore else { return [] }
         let selected = Set([
             preferences.defaultAgentModelID,
+            preferences.canvasAgentModelID,
             preferences.visionModelID,
+            preferences.canvasVisionModelID,
             preferences.approvalModelID,
             preferences.packageReviewModelID,
             preferences.sharedImageModelID,
@@ -806,8 +808,14 @@ public actor ConfigSyncEngine {
         if value.defaultAgentModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
             value.defaultAgentModelID = nil
         }
+        if value.canvasAgentModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
+            value.canvasAgentModelID = nil
+        }
         if value.visionModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
             value.visionModelID = nil
+        }
+        if value.canvasVisionModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
+            value.canvasVisionModelID = nil
         }
         if value.approvalModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
             value.approvalModelID = nil
@@ -842,7 +850,9 @@ public actor ConfigSyncEngine {
             id.flatMap { ProviderProfile.onDeviceModelIDs.contains($0) ? $0 : nil }
         }
         value.defaultAgentModelID = deviceValue(local.defaultAgentModelID) ?? value.defaultAgentModelID
+        value.canvasAgentModelID = deviceValue(local.canvasAgentModelID) ?? value.canvasAgentModelID
         value.visionModelID = deviceValue(local.visionModelID) ?? value.visionModelID
+        value.canvasVisionModelID = deviceValue(local.canvasVisionModelID) ?? value.canvasVisionModelID
         value.approvalModelID = deviceValue(local.approvalModelID) ?? value.approvalModelID
         value.packageReviewModelID = deviceValue(local.packageReviewModelID) ?? value.packageReviewModelID
         value.sharedImageModelID = deviceValue(local.sharedImageModelID) ?? value.sharedImageModelID

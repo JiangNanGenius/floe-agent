@@ -31,6 +31,18 @@ struct MemoryToolsTests {
         #expect(active.first?.originConversationID == taskID)
     }
 
+    @Test("memory.remember fails closed when task ownership is unavailable")
+    func rememberRequiresTaskOwner() async throws {
+        let store = FakeMemoryStore()
+        let tool = MemoryRememberTool(store: store) { _ in nil }
+        let output = try await tool.execute(
+            .init(content: "Must keep an owner"),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(output.exitStatus == 1)
+        #expect(await store.activeFor(.agentGlobal).isEmpty)
+    }
+
     @Test("memory.remember rejects empty content")
     func rememberValidation() async {
         let tool = MemoryRememberTool(store: FakeMemoryStore())

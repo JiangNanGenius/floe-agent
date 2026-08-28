@@ -69,7 +69,15 @@ public struct MemoryRememberTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        let ownerTaskID = try? await taskIDForRun(context.runID)
+        // A tool invocation always belongs to a durable run. Silently
+        // swallowing a lookup failure produced memories with no task origin,
+        // which then could not be explained or aged with their owner.
+        guard let ownerTaskID = try await taskIDForRun(context.runID) else {
+            return Self.output(
+                "status=failed error=memory owner task is unavailable",
+                exitStatus: 1
+            )
+        }
         let entry = MemoryEntry(
             scope: Self.parseScope(args.scope),
             status: .active,

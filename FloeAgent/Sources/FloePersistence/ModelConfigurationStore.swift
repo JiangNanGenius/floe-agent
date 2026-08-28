@@ -191,16 +191,19 @@ public actor ModelConfigurationStore {
                 sql: """
                     INSERT INTO model_preferences (
                         id, onboarding_status, default_agent_model_id,
-                        vision_model_id, approval_model_id, package_review_model_id,
+                        canvas_agent_model_id, vision_model_id, canvas_vision_model_id,
+                        approval_model_id, package_review_model_id,
                         auxiliary_image_mode, shared_image_model_id,
                         image_generation_model_id, image_editing_model_id,
                         default_video_model_id,
                         updated_at, sync_revision
-                    ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         onboarding_status = excluded.onboarding_status,
                         default_agent_model_id = excluded.default_agent_model_id,
+                        canvas_agent_model_id = excluded.canvas_agent_model_id,
                         vision_model_id = excluded.vision_model_id,
+                        canvas_vision_model_id = excluded.canvas_vision_model_id,
                         approval_model_id = excluded.approval_model_id,
                         package_review_model_id = excluded.package_review_model_id,
                         auxiliary_image_mode = excluded.auxiliary_image_mode,
@@ -214,7 +217,9 @@ public actor ModelConfigurationStore {
                 arguments: [
                     preferences.onboardingStatus.rawValue,
                     preferences.defaultAgentModelID?.uuidString,
+                    preferences.canvasAgentModelID?.uuidString,
                     preferences.visionModelID?.uuidString,
+                    preferences.canvasVisionModelID?.uuidString,
                     preferences.approvalModelID?.uuidString,
                     preferences.packageReviewModelID?.uuidString,
                     preferences.auxiliaryImageMode.rawValue,
@@ -442,7 +447,9 @@ enum ConfigurationCodec {
         return ModelSelectionPreferences(
             onboardingStatus: onboardingStatus,
             defaultAgentModelID: uuid("default_agent_model_id"),
+            canvasAgentModelID: uuid("canvas_agent_model_id"),
             visionModelID: uuid("vision_model_id"),
+            canvasVisionModelID: uuid("canvas_vision_model_id"),
             approvalModelID: uuid("approval_model_id"),
             packageReviewModelID: uuid("package_review_model_id"),
             auxiliaryImageMode: imageMode,
@@ -469,9 +476,17 @@ enum ConfigurationCodec {
            !capabilities.contains(.text) {
             throw FloeError.invalidConfiguration("Default agent model must support text")
         }
+        if let capabilities = try capabilities(for: preferences.canvasAgentModelID),
+           !(capabilities.contains(.text) && capabilities.contains(.tools)) {
+            throw FloeError.invalidConfiguration("Canvas assistant model must support text and tools")
+        }
         if let capabilities = try capabilities(for: preferences.visionModelID),
            !capabilities.contains(.vision) {
             throw FloeError.invalidConfiguration("Vision model must support image understanding")
+        }
+        if let capabilities = try capabilities(for: preferences.canvasVisionModelID),
+           !capabilities.contains(.vision) {
+            throw FloeError.invalidConfiguration("Canvas visual understanding model must support vision")
         }
         if let capabilities = try capabilities(for: preferences.approvalModelID),
            !capabilities.contains(.text) {

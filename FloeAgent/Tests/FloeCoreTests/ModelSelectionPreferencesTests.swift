@@ -4,6 +4,13 @@ import Testing
 
 @Suite("FloeCore.ModelSelectionPreferences")
 struct ModelSelectionPreferencesTests {
+    @Test("Canvas model routes inherit global defaults when unset")
+    func canvasRoutesDefaultToInheritance() {
+        let preferences = ModelSelectionPreferences()
+        #expect(preferences.canvasAgentModelID == nil)
+        #expect(preferences.canvasVisionModelID == nil)
+    }
+
     @Test("Shared image model splits only into supported roles")
     func sharedToSeparate() {
         let id = UUID()
