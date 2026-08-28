@@ -77,7 +77,9 @@ final class MemoryCenter: ObservableObject {
         do {
             try await environment.intelligenceStore.saveMemory(MemoryEntry(
                 scope: scope, status: .active, content: trimmed, confidence: 1,
-                importance: 0.8, isPinned: true, sourceKind: .explicitUserRequest
+                importance: 0.8, isPinned: true, sourceKind: .explicitUserRequest,
+                originConversationID: environment.browserCenter.conversationID,
+                originWorkspaceID: environment.workspaceCenter.currentWorkspace?.id
             ), evidence: [])
             await load()
         } catch { errorMessage = error.localizedDescription }
@@ -414,6 +416,14 @@ private struct MemoryEntryDetailView: View {
                 LabeledContent("状态", value: entry.status.rawValue)
                 LabeledContent("重要性", value: entry.importance, format: .percent)
                 LabeledContent("置信度", value: entry.confidence, format: .percent)
+                if let taskID = entry.originConversationID {
+                    LabeledContent("归属任务 ID", value: taskID.uuidString)
+                        .textSelection(.enabled)
+                }
+                if let workspaceID = entry.originWorkspaceID {
+                    LabeledContent("归属工作区 ID", value: workspaceID.uuidString)
+                        .textSelection(.enabled)
+                }
             }
             Section {
                 Button("删除记忆", role: .destructive) {

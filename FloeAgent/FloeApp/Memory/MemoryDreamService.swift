@@ -133,7 +133,9 @@ final class MemoryDreamService {
                 origin: .automaticTurnReview,
                 evidence: evidenceMessage.map {
                     [MemoryEvidenceReference(messageID: $0.id, excerpt: String($0.content.prefix(512)))]
-                } ?? []
+                } ?? [],
+                originConversationID: conversationID,
+                originWorkspaceID: workspaceID
             )
             try? await environment.memoryCandidatePipeline.submit(
                 candidate,

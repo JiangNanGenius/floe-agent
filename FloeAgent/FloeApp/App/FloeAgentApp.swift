@@ -57,6 +57,110 @@ struct FloeAgentApp: App {
                 .environmentObject(environment.speechService)
                 .task { await environment.bootstrap() }
         }
+        .commands {
+            FloeAgentCommands(router: router)
+        }
+    }
+}
+
+/// Hardware-keyboard command surface shared by iPad and Mac Catalyst-style
+/// keyboard navigation. Canvas editing shortcuts intentionally use Option for
+/// node-level operations so normal text editing keeps Command-C/V/Z semantics.
+private struct FloeAgentCommands: Commands {
+    let router: AppRouter
+    @FocusedValue(\.canvasKeyboardActions) private var canvas
+
+    var body: some Commands {
+        CommandGroup(after: .newItem) {
+            Button("新建任务") { router.startNewTask() }
+                .keyboardShortcut("n", modifiers: .command)
+        }
+
+        CommandMenu("导航") {
+            Button("工作台") { router.navigate(to: .home) }
+                .keyboardShortcut("1", modifiers: [.command, .shift])
+            Button("创意模式") { router.openMore(.creative) }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+            Button("任务中心") { router.openMore(.runs) }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+            Button("文件") { router.navigate(to: .files) }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+            Divider()
+            Button("设置") { router.presentedSettings = true }
+                .keyboardShortcut(",", modifiers: .command)
+        }
+
+        CommandMenu("画布") {
+            Button("画布撤销") { canvas?.undo() }
+                .keyboardShortcut("z", modifiers: [.command, .option])
+                .disabled(canvas?.canUndo != true)
+            Button("画布重做") { canvas?.redo() }
+                .keyboardShortcut("z", modifiers: [.command, .option, .shift])
+                .disabled(canvas?.canRedo != true)
+            Divider()
+            Button("选择工具") { canvas?.chooseTool(0) }
+                .keyboardShortcut("1", modifiers: .option)
+            Button("移动画布") { canvas?.chooseTool(1) }
+                .keyboardShortcut("2", modifiers: .option)
+            Button("Apple Pencil") { canvas?.chooseTool(2) }
+                .keyboardShortcut("3", modifiers: .option)
+            Button("橡皮") { canvas?.chooseTool(3) }
+                .keyboardShortcut("4", modifiers: .option)
+            Button("文本") { canvas?.chooseTool(4) }
+                .keyboardShortcut("5", modifiers: .option)
+            Button("形状") { canvas?.chooseTool(5) }
+                .keyboardShortcut("6", modifiers: .option)
+            Button("连接线") { canvas?.chooseTool(6) }
+                .keyboardShortcut("7", modifiers: .option)
+            Divider()
+            Button("复制所选节点") { canvas?.copy() }
+                .keyboardShortcut("c", modifiers: [.command, .option])
+                .disabled(canvas?.hasNodeSelection != true)
+            Button("粘贴画布节点") { canvas?.paste() }
+                .keyboardShortcut("v", modifiers: [.command, .option])
+                .disabled(canvas == nil)
+            Button("复制副本") { canvas?.duplicate() }
+                .keyboardShortcut("d", modifiers: .command)
+                .disabled(canvas?.hasNodeSelection != true)
+            Button("选择全部画布内容") { canvas?.selectAll() }
+                .keyboardShortcut("a", modifiers: [.command, .option])
+                .disabled(canvas == nil)
+            Button("删除所选画布内容") { canvas?.delete() }
+                .keyboardShortcut(.delete, modifiers: .option)
+                .disabled(canvas?.hasNodeSelection != true && canvas?.hasInkSelection != true)
+            Button("编组") { canvas?.group() }
+                .keyboardShortcut("g", modifiers: [.command, .option])
+                .disabled(canvas?.hasNodeSelection != true)
+            Button("取消编组") { canvas?.ungroup() }
+                .keyboardShortcut("g", modifiers: [.command, .option, .shift])
+                .disabled(canvas?.hasNodeSelection != true)
+            Button("理解并整理笔迹") { canvas?.interpretInk() }
+                .keyboardShortcut(.return, modifiers: [.command, .option])
+                .disabled(canvas?.hasInkSelection != true)
+            Divider()
+            Button("向左微移") { canvas?.nudge(-4, 0) }
+                .keyboardShortcut(.leftArrow, modifiers: .option)
+                .disabled(canvas?.hasNodeSelection != true)
+            Button("向右微移") { canvas?.nudge(4, 0) }
+                .keyboardShortcut(.rightArrow, modifiers: .option)
+                .disabled(canvas?.hasNodeSelection != true)
+            Button("向上微移") { canvas?.nudge(0, -4) }
+                .keyboardShortcut(.upArrow, modifiers: .option)
+                .disabled(canvas?.hasNodeSelection != true)
+            Button("向下微移") { canvas?.nudge(0, 4) }
+                .keyboardShortcut(.downArrow, modifiers: .option)
+                .disabled(canvas?.hasNodeSelection != true)
+            Divider()
+            Button("放大") { canvas?.zoomIn() }
+                .keyboardShortcut("+", modifiers: .command)
+                .disabled(canvas == nil)
+            Button("缩小") { canvas?.zoomOut() }
+                .keyboardShortcut("-", modifiers: .command)
+                .disabled(canvas == nil)
+            Button("适合画布") { canvas?.resetView() }
+                .keyboardShortcut("0", modifiers: .command)
+                .disabled(canvas == nil)
+        }
     }
 }
 

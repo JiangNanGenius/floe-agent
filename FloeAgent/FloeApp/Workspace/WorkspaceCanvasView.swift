@@ -403,6 +403,75 @@ private struct FloeCanvasStroke: Codable, Hashable, Identifiable {
     var color: String = "primary"
 }
 
+private enum CanvasInkOutputPreference: String, CaseIterable, Identifiable {
+    case automatic, cleanText, cards, diagram, wireframe
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .automatic: "自动判断"
+        case .cleanText: "整理文字"
+        case .cards: "便签卡片"
+        case .diagram: "流程／思维图"
+        case .wireframe: "界面草图"
+        }
+    }
+
+    var instruction: String {
+        switch self {
+        case .automatic: "Infer the most useful structured layout from the ink."
+        case .cleanText: "Convert handwriting into clean, faithfully ordered text notes."
+        case .cards: "Convert the ideas into concise grouped sticky-note cards."
+        case .diagram: "Convert the intent into a flowchart or mind map with explicit connections."
+        case .wireframe: "Convert the sketch into a simple interface wireframe using labeled shapes."
+        }
+    }
+}
+
+private struct CanvasInkPlanNode: Codable, Hashable, Identifiable {
+    var id: String
+    var kind: String
+    var text: String
+    var x: Double
+    var y: Double
+    var width: Double
+    var height: Double
+    var shape: String?
+}
+
+private struct CanvasInkPlanConnection: Codable, Hashable {
+    var from: String
+    var to: String
+    var label: String?
+}
+
+private struct CanvasInkInterpretation: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var summary: String
+    var layout: String
+    var confidence: Double
+    var nodes: [CanvasInkPlanNode]
+    var connections: [CanvasInkPlanConnection]
+    var sourceBounds: CGRect = .zero
+    var routeDescription: String = "辅助视觉模型"
+
+    private enum CodingKeys: String, CodingKey {
+        case summary, layout, confidence, nodes, connections
+    }
+}
+
+private struct CanvasInkCapture {
+    let imageData: Data
+    let pixelWidth: Int
+    let pixelHeight: Int
+    let canvasBounds: CGRect
+}
+
+private struct CanvasNodeClipboard: Codable {
+    let nodes: [FloeCanvasNode]
+    let connections: [CanvasConnection]
+}
+
 private struct FloeCanvasNode: Codable, Hashable, Identifiable {
     var id = UUID()
     var text: String
@@ -423,6 +492,7 @@ private struct FloeCanvasNode: Codable, Hashable, Identifiable {
     var shape: CanvasShapeKind?
     var asset: CanvasAssetReference?
     var generationJobID: UUID?
+    var metadata: [String: String]?
 }
 
 private struct FloeCanvasDocument: Codable, Hashable, Identifiable {
@@ -844,15 +914,19 @@ private final class WorkspaceCanvasStore: ObservableObject {
         return id
     }
 
-    func addShape(at point: CGPoint) {
+    @discardableResult
+    func addShape(at point: CGPoint) -> UUID {
+        let id = UUID()
         mutateSelectedDocument { document in
             document.nodes.append(FloeCanvasNode(
+                id: id,
                 text: "",
                 x: point.x, y: point.y, width: 220, height: 140,
                 kind: .shape, rotation: 0, zIndex: document.nodes.count,
                 isLocked: false, shape: .roundedRectangle
             ))
         }
+        return id
     }
 
     @discardableResult
@@ -972,6 +1046,87 @@ private final class WorkspaceCanvasStore: ObservableObject {
         return created
     }
 
+    func clipboardData(for ids: Set<UUID>) throws -> Data {
+        guard let document = selectedDocument else {
+            throw FloeError.validationFailed("当前没有可复制的画布。")
+        }
+        let nodes = document.nodes.filter { ids.contains($0.id) }
+        guard !nodes.isEmpty else {
+            throw FloeError.validationFailed("请先选择节点。")
+        }
+        let connections = (document.connections ?? []).filter {
+            ids.contains($0.sourceNodeID) && ids.contains($0.destinationNodeID)
+        }
+        return try JSONEncoder().encode(CanvasNodeClipboard(
+            nodes: nodes,
+            connections: connections
+        ))
+    }
+
+    func pasteNodes(from data: Data, offset: CGSize = CGSize(width: 44, height: 44)) throws -> Set<UUID> {
+        let clipboard = try JSONDecoder().decode(CanvasNodeClipboard.self, from: data)
+        guard !clipboard.nodes.isEmpty else { return [] }
+        var mapping: [UUID: UUID] = [:]
+        var created = Set<UUID>()
+        var referencedAssets: [UUID] = []
+        mutateSelectedDocument { document in
+            for var node in clipboard.nodes {
+                let oldID = node.id
+                node.id = UUID()
+                node.x += offset.width
+                node.y += offset.height
+                node.zIndex = (document.nodes.compactMap(\.zIndex).max() ?? 0) + 1
+                mapping[oldID] = node.id
+                created.insert(node.id)
+                if let assetID = node.asset?.id { referencedAssets.append(assetID) }
+                document.nodes.append(node)
+            }
+            var connections = document.connections ?? []
+            for connection in clipboard.connections {
+                guard let source = mapping[connection.sourceNodeID],
+                      let destination = mapping[connection.destinationNodeID] else { continue }
+                connections.append(CanvasConnection(
+                    sourceNodeID: source,
+                    destinationNodeID: destination,
+                    kind: connection.kind,
+                    label: connection.label
+                ))
+            }
+            document.connections = connections
+        }
+        for assetID in referencedAssets {
+            Task { try? await creativeAssetStore?.adjustReference(assetID: assetID, by: 1) }
+        }
+        return created
+    }
+
+    func deleteNodes(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        let assetIDs = selectedDocument?.nodes
+            .filter { ids.contains($0.id) }
+            .compactMap(\.asset?.id) ?? []
+        mutateSelectedDocument { document in
+            document.nodes.removeAll { ids.contains($0.id) }
+            document.connections?.removeAll {
+                ids.contains($0.sourceNodeID) || ids.contains($0.destinationNodeID)
+            }
+        }
+        for assetID in assetIDs {
+            Task { try? await creativeAssetStore?.adjustReference(assetID: assetID, by: -1) }
+        }
+    }
+
+    func nudgeNodes(_ ids: Set<UUID>, dx: Double, dy: Double) {
+        guard !ids.isEmpty else { return }
+        mutateSelectedDocument { document in
+            for index in document.nodes.indices
+            where ids.contains(document.nodes[index].id) && document.nodes[index].isLocked != true {
+                document.nodes[index].x += dx
+                document.nodes[index].y += dy
+            }
+        }
+    }
+
     func setLocked(_ ids: Set<UUID>, locked: Bool) {
         mutateSelectedDocument { document in
             for index in document.nodes.indices where ids.contains(document.nodes[index].id) {
@@ -1056,9 +1211,9 @@ private final class WorkspaceCanvasStore: ObservableObject {
         persist()
     }
 
-    func beginStroke(at point: CGPoint) -> UUID {
+    func beginStroke(at point: CGPoint, width: Double = 3, color: String = "primary") -> UUID {
         beginInteractiveMutation()
-        let stroke = FloeCanvasStroke(points: [FloeCanvasPoint(point)])
+        let stroke = FloeCanvasStroke(points: [FloeCanvasPoint(point)], width: width, color: color)
         mutateSelectedDocument(persistAfter: false) { $0.strokes.append(stroke) }
         return stroke.id
     }
@@ -1174,6 +1329,139 @@ private final class WorkspaceCanvasStore: ObservableObject {
 
     func clearDrawing() {
         mutateSelectedDocument { $0.strokes.removeAll() }
+    }
+
+    func removeStrokes(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        mutateSelectedDocument { document in
+            document.strokes.removeAll { ids.contains($0.id) }
+        }
+    }
+
+    func inkCapture(strokeIDs: Set<UUID>) throws -> CanvasInkCapture {
+        guard let document = selectedDocument else {
+            throw FloeError.validationFailed("当前没有画布。")
+        }
+        let strokes = document.strokes.filter { strokeIDs.contains($0.id) && $0.points.count > 1 }
+        guard !strokes.isEmpty else {
+            throw FloeError.validationFailed("请先画一些内容，或框选已有笔迹。")
+        }
+        let points = strokes.flatMap(\.points).map(\.cgPoint)
+        let rawBounds = points.reduce(CGRect.null) {
+            $0.union(CGRect(x: $1.x, y: $1.y, width: 1, height: 1))
+        }
+        guard !rawBounds.isNull else {
+            throw FloeError.validationFailed("所选笔迹没有可识别内容。")
+        }
+        let canvasBounds = rawBounds.insetBy(dx: -32, dy: -32)
+        let maximumDimension = 2_048.0
+        let minimumScale = 1.6
+        let renderScale = min(4, max(minimumScale, maximumDimension / max(canvasBounds.width, canvasBounds.height)))
+        let size = CGSize(
+            width: max(32, canvasBounds.width * renderScale),
+            height: max(32, canvasBounds.height * renderScale)
+        )
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { output in
+            UIColor.white.setFill()
+            output.fill(CGRect(origin: .zero, size: size))
+            let context = output.cgContext
+            context.saveGState()
+            context.scaleBy(x: renderScale, y: renderScale)
+            context.translateBy(x: -canvasBounds.minX, y: -canvasBounds.minY)
+            context.setLineCap(.round)
+            context.setLineJoin(.round)
+            context.setStrokeColor(UIColor.black.cgColor)
+            for stroke in strokes {
+                context.setLineWidth(max(1.5, stroke.width))
+                context.beginPath()
+                context.move(to: stroke.points[0].cgPoint)
+                for point in stroke.points.dropFirst() {
+                    context.addLine(to: point.cgPoint)
+                }
+                context.strokePath()
+            }
+            context.restoreGState()
+        }
+        guard let data = image.pngData() else {
+            throw FloeError.internalError("无法生成笔迹预览。")
+        }
+        return CanvasInkCapture(
+            imageData: data,
+            pixelWidth: Int(size.width),
+            pixelHeight: Int(size.height),
+            canvasBounds: canvasBounds
+        )
+    }
+
+    func applyInkInterpretation(
+        _ interpretation: CanvasInkInterpretation,
+        strokeIDs: Set<UUID>,
+        preserveOriginal: Bool
+    ) -> Set<UUID> {
+        guard !interpretation.nodes.isEmpty else { return [] }
+        let source = interpretation.sourceBounds
+        let targetSize = CGSize(
+            width: max(480, min(1_400, source.width * 1.25)),
+            height: max(320, min(1_100, source.height * 1.25))
+        )
+        let targetOrigin = preserveOriginal
+            ? CGPoint(x: source.maxX + 72, y: source.minY)
+            : source.origin
+        let groupID = UUID()
+        var mapping: [String: UUID] = [:]
+        var created = Set<UUID>()
+        mutateSelectedDocument { document in
+            let firstZ = (document.nodes.compactMap(\.zIndex).max() ?? 0) + 1
+            for (offset, planned) in interpretation.nodes.prefix(40).enumerated() {
+                let id = UUID()
+                let kind = CanvasNodeKind(rawValue: planned.kind) ?? .stickyNote
+                let shape = planned.shape.flatMap(CanvasShapeKind.init(rawValue:))
+                let width = min(640, max(120, planned.width * targetSize.width))
+                let height = min(520, max(70, planned.height * targetSize.height))
+                let node = FloeCanvasNode(
+                    id: id,
+                    text: planned.text,
+                    x: targetOrigin.x + min(1, max(0, planned.x)) * targetSize.width,
+                    y: targetOrigin.y + min(1, max(0, planned.y)) * targetSize.height,
+                    width: width,
+                    height: height,
+                    kind: kind,
+                    rotation: 0,
+                    zIndex: firstZ + offset,
+                    isLocked: false,
+                    groupID: groupID,
+                    shape: kind == .shape ? (shape ?? .roundedRectangle) : nil,
+                    metadata: [
+                        "inkInterpretation": interpretation.summary,
+                        "inkLayout": interpretation.layout,
+                        "inkRoute": interpretation.routeDescription,
+                        "convertedFromStrokeIDs": strokeIDs.map(\.uuidString).sorted().joined(separator: ",")
+                    ]
+                )
+                document.nodes.append(node)
+                mapping[planned.id] = id
+                created.insert(id)
+            }
+            var connections = document.connections ?? []
+            for planned in interpretation.connections.prefix(60) {
+                guard let sourceID = mapping[planned.from], let targetID = mapping[planned.to],
+                      sourceID != targetID else { continue }
+                connections.append(CanvasConnection(
+                    sourceNodeID: sourceID,
+                    destinationNodeID: targetID,
+                    kind: .arrow,
+                    label: planned.label
+                ))
+            }
+            document.connections = connections
+            if !preserveOriginal {
+                document.strokes.removeAll { strokeIDs.contains($0.id) }
+            }
+        }
+        return created
     }
 
     func exportData(_ format: ExportFormat) throws -> Data {
@@ -1348,6 +1636,39 @@ private final class WorkspaceCanvasStore: ObservableObject {
     }
 }
 
+struct CanvasKeyboardActions {
+    var canUndo = false
+    var canRedo = false
+    var hasNodeSelection = false
+    var hasInkSelection = false
+    let undo: () -> Void
+    let redo: () -> Void
+    let copy: () -> Void
+    let paste: () -> Void
+    let duplicate: () -> Void
+    let delete: () -> Void
+    let selectAll: () -> Void
+    let group: () -> Void
+    let ungroup: () -> Void
+    let interpretInk: () -> Void
+    let chooseTool: (Int) -> Void
+    let zoomIn: () -> Void
+    let zoomOut: () -> Void
+    let resetView: () -> Void
+    let nudge: (Double, Double) -> Void
+}
+
+private struct CanvasKeyboardActionsKey: FocusedValueKey {
+    typealias Value = CanvasKeyboardActions
+}
+
+extension FocusedValues {
+    var canvasKeyboardActions: CanvasKeyboardActions? {
+        get { self[CanvasKeyboardActionsKey.self] }
+        set { self[CanvasKeyboardActionsKey.self] = newValue }
+    }
+}
+
 struct WorkspaceCanvasView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
@@ -1355,7 +1676,16 @@ struct WorkspaceCanvasView: View {
     @StateObject private var store: WorkspaceCanvasStore
     private let workspace: WorkspaceRecord?
     @State private var selectedNodeIDs = Set<UUID>()
+    @State private var selectedStrokeIDs = Set<UUID>()
     @State private var mode: CanvasMode = .select
+    @State private var pencilWidth = 3.0
+    @State private var pencilColor = "primary"
+    @State private var inkOutputPreference: CanvasInkOutputPreference = .automatic
+    @State private var inkInterpretation: CanvasInkInterpretation?
+    @State private var inkInterpretationSourceIDs = Set<UUID>()
+    @State private var isInterpretingInk = false
+    @State private var preservesInkAfterConversion = true
+    @State private var inkInterpretationError: String?
     @State private var scale = 1.0
     @State private var scaleStart = 1.0
     @State private var pan = CGSize.zero
@@ -1364,6 +1694,8 @@ struct WorkspaceCanvasView: View {
     @State private var activeStrokeID: UUID?
     @State private var showsDocuments = true
     @State private var showsAgent = false
+    @State private var isAgentCollapsed = false
+    @State private var agentPanelOffset = CGSize.zero
     @State private var showsMaterials = false
     @State private var connectionStartID: UUID?
     @State private var showsGeneration = false
@@ -1375,6 +1707,8 @@ struct WorkspaceCanvasView: View {
     @State private var exportDocument: CanvasBinaryDocument?
     @State private var exportContentType: UTType = .floeCanvasPackage
     @State private var exportFilename = "Floe 画布"
+
+    private static let nodePasteboardType = "org.floeagent.canvas.nodes"
 
     private enum CanvasMode: String, CaseIterable, Identifiable {
         case select, hand, pencil, eraser, text, shape, connector
@@ -1432,10 +1766,6 @@ struct WorkspaceCanvasView: View {
             Button("返回创意模式") { dismiss() }
         } message: {
             Text("云端删除已经确认。当前设备不会重新上传这份旧画布。")
-        }
-        .sheet(isPresented: $showsAgent) {
-            CanvasAgentSheet(store: store, workspace: workspace)
-                .environmentObject(environment)
         }
         .sheet(isPresented: $showsMaterials) {
             NavigationStack {
@@ -1501,6 +1831,22 @@ struct WorkspaceCanvasView: View {
                 Task { await store.synchronizeFromCloud(environment.canvasCloudAssetService) }
             }
         }
+        .onChange(of: mode) { oldMode, newMode in
+            if newMode == .pencil, oldMode != .pencil {
+                selectedNodeIDs.removeAll()
+                selectedStrokeIDs.removeAll()
+            }
+            UISelectionFeedbackGenerator().selectionChanged()
+        }
+        .focusedValue(\.canvasKeyboardActions, keyboardActions)
+        .alert("无法整理笔迹", isPresented: Binding(
+            get: { inkInterpretationError != nil },
+            set: { if !$0 { inkInterpretationError = nil } }
+        )) {
+            Button("完成", role: .cancel) { inkInterpretationError = nil }
+        } message: {
+            Text(inkInterpretationError ?? "未知错误")
+        }
     }
 
     private var documentSidebar: some View {
@@ -1552,9 +1898,12 @@ struct WorkspaceCanvasView: View {
                 if let document = store.selectedDocument {
                     connectionLayer(document)
                     drawingLayer(document)
+                    interactionLayer(size: geometry.size)
                     nodeLayer(document)
+                        .allowsHitTesting(mode == .select || mode == .connector)
+                } else {
+                    interactionLayer(size: geometry.size)
                 }
-                interactionLayer(size: geometry.size)
                 if let marqueeStart, let marqueeCurrent {
                     let rect = CGRect(
                         x: min(marqueeStart.x, marqueeCurrent.x),
@@ -1569,6 +1918,66 @@ struct WorkspaceCanvasView: View {
                         .position(x: rect.midX, y: rect.midY)
                         .allowsHitTesting(false)
                 }
+                if showsAgent {
+                    CanvasAgentFloatingPanel(
+                        store: store,
+                        workspace: workspace,
+                        availableSize: geometry.size,
+                        offset: $agentPanelOffset,
+                        isCollapsed: $isAgentCollapsed,
+                        onClose: {
+                            withAnimation(.snappy) { showsAgent = false }
+                        }
+                    )
+                    .environmentObject(environment)
+                    .frame(
+                        width: min(420, max(280, geometry.size.width - 24)),
+                        height: isAgentCollapsed
+                            ? 52
+                            : min(680, max(300, geometry.size.height - 96))
+                    )
+                    .offset(agentPanelOffset)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .zIndex(20)
+                }
+                if isInterpretingInk {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("正在理解笔迹").font(.headline)
+                            Text("先识别内容与关系，再生成可编辑节点")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 14)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .shadow(radius: 12, y: 4)
+                    .transition(.scale.combined(with: .opacity))
+                    .zIndex(30)
+                } else if let inkInterpretation {
+                    CanvasInkInterpretationPanel(
+                        interpretation: inkInterpretation,
+                        preservesOriginal: $preservesInkAfterConversion,
+                        onApply: applyInkInterpretation,
+                        onRetry: interpretSelectedInk,
+                        onCancel: {
+                            withAnimation(.snappy) { self.inkInterpretation = nil }
+                        }
+                    )
+                    .frame(width: min(430, max(300, geometry.size.width - 32)))
+                    .padding(.bottom, 76)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(30)
+                }
+                CanvasPencilInteractionBridge {
+                    withAnimation(.snappy) {
+                        mode = mode == .eraser ? .pencil : .eraser
+                    }
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                }
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
             }
             .clipped()
             .overlay(alignment: .bottomTrailing) { zoomControls }
@@ -1589,7 +1998,10 @@ struct WorkspaceCanvasView: View {
                         Button("重做", systemImage: "arrow.uturn.forward") { store.redo() }
                             .disabled(!store.canRedo)
                         Button {
-                            showsAgent = true
+                            withAnimation(.snappy) {
+                                showsAgent = true
+                                isAgentCollapsed = false
+                            }
                         } label: {
                             Label("画布助手", systemImage: "sparkles")
                         }
@@ -1616,7 +2028,8 @@ struct WorkspaceCanvasView: View {
                             ))
                             if !selectedNodeIDs.isEmpty {
                                 Button("属性") { showsInspector = true }
-                                Button("复制") { selectedNodeIDs = store.duplicateNodes(selectedNodeIDs) }
+                                Button("复制到剪贴板", action: copySelection)
+                                Button("复制副本") { selectedNodeIDs = store.duplicateNodes(selectedNodeIDs) }
                                 Button("分组") { store.group(selectedNodeIDs) }
                                 Button("取消分组") { store.ungroup(selectedNodeIDs) }
                                 Button("锁定") { store.setLocked(selectedNodeIDs, locked: true) }
@@ -1636,6 +2049,14 @@ struct WorkspaceCanvasView: View {
                                 Menu("层级") {
                                     Button("移到最前") { store.changeLayer(selectedNodeIDs, bringToFront: true) }
                                     Button("移到最后") { store.changeLayer(selectedNodeIDs, bringToFront: false) }
+                                }
+                                Button("删除所选节点", role: .destructive, action: deleteSelection)
+                            }
+                            if !selectedStrokeIDs.isEmpty {
+                                Button("整理所选笔迹", systemImage: "wand.and.rays", action: interpretSelectedInk)
+                                Button("删除所选笔迹", role: .destructive) {
+                                    store.removeStrokes(selectedStrokeIDs)
+                                    selectedStrokeIDs.removeAll()
                                 }
                             }
                             Menu("导出") {
@@ -1679,12 +2100,18 @@ struct WorkspaceCanvasView: View {
     private func drawingLayer(_ document: FloeCanvasDocument) -> some View {
         Canvas { context, _ in
             for stroke in document.strokes where stroke.points.count > 1 {
-                var path = Path()
-                if let first = stroke.points.first {
-                    path.move(to: screenPoint(first.cgPoint))
-                    for point in stroke.points.dropFirst() {
-                        path.addLine(to: screenPoint(point.cgPoint))
-                    }
+                let points = stroke.points.map { screenPoint($0.cgPoint) }
+                let path = Self.smoothedPath(points)
+                if selectedStrokeIDs.contains(stroke.id) {
+                    context.stroke(
+                        path,
+                        with: .color(FloeTheme.primary.opacity(0.28)),
+                        style: StrokeStyle(
+                            lineWidth: (stroke.width + 8) * scale,
+                            lineCap: .round,
+                            lineJoin: .round
+                        )
+                    )
                 }
                 context.stroke(
                     path,
@@ -1698,6 +2125,27 @@ struct WorkspaceCanvasView: View {
             }
         }
         .allowsHitTesting(false)
+    }
+
+    private static func smoothedPath(_ points: [CGPoint]) -> Path {
+        var path = Path()
+        guard let first = points.first else { return path }
+        path.move(to: first)
+        guard points.count > 2 else {
+            if let last = points.last { path.addLine(to: last) }
+            return path
+        }
+        for index in 1..<points.count {
+            let current = points[index]
+            let previous = points[index - 1]
+            let midpoint = CGPoint(
+                x: (previous.x + current.x) / 2,
+                y: (previous.y + current.y) / 2
+            )
+            path.addQuadCurve(to: midpoint, control: previous)
+        }
+        if let last = points.last { path.addLine(to: last) }
+        return path
     }
 
     private func connectionLayer(_ document: FloeCanvasDocument) -> some View {
@@ -1744,7 +2192,6 @@ struct WorkspaceCanvasView: View {
                         selectedNodeIDs.remove(node.id)
                     } else {
                         selectedNodeIDs.insert(node.id)
-                        if nodeDragOrigins[node.id] == nil { store.beginInteractiveMutation() }
                     }
                 }
             }
@@ -1796,7 +2243,13 @@ struct WorkspaceCanvasView: View {
                                 if let activeStrokeID {
                                     store.appendPoint(point, to: activeStrokeID)
                                 } else {
-                                    activeStrokeID = store.beginStroke(at: point)
+                                    let newID = store.beginStroke(
+                                        at: point,
+                                        width: pencilWidth,
+                                        color: pencilColor
+                                    )
+                                    activeStrokeID = newID
+                                    selectedStrokeIDs.insert(newID)
                                 }
                             }
                         case .select:
@@ -1823,6 +2276,16 @@ struct WorkspaceCanvasView: View {
                                     width: $0.width, height: $0.height
                                 ))
                             }.map(\.id) ?? [])
+                            selectedStrokeIDs = Set(store.selectedDocument?.strokes.filter { stroke in
+                                let points = stroke.points.map(\.cgPoint)
+                                guard let first = points.first else { return false }
+                                let bounds = points.dropFirst().reduce(
+                                    CGRect(x: first.x, y: first.y, width: 1, height: 1)
+                                ) { partial, point in
+                                    partial.union(CGRect(x: point.x, y: point.y, width: 1, height: 1))
+                                }
+                                return rect.intersects(bounds)
+                            }.map(\.id) ?? [])
                             marqueeStart = nil; marqueeCurrent = nil
                         }
                     }
@@ -1836,34 +2299,86 @@ struct WorkspaceCanvasView: View {
                         scaleStart = scale
                     }
             )
-            .onTapGesture {
+            .gesture(SpatialTapGesture().onEnded { value in
                 switch mode {
-                case .select: selectedNodeIDs.removeAll()
-                case .text: store.addNote(at: canvasPoint(CGPoint(x: size.width / 2, y: size.height / 2)))
-                case .shape: store.addShape(at: canvasPoint(CGPoint(x: size.width / 2, y: size.height / 2)))
+                case .select:
+                    selectedNodeIDs.removeAll()
+                    selectedStrokeIDs.removeAll()
+                case .text:
+                    selectedNodeIDs = [store.addNote(at: canvasPoint(value.location))]
+                    mode = .select
+                case .shape:
+                    selectedNodeIDs = [store.addShape(at: canvasPoint(value.location))]
+                    mode = .select
                 case .hand, .pencil, .eraser, .connector: break
                 }
-            }
+            })
     }
 
     private func modeControls(size: CGSize) -> some View {
-        HStack(spacing: 8) {
-            Picker("画布工具", selection: $mode) {
-                ForEach(CanvasMode.allCases) { value in
-                    Label(value.title, systemImage: value.icon).tag(value)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Picker("画布工具", selection: $mode) {
+                    ForEach(CanvasMode.allCases) { value in
+                        Label(value.title, systemImage: value.icon).tag(value)
+                    }
                 }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 620)
-            if mode == .eraser {
-                Button(role: .destructive) { store.clearDrawing() } label: {
-                    Label("清除笔迹", systemImage: "eraser")
+                .pickerStyle(.segmented)
+                .frame(width: min(620, max(420, size.width - 280)))
+
+                if mode == .pencil {
+                    Menu {
+                        Picker("粗细", selection: $pencilWidth) {
+                            Text("细").tag(2.0)
+                            Text("中").tag(3.0)
+                            Text("粗").tag(6.0)
+                            Text("马克笔").tag(10.0)
+                        }
+                        Picker("颜色", selection: $pencilColor) {
+                            Text("跟随界面").tag("primary")
+                            Text("蓝色").tag("blue")
+                        }
+                    } label: {
+                        Label("笔迹", systemImage: "pencil.tip.crop.circle")
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                if mode == .eraser {
+                    Button(role: .destructive) {
+                        store.clearDrawing()
+                        selectedStrokeIDs.removeAll()
+                    } label: {
+                        Label("清除笔迹", systemImage: "eraser")
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Menu {
+                    Picker("整理方式", selection: $inkOutputPreference) {
+                        ForEach(CanvasInkOutputPreference.allCases) { value in
+                            Text(value.title).tag(value)
+                        }
+                    }
+                } label: {
+                    Label(inkOutputPreference.title, systemImage: "slider.horizontal.3")
                 }
                 .buttonStyle(.bordered)
+
+                Button(action: interpretSelectedInk) {
+                    Label(
+                        selectedStrokeIDs.isEmpty
+                            ? "整理笔迹"
+                            : "整理笔迹（\(selectedStrokeIDs.count)）",
+                        systemImage: "wand.and.rays"
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedStrokeIDs.isEmpty || isInterpretingInk)
             }
         }
         .padding(10)
-        .background(.regularMaterial, in: Capsule())
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
         .padding(12)
     }
 
@@ -1898,6 +2413,232 @@ struct WorkspaceCanvasView: View {
         .padding(10)
         .background(.regularMaterial, in: Capsule())
         .padding(12)
+    }
+
+    private var keyboardActions: CanvasKeyboardActions {
+        CanvasKeyboardActions(
+            canUndo: store.canUndo,
+            canRedo: store.canRedo,
+            hasNodeSelection: !selectedNodeIDs.isEmpty,
+            hasInkSelection: !selectedStrokeIDs.isEmpty,
+            undo: { store.undo() },
+            redo: { store.redo() },
+            copy: copySelection,
+            paste: pasteFromClipboard,
+            duplicate: {
+                guard !selectedNodeIDs.isEmpty else { return }
+                selectedNodeIDs = store.duplicateNodes(selectedNodeIDs)
+            },
+            delete: deleteSelection,
+            selectAll: {
+                selectedNodeIDs = Set(store.selectedDocument?.nodes.map(\.id) ?? [])
+                selectedStrokeIDs = Set(store.selectedDocument?.strokes.map(\.id) ?? [])
+            },
+            group: { store.group(selectedNodeIDs) },
+            ungroup: { store.ungroup(selectedNodeIDs) },
+            interpretInk: interpretSelectedInk,
+            chooseTool: { index in
+                guard CanvasMode.allCases.indices.contains(index) else { return }
+                mode = CanvasMode.allCases[index]
+            },
+            zoomIn: {
+                scale = min(3, scale + 0.2)
+                scaleStart = scale
+            },
+            zoomOut: {
+                scale = max(0.3, scale - 0.2)
+                scaleStart = scale
+            },
+            resetView: {
+                scale = 1; scaleStart = 1; pan = .zero; panStart = .zero
+            },
+            nudge: { dx, dy in store.nudgeNodes(selectedNodeIDs, dx: dx, dy: dy) }
+        )
+    }
+
+    private func copySelection() {
+        guard !selectedNodeIDs.isEmpty else { return }
+        do {
+            let data = try store.clipboardData(for: selectedNodeIDs)
+            let text = store.selectedDocument?.nodes
+                .filter { selectedNodeIDs.contains($0.id) }
+                .map(\.text)
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n\n")
+            var item: [String: Any] = [Self.nodePasteboardType: data]
+            if let text, !text.isEmpty {
+                item[UTType.utf8PlainText.identifier] = text
+            }
+            UIPasteboard.general.setItems([item], options: [:])
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } catch {
+            store.saveError = error.localizedDescription
+        }
+    }
+
+    private func pasteFromClipboard() {
+        do {
+            if let data = UIPasteboard.general.data(forPasteboardType: Self.nodePasteboardType) {
+                selectedNodeIDs = try store.pasteNodes(from: data)
+            } else if let text = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !text.isEmpty {
+                selectedNodeIDs = [store.addNote(
+                    at: canvasPoint(CGPoint(x: 560, y: 380)),
+                    text: text
+                )]
+            }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } catch {
+            store.saveError = "无法粘贴：\(error.localizedDescription)"
+        }
+    }
+
+    private func deleteSelection() {
+        store.deleteNodes(selectedNodeIDs)
+        store.removeStrokes(selectedStrokeIDs)
+        selectedNodeIDs.removeAll()
+        selectedStrokeIDs.removeAll()
+    }
+
+    private func interpretSelectedInk() {
+        guard !selectedStrokeIDs.isEmpty, !isInterpretingInk else {
+            if selectedStrokeIDs.isEmpty {
+                inkInterpretationError = "请用 Apple Pencil 画出内容，或切到“选择”后框选已有笔迹。"
+            }
+            return
+        }
+        let sourceIDs = selectedStrokeIDs
+        isInterpretingInk = true
+        inkInterpretation = nil
+        inkInterpretationError = nil
+        Task { @MainActor in
+            defer { isInterpretingInk = false }
+            do {
+                let capture = try store.inkCapture(strokeIDs: sourceIDs)
+                let recognized = try? await Task.detached(priority: .userInitiated) {
+                    try VisualTextRecognizer.recognize(
+                        imageData: capture.imageData,
+                        pixelWidth: capture.pixelWidth,
+                        pixelHeight: capture.pixelHeight,
+                        referencePrefix: "ink",
+                        limit: 80
+                    )
+                }.value
+                let ocrText = (recognized ?? []).map(\.text).joined(separator: "\n")
+                let prompt = inkInterpretationPrompt(
+                    preference: inkOutputPreference,
+                    ocrText: ocrText,
+                    pixelWidth: capture.pixelWidth,
+                    pixelHeight: capture.pixelHeight
+                )
+                let result = await environment.conversationCenter.describeImageResult(
+                    base64: capture.imageData.base64EncodedString(),
+                    mimeType: "image/png",
+                    prompt: prompt
+                )
+                var interpretation: CanvasInkInterpretation
+                switch result {
+                case .success(let response):
+                    do {
+                        interpretation = try Self.decodeInkInterpretation(response)
+                        interpretation.routeDescription = environment.conversationCenter
+                            .screenAnalysisDestinationName() ?? "辅助视觉模型"
+                    } catch {
+                        guard !ocrText.isEmpty else { throw error }
+                        interpretation = Self.ocrFallbackInterpretation(ocrText)
+                    }
+                case .failure(let failure):
+                    guard !ocrText.isEmpty else {
+                        throw FloeError.invalidConfiguration(failure.userMessage)
+                    }
+                    interpretation = Self.ocrFallbackInterpretation(ocrText)
+                }
+                interpretation.sourceBounds = capture.canvasBounds
+                inkInterpretationSourceIDs = sourceIDs
+                withAnimation(.snappy) { inkInterpretation = interpretation }
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } catch {
+                inkInterpretationError = error.localizedDescription
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
+        }
+    }
+
+    private func applyInkInterpretation() {
+        guard let inkInterpretation else { return }
+        selectedNodeIDs = store.applyInkInterpretation(
+            inkInterpretation,
+            strokeIDs: inkInterpretationSourceIDs,
+            preserveOriginal: preservesInkAfterConversion
+        )
+        if !preservesInkAfterConversion { selectedStrokeIDs.removeAll() }
+        self.inkInterpretation = nil
+        mode = .select
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    private func inkInterpretationPrompt(
+        preference: CanvasInkOutputPreference,
+        ocrText: String,
+        pixelWidth: Int,
+        pixelHeight: Int
+    ) -> String {
+        """
+        You are converting one Apple Pencil sketch into editable native canvas objects. Interpret the user's intent, not the drawing quality. Preserve the language and facts visible in the ink. Do not add unsupported content. \(preference.instruction)
+
+        Image size: \(pixelWidth)x\(pixelHeight). On-device OCR evidence (may be incomplete or wrong):
+        \(ocrText.isEmpty ? "none" : String(ocrText.prefix(4_000)))
+
+        Return ONLY one JSON object with this exact shape:
+        {"summary":"short explanation","layout":"text|cards|flowchart|mindmap|wireframe","confidence":0.0,"nodes":[{"id":"n1","kind":"text|stickyNote|shape","text":"visible label","x":0.5,"y":0.5,"width":0.3,"height":0.2,"shape":"rectangle|roundedRectangle|ellipse|diamond|triangle"}],"connections":[{"from":"n1","to":"n2","label":"optional"}]}
+
+        Coordinates and sizes are normalized 0...1. Use 1-40 nodes. Keep text concise and editable. Use shape nodes for diagram or interface geometry, stickyNote for ideas, and text for headings or prose. Connections must reference existing node IDs. If the ink is ambiguous, make the smallest faithful interpretation and lower confidence. Never return Markdown or commentary outside JSON.
+        """
+    }
+
+    private static func decodeInkInterpretation(_ response: String) throws -> CanvasInkInterpretation {
+        guard let start = response.firstIndex(of: "{"),
+              let end = response.lastIndex(of: "}"), start <= end else {
+            throw FloeError.validationFailed("笔迹模型没有返回可用的结构。")
+        }
+        let data = Data(response[start...end].utf8)
+        var value = try JSONDecoder().decode(CanvasInkInterpretation.self, from: data)
+        value.confidence = min(1, max(0, value.confidence))
+        value.nodes = Array(value.nodes.filter { node in
+            !node.id.isEmpty && ["text", "stickyNote", "shape"].contains(node.kind)
+                && node.x.isFinite && node.y.isFinite
+                && node.width.isFinite && node.height.isFinite
+        }.prefix(40))
+        let ids = Set(value.nodes.map(\.id))
+        value.connections = Array(value.connections.filter {
+            ids.contains($0.from) && ids.contains($0.to) && $0.from != $0.to
+        }.prefix(60))
+        guard !value.nodes.isEmpty else {
+            throw FloeError.validationFailed("笔迹模型没有生成可编辑节点。")
+        }
+        if value.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            value.summary = "已把所选笔迹整理成 \(value.nodes.count) 个可编辑节点。"
+        }
+        return value
+    }
+
+    private static func ocrFallbackInterpretation(_ text: String) -> CanvasInkInterpretation {
+        CanvasInkInterpretation(
+            summary: "辅助视觉不可用，已用本机文字识别整理可辨认内容。",
+            layout: "text",
+            confidence: 0.55,
+            nodes: [CanvasInkPlanNode(
+                id: "ocr-1",
+                kind: "stickyNote",
+                text: text,
+                x: 0.5,
+                y: 0.5,
+                width: 0.82,
+                height: 0.72
+            )],
+            connections: [],
+            routeDescription: "Apple Vision 本机文字识别"
+        )
     }
 
     private func screenPoint(_ point: CGPoint) -> CGPoint {
@@ -1951,6 +2692,116 @@ struct WorkspaceCanvasView: View {
             return nil
         } catch {
             return error.localizedDescription
+        }
+    }
+}
+
+private struct CanvasInkInterpretationPanel: View {
+    let interpretation: CanvasInkInterpretation
+    @Binding var preservesOriginal: Bool
+    let onApply: () -> Void
+    let onRetry: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "wand.and.rays")
+                    .font(.title2)
+                    .foregroundStyle(FloeTheme.primary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("笔迹整理预览").font(.headline)
+                    Text("\(interpretation.layout) · 置信度 \(Int(interpretation.confidence * 100))%")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(action: onCancel) {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("关闭笔迹整理预览")
+            }
+
+            Text(interpretation.summary)
+                .font(.subheadline)
+                .lineLimit(3)
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(interpretation.nodes.prefix(5)) { node in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: node.kind == "shape" ? "square.on.circle" : "note.text")
+                            .foregroundStyle(.secondary)
+                        Text(node.text.isEmpty ? "未命名图形" : node.text)
+                            .font(.caption)
+                            .lineLimit(2)
+                    }
+                }
+                if interpretation.nodes.count > 5 {
+                    Text("另有 \(interpretation.nodes.count - 5) 个节点")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+
+            Toggle("保留原始笔迹", isOn: $preservesOriginal)
+                .font(.subheadline)
+            Text(preservesOriginal
+                 ? "格式化内容会放在原稿旁边，原笔迹保持可编辑。"
+                 : "格式化内容会替换所选笔迹；应用后仍可撤销。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Button("重新理解", action: onRetry)
+                    .buttonStyle(.bordered)
+                Spacer()
+                Button("应用到画布", action: onApply)
+                    .buttonStyle(.borderedProminent)
+            }
+
+            Label("识别路径：\(interpretation.routeDescription)", systemImage: "eye")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20)
+                .stroke(.separator.opacity(0.45), lineWidth: 0.7)
+        }
+        .shadow(color: .black.opacity(0.14), radius: 18, y: 6)
+    }
+}
+
+private struct CanvasPencilInteractionBridge: UIViewRepresentable {
+    let onTap: @MainActor () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onTap: onTap) }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.backgroundColor = .clear
+        view.addInteraction(UIPencilInteraction(delegate: context.coordinator))
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.onTap = onTap
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, UIPencilInteractionDelegate {
+        var onTap: @MainActor () -> Void
+
+        init(onTap: @escaping @MainActor () -> Void) {
+            self.onTap = onTap
+        }
+
+        func pencilInteraction(
+            _ interaction: UIPencilInteraction,
+            didReceiveTap tap: UIPencilInteraction.Tap
+        ) {
+            onTap()
         }
     }
 }
@@ -2199,8 +3050,7 @@ private struct CanvasNodeCard: View {
                 .padding(10)
         case .shape:
             ZStack {
-                RoundedRectangle(cornerRadius: node.shape == .rectangle ? 0 : 18)
-                    .fill(FloeTheme.primary.opacity(0.14))
+                CanvasNodeShapeView(shape: node.shape ?? .roundedRectangle)
                 TextField("形状文字", text: $text, axis: .vertical)
                     .multilineTextAlignment(.center)
                     .padding()
@@ -2240,15 +3090,71 @@ private struct CanvasNodeCard: View {
     }
 }
 
+private struct CanvasNodeShapeView: View {
+    let shape: CanvasShapeKind
+
+    @ViewBuilder
+    var body: some View {
+        switch shape {
+        case .rectangle:
+            Rectangle()
+                .fill(FloeTheme.primary.opacity(0.14))
+                .overlay { Rectangle().stroke(FloeTheme.primary.opacity(0.45), lineWidth: 1.5) }
+        case .roundedRectangle:
+            RoundedRectangle(cornerRadius: 18)
+                .fill(FloeTheme.primary.opacity(0.14))
+                .overlay { RoundedRectangle(cornerRadius: 18).stroke(FloeTheme.primary.opacity(0.45), lineWidth: 1.5) }
+        case .ellipse:
+            Ellipse()
+                .fill(FloeTheme.primary.opacity(0.14))
+                .overlay { Ellipse().stroke(FloeTheme.primary.opacity(0.45), lineWidth: 1.5) }
+        case .diamond:
+            CanvasDiamondShape()
+                .fill(FloeTheme.primary.opacity(0.14))
+                .overlay { CanvasDiamondShape().stroke(FloeTheme.primary.opacity(0.45), lineWidth: 1.5) }
+        case .triangle:
+            CanvasTriangleShape()
+                .fill(FloeTheme.primary.opacity(0.14))
+                .overlay { CanvasTriangleShape().stroke(FloeTheme.primary.opacity(0.45), lineWidth: 1.5) }
+        }
+    }
+}
+
+private struct CanvasDiamondShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.midY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct CanvasTriangleShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+}
+
 /// A focused creative assistant embedded in the native canvas. It receives
 /// search, web reading, materials and media generation, without full browser
 /// control or unrelated system administration tools.
-private struct CanvasAgentSheet: View {
-    @Environment(\.dismiss) private var dismiss
+private struct CanvasAgentFloatingPanel: View {
     @EnvironmentObject private var environment: AppEnvironment
     @ObservedObject var store: WorkspaceCanvasStore
 
     let workspace: WorkspaceRecord?
+    let availableSize: CGSize
+    @Binding var offset: CGSize
+    @Binding var isCollapsed: Bool
+    let onClose: () -> Void
 
     @State private var prompt = ""
     @State private var selectedModelID: UUID?
@@ -2259,6 +3165,8 @@ private struct CanvasAgentSheet: View {
     @State private var resultText: String?
     @State private var resultRunID: UUID?
     @State private var insertedRunIDs: Set<UUID> = []
+    @State private var dragOrigin = CGSize.zero
+    @State private var isDragging = false
 
     private var center: ConversationCenter { environment.conversationCenter }
     private var mcpCenter: MCPSettingsCenter { environment.mcpSettingsCenter }
@@ -2274,25 +3182,84 @@ private struct CanvasAgentSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
+        VStack(spacing: 0) {
+            floatingHeader
+            if !isCollapsed {
                 capabilityBanner
                 Divider()
                 transcript
                 Divider()
                 composer
             }
-            .navigationTitle("画布助手")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
-                }
-            }
         }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(.separator.opacity(0.45), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
+        .padding(12)
         .task { await prepare() }
+    }
+
+    private var floatingHeader: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "sparkles")
+                .foregroundStyle(FloeTheme.primary)
+            Text("画布助手")
+                .font(.headline)
+            if isRunning {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            Spacer()
+            Button {
+                withAnimation(.snappy) { isCollapsed.toggle() }
+            } label: {
+                Image(systemName: isCollapsed ? "chevron.up" : "chevron.down")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isCollapsed ? "展开画布助手" : "收起画布助手")
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("关闭画布助手")
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 52)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 3)
+                .onChanged { value in
+                    if !isDragging {
+                        dragOrigin = offset
+                        isDragging = true
+                    }
+                    offset = clampedOffset(CGSize(
+                        width: dragOrigin.width + value.translation.width,
+                        height: dragOrigin.height + value.translation.height
+                    ))
+                }
+                .onEnded { _ in
+                    offset = clampedOffset(offset)
+                    isDragging = false
+                }
+        )
+        .onTapGesture(count: 2) {
+            withAnimation(.snappy) { offset = .zero }
+        }
+    }
+
+    private func clampedOffset(_ proposed: CGSize) -> CGSize {
+        let panelWidth = min(420, max(280, availableSize.width - 24))
+        let panelHeight = isCollapsed ? 52 : min(680, max(300, availableSize.height - 96))
+        let horizontalLimit = max(0, (availableSize.width - panelWidth) / 2)
+        let verticalLimit = max(0, (availableSize.height - panelHeight) / 2)
+        return CGSize(
+            width: min(horizontalLimit, max(-horizontalLimit, proposed.width)),
+            height: min(verticalLimit, max(-verticalLimit, proposed.height))
+        )
     }
 
     private var capabilityBanner: some View {

@@ -49,9 +49,14 @@ public struct MemoryRememberTool: AgentTool {
     static let maxContentBytes = 4_096
 
     private let store: any DurableMemoryStore
+    private let taskIDForRun: @Sendable (UUID) async throws -> UUID?
 
-    public init(store: any DurableMemoryStore) {
+    public init(
+        store: any DurableMemoryStore,
+        taskIDForRun: @escaping @Sendable (UUID) async throws -> UUID? = { _ in nil }
+    ) {
         self.store = store
+        self.taskIDForRun = taskIDForRun
     }
 
     public func validate(_ args: Arguments) throws {
@@ -64,6 +69,7 @@ public struct MemoryRememberTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        let ownerTaskID = try? await taskIDForRun(context.runID)
         let entry = MemoryEntry(
             scope: Self.parseScope(args.scope),
             status: .active,
@@ -71,7 +77,8 @@ public struct MemoryRememberTool: AgentTool {
             confidence: 1.0,
             importance: min(1, max(0, args.importance ?? 0.5)),
             isPinned: args.isPinned ?? false,
-            sourceKind: .explicitUserRequest
+            sourceKind: .explicitUserRequest,
+            originConversationID: ownerTaskID
         )
         do {
             try await store.saveMemory(entry, evidence: [])
@@ -155,11 +162,12 @@ public struct MemoryRecallTool: AgentTool {
 @discardableResult
 public func registerMemoryTools(
     registry: ToolRunnerRegistry = .shared,
-    store: any DurableMemoryStore
+    store: any DurableMemoryStore,
+    taskIDForRun: @escaping @Sendable (UUID) async throws -> UUID? = { _ in nil }
 ) -> any DurableMemoryStore {
     ToolCatalog.register(MemoryRememberTool.self)
     ToolCatalog.register(MemoryRecallTool.self)
-    registry.register(MemoryRememberTool(store: store))
+    registry.register(MemoryRememberTool(store: store, taskIDForRun: taskIDForRun))
     registry.register(MemoryRecallTool(store: store))
     return store
 }

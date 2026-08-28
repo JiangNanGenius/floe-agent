@@ -43,6 +43,11 @@ public struct MemoryCandidate: Sendable, Codable, Hashable, Identifiable {
     public var origin: MemoryCandidateOrigin
     public var evidence: [MemoryEvidenceReference]
     public var conflictsWithEntryIDs: [UUID]
+    /// Durable provenance is independent from recall scope. A user/global
+    /// memory can still originate in one task and must keep that ownership
+    /// after the conversation is deleted.
+    public var originConversationID: UUID?
+    public var originWorkspaceID: UUID?
     public var expiresAt: Date?
     public var createdAt: Date
 
@@ -57,6 +62,8 @@ public struct MemoryCandidate: Sendable, Codable, Hashable, Identifiable {
         origin: MemoryCandidateOrigin,
         evidence: [MemoryEvidenceReference],
         conflictsWithEntryIDs: [UUID] = [],
+        originConversationID: UUID? = nil,
+        originWorkspaceID: UUID? = nil,
         expiresAt: Date? = nil,
         createdAt: Date = Date()
     ) {
@@ -70,6 +77,8 @@ public struct MemoryCandidate: Sendable, Codable, Hashable, Identifiable {
         self.origin = origin
         self.evidence = Array(evidence.prefix(12))
         self.conflictsWithEntryIDs = Array(conflictsWithEntryIDs.prefix(12))
+        self.originConversationID = originConversationID
+        self.originWorkspaceID = originWorkspaceID
         self.expiresAt = expiresAt
         self.createdAt = createdAt
     }

@@ -16,6 +16,8 @@ public struct MemoryEntry: Sendable, Codable, Hashable, Identifiable {
     public var importance: Double
     public var isPinned: Bool
     public var sourceKind: MemoryCandidateOrigin
+    public var originConversationID: UUID?
+    public var originWorkspaceID: UUID?
     public var expiresAt: Date?
     public var createdAt: Date
     public var updatedAt: Date
@@ -24,6 +26,7 @@ public struct MemoryEntry: Sendable, Codable, Hashable, Identifiable {
         id: UUID = UUID(), scope: MemoryScope, status: MemoryEntryStatus,
         content: String, confidence: Double, importance: Double,
         isPinned: Bool = false, sourceKind: MemoryCandidateOrigin,
+        originConversationID: UUID? = nil, originWorkspaceID: UUID? = nil,
         expiresAt: Date? = nil, createdAt: Date = Date(), updatedAt: Date = Date()
     ) {
         self.id = id
@@ -34,6 +37,16 @@ public struct MemoryEntry: Sendable, Codable, Hashable, Identifiable {
         self.importance = min(1, max(0, importance))
         self.isPinned = isPinned
         self.sourceKind = sourceKind
+        if case .task(let taskID) = scope {
+            self.originConversationID = originConversationID ?? taskID
+        } else {
+            self.originConversationID = originConversationID
+        }
+        if case .workspace(let workspaceID) = scope {
+            self.originWorkspaceID = originWorkspaceID ?? workspaceID
+        } else {
+            self.originWorkspaceID = originWorkspaceID
+        }
         self.expiresAt = expiresAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -294,24 +307,30 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                 INSERT INTO memory_entries (
                     id, scope, workspace_id, conversation_id, status, content, normalized_content,
                     confidence, importance, is_pinned, source_kind, expires_at,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    origin_conversation_id, origin_workspace_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET status=excluded.status, content=excluded.content,
                     normalized_content=excluded.normalized_content, confidence=excluded.confidence,
                     importance=excluded.importance, is_pinned=excluded.is_pinned,
-                    expires_at=excluded.expires_at, updated_at=excluded.updated_at
+                    expires_at=excluded.expires_at,
+                    origin_conversation_id=COALESCE(memory_entries.origin_conversation_id, excluded.origin_conversation_id),
+                    origin_workspace_id=COALESCE(memory_entries.origin_workspace_id, excluded.origin_workspace_id),
+                    updated_at=excluded.updated_at
                 """, arguments: [entry.id.uuidString, scope, workspaceID?.uuidString,
                     conversationID?.uuidString,
                     entry.status.rawValue, entry.content, normalized, entry.confidence,
                     entry.importance, entry.isPinned, entry.sourceKind.rawValue,
-                    entry.expiresAt.map(Self.date), Self.date(entry.createdAt), Self.date(entry.updatedAt)])
+                    entry.expiresAt.map(Self.date), entry.originConversationID?.uuidString,
+                    entry.originWorkspaceID?.uuidString, Self.date(entry.createdAt), Self.date(entry.updatedAt)])
             try db.execute(sql: "DELETE FROM memory_evidence WHERE memory_id = ?", arguments: [entry.id.uuidString])
             for reference in evidence {
                 try db.execute(sql: """
-                    INSERT INTO memory_evidence (id, memory_id, message_id, excerpt_digest, created_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO memory_evidence (
+                        id, memory_id, conversation_id, message_id, excerpt_digest, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
                     """, arguments: [reference.id.uuidString, entry.id.uuidString,
-                        reference.messageID.uuidString, Self.stableDigest(reference.excerpt), Self.date(entry.updatedAt)])
+                        entry.originConversationID?.uuidString, reference.messageID.uuidString,
+                        Self.stableDigest(reference.excerpt), Self.date(entry.updatedAt)])
             }
         }
     }
@@ -760,6 +779,8 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         let expires: String? = row["expires_at"]
         return MemoryEntry(id: id, scope: scope, status: status, content: row["content"], confidence: row["confidence"],
             importance: row["importance"], isPinned: row["is_pinned"], sourceKind: source,
+            originConversationID: originConversation.flatMap(UUID.init(uuidString:)),
+            originWorkspaceID: originWorkspace.flatMap(UUID.init(uuidString:)),
             expiresAt: expires.map(Self.parseDate), createdAt: Self.parseDate(row["created_at"]), updatedAt: Self.parseDate(row["updated_at"]))
     }
 

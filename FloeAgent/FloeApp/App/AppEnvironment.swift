@@ -372,7 +372,9 @@ final class AppEnvironment: ObservableObject {
         // Skill authoring.
         registerSkillTools(creator: LocalSkillCreator(center: skillsCenter))
         // Durable memory.
-        registerMemoryTools(store: intelligenceStore)
+        registerMemoryTools(store: intelligenceStore) { [runStore] runID in
+            try await runStore.run(id: runID)?.conversationID
+        }
         // Supervisor-Worker delegation.
         registerDelegateTool(runners: subagentRunnerRegistry)
         // VNC remote-desktop driving.

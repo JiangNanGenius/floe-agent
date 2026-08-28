@@ -17,7 +17,8 @@ struct MemoryToolsTests {
     @Test("memory.remember records an active memory")
     func remember() async throws {
         let store = FakeMemoryStore()
-        let tool = MemoryRememberTool(store: store)
+        let taskID = UUID()
+        let tool = MemoryRememberTool(store: store) { _ in taskID }
         let output = try await tool.execute(
             .init(content: "User prefers dark mode"),
             context: ToolContext(runID: UUID(), cancellation: CancellationToken())
@@ -27,6 +28,7 @@ struct MemoryToolsTests {
         let active = await store.activeFor(.agentGlobal)
         #expect(active.count == 1)
         #expect(active.first?.content == "User prefers dark mode")
+        #expect(active.first?.originConversationID == taskID)
     }
 
     @Test("memory.remember rejects empty content")

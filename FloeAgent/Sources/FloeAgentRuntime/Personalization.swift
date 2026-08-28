@@ -746,6 +746,8 @@ public actor MemoryCandidatePipeline {
             try await memories.saveMemory(MemoryEntry(id: candidate.id, scope: candidate.scope,
                 status: .active, content: candidate.content, confidence: candidate.confidence,
                 importance: candidate.importance, sourceKind: candidate.origin,
+                originConversationID: candidate.originConversationID,
+                originWorkspaceID: candidate.originWorkspaceID,
                 expiresAt: candidate.expiresAt, createdAt: candidate.createdAt,
                 updatedAt: Date()), evidence: candidate.evidence)
             record = DurableMemoryCandidate(candidate: candidate, status: .activated)
@@ -786,7 +788,9 @@ public actor MemoryCandidatePipeline {
         case .activate:
             try await memories.saveMemory(MemoryEntry(id: candidate.id, scope: scope,
                 status: .active, content: candidate.content, confidence: candidate.confidence,
-                importance: candidate.importance, sourceKind: candidate.origin),
+                importance: candidate.importance, sourceKind: candidate.origin,
+                originConversationID: candidate.originConversationID,
+                originWorkspaceID: candidate.originWorkspaceID),
                 evidence: candidate.evidence)
             status = .activated; reason = nil
         case .pending(let value): status = .pending; reason = value
@@ -809,6 +813,8 @@ public actor MemoryCandidatePipeline {
             try await memories.saveMemory(MemoryEntry(id: candidate.id, scope: candidate.scope,
                 status: .active, content: candidate.content, confidence: candidate.confidence,
                 importance: candidate.importance, sourceKind: candidate.origin,
+                originConversationID: candidate.originConversationID,
+                originWorkspaceID: candidate.originWorkspaceID,
                 expiresAt: candidate.expiresAt, createdAt: candidate.createdAt),
                 evidence: candidate.evidence)
             record.status = .activated

@@ -165,6 +165,37 @@ struct PersonalizationMemoryTests {
         #expect(reinforcement.1 != nil)
     }
 
+    @Test("Cross-task memory retains its originating task ID independently of scope")
+    func globalMemoryTaskProvenance() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = SQLiteIntelligenceStore(database: database)
+        let taskID = UUID()
+        let memory = MemoryEntry(
+            scope: .userProfile,
+            status: .active,
+            content: "Prefer concise release evidence",
+            confidence: 1,
+            importance: 0.8,
+            sourceKind: .automaticTurnReview,
+            originConversationID: taskID
+        )
+        try await store.saveMemory(memory, evidence: [])
+
+        let restored = try #require(
+            try await store.memories(scope: .userProfile, status: .active).first
+        )
+        #expect(restored.originConversationID == taskID)
+        let storedOrigin: String? = try await database.reader { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT origin_conversation_id FROM memory_entries WHERE id = ?",
+                arguments: [memory.id.uuidString]
+            )
+        }
+        #expect(storedOrigin == taskID.uuidString)
+    }
+
     @Test("Live task and workspace memories are not evicted by size")
     func liveOwnerMemoryCapacity() {
         let policy = MemoryCapacityPolicy(
