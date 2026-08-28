@@ -23,6 +23,7 @@ final class LocalModelsCenter: ObservableObject {
     @Published private(set) var benchmarkResults: [String: LocalModelBenchmarkResult] = [:]
     @Published private(set) var appleFoundationAvailability: AppleFoundationModelAvailability = .unsupportedOS
     @Published private(set) var enabledRemoteModelIDs: Set<String> = []
+    @Published private(set) var hiddenFromPrimaryPickerIDs: Set<String> = []
     @Published var errorMessage: String?
     let store: LocalModelStore
     let runtime: LocalModelRuntime
@@ -69,6 +70,48 @@ final class LocalModelsCenter: ObservableObject {
                     await runtime.unload(modelID: remoteModelID)
                     if case .ready(let id) = runtimeState, id == remoteModelID {
                         runtimeState = .unloaded
+                    }
+                }
+                await refresh()
+                await onConfigurationChanged?()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func isHiddenFromPrimaryPicker(remoteModelID: String) -> Bool {
+        hiddenFromPrimaryPickerIDs.contains(remoteModelID)
+    }
+
+    func setHiddenFromPrimaryPicker(remoteModelID: String, isHidden: Bool) {
+        Task {
+            do {
+                var configured = try await configurationStore.models(
+                    providerID: ProviderProfile.onDeviceProviderID
+                )
+                if !configured.contains(where: { $0.remoteModelID == remoteModelID }) {
+                    await onConfigurationChanged?()
+                    configured = try await configurationStore.models(
+                        providerID: ProviderProfile.onDeviceProviderID
+                    )
+                }
+                guard var model = configured.first(where: { $0.remoteModelID == remoteModelID }) else {
+                    throw FloeError.notFound("本地模型配置尚未建立，请刷新后重试")
+                }
+                model.isHiddenFromPrimaryPicker = isHidden
+                try await configurationStore.saveModel(model)
+
+                if isHidden {
+                    var preferences = try await configurationStore.preferences()
+                    if preferences.defaultAgentModelID == model.id {
+                        let visible = configured.first(where: {
+                            $0.id != model.id && $0.isEnabled && $0.isVisibleInPrimaryPicker
+                        })
+                        preferences.defaultAgentModelID = visible?.id
+                        preferences.updatedAt = Date()
+                        preferences.syncRevision += 1
+                        try await configurationStore.savePreferences(preferences)
                     }
                 }
                 await refresh()
@@ -163,6 +206,9 @@ final class LocalModelsCenter: ObservableObject {
             providerID: ProviderProfile.onDeviceProviderID
         )) ?? []
         enabledRemoteModelIDs = Set(configuredModels.filter(\.isEnabled).map(\.remoteModelID))
+        hiddenFromPrimaryPickerIDs = Set(configuredModels.filter {
+            $0.isHiddenFromPrimaryPicker == true
+        }.map(\.remoteModelID))
         let resumable = await store.resumableModelIDs()
         pausedDownloads.formUnion(resumable.subtracting(activeDownloads))
         FloeLogger(category: .providers).debug(
@@ -291,6 +337,20 @@ struct LocalModelsSettingsView: View {
                                     .foregroundStyle(.green)
                             }
                         }
+                        Toggle("model.hide_from_primary_picker", isOn: Binding(
+                            get: {
+                                center.isHiddenFromPrimaryPicker(
+                                    remoteModelID: AppleFoundationModelIdentity.remoteModelID
+                                )
+                            },
+                            set: {
+                                center.setHiddenFromPrimaryPicker(
+                                    remoteModelID: AppleFoundationModelIdentity.remoteModelID,
+                                    isHidden: $0
+                                )
+                            }
+                        ))
+                        .accessibilityIdentifier("localModel.hideFromPrimaryPicker.appleFoundation")
                         if case .available(let context, let vision, let tools, let reasoning) =
                             center.appleFoundationAvailability {
                             HStack(spacing: 12) {
@@ -395,6 +455,17 @@ struct LocalModelsSettingsView: View {
                             ))
                             .tint(FloeTheme.primary)
                             .accessibilityIdentifier("localModel.enabled.\(entry.id)")
+                            Toggle("model.hide_from_primary_picker", isOn: Binding(
+                                get: { center.isHiddenFromPrimaryPicker(remoteModelID: entry.id) },
+                                set: {
+                                    center.setHiddenFromPrimaryPicker(
+                                        remoteModelID: entry.id,
+                                        isHidden: $0
+                                    )
+                                }
+                            ))
+                            .tint(FloeTheme.primary)
+                            .accessibilityIdentifier("localModel.hideFromPrimaryPicker.\(entry.id)")
                         }
                         if case .failed(let id, let message) = center.runtimeState, id == entry.id {
                             Text(message).font(.caption).foregroundStyle(.red)

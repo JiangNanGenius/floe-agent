@@ -15,7 +15,7 @@
 | Security | [Security](../SECURITY.md) | [安全策略](../SECURITY.zh-CN.md) |
 | Support | [Support](../SUPPORT.md) | [支持](../SUPPORT.zh-CN.md) |
 
-Current TestFlight candidate: [Floe Agent 1.4.45 (Build 76) test notes](TESTFLIGHT_1.4.45.md). Availability must be confirmed from App Store Connect evidence.
+Current TestFlight candidate: [Floe Agent 1.4.46 (Build 77) test notes](TESTFLIGHT_1.4.46.md). Availability must be confirmed from App Store Connect evidence.
 
 ## Product references
 

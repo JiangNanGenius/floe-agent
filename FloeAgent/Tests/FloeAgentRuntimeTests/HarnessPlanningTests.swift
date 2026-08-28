@@ -3,6 +3,7 @@ import Testing
 @testable import FloeAgentRuntime
 @testable import FloeModels
 @testable import FloeTools
+@testable import FloePersistence
 
 @Suite("Harness planning, goals, context, and memory")
 struct HarnessPlanningTests {
@@ -199,6 +200,38 @@ struct HarnessPlanningTests {
         #expect(goal.status == .blocked)
         #expect(goal.status != .completed)
         #expect(goal.budgets.maxCycles == nil)
+    }
+
+    @Test("Goal compare-and-swap rejects a stale continuation revision")
+    func goalRevisionCAS() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = SQLiteIntelligenceStore(database: database)
+        let conversationStore = SQLiteConversationStore(database: database)
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID,
+            title: "Goal CAS",
+            createdAt: Date(),
+            updatedAt: Date()
+        ))
+        var goal = ConversationGoal(
+            conversationID: conversationID,
+            objective: "Ship",
+            acceptanceCriteria: [GoalCriterion(text: "Verified")],
+            steps: [GoalStep(title: "Verify", order: 0)],
+            status: .active
+        )
+        try await store.saveGoal(goal)
+
+        goal.status = .verifying
+        goal.updatedAt = Date()
+        #expect(try await store.saveGoalIfRevisionMatches(goal, expectedRevision: 1))
+        #expect(!(try await store.saveGoalIfRevisionMatches(goal, expectedRevision: 1)))
+
+        let durable = try #require(try await store.goal(id: goal.id))
+        #expect(durable.revision == 2)
+        #expect(durable.status == .verifying)
     }
 
     @Test("Harness budget forbids grandchildren and enforces total reservations")

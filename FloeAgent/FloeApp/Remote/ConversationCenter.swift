@@ -96,6 +96,18 @@ struct StartedConversationTask: Sendable {
     let run: StartedConversationRun
 }
 
+enum AgentRunSurface: Sendable {
+    case ordinary
+    case canvas
+}
+
+private struct GoalContinuationReservation: Hashable {
+    let goalID: UUID
+    let revision: Int
+    let cycle: Int
+    let completedRunID: UUID
+}
+
 struct ConversationSessionSnapshot: Sendable {
     let revision: Int
     let conversation: ConversationRecord
@@ -170,6 +182,10 @@ final class ConversationCenter: ObservableObject {
     /// Provider-loop tasks retained so destructive actions can cancel and
     /// await them before cascading database rows.
     private var runTasks: [UUID: Task<Result<Void, Error>, Never>] = [:]
+    /// One quiescent continuation evaluator per Goal. A stale completed run
+    /// may observe evidence, but cannot race a newer Goal revision or launch
+    /// a second cycle after the reservation has changed.
+    private var goalContinuationReservations: [UUID: GoalContinuationReservation] = [:]
     /// Snapshot polling tasks keyed by run ID.
     private var snapshotTasks: [UUID: Task<Void, Never>] = [:]
     private var sessionRevisions: [UUID: Int] = [:]
@@ -403,6 +419,7 @@ final class ConversationCenter: ObservableObject {
         model: ModelProfile,
         runID: UUID = UUID(),
         executionMode: AgentExecutionMode = .agent,
+        runSurface: AgentRunSurface = .ordinary,
         workspaceID: UUID? = nil,
         memoryQuery: String = "",
         conversationHistory: [ConversationMessage] = [],
@@ -424,7 +441,8 @@ final class ConversationCenter: ObservableObject {
         } else {
             nil
         }
-        let taskRootLease: WorkspaceCenter.TaskRootLease? = if let canonicalWorkspace {
+        let taskRootLease: WorkspaceCenter.TaskRootLease? = if runSurface == .ordinary,
+                                                              let canonicalWorkspace {
             try? await environment.workspaceCenter.acquireTaskRoot(
                 canonicalWorkspace,
                 conversationID: conversationID
@@ -451,16 +469,27 @@ final class ConversationCenter: ObservableObject {
         // provider request even though the executor can run them.
         let catalogExecutor = CatalogToolExecutor()
         let availableDescriptors = catalogExecutor.allDescriptors
-        let skills = await environment.skillsCenter.runtimeSelection()
-        let personalization = await runtimePersonalizationContext(
-            query: memoryQuery,
-            workspaceID: canonicalWorkspaceID,
-            conversationID: conversationID
-        )
-        let activePlan = try? await environment.intelligenceStore
-            .latestPlan(conversationID: conversationID)
-        let activeGoal = try? await environment.intelligenceStore
-            .goals(conversationID: conversationID).first(where: { !$0.status.isTerminal })
+        let skills: SkillsCenter.RuntimeSelection
+        let personalization: RuntimePersonalizationContext
+        let activePlan: PlanDraft?
+        let activeGoal: ConversationGoal?
+        if runSurface == .canvas {
+            skills = .none
+            personalization = RuntimePersonalizationContext()
+            activePlan = nil
+            activeGoal = nil
+        } else {
+            skills = await environment.skillsCenter.runtimeSelection()
+            personalization = await runtimePersonalizationContext(
+                query: memoryQuery,
+                workspaceID: canonicalWorkspaceID,
+                conversationID: conversationID
+            )
+            activePlan = try? await environment.intelligenceStore
+                .latestPlan(conversationID: conversationID)
+            activeGoal = try? await environment.intelligenceStore
+                .goals(conversationID: conversationID).first(where: { !$0.status.isTerminal })
+        }
         let taskPolicyToolNames: Set<String>? = {
             let hasExplicitRestriction = taskPolicy.allowedToolNames != nil
                 || taskPolicy.approvalMode == "readOnly"
@@ -512,6 +541,18 @@ final class ConversationCenter: ObservableObject {
                 from: offered,
                 modelRemoteID: model.remoteModelID
             )
+        } else if model.capabilities.contains(.vision) {
+            // A native multimodal model should inspect the image parts that
+            // Floe attaches to its current user message. Offering the
+            // provider-backed semantic image helper as well lets capable
+            // models dodge their own visual input, adds a second billable
+            // inference hop, and can produce contradictory descriptions.
+            // Keep deterministic OCR available for exact transcription and
+            // token-efficient PDF/image text extraction.
+            var offered = allowedToolNames
+                ?? Set(availableDescriptors.map(\.name))
+            offered.remove("image.inspect")
+            allowedToolNames = offered
         }
         let credentials = resolveCredentials(for: provider)
         let forceInitialCompaction = consumeManualCompaction(conversationID: conversationID)
@@ -522,6 +563,8 @@ final class ConversationCenter: ObservableObject {
             conversationMode: executionMode.conversationMode,
             activeSkillIDs: skills.skillIDs,
             allowedToolNames: allowedToolNames,
+            preapprovedPythonScriptSHA256: skills.preapprovedPythonScriptSHA256,
+            preapprovedPythonPackages: skills.preapprovedPythonPackages,
             workspaceRootURL: taskRootLease?.url,
             allowedWorkspacePaths: taskPolicy.filePaths,
             toolsEnabled: executionMode.toolsEnabled,
@@ -557,7 +600,10 @@ final class ConversationCenter: ObservableObject {
                 workspaceName: canonicalWorkspace?.name,
                 executionTarget: canonicalWorkspace?.activeTarget.kindName,
                 availableToolNames: allowedToolNames,
-                skillInstructions: [skills.instructions, AppleCapabilityPreferences.skillInstructions()]
+                skillInstructions: [
+                    skills.instructions,
+                    runSurface == .ordinary ? AppleCapabilityPreferences.skillInstructions() : nil
+                ]
                     .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .filter { !$0.isEmpty }
                     .joined(separator: "\n\n"),
@@ -567,9 +613,9 @@ final class ConversationCenter: ObservableObject {
                 activePlan: activePlan,
                 activeGoal: activeGoal,
                 workspaceAttachmentPaths: workspaceAttachmentPaths,
-                workspaceNotes: environment.workspaceCenter.runtimeWorkspaceNotes(
-                    rootURL: taskRootLease?.url
-                ) + [WebSearchSettingsCenter.runtimeProviderNote()].compactMap { $0 }
+                workspaceNotes: (runSurface == .ordinary
+                    ? environment.workspaceCenter.runtimeWorkspaceNotes(rootURL: taskRootLease?.url)
+                    : []) + [WebSearchSettingsCenter.runtimeProviderNote()].compactMap { $0 }
             ),
             resourceAccessCleanup: taskRootLease?.release
         )
@@ -698,6 +744,7 @@ final class ConversationCenter: ObservableObject {
         workspaceID: UUID? = nil,
         attachments: [AttachmentRef] = [],
         executionMode: AgentExecutionMode = .agent,
+        runSurface: AgentRunSurface = .ordinary,
         isGoalContinuation: Bool = false
     ) async throws -> StartedConversationRun {
         let ingress = SecretIngressScanner.scan(goal.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -732,7 +779,9 @@ final class ConversationCenter: ObservableObject {
             providerProfile: provider,
             modelProfile: model
         ))
-        await recordPersonalizationActivity(userMessages: 1, workspaceID: workspaceID)
+        if runSurface == .ordinary {
+            await recordPersonalizationActivity(userMessages: 1, workspaceID: workspaceID)
+        }
         await captureIngressSecrets(ingress.captures, prepared: prepared)
         guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else {
             throw FloeError.validationFailed("Conversation was deleted during launch")
@@ -747,6 +796,7 @@ final class ConversationCenter: ObservableObject {
             provider: provider,
             model: model,
             executionMode: executionMode,
+            runSurface: runSurface,
             shouldGenerateTitle: false
         )
     }
@@ -941,9 +991,9 @@ final class ConversationCenter: ObservableObject {
     /// Injects a small, explicitly data-only memory projection. Secrets are
     /// rejected at write time and expired/rejected rows are excluded here.
     private struct RuntimePersonalizationContext {
-        var memory: String?
-        var soul: String?
-        var profile: String?
+        var memory: String? = nil
+        var soul: String? = nil
+        var profile: String? = nil
     }
 
     private func runtimePersonalizationContext(
@@ -1444,6 +1494,7 @@ final class ConversationCenter: ObservableObject {
         provider: ProviderProfile,
         model: ModelProfile,
         executionMode: AgentExecutionMode,
+        runSurface: AgentRunSurface = .ordinary,
         shouldGenerateTitle: Bool
     ) -> StartedConversationRun {
         let runID = prepared.run.id
@@ -1577,6 +1628,7 @@ final class ConversationCenter: ObservableObject {
                 model: model,
                 runID: runID,
                 executionMode: executionMode,
+                runSurface: runSurface,
                 workspaceID: prepared.workspace.id,
                 memoryQuery: goal,
                 conversationHistory: assembled.filter { $0.id != prepared.userMessage.id }
@@ -1597,7 +1649,8 @@ final class ConversationCenter: ObservableObject {
                 goalContinuation: executionMode == .goal
                     ? (conversationID, provider, model, prepared.workspace.id)
                     : nil,
-                localModelID: usesResidentLocalModel ? model.remoteModelID : nil
+                localModelID: usesResidentLocalModel ? model.remoteModelID : nil,
+                runSurface: runSurface
             )
         }
         runTasks[runID] = result
@@ -1662,7 +1715,8 @@ final class ConversationCenter: ObservableObject {
             model: ModelProfile,
             workspaceID: UUID
         )?,
-        localModelID: String? = nil
+        localModelID: String? = nil,
+        runSurface: AgentRunSurface = .ordinary
     ) async -> Result<Void, Error> {
         let runID = service.runID
         let outcome: Result<Void, Error>
@@ -1686,7 +1740,8 @@ final class ConversationCenter: ObservableObject {
                     model: automaticTitle.model
                 )
             }
-            if terminalState == "completed", case .success = outcome {
+            if terminalState == "completed", case .success = outcome,
+               runSurface == .ordinary {
                 await recordPersonalizationActivity(
                     completedRuns: 1,
                     conversationID: service.conversationID
@@ -1828,7 +1883,27 @@ final class ConversationCenter: ObservableObject {
             .goals(conversationID: conversationID).first,
               !goal.status.isTerminal else { return }
 
+        let expectedRevision = goal.revision ?? 1
+        let reservation = GoalContinuationReservation(
+            goalID: goal.id,
+            revision: expectedRevision,
+            cycle: goal.progress.cycleCount,
+            completedRunID: completedRunID
+        )
+        guard goalContinuationReservations[goal.id] == nil else { return }
+        goalContinuationReservations[goal.id] = reservation
+        defer {
+            if goalContinuationReservations[goal.id] == reservation {
+                goalContinuationReservations[goal.id] = nil
+            }
+        }
+
         let events = (try? await environment.runStore.events(runID: completedRunID)) ?? []
+        guard let completedRun = try? await environment.runStore.run(id: completedRunID),
+              completedRun.state == "completed",
+              events.last?.kind == .terminal else {
+            return
+        }
         let existingReferences = Set(goal.evidence.map(\.reference))
         var newEvidence: [GoalEvidence] = []
         for event in events where event.kind == .toolResult {
@@ -1887,7 +1962,11 @@ final class ConversationCenter: ObservableObject {
                     goal.progress.repeatedBlockerKey = nil
                     goal.progress.repeatedBlockerCount = 0
                     goal.updatedAt = Date()
-                    try? await environment.intelligenceStore.saveGoal(goal)
+                    guard await commitGoal(
+                        goal,
+                        expectedRevision: expectedRevision,
+                        reservation: reservation
+                    ) != nil else { return }
                     publishSession(conversationID)
                     return
                 }
@@ -1899,7 +1978,11 @@ final class ConversationCenter: ObservableObject {
                 if onlyUserConfirmationRemains {
                     goal.status = .verifying
                     goal.updatedAt = Date()
-                    try? await environment.intelligenceStore.saveGoal(goal)
+                    guard await commitGoal(
+                        goal,
+                        expectedRevision: expectedRevision,
+                        reservation: reservation
+                    ) != nil else { return }
                     publishSession(conversationID)
                     return
                 }
@@ -1925,9 +2008,21 @@ final class ConversationCenter: ObservableObject {
             if goal.status != .blocked { goal.status = .active }
         }
         goal.updatedAt = Date()
-        try? await environment.intelligenceStore.saveGoal(goal)
+        guard let committedRevision = await commitGoal(
+            goal,
+            expectedRevision: expectedRevision,
+            reservation: reservation
+        ) else { return }
+        goal.revision = committedRevision
         publishSession(conversationID)
         guard goal.status == .active else { return }
+
+        // Re-read after the durable flush. User edits or another cycle may
+        // have advanced the Goal since this evaluator acquired its snapshot.
+        guard goalContinuationReservations[goal.id] == reservation,
+              let durableGoal = try? await environment.intelligenceStore.goal(id: goal.id),
+              durableGoal.revision == committedRevision,
+              durableGoal.status == .active else { return }
 
         let nextPrompt = """
         Continue the active task goal: \(goal.objective)
@@ -1942,6 +2037,32 @@ final class ConversationCenter: ObservableObject {
             executionMode: .goal,
             isGoalContinuation: true
         )
+    }
+
+    private func commitGoal(
+        _ goal: ConversationGoal,
+        expectedRevision: Int,
+        reservation: GoalContinuationReservation
+    ) async -> Int? {
+        guard goalContinuationReservations[goal.id] == reservation else { return nil }
+        do {
+            let saved = try await environment.intelligenceStore.saveGoalIfRevisionMatches(
+                goal,
+                expectedRevision: expectedRevision
+            )
+            guard saved else {
+                FloeLogger(category: .runtime).warning(
+                    "goalCASConflict goal=\(goal.id.uuidString) expectedRevision=\(expectedRevision) run=\(reservation.completedRunID.uuidString)"
+                )
+                return nil
+            }
+            return expectedRevision + 1
+        } catch {
+            FloeLogger(category: .runtime).error(
+                "goalCASFailed goal=\(goal.id.uuidString) run=\(reservation.completedRunID.uuidString)"
+            )
+            return nil
+        }
     }
 
     private static func stringMap(from json: String) -> [String: String] {
@@ -2426,12 +2547,18 @@ final class ConversationCenter: ObservableObject {
             primaryModel: model,
             preferPrimaryVision: false
         )
+        let historicalConversation = try? await environment.conversationStore
+            .conversation(id: record.conversationID)
+        let runSurface: AgentRunSurface = CanvasAgentIdentity.isCanvasConversation(
+            historicalConversation
+        ) ? .canvas : .ordinary
         let service = await runService(
             for: record.conversationID,
             provider: provider,
             model: model,
             runID: record.id,
             executionMode: mode,
+            runSurface: runSurface,
             workspaceID: environment.workspaceCenter.workspaceID(for: record.conversationID),
             memoryQuery: record.goal,
             conversationHistory: history + resumedVisual.context,
@@ -2582,7 +2709,7 @@ final class ConversationCenter: ObservableObject {
     /// must show the actionable add-a-provider state, never fake messages.
     var hasConfiguredProvider: Bool { defaultProviderAndModel() != nil }
 
-    var availableAgentModels: [ModelProfile] {
+    private var enabledAgentModels: [ModelProfile] {
         let enabledProviderIDs = Set(providers.map(\.id))
         return modelsByProvider.values.flatMap { $0 }
             .filter {
@@ -2592,6 +2719,13 @@ final class ConversationCenter: ObservableObject {
             .sorted {
                 $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
             }
+    }
+
+    /// Models offered by the primary Home/chat picker. Hidden models remain
+    /// in `enabledAgentModels` so auxiliary routes and existing tasks keep
+    /// working without exposing them as a new-chat choice.
+    var availableAgentModels: [ModelProfile] {
+        enabledAgentModels.filter(\.isVisibleInPrimaryPicker)
     }
 
     var imageModels: [ModelProfile] {
@@ -2955,7 +3089,7 @@ final class ConversationCenter: ObservableObject {
 
     func providerAndModel(modelID: UUID?) -> (ProviderProfile, ModelProfile)? {
         guard let modelID else { return defaultProviderAndModel() }
-        guard let model = availableAgentModels.first(where: { $0.id == modelID }),
+        guard let model = enabledAgentModels.first(where: { $0.id == modelID }),
               let provider = providers.first(where: { $0.id == model.providerID })
         else { return nil }
         return (provider, model)

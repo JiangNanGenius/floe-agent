@@ -33,9 +33,10 @@ Floe Agent turns a model conversation into a durable task. Each message continue
 - **Sketch inside the workspace.** Each workspace can open one native infinite-canvas project with multiple canvases, movable notes, freehand drawing, pan, and zoom.
 - **Connect standard MCP servers.** Add optional Streamable HTTP servers for ordinary Agent runs; every remote tool remains namespaced, locally policy-checked, and disabled for canvas by default.
 - **Manage source without leaving the workspace.** Inspect changes and diffs, initialize a repository, stage, commit, branch, fetch, fast-forward pull, push, and connect GitHub from a lightweight native source-control surface.
+- **Create and revise Office files.** Build DOCX, XLSX and PPTX files locally, preview them first, then open Floe's basic native editor for manual text, cell/formula, slide and speaker-note changes without uploading the document.
 - **Approve consequential actions.** Task policies narrow file, network, browser, upload, credential, and remote-execution authority. Sensitive actions still require explicit confirmation.
 - **Resume honestly.** Checkpoints, notifications, and background coordination preserve safe progress. iOS suspension and uncertain side effects are reported instead of hidden.
-- **Extend declaratively.** Skill Creator and Skill Finder install validated instruction and knowledge packages. Skills cannot dynamically load native code or silently grant tools.
+- **Extend with audited skills.** Skill Creator and Skill Finder install validated instruction and knowledge packages. A skill may bundle bounded UTF-8 Python scripts and exact-version pure-Python wheels: Floe audits them once at creation or installation, then permits only identical script and dependency fingerprints to run without repeated prompts. Native code, install hooks, changed code, and silent tool grants remain blocked.
 - **Automate with Apple platforms.** App Intents expose immediate and scheduled Floe tasks to Shortcuts, while device-local controls govern Calendar, Reminders, Home, Maps, vision, documents, camera, location, and related integrations.
 
 ## The task model
@@ -60,7 +61,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.4.45 (build 76); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
+Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.4.46 (build 77); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
 
 ### Unsigned IPA
 
@@ -116,6 +117,8 @@ See the [English user guide](docs/USER_GUIDE.md), [简体中文使用指南](doc
 
 The system-owned Apple Foundation Model appears in **Settings → Local Models** on every device. On iOS/iPadOS 27 it uses the Foundation Models framework and reports the system's real availability state, including device eligibility, Apple Intelligence being disabled, or the model still downloading. There is no API-key or model-download setting because iOS owns both. It answers ordinary conversation directly rather than requiring every turn to be phrased as an action. Downloaded Qwen and Gemma MLX models are separate: Floe checks safe load headroom, keeps at most one resident model, uses quantized device-budgeted KV/prefill settings, releases transient MLX caches after each generation, and supplies a bounded catalog of real task tools. All on-device models run in text-only mode to avoid loading a vision projector. Attached images are transcribed with Apple Vision OCR into a task-workspace text file; PDF inspection, rendering and OCR remain available, while semantic `image.inspect` is reserved for compatible cloud models.
 
+Every enabled model has a separate **Hide from primary model picker** switch. It is off by default. Hiding a model removes it only from the New Task/Home model menu, so it can remain configured for auxiliary roles, internal routing and existing tasks.
+
 OpenAI image generation/editing defaults to `gpt-image-2`. Google Gemini Images includes Nano Banana Pro (`gemini-3-pro-image`). Both provider entries accept an editable Base URL for compatible proxies; generation, editing and vision remain separate roles.
 
 ### Workspaces, Git and approvals
@@ -127,6 +130,12 @@ Routine bounded reads, local workspace operations, image generation/inspection, 
 ### Python execution
 
 Signed Floe builds bundle a fixed CPython 3.13 runtime and standard library as app resources. `exec.localPython` runs bounded source inside the app sandbox after the configured approval policy. Managed package installation accepts pure-Python packages only: archives are isolated, inspected, and reviewed by the configured package-review model before activation; native extensions, JIT, and executable payloads are rejected. For NumPy, pandas, SciPy, Matplotlib and other supported binary scientific packages, the Python tool directory explicitly routes the model to create a workspace HTML artifact that runs Pyodide in the visible browser and exchanges bounded JSON with the task. A configured SSH host remains the path for native packages or a full licensed runtime. Each route reports output, timeout, cancellation and capability failures explicitly.
+
+Skills may carry bounded `.py` files plus exact pure-Python package requirements. Floe validates script paths and source, resolves and inspects universal wheels at install time, and records the approved script/package fingerprints. Later runs may reuse only that exact audited code with changing task input passed separately as JSON; edits, dependency changes, privileged operations, destructive file changes, credentials and external side effects return to the normal approval path.
+
+### Native Office documents
+
+Floe can create DOCX documents, multi-sheet XLSX workbooks with values and formulas, and 16:9 PPTX decks with slide notes. The document package is generated and checked locally, without a web editor or office-cloud upload. Opening an Office file keeps the system preview as the first layer; **Edit Office document** enters a separate basic editor for manual Word text, spreadsheet cells/formulas, PowerPoint text and speaker notes. Saving applies only changed semantic fields, rewrites the OOXML package atomically, and preserves untouched package parts such as styles, media and relationships. Advanced layout fidelity, charts, macros, ActiveX and full desktop Office parity are not claimed.
 
 For statistics without external packages, `exec.localNumerical` implements bounded R-, Stata- and MATLAB/Octave-compatible expressions, descriptive statistics, quantiles, correlation and simple OLS. It does not claim to bundle the proprietary Stata runtime: PyStata requires a licensed Stata installation, and native-extension packages such as `pyreadstat` must run on a configured host rather than inside the pure-Python iOS package sandbox.
 

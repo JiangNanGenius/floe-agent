@@ -118,4 +118,30 @@ struct HarnessInvariantTests {
         #expect(violations.contains { $0.name == "checkpoint.duplicateLifecycleID" })
         #expect(violations.contains { $0.name == "checkpoint.orphanOpenLifecycle" })
     }
+
+    @Test("Checkpoint rejects an incomplete provider dispatch envelope")
+    func checkpointRejectsInvalidDispatchEnvelope() {
+        let checkpoint = AgentCheckpoint(
+            runID: UUID(),
+            conversationID: UUID(),
+            state: .preparing(.init(goal: "test")),
+            messages: [ConversationMessage(role: "user", content: "test")],
+            providerDispatchEnvelope: ProviderDispatchEnvelope(
+                providerID: UUID(),
+                providerKind: "openAICompatible",
+                wireProtocol: "responsesAPI",
+                modelID: UUID(),
+                remoteModelID: "model",
+                conversationMode: "agent",
+                messagesDigest: "",
+                toolSchemasDigest: "schema",
+                pendingCallIDs: ["first"],
+                pendingResultCallIDs: ["second"]
+            )
+        )
+
+        let violations = HarnessInvariantRegistry.validateCheckpoint(checkpoint)
+        #expect(violations.contains { $0.name == "checkpoint.dispatchDigestMissing" })
+        #expect(violations.contains { $0.name == "checkpoint.dispatchPairingMismatch" })
+    }
 }

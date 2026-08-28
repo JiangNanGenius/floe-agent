@@ -70,10 +70,58 @@ public struct AgentToolLifecycleEntry: Sendable, Codable, Hashable {
     }
 }
 
+/// Stable, secret-free description of the exact provider boundary that was
+/// committed before a request went onto the wire. It lets recovery reject a
+/// run restored with a different provider/model and keeps the prompt, schema
+/// and tool-pairing inputs auditable without persisting credentials or raw
+/// image bytes a second time.
+public struct ProviderDispatchEnvelope: Sendable, Codable, Hashable {
+    public var providerID: UUID
+    public var providerKind: String
+    public var wireProtocol: String
+    public var modelID: UUID
+    public var remoteModelID: String
+    public var conversationMode: String
+    public var messagesDigest: String
+    public var toolSchemasDigest: String
+    public var pendingCallIDs: [String]
+    public var pendingResultCallIDs: [String]
+    public var reasoningDigest: String?
+    public var createdAt: Date
+
+    public init(
+        providerID: UUID,
+        providerKind: String,
+        wireProtocol: String,
+        modelID: UUID,
+        remoteModelID: String,
+        conversationMode: String,
+        messagesDigest: String,
+        toolSchemasDigest: String,
+        pendingCallIDs: [String],
+        pendingResultCallIDs: [String],
+        reasoningDigest: String? = nil,
+        createdAt: Date = Date()
+    ) {
+        self.providerID = providerID
+        self.providerKind = providerKind
+        self.wireProtocol = wireProtocol
+        self.modelID = modelID
+        self.remoteModelID = remoteModelID
+        self.conversationMode = conversationMode
+        self.messagesDigest = messagesDigest
+        self.toolSchemasDigest = toolSchemasDigest
+        self.pendingCallIDs = pendingCallIDs
+        self.pendingResultCallIDs = pendingResultCallIDs
+        self.reasoningDigest = reasoningDigest
+        self.createdAt = createdAt
+    }
+}
+
 /// Serializable snapshot of an agent run, written on cancellation, app
 /// suspension, or explicit user pause timeout.
 public struct AgentCheckpoint: Sendable, Codable, Hashable {
-    /// Checkpoint file format version. Current: 2.
+    /// Checkpoint file format version. Current: 4.
     public var formatVersion: Int
     public var runID: UUID
     public var conversationID: UUID
@@ -109,9 +157,11 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// Exact dispatch boundary for pending calls. Optional so older
     /// checkpoints remain decodable and are repaired conservatively.
     public var toolLifecycleEntries: [AgentToolLifecycleEntry]?
+    /// Last committed provider request boundary. Optional for legacy files.
+    public var providerDispatchEnvelope: ProviderDispatchEnvelope?
 
     /// Current checkpoint file format.
-    public static let currentFormatVersion = 3
+    public static let currentFormatVersion = 4
     /// Current GRDB schema version.
     public static let currentSchemaVersion = 1
 
@@ -136,7 +186,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         parentIterationCount: Int? = nil,
         totalIterationCount: Int? = nil,
         executionLedgerEntries: [AgentExecutionLedgerEntry]? = nil,
-        toolLifecycleEntries: [AgentToolLifecycleEntry]? = nil
+        toolLifecycleEntries: [AgentToolLifecycleEntry]? = nil,
+        providerDispatchEnvelope: ProviderDispatchEnvelope? = nil
     ) {
         self.formatVersion = formatVersion
         self.runID = runID
@@ -159,6 +210,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         self.totalIterationCount = totalIterationCount
         self.executionLedgerEntries = executionLedgerEntries
         self.toolLifecycleEntries = toolLifecycleEntries
+        self.providerDispatchEnvelope = providerDispatchEnvelope
     }
 
     public func encoded() throws -> Data {

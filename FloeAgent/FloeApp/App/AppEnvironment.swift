@@ -295,6 +295,7 @@ final class AppEnvironment: ObservableObject {
         sshCommandService: SSHCommandService?,
         cloudWorkspaceService: CloudWorkspaceService?
     ) {
+        let credentialVault = self.credentialVault
         // Workspace file tools (T04/T05).
         registerWorkspaceTools(rootProvider: WorkspaceCenter.toolRootProvider)
         // Native local Git and GitHub repository tools. Credentials are read
@@ -320,6 +321,35 @@ final class AppEnvironment: ObservableObject {
             sshCommandService: sshCommandService,
             cloudWorkspaceService: cloudWorkspaceService,
             remoteHostStore: remoteHostStore,
+            vncPasswordWriter: { hostID, connectionID, password in
+                let prefix = "⟨credential:"
+                guard let placeholder = String(data: password, encoding: .utf8),
+                      placeholder.hasPrefix(prefix), placeholder.hasSuffix("⟩"),
+                      let credentialID = UUID(uuidString: String(
+                        placeholder.dropFirst(prefix.count).dropLast()
+                      )) else {
+                    throw FloeError.validationFailed(
+                        "Raw VNC passwords are not accepted by model tools"
+                    )
+                }
+                let resolvedPassword = try await credentialVault.resolveForApprovedUse(
+                    CredentialHandle(id: credentialID)
+                )
+                let secrets = KeychainSecretStore()
+                try await secrets.storeSecret(
+                    resolvedPassword,
+                    scope: .hostVNCConnection(hostID: hostID, connectionID: connectionID)
+                )
+                return SecretReference(
+                    keychainAccount: "host.vnc.\(hostID.uuidString).\(connectionID.uuidString)",
+                    synchronizable: SyncControlPreferences.load().savedCredentialsEnabled
+                )
+            },
+            vncPasswordDeleter: { hostID, connectionID in
+                try await KeychainSecretStore().deleteSecret(
+                    scope: .hostVNCConnection(hostID: hostID, connectionID: connectionID)
+                )
+            },
             bluetoothSerialService: bluetoothSerialService,
             webSearchService: WebSearchService(configurations: WebSearchSettingsCenter.resolvedConfigurations),
             includeOnDeviceJavaScript: true

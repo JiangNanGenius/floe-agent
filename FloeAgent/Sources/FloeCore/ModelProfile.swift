@@ -99,6 +99,12 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
     /// `nil` has the same meaning as `.automatic`.
     public var reasoningEffort: ModelReasoningEffort?
     public var isEnabled: Bool
+    /// Independent presentation preference for the primary chat-model picker.
+    ///
+    /// `nil` decodes legacy synced payloads as visible. A hidden model remains
+    /// enabled and can still serve auxiliary routes such as vision, approval,
+    /// package review or an already-running conversation.
+    public var isHiddenFromPrimaryPicker: Bool?
 
     public init(
         id: UUID = UUID(),
@@ -109,7 +115,8 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
         pricing: PricingMetadata? = nil,
         capabilities: ModelCapabilities = [.text],
         reasoningEffort: ModelReasoningEffort? = nil,
-        isEnabled: Bool = true
+        isEnabled: Bool = true,
+        isHiddenFromPrimaryPicker: Bool? = false
     ) {
         self.id = id
         self.providerID = providerID
@@ -120,9 +127,14 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
         self.capabilities = capabilities
         self.reasoningEffort = reasoningEffort
         self.isEnabled = isEnabled
+        self.isHiddenFromPrimaryPicker = isHiddenFromPrimaryPicker
     }
 
     public var effectiveReasoningEffort: ModelReasoningEffort {
         reasoningEffort ?? .automatic
+    }
+
+    public var isVisibleInPrimaryPicker: Bool {
+        isHiddenFromPrimaryPicker != true
     }
 }

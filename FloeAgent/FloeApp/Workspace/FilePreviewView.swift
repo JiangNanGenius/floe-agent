@@ -31,6 +31,7 @@ struct FilePreviewView: View {
     @State private var content: FileContent?
     @State private var loadError: String?
     @State private var isIDEPresented = false
+    @State private var isOfficeEditorPresented = false
     @State private var quickLookURL: URL?
     @State private var previewError: String?
 
@@ -68,6 +69,13 @@ struct FilePreviewView: View {
             QuickLookView(url: url)
                 .ignoresSafeArea()
         }
+        .sheet(isPresented: $isOfficeEditorPresented) {
+            NavigationStack {
+                OfficeDocumentEditorView(relativePath: relativePath, center: center) {
+                    Task { await load() }
+                }
+            }
+        }
         .alert("无法预览网页", isPresented: Binding(
             get: { previewError != nil },
             set: { if !$0 { previewError = nil } }
@@ -90,6 +98,14 @@ struct FilePreviewView: View {
 
     private var isTextual: Bool {
         WorkspaceFileType.isText(relativePath)
+    }
+
+    private var isOfficeDocument: Bool {
+        ["docx", "xlsx", "pptx"].contains((relativePath as NSString).pathExtension.lowercased())
+    }
+
+    private var officeEditingAvailable: Bool {
+        isOfficeDocument && !center.isCloudWorkspacePath(relativePath) && center.fileService != nil
     }
 
     @ToolbarContentBuilder
@@ -134,6 +150,15 @@ struct FilePreviewView: View {
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("inspector.preview.quicklook")
             }
+            if officeEditingAvailable {
+                Button {
+                    isOfficeEditorPresented = true
+                } label: {
+                    Label("office.editor.open", systemImage: "square.and.pencil")
+                }
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .accessibilityLabel("office.editor.open")
+            }
         }
     }
 
@@ -156,6 +181,14 @@ struct FilePreviewView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(!quickLookAvailable)
+            if officeEditingAvailable {
+                Button {
+                    isOfficeEditorPresented = true
+                } label: {
+                    Label("office.editor.open", systemImage: "square.and.pencil")
+                }
+                .buttonStyle(.bordered)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

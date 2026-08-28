@@ -28,9 +28,9 @@ The following are core requirements:
 - Model output is untrusted input and must pass schema, policy, and scope validation.
 - Full-control mode requires explicit local authentication and has visible expiry.
 - High-confidence catastrophic actions stop for separate user confirmation, including while full control is active.
-- VNC sessions on public networks require an encrypted SSH tunnel.
-- Downloaded or model-generated code is never executed on iOS.
+- SSH-tunneled VNC is the safe default. Direct VNC is an explicit legacy-network option; Floe warns before use and keeps its password in Keychain.
+- Arbitrary downloaded or model-generated code is never executed on iOS. An installed skill may bundle pure-Python scripts only after one-time package audit; later reuse is bound to the same immutable content fingerprint and scope.
 - Visible browser references are document-scoped, and sensitive login/upload/payment flows require explicit user review or takeover.
-- Skill packages are declarative, statically validated, and cannot dynamically register native runners or grant themselves authority.
+- Skill packages are statically validated and cannot dynamically register native runners or grant themselves authority. Bundled pure-Python helpers remain sandboxed and do not inherit remote, credential, or filesystem authority.
 
 These controls reduce risk but cannot make unrestricted remote shell or graphical access safe. A user who enables powerful remote access remains responsible for the selected host, credentials, backups, provider terms, and actions they approve.

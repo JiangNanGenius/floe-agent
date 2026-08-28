@@ -249,6 +249,10 @@ public actor FloeAgentRuntime {
         /// Tool ceiling after skill declarations, device compatibility and
         /// user grants are intersected. `nil` preserves legacy no-skill runs.
         public var allowedToolNames: Set<String>?
+        /// Exact installed-skill Python artifacts audited at installation.
+        /// Approval policies may reuse only these fingerprints/specs.
+        public var preapprovedPythonScriptSHA256: Set<String>
+        public var preapprovedPythonPackages: Set<String>
         /// Canonical task workspace, independent of the currently visible UI.
         public var workspaceRootURL: URL?
         /// Persisted task-relative file scope; empty means the full root.
@@ -277,6 +281,8 @@ public actor FloeAgentRuntime {
             conversationMode: ConversationMode = .chat,
             activeSkillIDs: Set<String> = [],
             allowedToolNames: Set<String>? = nil,
+            preapprovedPythonScriptSHA256: Set<String> = [],
+            preapprovedPythonPackages: Set<String> = [],
             workspaceRootURL: URL? = nil,
             allowedWorkspacePaths: [String] = [],
             toolsEnabled: Bool = true,
@@ -291,6 +297,8 @@ public actor FloeAgentRuntime {
             self.conversationMode = conversationMode
             self.activeSkillIDs = activeSkillIDs
             self.allowedToolNames = allowedToolNames
+            self.preapprovedPythonScriptSHA256 = preapprovedPythonScriptSHA256
+            self.preapprovedPythonPackages = preapprovedPythonPackages
             self.workspaceRootURL = workspaceRootURL
             self.allowedWorkspacePaths = allowedWorkspacePaths
             self.toolsEnabled = toolsEnabled
@@ -374,6 +382,15 @@ public actor FloeAgentRuntime {
     /// makes resume auditable and prevents a recovered run from treating an
     /// already summarized transcript as pristine history.
     private var latestContextCompaction: ContextCompactionRecord?
+    /// Exact, secret-free summary of the last request checkpointed before
+    /// provider dispatch. It survives streaming recovery points after the
+    /// pending call/result arrays have been consumed in memory.
+    private var latestProviderDispatchEnvelope: ProviderDispatchEnvelope?
+    /// When recovery parked the run during an unfinished provider request,
+    /// the first replay must reconstruct the same secret-free boundary before
+    /// another request is allowed onto the wire. Completed provider turns
+    /// clear this value before tool settlement or terminal publication.
+    private var restoredProviderDispatchEnvelope: ProviderDispatchEnvelope?
 
     private var streamTask: Task<Void, Never>?
     private var cancellationToken = CancellationToken()
@@ -660,6 +677,18 @@ public actor FloeAgentRuntime {
         toolLifecycleByCallID = Dictionary(
             uniqueKeysWithValues: (checkpoint.toolLifecycleEntries ?? []).map { ($0.callID, $0) }
         )
+        if let envelope = checkpoint.providerDispatchEnvelope {
+            guard envelope.providerID == configuration.provider.id,
+                  envelope.modelID == configuration.model.id,
+                  envelope.remoteModelID == configuration.model.remoteModelID,
+                  envelope.conversationMode == configuration.conversationMode.rawValue else {
+                throw FloeError.validationFailed(
+                    "Checkpoint provider dispatch identity does not match the resumed run configuration"
+                )
+            }
+        }
+        latestProviderDispatchEnvelope = checkpoint.providerDispatchEnvelope
+        restoredProviderDispatchEnvelope = checkpoint.providerDispatchEnvelope
         // Older checkpoints may already contain a complete provider pair but
         // predate lifecycle metadata. Normalize those pairs before enforcing
         // the v3 provider/checkpoint invariants.
@@ -758,7 +787,9 @@ public actor FloeAgentRuntime {
             riskLabels: Set(descriptor.riskLabels.map(\.rawValue)),
             userGoal: messages.last(where: { $0.role == "user" })?.content ?? "",
             recentContext: Self.approvalContext(from: messages),
-            hostAndPathScope: waiting.toolCall.scope
+            hostAndPathScope: waiting.toolCall.scope,
+            preapprovedPythonScriptSHA256: configuration.preapprovedPythonScriptSHA256,
+            preapprovedPythonPackages: configuration.preapprovedPythonPackages
         )
         let decision: ApprovalDecision
         do {
@@ -818,11 +849,18 @@ public actor FloeAgentRuntime {
     /// subsequent turn by setting `modelTurnContinuationRequested`; it must
     /// never call this method recursively.
     private func runSingleModelTurn() async {
-        if !pendingSteers.isEmpty, !streamText.isEmpty {
+        let hasFreshSteer = !pendingSteers.isEmpty
+        if hasFreshSteer, !streamText.isEmpty {
             messages.append(ConversationMessage(role: "assistant", content: streamText))
             await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
         }
         await consumeSteersAtStepBoundary()
+        if hasFreshSteer {
+            // New user authority deliberately changes the next provider
+            // boundary, so it supersedes an unfinished replay reservation.
+            restoredProviderDispatchEnvelope = nil
+            latestProviderDispatchEnvelope = nil
+        }
         // Sink callbacks perform durable persistence and therefore suspend.
         // A user cancel/pause can win during that suspension; never revive a
         // parked or terminal run by starting a provider request afterwards.
@@ -1023,6 +1061,20 @@ public actor FloeAgentRuntime {
                 )
             ] : []) : []
         )
+        let dispatchEnvelope = Self.dispatchEnvelope(
+            request: request,
+            conversationMode: configuration.conversationMode
+        )
+        if let restored = restoredProviderDispatchEnvelope,
+           !Self.dispatchEnvelopesMatch(restored, dispatchEnvelope) {
+            await failRun(
+                message: "Recovered provider request does not match its durable dispatch checkpoint",
+                recoverable: true
+            )
+            return
+        }
+        restoredProviderDispatchEnvelope = nil
+        latestProviderDispatchEnvelope = dispatchEnvelope
         logger.info(
             "promptAssembly run=\(runID.uuidString) digest=\(Self.promptAssemblyDigest(messages: legacyMessages, descriptors: catalogDescriptors)) tools=\(request.toolSchemas.count) pendingCalls=\(request.pendingToolCalls.count) pendingResults=\(request.toolResults.count) mode=\(configuration.conversationMode.rawValue)"
         )
@@ -1070,6 +1122,7 @@ public actor FloeAgentRuntime {
                         await self.executeToolBatch(batch)
                         // The batch's resumeStream requested the next turn.
                     } else {
+                        await self.clearCompletedProviderDispatch()
                         await self.finishOrSteer(stopReason: .endTurn)
                     }
                 }
@@ -1193,6 +1246,8 @@ public actor FloeAgentRuntime {
                 // The batch's resumeStream already requested the next turn.
                 return
             }
+            latestProviderDispatchEnvelope = nil
+            restoredProviderDispatchEnvelope = nil
             await finishOrSteer(stopReason: forcedStopReason ?? completion.stopReason)
             return
         }
@@ -1415,7 +1470,9 @@ public actor FloeAgentRuntime {
             riskLabels: Set(descriptor.riskLabels.map(\.rawValue)),
             userGoal: messages.last(where: { $0.role == "user" })?.content ?? "",
             recentContext: Self.approvalContext(from: messages),
-            hostAndPathScope: call.scope
+            hostAndPathScope: call.scope,
+            preapprovedPythonScriptSHA256: configuration.preapprovedPythonScriptSHA256,
+            preapprovedPythonPackages: configuration.preapprovedPythonPackages
         )
         // Catastrophic gate runs before every policy.
         if let gate, let command = extractCommandString(from: call) {
@@ -1690,6 +1747,11 @@ public actor FloeAgentRuntime {
     /// Every result is audited and resumed exactly once.
     private func executeToolBatch(_ calls: [ToolCall]) async {
         guard !calls.isEmpty else { return }
+        // The provider response is complete once it yields this settled tool
+        // batch. Later recovery checkpoints describe the ordered call/result
+        // boundary, not the already-finished request that produced it.
+        latestProviderDispatchEnvelope = nil
+        restoredProviderDispatchEnvelope = nil
         guard Self.hasValidCallIDs(calls) else {
             await failRun(
                 message: "Provider emitted empty or duplicate tool-call identifiers",
@@ -2150,7 +2212,8 @@ public actor FloeAgentRuntime {
             toolLifecycleEntries: toolLifecycleByCallID.values.sorted {
                 if $0.updatedAt == $1.updatedAt { return $0.callID < $1.callID }
                 return $0.updatedAt < $1.updatedAt
-            }
+            },
+            providerDispatchEnvelope: latestProviderDispatchEnvelope
         )
         let invariantViolations = HarnessInvariantRegistry.validateCheckpoint(checkpoint)
         guard invariantViolations.isEmpty else {
@@ -2232,6 +2295,67 @@ public actor FloeAgentRuntime {
                 .joined()
                 .prefix(16)
         )
+    }
+
+    private static func dispatchEnvelope(
+        request: ProviderStreamRequest,
+        conversationMode: ConversationMode
+    ) -> ProviderDispatchEnvelope {
+        let messageMaterial: String = request.effectiveMessages.map { message -> String in
+            let parts = message.content.map { part -> String in
+                switch part {
+                case .text(let text):
+                    return "text:\(text)"
+                case .imageData(let mimeType, let base64):
+                    return "image:\(mimeType):\(digest(Data(base64.utf8)))"
+                case .imageURL(let url):
+                    return "imageURL:\(url.absoluteString)"
+                }
+            }.joined(separator: "|")
+            return "\(message.role):\(parts)"
+        }.joined(separator: "\n")
+        let schemaMaterial: String = request.toolSchemas.map { schema -> String in
+            "\(schema.name)|\(schema.description)|\(schema.parametersJSON)"
+        }.joined(separator: "\n")
+        return ProviderDispatchEnvelope(
+            providerID: request.provider.id,
+            providerKind: request.provider.kind.rawValue,
+            wireProtocol: request.provider.wireProtocol.rawValue,
+            modelID: request.model.id,
+            remoteModelID: request.model.remoteModelID,
+            conversationMode: conversationMode.rawValue,
+            messagesDigest: digest(Data(messageMaterial.utf8)),
+            toolSchemasDigest: digest(Data(schemaMaterial.utf8)),
+            pendingCallIDs: request.pendingToolCalls.map(\.id),
+            pendingResultCallIDs: request.toolResults.map(\.callID),
+            reasoningDigest: request.pendingAssistantReasoning.map { digest(Data($0.utf8)) }
+        )
+    }
+
+    private static func dispatchEnvelopesMatch(
+        _ expected: ProviderDispatchEnvelope,
+        _ actual: ProviderDispatchEnvelope
+    ) -> Bool {
+        expected.providerID == actual.providerID
+            && expected.providerKind == actual.providerKind
+            && expected.wireProtocol == actual.wireProtocol
+            && expected.modelID == actual.modelID
+            && expected.remoteModelID == actual.remoteModelID
+            && expected.conversationMode == actual.conversationMode
+            && expected.messagesDigest == actual.messagesDigest
+            && expected.toolSchemasDigest == actual.toolSchemasDigest
+            && expected.pendingCallIDs == actual.pendingCallIDs
+            && expected.pendingResultCallIDs == actual.pendingResultCallIDs
+            && expected.reasoningDigest == actual.reasoningDigest
+    }
+
+    private func clearCompletedProviderDispatch() {
+        latestProviderDispatchEnvelope = nil
+        restoredProviderDispatchEnvelope = nil
+    }
+
+    private static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: Audit
@@ -2410,10 +2534,11 @@ private struct ToolLoopGuardrailDecision {
 /// providers commonly regenerate on every retry.
 private struct ToolLoopGuard {
     private var outcomeCountsInEpoch: [String: Int] = [:]
-    private var lastOutcomeByRoute: [String: String] = [:]
+    private var lastObservationInEpoch: String?
 
     mutating func advanceProgressEpoch() {
         outcomeCountsInEpoch.removeAll(keepingCapacity: true)
+        lastObservationInEpoch = nil
     }
 
     mutating func record(
@@ -2428,8 +2553,6 @@ private struct ToolLoopGuard {
         let route = "\(call.toolName)|\(arguments)"
         let outcome = "\(result.status.rawValue)|\(observableOutput)"
 
-        defer { lastOutcomeByRoute[route] = outcome }
-
         // A successful mutation, an explicit wait, or a materially changed
         // observation establishes progress and opens a fresh epoch. This
         // keeps the guard focused on unchanged retries instead of imposing a
@@ -2440,12 +2563,12 @@ private struct ToolLoopGuard {
             advanceProgressEpoch()
             return nil
         }
-        if let previous = lastOutcomeByRoute[route], previous != outcome {
-            advanceProgressEpoch()
-            return nil
-        }
-
         let exact = "\(route)|\(outcome)"
+        if let previous = lastObservationInEpoch, previous != exact {
+            advanceProgressEpoch()
+        }
+        lastObservationInEpoch = exact
+
         outcomeCountsInEpoch[exact, default: 0] += 1
         if outcomeCountsInEpoch[exact, default: 0] >= 3 {
             return ToolLoopGuardrailDecision(

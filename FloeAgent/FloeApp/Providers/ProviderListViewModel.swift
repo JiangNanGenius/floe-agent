@@ -86,6 +86,21 @@ final class ProviderListViewModel: ObservableObject {
         secretStatus[providerID] ?? .synced
     }
 
+    /// Provider-level routing switch exposed directly in the settings list.
+    /// The endpoint, Keychain reference and per-model switches remain intact
+    /// while every runtime picker hides the provider immediately after save.
+    func setEnabled(_ enabled: Bool, provider: ProviderProfile) async {
+        var updated = provider
+        updated.isEnabled = enabled
+        updated.updatedAt = Date()
+        do {
+            try await center.saveProvider(updated)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await load()
+    }
+
     func delete(_ provider: ProviderProfile) async {
         do {
             // Remove the secret first. If metadata deletion then fails, the

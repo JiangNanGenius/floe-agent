@@ -22,6 +22,50 @@ struct ConversationRunServiceTests {
         return (SQLiteConversationStore(database: database), SQLiteRunStore(database: database))
     }
 
+    @Test("A Goal run reserves one revision and advances it only after durable completion")
+    func goalRunUsesReservedRevision() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let conversationStore = SQLiteConversationStore(database: database)
+        let runStore = SQLiteRunStore(database: database)
+        let intelligenceStore = SQLiteIntelligenceStore(database: database)
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "Goal", createdAt: Date(), updatedAt: Date()
+        ))
+        let provider = TestFixtures.localhostProvider()
+        let adapter = MockAdapter()
+        adapter.script = [[
+            .textDelta(.init(text: "目标步骤已完成。")),
+            .completed(.init(stopReason: .endTurn))
+        ]]
+        let service = ConversationRunService(
+            configuration: .init(
+                conversationID: conversationID,
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                conversationMode: .goal
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            intelligenceStore: intelligenceStore,
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        try await service.start(goal: "完成一个可验证目标")
+
+        let goal = try #require(await intelligenceStore.goals(conversationID: conversationID).first)
+        let run = try #require(await runStore.run(id: service.runID))
+        #expect(run.goalID == goal.id)
+        #expect(run.state == "completed")
+        #expect(goal.revision == 2)
+        #expect(goal.status == .verifying)
+        #expect(goal.progress.cycleCount == 1)
+        #expect(goal.progress.modelCallCount == 1)
+    }
+
     @Test("A completed streaming run persists assistant message, events and usage")
     func persistedStreamingRun() async throws {
         let (conversationStore, runStore) = try await makeStores()

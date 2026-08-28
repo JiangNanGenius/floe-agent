@@ -12,11 +12,21 @@ public struct SkillCreationRequest: Sendable, Equatable {
     public var name: String
     public var description: String
     public var instructions: String
+    public var pythonScripts: [SkillBundledPythonScript]
+    public var pythonPackages: [SkillPythonPackageRequirement]
 
-    public init(name: String, description: String, instructions: String) {
+    public init(
+        name: String,
+        description: String,
+        instructions: String,
+        pythonScripts: [SkillBundledPythonScript] = [],
+        pythonPackages: [SkillPythonPackageRequirement] = []
+    ) {
         self.name = name
         self.description = description
         self.instructions = instructions
+        self.pythonScripts = pythonScripts
+        self.pythonPackages = pythonPackages
     }
 }
 

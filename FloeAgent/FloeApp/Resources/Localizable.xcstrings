@@ -1965,13 +1965,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Enable VNC over SSH"
+            "value": "Add VNC connection"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "启用基于 SSH 的 VNC"
+            "value": "添加 VNC 连接"
           }
         }
       }
@@ -2152,13 +2152,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "VNC always runs over the SSH connection, never a public listener."
+            "value": "Use a direct VNC connection or protect it with a verified SSH tunnel."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "VNC 始终通过 SSH 连接运行，绝不暴露公共监听。"
+            "value": "可直接连接 VNC，也可通过已验证的 SSH 隧道保护连接。"
           }
         }
       }
@@ -2856,6 +2856,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "启用模型"
+          }
+        }
+      }
+    },
+    "model.hidden_from_primary_picker.badge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hidden from Home model picker"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已从首页模型列表隐藏"
+          }
+        }
+      }
+    },
+    "model.hide_from_primary_picker": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide from Home model picker"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从首页模型列表隐藏"
+          }
+        }
+      }
+    },
+    "model.show_in_primary_picker": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show in Home model picker"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在首页模型列表显示"
           }
         }
       }
@@ -9721,6 +9772,69 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Custom endpoint (optional)" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "自定义端点（可选）" } }
+      }
+    },
+    "office.editor.close": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Close" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "关闭" } }
+      }
+    },
+    "office.editor.error": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Unable to edit this Office file" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法编辑此 Office 文件" } }
+      }
+    },
+    "office.editor.fields": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Editable fields" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "可编辑字段" } }
+      }
+    },
+    "office.editor.format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Format" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "格式" } }
+      }
+    },
+    "office.editor.loading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Opening Office document…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在打开 Office 文档…" } }
+      }
+    },
+    "office.editor.open": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Edit Office document" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "编辑 Office 文档" } }
+      }
+    },
+    "office.editor.save": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Save" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "保存" } }
+      }
+    },
+    "office.editor.saved": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Saved and verified" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已保存并验证" } }
+      }
+    },
+    "office.editor.scope_hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Basic editing changes document text, slide text and spreadsheet cells. Themes, layouts, images and other untouched parts are preserved." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "基础编辑可修改文档文字、幻灯片文字和表格单元格；主题、版式、图片及其他未编辑内容会原样保留。" } }
       }
     },
     "state.stopped": {

@@ -14,24 +14,59 @@ public struct SkillCreateTool: AgentTool {
         public var name: String
         public var description: String
         public var instructions: String
+        public var pythonScripts: [SkillBundledPythonScript]?
+        public var pythonPackages: [SkillPythonPackageRequirement]?
 
-        public init(name: String, description: String, instructions: String) {
+        public init(
+            name: String,
+            description: String,
+            instructions: String,
+            pythonScripts: [SkillBundledPythonScript]? = nil,
+            pythonPackages: [SkillPythonPackageRequirement]? = nil
+        ) {
             self.name = name
             self.description = description
             self.instructions = instructions
+            self.pythonScripts = pythonScripts
+            self.pythonPackages = pythonPackages
         }
     }
 
     public static let name = "skill.create"
     public static let toolDescription =
-        "Create a reusable Floe skill from a name, a one-line description, and instructions. The skill is validated, persisted, and becomes available for future runs. Give the instructions as the full SKILL.md body (steps, conventions, or reference knowledge the agent should reuse)."
+        "Create a reusable Floe skill from instructions and optional audited pure-Python scripts. Python scripts must accept changing task data through inputJSON rather than rewriting their source. Optional dependencies must be exact PyPI name==version pure-Python wheels with a narrow purpose and capability list. Floe audits scripts and wheels once during installation; later execution of the exact installed script and package set can run without repeated approval, while changed code or broader side effects return to normal approval."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "name": {"type": "string", "description": "Skill name (letters/numbers; becomes a lowercase identifier)"},
         "description": {"type": "string", "description": "One-line description of when to use this skill"},
-        "instructions": {"type": "string", "description": "The skill body (Markdown): steps, conventions, or reference knowledge to reuse"}
+        "instructions": {"type": "string", "description": "The skill body (Markdown): steps, conventions, or reference knowledge to reuse"},
+        "pythonScripts": {
+          "type": "array", "maxItems": 8,
+          "description": "Optional UTF-8 pure-Python scripts bundled under scripts/. Use inputJSON for task-specific data.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "relativePath": {"type": "string", "description": "Relative path below scripts/, ending in .py"},
+              "source": {"type": "string", "description": "Audited Python source, at most 64 KiB"}
+            },
+            "required": ["relativePath", "source"], "additionalProperties": false
+          }
+        },
+        "pythonPackages": {
+          "type": "array", "maxItems": 16,
+          "description": "Optional exact, pure-Python PyPI dependencies audited during installation.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "spec": {"type": "string", "description": "Exact PyPI name==version"},
+              "purpose": {"type": "string", "description": "Why the installed skill needs it"},
+              "capabilities": {"type": "array", "maxItems": 16, "items": {"type": "string"}}
+            },
+            "required": ["spec", "purpose", "capabilities"], "additionalProperties": false
+          }
+        }
       },
       "required": ["name", "description", "instructions"],
       "additionalProperties": false
@@ -44,6 +79,7 @@ public struct SkillCreateTool: AgentTool {
     static let maxNameBytes = 128
     static let maxDescriptionBytes = 512
     static let maxInstructionsBytes = 256 * 1024
+    static let maxScriptBytes = 64 * 1024
 
     private let creator: any SkillCreating
 
@@ -64,6 +100,36 @@ public struct SkillCreateTool: AgentTool {
               args.instructions.utf8.count <= Self.maxInstructionsBytes else {
             throw FloeError.validationFailed("instructions must be non-empty and at most \(Self.maxInstructionsBytes) bytes")
         }
+        let scripts = args.pythonScripts ?? []
+        let packages = args.pythonPackages ?? []
+        guard scripts.count <= 8, packages.count <= 16 else {
+            throw FloeError.validationFailed("A skill may bundle at most 8 scripts and 16 packages")
+        }
+        if !packages.isEmpty, scripts.isEmpty {
+            throw FloeError.validationFailed("pythonPackages require at least one bundled Python script")
+        }
+        var paths = Set<String>()
+        for script in scripts {
+            let path = script.relativePath
+            guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"),
+                  !path.split(separator: "/").contains(".."),
+                  URL(fileURLWithPath: path).pathExtension.lowercased() == "py",
+                  paths.insert(path.lowercased()).inserted,
+                  !script.source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  script.source.utf8.count <= Self.maxScriptBytes else {
+                throw FloeError.validationFailed("Python script paths must be unique safe .py paths and source must be 1-65536 bytes")
+            }
+        }
+        for package in packages {
+            try ManagedPythonPackageSpecParser.validate(package.spec)
+            guard package.spec.components(separatedBy: "==").count == 2,
+                  !package.purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  package.purpose.utf8.count <= 1_024,
+                  !package.capabilities.isEmpty,
+                  package.capabilities.count <= 16 else {
+                throw FloeError.validationFailed("Skill packages require exact name==version, purpose and 1-16 capabilities")
+            }
+        }
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
@@ -72,7 +138,9 @@ public struct SkillCreateTool: AgentTool {
             let skill = try await creator.create(SkillCreationRequest(
                 name: args.name,
                 description: args.description,
-                instructions: args.instructions
+                instructions: args.instructions,
+                pythonScripts: args.pythonScripts ?? [],
+                pythonPackages: args.pythonPackages ?? []
             ))
             let text = "status=created id=\(skill.id) name=\(skill.name) version=\(skill.version)"
             return Self.output(text, exitStatus: 0)

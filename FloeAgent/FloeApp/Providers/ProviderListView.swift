@@ -97,16 +97,29 @@ struct ProviderListView: View {
     }
 
     private func providerButton(_ provider: ProviderProfile, modelCount: Int) -> some View {
-        Button {
-            presentedEditor = .existing(provider)
-        } label: {
-            ProviderRow(
-                provider: provider,
-                modelCount: modelCount,
-                status: viewModel.status(for: provider.id)
-            )
+        HStack(spacing: 12) {
+            Button {
+                presentedEditor = .existing(provider)
+            } label: {
+                ProviderRow(
+                    provider: provider,
+                    modelCount: modelCount,
+                    status: viewModel.status(for: provider.id)
+                )
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            Toggle("providers.enabled", isOn: Binding(
+                get: { provider.isEnabled },
+                set: { enabled in
+                    Task { await viewModel.setEnabled(enabled, provider: provider) }
+                }
+            ))
+            .labelsHidden()
+            .tint(FloeTheme.primary)
+            .accessibilityIdentifier("providers.enabled.\(provider.id.uuidString)")
         }
-        .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -158,6 +171,11 @@ private struct ProviderRow: View {
                     Label("providers.waiting_secret", systemImage: "key.fill")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(FloeTheme.pending)
+                }
+                if !provider.isEnabled {
+                    Text("已停用")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
                 }
             }
             Text(provider.baseURL.absoluteString)

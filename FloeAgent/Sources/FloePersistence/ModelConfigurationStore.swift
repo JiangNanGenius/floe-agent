@@ -96,20 +96,24 @@ public actor ModelConfigurationStore {
         for model in availableModels { try ConfigurationCodec.validate(model) }
         return try await database.writer { db in
             try ConfigurationCodec.write(provider, to: db)
-            let existingEnabled = try Row.fetchAll(
+            let existingPreferences = try Row.fetchAll(
                 db,
-                sql: "SELECT remote_model_id, is_enabled FROM models WHERE provider_id = ?",
+                sql: "SELECT remote_model_id, is_enabled, is_hidden_from_primary_picker FROM models WHERE provider_id = ?",
                 arguments: [provider.id.uuidString]
-            ).reduce(into: [String: Bool]()) { values, row in
-                values[row["remote_model_id"]] = row["is_enabled"]
+            ).reduce(into: [String: (enabled: Bool, hidden: Bool)]()) { values, row in
+                values[row["remote_model_id"]] = (
+                    enabled: row["is_enabled"],
+                    hidden: row["is_hidden_from_primary_picker"]
+                )
             }
             let saved = try availableModels.map { discovered in
                 var model = discovered
                 // Catalog refreshes update capabilities and limits, but an
                 // explicit per-model disable is a user preference and must
                 // survive every launch/reconciliation.
-                if let isEnabled = existingEnabled[model.remoteModelID] {
-                    model.isEnabled = isEnabled
+                if let preferences = existingPreferences[model.remoteModelID] {
+                    model.isEnabled = preferences.enabled
+                    model.isHiddenFromPrimaryPicker = preferences.hidden
                 }
                 return try ConfigurationCodec.write(model, to: db)
             }
@@ -361,8 +365,9 @@ enum ConfigurationCodec {
                 INSERT INTO models (
                     id, provider_id, remote_model_id, display_name,
                     context_tokens, max_output_tokens, pricing_json,
-                    capabilities, reasoning_effort, is_enabled
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    capabilities, reasoning_effort, is_enabled,
+                    is_hidden_from_primary_picker
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     provider_id = excluded.provider_id,
                     remote_model_id = excluded.remote_model_id,
@@ -372,14 +377,16 @@ enum ConfigurationCodec {
                     pricing_json = excluded.pricing_json,
                     capabilities = excluded.capabilities,
                     reasoning_effort = excluded.reasoning_effort,
-                    is_enabled = excluded.is_enabled
+                    is_enabled = excluded.is_enabled,
+                    is_hidden_from_primary_picker = excluded.is_hidden_from_primary_picker
                 """,
             arguments: [
                 canonical.id.uuidString, canonical.providerID.uuidString,
                 canonical.remoteModelID, canonical.displayName,
                 canonical.limits.contextTokens, canonical.limits.maxOutputTokens,
                 pricingJSON, canonical.capabilities.rawValue,
-                canonical.reasoningEffort?.rawValue, canonical.isEnabled
+                canonical.reasoningEffort?.rawValue, canonical.isEnabled,
+                canonical.isHiddenFromPrimaryPicker ?? false
             ]
         )
         return canonical
@@ -412,7 +419,8 @@ enum ConfigurationCodec {
             pricing: pricing,
             capabilities: ModelCapabilities(rawValue: row["capabilities"]),
             reasoningEffort: (row["reasoning_effort"] as String?).flatMap(ModelReasoningEffort.init(rawValue:)),
-            isEnabled: row["is_enabled"]
+            isEnabled: row["is_enabled"],
+            isHiddenFromPrimaryPicker: row["is_hidden_from_primary_picker"]
         )
     }
 

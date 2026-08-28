@@ -105,6 +105,71 @@ struct SkillPackageTests {
         #expect(package.manifest.scriptRuntime == .javaScriptCore)
     }
 
+    @Test("Pure Python scripts and exact packages form an install-audited skill")
+    func validatesLocalPythonSkill() throws {
+        let fixture = try SkillFixture()
+        try fixture.writeValidSkill(
+            capabilities: ["python.local"],
+            tools: ["exec.localPython"],
+            scriptRuntime: "python.local",
+            pythonPackages: [[
+                "spec": "python-dateutil==2.9.0.post0",
+                "purpose": "Parse dates in imported records",
+                "capabilities": ["data.transform"]
+            ]]
+        )
+        let scripts = fixture.root.appendingPathComponent("scripts", isDirectory: true)
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        try Data("import json\nprint(json.dumps(input))\n".utf8)
+            .write(to: scripts.appendingPathComponent("run.py"))
+
+        let package = try SkillPackageValidator().validate(packageAt: fixture.root)
+
+        #expect(package.manifest.scriptRuntime == .localPython)
+        #expect(package.manifest.pythonPackages.map(\.spec) == ["python-dateutil==2.9.0.post0"])
+        #expect(package.declaredCapabilities.contains(.localPython))
+    }
+
+    @Test("Python skill audit rejects installer and native execution escapes")
+    func rejectsUnsafePythonSkillSource() throws {
+        let fixture = try SkillFixture()
+        try fixture.writeValidSkill(
+            capabilities: ["python.local"],
+            tools: ["exec.localPython"],
+            scriptRuntime: "python.local"
+        )
+        let scripts = fixture.root.appendingPathComponent("scripts", isDirectory: true)
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        try Data("import subprocess\nsubprocess.run(['echo', 'x'])\n".utf8)
+            .write(to: scripts.appendingPathComponent("run.py"))
+
+        #expect(throws: SkillValidationError.self) {
+            try SkillPackageValidator().validate(packageAt: fixture.root)
+        }
+    }
+
+    @Test("Python skill dependencies must use immutable exact versions")
+    func rejectsFloatingPythonPackage() throws {
+        let fixture = try SkillFixture()
+        try fixture.writeValidSkill(
+            capabilities: ["python.local"],
+            tools: ["exec.localPython"],
+            scriptRuntime: "python.local",
+            pythonPackages: [[
+                "spec": "python-dateutil",
+                "purpose": "Parse dates",
+                "capabilities": ["data.transform"]
+            ]]
+        )
+        let scripts = fixture.root.appendingPathComponent("scripts", isDirectory: true)
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        try Data("print(input)\n".utf8).write(to: scripts.appendingPathComponent("run.py"))
+
+        #expect(throws: SkillValidationError.self) {
+            try SkillPackageValidator().validate(packageAt: fixture.root)
+        }
+    }
+
     @Test("Compatibility reports unavailable device capabilities and tools")
     func compatibilityReport() throws {
         let fixture = try SkillFixture()
@@ -240,7 +305,8 @@ private final class SkillFixture {
     func writeValidSkill(
         capabilities: [String] = ["workspace.read"],
         tools: [String] = [],
-        scriptRuntime: String = "none"
+        scriptRuntime: String = "none",
+        pythonPackages: [[String: Any]] = []
     ) throws {
         let markdown = """
         ---
@@ -259,7 +325,8 @@ private final class SkillFixture {
             "capabilities": capabilities,
             "tools": tools,
             "platforms": ["ios", "macos"],
-            "scriptRuntime": scriptRuntime
+            "scriptRuntime": scriptRuntime,
+            "pythonPackages": pythonPackages
         ]
         try Data(markdown.utf8).write(to: root.appendingPathComponent("SKILL.md"))
         try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])

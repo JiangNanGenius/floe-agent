@@ -33,6 +33,14 @@ struct ModelEditorView: View {
                     TextField("model.remote_id", text: $model.remoteModelID)
                         .textInputAutocapitalization(.never)
                     Toggle("model.enabled", isOn: $model.isEnabled)
+                    Toggle("model.hide_from_primary_picker", isOn: Binding(
+                        get: { model.isHiddenFromPrimaryPicker == true },
+                        set: { hidden in
+                            model.isHiddenFromPrimaryPicker = hidden
+                            if hidden { makeDefault = false }
+                        }
+                    ))
+                    .accessibilityIdentifier("model.hide_from_primary_picker")
                     if makeDefault {
                         Label("model.default", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(FloeTheme.primary)

@@ -68,6 +68,8 @@ struct RootView: View {
     @State private var renamingConversation: ConversationRecord?
     @State private var deletingConversation: ConversationRecord?
     @State private var deletingWorkspace: WorkspaceRecord?
+    @State private var presentedCanvasWorkspace: WorkspaceRecord?
+    @State private var canvasPresenceRevision = 0
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
     @State private var isPhoneSidebarOpen = false
     @GestureState private var phoneDrawerTranslation: CGFloat = 0
@@ -169,6 +171,10 @@ struct RootView: View {
                     title: title
                 )
             }
+        }
+        .fullScreenCover(item: $presentedCanvasWorkspace) { workspace in
+            WorkspaceCanvasView(workspace: workspace)
+                .environmentObject(environment)
         }
         .alert("删除任务？", isPresented: Binding(
             get: { deletingConversation != nil },
@@ -435,6 +441,9 @@ struct RootView: View {
                     Label("任务中心", systemImage: "checklist")
                         .tag(SidebarSelection.workbench(.overview))
                         .accessibilityIdentifier("sidebar.task_center")
+                    Label("创意模式", systemImage: "rectangle.and.pencil.and.ellipsis")
+                        .tag(SidebarSelection.more(.creative))
+                        .accessibilityIdentifier("sidebar.creative")
                     Label("skills.title", systemImage: "puzzlepiece.extension")
                         .tag(SidebarSelection.more(.skills))
                         .accessibilityIdentifier("sidebar.skills")
@@ -451,16 +460,32 @@ struct RootView: View {
                                     }
                                 )
                             ) {
+                                if WorkspaceCanvasRegistry.exists(workspaceID: workspace.id) {
+                                    Button {
+                                        presentedCanvasWorkspace = workspace
+                                    } label: {
+                                        Label("画布", systemImage: "rectangle.and.pencil.and.ellipsis")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityIdentifier("sidebar.workspace.canvas.\(workspace.id.uuidString)")
+                                }
                                 ForEach(conversations(in: workspace.id)) { conversation in
                                     conversationSidebarRow(conversation)
                                 }
                             } label: {
-                                Button {
-                                    router.startNewTask(workspaceID: workspace.id)
-                                } label: {
-                                    Label(workspace.name, systemImage: "folder")
+                                HStack(spacing: 8) {
+                                    Button {
+                                        router.selectWorkspace(workspace.id)
+                                        Task {
+                                            try? await environment.workspaceCenter.openWorkspace(id: workspace.id)
+                                        }
+                                    } label: {
+                                        Label(workspace.name, systemImage: "folder")
+                                    }
+                                    .buttonStyle(.plain)
+                                    Spacer(minLength: 4)
+                                    workspaceAddControl(workspace)
                                 }
-                                .buttonStyle(.plain)
                             }
                             .accessibilityIdentifier("sidebar.workspace.\(workspace.id.uuidString)")
                             .contextMenu {
@@ -573,6 +598,48 @@ struct RootView: View {
             Button(role: .destructive) { deletingConversation = conversation } label: {
                 Label("删除", systemImage: "trash")
             }
+        }
+    }
+
+    @ViewBuilder
+    private func workspaceAddControl(_ workspace: WorkspaceRecord) -> some View {
+        // Reading this state makes explicit creation immediately re-project
+        // the optional CanvasProject child without a database refresh.
+        let _ = canvasPresenceRevision
+        if WorkspaceCanvasRegistry.exists(workspaceID: workspace.id) {
+            Button {
+                router.startNewTask(workspaceID: workspace.id)
+            } label: {
+                Image(systemName: "plus")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("在 \(workspace.name) 中新建任务")
+        } else {
+            Menu {
+                Button {
+                    router.startNewTask(workspaceID: workspace.id)
+                } label: {
+                    Label("新建普通会话", systemImage: "square.and.pencil")
+                }
+                Button {
+                    do {
+                        try WorkspaceCanvasRegistry.createIfNeeded(workspace: workspace)
+                        canvasPresenceRevision += 1
+                        expandedWorkspaceIDs.insert(workspace.id)
+                        presentedCanvasWorkspace = workspace
+                    } catch {
+                        FloeLogger(category: .app).error(
+                            "canvasCreateFailed workspace=\(workspace.id.uuidString)"
+                        )
+                    }
+                } label: {
+                    Label("新建画布", systemImage: "rectangle.and.pencil.and.ellipsis")
+                }
+            } label: {
+                Image(systemName: "plus")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("在 \(workspace.name) 中新建")
         }
     }
 
@@ -822,6 +889,8 @@ private struct MoreDestinationView: View {
 
     var body: some View {
         switch sub {
+        case .creative:
+            CreativeModeHubView()
         case .runs:
             RunsHistoryView(viewModel: MoreViewModel(center: environment.conversationCenter))
         case .setupGuide:

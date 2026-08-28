@@ -2,6 +2,7 @@
 // expiry, audit chain, tamper detection, canonical JSON.
 
 import Foundation
+import Crypto
 import Testing
 @testable import FloeSecurity
 @testable import FloeModels
@@ -277,6 +278,51 @@ struct ApprovalPolicyTests {
         #expect(try await AutomaticApprovalPolicy(packageReviewBackend: AllowBackend()).decide(
             pythonAction(#"{"script":"import marko","pipCommand":"pip install marko==2.2.0","packagePurpose":"Render requested Markdown","packageCapabilities":["document.render"]}"#)
         ).permitsExecution)
+    }
+
+    @Test("Installed skill Python audit is exact and reusable across approval modes")
+    func installedSkillPythonAuditReuse() async throws {
+        let source = "import json\nprint(json.dumps(input))\n"
+        let digest = SHA256.hash(data: Data(source.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        func proposed(script: String, package: String) throws -> ProposedAction {
+            let object: [String: Any] = [
+                "script": script,
+                "packages": [package],
+                "packagePurpose": "Transform imported records",
+                "packageCapabilities": ["data.transform"]
+            ]
+            let call = try ToolCall(
+                id: UUID().uuidString,
+                toolName: "exec.localPython",
+                argumentsJSON: try JSONSerialization.data(withJSONObject: object),
+                scope: .local
+            )
+            return ProposedAction(
+                toolCall: call,
+                riskLabels: ["executesLocalCode"],
+                userGoal: "Run the installed transformation skill",
+                hostAndPathScope: .local,
+                preapprovedPythonScriptSHA256: [digest],
+                preapprovedPythonPackages: ["marko==2.2.0"]
+            )
+        }
+
+        let exact = try proposed(script: source, package: "marko==2.2.0")
+        #expect(try await HumanApprovalPolicy().decide(exact).permitsExecution)
+        #expect(try await AutomaticApprovalPolicy().decide(exact).permitsExecution)
+        #expect(try await TaskFullAccessPolicy().decide(exact).permitsExecution)
+
+        let changedSource = try proposed(script: source + "print('changed')\n", package: "marko==2.2.0")
+        guard case .escalateToHuman = try await AutomaticApprovalPolicy().decide(changedSource) else {
+            Issue.record("Changed skill source must return to package review")
+            return
+        }
+        let changedPackage = try proposed(script: source, package: "marko==2.3.0")
+        guard case .escalateToHuman = try await AutomaticApprovalPolicy().decide(changedPackage) else {
+            Issue.record("Changed skill package must return to package review")
+            return
+        }
     }
 
     @Test("HumanApprovalPolicy always escalates")
@@ -654,6 +700,8 @@ struct ApprovalPolicyTests {
         for name in [
             "image.inspect", "image.ocr", "image.generate",
             "document.pdf.inspect", "document.pdf.render",
+            "document.office.inspect", "document.office.updateText",
+            "document.createWord", "document.createWorkbook", "presentation.createDeck",
             "exec.localNumerical", "presentation.create"
         ] {
             let call = try ToolCall(

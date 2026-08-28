@@ -132,6 +132,20 @@ enum HarnessInvariantRegistry {
                 detail: "open lifecycle \(entry.callID) has no pending provider call"
             ))
         }
+        if let envelope = checkpoint.providerDispatchEnvelope {
+            if envelope.messagesDigest.isEmpty || envelope.toolSchemasDigest.isEmpty {
+                violations.append(Violation(
+                    name: "checkpoint.dispatchDigestMissing",
+                    detail: "provider dispatch envelope must identify messages and tool schemas"
+                ))
+            }
+            if envelope.pendingCallIDs != envelope.pendingResultCallIDs {
+                violations.append(Violation(
+                    name: "checkpoint.dispatchPairingMismatch",
+                    detail: "provider dispatch envelope must preserve ordered call/result pairing"
+                ))
+            }
+        }
         return violations
     }
 

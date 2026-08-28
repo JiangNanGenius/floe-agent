@@ -38,6 +38,14 @@ struct SecretRedactorTests {
         #expect(!output.contains(secret))
     }
 
+    @Test("Short JSON VNC passwords are masked by field name")
+    func shortJSONPasswordMasked() {
+        let input = #"{"host":"lab","password":"abc123!"}"#
+        let output = SecretRedactor.redact(input)
+        #expect(!output.contains("abc123!"))
+        #expect(output.contains(SecretRedactor.replacement))
+    }
+
     @Test("Non-secret text is left intact")
     func plainTextIntact() {
         let input = "rate limit exceeded, retry after 30 seconds"

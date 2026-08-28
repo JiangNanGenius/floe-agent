@@ -39,6 +39,8 @@ private struct MoreDestinationRouter: View {
 
     var body: some View {
         switch sub {
+        case .creative:
+            CreativeModeHubView()
         case .runs:
             RunsHistoryView(viewModel: viewModel)
         case .setupGuide:

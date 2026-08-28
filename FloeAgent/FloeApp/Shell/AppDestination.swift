@@ -47,12 +47,13 @@ enum AppDestination: String, Hashable, CaseIterable, Identifiable, Sendable {
 /// Sub-destinations reachable from the More tab on iPhone, and promoted to
 /// sidebar sections on iPad. Order is the locked display order.
 enum MoreDestination: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case runs, setupGuide, providers, auxiliaryModels, skills, memory, settings, diagnostics
+    case creative, runs, setupGuide, providers, auxiliaryModels, skills, memory, settings, diagnostics
 
     var id: String { rawValue }
 
     var title: LocalizedStringKey {
         switch self {
+        case .creative: "创意模式"
         case .runs: "more.runs"
         case .setupGuide: "more.setup_guide"
         case .providers: "more.providers"
@@ -66,6 +67,7 @@ enum MoreDestination: String, Hashable, CaseIterable, Identifiable, Sendable {
 
     var systemImage: String {
         switch self {
+        case .creative: "rectangle.and.pencil.and.ellipsis"
         case .runs: "play.rectangle"
         case .setupGuide: "wand.and.stars"
         case .providers: "antenna.radiowaves.left.and.right"

@@ -88,8 +88,8 @@ struct ToolLoopHardeningTests {
         })
     }
 
-    @Test("non-consecutive identical outcomes in one epoch still trip no-progress guard")
-    func nonConsecutiveNoProgressWithinOneEpochStops() async throws {
+    @Test("different observations open fresh progress epochs")
+    func interleavedDifferentObservationsDoNotStop() async throws {
         let adapter = MockAdapter()
         let calls = try [
             ToolCall(id: "echo-1", toolName: "test.echo", argumentsJSON: Data("{}".utf8), scope: .local),
@@ -128,9 +128,44 @@ struct ToolLoopHardeningTests {
 
         try await runtime.start(goal: "do not repeat unchanged work")
 
-        // The third unchanged observation is now the hard stop; alternating
-        // unrelated calls no longer lets a repeated route evade the guard.
-        #expect(executor.executedCalls.count == 5)
+        #expect(executor.executedCalls.count == calls.count)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected ordinary completion after distinct observations")
+            return
+        }
+        #expect(completion.stopReason == .endTurn)
+    }
+
+    @Test("three unchanged retries in one progress epoch stop only that route")
+    func consecutiveUnchangedRetriesStop() async throws {
+        let adapter = MockAdapter()
+        let calls = try (1...3).map {
+            try ToolCall(
+                id: "echo-\($0)",
+                toolName: "test.echo",
+                argumentsJSON: Data("{}".utf8),
+                scope: .local
+            )
+        }
+        adapter.script = calls.map { [.toolRequest($0)] }
+            + [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 20
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "stop only an unchanged retry route")
+
+        #expect(executor.executedCalls.count == calls.count)
         guard case .completed(let completion) = await runtime.state else {
             Issue.record("expected completed no-progress finalization")
             return

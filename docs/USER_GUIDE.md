@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Website](https://www.floe-agent.com/) · [README](../README.md) · [Security](../SECURITY.md)
 
-This guide describes the Floe Agent 1.4.45 source target (build 76). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
+This guide describes the Floe Agent 1.4.46 source target (build 77). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
 
 ## 1. Install safely
 
@@ -21,6 +21,8 @@ Floe Agent requires iOS or iPadOS 26 or newer. iPad is recommended for file revi
 Credentials should be stored in Keychain. Diagnostics and exported reports redact credential values; do not paste an unredacted provider response into a public issue.
 
 Each provider and each model has its own routing switch. Turning one off keeps its endpoint, credential and model metadata editable in Settings while removing it from the New Task model picker. The picker groups Apple/downloaded local models separately and groups cloud models by provider, so duplicate model names remain distinguishable.
+
+An enabled model also has a separate **Hide from primary model picker** switch, off by default. Use it for a model that should stay available as an auxiliary/internal model without cluttering the Home/New Task LLM menu. Existing tasks that explicitly reference the model remain resolvable.
 
 ## 3. Configure auxiliary image models
 
@@ -144,24 +146,32 @@ For NumPy, pandas, SciPy, Matplotlib and other supported binary scientific packa
 
 `exec.localNumerical` provides a bounded, dependency-free R, Stata and MATLAB/Octave compatibility surface for descriptive statistics, quantiles, covariance/correlation and one-predictor OLS. Stata-compatible commands include `generate`, `display`, `summarize`, `correlate` and `regress`. It is not GNU R or Stata. PyStata still requires a separately installed, licensed Stata runtime, while `pyreadstat` depends on native extensions; neither can masquerade as an installable pure-Python iOS package. Route full R/Stata to a configured trusted SSH host.
 
+An installed skill may include bounded UTF-8 `.py` scripts and exact-version pure-Python package requirements. The creation/install review validates paths and source, downloads and inspects only universal wheels, and records script/package fingerprints. A later task can execute the identical audited script without asking again for ordinary sandboxed computation; task inputs travel separately in `inputJSON`. Any source or dependency change, important-file mutation, credential use, privilege request, destructive behavior, or external side effect returns to the current task's normal approval policy.
+
 Open Python, JavaScript, MJS or CJS files from the workspace to use the structured editor with line numbers, syntax highlighting, search/replace, symbols, undo/redo and bounded local execution where supported.
 
-## 13. Use the workspace canvas and standard MCP
+## 13. Create and manually edit Office documents
+
+The Agent can create native DOCX, XLSX and PPTX files with `document.createWord`, `document.createWorkbook` and `presentation.createDeck`. It can inspect semantic fields with `document.office.inspect` and apply bounded text, cell, formula and slide-note changes with `document.office.updateText`. These operations are local and do not wait for an approval model when they remain inside the current workspace.
+
+For manual revision, open the file from the workspace. Floe shows the normal document preview first. Choose **Edit Office document** to open the basic editor, make changes, and save. DOCX exposes text fields; XLSX exposes worksheet cells and formulas; PPTX exposes slide text and speaker notes. Saving is atomic and preserves untouched OOXML package parts. Use Microsoft Office, LibreOffice or another full editor for advanced layout, charts, macros, tracked changes, animation and pixel-perfect compatibility.
+
+## 14. Use the workspace canvas and standard MCP
 
 Open a workspace's Files inspector and choose **Canvas**. Each workspace owns at most one native canvas project, and that project can contain multiple canvases. The current native surface supports movable text notes, freehand drawing, panning, zooming, renaming and deleting individual canvases, and atomic local persistence. Canvas content stays with the workspace and is not silently published to a global asset library.
 
-The canvas is deliberately a focused editing surface, not a second unrestricted browser. When sourced material is needed, return to the workspace task and let the ordinary Agent use `web.search` and `web.fetch`; browser control is not part of the canvas path. Results can then be saved into the workspace and arranged on the canvas. Standard MCP is disabled for canvas by default.
+The canvas is deliberately a focused editing surface, not a second unrestricted browser. Choose **Canvas Assistant** to research public references with only `web.search` and `web.fetch`; it cannot navigate or click a browser, log in, use a terminal/SSH/Git, inspect images, or read arbitrary workspace files. A result remains read-only until you choose **Add to canvas**, which creates a note carrying its source URLs, Run identity, and an unverified-license marker. Standard MCP remains disabled for canvas by default.
 
-To connect a standard remote tool server, open **Skills → Standard MCP** and add a Streamable HTTP endpoint. Floe supports no-auth, Bearer token, and custom-header authentication; secret values are stored in Keychain rather than server metadata. Each server and discovered tool can be enabled independently. Remote tools use a server-specific namespace, remain subject to the current task's local permission and approval policy, and treat server descriptions and outputs as untrusted data. Enabling **Allow canvas use** records an explicit opt-in for later canvas-agent workflows; it does not grant ordinary task authority or bypass approval.
+To connect a standard remote tool server, open **Skills → Standard MCP** and add a Streamable HTTP endpoint. Floe supports no-auth, Bearer token, and custom-header authentication; secret values are stored in Keychain rather than server metadata. Each server and discovered tool can be enabled independently. Remote tools use a server-specific namespace, remain subject to the current task's local permission and approval policy, and treat server descriptions and outputs as untrusted data. Enabling **Allow canvas use** adds only that server's currently enabled tools to future Canvas Agent runs; the setting is off by default, does not grant ordinary task authority, and never bypasses approval.
 
-## 14. Install and create Skills
+## 15. Install and create Skills
 
 - **Skill Creator** builds a local declarative instruction package.
 - **Skill Finder** downloads an HTTPS candidate, uses a selected model to normalize it for iOS, then runs deterministic validation and compatibility checks.
 
 Only instruction-only or read-only low-risk packages can install automatically. Scripts, network/browser access, writes, remote execution, credentials, uploads, capability expansion, and replacements require user confirmation. Scripts are visible source recipes; the App Store build does not dynamically execute them as local plugins.
 
-## 15. Troubleshoot
+## 16. Troubleshoot
 
 - **Model not configured:** add a provider and select a default Agent model.
 - **Apple Foundation Model unavailable:** read the exact reason under **Settings → Local Models**. It requires an eligible device, iOS/iPadOS 27, Apple Intelligence enabled, and the system model ready.
@@ -180,7 +190,7 @@ Only instruction-only or read-only low-risk packages can install automatically. 
 
 Export a redacted diagnostics report from **Settings → Privacy & Security** when filing a reproducible bug. See [Support](../SUPPORT.md) for the report checklist and [Security](../SECURITY.md) for private vulnerability reporting.
 
-## 16. Manage data, fonts, archives, and synced credentials
+## 17. Manage data, fonts, archives, and synced credentials
 
 Open **Settings → Data Management** to inspect Floe's total footprint, installed app size, user data, safely reclaimable space, and categories for local models, private workspaces, fonts, attachments, generated content, browser artifacts, checkpoints, database and other data. Safe Cleanup removes only rebuildable caches and temporary items left for at least one hour. It does not remove workspaces, documents, models, fonts, attachments, the database, or credentials.
 

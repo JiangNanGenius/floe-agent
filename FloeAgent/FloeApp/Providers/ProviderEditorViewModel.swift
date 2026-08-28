@@ -327,6 +327,12 @@ final class ProviderEditorViewModel: ObservableObject {
         candidateModels[index].isEnabled = isEnabled
     }
 
+    func setModelHiddenFromPrimaryPicker(_ id: UUID, isHidden: Bool) {
+        guard let index = candidateModels.firstIndex(where: { $0.id == id }) else { return }
+        candidateModels[index].isHiddenFromPrimaryPicker = isHidden
+        if isHidden, defaultModelID == id { defaultModelID = nil }
+    }
+
     func setDefaultModel(_ id: UUID) {
         guard selectedModelIDs.contains(id) else { return }
         defaultModelID = id
@@ -410,9 +416,13 @@ final class ProviderEditorViewModel: ObservableObject {
             var preferences = center.modelPreferences
             if let chosen = defaultModelID,
                enabled,
-               let staged = selectedModels.first(where: { $0.id == chosen && $0.isEnabled }),
+               let staged = selectedModels.first(where: {
+                   $0.id == chosen && $0.isEnabled && $0.isVisibleInPrimaryPicker
+               }),
                let canonical = saved.first(where: {
-                   $0.remoteModelID == staged.remoteModelID && $0.isEnabled
+                   $0.remoteModelID == staged.remoteModelID
+                       && $0.isEnabled
+                       && $0.isVisibleInPrimaryPicker
                }) {
                 preferences.defaultAgentModelID = canonical.id
             } else if preferences.defaultAgentModelID == nil,

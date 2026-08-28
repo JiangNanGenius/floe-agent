@@ -2,6 +2,7 @@
 // See docs/DEVELOPMENT_PLAN.md §3.3.
 
 import Foundation
+import Crypto
 import FloeCore
 import FloeModels
 
@@ -16,19 +17,27 @@ public struct ProposedAction: Sendable, Codable {
     /// This is context for the classifier only; it never becomes authority.
     public var recentContext: String
     public var hostAndPathScope: ToolScope
+    /// Exact source/package fingerprints audited while installed skills were
+    /// activated. These values grant no general Python authority.
+    public var preapprovedPythonScriptSHA256: Set<String>
+    public var preapprovedPythonPackages: Set<String>
 
     public init(
         toolCall: ToolCall,
         riskLabels: Set<String>,
         userGoal: String,
         recentContext: String = "",
-        hostAndPathScope: ToolScope
+        hostAndPathScope: ToolScope,
+        preapprovedPythonScriptSHA256: Set<String> = [],
+        preapprovedPythonPackages: Set<String> = []
     ) {
         self.toolCall = toolCall
         self.riskLabels = riskLabels
         self.userGoal = String(userGoal.prefix(2048))
         self.recentContext = String(recentContext.prefix(8192))
         self.hostAndPathScope = hostAndPathScope
+        self.preapprovedPythonScriptSHA256 = preapprovedPythonScriptSHA256
+        self.preapprovedPythonPackages = preapprovedPythonPackages
     }
 }
 
@@ -90,7 +99,10 @@ public struct HumanApprovalPolicy: ApprovalPolicy {
     public init() {}
 
     public func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
-        .escalateToHuman(reason: "Human approval policy requires explicit user decision")
+        if action.isPreapprovedSkillPythonRequest {
+            return .allow(scope: AutomaticApprovalPolicyScope.scope(for: action.toolCall), expiresAt: nil)
+        }
+        return .escalateToHuman(reason: "Human approval policy requires explicit user decision")
     }
 }
 
@@ -114,6 +126,9 @@ public struct ModelApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     }
 
     public func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+        if action.isPreapprovedSkillPythonRequest {
+            return .allow(scope: AutomaticApprovalPolicyScope.scope(for: action.toolCall), expiresAt: nil)
+        }
         do {
             return try await backend.decide(action)
         } catch {
@@ -121,7 +136,9 @@ public struct ModelApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
         }
     }
 
-    public func requiresModelReview(_ action: ProposedAction) -> Bool { true }
+    public func requiresModelReview(_ action: ProposedAction) -> Bool {
+        !action.isPreapprovedSkillPythonRequest
+    }
 }
 
 /// Automatic mode: managed packages use their source-review model; when an
@@ -189,9 +206,12 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     /// approve it. Mutating PDF calls only bypass review when they explicitly
     /// create a new output instead of overwriting their source.
     private static func isDeterministicallyExempt(_ action: ProposedAction) -> Bool {
+        if action.isPreapprovedSkillPythonRequest { return true }
         let alwaysExempt: Set<String> = [
             "image.inspect", "image.ocr", "image.scanBarcode", "image.generate",
             "document.pdf.inspect", "document.pdf.render",
+            "document.office.inspect", "document.office.updateText",
+            "document.createWord", "document.createWorkbook", "presentation.createDeck",
             "workspace.listDirectory", "workspace.readFile",
             "workspace.inspectMetadata", "workspace.searchFiles", "workspace.createFile",
             "workspace.writeFile", "workspace.applyPatch", "workspace.createDirectory",
@@ -514,6 +534,12 @@ public struct TaskFullAccessPolicy: ApprovalPolicy {
     }
 
     public func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+        if action.isPreapprovedSkillPythonRequest {
+            return .allow(
+                scope: AutomaticApprovalPolicyScope.scope(for: action.toolCall),
+                expiresAt: nil
+            )
+        }
         if action.isManagedPythonPackageRequest {
             guard let packageReviewBackend else {
                 return .escalateToHuman(reason: "No software package review model is configured")
@@ -544,6 +570,22 @@ private extension ProposedAction {
         return !((try? ManagedPythonPackageSpecParser.parse(
             command: object["pipCommand"] as? String
         )) ?? []).isEmpty
+    }
+
+    var isPreapprovedSkillPythonRequest: Bool {
+        guard toolCall.toolName == "exec.localPython",
+              !preapprovedPythonScriptSHA256.isEmpty,
+              let object = argumentObject,
+              let script = object["script"] as? String else { return false }
+        let digest = SHA256.hash(data: Data(script.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        guard preapprovedPythonScriptSHA256.contains(digest) else { return false }
+        var packages = object["packages"] as? [String] ?? []
+        packages += (try? ManagedPythonPackageSpecParser.parse(
+            command: object["pipCommand"] as? String
+        )) ?? []
+        return Set(packages.map { $0.lowercased() })
+            .isSubset(of: preapprovedPythonPackages)
     }
 }
 

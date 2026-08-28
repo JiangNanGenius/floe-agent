@@ -253,6 +253,17 @@ final class MCPSettingsCenter: ObservableObject {
         return (try? keychain.read(account: credentialAccount(server))) != nil
     }
 
+    /// Snapshot the exact remote-tool names that may enter a Canvas Agent
+    /// run. Keeping this decision in one policy builder prevents the canvas
+    /// UI from accidentally treating every ordinary-Agent MCP registration
+    /// as canvas-authorized.
+    func canvasAllowedToolNames() -> Set<String> {
+        CanvasAgentToolPolicy.allowedToolNames(
+            servers: servers,
+            discoveredTools: toolsByServerID
+        )
+    }
+
     private func reload() {
         let data = cloud.data(forKey: Self.defaultsKey) ?? defaults.data(forKey: Self.defaultsKey)
         servers = data.flatMap { try? JSONDecoder().decode([MCPServerConfiguration].self, from: $0) } ?? []
@@ -524,8 +535,27 @@ private struct SkillInstallReviewSheet: View {
                     Section("skills.review.tools") { ForEach(pending.toolNames, id: \.self) { Text($0) } }
                 }
                 if pending.containsScripts {
-                    Label("skills.review.scripts", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
+                    Section("Python 脚本（安装时审计）") {
+                        ForEach(pending.files.keys.filter { $0.hasPrefix("scripts/") }.sorted(), id: \.self) {
+                            Label($0, systemImage: "doc.text")
+                                .font(FloeTheme.Typography.evidence)
+                        }
+                    }
+                }
+                if !pending.manifest.pythonPackages.isEmpty {
+                    Section("纯 Python 依赖（安装时审计）") {
+                        ForEach(pending.manifest.pythonPackages, id: \.spec) { package in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(package.spec).font(FloeTheme.Typography.evidence)
+                                Text(package.purpose)
+                                    .font(FloeTheme.Typography.metadata)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Text("只接受固定版本的 PyPI none-any wheel；安装后仅相同脚本与依赖可免重复审核。")
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .navigationTitle("skills.review.title")

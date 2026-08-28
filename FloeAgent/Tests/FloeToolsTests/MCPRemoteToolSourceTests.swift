@@ -71,6 +71,72 @@ struct MCPRemoteToolSourceTests {
         return URLSession(configuration: configuration)
     }
 
+    @Test("Canvas policy exposes only bounded web tools unless MCP is explicitly granted")
+    func canvasPolicyDefaultsClosed() {
+        let server = MCPServerConfiguration(
+            displayName: "Assets",
+            endpoint: URL(string: "https://mcp.example.test/api")!
+        )
+        let tool = MCPDiscoveredTool(
+            remoteName: "asset.search",
+            displayName: nil,
+            toolDescription: "Search assets",
+            inputSchemaJSON: #"{"type":"object"}"#,
+            readOnlyHint: true,
+            destructiveHint: false
+        )
+
+        let names = CanvasAgentToolPolicy.allowedToolNames(
+            servers: [server],
+            discoveredTools: [server.id: [tool]]
+        )
+
+        #expect(names == ["web.search", "web.fetch"])
+        #expect(!names.contains("web.searchAI"))
+        #expect(!names.contains(where: { $0.hasPrefix("browser.") }))
+    }
+
+    @Test("Canvas policy includes only enabled tools from an explicitly granted MCP server")
+    func canvasPolicyFiltersMCPTools() {
+        var allowed = MCPServerConfiguration(
+            displayName: "Assets",
+            endpoint: URL(string: "https://mcp.example.test/api")!,
+            allowInCanvas: true,
+            disabledRemoteToolNames: ["asset.delete"]
+        )
+        let tools = [
+            MCPDiscoveredTool(
+                remoteName: "asset.search", displayName: nil,
+                toolDescription: "Search assets", inputSchemaJSON: #"{"type":"object"}"#,
+                readOnlyHint: true, destructiveHint: false
+            ),
+            MCPDiscoveredTool(
+                remoteName: "asset.delete", displayName: nil,
+                toolDescription: "Delete assets", inputSchemaJSON: #"{"type":"object"}"#,
+                readOnlyHint: false, destructiveHint: true
+            )
+        ]
+        var disabled = allowed
+        disabled.id = UUID()
+        disabled.enabled = false
+
+        let names = CanvasAgentToolPolicy.allowedToolNames(
+            servers: [allowed, disabled],
+            discoveredTools: [allowed.id: tools, disabled.id: tools]
+        )
+        let expected = MCPRemoteToolSource.namespacedName(
+            prefix: allowed.namespacePrefix + "_",
+            remoteName: "asset.search"
+        )
+        let rejected = MCPRemoteToolSource.namespacedName(
+            prefix: allowed.namespacePrefix + "_",
+            remoteName: "asset.delete"
+        )
+
+        #expect(names == ["web.search", "web.fetch", expected])
+        #expect(!names.contains(rejected))
+    }
+
     @Test("Credential-bearing MCP requests never follow redirects")
     func rejectsRedirects() throws {
         let delegate = MCPNoRedirectSessionDelegate()

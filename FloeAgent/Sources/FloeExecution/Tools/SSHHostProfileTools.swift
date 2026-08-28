@@ -5,6 +5,17 @@ import FloeTools
 import FloePersistence
 import FloeSSH
 
+public typealias VNCPasswordWriter = @Sendable (
+    _ hostID: UUID,
+    _ connectionID: UUID,
+    _ password: Data
+) async throws -> SecretReference
+
+public typealias VNCPasswordDeleter = @Sendable (
+    _ hostID: UUID,
+    _ connectionID: UUID
+) async throws -> Void
+
 public struct SSHListHostsTool: AgentTool {
     public struct Arguments: Decodable, Sendable { public init() {} }
     public static let name = "ssh.listHosts"
@@ -75,6 +86,11 @@ public struct SSHUpdateHostTool: AgentTool {
             public var transport: VNCTransport
             public var host: String
             public var port: Int
+            /// A credential-vault placeholder resolved directly into Keychain.
+            /// Raw secrets are rejected so they cannot enter tool-call history
+            /// or a recovery checkpoint.
+            public var password: String?
+            public var clearPassword: Bool?
         }
 
         public struct AuxiliaryConnection: Decodable, Sendable {
@@ -101,14 +117,24 @@ public struct SSHUpdateHostTool: AgentTool {
         public var auxiliaryConnections: [AuxiliaryConnection]?
     }
     public static let name = "ssh.updateHost"
-    public static let toolDescription = "Edit a saved device's non-secret metadata and connection profiles. Use ssh.listHosts first. Device kind is optional descriptive metadata and never overrides configured protocols. You may add direct or SSH-tunnel VNC, Telnet, TCP and BLE serial metadata after configuring a service. Omitted fields are preserved; supplied connection arrays replace that connection group. Never request or place passwords in this tool."
-    public static let parametersJSON = #"{"type":"object","properties":{"hostID":{"type":"string"},"displayName":{"type":"string"},"address":{"type":"string"},"port":{"type":"integer","minimum":1,"maximum":65535},"user":{"type":"string"},"isSSHEnabled":{"type":"boolean"},"deviceKind":{"type":"string","enum":["unspecified","linux","mac","windows","nas","router","switchDevice","appliance","other"]},"isRemoteExecutionEnvironment":{"type":"boolean"},"vncConnections":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"displayName":{"type":"string"},"transport":{"type":"string","enum":["direct","sshTunnel"]},"host":{"type":"string"},"port":{"type":"integer","minimum":1,"maximum":65535}},"required":["displayName","transport","host","port"],"additionalProperties":false}},"auxiliaryConnections":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"displayName":{"type":"string"},"kind":{"type":"string","enum":["telnet","tcp","bluetoothSerial"]},"host":{"type":"string"},"port":{"type":"integer","minimum":1,"maximum":65535},"bluetoothPeripheralID":{"type":"string"},"bluetoothServiceUUID":{"type":"string"},"bluetoothWriteCharacteristicUUID":{"type":"string"},"bluetoothNotifyCharacteristicUUID":{"type":"string"}},"required":["displayName","kind"],"additionalProperties":false}}},"required":["hostID"],"additionalProperties":false}"#
+    public static let toolDescription = "Edit a saved device and its connection profiles. Use ssh.listHosts first. Device kind is optional descriptive metadata and never overrides configured protocols. You may add direct or SSH-tunnel VNC, Telnet, TCP and BLE serial metadata. Omitted fields are preserved; supplied connection arrays replace that connection group. Only include a VNC password as the exact Floe credential placeholder supplied in the conversation (for example ⟨credential:UUID⟩); raw passwords are rejected and never enter tool history. Floe resolves the placeholder directly into Keychain and never returns the secret. Leave password and clearPassword omitted to preserve an existing credential."
+    public static let parametersJSON = #"{"type":"object","properties":{"hostID":{"type":"string"},"displayName":{"type":"string"},"address":{"type":"string"},"port":{"type":"integer","minimum":1,"maximum":65535},"user":{"type":"string"},"isSSHEnabled":{"type":"boolean"},"deviceKind":{"type":"string","enum":["unspecified","linux","mac","windows","nas","router","switchDevice","appliance","other"]},"isRemoteExecutionEnvironment":{"type":"boolean"},"vncConnections":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"displayName":{"type":"string"},"transport":{"type":"string","enum":["direct","sshTunnel"]},"host":{"type":"string"},"port":{"type":"integer","minimum":1,"maximum":65535},"password":{"type":"string"},"clearPassword":{"type":"boolean"}},"required":["displayName","transport","host","port"],"additionalProperties":false}},"auxiliaryConnections":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"displayName":{"type":"string"},"kind":{"type":"string","enum":["telnet","tcp","bluetoothSerial"]},"host":{"type":"string"},"port":{"type":"integer","minimum":1,"maximum":65535},"bluetoothPeripheralID":{"type":"string"},"bluetoothServiceUUID":{"type":"string"},"bluetoothWriteCharacteristicUUID":{"type":"string"},"bluetoothNotifyCharacteristicUUID":{"type":"string"}},"required":["displayName","kind"],"additionalProperties":false}}},"required":["hostID"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.persistsPersonalData, .networkAccess]
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
     private let store: RemoteHostStore
+    private let passwordWriter: VNCPasswordWriter?
+    private let passwordDeleter: VNCPasswordDeleter?
 
-    public init(store: RemoteHostStore) { self.store = store }
+    public init(
+        store: RemoteHostStore,
+        passwordWriter: VNCPasswordWriter? = nil,
+        passwordDeleter: VNCPasswordDeleter? = nil
+    ) {
+        self.store = store
+        self.passwordWriter = passwordWriter
+        self.passwordDeleter = passwordDeleter
+    }
     public func validate(_ args: Arguments) throws {
         guard UUID(uuidString: args.hostID) != nil else { throw FloeError.validationFailed("hostID must be a UUID") }
         if let port = args.port, !(1...65535).contains(port) { throw FloeError.validationFailed("port must be 1-65535") }
@@ -124,6 +150,19 @@ public struct SSHUpdateHostTool: AgentTool {
             }
             if let id = endpoint.id, UUID(uuidString: id) == nil {
                 throw FloeError.validationFailed("VNC connection id must be a UUID")
+            }
+            if endpoint.clearPassword == true, endpoint.password?.isEmpty == false {
+                throw FloeError.validationFailed("A VNC connection cannot set and clear its password together")
+            }
+            if let password = endpoint.password, !password.isEmpty {
+                guard Self.credentialID(from: password) != nil else {
+                    throw FloeError.validationFailed(
+                        "VNC passwords must use the credential placeholder captured from the user's message"
+                    )
+                }
+                guard passwordWriter != nil else {
+                    throw FloeError.invalidConfiguration("Secure VNC credential storage is unavailable")
+                }
             }
         }
         for connection in args.auxiliaryConnections ?? [] {
@@ -144,6 +183,12 @@ public struct SSHUpdateHostTool: AgentTool {
                 }
             }
         }
+    }
+
+    private static func credentialID(from placeholder: String) -> UUID? {
+        let prefix = "⟨credential:"
+        guard placeholder.hasPrefix(prefix), placeholder.hasSuffix("⟩") else { return nil }
+        return UUID(uuidString: String(placeholder.dropFirst(prefix.count).dropLast()))
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
@@ -185,6 +230,8 @@ public struct SSHUpdateHostTool: AgentTool {
         if let value = args.isRemoteExecutionEnvironment { host.isRemoteExecutionEnvironment = value }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
+        var removedCredentialIDs: Set<UUID> = []
+        var updatedCredentialCount = 0
         if let values = args.vncConnections {
             var previous = ((try? JSONDecoder().decode(
                 [VNCEndpoint].self,
@@ -195,13 +242,28 @@ public struct SSHUpdateHostTool: AgentTool {
                let legacy = try? JSONDecoder().decode(VNCEndpoint.self, from: Data(legacyJSON.utf8)) {
                 previous = [legacy]
             }
-            let endpoints = values.map { value in
-                let id = value.id.flatMap(UUID.init(uuidString:)) ?? UUID()
-                return VNCEndpoint(
-                    id: id, displayName: value.displayName,
+            let retainedIDs = Set(values.compactMap { $0.id.flatMap(UUID.init(uuidString:)) })
+            removedCredentialIDs.formUnion(
+                previous.filter { !retainedIDs.contains($0.id) && $0.passwordRef != nil }.map(\.id)
+            )
+            var endpoints: [VNCEndpoint] = []
+            for value in values {
+                let connectionID = value.id.flatMap(UUID.init(uuidString:)) ?? UUID()
+                let previousReference = previous.first(where: { $0.id == connectionID })?.passwordRef
+                var passwordReference = previousReference
+                if value.clearPassword == true {
+                    passwordReference = nil
+                    if previousReference != nil { removedCredentialIDs.insert(connectionID) }
+                } else if let password = value.password, !password.isEmpty,
+                          let data = password.data(using: .utf8), let passwordWriter {
+                    passwordReference = try await passwordWriter(id, connectionID, data)
+                    updatedCredentialCount += 1
+                }
+                endpoints.append(VNCEndpoint(
+                    id: connectionID, displayName: value.displayName,
                     transport: value.transport, host: value.host, port: value.port,
-                    passwordRef: previous.first(where: { $0.id == id })?.passwordRef
-                )
+                    passwordRef: passwordReference
+                ))
             }
             host.vncEndpointsJSON = String(decoding: try encoder.encode(endpoints), as: UTF8.self)
             host.vncEndpointJSON = try endpoints.first.map {
@@ -232,6 +294,11 @@ public struct SSHUpdateHostTool: AgentTool {
             )
             throw error
         }
+        if let passwordDeleter {
+            for connectionID in removedCredentialIDs {
+                try? await passwordDeleter(id, connectionID)
+            }
+        }
         FloeLogger(category: .ssh).info(
             "sshHostUpdateFinished trace=\(traceID) host=\(id.uuidString) fields=\(changedFields.joined(separator: ",")) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
         )
@@ -246,8 +313,8 @@ public struct SSHUpdateHostTool: AgentTool {
                  "displayName": endpoint.displayName,
                  "passwordConfigured": endpoint.passwordRef != nil]
             }
-            response["credentialUpdated"] = false
-            response["credentialNote"] = "This tool preserves existing VNC credentials but cannot create or replace them. Use the device editor for any connection that reports passwordConfigured=false."
+            response["credentialsUpdated"] = updatedCredentialCount
+            response["credentialsRemoved"] = removedCredentialIDs.count
         }
         let data = try JSONSerialization.data(withJSONObject: response, options: [.sortedKeys])
         return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self), fullOutputSHA256: digest(data), exitStatus: 0)

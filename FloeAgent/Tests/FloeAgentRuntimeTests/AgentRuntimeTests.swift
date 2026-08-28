@@ -703,7 +703,7 @@ struct AgentRuntimeTests {
 
     // MARK: Checkpoint / resume
 
-    @Test("Checkpoint v3 golden: format is stable and decode-validates")
+    @Test("Checkpoint v4 golden: format is stable and decode-validates")
     func checkpointGolden() async throws {
         let runID = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
         let conversationID = UUID(uuidString: "55555555-5555-5555-5555-555555555555")!
@@ -727,12 +727,40 @@ struct AgentRuntimeTests {
         let data = try checkpoint.encoded()
         // Golden field assertions (stable contract for v1 readers).
         let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        #expect(object["formatVersion"] as? Int == 3)
+        #expect(object["formatVersion"] as? Int == 4)
         #expect(object["schemaVersion"] as? Int == 1)
         #expect(object["runID"] as? String == runID.uuidString)
         // Round-trip decode.
         let decoded = try AgentCheckpoint.decoded(from: data)
         #expect(decoded == checkpoint)
+    }
+
+    @Test("Checkpoint v4 preserves the provider dispatch envelope")
+    func checkpointDispatchEnvelopeRoundTrip() throws {
+        let envelope = ProviderDispatchEnvelope(
+            providerID: UUID(),
+            providerKind: "openAICompatible",
+            wireProtocol: "responsesAPI",
+            modelID: UUID(),
+            remoteModelID: "deepseek-chat",
+            conversationMode: "agent",
+            messagesDigest: "messages-digest",
+            toolSchemasDigest: "schemas-digest",
+            pendingCallIDs: ["call-1"],
+            pendingResultCallIDs: ["call-1"],
+            reasoningDigest: "reasoning-digest",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let checkpoint = AgentCheckpoint(
+            runID: UUID(),
+            conversationID: UUID(),
+            state: .preparing(.init(goal: "test")),
+            messages: [ConversationMessage(role: "user", content: "test")],
+            providerDispatchEnvelope: envelope
+        )
+
+        let decoded = try AgentCheckpoint.decoded(from: checkpoint.encoded())
+        #expect(decoded.providerDispatchEnvelope == envelope)
     }
 
     @Test("Newer formatVersion is rejected on decode")
@@ -775,6 +803,50 @@ struct AgentRuntimeTests {
         try await runtime.resume(from: checkpoint)
         let state = await runtime.state
         #expect(state.name == "completed")
+    }
+
+    @Test("Resume rejects a provider dispatch envelope that no longer matches")
+    func resumeRejectsDispatchEnvelopeDrift() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+        let provider = TestFixtures.localhostProvider()
+        let model = TestFixtures.testModel(providerID: provider.id)
+        let runtime = FloeAgentRuntime(
+            configuration: .init(provider: provider, model: model),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            checkpointStore: MockCheckpointStore()
+        )
+        let checkpoint = AgentCheckpoint(
+            runID: UUID(),
+            conversationID: UUID(),
+            state: .preparing(.init(goal: "resume safely")),
+            messages: [ConversationMessage(role: "user", content: "resume safely")],
+            providerDispatchEnvelope: ProviderDispatchEnvelope(
+                providerID: provider.id,
+                providerKind: "wrong-provider-kind",
+                wireProtocol: "wrong-wire-protocol",
+                modelID: model.id,
+                remoteModelID: model.remoteModelID,
+                conversationMode: ConversationMode.chat.rawValue,
+                messagesDigest: "wrong-messages",
+                toolSchemasDigest: "wrong-tools",
+                pendingCallIDs: [],
+                pendingResultCallIDs: [],
+                reasoningDigest: "wrong-reasoning"
+            )
+        )
+
+        try await runtime.resume(from: checkpoint)
+
+        guard case .failed(let failure) = await runtime.state else {
+            Issue.record("Expected provider dispatch drift to fail closed")
+            return
+        }
+        #expect(failure.isRecoverable)
+        #expect(failure.message.contains("dispatch checkpoint"))
+        #expect(adapter.requests.isEmpty)
     }
 
     @Test("Recovery ledger prevents a completed tool from executing twice")

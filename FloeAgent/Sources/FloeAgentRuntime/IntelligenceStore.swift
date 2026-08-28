@@ -48,6 +48,13 @@ public protocol PlanDraftStore: Sendable {
 
 public protocol ConversationGoalStore: Sendable {
     func saveGoal(_ goal: ConversationGoal) async throws
+    /// Atomically replaces an existing goal only when its durable revision
+    /// still matches the caller's snapshot. The stored revision becomes
+    /// `expectedRevision + 1` on success.
+    func saveGoalIfRevisionMatches(
+        _ goal: ConversationGoal,
+        expectedRevision: Int
+    ) async throws -> Bool
     func goal(id: UUID) async throws -> ConversationGoal?
     func goals(conversationID: UUID) async throws -> [ConversationGoal]
 }
@@ -197,6 +204,66 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                     """, arguments: [step.id.uuidString, goal.id.uuidString, index, step.title,
                         step.detail, step.status.rawValue, try Self.json(step.evidenceIDs), Self.date(goal.updatedAt)])
             }
+        }
+    }
+
+    public func saveGoalIfRevisionMatches(
+        _ goal: ConversationGoal,
+        expectedRevision: Int
+    ) async throws -> Bool {
+        let criteria = try Self.json(goal.acceptanceCriteria)
+        let steps = try Self.json(goal.steps)
+        let evidence = try Self.json(goal.evidence)
+        let budgets = try Self.json(goal.budgets)
+        let progress = try Self.json(goal.progress)
+        let blockingConditions = try Self.json(goal.blockingConditions ?? [])
+        let stoppingConditions = try Self.json(goal.stoppingConditions ?? [])
+        return try await database.writer { db in
+            try db.execute(sql: """
+                UPDATE conversation_goals SET
+                    source_plan_id = ?, source_plan_digest = ?, objective = ?,
+                    status = ?, criteria_json = ?, steps_json = ?, evidence_json = ?,
+                    budgets_json = ?, progress_json = ?, blocking_fingerprint = ?,
+                    consecutive_blocked_cycles = ?, blocking_conditions_json = ?,
+                    stopping_conditions_json = ?, revision = ?, updated_at = ?
+                WHERE id = ? AND revision = ?
+                """, arguments: [
+                    goal.sourcePlanID?.uuidString, goal.sourcePlanDigest, goal.objective,
+                    goal.status.rawValue, criteria, steps, evidence, budgets, progress,
+                    goal.progress.repeatedBlockerKey, goal.progress.repeatedBlockerCount,
+                    blockingConditions, stoppingConditions, expectedRevision + 1,
+                    Self.date(goal.updatedAt), goal.id.uuidString, expectedRevision
+                ])
+            guard db.changesCount == 1 else { return false }
+            try db.execute(
+                sql: "DELETE FROM goal_criteria WHERE goal_id = ?",
+                arguments: [goal.id.uuidString]
+            )
+            for (index, criterion) in goal.acceptanceCriteria.enumerated() {
+                try db.execute(sql: """
+                    INSERT INTO goal_criteria (id, goal_id, criterion_index, text, status, evidence_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [
+                        criterion.id.uuidString, goal.id.uuidString, index,
+                        criterion.text, criterion.isSatisfied ? "satisfied" : "pending",
+                        try Self.json(criterion.evidenceIDs), Self.date(goal.updatedAt)
+                    ])
+            }
+            try db.execute(
+                sql: "DELETE FROM goal_steps WHERE goal_id = ?",
+                arguments: [goal.id.uuidString]
+            )
+            for (index, step) in goal.steps.enumerated() {
+                try db.execute(sql: """
+                    INSERT INTO goal_steps (id, goal_id, step_index, title, detail, status, evidence_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [
+                        step.id.uuidString, goal.id.uuidString, index, step.title,
+                        step.detail, step.status.rawValue, try Self.json(step.evidenceIDs),
+                        Self.date(goal.updatedAt)
+                    ])
+            }
+            return true
         }
     }
 

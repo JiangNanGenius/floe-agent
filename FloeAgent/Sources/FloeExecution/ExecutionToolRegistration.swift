@@ -34,6 +34,8 @@ public func registerExecutionTools(
     sshCommandService: SSHCommandService? = nil,
     cloudWorkspaceService: CloudWorkspaceService? = nil,
     remoteHostStore: RemoteHostStore? = nil,
+    vncPasswordWriter: VNCPasswordWriter? = nil,
+    vncPasswordDeleter: VNCPasswordDeleter? = nil,
     bluetoothSerialService: (any BluetoothSerialServicing)? = nil,
     httpRequestService: HTTPRequestService = HTTPRequestService(),
     webSearchService: WebSearchService = WebSearchService(),
@@ -143,7 +145,11 @@ public func registerExecutionTools(
     }
     if let remoteHostStore {
         registry.register(SSHListHostsTool(store: remoteHostStore))
-        registry.register(SSHUpdateHostTool(store: remoteHostStore))
+        registry.register(SSHUpdateHostTool(
+            store: remoteHostStore,
+            passwordWriter: vncPasswordWriter,
+            passwordDeleter: vncPasswordDeleter
+        ))
         let rawConnections = RawRemoteConnectionService()
         registry.register(RemoteConnectionOpenTool(service: rawConnections, store: remoteHostStore))
         registry.register(RemoteConnectionExchangeTool(service: rawConnections))

@@ -153,6 +153,32 @@ struct ModelConfigurationStoreTests {
         #expect(try await store.model(id: model.id)?.reasoningEffort == .maximum)
     }
 
+    @Test("Primary-picker visibility round-trips independently from enablement")
+    func primaryPickerVisibilityRoundTrip() async throws {
+        let store = try await makeStore()
+        let provider = ProviderProfile(
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://api.example.com"))
+        )
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "auxiliary-only",
+            displayName: "Auxiliary Only",
+            limits: ModelLimits(contextTokens: 32_768, maxOutputTokens: 4_096),
+            capabilities: [.text, .vision, .approval],
+            isEnabled: true,
+            isHiddenFromPrimaryPicker: true
+        )
+        try await store.saveProvider(provider)
+        try await store.saveModel(model)
+
+        let loaded = try #require(try await store.model(id: model.id))
+        #expect(loaded.isEnabled)
+        #expect(loaded.isHiddenFromPrimaryPicker == true)
+        #expect(!loaded.isVisibleInPrimaryPicker)
+    }
+
     @Test("Rejects unsafe provider URLs and invalid model limits")
     func rejectsInvalidConfigurations() async throws {
         let store = try await makeStore()

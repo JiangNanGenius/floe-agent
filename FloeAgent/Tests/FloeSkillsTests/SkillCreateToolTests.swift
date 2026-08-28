@@ -14,6 +14,34 @@ struct SkillCreateToolTests {
         #expect(SkillCreateTool.riskLabels == [.writesFiles, .changesAgentBehavior])
         #expect(SkillCreateTool.parametersJSON.contains("\"name\""))
         #expect(SkillCreateTool.parametersJSON.contains("\"instructions\""))
+        #expect(SkillCreateTool.parametersJSON.contains("\"pythonScripts\""))
+        #expect(SkillCreateTool.parametersJSON.contains("\"pythonPackages\""))
+    }
+
+    @Test("Python bundles require safe scripts and exact package declarations")
+    func pythonBundleValidation() throws {
+        let tool = SkillCreateTool(creator: FakeSkillCreator())
+        let package = SkillPythonPackageRequirement(
+            spec: "marko==2.2.0",
+            purpose: "Render trusted Markdown input",
+            capabilities: ["markdown.render"]
+        )
+        try tool.validate(.init(
+            name: "Markdown render",
+            description: "Render Markdown",
+            instructions: "Use the bundled renderer.",
+            pythonScripts: [.init(relativePath: "render.py", source: "print(input)\n")],
+            pythonPackages: [package]
+        ))
+        #expect(throws: FloeError.self) {
+            try tool.validate(.init(
+                name: "Bad",
+                description: "Bad",
+                instructions: "Bad",
+                pythonScripts: [],
+                pythonPackages: [package]
+            ))
+        }
     }
 
     @Test("empty name and oversized instructions are rejected")

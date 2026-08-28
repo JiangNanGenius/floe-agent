@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import FloeCore
 
 public struct SkillPackageValidator: Sendable {
     public var limits: SkillValidationLimits
@@ -56,7 +57,13 @@ public struct SkillPackageValidator: Sendable {
             return platform
         })
 
-        try validateScripts(inventory, runtime: manifest.scriptRuntime, capabilities: capabilities)
+        try validatePythonPackages(manifest, capabilities: capabilities)
+        try validateScripts(
+            inventory,
+            root: root,
+            runtime: manifest.scriptRuntime,
+            capabilities: capabilities
+        )
         let digest = try canonicalDigest(root: root, files: inventory)
         return ValidatedSkillPackage(
             rootURL: root,
@@ -241,7 +248,10 @@ public struct SkillPackageValidator: Sendable {
         guard let dictionary = object as? [String: Any] else {
             throw SkillValidationError.invalidManifest("top-level value must be an object")
         }
-        let allowedKeys: Set<String> = ["schemaVersion", "id", "version", "capabilities", "tools", "platforms", "scriptRuntime"]
+        let allowedKeys: Set<String> = [
+            "schemaVersion", "id", "version", "capabilities", "tools",
+            "platforms", "scriptRuntime", "pythonPackages"
+        ]
         if let unknown = dictionary.keys.first(where: { !allowedKeys.contains($0) }) {
             throw SkillValidationError.invalidManifest("unknown field '\(unknown)'")
         }
@@ -256,6 +266,10 @@ public struct SkillPackageValidator: Sendable {
         }
         guard Set(manifest.tools).count == manifest.tools.count else {
             throw SkillValidationError.invalidManifest("tools must be unique")
+        }
+        guard Set(manifest.pythonPackages.map { $0.spec.lowercased() }).count
+                == manifest.pythonPackages.count else {
+            throw SkillValidationError.invalidManifest("pythonPackages must be unique")
         }
         guard Set(manifest.platforms).count == manifest.platforms.count, !manifest.platforms.isEmpty else {
             throw SkillValidationError.invalidManifest("platforms must be non-empty and unique")
@@ -281,6 +295,7 @@ public struct SkillPackageValidator: Sendable {
 
     private func validateScripts(
         _ files: [SkillFile],
+        root: URL,
         runtime: SkillScriptRuntime,
         capabilities: Set<SkillCapability>
     ) throws {
@@ -301,6 +316,40 @@ public struct SkillPackageValidator: Sendable {
             for script in scripts where !["js", "mjs"].contains(URL(fileURLWithPath: script.relativePath).pathExtension.lowercased()) {
                 throw SkillValidationError.unsupportedFile(script.relativePath)
             }
+        case .localPython:
+            guard capabilities.contains(.localPython) else {
+                throw SkillValidationError.incompatibleScriptRuntime("python.local capability is required")
+            }
+            guard scripts.reduce(0, { $0 + $1.byteCount }) <= 192 * 1_024 else {
+                throw SkillValidationError.incompatibleScriptRuntime(
+                    "Bundled Python source exceeds the 192 KiB runtime prompt limit"
+                )
+            }
+            for script in scripts {
+                guard URL(fileURLWithPath: script.relativePath).pathExtension.lowercased() == "py" else {
+                    throw SkillValidationError.unsupportedFile(script.relativePath)
+                }
+                let data = try Data(
+                    floeContentsOf: root.appendingPathComponent(script.relativePath),
+                    options: [.mappedIfSafe]
+                )
+                guard let source = String(data: data, encoding: .utf8) else {
+                    throw SkillValidationError.incompatibleScriptRuntime(
+                        "Python scripts must be UTF-8: \(script.relativePath)"
+                    )
+                }
+                let normalized = source.lowercased()
+                let forbidden = [
+                    "import pip", "from pip", "ensurepip", "pip._internal",
+                    "subprocess", "os.system(", "import ctypes", "from ctypes",
+                    "import cffi", "from cffi"
+                ]
+                if let marker = forbidden.first(where: normalized.contains) {
+                    throw SkillValidationError.incompatibleScriptRuntime(
+                        "Python script \(script.relativePath) contains prohibited installer/native-execution marker '\(marker)'"
+                    )
+                }
+            }
         case .remote:
             guard capabilities.contains(.remoteExecution) else {
                 throw SkillValidationError.incompatibleScriptRuntime("execution.remote capability is required")
@@ -308,6 +357,58 @@ public struct SkillPackageValidator: Sendable {
             let allowed = Set(["js", "mjs", "py", "sh"])
             for script in scripts where !allowed.contains(URL(fileURLWithPath: script.relativePath).pathExtension.lowercased()) {
                 throw SkillValidationError.unsupportedFile(script.relativePath)
+            }
+        }
+    }
+
+    private func validatePythonPackages(
+        _ manifest: SkillManifest,
+        capabilities: Set<SkillCapability>
+    ) throws {
+        let packages = manifest.pythonPackages
+        guard packages.count <= 16 else {
+            throw SkillValidationError.invalidManifest("pythonPackages accepts at most 16 entries")
+        }
+        guard !packages.isEmpty else { return }
+        guard manifest.scriptRuntime == .localPython,
+              capabilities.contains(.localPython),
+              manifest.tools.contains("exec.localPython") else {
+            throw SkillValidationError.incompatibleScriptRuntime(
+                "pythonPackages require python.local runtime/capability and exec.localPython"
+            )
+        }
+        let capabilityPattern = try NSRegularExpression(
+            pattern: #"^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)+$"#
+        )
+        for package in packages {
+            do { try ManagedPythonPackageSpecParser.validate(package.spec) }
+            catch {
+                throw SkillValidationError.invalidManifest("invalid Python package '\(package.spec)'")
+            }
+            guard package.spec.components(separatedBy: "==").count == 2 else {
+                throw SkillValidationError.invalidManifest(
+                    "Python package versions must be exact name==version values"
+                )
+            }
+            let purpose = package.purpose.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !purpose.isEmpty, purpose.utf8.count <= 1_024 else {
+                throw SkillValidationError.invalidManifest(
+                    "Python package purpose must be 1-1024 bytes"
+                )
+            }
+            guard !package.capabilities.isEmpty, package.capabilities.count <= 16,
+                  Set(package.capabilities).count == package.capabilities.count else {
+                throw SkillValidationError.invalidManifest(
+                    "Python package capabilities must contain 1-16 unique values"
+                )
+            }
+            for capability in package.capabilities {
+                let range = NSRange(capability.startIndex..<capability.endIndex, in: capability)
+                guard capabilityPattern.firstMatch(in: capability, range: range)?.range == range else {
+                    throw SkillValidationError.invalidManifest(
+                        "Python package capabilities must use dotted lowercase identifiers"
+                    )
+                }
             }
         }
     }

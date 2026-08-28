@@ -27,7 +27,7 @@ struct FileInspectorView: View {
     @State private var showMountPicker = false
     @State private var showImportPicker = false
     @State private var showCloudWorkspaceLink = false
-    @State private var showCanvas = false
+    @State private var canvasWorkspace: WorkspaceRecord?
     @State private var exportURL: URL?
     @State private var inspectorMode: InspectorMode = .files
     @State private var contextNotice: String?
@@ -83,10 +83,8 @@ struct FileInspectorView: View {
         .sheet(isPresented: $showCloudWorkspaceLink) {
             CloudWorkspaceLinkSheet(center: center)
         }
-        .fullScreenCover(isPresented: $showCanvas) {
-            if let workspace = center.currentWorkspace {
-                WorkspaceCanvasView(workspace: workspace)
-            }
+        .fullScreenCover(item: $canvasWorkspace) { workspace in
+            WorkspaceCanvasView(workspace: workspace)
         }
         .sheet(isPresented: Binding(
             get: { exportURL != nil },
@@ -169,9 +167,18 @@ struct FileInspectorView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        showCanvas = true
+                        do {
+                            try WorkspaceCanvasRegistry.createIfNeeded(workspace: workspace)
+                            canvasWorkspace = workspace
+                        } catch {
+                            center.actionError = error.localizedDescription
+                        }
                     } label: {
-                        Label("画布", systemImage: "rectangle.and.pencil.and.ellipsis")
+                        Label(
+                            WorkspaceCanvasRegistry.exists(workspaceID: workspace.id)
+                                ? "画布" : "新建画布",
+                            systemImage: "rectangle.and.pencil.and.ellipsis"
+                        )
                     }
                     .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                     .accessibilityHint("打开这个工作区唯一的画布入口")

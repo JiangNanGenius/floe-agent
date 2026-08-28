@@ -11,6 +11,7 @@ public enum SkillCapability: String, Codable, CaseIterable, Sendable, Hashable {
     case browserInteract = "browser.interact"
     case credentials = "credentials"
     case localJavaScript = "javascript.local"
+    case localPython = "python.local"
     case remoteExecution = "execution.remote"
 }
 
@@ -23,7 +24,35 @@ public enum SkillPlatform: String, Codable, CaseIterable, Sendable, Hashable {
 public enum SkillScriptRuntime: String, Codable, CaseIterable, Sendable, Hashable {
     case none
     case javaScriptCore = "javascriptcore"
+    case localPython = "python.local"
     case remote
+}
+
+/// One immutable PyPI dependency reviewed when a skill is installed. Exact
+/// versions make the reviewed wheel stable; URLs, VCS references, local paths
+/// and version ranges are rejected by the package validator.
+public struct SkillPythonPackageRequirement: Codable, Equatable, Sendable, Hashable {
+    public var spec: String
+    public var purpose: String
+    public var capabilities: [String]
+
+    public init(spec: String, purpose: String, capabilities: [String]) {
+        self.spec = spec
+        self.purpose = purpose
+        self.capabilities = capabilities
+    }
+}
+
+/// UTF-8 source bundled into `scripts/` by the skill authoring tool. The
+/// package validator remains the authority for path, size and source checks.
+public struct SkillBundledPythonScript: Codable, Equatable, Sendable, Hashable {
+    public var relativePath: String
+    public var source: String
+
+    public init(relativePath: String, source: String) {
+        self.relativePath = relativePath
+        self.source = source
+    }
 }
 
 public struct SkillManifest: Codable, Equatable, Sendable {
@@ -34,6 +63,7 @@ public struct SkillManifest: Codable, Equatable, Sendable {
     public var tools: [String]
     public var platforms: [String]
     public var scriptRuntime: SkillScriptRuntime
+    public var pythonPackages: [SkillPythonPackageRequirement]
 
     public init(
         schemaVersion: Int = 1,
@@ -42,7 +72,8 @@ public struct SkillManifest: Codable, Equatable, Sendable {
         capabilities: [String] = [],
         tools: [String] = [],
         platforms: [String] = [SkillPlatform.iOS.rawValue],
-        scriptRuntime: SkillScriptRuntime = .none
+        scriptRuntime: SkillScriptRuntime = .none,
+        pythonPackages: [SkillPythonPackageRequirement] = []
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -51,6 +82,28 @@ public struct SkillManifest: Codable, Equatable, Sendable {
         self.tools = tools
         self.platforms = platforms
         self.scriptRuntime = scriptRuntime
+        self.pythonPackages = pythonPackages
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, id, version, capabilities, tools, platforms
+        case scriptRuntime, pythonPackages
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        id = try container.decode(String.self, forKey: .id)
+        version = try container.decode(String.self, forKey: .version)
+        capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities) ?? []
+        tools = try container.decodeIfPresent([String].self, forKey: .tools) ?? []
+        platforms = try container.decodeIfPresent([String].self, forKey: .platforms)
+            ?? [SkillPlatform.iOS.rawValue]
+        scriptRuntime = try container.decodeIfPresent(SkillScriptRuntime.self, forKey: .scriptRuntime) ?? .none
+        pythonPackages = try container.decodeIfPresent(
+            [SkillPythonPackageRequirement].self,
+            forKey: .pythonPackages
+        ) ?? []
     }
 }
 

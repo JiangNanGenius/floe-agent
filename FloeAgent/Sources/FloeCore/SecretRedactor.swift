@@ -29,6 +29,14 @@ public enum SecretRedactor {
         // Generic long hex/base64 secrets (>= 32 chars) that follow "key"/"token"/"secret".
         result = replace(#"(?i)(key|token|secret|password|passphrase)["'\s:=]+[A-Za-z0-9+/=_\-]{16,}"#,
                          in: result, with: "$1 \(replacement)")
+        // JSON tool arguments may legitimately contain short VNC passwords.
+        // Redact the value by field name regardless of length so timeline
+        // diagnostics never echo it back.
+        result = replace(
+            #"(?i)(["']?(?:password|passwd|passphrase)["']?\s*:\s*["'])[^"']*(["'])"#,
+            in: result,
+            with: "$1\(replacement)$2"
+        )
         return result
     }
 

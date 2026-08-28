@@ -7,6 +7,7 @@ import FloeSkills
 import FloeTools
 import FloeModels
 import FloeProviders
+import FloeExecution
 import CryptoKit
 
 @MainActor
@@ -15,9 +16,12 @@ final class SkillsCenter: ObservableObject {
         var skillIDs: Set<String>
         var allowedToolNames: Set<String>?
         var instructions: String?
+        var preapprovedPythonScriptSHA256: Set<String>
+        var preapprovedPythonPackages: Set<String>
 
         static let none = RuntimeSelection(
-            skillIDs: [], allowedToolNames: nil, instructions: nil
+            skillIDs: [], allowedToolNames: nil, instructions: nil,
+            preapprovedPythonScriptSHA256: [], preapprovedPythonPackages: []
         )
     }
 
@@ -74,9 +78,38 @@ final class SkillsCenter: ObservableObject {
             ---
             \(request.instructions)
             """
-        let manifest = SkillManifest(id: id, version: "1.0.0")
+        let hasPython = !request.pythonScripts.isEmpty
+        let manifest = SkillManifest(
+            id: id,
+            version: "1.0.0",
+            capabilities: hasPython ? [SkillCapability.localPython.rawValue] : [],
+            tools: hasPython ? [LocalPythonTool.name] : [],
+            scriptRuntime: hasPython ? .localPython : .none,
+            pythonPackages: request.pythonPackages
+        )
         try Data(markdown.utf8).write(to: temporary.appendingPathComponent("SKILL.md"), options: .atomic)
         try JSONEncoder().encode(manifest).write(to: temporary.appendingPathComponent("floe.json"), options: .atomic)
+        if hasPython {
+            let scriptsRoot = temporary.appendingPathComponent("scripts", isDirectory: true)
+            try FileManager.default.createDirectory(at: scriptsRoot, withIntermediateDirectories: true)
+            for script in request.pythonScripts {
+                let relative = script.relativePath.hasPrefix("scripts/")
+                    ? String(script.relativePath.dropFirst("scripts/".count))
+                    : script.relativePath
+                let destination = scriptsRoot.appendingPathComponent(relative, isDirectory: false)
+                    .standardizedFileURL
+                let scriptsPrefix = scriptsRoot.standardizedFileURL.path + "/"
+                guard destination.path.hasPrefix(scriptsPrefix),
+                      destination.pathExtension.lowercased() == "py" else {
+                    throw FloeError.validationFailed("Skill Python script path is unsafe")
+                }
+                try FileManager.default.createDirectory(
+                    at: destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try Data(script.source.utf8).write(to: destination, options: .atomic)
+            }
+        }
         let agents = temporary.appendingPathComponent("agents", isDirectory: true)
         try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
         let openAIYAML = """
@@ -123,16 +156,15 @@ final class SkillsCenter: ObservableObject {
                 sourceEnvelope, sourceURL: url, modelID: rewriteModelID
             )
             guard Set(envelope.manifest.capabilities).isSubset(of: Set(sourceEnvelope.manifest.capabilities)),
-                  Set(envelope.manifest.tools).isSubset(of: Set(sourceEnvelope.manifest.tools)) else {
+                  Set(envelope.manifest.tools).isSubset(of: Set(sourceEnvelope.manifest.tools)),
+                  envelope.files == sourceEnvelope.files else {
                 throw FloeError.validationFailed("The rewrite attempted to expand skill permissions")
             }
             let sourceDigest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
             let temporary = FileManager.default.temporaryDirectory
                 .appendingPathComponent("floe-finder-\(UUID().uuidString)", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: temporary) }
-            try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
-            try Data(envelope.skillMarkdown.utf8).write(to: temporary.appendingPathComponent("SKILL.md"), options: .atomic)
-            try JSONEncoder().encode(envelope.manifest).write(to: temporary.appendingPathComponent("floe.json"), options: .atomic)
+            try Self.materialize(envelope, at: temporary)
             let package = try SkillPackageValidator().validate(packageAt: temporary)
             try await self.requireCompatibility(package)
             if SkillAutomaticInstallPolicy.mayInstallWithoutConfirmation(
@@ -148,6 +180,7 @@ final class SkillsCenter: ObservableObject {
                     sourceURL: url,
                     skillMarkdown: envelope.skillMarkdown,
                     manifest: envelope.manifest,
+                    files: envelope.files,
                     capabilityNames: package.declaredCapabilities.map(\.rawValue).sorted(),
                     toolNames: package.manifest.tools.sorted(),
                     containsScripts: package.containsScripts,
@@ -165,9 +198,14 @@ final class SkillsCenter: ObservableObject {
             let temporary = FileManager.default.temporaryDirectory
                 .appendingPathComponent("floe-confirmed-\(UUID().uuidString)", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: temporary) }
-            try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
-            try Data(pending.skillMarkdown.utf8).write(to: temporary.appendingPathComponent("SKILL.md"), options: .atomic)
-            try JSONEncoder().encode(pending.manifest).write(to: temporary.appendingPathComponent("floe.json"), options: .atomic)
+            try Self.materialize(
+                FinderEnvelope(
+                    skillMarkdown: pending.skillMarkdown,
+                    manifest: pending.manifest,
+                    files: pending.files
+                ),
+                at: temporary
+            )
             try await self.installCanonicalPackage(
                 at: temporary, sourceURL: pending.sourceURL,
                 sourceDigest: pending.sourceDigest,
@@ -192,6 +230,8 @@ final class SkillsCenter: ObservableObject {
         var allowedTools: Set<String> = []
         var declaresToolBoundary = false
         var instructionBlocks: [String] = []
+        var preapprovedPythonScriptSHA256: Set<String> = []
+        var preapprovedPythonPackages: Set<String> = []
         let decoder = JSONDecoder()
 
         for skill in enabled {
@@ -201,7 +241,42 @@ final class SkillsCenter: ObservableObject {
             let granted = (try? await environment.skillStore.allowedCapabilities(skillID: skill.id)) ?? []
             let effective = Set(manifest.capabilities).intersection(granted)
             activeIDs.insert(skill.id)
-            instructionBlocks.append("## Skill: \(skill.name)\n\(skill.skillMarkdown)")
+            var skillInstructions = "## Skill: \(skill.name)\n\(skill.skillMarkdown)"
+
+            if manifest.scriptRuntime == .localPython,
+               effective.contains(SkillCapability.localPython.rawValue),
+               manifest.tools.contains(LocalPythonTool.name) {
+                let packageRoot = installationRoot.appendingPathComponent(skill.id, isDirectory: true)
+                let scripts = (try? SkillPackageValidator().validate(packageAt: packageRoot))?.files
+                    .filter { $0.relativePath.hasPrefix("scripts/") && $0.relativePath.hasSuffix(".py") }
+                    .sorted { $0.relativePath < $1.relativePath } ?? []
+                var scriptBlocks: [String] = []
+                for script in scripts {
+                    let url = packageRoot.appendingPathComponent(script.relativePath)
+                    guard let data = try? Data(floeContentsOf: url),
+                          let source = String(data: data, encoding: .utf8) else { continue }
+                    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                    preapprovedPythonScriptSHA256.insert(digest)
+                    scriptBlocks.append(
+                        "### Audited Python script: \(script.relativePath)\n```python\n\(source)\n```"
+                    )
+                }
+                if !scriptBlocks.isEmpty {
+                    let requirements = manifest.pythonPackages.map { requirement in
+                        preapprovedPythonPackages.insert(requirement.spec.lowercased())
+                        return "- \(requirement.spec): \(requirement.purpose) [\(requirement.capabilities.joined(separator: ", "))]"
+                    }
+                    skillInstructions += """
+
+                    \n### Installed Python execution contract
+                    Run only the exact audited source below through exec.localPython. Put changing task data in inputJSON; do not rewrite the source. If dependencies are listed, pass the exact package specs, the declared purpose and capability list. These exact artifacts were reviewed at installation; changing source or dependency specs returns to normal approval.
+                    \(requirements.isEmpty ? "Dependencies: none" : "Dependencies:\n" + requirements.joined(separator: "\n"))
+
+                    \(scriptBlocks.joined(separator: "\n\n"))
+                    """
+                }
+            }
+            instructionBlocks.append(skillInstructions)
 
             // An instruction-only skill must not turn the complete agent
             // catalog into an empty set. A tool ceiling exists only when at
@@ -222,7 +297,9 @@ final class SkillsCenter: ObservableObject {
         return RuntimeSelection(
             skillIDs: activeIDs,
             allowedToolNames: declaresToolBoundary ? allowedTools : nil,
-            instructions: instructionBlocks.joined(separator: "\n\n")
+            instructions: instructionBlocks.joined(separator: "\n\n"),
+            preapprovedPythonScriptSHA256: preapprovedPythonScriptSHA256,
+            preapprovedPythonPackages: preapprovedPythonPackages
         )
     }
 
@@ -267,6 +344,18 @@ final class SkillsCenter: ObservableObject {
         let validator = SkillPackageValidator()
         let package = try validator.validate(packageAt: url)
         try await requireCompatibility(package)
+        var pythonAuditDigest: String?
+        if !package.manifest.pythonPackages.isEmpty {
+            // Installation is the single trust transition for skill-bundled
+            // Python. Resolve and inspect every exact none-any wheel now;
+            // runtime may later reuse only the matching source/package
+            // fingerprints and never broadens this grant.
+            let report = try await ManagedPythonPackageInspector.inspect(
+                specs: package.manifest.pythonPackages.map(\.spec)
+            )
+            pythonAuditDigest = SHA256.hash(data: Data(report.utf8))
+                .map { String(format: "%02x", $0) }.joined()
+        }
         let provenance = SkillInstallProvenance(
             sourceURL: sourceURL,
             originalSHA256: sourceDigest ?? package.canonicalSHA256,
@@ -283,6 +372,19 @@ final class SkillsCenter: ObservableObject {
         let markdown = String(decoding: markdownData, as: UTF8.self)
         let manifestData = try Data(floeContentsOf: url.appendingPathComponent("floe.json"))
         let capabilities = try String(data: JSONEncoder().encode(package.manifest.capabilities), encoding: .utf8) ?? "[]"
+        var compatibilityObject: [String: Any] = [
+            "status": "compatible",
+            "pythonScriptsAudited": package.files.filter {
+                $0.relativePath.hasPrefix("scripts/") && $0.relativePath.hasSuffix(".py")
+            }.count
+        ]
+        if let pythonAuditDigest {
+            compatibilityObject["pythonPackageAuditSHA256"] = pythonAuditDigest
+        }
+        let compatibilityData = try JSONSerialization.data(
+            withJSONObject: compatibilityObject,
+            options: [.sortedKeys]
+        )
         try await environment.skillStore.save(PersistedSkill(
             id: record.skillID,
             name: package.metadata.name,
@@ -296,11 +398,12 @@ final class SkillsCenter: ObservableObject {
             sourceDigest: record.provenance.originalSHA256,
             rewrittenDigest: record.canonicalSHA256,
             rewriteModelID: record.provenance.rewriteModelID,
-            compatibilityReportJSON: #"{"status":"compatible"}"#
+            compatibilityReportJSON: String(decoding: compatibilityData, as: UTF8.self)
         ))
-        // This grant authorizes the skill's declared ceiling only. Every
-        // side-effecting invocation still passes the normal per-run approval
-        // policy and catastrophic-action gate.
+        // This grant authorizes the skill's declared ceiling only. Exact
+        // audited Python source/package fingerprints can be reused without a
+        // second package review; changed code and all broader side effects
+        // still pass the normal approval and catastrophic-action gates.
         for capability in package.declaredCapabilities {
             try await environment.skillStore.setPermission(
                 skillID: record.skillID,
@@ -326,9 +429,10 @@ final class SkillsCenter: ObservableObject {
         let sourceJSON = String(decoding: sourceData, as: UTF8.self)
         let instruction = """
         Rewrite the candidate Floe skill for an iOS App Store build. Return only strict JSON with exactly
-        {"skillMarkdown":"...","manifest":{...}}. Preserve the user's intent. You may remove unsupported
+        {"skillMarkdown":"...","manifest":{...},"files":{"scripts/name.py":"..."}}. Preserve the user's intent. You may remove unsupported
         capabilities or tools, but must never add either. Local JavaScript, native binaries, WASM and install
-        hooks are unavailable. Scripts are reference text only and cannot execute locally. Source: \(sourceURL.absoluteString)
+        hooks are unavailable. Preserve every files key/value byte-for-byte; audited UTF-8 Python scripts may
+        run only through the python.local runtime declared by the manifest. Source: \(sourceURL.absoluteString)
 
         Candidate:
         \(sourceJSON)
@@ -383,12 +487,44 @@ final class SkillsCenter: ObservableObject {
         try JSONDecoder().decode(FinderEnvelope.self, from: Data(text.utf8))
     }
 
+    private static func materialize(_ envelope: FinderEnvelope, at root: URL) throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data(envelope.skillMarkdown.utf8).write(
+            to: root.appendingPathComponent("SKILL.md"),
+            options: .atomic
+        )
+        try JSONEncoder().encode(envelope.manifest).write(
+            to: root.appendingPathComponent("floe.json"),
+            options: .atomic
+        )
+        let prefix = root.standardizedFileURL.path + "/"
+        for (relativePath, contents) in envelope.files {
+            guard !relativePath.isEmpty, !relativePath.hasPrefix("/"),
+                  !relativePath.contains("\\"),
+                  !relativePath.split(separator: "/").contains("..") else {
+                throw FloeError.validationFailed("Skill file path is unsafe")
+            }
+            let destination = root.appendingPathComponent(relativePath).standardizedFileURL
+            guard destination.path.hasPrefix(prefix) else {
+                throw FloeError.validationFailed("Skill file path escapes its package")
+            }
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data(contents.utf8).write(to: destination, options: .atomic)
+        }
+    }
+
     private func requireCompatibility(_ package: ValidatedSkillPackage) async throws {
         let hasRemoteHost = ((try? await environment.remoteHostStore.hosts()) ?? []).isEmpty == false
         var supported: Set<SkillCapability> = [
             .workspaceRead, .workspaceWrite, .workspaceDelete, .network,
             .browserObserve, .browserInteract
         ]
+        if ToolCatalog.allDescriptors.contains(where: { $0.name == LocalPythonTool.name }) {
+            supported.insert(.localPython)
+        }
         if hasRemoteHost { supported.insert(.remoteExecution) }
         let environmentSnapshot = SkillRuntimeEnvironment(
             platform: .iOS,
@@ -450,6 +586,9 @@ final class SkillsCenter: ObservableObject {
         if descriptor.name.hasPrefix("browser.") && descriptor.isSideEffecting {
             result.insert(SkillCapability.browserInteract.rawValue)
         }
+        if descriptor.name == LocalPythonTool.name {
+            result.insert(SkillCapability.localPython.rawValue)
+        }
         return result
     }
 
@@ -458,6 +597,7 @@ final class SkillsCenter: ObservableObject {
         var sourceURL: URL
         var skillMarkdown: String
         var manifest: SkillManifest
+        var files: [String: String]
         var capabilityNames: [String]
         var toolNames: [String]
         var containsScripts: Bool
@@ -468,6 +608,26 @@ final class SkillsCenter: ObservableObject {
     private struct FinderEnvelope: Codable {
         var skillMarkdown: String
         var manifest: SkillManifest
+        var files: [String: String]
+
+        init(
+            skillMarkdown: String,
+            manifest: SkillManifest,
+            files: [String: String] = [:]
+        ) {
+            self.skillMarkdown = skillMarkdown
+            self.manifest = manifest
+            self.files = files
+        }
+
+        private enum CodingKeys: String, CodingKey { case skillMarkdown, manifest, files }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            skillMarkdown = try container.decode(String.self, forKey: .skillMarkdown)
+            manifest = try container.decode(SkillManifest.self, forKey: .manifest)
+            files = try container.decodeIfPresent([String: String].self, forKey: .files) ?? [:]
+        }
     }
 
     private final class FinderRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {

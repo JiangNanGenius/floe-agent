@@ -280,6 +280,11 @@ struct ProviderEditorView: View {
                             .font(FloeTheme.Typography.metadata)
                             .foregroundStyle(FloeTheme.primary)
                     }
+                    if !model.isVisibleInPrimaryPicker {
+                        Image(systemName: "eye.slash")
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel(Text("model.hidden_from_primary_picker.badge"))
+                    }
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.tertiary)
@@ -299,6 +304,14 @@ struct ProviderEditorView: View {
         }
         .contextMenu {
             Button("model.set_default") { viewModel.setDefaultModel(model.id) }
+            Button(model.isVisibleInPrimaryPicker
+                   ? "model.hide_from_primary_picker"
+                   : "model.show_in_primary_picker") {
+                viewModel.setModelHiddenFromPrimaryPicker(
+                    model.id,
+                    isHidden: model.isVisibleInPrimaryPicker
+                )
+            }
         }
     }
 
