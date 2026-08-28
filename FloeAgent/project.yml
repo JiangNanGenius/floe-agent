@@ -59,6 +59,8 @@ targets:
         BGTaskSchedulerPermittedIdentifiers:
           - org.floeagent.ios.refresh
           - org.floeagent.ios.processing
+          - org.floeagent.ios.media-refresh
+          - org.floeagent.ios.media-processing
           - org.floeagent.ios.continued.*
         UIBackgroundModes:
           - fetch
