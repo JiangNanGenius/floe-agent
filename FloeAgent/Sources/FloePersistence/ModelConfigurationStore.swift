@@ -55,23 +55,24 @@ public actor ModelConfigurationStore {
     @discardableResult
     public func saveProviderBundle(
         provider: ProviderProfile,
-        models: [ModelProfile]
+        models: [ModelProfile],
+        managedCapabilities: ModelCapabilities = .text
     ) async throws -> [ModelProfile] {
         try provider.validate()
         for model in models { try ConfigurationCodec.validate(model) }
         return try await database.writer { db in
             try ConfigurationCodec.write(provider, to: db)
             let saved = try models.map { try ConfigurationCodec.write($0, to: db) }
-            // The bundle is the user's complete selected chat-model set for
-            // this provider. Remove deselected chat rows while preserving
-            // auxiliary image-only rows managed by their dedicated page.
+            // The bundle is the user's complete selected set for one product
+            // role. Remove stale rows from that role while preserving models
+            // managed by the provider's other conversation/media editors.
             let keptIDs = Set(saved.map { $0.id.uuidString })
-            let existingChatIDs = try String.fetchAll(
+            let existingManagedIDs = try String.fetchAll(
                 db,
                 sql: "SELECT id FROM models WHERE provider_id = ? AND (capabilities & ?) != 0",
-                arguments: [provider.id.uuidString, ModelCapabilities.text.rawValue]
+                arguments: [provider.id.uuidString, managedCapabilities.rawValue]
             )
-            for staleID in existingChatIDs where !keptIDs.contains(staleID) {
+            for staleID in existingManagedIDs where !keptIDs.contains(staleID) {
                 try db.execute(
                     sql: "DELETE FROM models WHERE id = ?",
                     arguments: [staleID]
@@ -193,8 +194,9 @@ public actor ModelConfigurationStore {
                         vision_model_id, approval_model_id, package_review_model_id,
                         auxiliary_image_mode, shared_image_model_id,
                         image_generation_model_id, image_editing_model_id,
+                        default_video_model_id,
                         updated_at, sync_revision
-                    ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         onboarding_status = excluded.onboarding_status,
                         default_agent_model_id = excluded.default_agent_model_id,
@@ -205,6 +207,7 @@ public actor ModelConfigurationStore {
                         shared_image_model_id = excluded.shared_image_model_id,
                         image_generation_model_id = excluded.image_generation_model_id,
                         image_editing_model_id = excluded.image_editing_model_id,
+                        default_video_model_id = excluded.default_video_model_id,
                         updated_at = excluded.updated_at,
                         sync_revision = excluded.sync_revision
                     """,
@@ -218,6 +221,7 @@ public actor ModelConfigurationStore {
                     preferences.sharedImageModelID?.uuidString,
                     preferences.imageGenerationModelID?.uuidString,
                     preferences.imageEditingModelID?.uuidString,
+                    preferences.defaultVideoModelID?.uuidString,
                     ConfigurationCodec.encode(preferences.updatedAt),
                     preferences.syncRevision
                 ]
@@ -445,6 +449,7 @@ enum ConfigurationCodec {
             sharedImageModelID: uuid("shared_image_model_id"),
             imageGenerationModelID: uuid("image_generation_model_id"),
             imageEditingModelID: uuid("image_editing_model_id"),
+            defaultVideoModelID: uuid("default_video_model_id"),
             updatedAt: try decodeDate(row["updated_at"]),
             syncRevision: row["sync_revision"]
         )
@@ -487,6 +492,10 @@ enum ConfigurationCodec {
         if let capabilities = try capabilities(for: preferences.imageEditingModelID),
            !capabilities.contains(.imageEditing) {
             throw FloeError.invalidConfiguration("Image editing model lacks editing capability")
+        }
+        if let capabilities = try capabilities(for: preferences.defaultVideoModelID),
+           !capabilities.contains(.videoGeneration) {
+            throw FloeError.invalidConfiguration("Video model lacks generation capability")
         }
     }
 }

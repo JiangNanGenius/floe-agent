@@ -173,7 +173,7 @@ struct RootView: View {
             }
         }
         .fullScreenCover(item: $presentedCanvasWorkspace) { workspace in
-            WorkspaceCanvasView(workspace: workspace)
+            WorkspaceCanvasView(canvasID: workspace.id, name: workspace.name, workspace: workspace)
                 .environmentObject(environment)
         }
         .alert("删除任务？", isPresented: Binding(

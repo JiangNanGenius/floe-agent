@@ -20,14 +20,30 @@ struct ProviderEditorView: View {
     @State private var showModelPicker = false
     @State private var editingModel: ModelProfile?
 
-    init(center: ConversationCenter, existing: ProviderProfile?) {
+    init(
+        center: ConversationCenter,
+        existing: ProviderProfile?,
+        initialRole: ProviderServiceRole? = nil
+    ) {
         _viewModel = StateObject(
-            wrappedValue: ProviderEditorViewModel(center: center, existing: existing)
+            wrappedValue: ProviderEditorViewModel(
+                center: center,
+                existing: existing,
+                initialRole: initialRole
+            )
         )
     }
 
     var body: some View {
         Form {
+            Section("服务用途") {
+                Label(viewModel.serviceRole.title, systemImage: viewModel.serviceRole.icon)
+                if viewModel.serviceRole == .video {
+                    Text("视频模型是创意模式的可选增强；创意模式只强制要求图片生成模型。")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                }
+            }
             presetSection
             protocolSection
             endpointSection
@@ -67,6 +83,7 @@ struct ProviderEditorView: View {
         .sheet(item: $editingModel) { model in
             ModelEditorView(
                 model: model,
+                serviceRole: viewModel.serviceRole,
                 isDefault: viewModel.defaultModelID == model.id,
                 onMakeDefault: { viewModel.setDefaultModel(model.id) }
             ) { updated in viewModel.updateModel(updated) }

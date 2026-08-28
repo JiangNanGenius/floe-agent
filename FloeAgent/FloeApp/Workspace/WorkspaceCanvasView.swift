@@ -11,27 +11,118 @@ import FloeModels
 import FloePersistence
 import FloeTools
 
-/// Stable sidebar entry for the native creative workspace. Canvas documents
-/// remain owned by a workspace; this hub makes that relationship explicit
-/// instead of creating an unowned second canvas store.
+/// Stable sidebar entry for creative work. A private canvas works without a
+/// Workspace; optional Workspace canvases remain available for project-owned
+/// material and explicit file export.
 struct CreativeModeHubView: View {
     @EnvironmentObject private var environment: AppEnvironment
-    @State private var presentedWorkspace: WorkspaceRecord?
+    @State private var presentation: CanvasPresentation?
     @State private var showsWorkspacePicker = false
+    @State private var imageGenerationReady = false
+    @State private var hasImageGenerationModel = false
+
+    private struct CanvasPresentation: Identifiable {
+        let id: UUID
+        let name: String
+        let workspace: WorkspaceRecord?
+    }
 
     var body: some View {
         Group {
-            if environment.workspaceCenter.projectWorkspaces.isEmpty {
-                ContentUnavailableView {
-                    Label("创意模式", systemImage: "rectangle.and.pencil.and.ellipsis")
-                } description: {
-                    Text("先添加一个工作区，再在无限画布中整理素材、笔记与研究结果。")
-                } actions: {
-                    Button("添加工作区") { showsWorkspacePicker = true }
-                        .buttonStyle(.borderedProminent)
-                }
+            if imageGenerationReady {
+                canvasList
             } else {
-                List(environment.workspaceCenter.projectWorkspaces) { workspace in
+                ContentUnavailableView {
+                    Label("需要生图模型", systemImage: "photo.badge.plus")
+                } description: {
+                    Text(hasImageGenerationModel
+                         ? "请选择创意模式默认使用的生图模型。视频模型是可选的 Extra，工作区也可以稍后再添加。"
+                         : "创意模式至少需要一个已启用的图片生成模型。视频模型是可选的 Extra，工作区也可以稍后再添加。")
+                } actions: {
+                    if hasImageGenerationModel {
+                        NavigationLink {
+                            AuxiliaryModelsView(center: environment.conversationCenter)
+                        } label: {
+                            Text("选择生图模型")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    } else {
+                        NavigationLink {
+                            ProviderListView(center: environment.conversationCenter)
+                        } label: {
+                            Text("添加生图服务商")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+        }
+        .navigationTitle("创意模式")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("添加工作区", systemImage: "folder.badge.plus") {
+                    showsWorkspacePicker = true
+                }
+            }
+        }
+        .task { await refreshPrerequisites() }
+        .onAppear { Task { await refreshPrerequisites() } }
+        .sheet(isPresented: $showsWorkspacePicker) {
+            NavigationStack {
+                WorkspacePickerView(center: environment.workspaceCenter) {
+                    showsWorkspacePicker = false
+                }
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("完成") { showsWorkspacePicker = false }
+                    }
+                }
+            }
+        }
+        .fullScreenCover(item: $presentation) { item in
+            WorkspaceCanvasView(
+                canvasID: item.id,
+                name: item.name,
+                workspace: item.workspace
+            )
+        }
+    }
+
+    private var canvasList: some View {
+        List {
+            Section {
+                Button {
+                    openPrivateCanvas()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "rectangle.and.pencil.and.ellipsis")
+                            .foregroundStyle(FloeTheme.primary)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("私人画布")
+                                .foregroundStyle(.primary)
+                            Text(WorkspaceCanvasRegistry.exists(canvasID: WorkspaceCanvasRegistry.privateCanvasID)
+                                 ? "继续创作" : "不绑定工作区，立即开始")
+                                .font(FloeTheme.Typography.metadata)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .frame(minHeight: FloeTheme.minimumTarget)
+            } header: {
+                Text("快速开始")
+            } footer: {
+                Text("私人画布独立保存；需要项目文件时再显式导出或打开工作区画布。")
+            }
+
+            if !environment.workspaceCenter.projectWorkspaces.isEmpty {
+                Section("工作区画布") {
+                    ForEach(environment.workspaceCenter.projectWorkspaces) { workspace in
                     Button {
                         openCanvas(for: workspace)
                     } label: {
@@ -56,39 +147,52 @@ struct CreativeModeHubView: View {
                     }
                     .buttonStyle(.plain)
                     .frame(minHeight: FloeTheme.minimumTarget)
-                }
-            }
-        }
-        .navigationTitle("创意模式")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("添加工作区", systemImage: "folder.badge.plus") {
-                    showsWorkspacePicker = true
-                }
-            }
-        }
-        .task { await environment.workspaceCenter.reload() }
-        .sheet(isPresented: $showsWorkspacePicker) {
-            NavigationStack {
-                WorkspacePickerView(center: environment.workspaceCenter) {
-                    showsWorkspacePicker = false
-                }
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("完成") { showsWorkspacePicker = false }
                     }
                 }
             }
         }
-        .fullScreenCover(item: $presentedWorkspace) { workspace in
-            WorkspaceCanvasView(workspace: workspace)
+    }
+
+    @MainActor
+    private func refreshPrerequisites() async {
+        await environment.conversationCenter.reload()
+        await environment.workspaceCenter.reload()
+        let center = environment.conversationCenter
+        let preferences = center.modelPreferences
+        hasImageGenerationModel = center.imageModels.contains {
+            $0.capabilities.contains(.imageGeneration)
+        }
+        let configuredID = preferences.auxiliaryImageMode == .shared
+            ? preferences.sharedImageModelID
+            : preferences.imageGenerationModelID
+        imageGenerationReady = configuredID.flatMap { id in
+            center.imageModels.first(where: {
+                $0.id == id && $0.capabilities.contains(.imageGeneration)
+            })
+        } != nil
+    }
+
+    private func openPrivateCanvas() {
+        do {
+            try WorkspaceCanvasRegistry.createIfNeeded(
+                canvasID: WorkspaceCanvasRegistry.privateCanvasID,
+                name: "私人画布",
+                workspaceID: nil
+            )
+            presentation = CanvasPresentation(
+                id: WorkspaceCanvasRegistry.privateCanvasID,
+                name: "私人画布",
+                workspace: nil
+            )
+        } catch {
+            environment.workspaceCenter.actionError = error.localizedDescription
         }
     }
 
     private func openCanvas(for workspace: WorkspaceRecord) {
         do {
             try WorkspaceCanvasRegistry.createIfNeeded(workspace: workspace)
-            presentedWorkspace = workspace
+            presentation = CanvasPresentation(id: workspace.id, name: workspace.name, workspace: workspace)
         } catch {
             environment.workspaceCenter.actionError = error.localizedDescription
         }
@@ -147,7 +251,7 @@ private struct FloeCanvasDocument: Codable, Hashable, Identifiable {
 
 private struct FloeCanvasProject: Codable, Hashable {
     var schemaVersion = 2
-    var workspaceID: UUID
+    var workspaceID: UUID?
     var name: String
     var documents: [FloeCanvasDocument]
     var selectedDocumentID: UUID
@@ -164,21 +268,32 @@ private struct FloeCanvasProject: Codable, Hashable {
 /// by a Workspace. Merely opening the file inspector must never manufacture a
 /// canvas; creation happens only from an explicit Workspace action.
 enum WorkspaceCanvasRegistry {
-    static func exists(workspaceID: UUID) -> Bool {
-        guard let url = try? projectURL(workspaceID: workspaceID, createDirectory: false) else {
+    static let privateCanvasID = UUID(uuidString: "4D17C2E1-AD82-4A39-97E7-F10ECA77A114")!
+
+    static func exists(canvasID: UUID) -> Bool {
+        guard let url = try? projectURL(canvasID: canvasID, createDirectory: false) else {
             return false
         }
         return FileManager.default.fileExists(atPath: url.path)
     }
 
+    static func exists(workspaceID: UUID) -> Bool {
+        exists(canvasID: workspaceID)
+    }
+
     @MainActor
     static func createIfNeeded(workspace: WorkspaceRecord) throws {
-        let url = try projectURL(workspaceID: workspace.id, createDirectory: true)
+        try createIfNeeded(canvasID: workspace.id, name: workspace.name, workspaceID: workspace.id)
+    }
+
+    @MainActor
+    static func createIfNeeded(canvasID: UUID, name: String, workspaceID: UUID?) throws {
+        let url = try projectURL(canvasID: canvasID, createDirectory: true)
         guard !FileManager.default.fileExists(atPath: url.path) else { return }
         let initial = FloeCanvasDocument(name: "画布 1")
         let project = FloeCanvasProject(
-            workspaceID: workspace.id,
-            name: workspace.name,
+            workspaceID: workspaceID,
+            name: name,
             documents: [initial],
             selectedDocumentID: initial.id
         )
@@ -189,7 +304,7 @@ enum WorkspaceCanvasRegistry {
     }
 
     static func projectURL(
-        workspaceID: UUID,
+        canvasID: UUID,
         createDirectory: Bool
     ) throws -> URL {
         let support = try FileManager.default.url(
@@ -207,7 +322,7 @@ enum WorkspaceCanvasRegistry {
                 withIntermediateDirectories: true
             )
         }
-        return directory.appendingPathComponent("\(workspaceID.uuidString).json")
+        return directory.appendingPathComponent("\(canvasID.uuidString).json")
     }
 }
 
@@ -218,17 +333,17 @@ private final class WorkspaceCanvasStore: ObservableObject {
 
     private let fileURL: URL
 
-    init(workspaceID: UUID, workspaceName: String) {
+    init(canvasID: UUID, workspaceID: UUID?, canvasName: String) {
         let initial = FloeCanvasDocument(name: "画布 1")
         let fallback = FloeCanvasProject(
             workspaceID: workspaceID,
-            name: workspaceName,
+            name: canvasName,
             documents: [initial],
             selectedDocumentID: initial.id
         )
         do {
             fileURL = try WorkspaceCanvasRegistry.projectURL(
-                workspaceID: workspaceID,
+                canvasID: canvasID,
                 createDirectory: true
             )
             let decoder = JSONDecoder()
@@ -244,7 +359,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
             }
         } catch {
             fileURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("floe-canvas-\(workspaceID.uuidString).json")
+                .appendingPathComponent("floe-canvas-\(canvasID.uuidString).json")
             project = fallback
             saveError = error.localizedDescription
         }
@@ -404,7 +519,7 @@ struct WorkspaceCanvasView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @StateObject private var store: WorkspaceCanvasStore
-    private let workspace: WorkspaceRecord
+    private let workspace: WorkspaceRecord?
     @State private var selectedNodeID: UUID?
     @State private var mode: CanvasMode = .move
     @State private var scale = 1.0
@@ -423,11 +538,12 @@ struct WorkspaceCanvasView: View {
         var icon: String { self == .move ? "arrow.up.and.down.and.arrow.left.and.right" : "pencil.tip" }
     }
 
-    init(workspace: WorkspaceRecord) {
+    init(canvasID: UUID, name: String, workspace: WorkspaceRecord?) {
         self.workspace = workspace
         _store = StateObject(wrappedValue: WorkspaceCanvasStore(
-            workspaceID: workspace.id,
-            workspaceName: workspace.name
+            canvasID: canvasID,
+            workspaceID: workspace?.id,
+            canvasName: name
         ))
     }
 
@@ -782,7 +898,7 @@ private struct CanvasAgentSheet: View {
     @EnvironmentObject private var environment: AppEnvironment
     @ObservedObject var store: WorkspaceCanvasStore
 
-    let workspace: WorkspaceRecord
+    let workspace: WorkspaceRecord?
 
     @State private var prompt = ""
     @State private var selectedModelID: UUID?
@@ -974,7 +1090,7 @@ private struct CanvasAgentSheet: View {
                 in: conversationID,
                 provider: pair.0,
                 model: pair.1,
-                workspaceID: workspace.id,
+                workspaceID: workspace?.id,
                 executionMode: .agent,
                 runSurface: .canvas
             )
@@ -1015,16 +1131,18 @@ private struct CanvasAgentSheet: View {
             do {
                 try await environment.conversationStore.saveConversation(ConversationRecord(
                     id: id,
-                    title: CanvasAgentIdentity.conversationTitlePrefix + workspace.name,
+                    title: CanvasAgentIdentity.conversationTitlePrefix + store.project.name,
                     createdAt: now,
                     updatedAt: now,
                     titleOrigin: .manual
                 ))
                 try await environment.conversationStore.setArchived(id: id, archived: true)
-                try await workspaceStore.linkConversation(
-                    workspaceID: workspace.id,
-                    conversationID: id
-                )
+                if let workspace {
+                    try await workspaceStore.linkConversation(
+                        workspaceID: workspace.id,
+                        conversationID: id
+                    )
+                }
                 store.setAgentConversationID(id)
                 conversationID = id
             } catch {

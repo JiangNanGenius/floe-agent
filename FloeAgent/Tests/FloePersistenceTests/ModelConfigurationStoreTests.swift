@@ -296,6 +296,49 @@ struct ModelConfigurationStoreTests {
         #expect(Set(models.map(\.remoteModelID)) == ["kept", "image"])
     }
 
+    @Test("Media provider bundle removes only deselected models in its role")
+    func mediaProviderBundleSelection() async throws {
+        let store = try await makeStore()
+        let provider = ProviderProfile(
+            kind: .openAI,
+            wireProtocol: .openAIResponses,
+            baseURL: try #require(URL(string: "https://api.openai.com/v1"))
+        )
+        let chat = ModelProfile(
+            providerID: provider.id, remoteModelID: "chat", displayName: "Chat",
+            limits: ModelLimits(contextTokens: 10, maxOutputTokens: 2),
+            capabilities: [.text]
+        )
+        let keptImage = ModelProfile(
+            providerID: provider.id, remoteModelID: "kept-image", displayName: "Kept Image",
+            limits: ModelLimits(contextTokens: 1, maxOutputTokens: 1),
+            capabilities: [.imageGeneration]
+        )
+        let removedImage = ModelProfile(
+            providerID: provider.id, remoteModelID: "removed-image", displayName: "Removed Image",
+            limits: ModelLimits(contextTokens: 1, maxOutputTokens: 1),
+            capabilities: [.imageEditing]
+        )
+        let video = ModelProfile(
+            providerID: provider.id, remoteModelID: "video", displayName: "Video",
+            limits: ModelLimits(contextTokens: 1, maxOutputTokens: 1),
+            capabilities: [.videoGeneration]
+        )
+        try await store.saveProvider(provider)
+        for model in [chat, keptImage, removedImage, video] {
+            try await store.saveModel(model)
+        }
+
+        _ = try await store.saveProviderBundle(
+            provider: provider,
+            models: [keptImage],
+            managedCapabilities: [.imageGeneration, .imageEditing]
+        )
+
+        let models = try await store.models(providerID: provider.id)
+        #expect(Set(models.map(\.remoteModelID)) == ["chat", "kept-image", "video"])
+    }
+
     @Test("Preferences enforce role capabilities and clear deleted references")
     func modelPreferences() async throws {
         let store = try await makeStore()
@@ -326,23 +369,37 @@ struct ModelConfigurationStoreTests {
             limits: ModelLimits(contextTokens: 10, maxOutputTokens: 2),
             capabilities: [.text, .vision]
         )
+        let video = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "video",
+            displayName: "Video",
+            limits: ModelLimits(contextTokens: 32_768, maxOutputTokens: 0),
+            capabilities: [.videoGeneration],
+            isHiddenFromPrimaryPicker: true
+        )
         try await store.saveModel(agent)
         try await store.saveModel(image)
         try await store.saveModel(vision)
+        try await store.saveModel(video)
         let preferences = ModelSelectionPreferences(
             onboardingStatus: .completed,
             defaultAgentModelID: agent.id,
             visionModelID: vision.id,
             auxiliaryImageMode: .shared,
-            sharedImageModelID: image.id
+            sharedImageModelID: image.id,
+            defaultVideoModelID: video.id
         )
         try await store.savePreferences(preferences)
         #expect(try await store.preferences().defaultAgentModelID == agent.id)
         #expect(try await store.preferences().visionModelID == vision.id)
         #expect(try await store.preferences().sharedImageModelID == image.id)
+        #expect(try await store.preferences().defaultVideoModelID == video.id)
 
         try await store.deleteModel(id: image.id)
         #expect(try await store.preferences().sharedImageModelID == nil)
+
+        try await store.deleteModel(id: video.id)
+        #expect(try await store.preferences().defaultVideoModelID == nil)
     }
 
     @Test("Onboarding status persists independently from unfinished configuration")

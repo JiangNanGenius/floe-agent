@@ -45,4 +45,19 @@ struct ModelSelectionPreferencesTests {
         }
         #expect(preferences.sharedImageModelID == nil)
     }
+
+    @Test("Video routing remains independent from image-mode transitions")
+    func videoRouteIsIndependent() {
+        let imageID = UUID()
+        let videoID = UUID()
+        var preferences = ModelSelectionPreferences(
+            auxiliaryImageMode: .shared,
+            sharedImageModelID: imageID,
+            defaultVideoModelID: videoID
+        )
+        preferences.switchAuxiliaryMode(to: .separate) { _ in
+            [.imageGeneration, .imageEditing]
+        }
+        #expect(preferences.defaultVideoModelID == videoID)
+    }
 }

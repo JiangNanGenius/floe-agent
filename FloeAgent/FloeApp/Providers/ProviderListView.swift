@@ -16,6 +16,7 @@ import FloeSyncCore
 struct ProviderListView: View {
     @StateObject private var viewModel: ProviderListViewModel
     @State private var presentedEditor: ProviderEditorRoute?
+    @State private var showsProviderTypePicker = false
 
     init(center: ConversationCenter) {
         _viewModel = StateObject(wrappedValue: ProviderListViewModel(center: center))
@@ -23,7 +24,10 @@ struct ProviderListView: View {
 
     var body: some View {
         Group {
-            if viewModel.providers.isEmpty && viewModel.imageOnlyProviders.isEmpty && !viewModel.isLoading {
+            if viewModel.providers.isEmpty
+                && viewModel.imageProviders.isEmpty
+                && viewModel.videoProviders.isEmpty
+                && !viewModel.isLoading {
                 ContentUnavailableView {
                     Label("more.providers", systemImage: "antenna.radiowaves.left.and.right")
                 } description: {
@@ -38,7 +42,7 @@ struct ProviderListView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    presentedEditor = .new
+                    showsProviderTypePicker = true
                 } label: {
                     Image(systemName: "plus")
                 }
@@ -49,11 +53,23 @@ struct ProviderListView: View {
         }
         .task { await viewModel.load() }
         .refreshable { await viewModel.load() }
+        .confirmationDialog("添加模型服务商", isPresented: $showsProviderTypePicker) {
+            Button("对话模型服务商") { presentedEditor = .new(.conversation) }
+            Button("图片生成/编辑服务商") { presentedEditor = .new(.image) }
+            Button("视频生成服务商") { presentedEditor = .new(.video) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("先选择用途，再配置端点、凭据和模型能力。")
+        }
         .sheet(item: $presentedEditor, onDismiss: {
             Task { await viewModel.load() }
         }) { route in
             NavigationStack {
-                ProviderEditorView(center: viewModel.center, existing: route.provider)
+                ProviderEditorView(
+                    center: viewModel.center,
+                    existing: route.provider,
+                    initialRole: route.role
+                )
             }
             .presentationSizing(.page)
         }
@@ -74,32 +90,57 @@ struct ProviderListView: View {
         List {
             Section("对话模型服务商") {
                 ForEach(viewModel.providers) { provider in
-                    providerButton(provider, modelCount: viewModel.modelCount(for: provider.id))
+                    providerButton(
+                        provider,
+                        role: .conversation,
+                        modelCount: viewModel.modelCount(for: provider.id)
+                    )
                 }
             }
 
-            if !viewModel.imageOnlyProviders.isEmpty {
+            if !viewModel.imageProviders.isEmpty {
                 Section {
-                    ForEach(viewModel.imageOnlyProviders) { provider in
+                    ForEach(viewModel.imageProviders) { provider in
                         providerButton(
                             provider,
-                            modelCount: viewModel.auxiliaryModelCount(for: provider.id)
+                            role: .image,
+                            modelCount: viewModel.imageModelCount(for: provider.id)
                         )
                     }
                 } header: {
                     Text("图像模型服务商")
                 } footer: {
-                    Text("这些端点只供读图、图片生成或编辑使用；路由在“辅助模型”中设置。")
+                    Text("用于图片生成与编辑；默认路由在“辅助模型”中设置。")
+                }
+            }
+
+            if !viewModel.videoProviders.isEmpty {
+                Section {
+                    ForEach(viewModel.videoProviders) { provider in
+                        providerButton(
+                            provider,
+                            role: .video,
+                            modelCount: viewModel.videoModelCount(for: provider.id)
+                        )
+                    }
+                } header: {
+                    Text("视频模型服务商")
+                } footer: {
+                    Text("视频是创意模式的可选增强，不影响私人画布和图片创作。")
                 }
             }
         }
         .listStyle(.insetGrouped)
     }
 
-    private func providerButton(_ provider: ProviderProfile, modelCount: Int) -> some View {
+    private func providerButton(
+        _ provider: ProviderProfile,
+        role: ProviderServiceRole,
+        modelCount: Int
+    ) -> some View {
         HStack(spacing: 12) {
             Button {
-                presentedEditor = .existing(provider)
+                presentedEditor = .existing(provider, role)
             } label: {
                 ProviderRow(
                     provider: provider,
@@ -124,7 +165,7 @@ struct ProviderListView: View {
         .contentShape(Rectangle())
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button {
-                presentedEditor = .existing(provider)
+                presentedEditor = .existing(provider, role)
             } label: {
                 Label("编辑", systemImage: "pencil")
             }
@@ -139,19 +180,25 @@ struct ProviderListView: View {
 }
 
 private enum ProviderEditorRoute: Identifiable {
-    case new
-    case existing(ProviderProfile)
+    case new(ProviderServiceRole)
+    case existing(ProviderProfile, ProviderServiceRole)
 
     var id: String {
         switch self {
-        case .new: "new"
-        case .existing(let provider): provider.id.uuidString
+        case .new(let role): "new-\(role.rawValue)"
+        case .existing(let provider, let role): "\(provider.id.uuidString)-\(role.rawValue)"
         }
     }
 
     var provider: ProviderProfile? {
-        if case .existing(let provider) = self { return provider }
+        if case .existing(let provider, _) = self { return provider }
         return nil
+    }
+
+    var role: ProviderServiceRole? {
+        switch self {
+        case .new(let role), .existing(_, let role): role
+        }
     }
 }
 

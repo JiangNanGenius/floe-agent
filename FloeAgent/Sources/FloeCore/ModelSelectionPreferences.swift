@@ -27,6 +27,9 @@ public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
     public var sharedImageModelID: UUID?
     public var imageGenerationModelID: UUID?
     public var imageEditingModelID: UUID?
+    /// Default video model used by Agent-initiated generation. Manual creative
+    /// actions may still choose another enabled compatible model per request.
+    public var defaultVideoModelID: UUID?
     public var updatedAt: Date
     public var syncRevision: Int64
 
@@ -40,6 +43,7 @@ public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
         sharedImageModelID: UUID? = nil,
         imageGenerationModelID: UUID? = nil,
         imageEditingModelID: UUID? = nil,
+        defaultVideoModelID: UUID? = nil,
         updatedAt: Date = Date(),
         syncRevision: Int64 = 0
     ) {
@@ -52,6 +56,7 @@ public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
         self.sharedImageModelID = sharedImageModelID
         self.imageGenerationModelID = imageGenerationModelID
         self.imageEditingModelID = imageEditingModelID
+        self.defaultVideoModelID = defaultVideoModelID
         self.updatedAt = updatedAt
         self.syncRevision = syncRevision
     }

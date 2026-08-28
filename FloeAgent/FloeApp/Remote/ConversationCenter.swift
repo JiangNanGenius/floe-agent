@@ -2741,6 +2741,18 @@ final class ConversationCenter: ObservableObject {
             }
     }
 
+    var videoModels: [ModelProfile] {
+        let enabledProviderIDs = Set(providers.map(\.id))
+        return modelsByProvider.values.flatMap { $0 }
+            .filter {
+                $0.isEnabled && $0.capabilities.contains(.videoGeneration)
+                    && enabledProviderIDs.contains($0.providerID)
+            }
+            .sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+            }
+    }
+
     var visionModels: [ModelProfile] {
         let enabledProviderIDs = Set(providers.map(\.id))
         return modelsByProvider.values.flatMap { $0 }
@@ -3007,21 +3019,23 @@ final class ConversationCenter: ObservableObject {
     @discardableResult
     func saveProviderBundle(
         provider: ProviderProfile,
-        models: [ModelProfile]
+        models: [ModelProfile],
+        managedCapabilities: ModelCapabilities = .text
     ) async throws -> [ModelProfile] {
-        let previousChatIDs = Set((configuredModelsByProvider[provider.id] ?? [])
-            .filter { $0.capabilities.contains(.text) }
+        let previousManagedIDs = Set((configuredModelsByProvider[provider.id] ?? [])
+            .filter { !$0.capabilities.intersection(managedCapabilities).isEmpty }
             .map(\.id))
         let saved = try await environment.configurationStore.saveProviderBundle(
             provider: provider,
-            models: models
+            models: models,
+            managedCapabilities: managedCapabilities
         )
         try await environment.configurationSync.saveProvider(provider)
         for model in saved {
             try await environment.configurationSync.saveModel(model)
         }
         let savedIDs = Set(saved.map(\.id))
-        for removedID in previousChatIDs.subtracting(savedIDs) {
+        for removedID in previousManagedIDs.subtracting(savedIDs) {
             try await environment.configurationSync.deleteModel(id: removedID)
         }
         await reload()

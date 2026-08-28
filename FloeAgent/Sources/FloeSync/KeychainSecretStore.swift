@@ -12,6 +12,7 @@ import FloeSecurity
 /// decoupled: configuration may arrive before its secret does, surfacing
 /// `.waitingForSecret` until iCloud Keychain catches up.
 public struct KeychainSecretStore: Sendable {
+    public static let defaultService = "org.floeagent.ios.secrets"
 
     public enum Scope: Sendable, Hashable {
         case provider(UUID)
@@ -25,7 +26,7 @@ public struct KeychainSecretStore: Sendable {
     /// Providers whose secrets stay local (user opt-out per provider).
     private let syncOptOut: SyncOptOutStorage
 
-    public init(service: String = "org.floeagent.ios.secrets") {
+    public init(service: String = Self.defaultService) {
         self.store = KeychainStore(service: service, synchronizable: true)
         self.syncOptOut = SyncOptOutStorage(namespace: service)
     }

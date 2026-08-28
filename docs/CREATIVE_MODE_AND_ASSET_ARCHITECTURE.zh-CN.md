@@ -381,7 +381,7 @@ Workspace 下的普通聊天和唯一画布入口都可以调用统一的媒体�
 
 ## 6. 信息架构与入口
 
-Floe 仍然以普通聊天为主。Workspace 继续沿用现有聊天/Task/Run 主页；创意模式不是一个独立项目入口，而是 Workspace 顶部的可选画布入口。画布只有在 Workspace 内主动新建后才存在，资料库可以从普通聊天、画布和项目文件面板进入，但第一阶段不增加独立的顶层资料库 Tab。
+Floe 仍然以普通聊天为主。Workspace 继续沿用现有聊天/Task/Run 主页；创意模式提供独立保存的私人画布，也保留 Workspace 顶部的项目画布入口。进入创意模式至少需要一个已配置的生图模型，但不要求先创建 Workspace；资料库可以从普通聊天、画布和项目文件面板进入，第一阶段不增加独立的顶层资料库 Tab。
 
 ```text
 Floe 启动
@@ -480,7 +480,7 @@ Workspace 右侧 `+` 的行为由“是否已经存在 CanvasProject 入口”�
 
 #### 画布入口
 
-1. 不提供脱离 Workspace 的“创意模式/新建独立画布”入口。
+1. 提供不依赖 Workspace 的“私人画布”入口；进入创意模式前至少配置一个可用的生图模型。视频模型是可选 Extra，Workspace 只在用户需要项目归属或文件导出时显式选择。
 2. 从 Workspace 文件夹右侧 `+` 选择“新建画布”；没有 Workspace 时先创建或选择 Workspace。
 3. 画布入口创建后，点击该入口进入 CanvasProject；最近打开状态恢复该入口内的当前 CanvasDocument。
 4. 进入画布后可以创建多张 CanvasDocument；这些文档都在同一个 CanvasProject 内管理。
@@ -1026,7 +1026,7 @@ MCP 配置归入“Skills 与工具来源”，不放在模型供应商或画布
 ### 交互
 
 - iPhone 和 iPad 路由使用同一选择源，不出现 Home/Chat/Canvas 各自维护的旧状态。
-- 普通聊天与 Workspace 画布之间的引用和转交必须由用户明确触发；画布不能脱离 Workspace 创建。
+- 普通聊天、私人画布与 Workspace 画布之间的引用和转交必须由用户明确触发；私人画布不隐式获得任何 Workspace 文件上下文。
 - 普通聊天、画布和 Workspace 都能使用视频生成；配置和任务进度来自同一套能力。
 - AI 操作有预览、确认、撤销和失败状态。
 - Pencil、手指、鼠标、键盘、VoiceOver 和动态字体都能完成核心流程。

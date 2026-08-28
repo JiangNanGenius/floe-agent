@@ -68,15 +68,22 @@ final class ProviderEditorViewModel: ObservableObject {
     let center: ConversationCenter
     /// The provider being edited, or nil when adding a new one.
     let existing: ProviderProfile?
+    let serviceRole: ProviderServiceRole
     private let secretStore = KeychainSecretStore()
     private let adapterFactory = ProviderAdapterFactory()
 
     /// The provider ID (stable across edit; new when adding).
     let providerID: UUID
 
-    init(center: ConversationCenter, existing: ProviderProfile?) {
+    init(
+        center: ConversationCenter,
+        existing: ProviderProfile?,
+        initialRole: ProviderServiceRole? = nil
+    ) {
         self.center = center
         self.existing = existing
+        let existingModels = existing.flatMap { center.configuredModelsByProvider[$0.id] } ?? []
+        self.serviceRole = initialRole ?? ProviderServiceRole.infer(from: existingModels)
         if let existing {
             self.providerID = existing.id
             self.selectedPreset = ProviderPreset.preset(for: existing.kind)
@@ -89,10 +96,11 @@ final class ProviderEditorViewModel: ObservableObject {
             self.nonSecretHeadersText = Self.headersText(from: existing.nonSecretHeaders)
         } else {
             self.providerID = UUID()
-            self.selectedPreset = ProviderPreset.chatPresets[0]
-            self.selectedProtocol = ProviderPreset.chatPresets[0].defaultProtocol
-            self.displayName = ProviderPreset.chatPresets[0].displayName
-            self.baseURLString = ProviderPreset.chatPresets[0].defaultBaseURL.absoluteString
+            let preset = Self.presets(for: self.serviceRole)[0]
+            self.selectedPreset = preset
+            self.selectedProtocol = preset.defaultProtocol
+            self.displayName = preset.displayName
+            self.baseURLString = preset.defaultBaseURL.absoluteString
         }
     }
 
@@ -115,7 +123,8 @@ final class ProviderEditorViewModel: ObservableObject {
     var availableProtocols: [ModelProtocol] { selectedPreset.supportedProtocols }
 
     var availablePresets: [ProviderPreset] {
-        existing?.kind == .googleGemini ? [.googleGemini] : ProviderPreset.chatPresets
+        if existing?.kind == .googleGemini { return [.googleGemini] }
+        return Self.presets(for: serviceRole)
     }
 
     var supportsDiscovery: Bool {
@@ -131,7 +140,15 @@ final class ProviderEditorViewModel: ObservableObject {
         secretStatus = await secretStore.status(for: providerID, hasConfiguration: true)
         syncEnabled = await secretStore.isSyncEnabled(for: providerID)
         let existingModels = center.configuredModelsByProvider[providerID] ?? []
-        candidateModels = existingModels.filter { $0.capabilities.contains(.text) }
+        candidateModels = existingModels.filter { model in
+            switch serviceRole {
+            case .conversation: model.capabilities.contains(.text)
+            case .image:
+                model.capabilities.contains(.imageGeneration)
+                    || model.capabilities.contains(.imageEditing)
+            case .video: model.capabilities.contains(.videoGeneration)
+            }
+        }
         nativeToolStatusByModelID = Dictionary(uniqueKeysWithValues: candidateModels.map {
             ($0.id, NativeToolCapabilityProbe.initialStatus(for: $0))
         })
@@ -317,7 +334,14 @@ final class ProviderEditorViewModel: ObservableObject {
     func updateModel(_ model: ModelProfile) {
         guard let index = candidateModels.firstIndex(where: { $0.id == model.id }) else { return }
         var normalized = model
-        normalized.capabilities.insert(.text)
+        if serviceRole == .conversation {
+            normalized.capabilities.insert(.text)
+        } else {
+            normalized.capabilities.remove(.text)
+            normalized.capabilities.remove(.tools)
+            normalized.capabilities.remove(.approval)
+            normalized.isHiddenFromPrimaryPicker = true
+        }
         candidateModels[index] = normalized
         nativeToolStatusByModelID[normalized.id] = NativeToolCapabilityProbe.initialStatus(for: normalized)
     }
@@ -339,7 +363,15 @@ final class ProviderEditorViewModel: ObservableObject {
     }
 
     private func mergeDiscovered(_ discovered: [ModelProfile]) {
-        candidateModels = ModelCatalogMerger.merge(existing: candidateModels, discovered: discovered)
+        let normalized = discovered.map { discoveredModel in
+            var model = discoveredModel
+            if serviceRole != .conversation {
+                model.capabilities = serviceRole.defaultCapabilities
+                model.isHiddenFromPrimaryPicker = true
+            }
+            return model
+        }
+        candidateModels = ModelCatalogMerger.merge(existing: candidateModels, discovered: normalized)
         for model in candidateModels where nativeToolStatusByModelID[model.id] != .verified {
             nativeToolStatusByModelID[model.id] = NativeToolCapabilityProbe.initialStatus(for: model)
         }
@@ -354,11 +386,25 @@ final class ProviderEditorViewModel: ObservableObject {
             remoteModelID: trimmed,
             displayName: displayName.isEmpty ? trimmed : displayName,
             limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 8_192),
-            capabilities: ModelCapabilities.defaultTextModel(for: selectedProtocol)
+            capabilities: serviceRole == .conversation
+                ? ModelCapabilities.defaultTextModel(for: selectedProtocol)
+                : serviceRole.defaultCapabilities,
+            isHiddenFromPrimaryPicker: serviceRole == .conversation ? false : true
         )
         candidateModels.append(model)
         nativeToolStatusByModelID[model.id] = NativeToolCapabilityProbe.initialStatus(for: model)
         selectedModelIDs.insert(model.id)
+    }
+
+    private static func presets(for role: ProviderServiceRole) -> [ProviderPreset] {
+        switch role {
+        case .conversation:
+            ProviderPreset.chatPresets
+        case .image:
+            [.openAIResponses, .volcengineArk, .alibabaStudio, .googleGemini, .custom]
+        case .video:
+            [.openAIResponses, .volcengineArk, .googleGemini, .custom]
+        }
     }
 
     /// Runs an explicit, inert native-tool round trip for one candidate model.
@@ -411,31 +457,37 @@ final class ProviderEditorViewModel: ObservableObject {
             let profile = try buildProfile()
             let saved = try await center.saveProviderBundle(
                 provider: profile,
-                models: selectedModels
+                models: selectedModels,
+                managedCapabilities: serviceRole.managedCapabilities
             )
-            var preferences = center.modelPreferences
-            if let chosen = defaultModelID,
-               enabled,
-               let staged = selectedModels.first(where: {
-                   $0.id == chosen && $0.isEnabled && $0.isVisibleInPrimaryPicker
-               }),
-               let canonical = saved.first(where: {
-                   $0.remoteModelID == staged.remoteModelID
-                       && $0.isEnabled
-                       && $0.isVisibleInPrimaryPicker
-               }) {
-                preferences.defaultAgentModelID = canonical.id
-            } else if preferences.defaultAgentModelID == nil,
-                      let first = center.availableAgentModels.first {
-                preferences.defaultAgentModelID = first.id
-            } else if let current = preferences.defaultAgentModelID,
-                      !center.availableAgentModels.contains(where: { $0.id == current }) {
-                preferences.defaultAgentModelID = center.availableAgentModels.first?.id
+            // Auxiliary-model routing is owned by AuxiliaryModelsView. Saving
+            // an image/video provider must not rewrite the conversation-model
+            // preference and create a cross-device last-writer-wins conflict.
+            if serviceRole == .conversation {
+                var preferences = center.modelPreferences
+                if let chosen = defaultModelID,
+                   enabled,
+                   let staged = selectedModels.first(where: {
+                       $0.id == chosen && $0.isEnabled && $0.isVisibleInPrimaryPicker
+                   }),
+                   let canonical = saved.first(where: {
+                       $0.remoteModelID == staged.remoteModelID
+                           && $0.isEnabled
+                           && $0.isVisibleInPrimaryPicker
+                   }) {
+                    preferences.defaultAgentModelID = canonical.id
+                } else if preferences.defaultAgentModelID == nil,
+                          let first = center.availableAgentModels.first {
+                    preferences.defaultAgentModelID = first.id
+                } else if let current = preferences.defaultAgentModelID,
+                          !center.availableAgentModels.contains(where: { $0.id == current }) {
+                    preferences.defaultAgentModelID = center.availableAgentModels.first?.id
+                }
+                if preferences.defaultAgentModelID != nil {
+                    preferences.onboardingStatus = .completed
+                }
+                try await center.saveModelPreferences(preferences)
             }
-            if preferences.defaultAgentModelID != nil {
-                preferences.onboardingStatus = .completed
-            }
-            try await center.saveModelPreferences(preferences)
             return true
         } catch {
             errorMessage = SecretRedactor.redact(error.localizedDescription)

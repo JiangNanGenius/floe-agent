@@ -84,7 +84,7 @@ struct FileInspectorView: View {
             CloudWorkspaceLinkSheet(center: center)
         }
         .fullScreenCover(item: $canvasWorkspace) { workspace in
-            WorkspaceCanvasView(workspace: workspace)
+            WorkspaceCanvasView(canvasID: workspace.id, name: workspace.name, workspace: workspace)
         }
         .sheet(isPresented: Binding(
             get: { exportURL != nil },

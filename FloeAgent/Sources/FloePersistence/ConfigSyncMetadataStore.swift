@@ -14,6 +14,8 @@ public struct ConfigSyncMetadata: Codable, Sendable, Hashable, Identifiable {
     public var fieldTimestamps: [String: Date]
     public var cloudChangeTag: String?
     public var cloudSystemFields: Data?
+    /// Merged, secret-free remote payload waiting for referenced records.
+    public var deferredRemotePayload: Data?
     public var pendingAction: ConfigSyncPendingAction?
     public var deletedAt: Date?
     public var updatedAt: Date
@@ -26,6 +28,7 @@ public struct ConfigSyncMetadata: Codable, Sendable, Hashable, Identifiable {
         fieldTimestamps: [String: Date] = [:],
         cloudChangeTag: String? = nil,
         cloudSystemFields: Data? = nil,
+        deferredRemotePayload: Data? = nil,
         pendingAction: ConfigSyncPendingAction? = nil,
         deletedAt: Date? = nil,
         updatedAt: Date = Date()
@@ -35,6 +38,7 @@ public struct ConfigSyncMetadata: Codable, Sendable, Hashable, Identifiable {
         self.fieldTimestamps = fieldTimestamps
         self.cloudChangeTag = cloudChangeTag
         self.cloudSystemFields = cloudSystemFields
+        self.deferredRemotePayload = deferredRemotePayload
         self.pendingAction = pendingAction
         self.deletedAt = deletedAt
         self.updatedAt = updatedAt
@@ -62,12 +66,14 @@ public actor ConfigSyncMetadataStore {
                 sql: """
                     INSERT INTO config_sync_metadata (
                         record_type, record_id, field_timestamps_json,
-                        cloud_change_tag, cloud_system_fields, pending_action, deleted_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        cloud_change_tag, cloud_system_fields, deferred_remote_payload,
+                        pending_action, deleted_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(record_type, record_id) DO UPDATE SET
                         field_timestamps_json = excluded.field_timestamps_json,
                         cloud_change_tag = excluded.cloud_change_tag,
                         cloud_system_fields = excluded.cloud_system_fields,
+                        deferred_remote_payload = excluded.deferred_remote_payload,
                         pending_action = excluded.pending_action,
                         deleted_at = excluded.deleted_at,
                         updated_at = excluded.updated_at
@@ -78,6 +84,7 @@ public actor ConfigSyncMetadataStore {
                     timestampsJSON,
                     metadata.cloudChangeTag,
                     metadata.cloudSystemFields,
+                    metadata.deferredRemotePayload,
                     metadata.pendingAction?.rawValue,
                     Self.encode(metadata.deletedAt),
                     Self.encode(metadata.updatedAt)
@@ -108,6 +115,21 @@ public actor ConfigSyncMetadataStore {
                     LIMIT ?
                     """,
                 arguments: [max(1, limit)]
+            ).map(Self.decode)
+        }
+    }
+
+    public func deferred(recordType: String, limit: Int = 200) async throws -> [ConfigSyncMetadata] {
+        try await database.reader { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM config_sync_metadata
+                    WHERE record_type = ? AND deferred_remote_payload IS NOT NULL
+                    ORDER BY updated_at, record_id
+                    LIMIT ?
+                    """,
+                arguments: [recordType, max(1, limit)]
             ).map(Self.decode)
         }
     }
@@ -154,6 +176,7 @@ public actor ConfigSyncMetadataStore {
             fieldTimestamps: timestamps,
             cloudChangeTag: row["cloud_change_tag"],
             cloudSystemFields: row["cloud_system_fields"],
+            deferredRemotePayload: row["deferred_remote_payload"],
             pendingAction: pendingRaw.flatMap(ConfigSyncPendingAction.init(rawValue:)),
             deletedAt: try Self.decode(row["deleted_at"]),
             updatedAt: try Self.decodeRequired(row["updated_at"])

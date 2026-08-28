@@ -8,18 +8,21 @@ struct ModelEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var model: ModelProfile
     @State private var makeDefault: Bool
+    let serviceRole: ProviderServiceRole
     let isDefault: Bool
     let onMakeDefault: () -> Void
     let onSave: (ModelProfile) -> Void
 
     init(
         model: ModelProfile,
+        serviceRole: ProviderServiceRole = .conversation,
         isDefault: Bool,
         onMakeDefault: @escaping () -> Void,
         onSave: @escaping (ModelProfile) -> Void
     ) {
         _model = State(initialValue: model)
         _makeDefault = State(initialValue: isDefault)
+        self.serviceRole = serviceRole
         self.isDefault = isDefault
         self.onMakeDefault = onMakeDefault
         self.onSave = onSave
@@ -33,37 +36,39 @@ struct ModelEditorView: View {
                     TextField("model.remote_id", text: $model.remoteModelID)
                         .textInputAutocapitalization(.never)
                     Toggle("model.enabled", isOn: $model.isEnabled)
-                    Toggle("model.hide_from_primary_picker", isOn: Binding(
+                    if serviceRole == .conversation {
+                        Toggle("model.hide_from_primary_picker", isOn: Binding(
                         get: { model.isHiddenFromPrimaryPicker == true },
                         set: { hidden in
                             model.isHiddenFromPrimaryPicker = hidden
                             if hidden { makeDefault = false }
                         }
-                    ))
-                    .accessibilityIdentifier("model.hide_from_primary_picker")
-                    if makeDefault {
-                        Label("model.default", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(FloeTheme.primary)
-                    } else {
-                        Button("model.set_default") { makeDefault = true }
+                        ))
+                        .accessibilityIdentifier("model.hide_from_primary_picker")
+                        if makeDefault {
+                            Label("model.default", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(FloeTheme.primary)
+                        } else {
+                            Button("model.set_default") { makeDefault = true }
+                        }
                     }
                 }
                 Section("model.section.capabilities") {
-                    Label("model.capability.text", systemImage: "text.bubble")
-                    capabilityToggle("model.capability.vision", capability: .vision)
-                    capabilityToggle("model.capability.tools", capability: .tools)
+                    capabilityControls
                 }
-                Section {
+                if serviceRole == .conversation {
+                    Section {
                     Picker("model.reasoning.effort", selection: reasoningEffort) {
                         ForEach(ModelReasoningEffort.allCases) { effort in
                             Text(effort.localizedTitle).tag(effort)
                         }
                     }
                     .accessibilityIdentifier("model.reasoning_effort")
-                } header: {
-                    Text("model.section.reasoning")
-                } footer: {
-                    Text("model.reasoning.hint")
+                    } header: {
+                        Text("model.section.reasoning")
+                    } footer: {
+                        Text("model.reasoning.hint")
+                    }
                 }
                 Section {
                     TokenLimitPicker(
@@ -91,10 +96,17 @@ struct ModelEditorView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("action.save") {
-                        model.capabilities.insert(.text)
-                        // Every text model can be selected as the reviewer.
-                        // Approval behavior itself is controlled per task.
-                        model.capabilities.insert(.approval)
+                        if serviceRole == .conversation {
+                            model.capabilities.insert(.text)
+                            // Every text model can be selected as the reviewer.
+                            // Approval behavior itself is controlled per task.
+                            model.capabilities.insert(.approval)
+                        } else {
+                            model.capabilities.remove(.text)
+                            model.capabilities.remove(.tools)
+                            model.capabilities.remove(.approval)
+                            model.isHiddenFromPrimaryPicker = true
+                        }
                         if makeDefault && !isDefault { onMakeDefault() }
                         onSave(model)
                         dismiss()
@@ -117,6 +129,22 @@ struct ModelEditorView: View {
                 else { model.capabilities.remove(capability) }
             }
         ))
+    }
+
+    @ViewBuilder
+    private var capabilityControls: some View {
+        switch serviceRole {
+        case .conversation:
+            Label("model.capability.text", systemImage: "text.bubble")
+            capabilityToggle("model.capability.vision", capability: .vision)
+            capabilityToggle("model.capability.tools", capability: .tools)
+        case .image:
+            capabilityToggle("图片生成", capability: .imageGeneration)
+            capabilityToggle("图片编辑", capability: .imageEditing)
+        case .video:
+            Label("视频生成", systemImage: "video.badge.plus")
+            capabilityToggle("支持参考图片", capability: .vision)
+        }
     }
 
     private var reasoningEffort: Binding<ModelReasoningEffort> {

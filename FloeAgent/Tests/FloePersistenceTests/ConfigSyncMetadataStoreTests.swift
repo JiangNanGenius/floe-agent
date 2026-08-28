@@ -19,6 +19,7 @@ struct ConfigSyncMetadataStoreTests {
             recordID: UUID().uuidString,
             fieldTimestamps: ["baseURL": timestamp],
             cloudChangeTag: "tag-1",
+            deferredRemotePayload: Data("deferred".utf8),
             pendingAction: .save,
             updatedAt: timestamp
         )
@@ -27,6 +28,7 @@ struct ConfigSyncMetadataStoreTests {
 
         #expect(try await store.metadata(recordType: metadata.recordType, recordID: metadata.recordID) == metadata)
         #expect(try await store.pending() == [metadata])
+        #expect(try await store.deferred(recordType: metadata.recordType) == [metadata])
     }
 
     @Test("Engine state replaces atomically")

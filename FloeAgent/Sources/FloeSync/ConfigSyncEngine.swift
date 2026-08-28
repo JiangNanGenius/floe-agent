@@ -135,6 +135,10 @@ public actor ConfigSyncEngine {
                 break
             }
         }
+        // A previous launch may have received dependency-sensitive records in
+        // separate CloudKit pages. Retry them from durable SQLite state before
+        // presenting configuration as synchronized.
+        try await retryDeferredRecords()
         // Configuration is not a completed sync. Keep the UI honest until
         // CloudKit has accepted the zone and the first fetch/send cycle.
         status = synchronizationEnabled ? .syncing : .paused
@@ -471,6 +475,7 @@ public actor ConfigSyncEngine {
                 for deletion in changes.deletions {
                     try await applyRemoteDeletion(recordID: deletion.recordID, recordType: deletion.recordType)
                 }
+                try await retryDeferredRecords()
                 lastSyncAt = Date()
                 status = await credentialSyncStatus()
 
@@ -637,18 +642,35 @@ public actor ConfigSyncEngine {
             let provider = try JSONDecoder.floe.decode(ProviderProfile.self, from: mergedPayload)
             guard provider.kind != .local else { return }
             try await configurationStore.saveProvider(provider)
+            try await retryDeferredRecords()
         case .modelProfile:
             let model = try JSONDecoder.floe.decode(ModelProfile.self, from: mergedPayload)
             guard model.providerID != ProviderProfile.onDeviceProviderID else { return }
+            guard try await configurationStore.provider(id: model.providerID) != nil else {
+                try await saveDeferredRemoteRecord(
+                    record: record, type: type, payload: mergedPayload,
+                    localTimestamps: localTimestamps, remoteTimestamps: remoteTimestamps,
+                    existing: existing
+                )
+                return
+            }
             try await configurationStore.saveModel(model)
+            try await retryDeferredPreferences()
         case .preference:
             let remote = Self.withoutDeviceLocalModels(
                 try JSONDecoder.floe.decode(ModelSelectionPreferences.self, from: mergedPayload)
             )
             let local = try await configurationStore.preferences()
-            try await configurationStore.savePreferences(
-                Self.restoringDeviceLocalModels(remote, from: local)
-            )
+            let restored = Self.restoringDeviceLocalModels(remote, from: local)
+            guard try await missingModelIDs(in: restored).isEmpty else {
+                try await saveDeferredRemoteRecord(
+                    record: record, type: type, payload: mergedPayload,
+                    localTimestamps: localTimestamps, remoteTimestamps: remoteTimestamps,
+                    existing: existing
+                )
+                return
+            }
+            try await configurationStore.savePreferences(restored)
         case .remoteHostProfile:
             guard let remoteHostStore else { return }
             try await remoteHostStore.saveHost(
@@ -676,6 +698,7 @@ public actor ConfigSyncEngine {
             fieldTimestamps: mergedTimestamps,
             cloudChangeTag: record.recordChangeTag,
             cloudSystemFields: Self.archiveSystemFields(record),
+            deferredRemotePayload: nil,
             pendingAction: retainsLocalChanges ? .save : nil,
             updatedAt: record.modificationDate ?? Date()
         )
@@ -683,6 +706,97 @@ public actor ConfigSyncEngine {
         if retainsLocalChanges {
             syncEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(record.recordID)])
         }
+    }
+
+    private func saveDeferredRemoteRecord(
+        record: CKRecord,
+        type: ConfigSyncRecordType,
+        payload: Data,
+        localTimestamps: [String: Date],
+        remoteTimestamps: [String: Date],
+        existing: ConfigSyncMetadata?
+    ) async throws {
+        guard let metadataStore else { return }
+        var mergedTimestamps = localTimestamps
+        for (field, date) in remoteTimestamps where date > (mergedTimestamps[field] ?? .distantPast) {
+            mergedTimestamps[field] = date
+        }
+        let retainsLocalChanges = existing?.pendingAction == .save && localTimestamps.contains { field, date in
+            date >= (remoteTimestamps[field] ?? .distantPast)
+        }
+        try await metadataStore.save(ConfigSyncMetadata(
+            recordType: type.rawValue,
+            recordID: record.recordID.recordName,
+            fieldTimestamps: mergedTimestamps,
+            cloudChangeTag: record.recordChangeTag,
+            cloudSystemFields: Self.archiveSystemFields(record),
+            deferredRemotePayload: payload,
+            pendingAction: retainsLocalChanges ? .save : nil,
+            updatedAt: record.modificationDate ?? Date()
+        ))
+        if retainsLocalChanges {
+            syncEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(record.recordID)])
+        }
+        status = .syncing
+    }
+
+    /// Replays dependency-sensitive CloudKit records from durable metadata.
+    /// Internal visibility keeps the replay contract directly testable without
+    /// exposing a product API or requiring a live iCloud account in CI.
+    func retryDeferredRecords() async throws {
+        try await retryDeferredModels()
+        try await retryDeferredPreferences()
+    }
+
+    private func retryDeferredModels() async throws {
+        guard let metadataStore, let configurationStore else { return }
+        for metadata in try await metadataStore.deferred(recordType: ConfigSyncRecordType.modelProfile.rawValue) {
+            guard let payload = metadata.deferredRemotePayload else { continue }
+            let model = try JSONDecoder.floe.decode(ModelProfile.self, from: payload)
+            guard model.providerID != ProviderProfile.onDeviceProviderID,
+                  try await configurationStore.provider(id: model.providerID) != nil else { continue }
+            try await configurationStore.saveModel(model)
+            var applied = metadata
+            applied.deferredRemotePayload = nil
+            try await metadataStore.save(applied)
+        }
+    }
+
+    private func retryDeferredPreferences() async throws {
+        guard let metadataStore, let configurationStore,
+              var metadata = try await metadataStore.metadata(
+                recordType: ConfigSyncRecordType.preference.rawValue,
+                recordID: "default"
+              ),
+              let payload = metadata.deferredRemotePayload else { return }
+        let remote = Self.withoutDeviceLocalModels(
+            try JSONDecoder.floe.decode(ModelSelectionPreferences.self, from: payload)
+        )
+        let local = try await configurationStore.preferences()
+        let restored = Self.restoringDeviceLocalModels(remote, from: local)
+        guard try await missingModelIDs(in: restored).isEmpty else { return }
+        try await configurationStore.savePreferences(restored)
+        metadata.deferredRemotePayload = nil
+        try await metadataStore.save(metadata)
+    }
+
+    private func missingModelIDs(in preferences: ModelSelectionPreferences) async throws -> Set<UUID> {
+        guard let configurationStore else { return [] }
+        let selected = Set([
+            preferences.defaultAgentModelID,
+            preferences.visionModelID,
+            preferences.approvalModelID,
+            preferences.packageReviewModelID,
+            preferences.sharedImageModelID,
+            preferences.imageGenerationModelID,
+            preferences.imageEditingModelID,
+            preferences.defaultVideoModelID
+        ].compactMap { $0 })
+        var missing: Set<UUID> = []
+        for id in selected where try await configurationStore.model(id: id) == nil {
+            missing.insert(id)
+        }
+        return missing
     }
 
     private static func withoutDeviceLocalModels(
@@ -710,6 +824,9 @@ public actor ConfigSyncEngine {
         if value.imageEditingModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
             value.imageEditingModelID = nil
         }
+        if value.defaultVideoModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
+            value.defaultVideoModelID = nil
+        }
         return value
     }
 
@@ -731,6 +848,7 @@ public actor ConfigSyncEngine {
         value.sharedImageModelID = deviceValue(local.sharedImageModelID) ?? value.sharedImageModelID
         value.imageGenerationModelID = deviceValue(local.imageGenerationModelID) ?? value.imageGenerationModelID
         value.imageEditingModelID = deviceValue(local.imageEditingModelID) ?? value.imageEditingModelID
+        value.defaultVideoModelID = deviceValue(local.defaultVideoModelID) ?? value.defaultVideoModelID
         return value
     }
 
@@ -819,7 +937,21 @@ public actor ConfigSyncEngine {
     /// global sync status honest until every synchronized descriptor has a
     /// corresponding secret on this device.
     private func credentialSyncStatus() async -> SyncStatus {
-        guard SyncControlPreferences.load().savedCredentialsEnabled,
+        let preferences = SyncControlPreferences.load()
+        if preferences.overallEnabled, let configurationStore,
+           let providers = try? await configurationStore.providers() {
+            let keychain = KeychainStore(
+                service: KeychainSecretStore.defaultService,
+                synchronizable: true
+            )
+            for provider in providers {
+                guard let reference = provider.secretRef, reference.synchronizable else { continue }
+                do { _ = try keychain.read(account: reference.keychainAccount) }
+                catch { return .waitingForSecret }
+            }
+        }
+
+        guard preferences.savedCredentialsEnabled,
               let credentialStore,
               let records = try? await credentialStore.records(owner: .vault)
         else { return .synced }

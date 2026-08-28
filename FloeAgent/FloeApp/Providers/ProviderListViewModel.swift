@@ -33,28 +33,42 @@ final class ProviderListViewModel: ObservableObject {
             guard provider.kind != .local else { return false }
             let models = center.configuredModelsByProvider[provider.id] ?? []
             // Keep empty providers visible while they are being configured,
-            // but route dedicated image-only endpoints to Auxiliary Models.
+            // but route dedicated media-only endpoints to their own section.
             return models.isEmpty || models.contains { $0.capabilities.contains(.text) }
         }
     }
 
-    var imageOnlyProviders: [ProviderProfile] {
+    var imageProviders: [ProviderProfile] {
         center.configuredProviders.filter { provider in
             guard provider.kind != .local else { return false }
             let models = center.configuredModelsByProvider[provider.id] ?? []
-            return !models.isEmpty
-                && !models.contains { $0.capabilities.contains(.text) }
-                && models.contains {
-                    $0.capabilities.contains(.imageGeneration)
-                        || $0.capabilities.contains(.imageEditing)
-                        || $0.capabilities.contains(.vision)
-                }
+            return models.contains {
+                $0.capabilities.contains(.imageGeneration)
+                    || $0.capabilities.contains(.imageEditing)
+            }
         }
     }
 
-    func auxiliaryModelCount(for providerID: UUID) -> Int {
+    var videoProviders: [ProviderProfile] {
+        center.configuredProviders.filter { provider in
+            guard provider.kind != .local else { return false }
+            return center.configuredModelsByProvider[provider.id]?.contains {
+                $0.capabilities.contains(.videoGeneration)
+            } == true
+        }
+    }
+
+    func imageModelCount(for providerID: UUID) -> Int {
         center.configuredModelsByProvider[providerID]?
-            .filter { !$0.capabilities.contains(.text) }.count ?? 0
+            .filter {
+                $0.capabilities.contains(.imageGeneration)
+                    || $0.capabilities.contains(.imageEditing)
+            }.count ?? 0
+    }
+
+    func videoModelCount(for providerID: UUID) -> Int {
+        center.configuredModelsByProvider[providerID]?
+            .filter { $0.capabilities.contains(.videoGeneration) }.count ?? 0
     }
 
     func modelCount(for providerID: UUID) -> Int {
