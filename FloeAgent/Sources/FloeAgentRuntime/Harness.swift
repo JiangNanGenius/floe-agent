@@ -17,6 +17,95 @@ public enum HarnessState: String, Sendable, Codable, Hashable {
     case failed
 }
 
+/// Product-facing progress phase. These phases describe where a run is
+/// waiting, rather than merely echoing the last state transition, so a
+/// stalled cloud request can explain how it may be recovered.
+public enum AgentLivenessPhase: String, Sendable, Codable, Hashable {
+    case preparing
+    case waitingForFirstEvent
+    case streaming
+    case resolvingTool
+    case waitingApproval
+    case executingTool
+    case persisting
+    case retrying
+    case compacting
+    case verifying
+    case waitingForRecovery
+    case completed
+    case failed
+}
+
+public struct AgentLivenessSnapshot: Sendable, Codable, Hashable {
+    public var phase: AgentLivenessPhase
+    public var message: String
+    public var attempt: Int
+    public var retryCount: Int
+    public var lastProgressAt: Date
+    public var isRecoverable: Bool
+
+    public init(
+        phase: AgentLivenessPhase,
+        message: String,
+        attempt: Int = 0,
+        retryCount: Int = 0,
+        lastProgressAt: Date = Date(),
+        isRecoverable: Bool = false
+    ) {
+        self.phase = phase
+        self.message = message
+        self.attempt = attempt
+        self.retryCount = retryCount
+        self.lastProgressAt = lastProgressAt
+        self.isRecoverable = isRecoverable
+    }
+}
+
+public enum ProviderAttemptStatus: String, Sendable, Codable, Hashable {
+    case started
+    case firstEvent
+    case streaming
+    case retryScheduled
+    case completed
+    case failed
+    case exhausted
+}
+
+/// Secret-free diagnostics for one cloud-provider request attempt.
+public struct ProviderAttemptSnapshot: Sendable, Codable, Hashable {
+    public var attempt: Int
+    public var maxAttempts: Int
+    public var status: ProviderAttemptStatus
+    public var reason: String?
+    public var errorKind: String?
+    public var httpStatus: Int?
+    public var startedAt: Date
+    public var lastProgressAt: Date
+    public var nextRetryAt: Date?
+
+    public init(
+        attempt: Int,
+        maxAttempts: Int,
+        status: ProviderAttemptStatus,
+        reason: String? = nil,
+        errorKind: String? = nil,
+        httpStatus: Int? = nil,
+        startedAt: Date = Date(),
+        lastProgressAt: Date = Date(),
+        nextRetryAt: Date? = nil
+    ) {
+        self.attempt = attempt
+        self.maxAttempts = max(1, maxAttempts)
+        self.status = status
+        self.reason = reason
+        self.errorKind = errorKind
+        self.httpStatus = httpStatus
+        self.startedAt = startedAt
+        self.lastProgressAt = lastProgressAt
+        self.nextRetryAt = nextRetryAt
+    }
+}
+
 public struct TextDelta: Sendable, Codable, Hashable {
     public var text: String
     public var blockID: String?
@@ -200,6 +289,8 @@ public enum HarnessTerminal: Sendable, Codable, Hashable {
 /// events to consumers.
 public enum HarnessEvent: Sendable, Codable, Hashable {
     case stateChanged(HarnessState)
+    case livenessChanged(AgentLivenessSnapshot)
+    case providerAttemptChanged(ProviderAttemptSnapshot)
     case answerDelta(TextDelta)
     case reasoningDelta(TextDelta)
     case toolLifecycle(ToolLifecycleEvent)
@@ -496,6 +587,14 @@ public final class AgentRuntimeHarnessBridge: AgentEventSink, @unchecked Sendabl
         case .completed:
             break
         }
+    }
+
+    public func agentRuntime(_ runtime: FloeAgentRuntime, didChangeLiveness snapshot: AgentLivenessSnapshot) async {
+        channel.yield(.livenessChanged(snapshot))
+    }
+
+    public func agentRuntime(_ runtime: FloeAgentRuntime, didChangeProviderAttempt snapshot: ProviderAttemptSnapshot) async {
+        channel.yield(.providerAttemptChanged(snapshot))
     }
 
     public func agentRuntime(

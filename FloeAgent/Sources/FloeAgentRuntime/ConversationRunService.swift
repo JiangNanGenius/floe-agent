@@ -34,6 +34,8 @@ public actor ConversationRunService {
         /// True after the provider has delivered any valid stream event,
         /// including reasoning-only chunks before visible answer text.
         public var hasProviderActivity: Bool
+        public var liveness: AgentLivenessSnapshot
+        public var providerAttempt: ProviderAttemptSnapshot?
         public var isTerminal: Bool
         /// The exact runtime payload awaiting approval. UI code must display
         /// this value rather than reconstructing authority from an event.
@@ -47,6 +49,12 @@ public actor ConversationRunService {
             streamedText: String,
             reasoningText: String = "",
             hasProviderActivity: Bool = false,
+            liveness: AgentLivenessSnapshot = AgentLivenessSnapshot(
+                phase: .preparing,
+                message: "Preparing the run",
+                isRecoverable: true
+            ),
+            providerAttempt: ProviderAttemptSnapshot? = nil,
             isTerminal: Bool,
             pendingApproval: AgentState.WaitingApproval? = nil,
             checkpointReason: String? = nil
@@ -57,6 +65,8 @@ public actor ConversationRunService {
             self.streamedText = streamedText
             self.reasoningText = reasoningText
             self.hasProviderActivity = hasProviderActivity
+            self.liveness = liveness
+            self.providerAttempt = providerAttempt
             self.isTerminal = isTerminal
             self.pendingApproval = pendingApproval
             self.checkpointReason = checkpointReason
@@ -110,6 +120,12 @@ public actor ConversationRunService {
     /// projects a recoverable failure instead of publishing a false success.
     private var durabilityFailure: String?
     private var hasProviderActivity = false
+    private var liveness = AgentLivenessSnapshot(
+        phase: .preparing,
+        message: "Preparing the run",
+        isRecoverable: true
+    )
+    private var providerAttempt: ProviderAttemptSnapshot?
     private var latestState: AgentState = .idle
     private var isReviewingApproval = false
     /// Set only while handling the provider's terminal event, after the final
@@ -264,6 +280,12 @@ public actor ConversationRunService {
         forwarder.onEvent = { [weak self] event in
             await self?.handleEvent(event)
         }
+        forwarder.onLiveness = { [weak self] snapshot in
+            await self?.handleLiveness(snapshot)
+        }
+        forwarder.onProviderAttempt = { [weak self] snapshot in
+            await self?.handleProviderAttempt(snapshot)
+        }
         forwarder.onAssistantStep = { [weak self] text in
             await self?.handleAssistantStep(text)
         }
@@ -299,6 +321,8 @@ public actor ConversationRunService {
             streamedText: streamedText,
             reasoningText: reasoningText,
             hasProviderActivity: hasProviderActivity,
+            liveness: liveness,
+            providerAttempt: providerAttempt,
             isTerminal: isTerminal(latestState),
             pendingApproval: pendingApproval,
             checkpointReason: checkpointReason
@@ -428,6 +452,49 @@ public actor ConversationRunService {
     }
 
     // MARK: - Sink handling
+
+    private func handleLiveness(_ snapshot: AgentLivenessSnapshot) async {
+        if snapshot.phase == .retrying {
+            // The preceding provider output was never completed or committed.
+            // Drop it from the live projection before the exact dispatch
+            // checkpoint is replayed, otherwise the recovered answer would
+            // concatenate a partial prefix and appear twice.
+            streamedText = ""
+            unflushedAssistantSegment = ""
+            unpublishedAnswerText = ""
+            reasoningText = ""
+            unflushedReasoningText = ""
+            unpublishedReasoningText = ""
+        }
+        liveness = snapshot
+        eventChannel.yield(.livenessChanged(snapshot))
+    }
+
+    private func handleProviderAttempt(_ snapshot: ProviderAttemptSnapshot) async {
+        providerAttempt = snapshot
+        eventChannel.yield(.providerAttemptChanged(snapshot))
+        var payload: [String: String] = [
+            "kind": "providerAttempt",
+            "attempt": String(snapshot.attempt),
+            "maxAttempts": String(snapshot.maxAttempts),
+            "status": snapshot.status.rawValue,
+            "startedAt": ISO8601DateFormatter().string(from: snapshot.startedAt),
+            "lastProgressAt": ISO8601DateFormatter().string(from: snapshot.lastProgressAt)
+        ]
+        if let reason = snapshot.reason { payload["reason"] = reason }
+        if let errorKind = snapshot.errorKind { payload["errorKind"] = errorKind }
+        if let httpStatus = snapshot.httpStatus { payload["httpStatus"] = String(httpStatus) }
+        if let nextRetryAt = snapshot.nextRetryAt {
+            payload["nextRetryAt"] = ISO8601DateFormatter().string(from: nextRetryAt)
+        }
+        _ = await appendEventReliably(
+            runID: runID,
+            kind: .status,
+            payloadJSON: Self.jsonPayload(payload),
+            boundary: "providerAttempt",
+            completionCritical: false
+        )
+    }
 
     private func handleAssistantStep(_ text: String) async {
         guard !text.isEmpty else { return }
@@ -747,7 +814,13 @@ public actor ConversationRunService {
                 costEstimate: report.costEstimate.map { "\($0)" }
             ))
         case .error(let error):
-            await flushAssistantSegment()
+            // Retryable provider errors do not close an assistant step. Any
+            // partial stream is discarded when the liveness layer announces
+            // the replay, so persisting it here would create a duplicate
+            // answer in the durable timeline.
+            if ![.network, .server, .rateLimited].contains(error.kind) {
+                await flushAssistantSegment()
+            }
             let redactedMessage = SecretRedactor.redact(
                 error.providerMessage,
                 secret: secretForRedaction
@@ -1515,6 +1588,8 @@ public actor ConversationRunService {
 private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
     var onTransition: (@Sendable (AgentState) async -> Void)?
     var onEvent: (@Sendable (AgentEvent) async -> Void)?
+    var onLiveness: (@Sendable (AgentLivenessSnapshot) async -> Void)?
+    var onProviderAttempt: (@Sendable (ProviderAttemptSnapshot) async -> Void)?
     var onAssistantStep: (@Sendable (String) async -> Void)?
     var onSteerConsumed: (@Sendable (RuntimeSteerInput) async -> Void)?
     var onCompaction: (@Sendable (ContextCompactionRecord) async -> Void)?
@@ -1526,6 +1601,14 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didEmit event: AgentEvent) async {
         await onEvent?(event)
+    }
+
+    func agentRuntime(_ runtime: FloeAgentRuntime, didChangeLiveness snapshot: AgentLivenessSnapshot) async {
+        await onLiveness?(snapshot)
+    }
+
+    func agentRuntime(_ runtime: FloeAgentRuntime, didChangeProviderAttempt snapshot: ProviderAttemptSnapshot) async {
+        await onProviderAttempt?(snapshot)
     }
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompleteAssistantStep text: String) async {

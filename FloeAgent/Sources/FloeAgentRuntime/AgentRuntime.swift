@@ -24,6 +24,8 @@ import Crypto
 public protocol AgentEventSink: Sendable {
     func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async
     func agentRuntime(_ runtime: FloeAgentRuntime, didEmit event: AgentEvent) async
+    func agentRuntime(_ runtime: FloeAgentRuntime, didChangeLiveness snapshot: AgentLivenessSnapshot) async
+    func agentRuntime(_ runtime: FloeAgentRuntime, didChangeProviderAttempt snapshot: ProviderAttemptSnapshot) async
     /// Called only after a complete assistant/model step and before a steer
     /// is inserted. Persistence uses it to seal the assistant message without
     /// falsely emitting a terminal event.
@@ -41,6 +43,8 @@ public protocol AgentEventSink: Sendable {
 }
 
 public extension AgentEventSink {
+    func agentRuntime(_ runtime: FloeAgentRuntime, didChangeLiveness snapshot: AgentLivenessSnapshot) async {}
+    func agentRuntime(_ runtime: FloeAgentRuntime, didChangeProviderAttempt snapshot: ProviderAttemptSnapshot) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompleteAssistantStep text: String) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didConsumeSteer input: RuntimeSteerInput) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompact record: ContextCompactionRecord) async {}
@@ -273,6 +277,19 @@ public actor FloeAgentRuntime {
         /// provider request. This is separate from automatic pressure-based
         /// compaction and is consumed by exactly one runtime.
         public var forceInitialCompaction: Bool
+        /// Number of retries allowed for a cloud request after a network,
+        /// server, rate-limit, or stream-liveness failure.
+        public var maxProviderRetries: Int
+        /// Maximum wait for the first decoded provider event.
+        public var providerFirstEventTimeout: TimeInterval
+        /// Maximum gap between decoded provider events after the first event.
+        public var providerStreamIdleTimeout: TimeInterval
+        /// Base delay for bounded exponential provider retry backoff.
+        public var providerRetryBaseDelay: TimeInterval
+        /// Upper bound for provider retry delay.
+        public var providerRetryMaxDelay: TimeInterval
+        /// Proportion of the backoff added as positive jitter.
+        public var providerRetryJitterRatio: Double
 
         public init(
             conversationID: UUID = UUID(),
@@ -289,7 +306,13 @@ public actor FloeAgentRuntime {
             pauseTimeout: TimeInterval = 300,
             maxToolSteps: Int = Int.max / 4,
             verifyFinalAnswer: Bool = false,
-            forceInitialCompaction: Bool = false
+            forceInitialCompaction: Bool = false,
+            maxProviderRetries: Int = 3,
+            providerFirstEventTimeout: TimeInterval = 30,
+            providerStreamIdleTimeout: TimeInterval = 45,
+            providerRetryBaseDelay: TimeInterval = 1,
+            providerRetryMaxDelay: TimeInterval = 30,
+            providerRetryJitterRatio: Double = 0.2
         ) {
             self.conversationID = conversationID
             self.provider = provider
@@ -306,6 +329,12 @@ public actor FloeAgentRuntime {
             self.maxToolSteps = maxToolSteps
             self.verifyFinalAnswer = verifyFinalAnswer
             self.forceInitialCompaction = forceInitialCompaction
+            self.maxProviderRetries = max(0, maxProviderRetries)
+            self.providerFirstEventTimeout = max(0, providerFirstEventTimeout)
+            self.providerStreamIdleTimeout = max(0, providerStreamIdleTimeout)
+            self.providerRetryBaseDelay = max(0, providerRetryBaseDelay)
+            self.providerRetryMaxDelay = max(self.providerRetryBaseDelay, providerRetryMaxDelay)
+            self.providerRetryJitterRatio = min(1, max(0, providerRetryJitterRatio))
         }
     }
 
@@ -391,6 +420,30 @@ public actor FloeAgentRuntime {
     /// another request is allowed onto the wire. Completed provider turns
     /// clear this value before tool settlement or terminal publication.
     private var restoredProviderDispatchEnvelope: ProviderDispatchEnvelope?
+    /// Exact request retained for an in-process retry. Rebuilding a request
+    /// through a fresh context compaction pass could silently move the replay
+    /// boundary, so retries reuse the committed dispatch envelope verbatim.
+    private var providerRetryRequest: ProviderStreamRequest?
+    /// Full pending tool/result pair retained while a provider request is on
+    /// the wire. The public checkpoint stores this pair even after the live
+    /// request arrays are drained, so relaunch can reconstruct the same safe
+    /// dispatch boundary instead of having only opaque envelope IDs.
+    private var activeProviderPendingCalls: [ToolCall] = []
+    private var activeProviderPendingResults: [ToolResult] = []
+    private var providerRetryCount = 0
+    private var providerAttemptNumber = 0
+    private var providerReceivedFirstEvent = false
+    private var providerLastProgressAt = Date()
+    private var providerAttemptStartedAt = Date()
+    private var providerRetryRequested = false
+    private var providerRetryDelay: TimeInterval = 0
+    private var providerWatchdogTask: Task<Void, Never>?
+    private var livenessSnapshot = AgentLivenessSnapshot(
+        phase: .preparing,
+        message: "Preparing the run",
+        isRecoverable: true
+    )
+    private var providerAttemptSnapshot: ProviderAttemptSnapshot?
 
     private var streamTask: Task<Void, Never>?
     private var cancellationToken = CancellationToken()
@@ -427,6 +480,7 @@ public actor FloeAgentRuntime {
         self.runID = runID
         self.forceCompactionOnNextTurn = configuration.forceInitialCompaction
         self.latestContextCompaction = nil
+        self.providerRetryRequest = nil
         self.budgetLedger = HarnessBudgetLedger(
             rootRunID: runID,
             budgets: HarnessBudgets(
@@ -451,6 +505,7 @@ public actor FloeAgentRuntime {
         }
         state = newState
         await sink?.agentRuntime(self, didTransitionTo: newState)
+        await publishLivenessForState(newState)
     }
 
     private static func isLegalTransition(from old: AgentState, to new: AgentState) -> Bool {
@@ -533,6 +588,13 @@ public actor FloeAgentRuntime {
         })
     }
 
+    /// Latest secret-free progress snapshot for diagnostics and UI recovery
+    /// cards. The timestamp is the runtime's last observed progress boundary.
+    public func liveness() -> AgentLivenessSnapshot { livenessSnapshot }
+
+    /// Latest provider-attempt diagnostics, when a cloud request has started.
+    public func providerAttempt() -> ProviderAttemptSnapshot? { providerAttemptSnapshot }
+
     /// Stable marker for app-produced visual handoffs. Keeping one typed
     /// prefix prevents harmless OCR/VLM evidence from being discarded by the
     /// historical-system-message authority filter when wording changes.
@@ -581,6 +643,8 @@ public actor FloeAgentRuntime {
         }
         pauseTask?.cancel()
         pauseTask = nil
+        providerWatchdogTask?.cancel()
+        providerWatchdogTask = nil
         // 4. Let an in-flight executor publish its cancelled/tool result
         // before the final checkpoint is written. Previously cancellation
         // checkpointed immediately and the executor could finish one actor
@@ -671,6 +735,8 @@ public actor FloeAgentRuntime {
         messages = checkpoint.messages
         pendingToolCalls = checkpoint.pendingToolCalls
         pendingToolResults = checkpoint.pendingToolResults
+        activeProviderPendingCalls = []
+        activeProviderPendingResults = []
         grants = checkpoint.approvals
         executedIdempotencyKeys = checkpoint.idempotencyKeys
         executionLedger = HarnessExecutionLedger(records: checkpoint.executionLedgerEntries ?? [])
@@ -842,6 +908,13 @@ public actor FloeAgentRuntime {
         repeat {
             modelTurnContinuationRequested = false
             await runSingleModelTurn()
+            if providerRetryRequested {
+                let delay = providerRetryDelay
+                providerRetryRequested = false
+                if delay > 0, !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(delay))
+                }
+            }
         } while modelTurnContinuationRequested && !Self.isTerminalState(state)
     }
 
@@ -870,7 +943,7 @@ public actor FloeAgentRuntime {
         default:
             break
         }
-        if let contextEngine {
+        if providerRetryRequest == nil, let contextEngine {
             let latestUserID = messages.last(where: { $0.role == "user" })?.id
             let protection = ContextProtection(
                 messageIDs: latestUserID.map { [$0] } ?? []
@@ -1036,7 +1109,7 @@ public actor FloeAgentRuntime {
                 ))
             }
         }
-        let request = ProviderStreamRequest(
+        let freshRequest = ProviderStreamRequest(
             provider: configuration.provider,
             model: configuration.model,
             messages: legacyMessages,
@@ -1061,6 +1134,10 @@ public actor FloeAgentRuntime {
                 )
             ] : []) : []
         )
+        // A retry must replay the exact safe dispatch boundary. In particular,
+        // do not rebuild a compacted prompt or regenerate a tool request after
+        // the provider has already crossed the network boundary.
+        let request = providerRetryRequest ?? freshRequest
         let dispatchEnvelope = Self.dispatchEnvelope(
             request: request,
             conversationMode: configuration.conversationMode
@@ -1081,6 +1158,11 @@ public actor FloeAgentRuntime {
         // The exact prompt/tool-result boundary must be recoverable before a
         // provider request is allowed onto the wire. This prevents a restart
         // from silently falling behind the context that the model received.
+        if providerRetryRequest == nil { providerRetryRequest = request }
+        if activeProviderPendingCalls.isEmpty, !pendingToolCalls.isEmpty {
+            activeProviderPendingCalls = pendingToolCalls
+            activeProviderPendingResults = pendingToolResults
+        }
         do {
             try await writeCheckpoint()
         } catch {
@@ -1096,6 +1178,21 @@ public actor FloeAgentRuntime {
 
         modelRequestStartedAt = Date()
         firstModelActivityAt = nil
+        providerAttemptNumber += 1
+        providerReceivedFirstEvent = false
+        providerAttemptStartedAt = modelRequestStartedAt ?? Date()
+        providerLastProgressAt = providerAttemptStartedAt
+        await publishProviderAttempt(
+            status: .started,
+            reason: "Provider request dispatched",
+            error: nil
+        )
+        await publishLiveness(
+            phase: .waitingForFirstEvent,
+            message: "Waiting for the cloud model's first event",
+            isRecoverable: true
+        )
+        startProviderWatchdog(attempt: providerAttemptNumber)
         let stream = adapter.stream(request: request, credentials: credentials)
         streamTask = Task { [weak self] in
             guard let self else { return }
@@ -1122,8 +1219,12 @@ public actor FloeAgentRuntime {
                         await self.executeToolBatch(batch)
                         // The batch's resumeStream requested the next turn.
                     } else {
-                        await self.clearCompletedProviderDispatch()
-                        await self.finishOrSteer(stopReason: .endTurn)
+                        let interrupted = AgentEvent.NormalizedError(
+                            kind: .network,
+                            providerMessage: "Cloud model stream ended before a completion event; no final reply was committed."
+                        )
+                        await self.emit(.error(interrupted))
+                        await self.handleProviderFailure(interrupted)
                     }
                 }
             } catch is CancellationError {
@@ -1131,13 +1232,12 @@ public actor FloeAgentRuntime {
             } catch {
                 let normalized = Self.normalizedBoundaryError(error)
                 await self.emit(.error(normalized))
-                await self.failRun(
-                    message: normalized.providerMessage,
-                    recoverable: [.network, .server, .rateLimited].contains(normalized.kind)
-                )
+                await self.handleProviderFailure(normalized)
             }
         }
         await streamTask?.value
+        providerWatchdogTask?.cancel()
+        providerWatchdogTask = nil
     }
 
     /// Errors thrown before the first wire event are often request-building
@@ -1195,6 +1295,20 @@ public actor FloeAgentRuntime {
         guard case .streamingModel(var info) = state else { return }
 
         let observedAt = Date()
+        providerLastProgressAt = observedAt
+        if !providerReceivedFirstEvent {
+            providerReceivedFirstEvent = true
+            await publishProviderAttempt(
+                status: .firstEvent,
+                reason: "Provider delivered its first event",
+                error: nil
+            )
+            await publishLiveness(
+                phase: .streaming,
+                message: "Cloud model stream is active",
+                isRecoverable: true
+            )
+        }
         switch rawEvent {
         case .textDelta, .reasoningSummary, .toolRequest:
             if firstModelActivityAt == nil { firstModelActivityAt = observedAt }
@@ -1242,12 +1356,21 @@ public actor FloeAgentRuntime {
             if !pendingToolBatch.isEmpty {
                 let batch = pendingToolBatch
                 pendingToolBatch = []
+                await publishProviderAttempt(
+                    status: .completed,
+                    reason: "Provider completed with a tool batch",
+                    error: nil
+                )
                 await executeToolBatch(batch)
                 // The batch's resumeStream already requested the next turn.
                 return
             }
-            latestProviderDispatchEnvelope = nil
-            restoredProviderDispatchEnvelope = nil
+            await publishProviderAttempt(
+                status: .completed,
+                reason: "Provider completed the model turn",
+                error: nil
+            )
+            clearCompletedProviderDispatch()
             await finishOrSteer(stopReason: forcedStopReason ?? completion.stopReason)
             return
         }
@@ -1341,7 +1464,7 @@ public actor FloeAgentRuntime {
             case .cancelled:
                 break // cancel() owns the transition.
             case .rateLimited, .server, .network:
-                await failRun(message: error.providerMessage, recoverable: true)
+                await handleProviderFailure(error)
             case .auth, .malformed:
                 await failRun(message: error.providerMessage, recoverable: false)
             }
@@ -1431,6 +1554,11 @@ public actor FloeAgentRuntime {
     /// waits for the human decision), so this phase must always run serially —
     /// never inside a concurrent task group.
     private func resolveToolCall(_ call: ToolCall) async -> ToolResolution {
+        await publishLiveness(
+            phase: .resolvingTool,
+            message: "Resolving tool authorization and safety policy for \(call.toolName)",
+            isRecoverable: true
+        )
         do {
             try await budgetLedger.reserveParentIteration()
             toolStepCount += 1
@@ -1750,8 +1878,12 @@ public actor FloeAgentRuntime {
         // The provider response is complete once it yields this settled tool
         // batch. Later recovery checkpoints describe the ordered call/result
         // boundary, not the already-finished request that produced it.
-        latestProviderDispatchEnvelope = nil
-        restoredProviderDispatchEnvelope = nil
+        await publishProviderAttempt(
+            status: .completed,
+            reason: "Provider completed with a settled tool batch",
+            error: nil
+        )
+        clearCompletedProviderDispatch()
         guard Self.hasValidCallIDs(calls) else {
             await failRun(
                 message: "Provider emitted empty or duplicate tool-call identifiers",
@@ -2107,6 +2239,218 @@ public actor FloeAgentRuntime {
 
     // MARK: Terminal transitions
 
+    private func publishLiveness(
+        phase: AgentLivenessPhase,
+        message: String,
+        isRecoverable: Bool,
+        lastProgressAt: Date? = nil
+    ) async {
+        livenessSnapshot = AgentLivenessSnapshot(
+            phase: phase,
+            message: safeDiagnostic(message),
+            attempt: providerAttemptNumber,
+            retryCount: providerRetryCount,
+            lastProgressAt: lastProgressAt ?? providerLastProgressAt,
+            isRecoverable: isRecoverable
+        )
+        await sink?.agentRuntime(self, didChangeLiveness: livenessSnapshot)
+    }
+
+    private func publishLivenessForState(_ state: AgentState) async {
+        switch state {
+        case .preparing:
+            await publishLiveness(
+                phase: .preparing,
+                message: "Preparing the next safe execution boundary",
+                isRecoverable: true
+            )
+        case .streamingModel:
+            await publishLiveness(
+                phase: providerReceivedFirstEvent ? .streaming : .waitingForFirstEvent,
+                message: providerReceivedFirstEvent
+                    ? "Cloud model stream is active"
+                    : "Waiting for the cloud model's first event",
+                isRecoverable: true
+            )
+        case .waitingApproval:
+            await publishLiveness(
+                phase: .waitingApproval,
+                message: "Waiting for approval before dispatching the requested tool",
+                isRecoverable: true
+            )
+        case .executingTool:
+            await publishLiveness(
+                phase: .executingTool,
+                message: "Executing an approved tool",
+                isRecoverable: true
+            )
+        case .compacting:
+            await publishLiveness(
+                phase: .compacting,
+                message: "Compacting conversation context before retrying the model",
+                isRecoverable: true
+            )
+        case .verifying:
+            await publishLiveness(
+                phase: .verifying,
+                message: "Verifying the final answer",
+                isRecoverable: true
+            )
+        case .checkpointed, .paused, .cancelling:
+            await publishLiveness(
+                phase: .waitingForRecovery,
+                message: "Run is parked at a durable checkpoint and can be resumed",
+                isRecoverable: true
+            )
+        case .completed:
+            await publishLiveness(
+                phase: .completed,
+                message: "Run completed",
+                isRecoverable: false
+            )
+        case .failed(let failure):
+            await publishLiveness(
+                phase: .failed,
+                message: failure.message,
+                isRecoverable: failure.isRecoverable
+            )
+        case .idle:
+            break
+        }
+    }
+
+    private func publishProviderAttempt(
+        status: ProviderAttemptStatus,
+        reason: String?,
+        error: AgentEvent.NormalizedError?,
+        nextRetryAt: Date? = nil
+    ) async {
+        let snapshot = ProviderAttemptSnapshot(
+            attempt: max(1, providerAttemptNumber),
+            maxAttempts: 1 + configuration.maxProviderRetries,
+            status: status,
+            reason: reason.map { safeDiagnostic($0) },
+            errorKind: error?.kind.rawValue,
+            httpStatus: error?.httpStatus,
+            startedAt: providerAttemptStartedAt,
+            lastProgressAt: providerLastProgressAt,
+            nextRetryAt: nextRetryAt
+        )
+        providerAttemptSnapshot = snapshot
+        await sink?.agentRuntime(self, didChangeProviderAttempt: snapshot)
+    }
+
+    private func startProviderWatchdog(attempt: Int) {
+        providerWatchdogTask?.cancel()
+        let firstTimeout = configuration.providerFirstEventTimeout
+        let idleTimeout = configuration.providerStreamIdleTimeout
+        providerWatchdogTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                let timeout = await self.providerWatchdogTimeout(
+                    firstTimeout: firstTimeout,
+                    idleTimeout: idleTimeout
+                )
+                let poll = min(0.25, max(0.01, timeout / 4))
+                do {
+                    try await Task.sleep(for: .seconds(poll))
+                } catch {
+                    return
+                }
+                let keepWatching = await self.providerWatchdogFired(
+                    attempt: attempt,
+                    firstTimeout: firstTimeout,
+                    idleTimeout: idleTimeout
+                )
+                if !keepWatching { return }
+            }
+        }
+    }
+
+    private func providerWatchdogTimeout(
+        firstTimeout: TimeInterval,
+        idleTimeout: TimeInterval
+    ) -> TimeInterval {
+        providerReceivedFirstEvent ? idleTimeout : firstTimeout
+    }
+
+    private func providerWatchdogFired(
+        attempt: Int,
+        firstTimeout: TimeInterval,
+        idleTimeout: TimeInterval
+    ) async -> Bool {
+        guard attempt == providerAttemptNumber,
+              case .streamingModel = state,
+              !providerRetryRequested else { return false }
+        let timeout = providerReceivedFirstEvent ? idleTimeout : firstTimeout
+        let elapsed = Date().timeIntervalSince(providerLastProgressAt)
+        guard timeout > 0, elapsed >= timeout else { return true }
+        let message = providerReceivedFirstEvent
+            ? "Cloud model stream stalled: no event for \(Self.durationDescription(timeout))"
+            : "Cloud model stream stalled: no first event within \(Self.durationDescription(timeout))"
+        let error = AgentEvent.NormalizedError(kind: .network, providerMessage: message)
+        await emit(.error(error))
+        await handleProviderFailure(error)
+        providerWatchdogTask?.cancel()
+        return false
+    }
+
+    private func handleProviderFailure(_ error: AgentEvent.NormalizedError) async {
+        let safeProviderMessage = safeDiagnostic(error.providerMessage)
+        let retryable: Bool = [.network, .server, .rateLimited].contains(error.kind)
+        guard retryable else {
+            await publishProviderAttempt(status: .failed, reason: error.providerMessage, error: error)
+            await failRun(message: safeProviderMessage, recoverable: false)
+            return
+        }
+        guard latestProviderDispatchEnvelope != nil, providerRetryRequest != nil else {
+            let message = "Cloud model request failed and no safe dispatch checkpoint is available. \(safeProviderMessage) Re-run the task to try again; no tool was replayed."
+            await publishProviderAttempt(status: .failed, reason: message, error: error)
+            await failRun(message: message, recoverable: true)
+            return
+        }
+        guard providerRetryCount < configuration.maxProviderRetries else {
+            let message = "Cloud model retry budget exhausted after \(providerAttemptNumber) attempt(s). Last cause: \(safeProviderMessage) Safe recovery: resume or re-run from the saved dispatch checkpoint; no tool side effect was replayed."
+            await publishProviderAttempt(status: .exhausted, reason: message, error: error)
+            await failRun(message: message, recoverable: true)
+            return
+        }
+        providerRetryCount += 1
+        let exponential = configuration.providerRetryBaseDelay
+            * pow(2, Double(providerRetryCount - 1))
+        let bounded = min(configuration.providerRetryMaxDelay, exponential)
+        let jitter = bounded * configuration.providerRetryJitterRatio
+            * Double.random(in: 0...1)
+        providerRetryDelay = min(configuration.providerRetryMaxDelay, bounded + jitter)
+        let retryAt = Date().addingTimeInterval(providerRetryDelay)
+        let reason = "\(safeProviderMessage) Retrying from the last safe dispatch checkpoint; completed tools will not be replayed."
+        await publishProviderAttempt(
+            status: .retryScheduled,
+            reason: reason,
+            error: error,
+            nextRetryAt: retryAt
+        )
+        await publishLiveness(
+            phase: .retrying,
+            message: reason,
+            isRecoverable: true
+        )
+        streamText = ""
+        responseReasoning = ""
+        pendingToolBatch.removeAll(keepingCapacity: true)
+        modelTurnContinuationRequested = true
+        providerRetryRequested = true
+    }
+
+    private func safeDiagnostic(_ value: String) -> String {
+        String(SecretRedactor.redact(value, secret: credentials.apiKey).prefix(500))
+    }
+
+    private static func durationDescription(_ seconds: TimeInterval) -> String {
+        if seconds < 1 { return "\(Int(seconds * 1_000))ms" }
+        return "\(String(format: "%.1f", seconds))s"
+    }
+
     private func completeRun(stopReason: AgentEvent.StopReason) async {
         // A verification pass that answers with a bare confirmation should
         // not append "CONFIRM" onto the already-sealed draft answer.
@@ -2176,7 +2520,15 @@ public actor FloeAgentRuntime {
     // MARK: Checkpoint persistence
 
     private func writeCheckpoint() async throws {
-        guard let checkpointStore else { return }
+        await publishLiveness(
+            phase: .persisting,
+            message: "Persisting a recovery checkpoint",
+            isRecoverable: true
+        )
+        guard let checkpointStore else {
+            await publishLivenessForState(state)
+            return
+        }
         // streamingModel/executingTool/cancelling downgrade to preparing on
         // disk (replay resumes from the last tool-result boundary).
         let persistedState: AgentState
@@ -2200,8 +2552,10 @@ public actor FloeAgentRuntime {
             conversationID: configuration.conversationID,
             state: persistedState,
             messages: checkpointMessages,
-            pendingToolCalls: pendingToolCalls,
-            pendingToolResults: pendingToolResults,
+            pendingToolCalls: activeProviderPendingCalls.isEmpty
+                ? pendingToolCalls : activeProviderPendingCalls,
+            pendingToolResults: activeProviderPendingCalls.isEmpty
+                ? pendingToolResults : activeProviderPendingResults,
             approvals: grants,
             idempotencyKeys: executedIdempotencyKeys,
             conversationMode: configuration.conversationMode,
@@ -2222,6 +2576,7 @@ public actor FloeAgentRuntime {
             )
         }
         try await checkpointStore.save(checkpoint)
+        await publishLivenessForState(state)
     }
 
     private func setToolLifecycle(
@@ -2352,6 +2707,13 @@ public actor FloeAgentRuntime {
     private func clearCompletedProviderDispatch() {
         latestProviderDispatchEnvelope = nil
         restoredProviderDispatchEnvelope = nil
+        providerRetryRequest = nil
+        activeProviderPendingCalls.removeAll(keepingCapacity: true)
+        activeProviderPendingResults.removeAll(keepingCapacity: true)
+        providerRetryCount = 0
+        providerAttemptNumber = 0
+        providerRetryDelay = 0
+        providerRetryRequested = false
     }
 
     private static func digest(_ data: Data) -> String {
