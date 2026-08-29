@@ -8,6 +8,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import FloeCore
 import FloeModels
 import FloePersistence
 import FloeSSH
@@ -18,6 +19,8 @@ import FloeVNC
 final class VNCSessionOwner {
     let sessionID: UUID
     let hostID: UUID
+    let endpointHost: String
+    let endpointPort: Int
 
     private(set) var forwarder: LoopbackSSHForwarder?
     private(set) var session: VNCSession?
@@ -31,9 +34,17 @@ final class VNCSessionOwner {
 
     var onStateChange: (() -> Void)?
 
-    init(sessionID: UUID, hostID: UUID, registry: any RemoteSessionRegistry) {
+    init(
+        sessionID: UUID,
+        hostID: UUID,
+        endpointHost: String,
+        endpointPort: Int,
+        registry: any RemoteSessionRegistry
+    ) {
         self.sessionID = sessionID
         self.hostID = hostID
+        self.endpointHost = endpointHost
+        self.endpointPort = endpointPort
         self.registry = registry
     }
 
@@ -89,13 +100,51 @@ final class VNCSessionOwner {
 
     func send(_ action: VNCAction) async throws {
         try action.validate()
-        guard let session else { return }
-        apply(action, to: session)
+        guard let session else {
+            throw VNCConnectionFailure(
+                category: .configurationMissing,
+                stage: .configuration,
+                retryable: true,
+                host: endpointHost,
+                port: endpointPort,
+                message: "The VNC session handle is no longer available. Reconnect before sending input."
+            )
+        }
+        switch connectionState {
+        case .connected:
+            break
+        case .failed(let failure):
+            throw failure
+        case .connecting:
+            throw VNCConnectionFailure(
+                category: .handshakeFailed,
+                stage: .handshake,
+                retryable: true,
+                host: endpointHost,
+                port: endpointPort,
+                message: "The VNC session is still connecting; input was not dispatched."
+            )
+        case .disconnected:
+            throw VNCConnectionFailure(
+                category: .handshakeFailed,
+                stage: .transport,
+                retryable: true,
+                host: endpointHost,
+                port: endpointPort,
+                message: "The VNC session is disconnected; input was not dispatched."
+            )
+        }
+        try apply(action, to: session)
     }
 
-    private func apply(_ action: VNCAction, to session: VNCSession) {
+    private func apply(_ action: VNCAction, to session: VNCSession) throws {
         switch action {
-        case .click(let point, _):
+        case .click(let point, let button):
+            guard button == .left else {
+                throw FloeError.invalidConfiguration(
+                    "The embedded VNC client currently supports left-button manual clicks only."
+                )
+            }
             let x = UInt16(clamping: point.x)
             let y = UInt16(clamping: point.y)
             session.mouseMove(x: x, y: y)
@@ -104,9 +153,12 @@ final class VNCSessionOwner {
         case .typeText(let text):
             session.send(text: text)
         default:
-            // Drag/scroll/key/wait/finish are exercised by the agent loop,
-            // not the manual viewer; the viewer handles its own gestures.
-            break
+            // Agent tools dispatch their richer actions directly after a
+            // fresh screenshot check. Never report an unsupported manual
+            // action as successful merely because an owner object exists.
+            throw FloeError.invalidConfiguration(
+                "This VNC action must be sent through the evidence-backed agent tool."
+            )
         }
     }
 

@@ -415,6 +415,13 @@ struct ConversationRunServiceTests {
         #expect(errors[0].recoverable)
         // The secret-shaped substring is redacted before persistence.
         #expect(!errors[0].message.contains("sk-secretvalue123"))
+
+        let events = try await runStore.events(runID: service.runID)
+        let providerError = try #require(events.first(where: { $0.kind == .error }))
+        #expect(providerError.payloadJSON.contains("rateLimited"))
+        #expect(providerError.payloadJSON.contains("429"))
+        #expect(providerError.payloadJSON.contains("recoverable"))
+        #expect(!providerError.payloadJSON.contains("sk-secretvalue123"))
     }
 
     @Test("The configured API key is redacted even when it has no known prefix")

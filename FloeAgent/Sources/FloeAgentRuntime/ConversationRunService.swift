@@ -839,13 +839,26 @@ public actor ConversationRunService {
             logger.error(
                 "Run \(runID.uuidString) provider error kind=\(error.kind.rawValue) httpStatus=\(error.httpStatus.map(String.init) ?? "none") message=\(String(redactedMessage.prefix(500)))"
             )
-            try? await runStore.recordError(RunErrorRecord(
+            let recoverable = Self.isRecoverable(error.kind)
+            _ = await recordErrorReliably(RunErrorRecord(
                 runID: runID,
                 kind: error.kind.rawValue,
                 message: redactedMessage,
                 httpStatus: error.httpStatus,
-                recoverable: Self.isRecoverable(error.kind)
-            ))
+                recoverable: recoverable
+            ), completionCritical: !recoverable)
+            _ = await appendEventReliably(
+                runID: runID,
+                kind: .error,
+                payloadJSON: Self.jsonPayload([
+                    "kind": error.kind.rawValue,
+                    "message": redactedMessage,
+                    "recoverable": recoverable ? "true" : "false",
+                    "httpStatus": error.httpStatus.map(String.init) ?? ""
+                ]),
+                boundary: "providerError",
+                completionCritical: !recoverable
+            )
         case .completed(let completion):
             flushAnswerPush()
             await flushAssistantSegment()
@@ -1092,6 +1105,30 @@ public actor ConversationRunService {
         }
         let detail = "Unable to persist run state \(state) after retry: \(lastError?.localizedDescription ?? "unknown persistence error")"
         logger.error("durableRunStateFailed run=\(runID.uuidString) state=\(state)")
+        if completionCritical { durabilityFailure = detail }
+        return false
+    }
+
+    /// Provider failures are part of the durable diagnostic contract. A
+    /// failed write must be observable and, for non-retryable errors, must
+    /// prevent the run from later presenting a clean completion.
+    @discardableResult
+    private func recordErrorReliably(
+        _ record: RunErrorRecord,
+        completionCritical: Bool
+    ) async -> Bool {
+        var lastError: Error?
+        for attempt in 1...3 {
+            do {
+                try await runStore.recordError(record)
+                return true
+            } catch {
+                lastError = error
+                if attempt < 3 { try? await Task.sleep(for: .milliseconds(25 * attempt)) }
+            }
+        }
+        let detail = "Unable to persist provider error after retry: \(lastError?.localizedDescription ?? "unknown persistence error")"
+        logger.error("durableProviderErrorFailed run=\(runID.uuidString)")
         if completionCritical { durabilityFailure = detail }
         return false
     }

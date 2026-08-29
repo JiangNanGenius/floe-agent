@@ -375,6 +375,8 @@ final class RemoteSessionCenter: ObservableObject {
         let owner = VNCSessionOwner(
             sessionID: sessionID,
             hostID: host.id,
+            endpointHost: endpoint.host,
+            endpointPort: endpoint.port,
             registry: environment.remoteSessionRegistry
         )
         let vncSession: VNCSession
@@ -427,7 +429,18 @@ final class RemoteSessionCenter: ObservableObject {
     }
 
     func sendVNC(_ action: VNCAction, to sessionID: UUID) async throws {
-        try await vncOwners[sessionID]?.send(action)
+        guard let owner = vncOwners[sessionID] else {
+            throw VNCConnectionFailure(
+                category: .configurationMissing,
+                stage: .configuration,
+                retryable: true,
+                host: "unknown",
+                port: 0,
+                message: "The selected VNC session no longer exists. Reconnect before sending input."
+            )
+        }
+        try await owner.send(action)
+        armToolManagedVNCIdleDisconnect(sessionID: sessionID)
     }
 
     func disconnectVNC(sessionID: UUID) async {
