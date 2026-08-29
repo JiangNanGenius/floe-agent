@@ -46,6 +46,41 @@ struct CreativeMediaModelsTests {
         #expect(decoded.schemaVersion == CanvasProject.currentSchemaVersion)
     }
 
+    @Test func canvasSchemaRoundTripsNative3DDirectorScene() throws {
+        var scene = CanvasScene3D.starter()
+        scene.name = "产品导演台"
+        scene.objects.append(CanvasSceneObject(
+            name: "背景球",
+            kind: .sphere,
+            position: .init(x: 1.5, y: 0.8, z: -0.5),
+            rotation: .init(x: 0, y: 35, z: 0),
+            scale: .init(x: 0.7, y: 0.7, z: 0.7),
+            colorHex: "#7C5CFC",
+            roughness: 0.2,
+            metallic: true
+        ))
+        let node = CanvasNode(
+            kind: .scene3D,
+            title: "产品镜头",
+            position: .init(x: 180, y: 140),
+            size: .init(width: 420, height: 300),
+            scene3D: scene
+        )
+        let document = CanvasDocument(name: "导演台", nodes: [node])
+        let project = CanvasProject(
+            id: UUID(),
+            name: "3D 测试",
+            documents: [document],
+            selectedDocumentID: document.id
+        )
+
+        let data = try JSONEncoder().encode(project)
+        let decoded = try JSONDecoder().decode(CanvasProject.self, from: data)
+        #expect(decoded == project)
+        #expect(decoded.documents[0].nodes[0].scene3D?.objects.count == 2)
+        #expect(decoded.schemaVersion == 5)
+    }
+
     @Test func canvasSyncReducerConvergesForOutOfOrderEqualRevision() {
         let canvasID = UUID(), entityID = UUID()
         let a = CanvasSyncOperation(

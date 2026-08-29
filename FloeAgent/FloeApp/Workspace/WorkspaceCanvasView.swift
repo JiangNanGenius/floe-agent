@@ -494,6 +494,7 @@ private struct FloeCanvasNode: Codable, Hashable, Identifiable {
     var shape: CanvasShapeKind?
     var asset: CanvasAssetReference?
     var generationJobID: UUID?
+    var scene3D: CanvasScene3D?
     var metadata: [String: String]?
 }
 
@@ -512,7 +513,7 @@ private struct FloeCanvasDocument: Codable, Hashable, Identifiable {
 
 private struct FloeCanvasProject: Codable, Hashable {
     var id: UUID?
-    var schemaVersion = 4
+    var schemaVersion = 5
     var workspaceID: UUID?
     var name: String
     var documents: [FloeCanvasDocument]
@@ -625,7 +626,7 @@ enum WorkspaceCanvasRegistry {
     @discardableResult
     static func importPackage(from source: URL) throws -> UUID {
         var project = try decodeProject(at: source)
-        guard !project.documents.isEmpty, (1...4).contains(project.schemaVersion) else {
+        guard !project.documents.isEmpty, (1...5).contains(project.schemaVersion) else {
             throw FloeError.validationFailed("这不是受支持的 Floe 画布包。")
         }
         let id = UUID()
@@ -772,9 +773,9 @@ private final class WorkspaceCanvasStore: ObservableObject {
     }
 
     private func migrateIfNeeded() {
-        guard project.schemaVersion < 4 || project.id == nil || project.sync == nil else { return }
+        guard project.schemaVersion < 5 || project.id == nil || project.sync == nil else { return }
         project.id = project.id ?? UUID(uuidString: fileURL.deletingPathExtension().lastPathComponent)
-        project.schemaVersion = 4
+        project.schemaVersion = 5
         project.sync = project.sync ?? CanvasSyncSettings()
         for documentIndex in project.documents.indices {
             project.documents[documentIndex].connections = project.documents[documentIndex].connections ?? []
@@ -963,6 +964,35 @@ private final class WorkspaceCanvasStore: ObservableObject {
             ))
         }
         return id
+    }
+
+    @discardableResult
+    func addScene3D(at point: CGPoint) -> UUID {
+        let id = UUID()
+        mutateSelectedDocument { document in
+            document.nodes.append(FloeCanvasNode(
+                id: id,
+                text: "3D 场景",
+                x: point.x,
+                y: point.y,
+                width: 420,
+                height: 300,
+                kind: .scene3D,
+                rotation: 0,
+                zIndex: document.nodes.count,
+                isLocked: false,
+                scene3D: .starter()
+            ))
+        }
+        return id
+    }
+
+    func updateScene3D(_ scene: CanvasScene3D, for nodeID: UUID) {
+        mutateSelectedDocument { document in
+            guard let index = document.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
+            document.nodes[index].scene3D = scene
+            document.nodes[index].text = scene.name
+        }
     }
 
     func setGenerationJob(_ jobID: UUID, for nodeID: UUID) {
@@ -1181,7 +1211,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
 
     func setAgentConversationID(_ id: UUID) {
         project.agentConversationID = id
-        project.schemaVersion = 4
+        project.schemaVersion = 5
         project.updatedAt = Date()
         persist()
     }
@@ -1769,6 +1799,7 @@ struct WorkspaceCanvasView: View {
     @State private var showsGeneration = false
     @State private var showsInspector = false
     @State private var showsMediaJobs = false
+    @State private var directorPresentation: Canvas3DDirectorPresentation?
     @State private var canvasJobs: [MediaGenerationJob] = []
     @State private var marqueeStart: CGPoint?
     @State private var marqueeCurrent: CGPoint?
@@ -1863,6 +1894,19 @@ struct WorkspaceCanvasView: View {
                 onCancel: { job in await cancel(job) },
                 onRetry: { job in await retry(job) }
             )
+        }
+        .fullScreenCover(item: $directorPresentation) { presentation in
+            if let node = store.selectedDocument?.nodes.first(where: {
+                $0.id == presentation.nodeID
+            }) {
+                Canvas3DDirectorView(
+                    initialScene: node.scene3D ?? .starter(),
+                    onSave: { scene in
+                        store.updateScene3D(scene, for: presentation.nodeID)
+                        directorPresentation = nil
+                    }
+                )
+            }
         }
         .fileExporter(
             isPresented: Binding(
@@ -2151,6 +2195,18 @@ struct WorkspaceCanvasView: View {
                             Label("媒体任务", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
                         }
                         .badge(canvasJobs.filter { !$0.state.isTerminal }.count)
+                        Button {
+                            let existing = store.selectedDocument?.nodes.first(where: {
+                                selectedNodeIDs.contains($0.id) && $0.kind == .scene3D
+                            })?.id
+                            let nodeID = existing ?? store.addScene3D(
+                                at: canvasPoint(CGPoint(x: 520, y: 380))
+                            )
+                            selectedNodeIDs = [nodeID]
+                            directorPresentation = Canvas3DDirectorPresentation(nodeID: nodeID)
+                        } label: {
+                            Label("3D 导演台", systemImage: "cube.transparent")
+                        }
                         Menu {
                             Toggle("同步此画布", isOn: Binding(
                                 get: { store.project.sync?.isEnabled ?? true },
@@ -2303,6 +2359,9 @@ struct WorkspaceCanvasView: View {
                 isSelected: selectedNodeIDs.contains(node.id),
                 sourceURLs: node.sourceURLs ?? [],
                 licenseStatus: node.licenseStatus,
+                onOpen3D: node.kind == .scene3D ? {
+                    directorPresentation = Canvas3DDirectorPresentation(nodeID: node.id)
+                } : nil,
                 onDelete: { store.deleteNode(node.id) }
             )
             .frame(width: node.width, height: node.height)
@@ -3354,6 +3413,7 @@ private struct CanvasNodeCard: View {
     let isSelected: Bool
     let sourceURLs: [String]
     let licenseStatus: String?
+    let onOpen3D: (() -> Void)?
     let onDelete: () -> Void
 
     var body: some View {
@@ -3381,6 +3441,9 @@ private struct CanvasNodeCard: View {
         }
         .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
         .contextMenu {
+            if let onOpen3D {
+                Button("打开 3D 导演台", systemImage: "cube.transparent", action: onOpen3D)
+            }
             Button("删除节点", role: .destructive, action: onDelete)
         }
     }
@@ -3419,6 +3482,24 @@ private struct CanvasNodeCard: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding()
+        case .scene3D:
+            ZStack(alignment: .bottomLeading) {
+                Canvas3DScenePreview(scene: node.scene3D ?? .starter())
+                VStack(alignment: .leading, spacing: 3) {
+                    Label(text.isEmpty ? "3D 场景" : text, systemImage: "cube.transparent")
+                        .font(.headline)
+                    if let onOpen3D {
+                        Button("打开导演台", systemImage: "arrow.up.left.and.arrow.down.right") {
+                            onOpen3D()
+                        }
+                        .font(.caption)
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+                .padding(10)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .padding(10)
+            }
         }
     }
 
@@ -4479,6 +4560,7 @@ private struct CanvasMaterialLibraryView: View {
         case .video: "film"
         case .audio: "waveform"
         case .file: "doc"
+        case .scene3D: "cube.transparent"
         default: "square.stack.3d.up"
         }
     }

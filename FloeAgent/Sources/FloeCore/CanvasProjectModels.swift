@@ -13,7 +13,7 @@ public struct CanvasSize: Sendable, Codable, Hashable {
 }
 
 public enum CanvasNodeKind: String, Sendable, Codable, CaseIterable, Hashable {
-    case text, stickyNote, shape, image, video, audio, file, group, generationTask
+    case text, stickyNote, shape, image, video, audio, file, group, generationTask, scene3D
 }
 
 public enum CanvasShapeKind: String, Sendable, Codable, CaseIterable, Hashable {
@@ -22,6 +22,148 @@ public enum CanvasShapeKind: String, Sendable, Codable, CaseIterable, Hashable {
 
 public enum CanvasBackgroundStyle: String, Sendable, Codable, CaseIterable, Hashable {
     case blank, grid, dots
+}
+
+public struct CanvasVector3: Sendable, Codable, Hashable {
+    public var x: Double
+    public var y: Double
+    public var z: Double
+
+    public init(x: Double = 0, y: Double = 0, z: Double = 0) {
+        self.x = x
+        self.y = y
+        self.z = z
+    }
+
+    public static let zero = CanvasVector3()
+    public static let one = CanvasVector3(x: 1, y: 1, z: 1)
+}
+
+public enum CanvasSceneObjectKind: String, Sendable, Codable, CaseIterable, Hashable {
+    case box, sphere, cylinder, cone, plane
+}
+
+public enum CanvasSceneBackground: String, Sendable, Codable, CaseIterable, Hashable {
+    case studio, graphite, midnight, chromaGreen
+}
+
+public struct CanvasSceneObject: Sendable, Codable, Identifiable, Hashable {
+    public var id: UUID
+    public var name: String
+    public var kind: CanvasSceneObjectKind
+    public var position: CanvasVector3
+    /// Euler angles in degrees. Degrees make persisted values legible to users,
+    /// tools and future schema migrations.
+    public var rotation: CanvasVector3
+    public var scale: CanvasVector3
+    public var colorHex: String
+    public var roughness: Double
+    public var metallic: Bool
+    public var isHidden: Bool
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        kind: CanvasSceneObjectKind,
+        position: CanvasVector3 = .zero,
+        rotation: CanvasVector3 = .zero,
+        scale: CanvasVector3 = .one,
+        colorHex: String = "#5B8DEF",
+        roughness: Double = 0.35,
+        metallic: Bool = false,
+        isHidden: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.position = position
+        self.rotation = rotation
+        self.scale = scale
+        self.colorHex = colorHex
+        self.roughness = roughness
+        self.metallic = metallic
+        self.isHidden = isHidden
+    }
+}
+
+public struct CanvasSceneCamera: Sendable, Codable, Hashable {
+    public var orbitYaw: Double
+    public var orbitPitch: Double
+    public var distance: Double
+    public var target: CanvasVector3
+    public var fieldOfView: Double
+
+    public init(
+        orbitYaw: Double = 38,
+        orbitPitch: Double = -22,
+        distance: Double = 6.5,
+        target: CanvasVector3 = .zero,
+        fieldOfView: Double = 48
+    ) {
+        self.orbitYaw = orbitYaw
+        self.orbitPitch = orbitPitch
+        self.distance = distance
+        self.target = target
+        self.fieldOfView = fieldOfView
+    }
+}
+
+public struct CanvasSceneLighting: Sendable, Codable, Hashable {
+    public var keyIntensity: Double
+    public var fillIntensity: Double
+    public var castsShadows: Bool
+
+    public init(
+        keyIntensity: Double = 28_000,
+        fillIntensity: Double = 7_000,
+        castsShadows: Bool = true
+    ) {
+        self.keyIntensity = keyIntensity
+        self.fillIntensity = fillIntensity
+        self.castsShadows = castsShadows
+    }
+}
+
+public struct CanvasScene3D: Sendable, Codable, Identifiable, Hashable {
+    public var id: UUID
+    public var name: String
+    public var objects: [CanvasSceneObject]
+    public var camera: CanvasSceneCamera
+    public var lighting: CanvasSceneLighting
+    public var background: CanvasSceneBackground
+    public var showsGrid: Bool
+    public var updatedAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        name: String = "3D 场景",
+        objects: [CanvasSceneObject] = [],
+        camera: CanvasSceneCamera = .init(),
+        lighting: CanvasSceneLighting = .init(),
+        background: CanvasSceneBackground = .studio,
+        showsGrid: Bool = true,
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        self.objects = objects
+        self.camera = camera
+        self.lighting = lighting
+        self.background = background
+        self.showsGrid = showsGrid
+        self.updatedAt = updatedAt
+    }
+
+    public static func starter() -> CanvasScene3D {
+        CanvasScene3D(objects: [
+            CanvasSceneObject(
+                name: "主体",
+                kind: .box,
+                position: CanvasVector3(x: 0, y: 0.6, z: 0),
+                scale: CanvasVector3(x: 1.4, y: 1.2, z: 1.4)
+            )
+        ])
+    }
 }
 
 public struct CanvasAssetReference: Sendable, Codable, Identifiable, Hashable {
@@ -61,6 +203,7 @@ public struct CanvasNode: Sendable, Codable, Identifiable, Hashable {
     public var shape: CanvasShapeKind?
     public var asset: CanvasAssetReference?
     public var generationJobID: UUID?
+    public var scene3D: CanvasScene3D?
     public var sourceURLs: [URL]
     public var createdByRunID: UUID?
     public var metadata: [String: String]
@@ -72,6 +215,7 @@ public struct CanvasNode: Sendable, Codable, Identifiable, Hashable {
         rotation: Double = 0, zIndex: Int = 0, isLocked: Bool = false,
         groupID: UUID? = nil, shape: CanvasShapeKind? = nil,
         asset: CanvasAssetReference? = nil, generationJobID: UUID? = nil,
+        scene3D: CanvasScene3D? = nil,
         sourceURLs: [URL] = [], createdByRunID: UUID? = nil,
         metadata: [String: String] = [:]
     ) {
@@ -79,6 +223,7 @@ public struct CanvasNode: Sendable, Codable, Identifiable, Hashable {
         self.position = position; self.size = size; self.rotation = rotation
         self.zIndex = zIndex; self.isLocked = isLocked; self.groupID = groupID
         self.shape = shape; self.asset = asset; self.generationJobID = generationJobID
+        self.scene3D = scene3D
         self.sourceURLs = sourceURLs; self.createdByRunID = createdByRunID
         self.metadata = metadata
     }
@@ -164,7 +309,7 @@ public struct CanvasSyncSettings: Sendable, Codable, Hashable {
 }
 
 public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
-    public static let currentSchemaVersion = 4
+    public static let currentSchemaVersion = 5
 
     public var id: UUID
     public var schemaVersion: Int
