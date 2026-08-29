@@ -20,7 +20,7 @@ public struct VNCSessionHandle: @unchecked Sendable {
     }
 }
 
-public typealias VNCSessionProvider = @Sendable () async -> VNCSessionHandle?
+public typealias VNCSessionProvider = @Sendable () async throws -> VNCSessionHandle?
 
 private struct VNCCapturedArtifact {
     let capture: VNCFrameCapture
@@ -29,9 +29,9 @@ private struct VNCCapturedArtifact {
 
 private enum VNCToolSupport {
     static func connectedSession(from provider: VNCSessionProvider) async throws -> VNCSessionHandle {
-        guard let handle = await provider(), handle.session.isConnected else {
+        guard let handle = try await provider(), handle.session.isConnected else {
             throw FloeError.validationFailed(
-                "No connected VNC session. Connect a remote desktop first and wait for Connected."
+                "No connected VNC session is available. Floe could not establish one on demand; check the configured endpoint and its latest connection error."
             )
         }
         return handle

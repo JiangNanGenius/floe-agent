@@ -2729,6 +2729,9 @@ final class ConversationCenter: ObservableObject {
         return modelsByProvider.values.flatMap { $0 }
             .filter {
                 $0.isEnabled && $0.capabilities.contains(.text)
+                    && !$0.capabilities.contains(.imageGeneration)
+                    && !$0.capabilities.contains(.imageEditing)
+                    && !$0.capabilities.contains(.videoGeneration)
                     && enabledProviderIDs.contains($0.providerID)
             }
             .sorted {

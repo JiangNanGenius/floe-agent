@@ -47,6 +47,11 @@ final class RemoteSessionCenter: ObservableObject {
     private let secretStore = KeychainSecretStore()
     private var sshOwners: [UUID: SSHSessionOwner] = [:]
     private var vncOwners: [UUID: VNCSessionOwner] = [:]
+    private var vncEndpointBySessionID: [UUID: UUID] = [:]
+    private var toolManagedVNCSessionIDs: Set<UUID> = []
+    private var vncIdleDisconnectTasks: [UUID: Task<Void, Never>] = [:]
+    private var latestVNCFailureByEndpointID: [UUID: String] = [:]
+    private let toolManagedVNCIdleTimeout: TimeInterval = 5 * 60
     /// Continuations for pending TOFU decisions, keyed by challenge id.
     private var trustContinuations: [String: CheckedContinuation<Bool, Never>] = [:]
 
@@ -268,6 +273,53 @@ final class RemoteSessionCenter: ObservableObject {
         }
     }
 
+    /// Returns a reusable live VNC session for agent tools. When no viewer or
+    /// prior tool session is active, a single unambiguous configured endpoint
+    /// is connected on demand. Tool-created sessions stay alive across calls
+    /// and are reclaimed only after an idle grace period.
+    func activeOrConnectVNCSession() async throws -> VNCSessionHandle? {
+        if let active = activeVNCSession() {
+            armToolManagedVNCIdleDisconnect(sessionID: active.id)
+            return active
+        }
+        if hosts.isEmpty { await loadHosts() }
+        let candidates = hosts.flatMap { host in
+            host.vncEndpoints.map { (host: host, endpoint: $0) }
+        }
+        guard !candidates.isEmpty else {
+            throw FloeError.invalidConfiguration(
+                "No VNC connection is configured. Add a direct or SSH-tunnel VNC endpoint first."
+            )
+        }
+        guard candidates.count == 1, let candidate = candidates.first else {
+            let names = candidates.prefix(6).map { "\($0.host.displayName)/\($0.endpoint.displayName)" }
+                .joined(separator: ", ")
+            throw FloeError.invalidConfiguration(
+                "Multiple VNC endpoints are configured (\(names)). Open the intended connection once so the agent has an unambiguous active session."
+            )
+        }
+
+        if let existing = vncEndpointBySessionID.first(where: { $0.value == candidate.endpoint.id })?.key,
+           let owner = vncOwners[existing] {
+            switch owner.connectionState {
+            case .connected:
+                armToolManagedVNCIdleDisconnect(sessionID: existing)
+                return owner.session.map { VNCSessionHandle(id: existing, session: $0) }
+            case .connecting:
+                return try await waitForVNCConnection(sessionID: existing, endpoint: candidate.endpoint)
+            case .failed, .disconnected:
+                await disconnectVNC(sessionID: existing)
+            }
+        }
+
+        let sessionID = try await connectVNC(
+            to: candidate.host,
+            endpoint: candidate.endpoint,
+            toolManaged: true
+        )
+        return try await waitForVNCConnection(sessionID: sessionID, endpoint: candidate.endpoint)
+    }
+
     func vncConnectionState(for sessionID: UUID) -> VNCSessionState {
         vncOwners[sessionID]?.connectionState ?? .disconnected
     }
@@ -281,9 +333,24 @@ final class RemoteSessionCenter: ObservableObject {
 
     /// Connects one selected VNC profile directly or through SSH.
     @discardableResult
-    func connectVNC(to host: RemoteHostProfile, endpoint selected: VNCEndpoint? = nil) async throws -> UUID {
+    func connectVNC(
+        to host: RemoteHostProfile,
+        endpoint selected: VNCEndpoint? = nil,
+        toolManaged: Bool = false
+    ) async throws -> UUID {
         guard let endpoint = selected ?? host.vncEndpoint else {
             throw FloeError.invalidConfiguration("Host has no VNC endpoint")
+        }
+        if let reusable = vncEndpointBySessionID.first(where: { $0.value == endpoint.id })?.key,
+           let owner = vncOwners[reusable] {
+            switch owner.connectionState {
+            case .connecting, .connected:
+                if toolManaged { toolManagedVNCSessionIDs.insert(reusable) }
+                armToolManagedVNCIdleDisconnect(sessionID: reusable)
+                return reusable
+            case .failed, .disconnected:
+                await disconnectVNC(sessionID: reusable)
+            }
         }
         let sessionID = UUID()
         let record = RemoteSessionRecord(
@@ -332,11 +399,18 @@ final class RemoteSessionCenter: ObservableObject {
         }
         owner.onStateChange = { [weak self] in
             Task { @MainActor [weak self] in
-                await self?.refreshSnapshots()
+                guard let self else { return }
+                if case .failed(let reason) = owner.connectionState {
+                    self.latestVNCFailureByEndpointID[endpoint.id] = reason
+                }
+                await self.refreshSnapshots()
             }
         }
         vncOwners[sessionID] = owner
+        vncEndpointBySessionID[sessionID] = endpoint.id
+        if toolManaged { toolManagedVNCSessionIDs.insert(sessionID) }
         vncSession.connect()
+        armToolManagedVNCIdleDisconnect(sessionID: sessionID)
         await refreshSnapshots()
         return sessionID
     }
@@ -346,16 +420,58 @@ final class RemoteSessionCenter: ObservableObject {
     }
 
     func disconnectVNC(sessionID: UUID) async {
+        vncIdleDisconnectTasks.removeValue(forKey: sessionID)?.cancel()
         await vncOwners[sessionID]?.disconnect()
         vncOwners[sessionID] = nil
+        vncEndpointBySessionID[sessionID] = nil
+        toolManagedVNCSessionIDs.remove(sessionID)
         await refreshSnapshots()
     }
 
     /// Emergency stop: immediately tears down the VNC session.
     func emergencyStop(sessionID: UUID) async {
+        vncIdleDisconnectTasks.removeValue(forKey: sessionID)?.cancel()
         await vncOwners[sessionID]?.emergencyStop()
         vncOwners[sessionID] = nil
+        vncEndpointBySessionID[sessionID] = nil
+        toolManagedVNCSessionIDs.remove(sessionID)
         await refreshSnapshots()
+    }
+
+    private func waitForVNCConnection(
+        sessionID: UUID,
+        endpoint: VNCEndpoint
+    ) async throws -> VNCSessionHandle? {
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            guard let owner = vncOwners[sessionID] else { break }
+            switch owner.connectionState {
+            case .connected:
+                latestVNCFailureByEndpointID[endpoint.id] = nil
+                armToolManagedVNCIdleDisconnect(sessionID: sessionID)
+                return owner.session.map { VNCSessionHandle(id: sessionID, session: $0) }
+            case .failed(let reason):
+                latestVNCFailureByEndpointID[endpoint.id] = reason
+                throw FloeError.validationFailed(reason)
+            case .connecting, .disconnected:
+                try await Task.sleep(for: .milliseconds(150))
+            }
+        }
+        let previous = latestVNCFailureByEndpointID[endpoint.id]
+        let reason = previous ?? "VNC connection timed out after 15 seconds while waiting for authentication and the first framebuffer."
+        throw FloeError.validationFailed(reason)
+    }
+
+    private func armToolManagedVNCIdleDisconnect(sessionID: UUID) {
+        guard toolManagedVNCSessionIDs.contains(sessionID) else { return }
+        vncIdleDisconnectTasks.removeValue(forKey: sessionID)?.cancel()
+        let timeout = toolManagedVNCIdleTimeout
+        vncIdleDisconnectTasks[sessionID] = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(timeout)) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            await self?.disconnectVNC(sessionID: sessionID)
+        }
     }
 
     // MARK: - Reconciliation / honest state

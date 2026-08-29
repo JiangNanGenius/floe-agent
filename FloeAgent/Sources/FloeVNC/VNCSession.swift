@@ -222,12 +222,48 @@ public final class VNCSession: NSObject, VNCConnectionDelegate, @unchecked Senda
     public func connection(_ connection: VNCConnection, stateDidChange connectionState: VNCConnection.ConnectionState) {
         switch connectionState.status {
         case .disconnected:
-            if let error = connectionState.error { emit(state: .failed(error.localizedDescription)) }
+            if let error = connectionState.error {
+                emit(state: .failed(Self.connectionFailureDescription(
+                    error,
+                    passwordConfigured: password?.isEmpty == false
+                )))
+            }
             else { emit(state: .disconnected) }
         case .connecting: emit(state: .connecting)
         case .connected: emit(state: .connected)
         case .disconnecting: break
         }
+    }
+
+    /// RoyalVNCKit exposes transport failures as NSError values. Normalize
+    /// them into actionable, secret-free reasons so both the UI and the agent
+    /// can distinguish a bad password from an unreachable host or timeout.
+    private static func connectionFailureDescription(
+        _ error: Error,
+        passwordConfigured: Bool
+    ) -> String {
+        let nsError = error as NSError
+        let raw = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let probe = "\(raw) \(nsError.domain) \(nsError.code)".lowercased()
+        if probe.contains("auth") || probe.contains("password") || probe.contains("security") {
+            return passwordConfigured
+                ? "VNC authentication was rejected. The saved password may be incorrect or the server may require a different security type."
+                : "VNC authentication requires a password, but this connection has no saved password."
+        }
+        if probe.contains("timed out") || probe.contains("timeout") {
+            return "VNC connection timed out before the server completed the handshake."
+        }
+        if probe.contains("refused") {
+            return "VNC connection was refused. Confirm that the server is listening on the configured host and port."
+        }
+        if probe.contains("unreachable") || probe.contains("no route") {
+            return "VNC host is unreachable from this device. Check the route, VPN, firewall, and address."
+        }
+        if probe.contains("name or service") || probe.contains("dns") || probe.contains("not known") {
+            return "VNC host name could not be resolved."
+        }
+        let detail = raw.isEmpty ? "Unknown transport error" : String(raw.prefix(240))
+        return "VNC handshake failed: \(detail) [\(nsError.domain):\(nsError.code)]."
     }
 
     public func connection(

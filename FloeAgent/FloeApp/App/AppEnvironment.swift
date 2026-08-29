@@ -380,7 +380,7 @@ final class AppEnvironment: ObservableObject {
         registerDelegateTool(runners: subagentRunnerRegistry)
         // VNC remote-desktop driving.
         registerVNCTools { [weak remoteSessionCenter] in
-            await remoteSessionCenter?.activeVNCSession()
+            try await remoteSessionCenter?.activeOrConnectVNCSession()
         }
         // Standard remote MCP servers are configuration-driven tool sources.
         // Activation only discovers JSON schemas and registers namespaced

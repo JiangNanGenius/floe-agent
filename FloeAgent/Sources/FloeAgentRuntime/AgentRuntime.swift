@@ -395,6 +395,11 @@ public actor FloeAgentRuntime {
     private let logger = FloeLogger(category: .runtime)
     /// Guards the single self-critique pass so verification runs once.
     private var didVerifyFinalAnswer = false
+    /// A provider can occasionally end a turn with prose such as “I will now
+    /// call the tool” without emitting a structured call. Repair that broken
+    /// action boundary once; a hard cap keeps weak models from turning the
+    /// harness correction itself into a loop.
+    private var deferredActionRepairCount = 0
     /// Set by tool/compaction handling to request another provider turn.
     /// The outer model loop consumes this flag; handlers never recursively
     /// enter `runModelTurn`, which keeps one owner for state transitions.
@@ -1503,6 +1508,10 @@ public actor FloeAgentRuntime {
     /// completion and transitions terminally.
     private func finishOrSteer(stopReason: AgentEvent.StopReason) async {
         guard !pendingSteers.isEmpty else {
+            if shouldRepairDeferredActionPromise(stopReason: stopReason) {
+                await beginDeferredActionRepair()
+                return
+            }
             if stopReason == .endTurn,
                configuration.verifyFinalAnswer,
                !didVerifyFinalAnswer,
@@ -1525,6 +1534,62 @@ public actor FloeAgentRuntime {
             await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
         }
         await consumeSteersAtStepBoundary()
+        modelTurnContinuationRequested = true
+    }
+
+    /// Detects an unfinished action promise at the exact provider boundary.
+    /// This is intentionally conservative: tools must be available, the turn
+    /// must otherwise be terminal, and the prose must combine a near-future
+    /// phrase with either an action verb or an exposed tool name.
+    private func shouldRepairDeferredActionPromise(
+        stopReason: AgentEvent.StopReason
+    ) -> Bool {
+        guard stopReason == .endTurn,
+              deferredActionRepairCount == 0,
+              !isFinalizingWithoutTools,
+              configuration.toolsEnabled,
+              configuration.model.capabilities.contains(.tools),
+              !executor.allDescriptors.isEmpty else { return false }
+
+        let text = streamText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !text.isEmpty else { return false }
+
+        let futureMarkers = [
+            "我现在", "现在用", "现在调用", "接下来我", "下一步我", "我会立即",
+            "立即调用", "让我", "我先", "准备调用", "准备执行",
+            "i'll now", "i will now", "next i'll", "next i will", "let me",
+            "i'm going to", "i am going to", "now i'll", "now i will"
+        ]
+        guard futureMarkers.contains(where: text.contains) else { return false }
+
+        let actionMarkers = [
+            "调用", "执行", "观察", "检查", "读取", "连接", "安装", "测试",
+            "打开", "获取", "截图", "重试", "call", "run", "execute",
+            "inspect", "observe", "read", "connect", "install", "test",
+            "open", "fetch", "capture", "retry"
+        ]
+        if actionMarkers.contains(where: text.contains) { return true }
+
+        return executor.allDescriptors.contains { descriptor in
+            let dotted = descriptor.name.lowercased()
+            return text.contains(dotted) || text.contains(dotted.replacingOccurrences(of: ".", with: "_"))
+        }
+    }
+
+    /// Seals the misleading prose as a complete assistant step and asks the
+    /// provider to either emit the real structured call or report a concrete
+    /// blocker. Tool schemas stay enabled for this one repair turn.
+    private func beginDeferredActionRepair() async {
+        deferredActionRepairCount += 1
+        messages.append(ConversationMessage(role: "assistant", content: streamText))
+        await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
+        await transition(to: .verifying)
+        messages.append(ConversationMessage(
+            role: "system",
+            content: "Harness control: your previous response promised an immediate action but emitted no structured tool call. If that action is still required, issue the actual tool call now. If no suitable tool is available or the action is blocked, give a final answer with the exact reason. Do not merely promise another future action."
+        ))
         modelTurnContinuationRequested = true
     }
 

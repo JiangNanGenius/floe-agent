@@ -920,6 +920,28 @@ private final class WorkspaceCanvasStore: ObservableObject {
         return id
     }
 
+    /// Creates a real sticky-note node. Keeping this separate from `addNote`
+    /// prevents card entry points from silently producing plain text nodes.
+    @discardableResult
+    func addCard(at point: CGPoint, text: String = "新建卡片") -> UUID {
+        let id = UUID()
+        mutateSelectedDocument { document in
+            document.nodes.append(FloeCanvasNode(
+                id: id,
+                text: text,
+                x: point.x,
+                y: point.y,
+                width: 260,
+                height: 180,
+                kind: .stickyNote,
+                rotation: 0,
+                zIndex: document.nodes.count,
+                isLocked: false
+            ))
+        }
+        return id
+    }
+
     @discardableResult
     func addShape(at point: CGPoint) -> UUID {
         let id = UUID()
@@ -1810,7 +1832,7 @@ struct WorkspaceCanvasView: View {
     private static let nodePasteboardType = "org.floeagent.canvas.nodes"
 
     private enum CanvasMode: String, CaseIterable, Identifiable {
-        case select, hand, pencil, eraser, text, shape, connector
+        case select, hand, pencil, eraser, card, text, shape, connector
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -1818,6 +1840,7 @@ struct WorkspaceCanvasView: View {
             case .hand: "移动画布"
             case .pencil: "画笔"
             case .eraser: "橡皮"
+            case .card: "卡片"
             case .text: "文本"
             case .shape: "形状"
             case .connector: "连接线"
@@ -1829,6 +1852,7 @@ struct WorkspaceCanvasView: View {
             case .hand: "hand.draw"
             case .pencil: "pencil.tip"
             case .eraser: "eraser"
+            case .card: "note.text"
             case .text: "textformat"
             case .shape: "square.on.circle"
             case .connector: "point.topleft.down.to.point.bottomright.curvepath"
@@ -1904,7 +1928,8 @@ struct WorkspaceCanvasView: View {
                     onSave: { scene in
                         store.updateScene3D(scene, for: presentation.nodeID)
                         directorPresentation = nil
-                    }
+                    },
+                    onCancel: { directorPresentation = nil }
                 )
             }
         }
@@ -1951,6 +1976,11 @@ struct WorkspaceCanvasView: View {
             if newMode == .pencil, oldMode != .pencil {
                 selectedNodeIDs.removeAll()
                 selectedStrokeIDs.removeAll()
+                DispatchQueue.main.async {
+                    showsPencilPalette = true
+                }
+            } else if newMode != .pencil {
+                showsPencilPalette = false
             }
             UISelectionFeedbackGenerator().selectionChanged()
         }
@@ -2059,7 +2089,7 @@ struct WorkspaceCanvasView: View {
                 }
                 if let bounds = closedShapeSuggestion, mode == .pencil {
                     Button {
-                        selectedNodeIDs = [store.addNote(
+                        selectedNodeIDs = [store.addCard(
                             at: canvasPoint(CGPoint(x: bounds.midX, y: bounds.midY)),
                             text: "新建卡片"
                         )]
@@ -2137,7 +2167,7 @@ struct WorkspaceCanvasView: View {
                         mode = .pencil
                         showsPencilPalette = true
                     case .createCard:
-                        selectedNodeIDs = [store.addNote(at: canvasPoint(
+                        selectedNodeIDs = [store.addCard(at: canvasPoint(
                             CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
                         ), text: "新建卡片")]
                         mode = .select
@@ -2462,7 +2492,7 @@ struct WorkspaceCanvasView: View {
                         case .select:
                             if marqueeStart == nil { marqueeStart = value.startLocation }
                             marqueeCurrent = value.location
-                        case .text, .shape, .connector: break
+                        case .card, .text, .shape, .connector: break
                         }
                     }
                     .onEnded { _ in
@@ -2514,6 +2544,9 @@ struct WorkspaceCanvasView: View {
                 case .text:
                     selectedNodeIDs = [store.addNote(at: canvasPoint(value.location))]
                     mode = .select
+                case .card:
+                    selectedNodeIDs = [store.addCard(at: canvasPoint(value.location))]
+                    mode = .select
                 case .shape:
                     selectedNodeIDs = [store.addShape(at: canvasPoint(value.location))]
                     mode = .select
@@ -2523,90 +2556,99 @@ struct WorkspaceCanvasView: View {
     }
 
     private func modeControls(size: CGSize) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                Picker("画布工具", selection: $mode) {
-                    ForEach(CanvasMode.allCases) { value in
-                        Label(value.title, systemImage: value.icon).tag(value)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: min(620, max(420, size.width - 280)))
-
-                if mode == .pencil {
-                    Button {
+        HStack(spacing: 4) {
+            ForEach(CanvasMode.allCases) { value in
+                Button {
+                    if value == .pencil, mode == .pencil {
                         showsPencilPalette.toggle()
-                    } label: {
-                        Label("画笔", systemImage: "pencil.tip.crop.circle")
-                    }
-                    .buttonStyle(.bordered)
-                    .popover(isPresented: $showsPencilPalette, arrowEdge: .top) {
-                        CanvasPencilPalette(
-                            width: $pencilWidth,
-                            colorName: $pencilColor,
-                            fingerDrawingEnabled: $canvasPreferences.fingerDrawingEnabled,
-                            onCreateCard: {
-                                selectedNodeIDs = [store.addNote(
-                                    at: canvasPoint(CGPoint(x: size.width / 2, y: size.height / 2)),
-                                    text: "新建卡片"
-                                )]
-                                showsPencilPalette = false
-                                mode = .select
-                            },
-                            onCreateText: {
-                                selectedNodeIDs = [store.addNote(
-                                    at: canvasPoint(CGPoint(x: size.width / 2, y: size.height / 2))
-                                )]
-                                showsPencilPalette = false
-                                mode = .select
-                            },
-                            onCreateShape: {
-                                selectedNodeIDs = [store.addShape(
-                                    at: canvasPoint(CGPoint(x: size.width / 2, y: size.height / 2))
-                                )]
-                                showsPencilPalette = false
-                                mode = .select
-                            }
-                        )
-                        .presentationCompactAdaptation(.popover)
-                    }
-                }
-
-                if mode == .eraser {
-                    Button(role: .destructive) {
-                        store.clearDrawing()
-                        selectedStrokeIDs.removeAll()
-                    } label: {
-                        Label("清除笔迹", systemImage: "eraser")
-                    }
-                    .buttonStyle(.bordered)
-                }
-
-                Menu {
-                    Picker("整理方式", selection: $inkOutputPreference) {
-                        ForEach(CanvasInkOutputPreference.allCases) { value in
-                            Text(value.title).tag(value)
-                        }
+                    } else {
+                        mode = value
                     }
                 } label: {
-                    Label(inkOutputPreference.title, systemImage: "slider.horizontal.3")
+                    Image(systemName: value.icon)
+                        .font(.body.weight(mode == value ? .semibold : .regular))
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.bordered)
-
-                Button(action: interpretSelectedInk) {
-                    Label(
-                        selectedStrokeIDs.isEmpty
-                            ? "整理笔迹"
-                            : "整理笔迹（\(selectedStrokeIDs.count)）",
-                        systemImage: "wand.and.rays"
-                    )
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled((selectedStrokeIDs.isEmpty && !store.hasNativeInk) || isInterpretingInk)
+                .buttonStyle(.plain)
+                .foregroundStyle(mode == value ? Color.white : Color.primary)
+                .background(
+                    mode == value ? FloeTheme.primary : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 8)
+                )
+                .accessibilityLabel(value.title)
+                .accessibilityAddTraits(mode == value ? .isSelected : [])
             }
+
+            Divider().frame(height: 24).padding(.horizontal, 2)
+
+            Menu {
+                Picker("整理方式", selection: $inkOutputPreference) {
+                    ForEach(CanvasInkOutputPreference.allCases) { value in
+                        Text(value.title).tag(value)
+                    }
+                }
+                if mode == .eraser {
+                    Button("清除全部笔迹", systemImage: "trash", role: .destructive) {
+                        store.clearDrawing()
+                        selectedStrokeIDs.removeAll()
+                    }
+                }
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .frame(width: 32, height: 32)
+            }
+            .accessibilityLabel("笔迹整理方式：\(inkOutputPreference.title)")
+
+            Button(action: interpretSelectedInk) {
+                Image(systemName: "wand.and.rays")
+                    .frame(width: 32, height: 32)
+                    .overlay(alignment: .topTrailing) {
+                        if !selectedStrokeIDs.isEmpty {
+                            Text("\(selectedStrokeIDs.count)")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.white)
+                                .padding(3)
+                                .background(FloeTheme.primary, in: Circle())
+                                .offset(x: 5, y: -5)
+                        }
+                    }
+            }
+            .accessibilityLabel(selectedStrokeIDs.isEmpty ? "整理笔迹" : "整理所选笔迹")
+            .disabled((selectedStrokeIDs.isEmpty && !store.hasNativeInk) || isInterpretingInk)
         }
-        .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .padding(5)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .popover(isPresented: $showsPencilPalette, arrowEdge: .top) {
+            CanvasPencilPalette(
+                width: $pencilWidth,
+                colorName: $pencilColor,
+                fingerDrawingEnabled: $canvasPreferences.fingerDrawingEnabled,
+                onCreateCard: {
+                    selectedNodeIDs = [store.addCard(
+                        at: canvasPoint(CGPoint(x: size.width / 2, y: size.height / 2)),
+                        text: "新建卡片"
+                    )]
+                    showsPencilPalette = false
+                    mode = .select
+                },
+                onCreateText: {
+                    selectedNodeIDs = [store.addNote(
+                        at: canvasPoint(CGPoint(x: size.width / 2, y: size.height / 2))
+                    )]
+                    showsPencilPalette = false
+                    mode = .select
+                },
+                onCreateShape: {
+                    selectedNodeIDs = [store.addShape(
+                        at: canvasPoint(CGPoint(x: size.width / 2, y: size.height / 2))
+                    )]
+                    showsPencilPalette = false
+                    mode = .select
+                }
+            )
+            .presentationCompactAdaptation(.popover)
+        }
         .padding(12)
     }
 
@@ -3434,7 +3476,7 @@ private struct CanvasNodeCard: View {
                 .padding(.vertical, 7)
             }
         }
-        .background(.background, in: RoundedRectangle(cornerRadius: 14))
+        .background(nodeBackground, in: RoundedRectangle(cornerRadius: 14))
         .overlay {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(isSelected ? FloeTheme.primary : .secondary.opacity(0.25), lineWidth: isSelected ? 2 : 1)
@@ -3446,6 +3488,12 @@ private struct CanvasNodeCard: View {
             }
             Button("删除节点", role: .destructive, action: onDelete)
         }
+    }
+
+    private var nodeBackground: Color {
+        node.kind == .stickyNote
+            ? Color(uiColor: .systemYellow).opacity(0.24)
+            : Color(uiColor: .secondarySystemBackground)
     }
 
     @ViewBuilder

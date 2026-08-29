@@ -58,6 +58,21 @@ struct Canvas3DDirectorView: View {
         .navigationTitle(scene.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { directorToolbar }
+        .overlay(alignment: .topLeading) {
+            Button {
+                closeWithoutSaving()
+            } label: {
+                Label("退出 3D 导演台", systemImage: "xmark")
+                    .labelStyle(.iconOnly)
+                    .font(.headline)
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.circle)
+            .padding(.leading, 12)
+            .padding(.top, 8)
+            .accessibilityHint("不保存本次修改并返回画布")
+        }
         .sheet(isPresented: $showsInspector) {
             NavigationStack {
                 inspector
@@ -241,10 +256,6 @@ struct Canvas3DDirectorView: View {
     @ToolbarContentBuilder
     private var directorToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarLeading) {
-            Button("取消") {
-                onCancel?()
-                dismiss()
-            }
             Button("撤销", systemImage: "arrow.uturn.backward") { undo() }
                 .disabled(undoStack.isEmpty)
                 .keyboardShortcut("z", modifiers: .command)
@@ -269,6 +280,11 @@ struct Canvas3DDirectorView: View {
             .buttonStyle(.borderedProminent)
             .keyboardShortcut("s", modifiers: .command)
         }
+    }
+
+    private func closeWithoutSaving() {
+        onCancel?()
+        dismiss()
     }
 
     private var selectedObjectIndex: Int? {

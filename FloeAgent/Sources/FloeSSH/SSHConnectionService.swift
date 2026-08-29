@@ -31,6 +31,12 @@ public enum SSHConnectionError: Error, Sendable, LocalizedError {
     case invalidCredential
     case invalidHostKey
     case unsupportedKeyType(SSHAuthMethod.SSHKeyType)
+    case authenticationFailed(user: String, address: String)
+    case connectionRefused(address: String, port: Int)
+    case hostNotFound(address: String)
+    case timedOut(address: String, port: Int)
+    case networkUnreachable(address: String)
+    case transport(String)
 
     public var errorDescription: String? {
         switch self {
@@ -41,6 +47,16 @@ public enum SSHConnectionError: Error, Sendable, LocalizedError {
         case .invalidCredential: "The SSH credential is missing or malformed."
         case .invalidHostKey: "The SSH server returned a malformed host key."
         case .unsupportedKeyType(let type): "Unsupported SSH private key type: \(type.rawValue)."
+        case .authenticationFailed(let user, let address):
+            "SSH authentication was rejected for \(user)@\(address). Check the saved password/key and whether that login is allowed."
+        case .connectionRefused(let address, let port):
+            "SSH connection to \(address):\(port) was refused. Confirm that sshd is listening and the firewall allows this port."
+        case .hostNotFound(let address): "SSH host name could not be resolved: \(address)."
+        case .timedOut(let address, let port):
+            "SSH connection to \(address):\(port) timed out. Check reachability, VPN, firewall, and the configured port."
+        case .networkUnreachable(let address):
+            "SSH host \(address) is unreachable from this device. Check the route, VPN, and address."
+        case .transport(let detail): "SSH transport failed: \(detail)"
         }
     }
 }
@@ -64,6 +80,24 @@ public final class SSHConnectionService: SSHConnectionServiceProtocol, @unchecke
     }
 
     public func connect(
+        profile: RemoteHostProfile,
+        credentialResolver: @escaping SSHCredentialResolver,
+        hostKeyDecision: @escaping HostKeyDecisionHandler
+    ) async throws -> SSHSessionHandle {
+        do {
+            return try await connectUnnormalized(
+                profile: profile,
+                credentialResolver: credentialResolver,
+                hostKeyDecision: hostKeyDecision
+            )
+        } catch let known as SSHConnectionError {
+            throw known
+        } catch {
+            throw Self.normalizedConnectionError(error, profile: profile)
+        }
+    }
+
+    private func connectUnnormalized(
         profile: RemoteHostProfile,
         credentialResolver: @escaping SSHCredentialResolver,
         hostKeyDecision: @escaping HostKeyDecisionHandler
@@ -129,6 +163,37 @@ public final class SSHConnectionService: SSHConnectionServiceProtocol, @unchecke
         }
 
         return SSHSessionHandle(clients: clients)
+    }
+
+    /// Converts NIO/Citadel transport errors into stable reasons suitable for
+    /// tool output. The classifier never includes credential bytes.
+    static func normalizedConnectionError(
+        _ error: Error,
+        profile: RemoteHostProfile
+    ) -> SSHConnectionError {
+        let nsError = error as NSError
+        let raw = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let probe = "\(raw) \(nsError.domain) \(nsError.code)".lowercased()
+        if probe.contains("auth") || probe.contains("permission denied") || probe.contains("credential") {
+            return .authenticationFailed(user: profile.user, address: profile.address)
+        }
+        if probe.contains("refused") || nsError.code == 61 {
+            return .connectionRefused(address: profile.address, port: profile.port)
+        }
+        if probe.contains("timed out") || probe.contains("timeout") || nsError.code == 60 {
+            return .timedOut(address: profile.address, port: profile.port)
+        }
+        if probe.contains("no route") || probe.contains("unreachable") || nsError.code == 65 {
+            return .networkUnreachable(address: profile.address)
+        }
+        if probe.contains("name or service") || probe.contains("dns") || probe.contains("not known")
+            || nsError.code == 8 {
+            return .hostNotFound(address: profile.address)
+        }
+        let detail = raw.isEmpty
+            ? "Unknown connection error [\(nsError.domain):\(nsError.code)]"
+            : "\(String(raw.prefix(240))) [\(nsError.domain):\(nsError.code)]"
+        return .transport(detail)
     }
 
     private func settings(

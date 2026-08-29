@@ -99,6 +99,12 @@ final class MockExecutor: ToolExecutor, @unchecked Sendable {
         storage.withLock { $0.descriptors[name] }
     }
 
+    var allDescriptors: [ToolCatalog.Descriptor] {
+        storage.withLock { state in
+            state.descriptors.values.sorted { $0.name < $1.name }
+        }
+    }
+
     func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
         if let executionGate { await executionGate() }
         try context.cancellation.throwIfCancelled()
@@ -346,6 +352,44 @@ struct AgentRuntimeTests {
             return delta.text
         }
         #expect(visibleText == ["Draft answer", "Corrected answer"])
+    }
+
+    @Test("A promised action without a structured call is repaired once")
+    func deferredActionPromiseRequestsTheRealToolCall() async throws {
+        let adapter = MockAdapter()
+        let call = try TestFixtures.toolCall(id: "promised-call")
+        adapter.script = [
+            [
+                .textDelta(.init(text: "我现在调用 test_echo 检查：")),
+                .completed(.init(stopReason: .endTurn))
+            ],
+            [
+                .toolRequest(call),
+                .completed(.init(stopReason: .toolUse))
+            ],
+            [
+                .textDelta(.init(text: "检查完成")),
+                .completed(.init(stopReason: .endTurn))
+            ]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let sink = MockSink()
+        let runtime = makeRuntime(adapter: adapter, executor: executor, sink: sink)
+
+        try await runtime.start(goal: "检查当前状态")
+
+        #expect(executor.executedCalls.map(\.id) == ["promised-call"])
+        #expect(adapter.requests.count == 3)
+        let repairRequest = try #require(adapter.requests.dropFirst().first)
+        #expect(repairRequest.toolSchemas.contains { $0.name == "test.echo" })
+        #expect(repairRequest.messages.contains {
+            $0.role == "system" && $0.content.contains("promised an immediate action")
+        })
+        guard case .completed = await runtime.state else {
+            Issue.record("Expected repaired run to complete")
+            return
+        }
     }
 
     @Test("A text-only model is never offered tool schemas")
