@@ -54,6 +54,24 @@ struct VNCToolContractTests {
         }
     }
 
+    @Test("Credential input accepts only opaque Floe references") func credentialInput() throws {
+        let id = UUID()
+        let reference = "⟨credential:\(id.uuidString)⟩"
+        let tool = VNCTypeCredentialTool(
+            sessionProvider: unavailable,
+            credentialResolver: { requestedID in
+                #expect(requestedID == id)
+                return Data("secret".utf8)
+            }
+        )
+        try tool.validate(.init(credentialRef: reference, submit: true))
+        #expect(throws: (any Error).self) {
+            try tool.validate(.init(credentialRef: "plaintext-password"))
+        }
+        #expect(!VNCTypeCredentialTool.parametersJSON.contains("password"))
+        #expect(VNCTypeCredentialTool.riskLabels.contains(.accessesCredentials))
+    }
+
     @Test("Scroll rejects zero and unbounded steps")
     func scrollValidation() throws {
         let tool = VNCScrollTool(sessionProvider: unavailable)

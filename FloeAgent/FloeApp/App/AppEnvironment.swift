@@ -379,7 +379,9 @@ final class AppEnvironment: ObservableObject {
         // Supervisor-Worker delegation.
         registerDelegateTool(runners: subagentRunnerRegistry)
         // VNC remote-desktop driving.
-        registerVNCTools { [weak remoteSessionCenter] in
+        registerVNCTools(credentialResolver: { credentialID in
+            try await credentialVault.resolveForApprovedUse(CredentialHandle(id: credentialID))
+        }) { [weak remoteSessionCenter] in
             try await remoteSessionCenter?.activeOrConnectVNCSession()
         }
         // Standard remote MCP servers are configuration-driven tool sources.

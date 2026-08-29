@@ -162,9 +162,9 @@ final class ProviderEditorViewModel: ObservableObject {
             case .conversation:
                 model.supportsChatAgentSurface
             case .image:
-                model.effectiveUseSurfaces.contains(.imageGeneration)
+                model.supportsImageGenerationSurface
             case .video:
-                model.effectiveUseSurfaces.contains(.videoGeneration)
+                model.supportsVideoGenerationSurface
             }
         }
         nativeToolStatusByModelID = Dictionary(uniqueKeysWithValues: candidateModels.map {

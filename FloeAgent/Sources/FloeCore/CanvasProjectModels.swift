@@ -193,7 +193,7 @@ public struct CanvasNode: Sendable, Codable, Identifiable, Hashable {
     public var id: UUID
     public var kind: CanvasNodeKind
     public var title: String?
-    public var text: String?
+    public var text: String
     public var position: CanvasPoint
     public var size: CanvasSize
     public var rotation: Double
@@ -210,7 +210,7 @@ public struct CanvasNode: Sendable, Codable, Identifiable, Hashable {
 
     public init(
         id: UUID = UUID(), kind: CanvasNodeKind,
-        title: String? = nil, text: String? = nil,
+        title: String? = nil, text: String = "",
         position: CanvasPoint, size: CanvasSize,
         rotation: Double = 0, zIndex: Int = 0, isLocked: Bool = false,
         groupID: UUID? = nil, shape: CanvasShapeKind? = nil,
@@ -226,6 +226,94 @@ public struct CanvasNode: Sendable, Codable, Identifiable, Hashable {
         self.scene3D = scene3D
         self.sourceURLs = sourceURLs; self.createdByRunID = createdByRunID
         self.metadata = metadata
+    }
+
+    /// Compatibility initializer for schema-v1...v4 canvas coordinates. New
+    /// callers should prefer `position` and `size`.
+    public init(
+        id: UUID = UUID(), text: String, x: Double, y: Double,
+        width: Double = 260, height: Double = 150,
+        sourceURLs: [String]? = nil, licenseStatus: String? = nil,
+        createdByRunID: UUID? = nil, kind: CanvasNodeKind? = nil,
+        rotation: Double? = nil, zIndex: Int? = nil, isLocked: Bool? = nil,
+        groupID: UUID? = nil, shape: CanvasShapeKind? = nil,
+        asset: CanvasAssetReference? = nil, generationJobID: UUID? = nil,
+        scene3D: CanvasScene3D? = nil, metadata: [String: String]? = nil
+    ) {
+        var canonicalMetadata = metadata ?? [:]
+        if let licenseStatus { canonicalMetadata["licenseStatus"] = licenseStatus }
+        self.init(
+            id: id, kind: kind ?? .text, text: text,
+            position: .init(x: x, y: y), size: .init(width: width, height: height),
+            rotation: rotation ?? 0, zIndex: zIndex ?? 0,
+            isLocked: isLocked ?? false, groupID: groupID, shape: shape,
+            asset: asset, generationJobID: generationJobID, scene3D: scene3D,
+            sourceURLs: (sourceURLs ?? []).compactMap(URL.init(string:)),
+            createdByRunID: createdByRunID, metadata: canonicalMetadata
+        )
+    }
+
+    public var x: Double { get { position.x } set { position.x = newValue } }
+    public var y: Double { get { position.y } set { position.y = newValue } }
+    public var width: Double { get { size.width } set { size.width = newValue } }
+    public var height: Double { get { size.height } set { size.height = newValue } }
+    public var licenseStatus: String? {
+        get { metadata["licenseStatus"] }
+        set { metadata["licenseStatus"] = newValue }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, title, text, position, size, rotation, zIndex, isLocked
+        case groupID, shape, asset, generationJobID, scene3D, sourceURLs
+        case createdByRunID, metadata
+        case x, y, width, height, licenseStatus
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        kind = try values.decodeIfPresent(CanvasNodeKind.self, forKey: .kind) ?? .text
+        title = try values.decodeIfPresent(String.self, forKey: .title)
+        text = try values.decodeIfPresent(String.self, forKey: .text) ?? ""
+        position = try values.decodeIfPresent(CanvasPoint.self, forKey: .position)
+            ?? CanvasPoint(
+                x: try values.decodeIfPresent(Double.self, forKey: .x) ?? 0,
+                y: try values.decodeIfPresent(Double.self, forKey: .y) ?? 0
+            )
+        size = try values.decodeIfPresent(CanvasSize.self, forKey: .size)
+            ?? CanvasSize(
+                width: try values.decodeIfPresent(Double.self, forKey: .width) ?? 260,
+                height: try values.decodeIfPresent(Double.self, forKey: .height) ?? 150
+            )
+        rotation = try values.decodeIfPresent(Double.self, forKey: .rotation) ?? 0
+        zIndex = try values.decodeIfPresent(Int.self, forKey: .zIndex) ?? 0
+        isLocked = try values.decodeIfPresent(Bool.self, forKey: .isLocked) ?? false
+        groupID = try values.decodeIfPresent(UUID.self, forKey: .groupID)
+        shape = try values.decodeIfPresent(CanvasShapeKind.self, forKey: .shape)
+        asset = try values.decodeIfPresent(CanvasAssetReference.self, forKey: .asset)
+        generationJobID = try values.decodeIfPresent(UUID.self, forKey: .generationJobID)
+        scene3D = try values.decodeIfPresent(CanvasScene3D.self, forKey: .scene3D)
+        sourceURLs = try values.decodeIfPresent([URL].self, forKey: .sourceURLs) ?? []
+        createdByRunID = try values.decodeIfPresent(UUID.self, forKey: .createdByRunID)
+        metadata = try values.decodeIfPresent([String: String].self, forKey: .metadata) ?? [:]
+        if let legacyLicense = try values.decodeIfPresent(String.self, forKey: .licenseStatus) {
+            metadata["licenseStatus"] = legacyLicense
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id); try values.encode(kind, forKey: .kind)
+        try values.encodeIfPresent(title, forKey: .title); try values.encode(text, forKey: .text)
+        try values.encode(position, forKey: .position); try values.encode(size, forKey: .size)
+        try values.encode(rotation, forKey: .rotation); try values.encode(zIndex, forKey: .zIndex)
+        try values.encode(isLocked, forKey: .isLocked); try values.encodeIfPresent(groupID, forKey: .groupID)
+        try values.encodeIfPresent(shape, forKey: .shape); try values.encodeIfPresent(asset, forKey: .asset)
+        try values.encodeIfPresent(generationJobID, forKey: .generationJobID)
+        try values.encodeIfPresent(scene3D, forKey: .scene3D)
+        if !sourceURLs.isEmpty { try values.encode(sourceURLs, forKey: .sourceURLs) }
+        try values.encodeIfPresent(createdByRunID, forKey: .createdByRunID)
+        if !metadata.isEmpty { try values.encode(metadata, forKey: .metadata) }
     }
 }
 
@@ -263,6 +351,16 @@ public struct CanvasStroke: Sendable, Codable, Identifiable, Hashable {
         self.id = id; self.points = points; self.width = width
         self.color = color; self.isEraser = isEraser
     }
+
+    private enum CodingKeys: String, CodingKey { case id, points, width, color, isEraser }
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        points = try values.decodeIfPresent([CanvasPoint].self, forKey: .points) ?? []
+        width = try values.decodeIfPresent(Double.self, forKey: .width) ?? 3
+        color = try values.decodeIfPresent(String.self, forKey: .color) ?? "primary"
+        isEraser = try values.decodeIfPresent(Bool.self, forKey: .isEraser) ?? false
+    }
 }
 
 public struct CanvasDocument: Sendable, Codable, Identifiable, Hashable {
@@ -290,6 +388,23 @@ public struct CanvasDocument: Sendable, Codable, Identifiable, Hashable {
         self.pencilDrawingData = pencilDrawingData
         self.backgroundStyle = backgroundStyle
         self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, nodes, connections, strokes, pencilDrawingData
+        case backgroundStyle, createdAt, updatedAt
+    }
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try values.decodeIfPresent(String.self, forKey: .name) ?? "画布"
+        nodes = try values.decodeIfPresent([CanvasNode].self, forKey: .nodes) ?? []
+        connections = try values.decodeIfPresent([CanvasConnection].self, forKey: .connections) ?? []
+        strokes = try values.decodeIfPresent([CanvasStroke].self, forKey: .strokes) ?? []
+        pencilDrawingData = try values.decodeIfPresent(Data.self, forKey: .pencilDrawingData)
+        backgroundStyle = try values.decodeIfPresent(CanvasBackgroundStyle.self, forKey: .backgroundStyle) ?? .grid
+        createdAt = try values.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
     }
 }
 
@@ -334,6 +449,62 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         self.selectedDocumentID = selectedDocumentID
         self.agentConversationID = agentConversationID; self.sync = sync
         self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, schemaVersion, workspaceID, name, documents, selectedDocumentID
+        case agentConversationID, sync, createdAt, updatedAt
+    }
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        workspaceID = try values.decodeIfPresent(UUID.self, forKey: .workspaceID)
+        name = try values.decodeIfPresent(String.self, forKey: .name) ?? "画布"
+        documents = try values.decodeIfPresent([CanvasDocument].self, forKey: .documents) ?? []
+        selectedDocumentID = try values.decodeIfPresent(UUID.self, forKey: .selectedDocumentID)
+            ?? documents.first?.id ?? UUID()
+        agentConversationID = try values.decodeIfPresent(UUID.self, forKey: .agentConversationID)
+        sync = try values.decodeIfPresent(CanvasSyncSettings.self, forKey: .sync) ?? .init()
+        createdAt = try values.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+    }
+}
+
+/// The one canonical codec used by the app, sync layer and imports. It knows
+/// how to recover the project identifier that schema-v1 files derived from
+/// their filename, then always emits the current canonical schema.
+public enum CanvasProjectCodec {
+    public static func decode(
+        _ data: Data,
+        fallbackID: UUID? = nil,
+        decoder: JSONDecoder? = nil
+    ) throws -> CanvasProject {
+        let decoder = decoder ?? JSONDecoder()
+        var project = try decoder.decode(CanvasProject.self, from: data)
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           object["id"] == nil, let fallbackID {
+            project.id = fallbackID
+        }
+        guard (1...CanvasProject.currentSchemaVersion).contains(project.schemaVersion),
+              !project.documents.isEmpty else {
+            throw FloeError.validationFailed("Unsupported or empty Floe canvas package")
+        }
+        project.schemaVersion = CanvasProject.currentSchemaVersion
+        if !project.documents.contains(where: { $0.id == project.selectedDocumentID }),
+           let first = project.documents.first {
+            project.selectedDocumentID = first.id
+        }
+        return project
+    }
+
+    public static func encode(
+        _ project: CanvasProject,
+        encoder: JSONEncoder? = nil
+    ) throws -> Data {
+        var canonical = project
+        canonical.schemaVersion = CanvasProject.currentSchemaVersion
+        return try (encoder ?? JSONEncoder()).encode(canonical)
     }
 }
 

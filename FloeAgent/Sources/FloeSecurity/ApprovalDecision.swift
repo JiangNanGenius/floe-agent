@@ -2,6 +2,54 @@
 // See docs/DEVELOPMENT_PLAN.md §3.3.
 
 import Foundation
+import FloeModels
+
+/// Secret-free authority used only while normalizing credentials emitted by a
+/// provider. It binds capture to one run, one compiled tool, one approved
+/// target scope, and a small set of credential fields. Capturing a secret does
+/// not itself approve using it; normal tool approval remains mandatory.
+public struct RunCredentialAuthority: Sendable, Codable, Identifiable, Hashable {
+    public var id: UUID
+    public var runID: UUID
+    public var toolName: String
+    public var targetScope: ToolScope
+    public var allowedFieldNames: Set<String>
+    public var createdAt: Date
+    public var expiresAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        runID: UUID,
+        toolName: String,
+        targetScope: ToolScope,
+        allowedFieldNames: Set<String> = [
+            "credentialinput", "credentialref", "password", "passwd",
+            "passphrase", "apikey", "api_key", "token", "secret"
+        ],
+        createdAt: Date = Date(),
+        expiresAt: Date? = nil
+    ) {
+        self.id = id
+        self.runID = runID
+        self.toolName = toolName
+        self.targetScope = targetScope
+        self.allowedFieldNames = allowedFieldNames
+        self.createdAt = createdAt
+        self.expiresAt = expiresAt ?? createdAt.addingTimeInterval(15 * 60)
+    }
+
+    public func permits(
+        toolName: String,
+        targetScope: ToolScope,
+        fieldPath: [String],
+        at date: Date = Date()
+    ) -> Bool {
+        guard date < expiresAt, self.toolName == toolName,
+              self.targetScope == targetScope,
+              let field = fieldPath.last?.lowercased() else { return false }
+        return allowedFieldNames.contains(field)
+    }
+}
 
 /// What an approval covers. Intersection semantics: a grant only applies
 /// when every non-nil field matches the proposed action.

@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import FloePersistence
 import FloeSecurity
+import FloeModels
 @testable import FloeSync
 
 @Suite("Credential argument normalization")
@@ -112,5 +113,63 @@ struct CredentialArgumentNormalizerTests {
         #expect(record.label.contains("New VNC host"))
         #expect(!record.label.contains(rawPassword))
         #expect(try await vault.resolveForApprovedUse(CredentialHandle(id: id)) == Data(rawPassword.utf8))
+    }
+
+    @Test("Run authority binds credential capture to its tool and field")
+    func authorityBinding() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let records = CredentialStore(database: database)
+        let vault = CredentialVaultService(records: records)
+        let input = try JSONSerialization.data(withJSONObject: [
+            "credentialInput": "temporary-secret"
+        ])
+        let authority = RunCredentialAuthority(
+            runID: UUID(),
+            toolName: "ssh.updateHost",
+            targetScope: .local,
+            allowedFieldNames: ["credentialinput"]
+        )
+
+        await #expect(throws: (any Error).self) {
+            _ = try await CredentialArgumentNormalizer.normalize(
+                input,
+                toolName: "vnc.typeCredential",
+                vault: vault,
+                authority: authority
+            )
+        }
+        #expect(try await records.records().isEmpty)
+
+        await #expect(throws: (any Error).self) {
+            _ = try await CredentialArgumentNormalizer.normalize(
+                input,
+                toolName: "ssh.updateHost",
+                targetScope: .host(UUID()),
+                vault: vault,
+                authority: authority
+            )
+        }
+        #expect(try await records.records().isEmpty)
+    }
+
+    @Test("Secure card projection omits Keychain implementation details")
+    func secureCardProjection() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let records = CredentialStore(database: database)
+        let record = CredentialRecord(
+            kind: .vncPassword,
+            owner: .vault,
+            label: "Lab VNC",
+            keychainAccount: "private.keychain.account"
+        )
+        try await records.save(record)
+
+        let card = try #require(try await records.cards().first)
+        let encoded = try JSONEncoder().encode(card)
+        let text = try #require(String(data: encoded, encoding: .utf8))
+        #expect(card.reference == "⟨credential:\(record.id.uuidString)⟩")
+        #expect(!text.contains("private.keychain.account"))
     }
 }

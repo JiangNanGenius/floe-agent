@@ -286,7 +286,7 @@ let package = Package(
 
         .target(
             name: "FloeSync",
-            dependencies: ["FloeCore", "FloeSyncCore", "FloePersistence", "FloeSecurity"],
+            dependencies: ["FloeCore", "FloeModels", "FloeSyncCore", "FloePersistence", "FloeSecurity"],
             path: "Sources/FloeSync",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -358,6 +358,7 @@ let package = Package(
             dependencies: [
                 "FloeCore",
                 "FloePersistence",
+                "FloeSecurity",
                 "FloeTools",
                 .product(name: "RoyalVNCKit", package: "royalvnc"),
                 .product(name: "Crypto", package: "swift-crypto")

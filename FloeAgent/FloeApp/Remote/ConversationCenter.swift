@@ -598,6 +598,7 @@ final class ConversationCenter: ObservableObject {
                 }
                 return try await Self.normalizeCredentialArguments(
                     in: call,
+                    runID: runID,
                     vault: credentialVault,
                     owner: owner
                 )
@@ -1120,22 +1121,22 @@ final class ConversationCenter: ObservableObject {
         let memoryLines = recalled.map { "- \(String($0.content.prefix(500)))" }
             + selected.filter { !recalledIDs.contains($0.id) }
                 .map { "- \(String($0.content.prefix(500)))" }
-        var credentialRecords = (try? await environment.credentialStore.records(
+        var credentialCards = (try? await environment.credentialStore.cards(
             owner: .conversation(conversationID)
         )) ?? []
         if let workspaceID {
-            credentialRecords += (try? await environment.credentialStore.records(
+            credentialCards += (try? await environment.credentialStore.cards(
                 owner: .workspace(workspaceID)
             )) ?? []
         }
-        credentialRecords += (try? await environment.credentialStore.records(owner: .vault)) ?? []
+        credentialCards += (try? await environment.credentialStore.cards(owner: .vault)) ?? []
         let credentialSearchTerms = query
             .lowercased()
             .split { !$0.isLetter && !$0.isNumber }
             .map(String.init)
             .filter { $0.count >= 2 }
-        let credentialLines = credentialRecords
-            .reduce(into: [UUID: CredentialRecord]()) { $0[$1.id] = $1 }
+        let credentialLines = credentialCards
+            .reduce(into: [UUID: SecureCredentialCard]()) { $0[$1.id] = $1 }
             .values
             .sorted { lhs, rhs in
                 let lhsText = "\(lhs.label) \(lhs.kind.rawValue) \(lhs.origin ?? "") \(lhs.hostID?.uuidString ?? "")".lowercased()
@@ -1149,7 +1150,7 @@ final class ConversationCenter: ObservableObject {
             .map {
                 let hostScope = $0.hostID.map { "; host \($0.uuidString)" } ?? ""
                 let origin = $0.origin.map { "; source \($0)" } ?? ""
-                return "- Secure credential card: \($0.label); reference \(CapturedSecret.placeholder(for: $0.id)); kind \($0.kind.rawValue)\(hostScope)\(origin). Reuse this reference for the same target; do not ask for the plaintext again."
+                return "- Secure credential card: \($0.label); reference \($0.reference); kind \($0.kind.rawValue)\(hostScope)\(origin). Reuse this reference for the same target; do not ask for the plaintext again."
             }
         let workspaceSoulValue = try? await workspaceSoul
         let globalSoulValue = try? await globalSoul
@@ -1202,14 +1203,22 @@ final class ConversationCenter: ObservableObject {
     /// before approval, audit or checkpoint code can observe the call.
     private static func normalizeCredentialArguments(
         in call: ToolCall,
+        runID: UUID,
         vault: CredentialVaultService,
         owner: CredentialOwner
     ) async throws -> ToolCall {
+        let authority = RunCredentialAuthority(
+            runID: runID,
+            toolName: call.toolName,
+            targetScope: call.scope
+        )
         let normalizedJSON = try await CredentialArgumentNormalizer.normalize(
             call.argumentsJSON,
             toolName: call.toolName,
+            targetScope: call.scope,
             vault: vault,
-            owner: owner
+            owner: owner,
+            authority: authority
         )
         guard normalizedJSON != call.argumentsJSON else { return call }
         return try ToolCall(
@@ -2829,7 +2838,7 @@ final class ConversationCenter: ObservableObject {
         let enabledProviderIDs = Set(providers.map(\.id))
         return modelsByProvider.values.flatMap { $0 }
             .filter {
-                $0.isEnabled && $0.effectiveUseSurfaces.contains(.imageGeneration)
+                $0.isEnabled && $0.supportsImageGenerationSurface
                     && enabledProviderIDs.contains($0.providerID)
             }
             .sorted {
@@ -2841,7 +2850,7 @@ final class ConversationCenter: ObservableObject {
         let enabledProviderIDs = Set(providers.map(\.id))
         return modelsByProvider.values.flatMap { $0 }
             .filter {
-                $0.isEnabled && $0.effectiveUseSurfaces.contains(.videoGeneration)
+                $0.isEnabled && $0.supportsVideoGenerationSurface
                     && enabledProviderIDs.contains($0.providerID)
             }
             .sorted {

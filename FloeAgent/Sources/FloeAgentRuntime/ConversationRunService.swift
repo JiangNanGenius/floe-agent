@@ -428,7 +428,7 @@ public actor ConversationRunService {
     }
 
     public func persistRecoveryPoint() async {
-        try? await runtime.persistRecoveryPoint()
+        await persistRecoveryPointReliably(boundary: "externalRecoveryPoint")
     }
 
     /// Resolves a pending human approval.
@@ -1140,9 +1140,41 @@ public actor ConversationRunService {
         recoveryPointTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
             guard let self else { return }
-            try? await self.runtime.persistRecoveryPoint()
+            await self.persistRecoveryPointReliably(boundary: "streamRecoveryPoint")
             await self.clearRecoveryPointTask()
         }
+    }
+
+    /// Recovery points protect already-committed provider/tool progress. A
+    /// failed save is therefore a visible durability failure, never a silent
+    /// best-effort optimization that can later make a task appear stuck or
+    /// replay completed work.
+    private func persistRecoveryPointReliably(boundary: String) async {
+        var lastError: Error?
+        for attempt in 1...3 {
+            do {
+                try await runtime.persistRecoveryPoint()
+                return
+            } catch {
+                lastError = error
+                if attempt < 3 {
+                    try? await Task.sleep(for: .milliseconds(25 * attempt))
+                }
+            }
+        }
+        let detail = "Unable to persist \(boundary) after retry: \(lastError?.localizedDescription ?? "unknown persistence error")"
+        logger.error("recoveryPointFailed run=\(runID.uuidString) boundary=\(boundary)")
+        durabilityFailure = detail
+        _ = await appendEventReliably(
+            runID: runID,
+            kind: .error,
+            payloadJSON: Self.jsonPayload([
+                "message": "recoveryPointPersistenceFailed",
+                "boundary": boundary
+            ]),
+            boundary: "recoveryPointFailureEvent",
+            completionCritical: false
+        )
     }
 
     private func clearRecoveryPointTask() {

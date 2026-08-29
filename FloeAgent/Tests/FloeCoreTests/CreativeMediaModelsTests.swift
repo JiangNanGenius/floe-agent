@@ -81,6 +81,65 @@ struct CreativeMediaModelsTests {
         #expect(decoded.schemaVersion == 5)
     }
 
+    @Test func legacyCanvasDecodesIntoCanonicalStoreWithoutLosingGeometry() throws {
+        let fallbackID = UUID()
+        let nodeID = UUID()
+        let documentID = UUID()
+        let legacy = """
+        {
+          "schemaVersion": 2,
+          "name": "Legacy board",
+          "selectedDocumentID": "\(documentID.uuidString)",
+          "documents": [{
+            "id": "\(documentID.uuidString)",
+            "name": "Canvas 1",
+            "nodes": [{
+              "id": "\(nodeID.uuidString)",
+              "kind": "text",
+              "text": "preserved",
+              "x": 123.5,
+              "y": -44,
+              "width": 320,
+              "height": 180,
+              "licenseStatus": "cleared"
+            }],
+            "strokes": []
+          }]
+        }
+        """
+
+        let project = try CanvasProjectCodec.decode(
+            Data(legacy.utf8),
+            fallbackID: fallbackID
+        )
+        guard let node = project.documents.first?.nodes.first else {
+            throw FloeError.validationFailed("Legacy node was not restored")
+        }
+
+        #expect(project.id == fallbackID)
+        #expect(project.schemaVersion == CanvasProject.currentSchemaVersion)
+        #expect(node.id == nodeID)
+        #expect(node.position == CanvasPoint(x: 123.5, y: -44))
+        #expect(node.size == CanvasSize(width: 320, height: 180))
+        #expect(node.text == "preserved")
+        #expect(node.licenseStatus == "cleared")
+        #expect(project.documents[0].connections.isEmpty)
+
+        let canonical = try CanvasProjectCodec.encode(project)
+        guard let object = try JSONSerialization.jsonObject(with: canonical) as? [String: Any],
+              let documents = object["documents"] as? [[String: Any]],
+              let firstDocument = documents.first,
+              let nodes = firstDocument["nodes"] as? [[String: Any]],
+              let encodedNode = nodes.first else {
+            throw FloeError.validationFailed("Canonical canvas JSON was incomplete")
+        }
+        #expect(object["id"] as? String == fallbackID.uuidString)
+        #expect(encodedNode["position"] != nil)
+        #expect(encodedNode["size"] != nil)
+        #expect(encodedNode["x"] == nil)
+        #expect(encodedNode["width"] == nil)
+    }
+
     @Test func canvasSyncReducerConvergesForOutOfOrderEqualRevision() {
         let canvasID = UUID(), entityID = UUID()
         let a = CanvasSyncOperation(

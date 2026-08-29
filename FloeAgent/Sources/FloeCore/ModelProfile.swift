@@ -156,23 +156,42 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
     }
 
     public var effectiveUseSurfaces: ModelUseSurfaces {
-        if let useSurfaces { return useSurfaces }
-        var result: ModelUseSurfaces = []
-        let isMedia = capabilities.contains(.imageGeneration)
+        var result: ModelUseSurfaces = useSurfaces ?? []
+        let hasImageCapability = capabilities.contains(.imageGeneration)
             || capabilities.contains(.imageEditing)
-            || capabilities.contains(.videoGeneration)
-        if capabilities.contains(.text), !isMedia { result.insert(.chatAgent) }
-        if capabilities.contains(.vision) { result.insert(.auxiliaryVision) }
-        if capabilities.contains(.approval) { result.insert(.approval) }
-        if capabilities.contains(.imageGeneration) || capabilities.contains(.imageEditing) {
-            result.insert(.imageGeneration)
+        let hasVideoCapability = capabilities.contains(.videoGeneration)
+        let isMedia = hasImageCapability || hasVideoCapability
+        if useSurfaces == nil {
+            if capabilities.contains(.text), !isMedia { result.insert(.chatAgent) }
+            if capabilities.contains(.vision), !isMedia { result.insert(.auxiliaryVision) }
+            if capabilities.contains(.approval), !isMedia { result.insert(.approval) }
+            if capabilities.contains(.imageGeneration) || capabilities.contains(.imageEditing) {
+                result.insert(.imageGeneration)
+            }
+            if capabilities.contains(.videoGeneration) { result.insert(.videoGeneration) }
         }
-        if capabilities.contains(.videoGeneration) { result.insert(.videoGeneration) }
+        // Treat media endpoints as a separate product role even when a stale
+        // synced row explicitly contains chat/vision/approval surfaces. A
+        // reference-image input is not visual understanding, and an
+        // OpenAI-compatible wire protocol does not make a generator an LLM.
+        if isMedia || result.contains(.imageGeneration) || result.contains(.videoGeneration) {
+            result.remove([.chatAgent, .auxiliaryVision, .approval])
+        }
+        // A stale synced role bit must not make a model appear in an
+        // unrelated media picker. Capabilities are the authoritative signal
+        // once a media capability exists; explicit use surfaces remain the
+        // compatibility fallback only for older records that had no media
+        // capability flags at all.
+        if isMedia {
+            if !hasImageCapability { result.remove(.imageGeneration) }
+            if !hasVideoCapability { result.remove(.videoGeneration) }
+        }
         return result
     }
 
     public var supportsChatAgentSurface: Bool {
         effectiveUseSurfaces.contains(.chatAgent)
+            && capabilities.contains(.text)
     }
 
     /// A visual-understanding helper must be a dedicated inference model.
@@ -183,6 +202,7 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
     /// surfaces.
     public var supportsAuxiliaryVisionSurface: Bool {
         effectiveUseSurfaces.contains(.auxiliaryVision)
+            && capabilities.contains(.vision)
             && !effectiveUseSurfaces.contains(.imageGeneration)
             && !effectiveUseSurfaces.contains(.videoGeneration)
             && !capabilities.contains(.imageGeneration)
@@ -194,11 +214,25 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
     /// generation endpoint that happens to carry a stale approval flag.
     public var supportsApprovalSurface: Bool {
         effectiveUseSurfaces.contains(.approval)
+            && capabilities.contains(.text)
             && !effectiveUseSurfaces.contains(.imageGeneration)
             && !effectiveUseSurfaces.contains(.videoGeneration)
             && !capabilities.contains(.imageGeneration)
             && !capabilities.contains(.imageEditing)
             && !capabilities.contains(.videoGeneration)
+    }
+
+    public var supportsImageGenerationSurface: Bool {
+        effectiveUseSurfaces.contains(.imageGeneration)
+            && (capabilities.contains(.imageGeneration) || capabilities.contains(.imageEditing))
+            && !capabilities.contains(.videoGeneration)
+    }
+
+    public var supportsVideoGenerationSurface: Bool {
+        effectiveUseSurfaces.contains(.videoGeneration)
+            && capabilities.contains(.videoGeneration)
+            && !capabilities.contains(.imageGeneration)
+            && !capabilities.contains(.imageEditing)
     }
 
     public var isVisibleInPrimaryPicker: Bool {

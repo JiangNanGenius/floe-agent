@@ -43,7 +43,7 @@ final class ProviderListViewModel: ObservableObject {
             guard provider.kind != .local else { return false }
             let models = center.configuredModelsByProvider[provider.id] ?? []
             return models.contains {
-                $0.effectiveUseSurfaces.contains(.imageGeneration)
+                $0.supportsImageGenerationSurface
             }
         }
     }
@@ -52,7 +52,7 @@ final class ProviderListViewModel: ObservableObject {
         center.configuredProviders.filter { provider in
             guard provider.kind != .local else { return false }
             return center.configuredModelsByProvider[provider.id]?.contains {
-                $0.effectiveUseSurfaces.contains(.videoGeneration)
+                $0.supportsVideoGenerationSurface
             } == true
         }
     }
@@ -60,13 +60,13 @@ final class ProviderListViewModel: ObservableObject {
     func imageModelCount(for providerID: UUID) -> Int {
         center.configuredModelsByProvider[providerID]?
             .filter {
-                $0.effectiveUseSurfaces.contains(.imageGeneration)
+                $0.supportsImageGenerationSurface
             }.count ?? 0
     }
 
     func videoModelCount(for providerID: UUID) -> Int {
         center.configuredModelsByProvider[providerID]?
-            .filter { $0.effectiveUseSurfaces.contains(.videoGeneration) }.count ?? 0
+            .filter(\.supportsVideoGenerationSurface).count ?? 0
     }
 
     func modelCount(for providerID: UUID) -> Int {

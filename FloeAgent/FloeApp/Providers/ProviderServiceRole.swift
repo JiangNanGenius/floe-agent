@@ -53,8 +53,8 @@ enum ProviderServiceRole: String, CaseIterable, Identifiable {
     }
 
     static func infer(from models: [ModelProfile]) -> ProviderServiceRole {
-        if models.contains(where: { $0.effectiveUseSurfaces.contains(.chatAgent) }) { return .conversation }
-        if models.contains(where: { $0.effectiveUseSurfaces.contains(.videoGeneration) }) { return .video }
+        if models.contains(where: \.supportsChatAgentSurface) { return .conversation }
+        if models.contains(where: \.supportsVideoGenerationSurface) { return .video }
         return .image
     }
 }

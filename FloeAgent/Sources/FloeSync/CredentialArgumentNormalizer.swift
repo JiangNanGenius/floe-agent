@@ -1,5 +1,6 @@
 import Foundation
 import FloeCore
+import FloeModels
 import FloePersistence
 import FloeSecurity
 
@@ -10,8 +11,10 @@ public enum CredentialArgumentNormalizer {
     public static func normalize(
         _ argumentsJSON: Data,
         toolName: String,
+        targetScope: ToolScope = .local,
         vault: CredentialVaultService,
-        owner: CredentialOwner = .vault
+        owner: CredentialOwner = .vault,
+        authority: RunCredentialAuthority? = nil
     ) async throws -> Data {
         guard let object = try JSONSerialization.jsonObject(with: argumentsJSON) as? [String: Any]
         else { return argumentsJSON }
@@ -48,6 +51,14 @@ public enum CredentialArgumentNormalizer {
                         let secret = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !secret.isEmpty,
                               SecretIngressScanner.credentialID(from: secret) == nil else { continue }
+                        if let authority,
+                           !authority.permits(
+                               toolName: toolName,
+                               targetScope: targetScope,
+                               fieldPath: childPath
+                           ) {
+                            throw FloeError.unauthorized
+                        }
                         let normalizedPath = childPath.joined(separator: ".").lowercased()
                         let normalizedTool = toolName.lowercased()
                         let kind: CredentialKind

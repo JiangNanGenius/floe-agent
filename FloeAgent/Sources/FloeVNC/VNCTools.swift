@@ -8,6 +8,7 @@ import Foundation
 import Crypto
 import FloeCore
 import FloeModels
+import FloeSecurity
 import FloeTools
 
 public struct VNCSessionHandle: @unchecked Sendable {
@@ -21,6 +22,7 @@ public struct VNCSessionHandle: @unchecked Sendable {
 }
 
 public typealias VNCSessionProvider = @Sendable () async throws -> VNCSessionHandle?
+public typealias VNCCredentialResolver = @Sendable (UUID) async throws -> Data
 
 private struct VNCCapturedArtifact {
     let capture: VNCFrameCapture
@@ -407,6 +409,75 @@ public struct VNCTypeTextTool: AgentTool {
     }
 }
 
+/// Types a saved credential without ever placing its plaintext in provider
+/// arguments, approvals, audit events, checkpoints, or tool output.
+public struct VNCTypeCredentialTool: AgentTool {
+    public struct Arguments: Decodable, Sendable {
+        public var credentialRef: String
+        public var submit: Bool?
+        public init(credentialRef: String, submit: Bool? = nil) {
+            self.credentialRef = credentialRef
+            self.submit = submit
+        }
+    }
+
+    public static let name = "vnc.typeCredential"
+    public static let toolDescription =
+        "Type a previously saved Floe secure credential card into the current VNC focus. Pass credentialRef exactly as shown in context; plaintext is resolved only inside the approved executor and is never returned."
+    public static let parametersJSON = #"{"type":"object","properties":{"credentialRef":{"type":"string","pattern":"^⟨credential:[0-9A-Fa-f-]{36}⟩$"},"submit":{"type":"boolean"}},"required":["credentialRef"],"additionalProperties":false}"#
+    public static let riskLabels: Set<RiskLabel> = [
+        .controlsGUI, .executesRemoteCommand, .sendsDataToProvider, .accessesCredentials
+    ]
+    public static let isSideEffecting = true
+    public static let toolEffect: ToolEffect = .mutating
+    public static let requiresHostScope = false
+
+    private let sessionProvider: VNCSessionProvider
+    private let credentialResolver: VNCCredentialResolver
+
+    public init(
+        sessionProvider: @escaping VNCSessionProvider,
+        credentialResolver: @escaping VNCCredentialResolver
+    ) {
+        self.sessionProvider = sessionProvider
+        self.credentialResolver = credentialResolver
+    }
+
+    public func validate(_ args: Arguments) throws {
+        guard SecretIngressScanner.credentialID(from: args.credentialRef) != nil else {
+            throw FloeError.validationFailed("credentialRef must reference a Floe secure credential card")
+        }
+    }
+
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        guard let credentialID = SecretIngressScanner.credentialID(from: args.credentialRef) else {
+            throw FloeError.validationFailed("credentialRef must reference a Floe secure credential card")
+        }
+        var bytes = try await credentialResolver(credentialID)
+        defer { bytes.resetBytes(in: bytes.indices) }
+        guard !bytes.isEmpty, bytes.count <= 4_096,
+              let text = String(data: bytes, encoding: .utf8) else {
+            throw FloeError.validationFailed("Saved credential is empty, too large, or not UTF-8 text")
+        }
+        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider)
+        let before = handle.session.currentVisualEvidence
+        handle.session.send(text: text)
+        if args.submit == true { handle.session.send(.return) }
+        let post = try await VNCToolSupport.postActionCapture(handle, before: before)
+        return try VNCToolSupport.output([
+            "status": "ok",
+            "sessionID": handle.id.uuidString,
+            "credentialDispatched": true,
+            "submitted": args.submit == true,
+            "frameChanged": post.changed,
+            "postScreenshotSHA256": post.artifact.capture.sha256,
+            "postScreenshotPath": post.artifact.reference.relativePath,
+            "postRevision": post.artifact.capture.revision
+        ], artifacts: [post.artifact.reference])
+    }
+}
+
 public struct VNCScrollTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var x: Int
@@ -597,12 +668,16 @@ public struct VNCKeyPressTool: AgentTool {
 @discardableResult
 public func registerVNCTools(
     registry: ToolRunnerRegistry = .shared,
+    credentialResolver: @escaping VNCCredentialResolver = { _ in
+        throw FloeError.invalidConfiguration("Credential resolver is unavailable")
+    },
     sessionProvider: @escaping VNCSessionProvider
 ) -> VNCSessionProvider {
     ToolCatalog.register(VNCObserveTool.self)
     ToolCatalog.register(VNCClickElementTool.self)
     ToolCatalog.register(VNCClickTool.self)
     ToolCatalog.register(VNCTypeTextTool.self)
+    ToolCatalog.register(VNCTypeCredentialTool.self)
     ToolCatalog.register(VNCScrollTool.self)
     ToolCatalog.register(VNCDragTool.self)
     ToolCatalog.register(VNCKeyPressTool.self)
@@ -610,6 +685,10 @@ public func registerVNCTools(
     registry.register(VNCClickElementTool(sessionProvider: sessionProvider))
     registry.register(VNCClickTool(sessionProvider: sessionProvider))
     registry.register(VNCTypeTextTool(sessionProvider: sessionProvider))
+    registry.register(VNCTypeCredentialTool(
+        sessionProvider: sessionProvider,
+        credentialResolver: credentialResolver
+    ))
     registry.register(VNCScrollTool(sessionProvider: sessionProvider))
     registry.register(VNCDragTool(sessionProvider: sessionProvider))
     registry.register(VNCKeyPressTool(sessionProvider: sessionProvider))

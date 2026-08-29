@@ -399,6 +399,18 @@ struct ModelConfigurationStoreTests {
         #expect(try await store.preferences().sharedImageModelID == image.id)
         #expect(try await store.preferences().defaultVideoModelID == video.id)
 
+        var invalidVisionPreferences = preferences
+        invalidVisionPreferences.visionModelID = image.id
+        await #expect(throws: FloeError.self) {
+            try await store.savePreferences(invalidVisionPreferences)
+        }
+
+        var invalidVideoPreferences = preferences
+        invalidVideoPreferences.defaultVideoModelID = image.id
+        await #expect(throws: FloeError.self) {
+            try await store.savePreferences(invalidVideoPreferences)
+        }
+
         try await store.deleteModel(id: image.id)
         #expect(try await store.preferences().sharedImageModelID == nil)
 
@@ -502,11 +514,38 @@ struct ModelConfigurationStoreTests {
             capabilities: [.text, .vision, .videoGeneration],
             useSurfaces: [.auxiliaryVision, .videoGeneration]
         )
+        let staleVideoInImageRole = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "stale-video-image-role",
+            displayName: "Stale video",
+            limits: ModelLimits(contextTokens: 1, maxOutputTokens: 0),
+            capabilities: [.videoGeneration],
+            useSurfaces: [.auxiliaryVision, .imageGeneration, .videoGeneration]
+        )
+        let staleImageInVideoRole = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "stale-image-video-role",
+            displayName: "Stale image",
+            limits: ModelLimits(contextTokens: 1, maxOutputTokens: 0),
+            capabilities: [.imageGeneration],
+            useSurfaces: [.auxiliaryVision, .imageGeneration, .videoGeneration]
+        )
 
         #expect(vision.supportsAuxiliaryVisionSurface)
         #expect(imageGenerator.supportsAuxiliaryVisionSurface == false)
         #expect(videoGenerator.supportsAuxiliaryVisionSurface == false)
         #expect(imageGenerator.supportsApprovalSurface == false)
+        #expect(imageGenerator.effectiveUseSurfaces == [.imageGeneration])
+        #expect(videoGenerator.effectiveUseSurfaces == [.videoGeneration])
+        #expect(imageGenerator.supportsChatAgentSurface == false)
+        #expect(staleVideoInImageRole.effectiveUseSurfaces == [.videoGeneration])
+        #expect(staleVideoInImageRole.supportsImageGenerationSurface == false)
+        #expect(staleVideoInImageRole.supportsVideoGenerationSurface)
+        #expect(staleVideoInImageRole.supportsAuxiliaryVisionSurface == false)
+        #expect(staleImageInVideoRole.effectiveUseSurfaces == [.imageGeneration])
+        #expect(staleImageInVideoRole.supportsImageGenerationSurface)
+        #expect(staleImageInVideoRole.supportsVideoGenerationSurface == false)
+        #expect(staleImageInVideoRole.supportsAuxiliaryVisionSurface == false)
     }
 
     @Test("Onboarding status persists independently from unfinished configuration")

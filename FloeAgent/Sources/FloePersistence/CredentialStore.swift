@@ -60,6 +60,30 @@ public struct CredentialRecord: Sendable, Codable, Hashable, Identifiable {
     }
 }
 
+/// The semantic, secret-free representation shown to the model and UI. It
+/// deliberately omits the Keychain account as well as the secret bytes.
+public struct SecureCredentialCard: Sendable, Codable, Hashable, Identifiable {
+    public var id: UUID
+    public var reference: String
+    public var kind: CredentialKind
+    public var owner: CredentialOwner
+    public var hostID: UUID?
+    public var origin: String?
+    public var label: String
+    public var updatedAt: Date
+
+    public init(record: CredentialRecord) {
+        id = record.id
+        reference = "⟨credential:\(record.id.uuidString)⟩"
+        kind = record.kind
+        owner = record.owner
+        hostID = record.hostID
+        origin = record.origin
+        label = record.label
+        updatedAt = record.updatedAt
+    }
+}
+
 public struct CredentialDeletionRecord: Sendable, Hashable {
     public var keychainAccount: String
     public var synchronizable: Bool
@@ -124,6 +148,10 @@ public actor CredentialStore {
             }
             return try rows.map(Self.decode)
         }
+    }
+
+    public func cards(owner: CredentialOwner? = nil) async throws -> [SecureCredentialCard] {
+        try await records(owner: owner).map(SecureCredentialCard.init(record:))
     }
 
     /// A model may create a host and its credential in the same tool call.

@@ -466,53 +466,57 @@ enum ConfigurationCodec {
     }
 
     static func validate(_ preferences: ModelSelectionPreferences, in db: Database) throws {
-        func capabilities(for id: UUID?) throws -> ModelCapabilities? {
+        func model(for id: UUID?) throws -> ModelProfile? {
             guard let id else { return nil }
-            guard let raw = try Int.fetchOne(
+            guard let row = try Row.fetchOne(
                 db,
-                sql: "SELECT capabilities FROM models WHERE id = ? AND is_enabled = 1",
+                sql: "SELECT * FROM models WHERE id = ? AND is_enabled = 1",
                 arguments: [id.uuidString]
             ) else { throw FloeError.invalidConfiguration("Selected model is unavailable") }
-            return ModelCapabilities(rawValue: raw)
+            return try ConfigurationCodec.model(from: row)
         }
-        if let capabilities = try capabilities(for: preferences.defaultAgentModelID),
-           !capabilities.contains(.text) {
+        if let selected = try model(for: preferences.defaultAgentModelID),
+           !selected.supportsChatAgentSurface {
             throw FloeError.invalidConfiguration("Default agent model must support text")
         }
-        if let capabilities = try capabilities(for: preferences.canvasAgentModelID),
-           !(capabilities.contains(.text) && capabilities.contains(.tools)) {
+        if let selected = try model(for: preferences.canvasAgentModelID),
+           !(selected.supportsChatAgentSurface && selected.capabilities.contains(.tools)) {
             throw FloeError.invalidConfiguration("Canvas assistant model must support text and tools")
         }
-        if let capabilities = try capabilities(for: preferences.visionModelID),
-           !capabilities.contains(.vision) {
+        if let selected = try model(for: preferences.visionModelID),
+           !selected.supportsAuxiliaryVisionSurface {
             throw FloeError.invalidConfiguration("Vision model must support image understanding")
         }
-        if let capabilities = try capabilities(for: preferences.canvasVisionModelID),
-           !capabilities.contains(.vision) {
+        if let selected = try model(for: preferences.canvasVisionModelID),
+           !selected.supportsAuxiliaryVisionSurface {
             throw FloeError.invalidConfiguration("Canvas visual understanding model must support vision")
         }
-        if let capabilities = try capabilities(for: preferences.approvalModelID),
-           !capabilities.contains(.text) {
+        if let selected = try model(for: preferences.approvalModelID),
+           !selected.supportsApprovalSurface {
             throw FloeError.invalidConfiguration("Approval model must support text")
         }
-        if let capabilities = try capabilities(for: preferences.packageReviewModelID),
-           !capabilities.contains(.text) {
+        if let selected = try model(for: preferences.packageReviewModelID),
+           !selected.supportsApprovalSurface {
             throw FloeError.invalidConfiguration("Package review model must support text")
         }
-        if let capabilities = try capabilities(for: preferences.sharedImageModelID),
-           !(capabilities.contains(.imageGeneration) && capabilities.contains(.imageEditing)) {
+        if let selected = try model(for: preferences.sharedImageModelID),
+           !(selected.supportsImageGenerationSurface
+                && selected.capabilities.contains(.imageGeneration)
+                && selected.capabilities.contains(.imageEditing)) {
             throw FloeError.invalidConfiguration("Shared image model must support generation and editing")
         }
-        if let capabilities = try capabilities(for: preferences.imageGenerationModelID),
-           !capabilities.contains(.imageGeneration) {
+        if let selected = try model(for: preferences.imageGenerationModelID),
+           !(selected.supportsImageGenerationSurface
+                && selected.capabilities.contains(.imageGeneration)) {
             throw FloeError.invalidConfiguration("Image generation model lacks generation capability")
         }
-        if let capabilities = try capabilities(for: preferences.imageEditingModelID),
-           !capabilities.contains(.imageEditing) {
+        if let selected = try model(for: preferences.imageEditingModelID),
+           !(selected.supportsImageGenerationSurface
+                && selected.capabilities.contains(.imageEditing)) {
             throw FloeError.invalidConfiguration("Image editing model lacks editing capability")
         }
-        if let capabilities = try capabilities(for: preferences.defaultVideoModelID),
-           !capabilities.contains(.videoGeneration) {
+        if let selected = try model(for: preferences.defaultVideoModelID),
+           !selected.supportsVideoGenerationSurface {
             throw FloeError.invalidConfiguration("Video model lacks generation capability")
         }
     }

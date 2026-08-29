@@ -386,23 +386,18 @@ enum CanvasAgentIdentity {
     }
 }
 
-private struct FloeCanvasPoint: Codable, Hashable {
-    var x: Double
-    var y: Double
+private typealias FloeCanvasPoint = CanvasPoint
+private typealias FloeCanvasStroke = CanvasStroke
+private typealias FloeCanvasNode = CanvasNode
+private typealias FloeCanvasDocument = CanvasDocument
+private typealias FloeCanvasProject = CanvasProject
 
+private extension CanvasPoint {
     init(_ point: CGPoint) {
-        x = point.x
-        y = point.y
+        self.init(x: point.x, y: point.y)
     }
 
     var cgPoint: CGPoint { CGPoint(x: x, y: y) }
-}
-
-private struct FloeCanvasStroke: Codable, Hashable, Identifiable {
-    var id = UUID()
-    var points: [FloeCanvasPoint]
-    var width: Double = 3
-    var color: String = "primary"
 }
 
 private enum CanvasInkOutputPreference: String, CaseIterable, Identifiable {
@@ -474,60 +469,6 @@ private struct CanvasNodeClipboard: Codable {
     let connections: [CanvasConnection]
 }
 
-private struct FloeCanvasNode: Codable, Hashable, Identifiable {
-    var id = UUID()
-    var text: String
-    var x: Double
-    var y: Double
-    var width: Double = 260
-    var height: Double = 150
-    /// Provenance for research notes inserted from a Canvas Agent run. These
-    /// fields are optional so schema-v1 canvas files remain decodable.
-    var sourceURLs: [String]?
-    var licenseStatus: String?
-    var createdByRunID: UUID?
-    var kind: CanvasNodeKind?
-    var rotation: Double?
-    var zIndex: Int?
-    var isLocked: Bool?
-    var groupID: UUID?
-    var shape: CanvasShapeKind?
-    var asset: CanvasAssetReference?
-    var generationJobID: UUID?
-    var scene3D: CanvasScene3D?
-    var metadata: [String: String]?
-}
-
-private struct FloeCanvasDocument: Codable, Hashable, Identifiable {
-    var id = UUID()
-    var name: String
-    var nodes: [FloeCanvasNode] = []
-    var strokes: [FloeCanvasStroke] = []
-    /// Native PencilKit payload. Legacy point strokes remain decodable and
-    /// renderable so existing canvases migrate without destructive rewriting.
-    var pencilDrawingData: Data?
-    var connections: [CanvasConnection]?
-    var createdAt = Date()
-    var updatedAt = Date()
-}
-
-private struct FloeCanvasProject: Codable, Hashable {
-    var id: UUID?
-    var schemaVersion = 5
-    var workspaceID: UUID?
-    var name: String
-    var documents: [FloeCanvasDocument]
-    var selectedDocumentID: UUID
-    /// A hidden, archived Conversation owned by this Workspace. Reusing the
-    /// production Conversation/Run path gives Canvas Agent runs the same
-    /// checkpoint, execution-ledger, cancellation and recovery guarantees as
-    /// ordinary tasks without adding a second message database.
-    var agentConversationID: UUID? = nil
-    var sync: CanvasSyncSettings?
-    var createdAt = Date()
-    var updatedAt = Date()
-}
-
 /// Product-level presence contract for the one optional CanvasProject owned
 /// by a Workspace. Merely opening the file inspector must never manufacture a
 /// canvas; creation happens only from an explicit Workspace action.
@@ -550,12 +491,14 @@ enum WorkspaceCanvasRegistry {
         decoder.dateDecodingStrategy = .iso8601
         return urls.compactMap { url in
             guard url.pathExtension == "json", let data = try? Data(contentsOf: url),
-                  let project = try? decoder.decode(FloeCanvasProject.self, from: data),
-                  let fileID = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else { return nil }
+                  let fileID = UUID(uuidString: url.deletingPathExtension().lastPathComponent),
+                  let project = try? CanvasProjectCodec.decode(
+                    data, fallbackID: fileID, decoder: decoder
+                  ) else { return nil }
             return CanvasSummary(
-                id: project.id ?? fileID, name: project.name,
+                id: project.id, name: project.name,
                 workspaceID: project.workspaceID, updatedAt: project.updatedAt,
-                syncEnabled: project.sync?.isEnabled ?? true,
+                syncEnabled: project.sync.isEnabled,
                 pendingMediaJobs: project.documents.flatMap(\.nodes).filter {
                     $0.kind == .generationTask && $0.generationJobID != nil
                 }.count
@@ -687,19 +630,23 @@ enum WorkspaceCanvasRegistry {
     private static func decodeProject(at url: URL) throws -> FloeCanvasProject {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(FloeCanvasProject.self, from: Data(contentsOf: url))
+        return try CanvasProjectCodec.decode(
+            Data(contentsOf: url),
+            fallbackID: UUID(uuidString: url.deletingPathExtension().lastPathComponent),
+            decoder: decoder
+        )
     }
 
     private static func encodeProject(_ project: FloeCanvasProject, to url: URL) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(project).write(to: url, options: .atomic)
+        try CanvasProjectCodec.encode(project, encoder: encoder).write(to: url, options: .atomic)
     }
 }
 
 @MainActor
-private final class WorkspaceCanvasStore: ObservableObject {
+private final class CanvasDocumentStore: ObservableObject {
     @Published private(set) var project: FloeCanvasProject
     @Published var saveError: String?
     @Published var wasDeletedRemotely = false
@@ -735,11 +682,13 @@ private final class WorkspaceCanvasStore: ObservableObject {
             decoder.dateDecodingStrategy = .iso8601
             if FileManager.default.fileExists(atPath: fileURL.path) {
                 let data = try Data(contentsOf: fileURL)
-                if let decoded = try? decoder.decode(FloeCanvasProject.self, from: data),
+                if let decoded = try? CanvasProjectCodec.decode(
+                    data, fallbackID: canvasID, decoder: decoder
+                ),
                    decoded.workspaceID == workspaceID,
                    !decoded.documents.isEmpty {
                     project = decoded
-                    migrateIfNeeded()
+                    persist()
                 } else {
                     let backup = try Self.preserveReadOnlyBackup(of: fileURL)
                     project = fallback
@@ -772,31 +721,6 @@ private final class WorkspaceCanvasStore: ObservableObject {
         return destination
     }
 
-    private func migrateIfNeeded() {
-        guard project.schemaVersion < 5 || project.id == nil || project.sync == nil else { return }
-        project.id = project.id ?? UUID(uuidString: fileURL.deletingPathExtension().lastPathComponent)
-        project.schemaVersion = 5
-        project.sync = project.sync ?? CanvasSyncSettings()
-        for documentIndex in project.documents.indices {
-            project.documents[documentIndex].connections = project.documents[documentIndex].connections ?? []
-            for nodeIndex in project.documents[documentIndex].nodes.indices {
-                if project.documents[documentIndex].nodes[nodeIndex].kind == nil {
-                    project.documents[documentIndex].nodes[nodeIndex].kind = .text
-                }
-                if project.documents[documentIndex].nodes[nodeIndex].rotation == nil {
-                    project.documents[documentIndex].nodes[nodeIndex].rotation = 0
-                }
-                if project.documents[documentIndex].nodes[nodeIndex].zIndex == nil {
-                    project.documents[documentIndex].nodes[nodeIndex].zIndex = nodeIndex
-                }
-                if project.documents[documentIndex].nodes[nodeIndex].isLocked == nil {
-                    project.documents[documentIndex].nodes[nodeIndex].isLocked = false
-                }
-            }
-        }
-        persist()
-    }
-
     var selectedDocument: FloeCanvasDocument? {
         project.documents.first { $0.id == project.selectedDocumentID }
             ?? project.documents.first
@@ -813,13 +737,13 @@ private final class WorkspaceCanvasStore: ObservableObject {
     }
 
     func synchronizeFromCloud(_ service: CanvasCloudAssetService) async {
-        guard globalSyncEnabled, project.sync?.isEnabled ?? true,
-              let canvasID = project.id else { return }
+        guard globalSyncEnabled, project.sync.isEnabled else { return }
+        let canvasID = project.id
         let operations = await service.pullCanvasOperations(canvasID: canvasID)
         if let deletion = operations
             .filter({ $0.entityKind == .tombstone && $0.mutation == .delete })
             .max(by: { $0.revision < $1.revision }),
-           deletion.revision >= (project.sync?.revision ?? 0) {
+           deletion.revision >= project.sync.revision {
             wasDeletedRemotely = true
             return
         }
@@ -828,12 +752,14 @@ private final class WorkspaceCanvasStore: ObservableObject {
             .max(by: {
                 ($0.revision, $0.operationID.uuidString) < ($1.revision, $1.operationID.uuidString)
             }),
-              newest.revision > (project.sync?.revision ?? 0),
+              newest.revision > project.sync.revision,
               let payload = newest.payload else { return }
         do {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            let remote = try decoder.decode(FloeCanvasProject.self, from: payload)
+            let remote = try CanvasProjectCodec.decode(
+                payload, fallbackID: canvasID, decoder: decoder
+            )
             guard remote.id == canvasID else { return }
             try payload.write(to: fileURL, options: .atomic)
             project = remote
@@ -1073,7 +999,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
     func connect(_ source: UUID, to destination: UUID, kind: CanvasConnectionKind = .arrow) {
         guard source != destination else { return }
         mutateSelectedDocument { document in
-            var connections = document.connections ?? []
+            var connections = document.connections
             let connection = CanvasConnection(sourceNodeID: source, destinationNodeID: destination, kind: kind)
             guard !connections.contains(where: {
                 $0.sourceNodeID == source && $0.destinationNodeID == destination && $0.kind == kind
@@ -1085,17 +1011,17 @@ private final class WorkspaceCanvasStore: ObservableObject {
 
     func deleteConnection(_ id: UUID) {
         mutateSelectedDocument { document in
-            document.connections?.removeAll { $0.id == id }
+            document.connections.removeAll { $0.id == id }
         }
     }
 
     func reverseConnection(_ id: UUID) {
         mutateSelectedDocument { document in
-            guard let index = document.connections?.firstIndex(where: { $0.id == id }),
-                  let source = document.connections?[index].sourceNodeID,
-                  let destination = document.connections?[index].destinationNodeID else { return }
-            document.connections?[index].sourceNodeID = destination
-            document.connections?[index].destinationNodeID = source
+            guard let index = document.connections.firstIndex(where: { $0.id == id }) else { return }
+            let source = document.connections[index].sourceNodeID
+            let destination = document.connections[index].destinationNodeID
+            document.connections[index].sourceNodeID = destination
+            document.connections[index].destinationNodeID = source
         }
     }
 
@@ -1127,7 +1053,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
         guard !nodes.isEmpty else {
             throw FloeError.validationFailed("请先选择节点。")
         }
-        let connections = (document.connections ?? []).filter {
+        let connections = document.connections.filter {
             ids.contains($0.sourceNodeID) && ids.contains($0.destinationNodeID)
         }
         return try JSONEncoder().encode(CanvasNodeClipboard(
@@ -1148,13 +1074,13 @@ private final class WorkspaceCanvasStore: ObservableObject {
                 node.id = UUID()
                 node.x += offset.width
                 node.y += offset.height
-                node.zIndex = (document.nodes.compactMap(\.zIndex).max() ?? 0) + 1
+                node.zIndex = (document.nodes.map(\.zIndex).max() ?? 0) + 1
                 mapping[oldID] = node.id
                 created.insert(node.id)
                 if let assetID = node.asset?.id { referencedAssets.append(assetID) }
                 document.nodes.append(node)
             }
-            var connections = document.connections ?? []
+            var connections = document.connections
             for connection in clipboard.connections {
                 guard let source = mapping[connection.sourceNodeID],
                       let destination = mapping[connection.destinationNodeID] else { continue }
@@ -1180,7 +1106,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
             .compactMap(\.asset?.id) ?? []
         mutateSelectedDocument { document in
             document.nodes.removeAll { ids.contains($0.id) }
-            document.connections?.removeAll {
+            document.connections.removeAll {
                 ids.contains($0.sourceNodeID) || ids.contains($0.destinationNodeID)
             }
         }
@@ -1193,7 +1119,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
         guard !ids.isEmpty else { return }
         mutateSelectedDocument { document in
             for index in document.nodes.indices
-            where ids.contains(document.nodes[index].id) && document.nodes[index].isLocked != true {
+            where ids.contains(document.nodes[index].id) && !document.nodes[index].isLocked {
                 document.nodes[index].x += dx
                 document.nodes[index].y += dy
             }
@@ -1279,7 +1205,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
     ) {
         mutateSelectedDocument(persistAfter: persistAfter) { document in
             guard let index = document.nodes.firstIndex(where: { $0.id == id }),
-                  document.nodes[index].isLocked != true else { return }
+                  !document.nodes[index].isLocked else { return }
             if let width { document.nodes[index].width = min(2_400, max(80, width)) }
             if let height { document.nodes[index].height = min(2_400, max(60, height)) }
             if let rotation {
@@ -1336,7 +1262,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
     func resizeNode(_ id: UUID, width: Double, height: Double) {
         mutateSelectedDocument { document in
             guard let index = document.nodes.firstIndex(where: { $0.id == id }),
-                  document.nodes[index].isLocked != true else { return }
+                  !document.nodes[index].isLocked else { return }
             document.nodes[index].width = min(2_400, max(80, width))
             document.nodes[index].height = min(2_400, max(60, height))
         }
@@ -1345,7 +1271,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
     func rotateNodes(_ ids: Set<UUID>, degrees: Double) {
         mutateSelectedDocument { document in
             for index in document.nodes.indices
-            where ids.contains(document.nodes[index].id) && document.nodes[index].isLocked != true {
+            where ids.contains(document.nodes[index].id) && !document.nodes[index].isLocked {
                 document.nodes[index].rotation = degrees.truncatingRemainder(dividingBy: 360)
             }
         }
@@ -1368,7 +1294,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
             case .bottom: target = selected.map { $0.y + $0.height / 2 }.max() ?? 0
             }
             for index in document.nodes.indices
-            where ids.contains(document.nodes[index].id) && document.nodes[index].isLocked != true {
+            where ids.contains(document.nodes[index].id) && !document.nodes[index].isLocked {
                 switch alignment {
                 case .leading: document.nodes[index].x = target + document.nodes[index].width / 2
                 case .horizontalCenter: document.nodes[index].x = target
@@ -1392,7 +1318,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
             let step = (end - start) / Double(selected.count - 1)
             for (offset, node) in selected.enumerated() {
                 guard let index = document.nodes.firstIndex(where: { $0.id == node.id }),
-                      document.nodes[index].isLocked != true else { continue }
+                      !document.nodes[index].isLocked else { continue }
                 if horizontally { document.nodes[index].x = start + Double(offset) * step }
                 else { document.nodes[index].y = start + Double(offset) * step }
             }
@@ -1402,8 +1328,8 @@ private final class WorkspaceCanvasStore: ObservableObject {
     func changeLayer(_ ids: Set<UUID>, bringToFront: Bool) {
         mutateSelectedDocument { document in
             let edge = bringToFront
-                ? (document.nodes.compactMap(\.zIndex).max() ?? 0) + 1
-                : (document.nodes.compactMap(\.zIndex).min() ?? 0) - 1
+                ? (document.nodes.map(\.zIndex).max() ?? 0) + 1
+                : (document.nodes.map(\.zIndex).min() ?? 0) - 1
             for index in document.nodes.indices where ids.contains(document.nodes[index].id) {
                 document.nodes[index].zIndex = edge
             }
@@ -1541,7 +1467,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
         var mapping: [String: UUID] = [:]
         var created = Set<UUID>()
         mutateSelectedDocument { document in
-            let firstZ = (document.nodes.compactMap(\.zIndex).max() ?? 0) + 1
+            let firstZ = (document.nodes.map(\.zIndex).max() ?? 0) + 1
             for (offset, planned) in interpretation.nodes.prefix(40).enumerated() {
                 let id = UUID()
                 let kind = CanvasNodeKind(rawValue: planned.kind) ?? .stickyNote
@@ -1572,7 +1498,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
                 mapping[planned.id] = id
                 created.insert(id)
             }
-            var connections = document.connections ?? []
+            var connections = document.connections
             for planned in interpretation.connections.prefix(60) {
                 guard let sourceID = mapping[planned.from], let targetID = mapping[planned.to],
                       sourceID != targetID else { continue }
@@ -1597,7 +1523,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
-            return try encoder.encode(project)
+            return try CanvasProjectCodec.encode(project, encoder: encoder)
         case .png:
             guard let image = renderCurrentDocument() else {
                 throw FloeError.validationFailed("当前画布没有可导出的内容。")
@@ -1649,7 +1575,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
             context.setStrokeColor(UIColor.separator.cgColor)
             context.setLineWidth(2)
             let byID = Dictionary(uniqueKeysWithValues: document.nodes.map { ($0.id, $0) })
-            for connection in document.connections ?? [] {
+            for connection in document.connections {
                 guard let source = byID[connection.sourceNodeID],
                       let target = byID[connection.destinationNodeID] else { continue }
                 context.move(to: CGPoint(x: source.x, y: source.y))
@@ -1669,18 +1595,18 @@ private final class WorkspaceCanvasStore: ObservableObject {
                 nativeDrawing.image(from: nativeDrawing.bounds, scale: 1)
                     .draw(in: nativeDrawing.bounds)
             }
-            for node in document.nodes.sorted(by: { ($0.zIndex ?? 0) < ($1.zIndex ?? 0) }) {
+            for node in document.nodes.sorted(by: { $0.zIndex < $1.zIndex }) {
                 let rect = CGRect(x: node.x - node.width / 2, y: node.y - node.height / 2,
                                   width: node.width, height: node.height)
                 context.saveGState()
                 context.translateBy(x: node.x, y: node.y)
-                context.rotate(by: CGFloat((node.rotation ?? 0) * .pi / 180))
+                context.rotate(by: CGFloat(node.rotation * .pi / 180))
                 context.translateBy(x: -node.x, y: -node.y)
                 UIColor.secondarySystemBackground.setFill()
                 UIBezierPath(roundedRect: rect, cornerRadius: 14).fill()
                 UIColor.separator.setStroke()
                 UIBezierPath(roundedRect: rect, cornerRadius: 14).stroke()
-                let text = node.text.isEmpty ? (node.kind?.rawValue ?? "节点") : node.text
+                let text = node.text.isEmpty ? node.kind.rawValue : node.text
                 let paragraph = NSMutableParagraphStyle()
                 paragraph.lineBreakMode = .byTruncatingTail
                 (text as NSString).draw(
@@ -1729,21 +1655,21 @@ private final class WorkspaceCanvasStore: ObservableObject {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
             if syncOperationStore != nil, globalSyncEnabled,
-               project.sync?.isEnabled ?? true {
-                var sync = project.sync ?? CanvasSyncSettings()
+               project.sync.isEnabled {
+                var sync = project.sync
                 sync.revision += 1
                 project.sync = sync
             }
-            let data = try encoder.encode(project)
+            let data = try CanvasProjectCodec.encode(project, encoder: encoder)
             try data.write(to: fileURL, options: .atomic)
             saveError = nil
             if let syncOperationStore, globalSyncEnabled,
-               project.sync?.isEnabled ?? true,
-               let canvasID = project.id {
+               project.sync.isEnabled {
+                let canvasID = project.id
                 let operation = CanvasSyncOperation(
                     canvasID: canvasID, entityKind: .project,
                     entityID: canvasID, mutation: .upsert,
-                    revision: project.sync?.revision ?? 0,
+                    revision: project.sync.revision,
                     payload: data,
                     assetHashes: project.documents.flatMap(\.nodes)
                         .compactMap { $0.asset?.contentHash }
@@ -1806,7 +1732,7 @@ struct WorkspaceCanvasView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @AppStorage("creative.canvas.sync.enabled") private var globalCanvasSyncEnabled = true
-    @StateObject private var store: WorkspaceCanvasStore
+    @StateObject private var store: CanvasDocumentStore
     private let workspace: WorkspaceRecord?
     @State private var selectedNodeIDs = Set<UUID>()
     @State private var editingNodeID: UUID?
@@ -1881,7 +1807,7 @@ struct WorkspaceCanvasView: View {
 
     init(canvasID: UUID, name: String, workspace: WorkspaceRecord?) {
         self.workspace = workspace
-        _store = StateObject(wrappedValue: WorkspaceCanvasStore(
+        _store = StateObject(wrappedValue: CanvasDocumentStore(
             canvasID: canvasID,
             workspaceID: workspace?.id,
             canvasName: name
@@ -1972,8 +1898,8 @@ struct WorkspaceCanvasView: View {
             )
             await store.synchronizeFromCloud(environment.canvasCloudAssetService)
             while !Task.isCancelled {
-                if let canvasID = store.project.id,
-                   let jobs = try? await MediaGenerationJobStore(database: environment.database)
+                let canvasID = store.project.id
+                if let jobs = try? await MediaGenerationJobStore(database: environment.database)
                     .jobs(canvasID: canvasID) {
                     canvasJobs = jobs
                     store.applyMediaJobs(jobs)
@@ -2260,7 +2186,7 @@ struct WorkspaceCanvasView: View {
                         }
                         Menu {
                             Toggle("同步此画布", isOn: Binding(
-                                get: { store.project.sync?.isEnabled ?? true },
+                                get: { store.project.sync.isEnabled },
                                 set: { store.setSyncEnabled($0) }
                             ))
                             if !selectedNodeIDs.isEmpty {
@@ -2389,7 +2315,7 @@ struct WorkspaceCanvasView: View {
         let nodes = Dictionary(uniqueKeysWithValues: document.nodes.map { ($0.id, $0) })
         return ZStack {
             Canvas { context, _ in
-                for connection in document.connections ?? [] {
+                for connection in document.connections {
                     guard let source = nodes[connection.sourceNodeID],
                           let destination = nodes[connection.destinationNodeID] else { continue }
                     let start = screenPoint(CGPoint(x: source.x, y: source.y))
@@ -2410,7 +2336,7 @@ struct WorkspaceCanvasView: View {
             }
             .allowsHitTesting(false)
 
-            ForEach(document.connections ?? []) { connection in
+            ForEach(document.connections) { connection in
                 if let source = nodes[connection.sourceNodeID],
                    let destination = nodes[connection.destinationNodeID] {
                     let start = screenPoint(CGPoint(x: source.x, y: source.y))
@@ -2438,7 +2364,7 @@ struct WorkspaceCanvasView: View {
     }
 
     private func nodeLayer(_ document: FloeCanvasDocument) -> some View {
-        ForEach(document.nodes.sorted { ($0.zIndex ?? 0) < ($1.zIndex ?? 0) }) { node in
+        ForEach(document.nodes.sorted { $0.zIndex < $1.zIndex }) { node in
             CanvasNodeCard(
                 node: node,
                 text: Binding(
@@ -2447,7 +2373,7 @@ struct WorkspaceCanvasView: View {
                 ),
                 isSelected: selectedNodeIDs.contains(node.id),
                 isEditing: editingNodeID == node.id,
-                sourceURLs: node.sourceURLs ?? [],
+                sourceURLs: node.sourceURLs.map(\.absoluteString),
                 licenseStatus: node.licenseStatus,
                 onOpen3D: node.kind == .scene3D ? {
                     directorPresentation = Canvas3DDirectorPresentation(nodeID: node.id)
@@ -2470,7 +2396,7 @@ struct WorkspaceCanvasView: View {
                     mode = .connector
                 },
                 onToggleLock: {
-                    store.setLocked(contextSelection(for: node), locked: node.isLocked != true)
+                    store.setLocked(contextSelection(for: node), locked: !node.isLocked)
                 },
                 onBringToFront: {
                     store.changeLayer(contextSelection(for: node), bringToFront: true)
@@ -2493,7 +2419,7 @@ struct WorkspaceCanvasView: View {
             )
             .frame(width: node.width, height: node.height)
             .overlay {
-                if selectedNodeIDs.contains(node.id), mode == .select, node.isLocked != true {
+                if selectedNodeIDs.contains(node.id), mode == .select, !node.isLocked {
                     CanvasNodeSelectionChrome(
                         node: node,
                         onBegin: store.beginInteractiveMutation,
@@ -2512,7 +2438,7 @@ struct WorkspaceCanvasView: View {
             }
             .scaleEffect(scale)
             .position(screenPoint(CGPoint(x: node.x, y: node.y)))
-            .rotationEffect(.degrees(node.rotation ?? 0))
+            .rotationEffect(.degrees(node.rotation))
             .onTapGesture(count: 2) {
                 guard mode == .select else { return }
                 selectedConnectionID = nil
@@ -2544,7 +2470,7 @@ struct WorkspaceCanvasView: View {
             .simultaneousGesture(
                 DragGesture()
                     .onChanged { value in
-                        guard mode == .select, node.isLocked != true else { return }
+                        guard mode == .select, !node.isLocked else { return }
                         updateNodeDrag(node, translation: value.translation)
                     }
                     .onEnded { _ in
@@ -2574,7 +2500,7 @@ struct WorkspaceCanvasView: View {
         if nodeDragOrigins.isEmpty {
             let nodes = store.selectedDocument?.nodes ?? []
             nodeDragOrigins = Dictionary(uniqueKeysWithValues: nodes.compactMap { candidate in
-                guard selectedNodeIDs.contains(candidate.id), candidate.isLocked != true else { return nil }
+                guard selectedNodeIDs.contains(candidate.id), !candidate.isLocked else { return nil }
                 return (candidate.id, CGPoint(x: candidate.x, y: candidate.y))
             })
             guard !nodeDragOrigins.isEmpty else { return }
@@ -3150,7 +3076,7 @@ struct WorkspaceCanvasView: View {
         CGPoint(x: (point.x - pan.width) / scale, y: (point.y - pan.height) / scale)
     }
 
-    private func prepareExport(_ format: WorkspaceCanvasStore.ExportFormat) {
+    private func prepareExport(_ format: CanvasDocumentStore.ExportFormat) {
         do {
             let data = try store.exportData(format)
             let base = store.project.name.isEmpty ? "Floe 画布" : store.project.name
@@ -3602,7 +3528,7 @@ private struct CanvasMediaJobCenter: View {
 
 private struct CanvasNodeInspector: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var store: WorkspaceCanvasStore
+    @ObservedObject var store: CanvasDocumentStore
     let node: FloeCanvasNode
     let selectedIDs: Set<UUID>
 
@@ -3610,13 +3536,13 @@ private struct CanvasNodeInspector: View {
     @State private var height: Double
     @State private var rotation: Double
 
-    init(store: WorkspaceCanvasStore, node: FloeCanvasNode, selectedIDs: Set<UUID>) {
+    init(store: CanvasDocumentStore, node: FloeCanvasNode, selectedIDs: Set<UUID>) {
         self.store = store
         self.node = node
         self.selectedIDs = selectedIDs
         _width = State(initialValue: node.width)
         _height = State(initialValue: node.height)
-        _rotation = State(initialValue: node.rotation ?? 0)
+        _rotation = State(initialValue: node.rotation)
     }
 
     var body: some View {
@@ -3636,7 +3562,7 @@ private struct CanvasNodeInspector: View {
                     Button("应用尺寸") {
                         store.resizeNode(node.id, width: width, height: height)
                     }
-                    .disabled(node.isLocked == true)
+                    .disabled(node.isLocked)
                 }
 
                 Section("旋转") {
@@ -3649,7 +3575,7 @@ private struct CanvasNodeInspector: View {
 
                 Section("排列") {
                     Toggle("锁定", isOn: Binding(
-                        get: { node.isLocked == true },
+                        get: { node.isLocked },
                         set: { store.setLocked(selectedIDs.isEmpty ? [node.id] : selectedIDs, locked: $0) }
                     ))
                     Button("移到最前") {
@@ -3722,7 +3648,7 @@ private struct CanvasNodeCard: View {
                 Button("打开 3D 导演台", systemImage: "cube.transparent", action: onOpen3D)
             }
             Divider()
-            Button(node.isLocked == true ? "解锁" : "锁定", systemImage: node.isLocked == true ? "lock.open" : "lock", action: onToggleLock)
+            Button(node.isLocked ? "解锁" : "锁定", systemImage: node.isLocked ? "lock.open" : "lock", action: onToggleLock)
             Button("移到最前", systemImage: "arrow.up.to.line", action: onBringToFront)
             Button("移到最后", systemImage: "arrow.down.to.line", action: onSendToBack)
             if node.groupID == nil {
@@ -3744,7 +3670,7 @@ private struct CanvasNodeCard: View {
 
     @ViewBuilder
     private var nodeContent: some View {
-        switch node.kind ?? .text {
+        switch node.kind {
         case .text, .stickyNote:
             if isEditing {
                 TextEditor(text: $text)
@@ -3845,7 +3771,7 @@ private struct CanvasAssetNodeContent: View {
 
     var body: some View {
         Group {
-            switch node.kind ?? .file {
+            switch node.kind {
             case .image:
                 if let fileURL, let image = UIImage(contentsOfFile: fileURL.path) {
                     Image(uiImage: image)
@@ -3989,7 +3915,7 @@ private struct CanvasNodeSelectionChrome: View {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 if rotationOrigin == nil {
-                    rotationOrigin = node.rotation ?? 0
+                    rotationOrigin = node.rotation
                     onBegin()
                 }
                 guard let origin = rotationOrigin else { return }
@@ -4060,7 +3986,7 @@ private struct CanvasTriangleShape: Shape {
 /// control or unrelated system administration tools.
 private struct CanvasAgentFloatingPanel: View {
     @EnvironmentObject private var environment: AppEnvironment
-    @ObservedObject var store: WorkspaceCanvasStore
+    @ObservedObject var store: CanvasDocumentStore
 
     let workspace: WorkspaceRecord?
     let availableSize: CGSize
@@ -4454,7 +4380,7 @@ private struct CanvasAgentFloatingPanel: View {
 private struct CanvasMediaGenerationView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
-    @ObservedObject var store: WorkspaceCanvasStore
+    @ObservedObject var store: CanvasDocumentStore
     let sourceNodeIDs: Set<UUID>
 
     @State private var kind: MediaKind = .image
@@ -4570,8 +4496,8 @@ private struct CanvasMediaGenerationView: View {
                 let resultID = store.addAsset(asset, kind: .image, at: resultPoint)
                 store.connect(promptNodeID, to: resultID, kind: .generatedFrom)
             } else {
-                guard let canvasID = store.project.id,
-                      let documentID = store.selectedDocument?.id,
+                let canvasID = store.project.id
+                guard let documentID = store.selectedDocument?.id,
                       let model = selectedVideoModel else {
                     throw FloeError.invalidConfiguration("请选择视频模型。")
                 }
