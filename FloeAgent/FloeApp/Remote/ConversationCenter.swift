@@ -589,10 +589,6 @@ final class ConversationCenter: ObservableObject {
             credentials: credentials,
             gate: environment.catastrophicGate,
             checkpointStore: environment.checkpointStore,
-            intelligenceStore: environment.intelligenceStore,
-            conversationStore: environment.conversationStore,
-            runStore: environment.runStore,
-            runningInputStore: environment.runningInputStore,
             toolCallNormalizer: { [credentialVault = environment.credentialVault] call in
                 let owner: CredentialOwner = if canonicalWorkspace?.kind == .project,
                                                 let canonicalWorkspaceID {
@@ -606,6 +602,10 @@ final class ConversationCenter: ObservableObject {
                     owner: owner
                 )
             },
+            intelligenceStore: environment.intelligenceStore,
+            conversationStore: environment.conversationStore,
+            runStore: environment.runStore,
+            runningInputStore: environment.runningInputStore,
             runID: runID,
             conversationHistory: conversationHistory,
             currentUserImages: currentUserImages,
@@ -1168,8 +1168,8 @@ final class ConversationCenter: ObservableObject {
                 kind: kind,
                 owner: owner,
                 label: capture.label,
-                origin: "chat-ingress",
-                id: capture.id
+                id: capture.id,
+                origin: "chat-ingress"
             )
         }
     }
