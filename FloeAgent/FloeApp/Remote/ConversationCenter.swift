@@ -747,8 +747,11 @@ final class ConversationCenter: ObservableObject {
         runSurface: AgentRunSurface = .ordinary,
         isGoalContinuation: Bool = false
     ) async throws -> StartedConversationRun {
-        let ingress = SecretIngressScanner.scan(goal.trimmingCharacters(in: .whitespacesAndNewlines))
-        let trimmed = ingress.sanitizedText
+        // Preserve exactly what the user authored. Secret redaction belongs at
+        // log/persistence boundaries for tool arguments, not in the visible
+        // conversation or provider context. Replacing text here also prevents
+        // the model from completing an explicitly requested credential setup.
+        let trimmed = goal.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw FloeError.validationFailed("Goal must not be empty")
         }
@@ -782,7 +785,6 @@ final class ConversationCenter: ObservableObject {
         if runSurface == .ordinary {
             await recordPersonalizationActivity(userMessages: 1, workspaceID: workspaceID)
         }
-        await captureIngressSecrets(ingress.captures, prepared: prepared)
         guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else {
             throw FloeError.validationFailed("Conversation was deleted during launch")
         }
@@ -813,8 +815,7 @@ final class ConversationCenter: ObservableObject {
         executionMode: AgentExecutionMode = .agent,
         initialPolicy: DraftTaskPolicy? = nil
     ) async throws -> StartedConversationTask {
-        let ingress = SecretIngressScanner.scan(goal.trimmingCharacters(in: .whitespacesAndNewlines))
-        let trimmed = ingress.sanitizedText
+        let trimmed = goal.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw FloeError.validationFailed("Goal must not be empty")
         }
@@ -845,7 +846,6 @@ final class ConversationCenter: ObservableObject {
             modelProfile: model
         ))
         await recordPersonalizationActivity(userMessages: 1, workspaceID: workspaceID)
-        await captureIngressSecrets(ingress.captures, prepared: prepared)
         guard !isClearingHistory else {
             throw FloeError.validationFailed("Conversation history was cleared during launch")
         }
@@ -1352,18 +1352,14 @@ final class ConversationCenter: ObservableObject {
         executionMode: AgentExecutionMode,
         attachments: [AttachmentRef]
     ) async throws {
-        let ingress = SecretIngressScanner.scan(content.trimmingCharacters(in: .whitespacesAndNewlines))
-        guard !ingress.sanitizedText.isEmpty else {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
             throw FloeError.validationFailed("Input must not be empty")
         }
-        await captureIngressSecrets(
-            ingress.captures,
-            owner: workspaceID.map(CredentialOwner.workspace) ?? .conversation(conversationID)
-        )
         let input = try await environment.runningInputStore.enqueue(PendingUserInput(
             conversationID: conversationID,
             targetRunID: expectedRunID,
-            content: ingress.sanitizedText,
+            content: trimmed,
             mode: mode,
             attachments: attachments,
             selectedModelID: selectedModelID,
@@ -1378,17 +1374,11 @@ final class ConversationCenter: ObservableObject {
 
     func editPendingInput(id: UUID, content: String) async throws {
         let value = try await environment.runningInputStore.input(id: id)
-        let ingress = SecretIngressScanner.scan(content.trimmingCharacters(in: .whitespacesAndNewlines))
-        guard !ingress.sanitizedText.isEmpty else {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
             throw FloeError.validationFailed("Input must not be empty")
         }
-        if let value {
-            await captureIngressSecrets(
-                ingress.captures,
-                owner: value.workspaceID.map(CredentialOwner.workspace) ?? .conversation(value.conversationID)
-            )
-        }
-        try await environment.runningInputStore.updateContent(id: id, content: ingress.sanitizedText)
+        try await environment.runningInputStore.updateContent(id: id, content: trimmed)
         if let value { publishSession(value.conversationID) }
     }
 

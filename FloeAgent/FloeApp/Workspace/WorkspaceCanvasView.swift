@@ -6,6 +6,7 @@
 import Foundation
 import SwiftUI
 import UIKit
+import AVKit
 import PencilKit
 import UniformTypeIdentifiers
 import CryptoKit
@@ -1180,7 +1181,7 @@ private final class WorkspaceCanvasStore: ObservableObject {
 
     func setAgentConversationID(_ id: UUID) {
         project.agentConversationID = id
-        project.schemaVersion = 3
+        project.schemaVersion = 4
         project.updatedAt = Date()
         persist()
     }
@@ -1197,6 +1198,24 @@ private final class WorkspaceCanvasStore: ObservableObject {
             if let position {
                 document.nodes[index].x = position.x
                 document.nodes[index].y = position.y
+            }
+        }
+    }
+
+    func updateNodeGeometry(
+        _ id: UUID,
+        width: Double? = nil,
+        height: Double? = nil,
+        rotation: Double? = nil,
+        persistAfter: Bool = false
+    ) {
+        mutateSelectedDocument(persistAfter: persistAfter) { document in
+            guard let index = document.nodes.firstIndex(where: { $0.id == id }),
+                  document.nodes[index].isLocked != true else { return }
+            if let width { document.nodes[index].width = min(2_400, max(80, width)) }
+            if let height { document.nodes[index].height = min(2_400, max(60, height)) }
+            if let rotation {
+                document.nodes[index].rotation = rotation.truncatingRemainder(dividingBy: 360)
             }
         }
     }
@@ -1803,6 +1822,10 @@ struct WorkspaceCanvasView: View {
             canvasDetail
         }
         .navigationSplitViewStyle(.balanced)
+        // The app already owns the system sidebar toggle. Suppress the nested
+        // automatic copy and expose the canvas-document list with a distinct,
+        // labelled control inside the canvas toolbar.
+        .toolbar(removing: .sidebarToggle)
         .alert("画布无法保存", isPresented: Binding(
             get: { store.saveError != nil },
             set: { if !$0 { store.saveError = nil } }
@@ -2086,6 +2109,18 @@ struct WorkspaceCanvasView: View {
             .navigationTitle(store.selectedDocument?.name ?? "画布")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        withAnimation(.snappy) {
+                            columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+                        }
+                    } label: {
+                        Label(
+                            columnVisibility == .detailOnly ? "显示画布列表" : "隐藏画布列表",
+                            systemImage: "rectangle.split.1x2"
+                        )
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack {
                         Button("撤销", systemImage: "arrow.uturn.backward") { store.undo() }
@@ -2271,6 +2306,24 @@ struct WorkspaceCanvasView: View {
                 onDelete: { store.deleteNode(node.id) }
             )
             .frame(width: node.width, height: node.height)
+            .overlay {
+                if selectedNodeIDs.contains(node.id), mode == .select, node.isLocked != true {
+                    CanvasNodeSelectionChrome(
+                        node: node,
+                        onBegin: store.beginInteractiveMutation,
+                        onGeometryChanged: { width, height, rotation in
+                            store.updateNodeGeometry(
+                                node.id,
+                                width: width,
+                                height: height,
+                                rotation: rotation,
+                                persistAfter: false
+                            )
+                        },
+                        onEnd: store.finishNodeMutation
+                    )
+                }
+            }
             .scaleEffect(scale)
             .position(screenPoint(CGPoint(x: node.x, y: node.y)))
             .rotationEffect(.degrees(node.rotation ?? 0))
@@ -3348,13 +3401,13 @@ private struct CanvasNodeCard: View {
                     .padding()
             }
         case .image:
-            assetPlaceholder(icon: "photo", title: text.isEmpty ? "图片" : text)
+            CanvasAssetNodeContent(node: node, fallbackIcon: "photo", title: text.isEmpty ? "图片" : text)
         case .video:
-            assetPlaceholder(icon: "play.rectangle.fill", title: text.isEmpty ? "视频" : text)
+            CanvasAssetNodeContent(node: node, fallbackIcon: "play.rectangle.fill", title: text.isEmpty ? "视频" : text)
         case .audio:
-            assetPlaceholder(icon: "waveform", title: text.isEmpty ? "音频" : text)
+            CanvasAssetNodeContent(node: node, fallbackIcon: "waveform", title: text.isEmpty ? "音频" : text)
         case .file:
-            assetPlaceholder(icon: "doc", title: text.isEmpty ? "文件" : text)
+            CanvasAssetNodeContent(node: node, fallbackIcon: "doc", title: text.isEmpty ? "文件" : text)
         case .group:
             assetPlaceholder(icon: "square.3.layers.3d", title: text.isEmpty ? "分组" : text)
         case .generationTask:
@@ -3379,6 +3432,183 @@ private struct CanvasNodeCard: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
+    }
+}
+
+private struct CanvasAssetNodeContent: View {
+    let node: FloeCanvasNode
+    let fallbackIcon: String
+    let title: String
+
+    private var fileURL: URL? {
+        guard let relativePath = node.asset?.localRelativePath,
+              !relativePath.contains(".."),
+              let support = try? FileManager.default.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: false
+              ) else { return nil }
+        return support.appendingPathComponent("FloeAgent", isDirectory: true)
+            .appendingPathComponent(relativePath)
+    }
+
+    var body: some View {
+        Group {
+            switch node.kind ?? .file {
+            case .image:
+                if let fileURL, let image = UIImage(contentsOfFile: fileURL.path) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                } else {
+                    placeholder
+                }
+            case .video:
+                if let fileURL, FileManager.default.fileExists(atPath: fileURL.path) {
+                    CanvasVideoNode(url: fileURL)
+                } else {
+                    placeholder
+                }
+            default:
+                placeholder
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 13))
+    }
+
+    private var placeholder: some View {
+        VStack(spacing: 10) {
+            Image(systemName: fallbackIcon)
+                .font(.largeTitle)
+                .foregroundStyle(FloeTheme.primary)
+            Text(title).lineLimit(2)
+            if let mimeType = node.asset?.mimeType {
+                Text(mimeType).font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+}
+
+private struct CanvasVideoNode: View {
+    @State private var player: AVPlayer
+
+    init(url: URL) {
+        _player = State(initialValue: AVPlayer(url: url))
+    }
+
+    var body: some View {
+        VideoPlayer(player: player)
+            .onDisappear { player.pause() }
+    }
+}
+
+private struct CanvasNodeSelectionChrome: View {
+    let node: FloeCanvasNode
+    let onBegin: () -> Void
+    let onGeometryChanged: (_ width: Double?, _ height: Double?, _ rotation: Double?) -> Void
+    let onEnd: () -> Void
+
+    @State private var resizeOrigin: CGSize?
+    @State private var rotationOrigin: Double?
+
+    private enum Handle: CaseIterable, Hashable {
+        case topLeading, top, topTrailing, leading, trailing, bottomLeading, bottom, bottomTrailing
+
+        var alignment: Alignment {
+            switch self {
+            case .topLeading: .topLeading
+            case .top: .top
+            case .topTrailing: .topTrailing
+            case .leading: .leading
+            case .trailing: .trailing
+            case .bottomLeading: .bottomLeading
+            case .bottom: .bottom
+            case .bottomTrailing: .bottomTrailing
+            }
+        }
+
+        var horizontal: Double {
+            switch self {
+            case .topLeading, .leading, .bottomLeading: -1
+            case .top, .bottom: 0
+            case .topTrailing, .trailing, .bottomTrailing: 1
+            }
+        }
+
+        var vertical: Double {
+            switch self {
+            case .topLeading, .top, .topTrailing: -1
+            case .leading, .trailing: 0
+            case .bottomLeading, .bottom, .bottomTrailing: 1
+            }
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(FloeTheme.primary, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                .allowsHitTesting(false)
+            ForEach(Handle.allCases, id: \.self) { handle in
+                Circle()
+                    .fill(.background)
+                    .overlay { Circle().stroke(FloeTheme.primary, lineWidth: 2) }
+                    .frame(width: 13, height: 13)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: handle.alignment)
+                    .contentShape(Rectangle().inset(by: -10))
+                    .gesture(resizeGesture(handle))
+            }
+            Image(systemName: "arrow.clockwise")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(FloeTheme.primary)
+                .padding(7)
+                .background(.background, in: Circle())
+                .overlay { Circle().stroke(FloeTheme.primary, lineWidth: 1.5) }
+                .offset(y: -node.height / 2 - 30)
+                .gesture(rotationGesture)
+                .accessibilityLabel("旋转节点")
+        }
+    }
+
+    private func resizeGesture(_ handle: Handle) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if resizeOrigin == nil {
+                    resizeOrigin = CGSize(width: node.width, height: node.height)
+                    onBegin()
+                }
+                guard let origin = resizeOrigin else { return }
+                let width = handle.horizontal == 0
+                    ? nil
+                    : origin.width + value.translation.width * handle.horizontal
+                let height = handle.vertical == 0
+                    ? nil
+                    : origin.height + value.translation.height * handle.vertical
+                onGeometryChanged(width, height, nil)
+            }
+            .onEnded { _ in
+                resizeOrigin = nil
+                onEnd()
+            }
+    }
+
+    private var rotationGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if rotationOrigin == nil {
+                    rotationOrigin = node.rotation ?? 0
+                    onBegin()
+                }
+                guard let origin = rotationOrigin else { return }
+                onGeometryChanged(nil, nil, origin + value.translation.width * 0.6)
+            }
+            .onEnded { _ in
+                rotationOrigin = nil
+                onEnd()
+            }
     }
 }
 

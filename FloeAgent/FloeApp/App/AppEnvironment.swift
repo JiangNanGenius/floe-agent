@@ -333,15 +333,20 @@ final class AppEnvironment: ObservableObject {
             cloudWorkspaceService: cloudWorkspaceService,
             remoteHostStore: remoteHostStore,
             vncPasswordWriter: { hostID, connectionID, credentialInput in
-                guard let placeholder = String(data: credentialInput, encoding: .utf8),
-                      let credentialID = SecretIngressScanner.credentialID(from: placeholder) else {
-                    throw FloeError.validationFailed(
-                        "Raw VNC passwords are not accepted by model tools"
-                    )
+                guard !credentialInput.isEmpty else {
+                    throw FloeError.validationFailed("VNC password must not be empty")
                 }
-                let resolvedPassword = try await credentialVault.resolveForApprovedUse(
-                    CredentialHandle(id: credentialID)
-                )
+                let resolvedPassword: Data
+                if let value = String(data: credentialInput, encoding: .utf8),
+                   let credentialID = SecretIngressScanner.credentialID(from: value) {
+                    resolvedPassword = try await credentialVault.resolveForApprovedUse(
+                        CredentialHandle(id: credentialID)
+                    )
+                } else {
+                    // Plaintext is permitted only at this executor boundary;
+                    // the saved host profile receives a Keychain reference.
+                    resolvedPassword = credentialInput
+                }
                 let secrets = KeychainSecretStore()
                 try await secrets.storeSecret(
                     resolvedPassword,

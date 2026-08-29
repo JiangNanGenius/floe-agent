@@ -20,6 +20,10 @@ public enum CanvasShapeKind: String, Sendable, Codable, CaseIterable, Hashable {
     case rectangle, roundedRectangle, ellipse, diamond, triangle
 }
 
+public enum CanvasBackgroundStyle: String, Sendable, Codable, CaseIterable, Hashable {
+    case blank, grid, dots
+}
+
 public struct CanvasAssetReference: Sendable, Codable, Identifiable, Hashable {
     public var id: UUID
     public var contentHash: String?
@@ -122,16 +126,24 @@ public struct CanvasDocument: Sendable, Codable, Identifiable, Hashable {
     public var nodes: [CanvasNode]
     public var connections: [CanvasConnection]
     public var strokes: [CanvasStroke]
+    /// Native PencilKit representation. Optional for lossless migration from
+    /// schema v3 and for consumers that only understand vector point strokes.
+    public var pencilDrawingData: Data?
+    public var backgroundStyle: CanvasBackgroundStyle?
     public var createdAt: Date
     public var updatedAt: Date
 
     public init(
         id: UUID = UUID(), name: String, nodes: [CanvasNode] = [],
         connections: [CanvasConnection] = [], strokes: [CanvasStroke] = [],
+        pencilDrawingData: Data? = nil,
+        backgroundStyle: CanvasBackgroundStyle? = .grid,
         createdAt: Date = Date(), updatedAt: Date = Date()
     ) {
         self.id = id; self.name = name; self.nodes = nodes
         self.connections = connections; self.strokes = strokes
+        self.pencilDrawingData = pencilDrawingData
+        self.backgroundStyle = backgroundStyle
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
 }
@@ -152,7 +164,7 @@ public struct CanvasSyncSettings: Sendable, Codable, Hashable {
 }
 
 public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
-    public static let currentSchemaVersion = 3
+    public static let currentSchemaVersion = 4
 
     public var id: UUID
     public var schemaVersion: Int

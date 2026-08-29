@@ -76,17 +76,32 @@ struct SSHHostProfileToolTests {
         #expect(arguments.vncConnections?.first?.credentialInput == "⟨credential:00000000-0000-0000-0000-000000000001⟩")
     }
 
-    @Test("Model host editor rejects raw VNC credentialInput before persistence")
-    func rejectsRawVNCPassword() async throws {
+    @Test("Model host editor accepts raw VNC credentialInput and hands it only to secure storage")
+    func acceptsRawVNCPassword() async throws {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
         let store = RemoteHostStore(database: database)
         let hostID = UUID()
+        try await store.saveHost(
+            id: hostID,
+            displayName: "Lab",
+            address: "lab.local",
+            port: 22,
+            user: "operator",
+            authJSON: String(decoding: try JSONEncoder().encode(SSHAuthMethod.none), as: UTF8.self),
+            jumpChainJSON: "[]",
+            hostKeyPolicy: "trustOnFirstUse",
+            allowsLegacyAlgorithms: false,
+            vncEndpointJSON: nil,
+            isRemoteExecutionEnvironment: false,
+            vncEndpointsJSON: "[]"
+        )
+        let recorder = VNCPasswordRecorder()
         let tool = SSHUpdateHostTool(
             store: store,
-            passwordWriter: { _, _, _ in
-                Issue.record("Raw password must be rejected before the secure writer")
-                return SecretReference(keychainAccount: "unexpected", synchronizable: false)
+            passwordWriter: { savedHostID, savedConnectionID, secret in
+                await recorder.record(hostID: savedHostID, connectionID: savedConnectionID, secret: secret)
+                return SecretReference(keychainAccount: "host.vnc.secure", synchronizable: false)
             }
         )
         let arguments = try JSONDecoder().decode(
@@ -94,9 +109,9 @@ struct SSHHostProfileToolTests {
             from: Data(#"{"hostID":"\#(hostID.uuidString)","vncConnections":[{"displayName":"Direct desktop","transport":"direct","host":"lab.local","port":5900,"credentialInput":"raw-secret"}]}"#.utf8)
         )
 
-        #expect(throws: FloeError.self) {
-            try tool.validate(arguments)
-        }
+        try tool.validate(arguments)
+        _ = try await tool.execute(arguments, context: ToolContext(runID: UUID(), cancellation: CancellationToken()))
+        #expect(String(data: await recorder.value?.secret ?? Data(), encoding: .utf8) == "raw-secret")
     }
 }
 

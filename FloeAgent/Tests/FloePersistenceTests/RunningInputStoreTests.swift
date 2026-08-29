@@ -79,8 +79,8 @@ struct RunningInputStoreTests {
         #expect(recovered.targetRunID == nil)
     }
 
-    @Test("explicit credentials are sanitized before queue persistence")
-    func sanitizesCredentialsBeforePersistence() async throws {
+    @Test("user-authored credentials are not rewritten in the running-input queue")
+    func preservesCredentialsInAuthoredInput() async throws {
         let (store, conversationID, runID) = try await makeStore()
         let secret = "queue-secret-123"
         let input = try await store.enqueue(.init(
@@ -89,14 +89,12 @@ struct RunningInputStoreTests {
             content: "连接设备，password is \(secret)"
         ))
 
-        #expect(!input.content.contains(secret))
+        #expect(input.content.contains(secret))
         let persisted = try #require(try await store.input(id: input.id))
-        #expect(!persisted.content.contains(secret))
-        #expect(persisted.content.contains("⟨credential:"))
+        #expect(persisted.content.contains(secret))
 
         try await store.updateContent(id: input.id, content: "更新凭据：密码为\(secret)")
         let edited = try #require(try await store.input(id: input.id))
-        #expect(!edited.content.contains(secret))
-        #expect(edited.content.contains("⟨credential:"))
+        #expect(edited.content.contains(secret))
     }
 }
