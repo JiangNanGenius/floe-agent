@@ -29,9 +29,23 @@ private struct VNCCapturedArtifact {
 
 private enum VNCToolSupport {
     static func connectedSession(from provider: VNCSessionProvider) async throws -> VNCSessionHandle {
-        guard let handle = try await provider(), handle.session.isConnected else {
+        let handle: VNCSessionHandle?
+        do {
+            handle = try await provider()
+        } catch let failure as VNCConnectionFailure {
+            throw FloeError.validationFailed(failure.toolSummary)
+        }
+        guard let handle else {
             throw FloeError.validationFailed(
-                "No connected VNC session is available. Floe could not establish one on demand; check the configured endpoint and its latest connection error."
+                #"{"category":"configurationMissing","reason":"No VNC endpoint is available to the agent.","retryable":false,"stage":"configuration","status":"connectionFailed"}"#
+            )
+        }
+        guard handle.session.isConnected else {
+            if case .failed(let failure) = handle.session.currentState {
+                throw FloeError.validationFailed(failure.toolSummary)
+            }
+            throw FloeError.validationFailed(
+                #"{"category":"handshakeFailed","reason":"The VNC session exists but is not connected.","retryable":true,"stage":"handshake","status":"connectionFailed"}"#
             )
         }
         return handle

@@ -750,10 +750,11 @@ public actor ConversationRunService {
                 draft.digest = Self.stableTextDigest(
                     String(decoding: call.argumentsJSON, as: UTF8.self)
                 )
-                try? await intelligenceStore?.savePlanRevision(draft)
-                eventChannel.yield(.planChanged(PlanSnapshot(
-                    id: draft.id, revision: draft.revision, status: draft.status
-                )))
+                if await savePlanReliably(draft) {
+                    eventChannel.yield(.planChanged(PlanSnapshot(
+                        id: draft.id, revision: draft.revision, status: draft.status
+                    )))
+                }
             }
             eventChannel.yield(.toolLifecycle(.requested(call)))
             toolNames[call.id] = call.toolName

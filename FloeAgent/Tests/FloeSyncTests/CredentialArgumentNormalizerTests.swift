@@ -13,8 +13,21 @@ struct CredentialArgumentNormalizerTests {
         let records = CredentialStore(database: database)
         let vault = CredentialVaultService(records: records)
         let rawPassword = "nested-vnc-secret-\(UUID().uuidString)"
+        let hostID = UUID()
+        try await RemoteHostStore(database: database).saveHost(
+            id: hostID,
+            displayName: "Lab host",
+            address: "192.0.2.10",
+            port: 22,
+            user: "tester",
+            authJSON: #"{"none":{}}"#,
+            jumpChainJSON: "[]",
+            hostKeyPolicy: "trustOnFirstUse",
+            allowsLegacyAlgorithms: false,
+            vncEndpointJSON: nil
+        )
         let input = try JSONSerialization.data(withJSONObject: [
-            "hostID": UUID().uuidString,
+            "hostID": hostID.uuidString,
             "vncConnections": [[
                 "displayName": "Direct VNC",
                 "transport": "direct",
@@ -40,6 +53,11 @@ struct CredentialArgumentNormalizerTests {
         let id = try #require(SecretIngressScanner.credentialID(from: placeholder))
         let record = try #require(try await records.record(id: id))
         #expect(record.kind == .vncPassword)
+        #expect(record.hostID == hostID)
+        #expect(record.label.contains("Direct VNC"))
+        #expect(record.label.contains("192.0.2.10"))
+        #expect(!record.label.contains(rawPassword))
+        #expect(record.origin?.contains("ssh.updateHost") == true)
         #expect(try await vault.resolveForApprovedUse(CredentialHandle(id: id)) == Data(rawPassword.utf8))
 
         try await records.delete(id: id)
@@ -64,5 +82,35 @@ struct CredentialArgumentNormalizerTests {
 
         #expect(output == input)
         #expect(try await records.records().isEmpty)
+    }
+
+    @Test("A new host and its password can be captured in the same call")
+    func newHostCredentialDoesNotRequireExistingForeignKey() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let records = CredentialStore(database: database)
+        let vault = CredentialVaultService(records: records)
+        let rawPassword = "new-host-secret-\(UUID().uuidString)"
+        let input = try JSONSerialization.data(withJSONObject: [
+            "hostID": UUID().uuidString,
+            "displayName": "New VNC host",
+            "host": "198.51.100.8",
+            "credentialInput": rawPassword
+        ])
+
+        let output = try await CredentialArgumentNormalizer.normalize(
+            input,
+            toolName: "ssh.updateHost",
+            vault: vault
+        )
+        let object = try #require(JSONSerialization.jsonObject(with: output) as? [String: Any])
+        let placeholder = try #require(object["credentialInput"] as? String)
+        let id = try #require(SecretIngressScanner.credentialID(from: placeholder))
+        let record = try #require(try await records.record(id: id))
+
+        #expect(record.hostID == nil)
+        #expect(record.label.contains("New VNC host"))
+        #expect(!record.label.contains(rawPassword))
+        #expect(try await vault.resolveForApprovedUse(CredentialHandle(id: id)) == Data(rawPassword.utf8))
     }
 }

@@ -17,11 +17,12 @@ struct SecretIngressScannerTests {
 
     @Test("Captures explicit English and Chinese is/为 password wording")
     func explicitIsWording() {
-        let input = "password is ssh-secret\n密码为vnc-密码"
+        let input = "SSH password is ssh-secret\nVNC 密码为vnc-密码"
         let result = SecretIngressScanner.scan(input)
         #expect(result.captures.count == 2)
         #expect(!result.sanitizedText.contains("ssh-secret"))
         #expect(!result.sanitizedText.contains("vnc-密码"))
+        #expect(result.captures.map(\.label) == ["SSH password", "VNC password"])
     }
 
     @Test("Captures quoted passwords containing spaces")

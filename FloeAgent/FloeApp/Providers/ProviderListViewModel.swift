@@ -34,7 +34,7 @@ final class ProviderListViewModel: ObservableObject {
             let models = center.configuredModelsByProvider[provider.id] ?? []
             // Keep empty providers visible while they are being configured,
             // but route dedicated media-only endpoints to their own section.
-            return models.isEmpty || models.contains { $0.capabilities.contains(.text) }
+            return models.isEmpty || models.contains(where: \.supportsChatAgentSurface)
         }
     }
 
@@ -43,8 +43,7 @@ final class ProviderListViewModel: ObservableObject {
             guard provider.kind != .local else { return false }
             let models = center.configuredModelsByProvider[provider.id] ?? []
             return models.contains {
-                $0.capabilities.contains(.imageGeneration)
-                    || $0.capabilities.contains(.imageEditing)
+                $0.effectiveUseSurfaces.contains(.imageGeneration)
             }
         }
     }
@@ -53,7 +52,7 @@ final class ProviderListViewModel: ObservableObject {
         center.configuredProviders.filter { provider in
             guard provider.kind != .local else { return false }
             return center.configuredModelsByProvider[provider.id]?.contains {
-                $0.capabilities.contains(.videoGeneration)
+                $0.effectiveUseSurfaces.contains(.videoGeneration)
             } == true
         }
     }
@@ -61,19 +60,18 @@ final class ProviderListViewModel: ObservableObject {
     func imageModelCount(for providerID: UUID) -> Int {
         center.configuredModelsByProvider[providerID]?
             .filter {
-                $0.capabilities.contains(.imageGeneration)
-                    || $0.capabilities.contains(.imageEditing)
+                $0.effectiveUseSurfaces.contains(.imageGeneration)
             }.count ?? 0
     }
 
     func videoModelCount(for providerID: UUID) -> Int {
         center.configuredModelsByProvider[providerID]?
-            .filter { $0.capabilities.contains(.videoGeneration) }.count ?? 0
+            .filter { $0.effectiveUseSurfaces.contains(.videoGeneration) }.count ?? 0
     }
 
     func modelCount(for providerID: UUID) -> Int {
         center.configuredModelsByProvider[providerID]?
-            .filter { $0.capabilities.contains(.text) }.count ?? 0
+            .filter(\.supportsChatAgentSurface).count ?? 0
     }
 
     func load() async {

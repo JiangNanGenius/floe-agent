@@ -1,5 +1,7 @@
 import Foundation
 import Testing
+import FloeCore
+import FloeTools
 @testable import FloeVNC
 
 @Suite("VNC model tool contracts")
@@ -91,5 +93,55 @@ struct VNCToolContractTests {
         try tool.validate(.init(key: "Escape"))
         try tool.validate(.init(key: "F12"))
         #expect(throws: (any Error).self) { try tool.validate(.init(key: "Power")) }
+    }
+
+    @Test("Connection failures expose stable categories and retry policy")
+    func connectionFailureClassification() {
+        let authentication = VNCSession.normalizedConnectionFailure(
+            NSError(
+                domain: "RoyalVNCKit",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "VNC authentication password rejected"]
+            ),
+            host: "display.example",
+            port: 5900,
+            passwordConfigured: true
+        )
+        #expect(authentication.category == .authenticationFailed)
+        #expect(authentication.stage == .authentication)
+        #expect(authentication.retryable == false)
+        #expect(authentication.toolSummary.contains(#""category":"authenticationFailed""#))
+        #expect(authentication.toolSummary.contains(#""target":"display.example:5900""#))
+
+        let timeout = VNCSession.normalizedConnectionFailure(
+            NSError(
+                domain: NSPOSIXErrorDomain,
+                code: 60,
+                userInfo: [NSLocalizedDescriptionKey: "Operation timed out"]
+            ),
+            host: "display.example",
+            port: 5900,
+            passwordConfigured: true
+        )
+        #expect(timeout.category == .timedOut)
+        #expect(timeout.stage == .transport)
+        #expect(timeout.retryable)
+    }
+
+    @Test("Unavailable session returns a machine-readable reason")
+    func unavailableSessionReason() async {
+        let tool = VNCObserveTool(sessionProvider: unavailable)
+        do {
+            _ = try await tool.execute(
+                .init(),
+                context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+            )
+            Issue.record("Expected the unavailable session to fail")
+        } catch let error as FloeError {
+            #expect(error.localizedDescription.contains("configurationMissing"))
+            #expect(error.localizedDescription.contains("retryable"))
+        } catch {
+            Issue.record("Expected FloeError, got \(error)")
+        }
     }
 }

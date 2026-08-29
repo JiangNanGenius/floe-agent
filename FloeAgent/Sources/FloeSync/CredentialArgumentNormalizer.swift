@@ -21,6 +21,22 @@ public enum CredentialArgumentNormalizer {
         ])
         var changed = false
 
+        let rootHostID = (object["hostID"] as? String).flatMap(UUID.init(uuidString:))
+
+        func semanticScope(for dictionary: [String: Any]) -> String? {
+            let values = ["displayName", "name", "host", "hostname", "address"]
+                .compactMap { key -> String? in
+                    guard let value = dictionary[key] as? String,
+                          !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        return nil
+                    }
+                    return value.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            let port = (dictionary["port"] as? NSNumber)?.stringValue
+            let parts = values + (port.map { ["port \($0)"] } ?? [])
+            return parts.isEmpty ? nil : parts.joined(separator: " / ")
+        }
+
         func normalizeValue(_ value: Any, path: [String]) async throws -> Any {
             if let dictionary = value as? [String: Any] {
                 var result = dictionary
@@ -46,12 +62,23 @@ public enum CredentialArgumentNormalizer {
                         } else {
                             kind = .genericToken
                         }
+                        let kindLabel: String = switch kind {
+                        case .vncPassword: "VNC password"
+                        case .sshPassword: "SSH password"
+                        case .sshPrivateKey: "SSH private key"
+                        case .providerAPIKey: "Provider API key"
+                        case .websitePassword: "Website password"
+                        case .genericToken: "Credential"
+                        }
+                        let scope = semanticScope(for: dictionary)
+                            ?? semanticScope(for: object)
                         let handle = try await vault.capture(
                             Data(secret.utf8),
                             kind: kind,
                             owner: owner,
-                            label: "Tool credential for \(toolName).\(childPath.joined(separator: "."))",
-                            origin: "model-tool-call"
+                            label: scope.map { "\(kindLabel) for \($0)" } ?? kindLabel,
+                            hostID: rootHostID,
+                            origin: "model-tool-call:\(toolName).\(childPath.joined(separator: "."))"
                         )
                         result[key] = CapturedSecret.placeholder(for: handle.id)
                         changed = true

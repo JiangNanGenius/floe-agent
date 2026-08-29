@@ -24,7 +24,29 @@ public struct HostKeyChallenge: Sendable, Hashable, Identifiable {
     public var id: String { "\(address):\(port):\(keyType):\(fingerprintSHA256)" }
 }
 
-public enum SSHConnectionError: Error, Sendable, LocalizedError {
+public enum SSHConnectionFailureCategory: String, Codable, Sendable, Hashable {
+    case configurationMissing
+    case credentialMissing
+    case authenticationFailed
+    case hostKeyRejected
+    case hostKeyChanged
+    case networkUnreachable
+    case connectionRefused
+    case timedOut
+    case protocolIncompatible
+    case transportFailed
+}
+
+public enum SSHConnectionFailureStage: String, Codable, Sendable, Hashable {
+    case configuration
+    case credentialResolution
+    case hostKeyVerification
+    case transport
+    case authentication
+    case protocolHandshake
+}
+
+public enum SSHConnectionError: Error, Sendable, LocalizedError, Hashable {
     case sshNotConfigured
     case hostKeyRejected(HostKeyChallenge)
     case hostKeyChanged(expected: String, received: String)
@@ -58,6 +80,72 @@ public enum SSHConnectionError: Error, Sendable, LocalizedError {
             "SSH host \(address) is unreachable from this device. Check the route, VPN, and address."
         case .transport(let detail): "SSH transport failed: \(detail)"
         }
+    }
+
+    public var category: SSHConnectionFailureCategory {
+        switch self {
+        case .sshNotConfigured: .configurationMissing
+        case .invalidCredential: .credentialMissing
+        case .authenticationFailed: .authenticationFailed
+        case .hostKeyRejected: .hostKeyRejected
+        case .hostKeyChanged: .hostKeyChanged
+        case .connectionRefused: .connectionRefused
+        case .hostNotFound, .networkUnreachable: .networkUnreachable
+        case .timedOut: .timedOut
+        case .invalidHostKey, .unsupportedKeyType: .protocolIncompatible
+        case .transport: .transportFailed
+        }
+    }
+
+    public var stage: SSHConnectionFailureStage {
+        switch self {
+        case .sshNotConfigured: .configuration
+        case .invalidCredential, .unsupportedKeyType: .credentialResolution
+        case .authenticationFailed: .authentication
+        case .hostKeyRejected, .hostKeyChanged, .invalidHostKey: .hostKeyVerification
+        case .connectionRefused, .hostNotFound, .timedOut, .networkUnreachable: .transport
+        case .transport: .protocolHandshake
+        }
+    }
+
+    public var retryable: Bool {
+        switch self {
+        case .connectionRefused, .hostNotFound, .timedOut, .networkUnreachable, .transport:
+            true
+        case .sshNotConfigured, .hostKeyRejected, .hostKeyChanged, .invalidCredential,
+             .invalidHostKey, .unsupportedKeyType, .authenticationFailed:
+            false
+        }
+    }
+
+    public var target: String? {
+        switch self {
+        case .authenticationFailed(_, let address), .networkUnreachable(let address),
+             .hostNotFound(let address):
+            address
+        case .connectionRefused(let address, let port), .timedOut(let address, let port):
+            "\(address):\(port)"
+        case .hostKeyRejected(let challenge):
+            "\(challenge.address):\(challenge.port)"
+        default:
+            nil
+        }
+    }
+
+    /// Machine-readable, secret-free failure supplied to agent tools.
+    public var toolSummary: String {
+        let payload: [String: Any] = [
+            "status": "connectionFailed",
+            "category": category.rawValue,
+            "stage": stage.rawValue,
+            "retryable": retryable,
+            "target": target ?? NSNull(),
+            "reason": errorDescription ?? "SSH connection failed"
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
+            return errorDescription ?? "SSH connection failed"
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 }
 

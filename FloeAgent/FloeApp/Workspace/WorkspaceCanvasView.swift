@@ -1083,6 +1083,22 @@ private final class WorkspaceCanvasStore: ObservableObject {
         }
     }
 
+    func deleteConnection(_ id: UUID) {
+        mutateSelectedDocument { document in
+            document.connections?.removeAll { $0.id == id }
+        }
+    }
+
+    func reverseConnection(_ id: UUID) {
+        mutateSelectedDocument { document in
+            guard let index = document.connections?.firstIndex(where: { $0.id == id }),
+                  let source = document.connections?[index].sourceNodeID,
+                  let destination = document.connections?[index].destinationNodeID else { return }
+            document.connections?[index].sourceNodeID = destination
+            document.connections?[index].destinationNodeID = source
+        }
+    }
+
     func duplicateNodes(_ ids: Set<UUID>) -> Set<UUID> {
         var created = Set<UUID>()
         var duplicatedAssetIDs: [UUID] = []
@@ -1819,6 +1835,8 @@ struct WorkspaceCanvasView: View {
     @State private var agentPanelOffset = CGSize.zero
     @State private var showsMaterials = false
     @State private var connectionStartID: UUID?
+    @State private var selectedConnectionID: UUID?
+    @State private var enteredGroupID: UUID?
     @State private var showsGeneration = false
     @State private var showsInspector = false
     @State private var showsMediaJobs = false
@@ -2064,11 +2082,12 @@ struct WorkspaceCanvasView: View {
                         }
                     )
                     .allowsHitTesting(mode == .pencil || mode == .eraser)
-                    connectionLayer(document)
                     drawingLayer(document)
                     if mode != .pencil && mode != .eraser {
                         interactionLayer(size: geometry.size)
                     }
+                    connectionLayer(document)
+                        .allowsHitTesting(mode == .select)
                     nodeLayer(document)
                         .allowsHitTesting(mode == .select || mode == .connector)
                 } else {
@@ -2181,7 +2200,7 @@ struct WorkspaceCanvasView: View {
             .clipped()
             .overlay(alignment: .bottomTrailing) { zoomControls }
             .overlay(alignment: .topLeading) { modeControls(size: geometry.size) }
-            .overlay(alignment: .bottom) { selectedNodeToolbar }
+            .overlay(alignment: .bottom) { selectionToolbar }
             .navigationTitle(store.selectedDocument?.name ?? "画布")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -2367,17 +2386,55 @@ struct WorkspaceCanvasView: View {
     }
 
     private func connectionLayer(_ document: FloeCanvasDocument) -> some View {
-        Canvas { context, _ in
-            let nodes = Dictionary(uniqueKeysWithValues: document.nodes.map { ($0.id, $0) })
-            for connection in document.connections ?? [] {
-                guard let source = nodes[connection.sourceNodeID], let destination = nodes[connection.destinationNodeID] else { continue }
-                var path = Path()
-                path.move(to: screenPoint(CGPoint(x: source.x, y: source.y)))
-                path.addLine(to: screenPoint(CGPoint(x: destination.x, y: destination.y)))
-                context.stroke(path, with: .color(FloeTheme.primary.opacity(0.65)), style: StrokeStyle(lineWidth: 2, dash: connection.kind == .source ? [7, 5] : []))
+        let nodes = Dictionary(uniqueKeysWithValues: document.nodes.map { ($0.id, $0) })
+        return ZStack {
+            Canvas { context, _ in
+                for connection in document.connections ?? [] {
+                    guard let source = nodes[connection.sourceNodeID],
+                          let destination = nodes[connection.destinationNodeID] else { continue }
+                    let start = screenPoint(CGPoint(x: source.x, y: source.y))
+                    let end = screenPoint(CGPoint(x: destination.x, y: destination.y))
+                    var path = Path()
+                    path.move(to: start)
+                    path.addLine(to: end)
+                    let selected = selectedConnectionID == connection.id
+                    context.stroke(
+                        path,
+                        with: .color(selected ? FloeTheme.primary : FloeTheme.primary.opacity(0.65)),
+                        style: StrokeStyle(
+                            lineWidth: selected ? 4 : 2,
+                            dash: connection.kind == .source ? [7, 5] : []
+                        )
+                    )
+                }
+            }
+            .allowsHitTesting(false)
+
+            ForEach(document.connections ?? []) { connection in
+                if let source = nodes[connection.sourceNodeID],
+                   let destination = nodes[connection.destinationNodeID] {
+                    let start = screenPoint(CGPoint(x: source.x, y: source.y))
+                    let end = screenPoint(CGPoint(x: destination.x, y: destination.y))
+                    let dx = end.x - start.x
+                    let dy = end.y - start.y
+                    Capsule()
+                        .fill(Color.black.opacity(0.001))
+                        .frame(width: max(32, hypot(dx, dy)), height: 30)
+                        .rotationEffect(.radians(atan2(dy, dx)))
+                        .position(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            selectedConnectionID = connection.id
+                            selectedNodeIDs.removeAll()
+                            selectedStrokeIDs.removeAll()
+                            editingNodeID = nil
+                        }
+                        .accessibilityLabel("连接线")
+                        .accessibilityHint("点按后可反向或删除")
+                        .accessibilityIdentifier("canvas.connection.\(connection.id.uuidString)")
+                }
             }
         }
-        .allowsHitTesting(false)
     }
 
     private func nodeLayer(_ document: FloeCanvasDocument) -> some View {
@@ -2397,9 +2454,42 @@ struct WorkspaceCanvasView: View {
                 } : nil,
                 onBeginEditing: {
                     selectedNodeIDs = [node.id]
+                    selectedConnectionID = nil
                     editingNodeID = node.id
                 },
-                onDelete: { store.deleteNode(node.id) }
+                onDuplicate: {
+                    selectedNodeIDs = store.duplicateNodes(contextSelection(for: node))
+                    selectedConnectionID = nil
+                    editingNodeID = nil
+                },
+                onConnect: {
+                    selectedNodeIDs = contextSelection(for: node)
+                    connectionStartID = node.id
+                    selectedConnectionID = nil
+                    editingNodeID = nil
+                    mode = .connector
+                },
+                onToggleLock: {
+                    store.setLocked(contextSelection(for: node), locked: node.isLocked != true)
+                },
+                onBringToFront: {
+                    store.changeLayer(contextSelection(for: node), bringToFront: true)
+                },
+                onSendToBack: {
+                    store.changeLayer(contextSelection(for: node), bringToFront: false)
+                },
+                onGroup: {
+                    store.group(contextSelection(for: node))
+                },
+                onUngroup: {
+                    store.ungroup(contextSelection(for: node))
+                    enteredGroupID = nil
+                },
+                onDelete: {
+                    let ids = contextSelection(for: node)
+                    store.deleteNodes(ids)
+                    selectedNodeIDs.subtract(ids)
+                }
             )
             .frame(width: node.width, height: node.height)
             .overlay {
@@ -2425,8 +2515,15 @@ struct WorkspaceCanvasView: View {
             .rotationEffect(.degrees(node.rotation ?? 0))
             .onTapGesture(count: 2) {
                 guard mode == .select else { return }
-                selectedNodeIDs = [node.id]
-                editingNodeID = node.id
+                selectedConnectionID = nil
+                if let groupID = node.groupID, enteredGroupID != groupID {
+                    enteredGroupID = groupID
+                    selectedNodeIDs = [node.id]
+                    editingNodeID = nil
+                } else {
+                    selectedNodeIDs = [node.id]
+                    editingNodeID = node.id
+                }
             }
             .onTapGesture {
                 if mode == .connector {
@@ -2439,35 +2536,66 @@ struct WorkspaceCanvasView: View {
                 } else {
                     // Selection is stable: a second click begins no hidden
                     // toggle. Editing is an explicit double-click/menu action.
-                    selectedNodeIDs = [node.id]
+                    selectedConnectionID = nil
+                    selectedNodeIDs = selectionForNode(node)
+                    editingNodeID = nil
                 }
             }
             .simultaneousGesture(
                 DragGesture()
                     .onChanged { value in
                         guard mode == .select, node.isLocked != true else { return }
-                        selectedNodeIDs.insert(node.id)
-                        if nodeDragOrigins[node.id] == nil {
-                            store.beginInteractiveMutation()
-                        }
-                        let origin = nodeDragOrigins[node.id] ?? CGPoint(x: node.x, y: node.y)
-                        nodeDragOrigins[node.id] = origin
-                        store.updateNode(
-                            node.id,
-                            position: CGPoint(
-                                x: origin.x + value.translation.width / scale,
-                                y: origin.y + value.translation.height / scale
-                            ),
-                            persistAfter: false
-                        )
+                        updateNodeDrag(node, translation: value.translation)
                     }
                     .onEnded { _ in
                         guard mode == .select else { return }
-                        nodeDragOrigins[node.id] = nil
-                        store.finishNodeMutation()
+                        finishNodeDrag()
                     }
             )
         }
+    }
+
+    private func selectionForNode(_ node: FloeCanvasNode) -> Set<UUID> {
+        guard let groupID = node.groupID, enteredGroupID != groupID else { return [node.id] }
+        return Set(store.selectedDocument?.nodes.compactMap {
+            $0.groupID == groupID ? $0.id : nil
+        } ?? [node.id])
+    }
+
+    private func contextSelection(for node: FloeCanvasNode) -> Set<UUID> {
+        selectedNodeIDs.contains(node.id) ? selectedNodeIDs : selectionForNode(node)
+    }
+
+    private func updateNodeDrag(_ node: FloeCanvasNode, translation: CGSize) {
+        if !selectedNodeIDs.contains(node.id) {
+            selectedNodeIDs = selectionForNode(node)
+        }
+        selectedConnectionID = nil
+        if nodeDragOrigins.isEmpty {
+            let nodes = store.selectedDocument?.nodes ?? []
+            nodeDragOrigins = Dictionary(uniqueKeysWithValues: nodes.compactMap { candidate in
+                guard selectedNodeIDs.contains(candidate.id), candidate.isLocked != true else { return nil }
+                return (candidate.id, CGPoint(x: candidate.x, y: candidate.y))
+            })
+            guard !nodeDragOrigins.isEmpty else { return }
+            store.beginInteractiveMutation()
+        }
+        for (id, origin) in nodeDragOrigins {
+            store.updateNode(
+                id,
+                position: CGPoint(
+                    x: origin.x + translation.width / scale,
+                    y: origin.y + translation.height / scale
+                ),
+                persistAfter: false
+            )
+        }
+    }
+
+    private func finishNodeDrag() {
+        guard !nodeDragOrigins.isEmpty else { return }
+        nodeDragOrigins.removeAll()
+        store.finishNodeMutation()
     }
 
     private func interactionLayer(size: CGSize) -> some View {
@@ -2533,6 +2661,7 @@ struct WorkspaceCanvasView: View {
                                 }
                                 return rect.intersects(bounds)
                             }.map(\.id) ?? [])
+                            selectedConnectionID = nil
                             marqueeStart = nil; marqueeCurrent = nil
                         }
                     }
@@ -2551,6 +2680,7 @@ struct WorkspaceCanvasView: View {
                 case .select:
                     selectedNodeIDs.removeAll()
                     selectedStrokeIDs.removeAll()
+                    selectedConnectionID = nil
                     editingNodeID = nil
                 case .text:
                     selectedNodeIDs = [store.addNote(at: canvasPoint(value.location))]
@@ -2570,9 +2700,11 @@ struct WorkspaceCanvasView: View {
         HStack(spacing: 4) {
             ForEach(CanvasMode.allCases) { value in
                 Button {
-                    if value == .pencil, mode == .pencil {
+                    if value == .pencil {
+                        mode = .pencil
                         showsPencilPalette.toggle()
                     } else {
+                        showsPencilPalette = false
                         mode = value
                     }
                 } label: {
@@ -2589,6 +2721,7 @@ struct WorkspaceCanvasView: View {
                 )
                 .accessibilityLabel(value.title)
                 .accessibilityAddTraits(mode == value ? .isSelected : [])
+                .accessibilityIdentifier("canvas.tool.\(value.rawValue)")
             }
 
             Divider().frame(height: 24).padding(.horizontal, 2)
@@ -2664,8 +2797,25 @@ struct WorkspaceCanvasView: View {
     }
 
     @ViewBuilder
-    private var selectedNodeToolbar: some View {
-        if !selectedNodeIDs.isEmpty, mode == .select {
+    private var selectionToolbar: some View {
+        if let connectionID = selectedConnectionID, mode == .select {
+            HStack(spacing: 4) {
+                Button("反向", systemImage: "arrow.left.arrow.right") {
+                    store.reverseConnection(connectionID)
+                }
+                Button("删除连接", systemImage: "trash", role: .destructive) {
+                    store.deleteConnection(connectionID)
+                    selectedConnectionID = nil
+                }
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.bordered)
+            .padding(8)
+            .background(.regularMaterial, in: Capsule())
+            .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+            .padding(.bottom, 18)
+            .accessibilityIdentifier("canvas.connection.toolbar")
+        } else if !selectedNodeIDs.isEmpty, mode == .select {
             HStack(spacing: 4) {
                 if selectedNodeIDs.count == 1, let nodeID = selectedNodeIDs.first {
                     Button("编辑", systemImage: "pencil") { editingNodeID = nodeID }
@@ -2679,9 +2829,22 @@ struct WorkspaceCanvasView: View {
                     editingNodeID = nil
                     mode = .connector
                 }
-                Button("分组", systemImage: "square.3.layers.3d") {
-                    store.group(selectedNodeIDs)
-                    editingNodeID = nil
+                if let selectedGroupID, enteredGroupID != selectedGroupID {
+                    Button("进入分组", systemImage: "rectangle.inset.filled") {
+                        enteredGroupID = selectedGroupID
+                        if let first = selectedNodeIDs.first { selectedNodeIDs = [first] }
+                        editingNodeID = nil
+                    }
+                } else if enteredGroupID != nil {
+                    Button("退出分组", systemImage: "rectangle.portrait.and.arrow.right") {
+                        enteredGroupID = nil
+                        editingNodeID = nil
+                    }
+                } else {
+                    Button("分组", systemImage: "square.3.layers.3d") {
+                        store.group(selectedNodeIDs)
+                        editingNodeID = nil
+                    }
                 }
                 Button("属性", systemImage: "slider.horizontal.3") { showsInspector = true }
                 Button("生成", systemImage: "wand.and.stars") { showsGeneration = true }
@@ -2695,7 +2858,15 @@ struct WorkspaceCanvasView: View {
             .padding(.bottom, 18)
             .transition(.move(edge: .bottom).combined(with: .opacity))
             .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("canvas.node.toolbar")
         }
+    }
+
+    private var selectedGroupID: UUID? {
+        let selectedNodes = store.selectedDocument?.nodes.filter { selectedNodeIDs.contains($0.id) } ?? []
+        let groups = Set(selectedNodes.compactMap(\.groupID))
+        guard groups.count == 1, selectedNodes.allSatisfy({ $0.groupID == groups.first }) else { return nil }
+        return groups.first
     }
 
     private var zoomControls: some View {
@@ -2810,6 +2981,11 @@ struct WorkspaceCanvasView: View {
     }
 
     private func deleteSelection() {
+        if let selectedConnectionID {
+            store.deleteConnection(selectedConnectionID)
+            self.selectedConnectionID = nil
+            return
+        }
         store.deleteNodes(selectedNodeIDs)
         store.removeStrokes(selectedStrokeIDs)
         editingNodeID = nil
@@ -3505,6 +3681,13 @@ private struct CanvasNodeCard: View {
     let licenseStatus: String?
     let onOpen3D: (() -> Void)?
     let onBeginEditing: () -> Void
+    let onDuplicate: () -> Void
+    let onConnect: () -> Void
+    let onToggleLock: () -> Void
+    let onBringToFront: () -> Void
+    let onSendToBack: () -> Void
+    let onGroup: () -> Void
+    let onUngroup: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -3533,11 +3716,24 @@ private struct CanvasNodeCard: View {
         .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
         .contextMenu {
             Button("编辑", systemImage: "pencil", action: onBeginEditing)
+            Button("复制", systemImage: "plus.square.on.square", action: onDuplicate)
+            Button("连接", systemImage: "point.topleft.down.to.point.bottomright.curvepath", action: onConnect)
             if let onOpen3D {
                 Button("打开 3D 导演台", systemImage: "cube.transparent", action: onOpen3D)
             }
+            Divider()
+            Button(node.isLocked == true ? "解锁" : "锁定", systemImage: node.isLocked == true ? "lock.open" : "lock", action: onToggleLock)
+            Button("移到最前", systemImage: "arrow.up.to.line", action: onBringToFront)
+            Button("移到最后", systemImage: "arrow.down.to.line", action: onSendToBack)
+            if node.groupID == nil {
+                Button("分组", systemImage: "square.3.layers.3d", action: onGroup)
+            } else {
+                Button("解除分组", systemImage: "square.2.layers.3d", action: onUngroup)
+            }
+            Divider()
             Button("删除节点", role: .destructive, action: onDelete)
         }
+        .accessibilityIdentifier("canvas.node.\(node.id.uuidString)")
     }
 
     private var nodeBackground: Color {

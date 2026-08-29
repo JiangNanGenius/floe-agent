@@ -72,6 +72,7 @@ struct Canvas3DDirectorView: View {
             .padding(.leading, 12)
             .padding(.top, 8)
             .accessibilityHint("不保存本次修改并返回画布")
+            .accessibilityIdentifier("canvas.3d.exit")
         }
         .sheet(isPresented: $showsInspector) {
             NavigationStack {

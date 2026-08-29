@@ -475,6 +475,40 @@ struct ModelConfigurationStoreTests {
         #expect(chat.supportsChatAgentSurface)
     }
 
+    @Test("Media generators are never auxiliary visual-understanding models")
+    func mediaGeneratorsStayOutOfAuxiliaryVision() {
+        let providerID = UUID()
+        let vision = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "vision-only",
+            displayName: "Vision only",
+            limits: ModelLimits(contextTokens: 16_384, maxOutputTokens: 2_048),
+            capabilities: [.text, .vision],
+            useSurfaces: [.auxiliaryVision]
+        )
+        let imageGenerator = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "image-generator",
+            displayName: "Image generator",
+            limits: ModelLimits(contextTokens: 1, maxOutputTokens: 0),
+            capabilities: [.text, .vision, .imageGeneration],
+            useSurfaces: [.auxiliaryVision, .approval, .imageGeneration]
+        )
+        let videoGenerator = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "video-generator",
+            displayName: "Video generator",
+            limits: ModelLimits(contextTokens: 1, maxOutputTokens: 0),
+            capabilities: [.text, .vision, .videoGeneration],
+            useSurfaces: [.auxiliaryVision, .videoGeneration]
+        )
+
+        #expect(vision.supportsAuxiliaryVisionSurface)
+        #expect(imageGenerator.supportsAuxiliaryVisionSurface == false)
+        #expect(videoGenerator.supportsAuxiliaryVisionSurface == false)
+        #expect(imageGenerator.supportsApprovalSurface == false)
+    }
+
     @Test("Onboarding status persists independently from unfinished configuration")
     func onboardingStatusPersistence() async throws {
         let store = try await makeStore()

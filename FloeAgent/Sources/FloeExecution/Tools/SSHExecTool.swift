@@ -146,7 +146,7 @@ public struct SSHExecTool: AgentTool {
         } catch SSHExecError.timedOut {
             return Self.output("status=timedOut", exitStatus: 124)
         } catch let error as RemotePythonError {
-            return Self.output("status=error error=\(error.errorDescription ?? "unknown")", exitStatus: 2)
+            return Self.output(error.toolFailureSummary, exitStatus: 2)
         } catch {
             return Self.output("status=error error=\(error.localizedDescription)", exitStatus: 2)
         }

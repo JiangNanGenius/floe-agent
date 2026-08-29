@@ -76,6 +76,10 @@ struct RemoteDeviceProfileTests {
         #expect(user == "operator")
         #expect(address == "server.example")
         #expect(normalized.localizedDescription.contains("saved password/key"))
+        #expect(normalized.category == .authenticationFailed)
+        #expect(normalized.stage == .authentication)
+        #expect(normalized.retryable == false)
+        #expect(normalized.toolSummary.contains(#""category":"authenticationFailed""#))
     }
 
     @Test("Connection failures preserve timeout and refusal reasons")
@@ -101,5 +105,8 @@ struct RemoteDeviceProfileTests {
         }
         #expect(refusedAddress == "server.example")
         #expect(refusedPort == 2222)
+        #expect(timeout.retryable)
+        #expect(refused.retryable)
+        #expect(timeout.toolSummary.contains(#""stage":"transport""#))
     }
 }

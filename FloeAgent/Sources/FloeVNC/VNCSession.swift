@@ -9,11 +9,80 @@ import ImageIO
 import UniformTypeIdentifiers
 #endif
 
+public enum VNCConnectionFailureCategory: String, Codable, Sendable, Hashable {
+    case configurationMissing
+    case credentialMissing
+    case authenticationFailed
+    case networkUnreachable
+    case connectionRefused
+    case timedOut
+    case handshakeFailed
+    case protocolIncompatible
+}
+
+public enum VNCConnectionFailureStage: String, Codable, Sendable, Hashable {
+    case configuration
+    case credentialResolution
+    case transport
+    case authentication
+    case handshake
+    case framebuffer
+}
+
+/// Stable, secret-free VNC failure shared by the viewer and agent tools.
+/// The category and stage are deliberately machine-readable so the model can
+/// decide whether to retry instead of guessing from a localized sentence.
+public struct VNCConnectionFailure: Error, Codable, Sendable, Hashable, LocalizedError {
+    public var category: VNCConnectionFailureCategory
+    public var stage: VNCConnectionFailureStage
+    public var retryable: Bool
+    public var host: String
+    public var port: Int
+    public var message: String
+    public var underlyingCode: String?
+
+    public init(
+        category: VNCConnectionFailureCategory,
+        stage: VNCConnectionFailureStage,
+        retryable: Bool,
+        host: String,
+        port: Int,
+        message: String,
+        underlyingCode: String? = nil
+    ) {
+        self.category = category
+        self.stage = stage
+        self.retryable = retryable
+        self.host = host
+        self.port = port
+        self.message = message
+        self.underlyingCode = underlyingCode
+    }
+
+    public var errorDescription: String? { message }
+
+    public var toolSummary: String {
+        let payload: [String: Any] = [
+            "status": "connectionFailed",
+            "category": category.rawValue,
+            "stage": stage.rawValue,
+            "retryable": retryable,
+            "target": "\(host):\(port)",
+            "reason": message,
+            "underlyingCode": underlyingCode ?? NSNull()
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
+            return message
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
 public enum VNCSessionState: Sendable, Hashable {
     case disconnected
     case connecting
     case connected
-    case failed(String)
+    case failed(VNCConnectionFailure)
 }
 
 /// RoyalVNCKit session facade with credential ownership and a small,
@@ -21,6 +90,8 @@ public enum VNCSessionState: Sendable, Hashable {
 public final class VNCSession: NSObject, VNCConnectionDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private let logger = FloeLogger(category: .vnc)
+    private let host: String
+    private let port: UInt16
     private let password: String?
     private var connection: VNCConnection?
     private var framebuffer: VNCFramebuffer?
@@ -33,6 +104,8 @@ public final class VNCSession: NSObject, VNCConnectionDelegate, @unchecked Senda
     private var structuredEvidence: VNCStructuredEvidence?
 
     public init(host: String, port: UInt16, password: String?) {
+        self.host = host
+        self.port = port
         self.password = password
         let settings = VNCConnection.Settings(
             isDebugLoggingEnabled: false,
@@ -223,12 +296,19 @@ public final class VNCSession: NSObject, VNCConnectionDelegate, @unchecked Senda
         switch connectionState.status {
         case .disconnected:
             if let error = connectionState.error {
-                emit(state: .failed(Self.connectionFailureDescription(
+                emit(state: .failed(Self.normalizedConnectionFailure(
                     error,
+                    host: host,
+                    port: Int(port),
                     passwordConfigured: password?.isEmpty == false
                 )))
             }
-            else { emit(state: .disconnected) }
+            else if case .failed = currentState {
+                // RoyalVNCKit can emit a second, empty disconnect after the
+                // real failure. Preserve the actionable failure for the UI.
+            } else {
+                emit(state: .disconnected)
+            }
         case .connecting: emit(state: .connecting)
         case .connected: emit(state: .connected)
         case .disconnecting: break
@@ -238,32 +318,85 @@ public final class VNCSession: NSObject, VNCConnectionDelegate, @unchecked Senda
     /// RoyalVNCKit exposes transport failures as NSError values. Normalize
     /// them into actionable, secret-free reasons so both the UI and the agent
     /// can distinguish a bad password from an unreachable host or timeout.
-    private static func connectionFailureDescription(
+    static func normalizedConnectionFailure(
         _ error: Error,
+        host: String,
+        port: Int,
         passwordConfigured: Bool
-    ) -> String {
+    ) -> VNCConnectionFailure {
         let nsError = error as NSError
         let raw = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         let probe = "\(raw) \(nsError.domain) \(nsError.code)".lowercased()
+        let code = "\(nsError.domain):\(nsError.code)"
         if probe.contains("auth") || probe.contains("password") || probe.contains("security") {
-            return passwordConfigured
-                ? "VNC authentication was rejected. The saved password may be incorrect or the server may require a different security type."
-                : "VNC authentication requires a password, but this connection has no saved password."
+            if passwordConfigured {
+                return VNCConnectionFailure(
+                    category: .authenticationFailed,
+                    stage: .authentication,
+                    retryable: false,
+                    host: host,
+                    port: port,
+                    message: "VNC authentication was rejected. The saved password may be incorrect or the server may require a different security type.",
+                    underlyingCode: code
+                )
+            }
+            return VNCConnectionFailure(
+                category: .credentialMissing,
+                stage: .credentialResolution,
+                retryable: false,
+                host: host,
+                port: port,
+                message: "VNC authentication requires a password, but this connection has no saved password.",
+                underlyingCode: code
+            )
         }
         if probe.contains("timed out") || probe.contains("timeout") {
-            return "VNC connection timed out before the server completed the handshake."
+            return VNCConnectionFailure(
+                category: .timedOut, stage: .transport, retryable: true,
+                host: host, port: port,
+                message: "VNC connection timed out before the server completed the handshake.",
+                underlyingCode: code
+            )
         }
         if probe.contains("refused") {
-            return "VNC connection was refused. Confirm that the server is listening on the configured host and port."
+            return VNCConnectionFailure(
+                category: .connectionRefused, stage: .transport, retryable: true,
+                host: host, port: port,
+                message: "VNC connection was refused. Confirm that the server is listening on the configured host and port.",
+                underlyingCode: code
+            )
         }
         if probe.contains("unreachable") || probe.contains("no route") {
-            return "VNC host is unreachable from this device. Check the route, VPN, firewall, and address."
+            return VNCConnectionFailure(
+                category: .networkUnreachable, stage: .transport, retryable: true,
+                host: host, port: port,
+                message: "VNC host is unreachable from this device. Check the route, VPN, firewall, and address.",
+                underlyingCode: code
+            )
         }
         if probe.contains("name or service") || probe.contains("dns") || probe.contains("not known") {
-            return "VNC host name could not be resolved."
+            return VNCConnectionFailure(
+                category: .networkUnreachable, stage: .transport, retryable: true,
+                host: host, port: port,
+                message: "VNC host name could not be resolved.",
+                underlyingCode: code
+            )
+        }
+        if probe.contains("version") || probe.contains("encoding") || probe.contains("protocol") {
+            return VNCConnectionFailure(
+                category: .protocolIncompatible, stage: .handshake, retryable: false,
+                host: host, port: port,
+                message: "The VNC server uses a protocol or security mode that this client does not support.",
+                underlyingCode: code
+            )
         }
         let detail = raw.isEmpty ? "Unknown transport error" : String(raw.prefix(240))
-        return "VNC handshake failed: \(detail) [\(nsError.domain):\(nsError.code)]."
+        return VNCConnectionFailure(
+            category: .handshakeFailed, stage: .handshake, retryable: true,
+            host: host, port: port,
+            message: "VNC handshake failed: \(detail) [\(code)].",
+            underlyingCode: code
+        )
     }
 
     public func connection(
@@ -278,6 +411,16 @@ public final class VNCSession: NSObject, VNCConnectionDelegate, @unchecked Senda
               authenticationType.requiresPassword,
               let password else {
             logger.warning("vncCredentialUnsupported requiresUsername=\(authenticationType.requiresUsername)")
+            if authenticationType.requiresPassword, password == nil {
+                emit(state: .failed(VNCConnectionFailure(
+                    category: .credentialMissing,
+                    stage: .credentialResolution,
+                    retryable: false,
+                    host: host,
+                    port: Int(port),
+                    message: "VNC authentication requires a password, but this connection has no saved password."
+                )))
+            }
             completion(nil)
             return
         }
@@ -332,7 +475,11 @@ public final class VNCSession: NSObject, VNCConnectionDelegate, @unchecked Senda
         case .connecting: logger.info("vncState=connecting")
         case .connected: logger.info("vncState=connected")
         case .disconnected: logger.info("vncState=disconnected")
-        case .failed(let reason): logger.error("vncState=failed reason=\(reason)")
+        case .failed(let failure):
+            let code = failure.underlyingCode ?? "none"
+            logger.error(
+                "vncState=failed category=\(failure.category.rawValue) stage=\(failure.stage.rawValue) retryable=\(failure.retryable) code=\(code)"
+            )
         }
         handler?(state)
     }

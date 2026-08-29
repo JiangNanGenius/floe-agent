@@ -1129,13 +1129,27 @@ final class ConversationCenter: ObservableObject {
             )) ?? []
         }
         credentialRecords += (try? await environment.credentialStore.records(owner: .vault)) ?? []
+        let credentialSearchTerms = query
+            .lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+            .filter { $0.count >= 2 }
         let credentialLines = credentialRecords
             .reduce(into: [UUID: CredentialRecord]()) { $0[$1.id] = $1 }
             .values
-            .sorted { $0.updatedAt > $1.updatedAt }
-            .prefix(12)
+            .sorted { lhs, rhs in
+                let lhsText = "\(lhs.label) \(lhs.kind.rawValue) \(lhs.origin ?? "") \(lhs.hostID?.uuidString ?? "")".lowercased()
+                let rhsText = "\(rhs.label) \(rhs.kind.rawValue) \(rhs.origin ?? "") \(rhs.hostID?.uuidString ?? "")".lowercased()
+                let lhsScore = credentialSearchTerms.reduce(0) { $0 + (lhsText.contains($1) ? 1 : 0) }
+                let rhsScore = credentialSearchTerms.reduce(0) { $0 + (rhsText.contains($1) ? 1 : 0) }
+                if lhsScore != rhsScore { return lhsScore > rhsScore }
+                return lhs.updatedAt > rhs.updatedAt
+            }
+            .prefix(24)
             .map {
-                "- Secure credential card: \($0.label); reference \(CapturedSecret.placeholder(for: $0.id)); kind \($0.kind.rawValue)"
+                let hostScope = $0.hostID.map { "; host \($0.uuidString)" } ?? ""
+                let origin = $0.origin.map { "; source \($0)" } ?? ""
+                return "- Secure credential card: \($0.label); reference \(CapturedSecret.placeholder(for: $0.id)); kind \($0.kind.rawValue)\(hostScope)\(origin). Reuse this reference for the same target; do not ask for the plaintext again."
             }
         let workspaceSoulValue = try? await workspaceSoul
         let globalSoulValue = try? await globalSoul
@@ -1159,10 +1173,20 @@ final class ConversationCenter: ObservableObject {
         guard !captures.isEmpty else { return }
         for capture in captures {
             let lower = capture.label.lowercased()
-            let kind: CredentialKind = lower.contains("private key")
-                ? .sshPrivateKey
-                : (lower.contains("password") || lower.contains("密码")
-                    ? .websitePassword : .genericToken)
+            let kind: CredentialKind
+            if lower.contains("private key") {
+                kind = .sshPrivateKey
+            } else if lower.contains("vnc") {
+                kind = .vncPassword
+            } else if lower.contains("ssh") {
+                kind = .sshPassword
+            } else if lower.contains("api") {
+                kind = .providerAPIKey
+            } else if lower.contains("password") || lower.contains("密码") {
+                kind = .websitePassword
+            } else {
+                kind = .genericToken
+            }
             _ = try await environment.credentialVault.capture(
                 capture.value,
                 kind: kind,
@@ -2829,7 +2853,7 @@ final class ConversationCenter: ObservableObject {
         let enabledProviderIDs = Set(providers.map(\.id))
         return modelsByProvider.values.flatMap { $0 }
             .filter {
-                $0.isEnabled && $0.effectiveUseSurfaces.contains(.auxiliaryVision)
+                $0.isEnabled && $0.supportsAuxiliaryVisionSurface
                     && enabledProviderIDs.contains($0.providerID)
             }
             .sorted {
@@ -2840,22 +2864,18 @@ final class ConversationCenter: ObservableObject {
     var approvalModels: [ModelProfile] {
         let enabledProviderIDs = Set(providers.map(\.id))
         return modelsByProvider.values.flatMap { $0 }
-            .filter { $0.isEnabled && $0.effectiveUseSurfaces.contains(.approval)
+            .filter { $0.isEnabled && $0.supportsApprovalSurface
                 && enabledProviderIDs.contains($0.providerID) }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
     func auxiliaryVisionProviderAndModel() -> (ProviderProfile, ModelProfile)? {
         let candidates = visionModels
-        // An explicit auxiliary selection is authoritative. Older synced
-        // model rows can predate the vision-capability flag; rejecting that
-        // selected row made Settings show a model while image.inspect claimed
-        // none was configured. Capability filtering remains the fallback for
-        // automatic selection.
+        // An explicit selection is authoritative only while it remains a
+        // dedicated visual-understanding candidate. A stale synced media
+        // generator must never bypass the same filter used by Settings.
         let selected = modelPreferences.visionModelID.flatMap { selectedID in
-            modelsByProvider.values.flatMap { $0 }.first(where: {
-                $0.id == selectedID && $0.isEnabled
-            })
+            candidates.first(where: { $0.id == selectedID })
         }
         let defaultVision = modelPreferences.defaultAgentModelID.flatMap { defaultID in
             candidates.first(where: { $0.id == defaultID })

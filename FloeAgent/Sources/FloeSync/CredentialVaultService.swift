@@ -35,9 +35,15 @@ public actor CredentialVaultService {
         origin: String? = nil,
         deviceBound: Bool = false
     ) async throws -> CredentialHandle {
+        let durableHostID: UUID?
+        if let hostID, try await records.hostExists(id: hostID) {
+            durableHostID = hostID
+        } else {
+            durableHostID = nil
+        }
         let record = CredentialRecord(
             id: id,
-            kind: kind, owner: owner, hostID: hostID, origin: origin,
+            kind: kind, owner: owner, hostID: durableHostID, origin: origin,
             label: label, synchronizable: false, deviceBound: deviceBound
         )
         try local.store(account: record.keychainAccount, secret: secret)

@@ -50,7 +50,7 @@ final class RemoteSessionCenter: ObservableObject {
     private var vncEndpointBySessionID: [UUID: UUID] = [:]
     private var toolManagedVNCSessionIDs: Set<UUID> = []
     private var vncIdleDisconnectTasks: [UUID: Task<Void, Never>] = [:]
-    private var latestVNCFailureByEndpointID: [UUID: String] = [:]
+    private var latestVNCFailureByEndpointID: [UUID: VNCConnectionFailure] = [:]
     private let toolManagedVNCIdleTimeout: TimeInterval = 5 * 60
     /// Continuations for pending TOFU decisions, keyed by challenge id.
     private var trustContinuations: [String: CheckedContinuation<Bool, Never>] = [:]
@@ -130,6 +130,12 @@ final class RemoteSessionCenter: ObservableObject {
         )
         if let stored = try await hostStore.host(id: profile.id) {
             try await environment.configurationSync.saveRemoteHost(stored)
+        }
+        // Saving the host is the explicit signal that endpoint settings or
+        // credentials may have changed. Only then may an agent retry a prior
+        // non-retryable authentication failure.
+        for endpoint in profile.vncEndpoints {
+            latestVNCFailureByEndpointID[endpoint.id] = nil
         }
         await loadHosts()
     }
@@ -299,6 +305,11 @@ final class RemoteSessionCenter: ObservableObject {
             )
         }
 
+        if let failure = latestVNCFailureByEndpointID[candidate.endpoint.id],
+           failure.category == .authenticationFailed || failure.category == .credentialMissing {
+            throw failure
+        }
+
         if let existing = vncEndpointBySessionID.first(where: { $0.value == candidate.endpoint.id })?.key,
            let owner = vncOwners[existing] {
             switch owner.connectionState {
@@ -400,8 +411,8 @@ final class RemoteSessionCenter: ObservableObject {
         owner.onStateChange = { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if case .failed(let reason) = owner.connectionState {
-                    self.latestVNCFailureByEndpointID[endpoint.id] = reason
+                if case .failed(let failure) = owner.connectionState {
+                    self.latestVNCFailureByEndpointID[endpoint.id] = failure
                 }
                 await self.refreshSnapshots()
             }
@@ -450,16 +461,24 @@ final class RemoteSessionCenter: ObservableObject {
                 latestVNCFailureByEndpointID[endpoint.id] = nil
                 armToolManagedVNCIdleDisconnect(sessionID: sessionID)
                 return owner.session.map { VNCSessionHandle(id: sessionID, session: $0) }
-            case .failed(let reason):
-                latestVNCFailureByEndpointID[endpoint.id] = reason
-                throw FloeError.validationFailed(reason)
+            case .failed(let failure):
+                latestVNCFailureByEndpointID[endpoint.id] = failure
+                throw failure
             case .connecting, .disconnected:
                 try await Task.sleep(for: .milliseconds(150))
             }
         }
-        let previous = latestVNCFailureByEndpointID[endpoint.id]
-        let reason = previous ?? "VNC connection timed out after 15 seconds while waiting for authentication and the first framebuffer."
-        throw FloeError.validationFailed(reason)
+        if let previous = latestVNCFailureByEndpointID[endpoint.id] {
+            throw previous
+        }
+        throw VNCConnectionFailure(
+            category: .timedOut,
+            stage: .framebuffer,
+            retryable: true,
+            host: endpoint.host,
+            port: endpoint.port,
+            message: "VNC connection timed out after 15 seconds while waiting for authentication and the first framebuffer."
+        )
     }
 
     private func armToolManagedVNCIdleDisconnect(sessionID: UUID) {

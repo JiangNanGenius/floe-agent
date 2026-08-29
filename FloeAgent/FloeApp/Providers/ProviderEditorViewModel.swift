@@ -159,11 +159,12 @@ final class ProviderEditorViewModel: ObservableObject {
         let existingModels = center.configuredModelsByProvider[providerID] ?? []
         candidateModels = existingModels.filter { model in
             switch serviceRole {
-            case .conversation: model.capabilities.contains(.text)
+            case .conversation:
+                model.supportsChatAgentSurface
             case .image:
-                model.capabilities.contains(.imageGeneration)
-                    || model.capabilities.contains(.imageEditing)
-            case .video: model.capabilities.contains(.videoGeneration)
+                model.effectiveUseSurfaces.contains(.imageGeneration)
+            case .video:
+                model.effectiveUseSurfaces.contains(.videoGeneration)
             }
         }
         nativeToolStatusByModelID = Dictionary(uniqueKeysWithValues: candidateModels.map {

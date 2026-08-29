@@ -24,6 +24,8 @@ public enum RemotePythonError: Error, Sendable, Equatable, LocalizedError {
     case executionFailed(exitCode: Int32, stderr: String)
     /// A connection/auth/transport failure (SSH-level).
     case connectionFailed(String)
+    /// Structured SSH failure preserved from the connection boundary.
+    case sshConnection(SSHConnectionError)
 
     public var errorDescription: String? {
         switch self {
@@ -37,7 +39,45 @@ public enum RemotePythonError: Error, Sendable, Equatable, LocalizedError {
             "python3 exited with status \(code): \(stderr)"
         case .connectionFailed(let detail):
             "SSH connection failed: \(detail)"
+        case .sshConnection(let failure):
+            failure.errorDescription
         }
+    }
+
+    public var toolFailureSummary: String {
+        switch self {
+        case .sshConnection(let failure):
+            failure.toolSummary
+        case .noHostConfigured:
+            #"{"category":"configurationMissing","reason":"No SSH host is configured.","retryable":false,"stage":"configuration","status":"connectionFailed"}"#
+        case .hostNotFound(let id):
+            #"{"category":"configurationMissing","reason":"The requested SSH host does not exist.","retryable":false,"stage":"configuration","status":"connectionFailed","target":"\#(id.uuidString)"}"#
+        case .connectionFailed(let detail):
+            Self.failureJSON(category: "transportFailed", stage: "transport", retryable: true, reason: detail)
+        case .pythonNotFound(let hostID):
+            Self.failureJSON(category: "remoteCapabilityMissing", stage: "execution", retryable: false, reason: "python3 is not installed on host \(hostID.uuidString)")
+        case .executionFailed(let code, let stderr):
+            Self.failureJSON(category: "remoteCommandFailed", stage: "execution", retryable: false, reason: "python3 exited with status \(code): \(stderr)")
+        }
+    }
+
+    private static func failureJSON(
+        category: String,
+        stage: String,
+        retryable: Bool,
+        reason: String
+    ) -> String {
+        let payload: [String: Any] = [
+            "status": "connectionFailed",
+            "category": category,
+            "stage": stage,
+            "retryable": retryable,
+            "reason": SecretRedactor.redact(reason)
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
+            return SecretRedactor.redact(reason)
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 }
 

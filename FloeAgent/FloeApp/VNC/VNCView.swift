@@ -104,15 +104,15 @@ struct VNCView: View {
     }
 
     private var statusText: String {
-        if case .failed(let reason) = viewModel.connectionState {
-            return reason
+        if case .failed(let failure) = viewModel.connectionState {
+            return failure.message
         }
         guard let state = viewModel.snapshot?.record.state else {
             switch viewModel.connectionState {
             case .connecting: return String(localized: "session.connecting")
             case .connected: return String(localized: "session.connected")
             case .disconnected: return String(localized: "state.disconnected")
-            case .failed(let reason): return reason
+            case .failed(let failure): return failure.message
             }
         }
         switch state {

@@ -175,6 +175,32 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
         effectiveUseSurfaces.contains(.chatAgent)
     }
 
+    /// A visual-understanding helper must be a dedicated inference model.
+    /// Media generators sometimes advertise `vision` because they accept
+    /// reference images, but that does not make them suitable for OCR or
+    /// describing an attachment. Keep those models out of every auxiliary
+    /// vision picker and route even when a stale synced row contains both
+    /// surfaces.
+    public var supportsAuxiliaryVisionSurface: Bool {
+        effectiveUseSurfaces.contains(.auxiliaryVision)
+            && !effectiveUseSurfaces.contains(.imageGeneration)
+            && !effectiveUseSurfaces.contains(.videoGeneration)
+            && !capabilities.contains(.imageGeneration)
+            && !capabilities.contains(.imageEditing)
+            && !capabilities.contains(.videoGeneration)
+    }
+
+    /// Approval must be performed by a text/reasoning model, not by a media
+    /// generation endpoint that happens to carry a stale approval flag.
+    public var supportsApprovalSurface: Bool {
+        effectiveUseSurfaces.contains(.approval)
+            && !effectiveUseSurfaces.contains(.imageGeneration)
+            && !effectiveUseSurfaces.contains(.videoGeneration)
+            && !capabilities.contains(.imageGeneration)
+            && !capabilities.contains(.imageEditing)
+            && !capabilities.contains(.videoGeneration)
+    }
+
     public var isVisibleInPrimaryPicker: Bool {
         isHiddenFromPrimaryPicker != true
     }

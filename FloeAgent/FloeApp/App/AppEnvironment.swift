@@ -401,20 +401,24 @@ final class AppEnvironment: ObservableObject {
                 throw RemotePythonError.hostNotFound(hostID)
             }
             let profile = try RemoteHostProfile(stored: stored)
-            return try await sshService.connect(
-                profile: profile,
-                credentialResolver: { reference in
-                    let store = KeychainStore(
-                        service: "org.floeagent.ios.secrets",
-                        synchronizable: reference.synchronizable
-                    )
-                    return try store.read(account: reference.keychainAccount)
-                },
-                // Non-interactive context: an unknown host key is rejected
-                // rather than prompting. The user trusts hosts via the
-                // Hosts UI (TOFU) before running remote Python.
-                hostKeyDecision: { _ in false }
-            )
+            do {
+                return try await sshService.connect(
+                    profile: profile,
+                    credentialResolver: { reference in
+                        let store = KeychainStore(
+                            service: "org.floeagent.ios.secrets",
+                            synchronizable: reference.synchronizable
+                        )
+                        return try store.read(account: reference.keychainAccount)
+                    },
+                    // Non-interactive context: an unknown host key is rejected
+                    // rather than prompting. The user trusts hosts via the
+                    // Hosts UI (TOFU) before running remote Python.
+                    hostKeyDecision: { _ in false }
+                )
+            } catch let error as SSHConnectionError {
+                throw RemotePythonError.sshConnection(error)
+            }
         }
 
         let hostResolver: RemotePythonService.HostResolver = { hostID in

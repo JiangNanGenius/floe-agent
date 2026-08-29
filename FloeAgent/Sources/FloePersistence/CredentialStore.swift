@@ -126,6 +126,19 @@ public actor CredentialStore {
         }
     }
 
+    /// A model may create a host and its credential in the same tool call.
+    /// Credential normalization runs first, so only attach the optional host
+    /// foreign key when that host is already durable.
+    public func hostExists(id: UUID) async throws -> Bool {
+        try await database.reader { db in
+            try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM hosts WHERE id = ?)",
+                arguments: [id.uuidString]
+            ) ?? false
+        }
+    }
+
     public func delete(id: UUID) async throws {
         try await database.writer { db in
             try db.execute(sql: "DELETE FROM credential_records WHERE id = ?", arguments: [id.uuidString])

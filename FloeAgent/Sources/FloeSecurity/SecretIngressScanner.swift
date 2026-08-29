@@ -90,7 +90,10 @@ public enum SecretIngressScanner {
                     continue
                 }
                 guard let data = capturedValue.data(using: .utf8) else { break }
-                let capture = CapturedSecret(label: label, value: data)
+                let semanticLabel = label == "private key"
+                    ? label
+                    : contextualLabel(baseLabel: label, text: sanitized, matchRange: match.range)
+                let capture = CapturedSecret(label: semanticLabel, value: data)
                 captures.append(capture)
                 if match.numberOfRanges >= 3,
                    label != "private key",
@@ -108,5 +111,37 @@ public enum SecretIngressScanner {
             }
         }
         return SecretIngressResult(sanitizedText: sanitized, captures: captures)
+    }
+
+    /// Keeps enough non-secret intent beside an opaque credential card for a
+    /// later model turn to find the right card. The raw value is never copied
+    /// into this metadata.
+    private static func contextualLabel(
+        baseLabel: String,
+        text: String,
+        matchRange: NSRange
+    ) -> String {
+        let nsText = text as NSString
+        let lineRange = nsText.lineRange(for: matchRange)
+        let line = nsText.substring(with: lineRange).lowercased()
+        let normalized = baseLabel.lowercased()
+
+        if line.contains("vnc") {
+            return normalized.contains("token") || normalized.contains("key")
+                ? "VNC credential"
+                : "VNC password"
+        }
+        if line.contains("ssh") || line.contains("远程主机") {
+            return normalized.contains("key") || normalized.contains("private")
+                ? "SSH private key"
+                : "SSH password"
+        }
+        if line.contains("api") || normalized.contains("api") {
+            return "Provider API key"
+        }
+        if line.contains("网站") || line.contains("后台") || line.contains("登录") {
+            return "Website password"
+        }
+        return baseLabel
     }
 }
