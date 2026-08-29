@@ -44,9 +44,17 @@ enum ProviderServiceRole: String, CaseIterable, Identifiable {
         }
     }
 
+    var defaultUseSurfaces: ModelUseSurfaces {
+        switch self {
+        case .conversation: [.chatAgent, .approval]
+        case .image: .imageGeneration
+        case .video: .videoGeneration
+        }
+    }
+
     static func infer(from models: [ModelProfile]) -> ProviderServiceRole {
-        if models.contains(where: { $0.capabilities.contains(.text) }) { return .conversation }
-        if models.contains(where: { $0.capabilities.contains(.videoGeneration) }) { return .video }
+        if models.contains(where: { $0.effectiveUseSurfaces.contains(.chatAgent) }) { return .conversation }
+        if models.contains(where: { $0.effectiveUseSurfaces.contains(.videoGeneration) }) { return .video }
         return .image
     }
 }

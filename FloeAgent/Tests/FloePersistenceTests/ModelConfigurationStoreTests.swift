@@ -412,6 +412,69 @@ struct ModelConfigurationStoreTests {
         #expect(try await store.preferences().canvasVisionModelID == nil)
     }
 
+    @Test("Explicit model use surfaces survive persistence and media stays out of chat")
+    func modelUseSurfacesRoundTrip() async throws {
+        let store = try await makeStore()
+        let provider = ProviderProfile(
+            kind: .openAI,
+            wireProtocol: .openAIResponses,
+            baseURL: try #require(URL(string: "https://api.example.com/v1"))
+        )
+        try await store.saveProvider(provider)
+
+        let hiddenVision = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "vision-helper",
+            displayName: "Vision helper",
+            limits: ModelLimits(contextTokens: 32_768, maxOutputTokens: 4_096),
+            capabilities: [.text, .vision],
+            useSurfaces: [.auxiliaryVision],
+            isHiddenFromPrimaryPicker: true
+        )
+        let image = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "image-only",
+            displayName: "Image only",
+            limits: ModelLimits(contextTokens: 1, maxOutputTokens: 0),
+            capabilities: [.text, .imageGeneration],
+            useSurfaces: [.imageGeneration]
+        )
+        try await store.saveModel(hiddenVision)
+        try await store.saveModel(image)
+
+        let restored = try await store.models(providerID: provider.id)
+        let restoredVision = try #require(restored.first { $0.id == hiddenVision.id })
+        let restoredImage = try #require(restored.first { $0.id == image.id })
+
+        #expect(restoredVision.effectiveUseSurfaces == [.auxiliaryVision])
+        #expect(restoredVision.supportsChatAgentSurface == false)
+        #expect(restoredImage.effectiveUseSurfaces == [.imageGeneration])
+        #expect(restoredImage.supportsChatAgentSurface == false)
+    }
+
+    @Test("Legacy media capability never infers chat-agent use")
+    func legacyMediaUseSurfaceInference() {
+        let providerID = UUID()
+        let image = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "legacy-image",
+            displayName: "Legacy image",
+            limits: ModelLimits(contextTokens: 1, maxOutputTokens: 0),
+            capabilities: [.text, .imageGeneration]
+        )
+        let chat = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "legacy-chat",
+            displayName: "Legacy chat",
+            limits: ModelLimits(contextTokens: 8_192, maxOutputTokens: 2_048),
+            capabilities: [.text, .tools]
+        )
+
+        #expect(image.supportsChatAgentSurface == false)
+        #expect(image.effectiveUseSurfaces.contains(.imageGeneration))
+        #expect(chat.supportsChatAgentSurface)
+    }
+
     @Test("Onboarding status persists independently from unfinished configuration")
     func onboardingStatusPersistence() async throws {
         let store = try await makeStore()

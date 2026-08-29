@@ -28,10 +28,14 @@ public struct SecretIngressResult: Sendable, Hashable {
 public enum SecretIngressScanner {
     private static let labelledSecretPattern = #"(?is)(?<![\p{L}\p{N}_])(password|passwd|passphrase|密码|口令|api[-_ ]?key|token|secret)\s*(?:(?:is)\s+|(?:为|是)\s*|[:=：]\s*)"#
     private static let quotedValuePattern = labelledSecretPattern + #"["“‘]([^\r\n"”’]{4,256})["”’]"#
-    private static let unquotedValuePattern = labelledSecretPattern + #"([^\r\n,，;；。.!?！？…]{4,})"#
+    // Unquoted credentials stop at whitespace so a request such as
+    // "密码是 abc 然后连接" keeps the action text. Credentials containing
+    // spaces remain supported through the quoted form above.
+    private static let unquotedValuePattern = labelledSecretPattern + #"([^\s\r\n,，;；。.!?！？…]{4,256})"#
     private static let nonSecretValues: Set<String> = [
         "blank", "empty", "example", "missing", "none", "null", "optional",
-        "required", "same", "unchanged", "unknown", "whatever"
+        "required", "same", "unchanged", "unknown", "whatever",
+        "你设置的", "我设置的", "之前那个", "还是之前的", "没有设置", "不正确"
     ]
 
     public static func credentialID(from placeholder: String) -> UUID? {
@@ -73,6 +77,10 @@ public enum SecretIngressScanner {
                 let capturedValue = label == "private key"
                     ? value
                     : value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if label != "private key", capturedValue.contains("⟨credential:") {
+                    searchLocation = NSMaxRange(match.range)
+                    continue
+                }
                 if match.numberOfRanges >= 3,
                    label != "private key",
                    Self.nonSecretValues.contains(capturedValue.lowercased()) {
@@ -84,11 +92,19 @@ public enum SecretIngressScanner {
                 guard let data = capturedValue.data(using: .utf8) else { break }
                 let capture = CapturedSecret(label: label, value: data)
                 captures.append(capture)
-                // Replace the complete labelled assignment. Replacing only
-                // its value leaves `password: <placeholder>` matching this
-                // same expression forever and can hang message submission.
-                sanitized.replaceSubrange(matchRange, with: capture.placeholder)
-                searchLocation = 0
+                if match.numberOfRanges >= 3,
+                   label != "private key",
+                   let valueRange = Range(match.range(at: 2), in: sanitized) {
+                    // Preserve the user's wording and only replace the secret
+                    // value. This keeps intent such as "VNC 密码是 …" visible
+                    // beside the secure card instead of making the message
+                    // appear rewritten by the app.
+                    sanitized.replaceSubrange(valueRange, with: capture.placeholder)
+                    searchLocation = match.range(at: 2).location + capture.placeholder.utf16.count
+                } else {
+                    sanitized.replaceSubrange(matchRange, with: capture.placeholder)
+                    searchLocation = match.range.location + capture.placeholder.utf16.count
+                }
             }
         }
         return SecretIngressResult(sanitizedText: sanitized, captures: captures)

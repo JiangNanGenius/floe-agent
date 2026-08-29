@@ -375,8 +375,8 @@ enum ConfigurationCodec {
                     id, provider_id, remote_model_id, display_name,
                     context_tokens, max_output_tokens, pricing_json,
                     capabilities, reasoning_effort, is_enabled,
-                    is_hidden_from_primary_picker
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    is_hidden_from_primary_picker, use_surfaces
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     provider_id = excluded.provider_id,
                     remote_model_id = excluded.remote_model_id,
@@ -387,7 +387,8 @@ enum ConfigurationCodec {
                     capabilities = excluded.capabilities,
                     reasoning_effort = excluded.reasoning_effort,
                     is_enabled = excluded.is_enabled,
-                    is_hidden_from_primary_picker = excluded.is_hidden_from_primary_picker
+                    is_hidden_from_primary_picker = excluded.is_hidden_from_primary_picker,
+                    use_surfaces = excluded.use_surfaces
                 """,
             arguments: [
                 canonical.id.uuidString, canonical.providerID.uuidString,
@@ -395,7 +396,8 @@ enum ConfigurationCodec {
                 canonical.limits.contextTokens, canonical.limits.maxOutputTokens,
                 pricingJSON, canonical.capabilities.rawValue,
                 canonical.reasoningEffort?.rawValue, canonical.isEnabled,
-                canonical.isHiddenFromPrimaryPicker ?? false
+                canonical.isHiddenFromPrimaryPicker ?? false,
+                canonical.useSurfaces?.rawValue
             ]
         )
         return canonical
@@ -427,6 +429,7 @@ enum ConfigurationCodec {
             ),
             pricing: pricing,
             capabilities: ModelCapabilities(rawValue: row["capabilities"]),
+            useSurfaces: (row["use_surfaces"] as Int?).map(ModelUseSurfaces.init(rawValue:)),
             reasoningEffort: (row["reasoning_effort"] as String?).flatMap(ModelReasoningEffort.init(rawValue:)),
             isEnabled: row["is_enabled"],
             isHiddenFromPrimaryPicker: row["is_hidden_from_primary_picker"]

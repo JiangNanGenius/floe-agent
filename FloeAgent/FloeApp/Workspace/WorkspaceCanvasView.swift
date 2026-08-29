@@ -1793,6 +1793,7 @@ struct WorkspaceCanvasView: View {
     @StateObject private var store: WorkspaceCanvasStore
     private let workspace: WorkspaceRecord?
     @State private var selectedNodeIDs = Set<UUID>()
+    @State private var editingNodeID: UUID?
     @State private var selectedStrokeIDs = Set<UUID>()
     @State private var mode: CanvasMode = .select
     @State private var canvasPreferences = CanvasPreferences.load()
@@ -2180,6 +2181,7 @@ struct WorkspaceCanvasView: View {
             .clipped()
             .overlay(alignment: .bottomTrailing) { zoomControls }
             .overlay(alignment: .topLeading) { modeControls(size: geometry.size) }
+            .overlay(alignment: .bottom) { selectedNodeToolbar }
             .navigationTitle(store.selectedDocument?.name ?? "画布")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -2387,11 +2389,16 @@ struct WorkspaceCanvasView: View {
                     set: { store.updateNode(node.id, text: $0) }
                 ),
                 isSelected: selectedNodeIDs.contains(node.id),
+                isEditing: editingNodeID == node.id,
                 sourceURLs: node.sourceURLs ?? [],
                 licenseStatus: node.licenseStatus,
                 onOpen3D: node.kind == .scene3D ? {
                     directorPresentation = Canvas3DDirectorPresentation(nodeID: node.id)
                 } : nil,
+                onBeginEditing: {
+                    selectedNodeIDs = [node.id]
+                    editingNodeID = node.id
+                },
                 onDelete: { store.deleteNode(node.id) }
             )
             .frame(width: node.width, height: node.height)
@@ -2416,6 +2423,11 @@ struct WorkspaceCanvasView: View {
             .scaleEffect(scale)
             .position(screenPoint(CGPoint(x: node.x, y: node.y)))
             .rotationEffect(.degrees(node.rotation ?? 0))
+            .onTapGesture(count: 2) {
+                guard mode == .select else { return }
+                selectedNodeIDs = [node.id]
+                editingNodeID = node.id
+            }
             .onTapGesture {
                 if mode == .connector {
                     if let source = connectionStartID {
@@ -2425,11 +2437,9 @@ struct WorkspaceCanvasView: View {
                         connectionStartID = node.id
                     }
                 } else {
-                    if selectedNodeIDs.contains(node.id) {
-                        selectedNodeIDs.remove(node.id)
-                    } else {
-                        selectedNodeIDs.insert(node.id)
-                    }
+                    // Selection is stable: a second click begins no hidden
+                    // toggle. Editing is an explicit double-click/menu action.
+                    selectedNodeIDs = [node.id]
                 }
             }
             .simultaneousGesture(
@@ -2541,6 +2551,7 @@ struct WorkspaceCanvasView: View {
                 case .select:
                     selectedNodeIDs.removeAll()
                     selectedStrokeIDs.removeAll()
+                    editingNodeID = nil
                 case .text:
                     selectedNodeIDs = [store.addNote(at: canvasPoint(value.location))]
                     mode = .select
@@ -2650,6 +2661,41 @@ struct WorkspaceCanvasView: View {
             .presentationCompactAdaptation(.popover)
         }
         .padding(12)
+    }
+
+    @ViewBuilder
+    private var selectedNodeToolbar: some View {
+        if !selectedNodeIDs.isEmpty, mode == .select {
+            HStack(spacing: 4) {
+                if selectedNodeIDs.count == 1, let nodeID = selectedNodeIDs.first {
+                    Button("编辑", systemImage: "pencil") { editingNodeID = nodeID }
+                }
+                Button("复制", systemImage: "plus.square.on.square") {
+                    selectedNodeIDs = store.duplicateNodes(selectedNodeIDs)
+                    editingNodeID = nil
+                }
+                Button("连接", systemImage: "point.topleft.down.to.point.bottomright.curvepath") {
+                    connectionStartID = selectedNodeIDs.first
+                    editingNodeID = nil
+                    mode = .connector
+                }
+                Button("分组", systemImage: "square.3.layers.3d") {
+                    store.group(selectedNodeIDs)
+                    editingNodeID = nil
+                }
+                Button("属性", systemImage: "slider.horizontal.3") { showsInspector = true }
+                Button("生成", systemImage: "wand.and.stars") { showsGeneration = true }
+                Button("删除", systemImage: "trash", role: .destructive) { deleteSelection() }
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.bordered)
+            .padding(8)
+            .background(.regularMaterial, in: Capsule())
+            .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+            .padding(.bottom, 18)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .accessibilityElement(children: .contain)
+        }
     }
 
     private var zoomControls: some View {
@@ -2766,6 +2812,7 @@ struct WorkspaceCanvasView: View {
     private func deleteSelection() {
         store.deleteNodes(selectedNodeIDs)
         store.removeStrokes(selectedStrokeIDs)
+        editingNodeID = nil
         selectedNodeIDs.removeAll()
         selectedStrokeIDs.removeAll()
     }
@@ -3453,9 +3500,11 @@ private struct CanvasNodeCard: View {
     let node: FloeCanvasNode
     @Binding var text: String
     let isSelected: Bool
+    let isEditing: Bool
     let sourceURLs: [String]
     let licenseStatus: String?
     let onOpen3D: (() -> Void)?
+    let onBeginEditing: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -3483,6 +3532,7 @@ private struct CanvasNodeCard: View {
         }
         .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
         .contextMenu {
+            Button("编辑", systemImage: "pencil", action: onBeginEditing)
             if let onOpen3D {
                 Button("打开 3D 导演台", systemImage: "cube.transparent", action: onOpen3D)
             }
@@ -3500,16 +3550,31 @@ private struct CanvasNodeCard: View {
     private var nodeContent: some View {
         switch node.kind ?? .text {
         case .text, .stickyNote:
-            TextEditor(text: $text)
-                .font(.body)
-                .scrollContentBackground(.hidden)
-                .padding(10)
+            if isEditing {
+                TextEditor(text: $text)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .padding(10)
+            } else {
+                Text(text.isEmpty ? (node.kind == .stickyNote ? "便签" : "文本") : text)
+                    .font(.body)
+                    .foregroundStyle(text.isEmpty ? .secondary : .primary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(14)
+                    .contentShape(Rectangle())
+            }
         case .shape:
             ZStack {
                 CanvasNodeShapeView(shape: node.shape ?? .roundedRectangle)
-                TextField("形状文字", text: $text, axis: .vertical)
-                    .multilineTextAlignment(.center)
-                    .padding()
+                if isEditing {
+                    TextField("形状文字", text: $text, axis: .vertical)
+                        .multilineTextAlignment(.center)
+                        .padding()
+                } else {
+                    Text(text)
+                        .multilineTextAlignment(.center)
+                        .padding()
+                }
             }
         case .image:
             CanvasAssetNodeContent(node: node, fallbackIcon: "photo", title: text.isEmpty ? "图片" : text)

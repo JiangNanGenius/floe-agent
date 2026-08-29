@@ -355,6 +355,10 @@ public actor FloeAgentRuntime {
     private let sink: (any AgentEventSink)?
     private let contextEngine: (any ContextEngine)?
     private let budgetLedger: HarnessBudgetLedger
+    /// Last boundary before model-produced tool arguments can enter approval,
+    /// checkpoints, audit events or logs. App hosts use this to replace raw
+    /// credential fields with Keychain-backed references.
+    private let toolCallNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)?
 
     private var messages: [ConversationMessage] = []
     private var pendingToolCalls: [ToolCall] = []
@@ -468,6 +472,7 @@ public actor FloeAgentRuntime {
         checkpointStore: (any CheckpointStore)? = nil,
         intelligenceStore: SQLiteIntelligenceStore? = nil,
         contextEngine: (any ContextEngine)? = nil,
+        toolCallNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)? = nil,
         sink: (any AgentEventSink)? = nil,
         runID: UUID = UUID()
     ) {
@@ -481,6 +486,7 @@ public actor FloeAgentRuntime {
         self.checkpointStore = checkpointStore
         self.intelligenceStore = intelligenceStore
         self.contextEngine = contextEngine
+        self.toolCallNormalizer = toolCallNormalizer
         self.sink = sink
         self.runID = runID
         self.forceCompactionOnNextTurn = configuration.forceInitialCompaction
@@ -1445,8 +1451,15 @@ public actor FloeAgentRuntime {
             // Collect into the response batch; execution happens on the
             // provider's completion event so read-only calls can run in
             // parallel and writes act as barriers.
-            let scoped = call.withIDContext(runID: runID)
-            pendingToolBatch.append(scoped)
+            do {
+                let normalized = try await toolCallNormalizer?(call) ?? call
+                pendingToolBatch.append(normalized.withIDContext(runID: runID))
+            } catch {
+                await failRun(
+                    message: "Could not securely prepare tool credentials: \(error.localizedDescription)",
+                    recoverable: true
+                )
+            }
 
         case .toolResult:
             break // Providers never emit tool results; runtime owns them.

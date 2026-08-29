@@ -353,11 +353,13 @@ final class ProviderEditorViewModel: ObservableObject {
         var normalized = model
         if serviceRole == .conversation {
             normalized.capabilities.insert(.text)
+            normalized.useSurfaces = normalized.effectiveUseSurfaces.union(.chatAgent)
         } else {
             normalized.capabilities.remove(.text)
             normalized.capabilities.remove(.tools)
             normalized.capabilities.remove(.approval)
             normalized.isHiddenFromPrimaryPicker = true
+            normalized.useSurfaces = serviceRole.defaultUseSurfaces
         }
         candidateModels[index] = normalized
         nativeToolStatusByModelID[normalized.id] = NativeToolCapabilityProbe.initialStatus(for: normalized)
@@ -385,6 +387,9 @@ final class ProviderEditorViewModel: ObservableObject {
             if serviceRole != .conversation {
                 model.capabilities = serviceRole.defaultCapabilities
                 model.isHiddenFromPrimaryPicker = true
+                model.useSurfaces = serviceRole.defaultUseSurfaces
+            } else if model.useSurfaces == nil {
+                model.useSurfaces = serviceRole.defaultUseSurfaces
             }
             return model
         }
@@ -406,6 +411,7 @@ final class ProviderEditorViewModel: ObservableObject {
             capabilities: serviceRole == .conversation
                 ? ModelCapabilities.defaultTextModel(for: selectedProtocol)
                 : serviceRole.defaultCapabilities,
+            useSurfaces: serviceRole.defaultUseSurfaces,
             isHiddenFromPrimaryPicker: serviceRole == .conversation ? false : true
         )
         candidateModels.append(model)

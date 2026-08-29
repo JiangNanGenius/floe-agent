@@ -230,6 +230,7 @@ public actor ConversationRunService {
         auditSink: (any AuditSink)? = nil,
         checkpointStore: (any CheckpointStore)? = nil,
         contextEngine: (any ContextEngine)? = HybridContextEngine(),
+        toolCallNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)? = nil,
         intelligenceStore: SQLiteIntelligenceStore? = nil,
         conversationStore: any ConversationStore,
         runStore: any RunStore,
@@ -271,6 +272,7 @@ public actor ConversationRunService {
             checkpointStore: checkpointStore,
             intelligenceStore: intelligenceStore,
             contextEngine: contextEngine,
+            toolCallNormalizer: toolCallNormalizer,
             sink: forwarder,
             runID: runID
         )
@@ -584,10 +586,12 @@ public actor ConversationRunService {
                 "callID": snapshot.callID ?? "",
                 "outcome": outcome
             ])
-            _ = try? await runStore.appendEvent(
+            _ = await appendEventReliably(
                 runID: runID,
                 kind: .approval,
-                payloadJSON: payload
+                payloadJSON: payload,
+                boundary: "approvalReviewOutcome",
+                completionCritical: true
             )
         }
         let callLabel = snapshot.callID ?? "none"
@@ -647,7 +651,13 @@ public actor ConversationRunService {
                 requestedAt: waiting.requestedAt
             )))
             let payload = Self.approvalPayload(waiting)
-            _ = try? await runStore.appendEvent(runID: runID, kind: .approval, payloadJSON: payload)
+            _ = await appendEventReliably(
+                runID: runID,
+                kind: .approval,
+                payloadJSON: payload,
+                boundary: "approvalRequest",
+                completionCritical: true
+            )
         }
         // Successful completion already persisted its final assistant text
         // followed by the terminal event in handleEvent(.completed). Do not

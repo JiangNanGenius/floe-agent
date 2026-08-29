@@ -5,11 +5,13 @@ import Testing
 struct SecretIngressScannerTests {
     @Test("Replaces labelled password and token values")
     func labelledSecrets() {
-        let input = "账号 alice\n密码: correct horse battery staple\nAPI_KEY=sk-live-secret"
+        let input = "账号 alice\n密码: \"correct horse battery staple\"\nAPI_KEY=sk-live-secret"
         let result = SecretIngressScanner.scan(input)
         #expect(result.captures.count == 2)
         #expect(!result.sanitizedText.contains("correct horse battery staple"))
         #expect(!result.sanitizedText.contains("sk-live-secret"))
+        #expect(result.sanitizedText.contains("密码:"))
+        #expect(result.sanitizedText.contains("API_KEY="))
         #expect(result.sanitizedText.contains("⟨credential:"))
     }
 
@@ -32,10 +34,12 @@ struct SecretIngressScannerTests {
 
     @Test("Leaves password-related prose without a supplied value intact")
     func avoidsFalsePositives() {
-        let input = "密码是什么？\npassword is required\n请打开 password manager"
+        let input = "密码是什么？\npassword is required\n请打开 password manager\n密码是你设置的\n密码是 abc123 然后连接"
         let result = SecretIngressScanner.scan(input)
-        #expect(result.captures.isEmpty)
-        #expect(result.sanitizedText == input)
+        #expect(result.captures.count == 1)
+        #expect(result.sanitizedText.contains("密码是你设置的"))
+        #expect(result.sanitizedText.contains("然后连接"))
+        #expect(!result.sanitizedText.contains("abc123"))
     }
 
     @Test("Private key blocks never remain in persisted text")

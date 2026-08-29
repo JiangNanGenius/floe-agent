@@ -1,0 +1,68 @@
+import Foundation
+import Testing
+import FloePersistence
+import FloeSecurity
+@testable import FloeSync
+
+@Suite("Credential argument normalization")
+struct CredentialArgumentNormalizerTests {
+    @Test("Nested VNC plaintext becomes a reusable credential reference")
+    func nestedVNCPassword() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let records = CredentialStore(database: database)
+        let vault = CredentialVaultService(records: records)
+        let rawPassword = "nested-vnc-secret-\(UUID().uuidString)"
+        let input = try JSONSerialization.data(withJSONObject: [
+            "hostID": UUID().uuidString,
+            "vncConnections": [[
+                "displayName": "Direct VNC",
+                "transport": "direct",
+                "host": "192.0.2.10",
+                "port": 5_900,
+                "credentialInput": rawPassword
+            ]]
+        ])
+
+        let output = try await CredentialArgumentNormalizer.normalize(
+            input,
+            toolName: "ssh.updateHost",
+            vault: vault
+        )
+        let text = try #require(String(data: output, encoding: .utf8))
+        #expect(!text.contains(rawPassword))
+
+        let object = try #require(
+            JSONSerialization.jsonObject(with: output) as? [String: Any]
+        )
+        let connections = try #require(object["vncConnections"] as? [[String: Any]])
+        let placeholder = try #require(connections.first?["credentialInput"] as? String)
+        let id = try #require(SecretIngressScanner.credentialID(from: placeholder))
+        let record = try #require(try await records.record(id: id))
+        #expect(record.kind == .vncPassword)
+        #expect(try await vault.resolveForApprovedUse(CredentialHandle(id: id)) == Data(rawPassword.utf8))
+
+        try await records.delete(id: id)
+        await vault.drainDeletionQueue()
+    }
+
+    @Test("Existing references remain unchanged and create no duplicate card")
+    func existingReferenceIsIdempotent() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let records = CredentialStore(database: database)
+        let vault = CredentialVaultService(records: records)
+        let id = UUID()
+        let placeholder = CapturedSecret.placeholder(for: id)
+        let input = try JSONSerialization.data(withJSONObject: ["credentialInput": placeholder])
+
+        let output = try await CredentialArgumentNormalizer.normalize(
+            input,
+            toolName: "vnc.typeCredential",
+            vault: vault
+        )
+
+        #expect(output == input)
+        #expect(try await records.records().isEmpty)
+    }
+}

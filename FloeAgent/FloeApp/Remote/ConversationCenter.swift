@@ -593,6 +593,19 @@ final class ConversationCenter: ObservableObject {
             conversationStore: environment.conversationStore,
             runStore: environment.runStore,
             runningInputStore: environment.runningInputStore,
+            toolCallNormalizer: { [credentialVault = environment.credentialVault] call in
+                let owner: CredentialOwner = if canonicalWorkspace?.kind == .project,
+                                                let canonicalWorkspaceID {
+                    .workspace(canonicalWorkspaceID)
+                } else {
+                    .conversation(conversationID)
+                }
+                return try await Self.normalizeCredentialArguments(
+                    in: call,
+                    vault: credentialVault,
+                    owner: owner
+                )
+            },
             runID: runID,
             conversationHistory: conversationHistory,
             currentUserImages: currentUserImages,
@@ -747,11 +760,8 @@ final class ConversationCenter: ObservableObject {
         runSurface: AgentRunSurface = .ordinary,
         isGoalContinuation: Bool = false
     ) async throws -> StartedConversationRun {
-        // Preserve exactly what the user authored. Secret redaction belongs at
-        // log/persistence boundaries for tool arguments, not in the visible
-        // conversation or provider context. Replacing text here also prevents
-        // the model from completing an explicitly requested credential setup.
-        let trimmed = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ingress = SecretIngressScanner.scan(goal)
+        let trimmed = ingress.sanitizedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw FloeError.validationFailed("Goal must not be empty")
         }
@@ -762,6 +772,13 @@ final class ConversationCenter: ObservableObject {
 
         beginLaunch()
         defer { finishLaunch() }
+        // Capture before any durable message/checkpoint is written. The user
+        // still sees a secure card, while provider context and recovery state
+        // receive only a reusable credential reference.
+        try await captureIngressSecrets(
+            ingress.captures,
+            owner: workspaceID.map(CredentialOwner.workspace) ?? .conversation(conversationID)
+        )
         let runID = UUID()
         let prepared = try await prepareRunLaunch(RunLaunchRequest(
             conversationID: conversationID,
@@ -815,7 +832,8 @@ final class ConversationCenter: ObservableObject {
         executionMode: AgentExecutionMode = .agent,
         initialPolicy: DraftTaskPolicy? = nil
     ) async throws -> StartedConversationTask {
-        let trimmed = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ingress = SecretIngressScanner.scan(goal)
+        let trimmed = ingress.sanitizedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw FloeError.validationFailed("Goal must not be empty")
         }
@@ -826,6 +844,10 @@ final class ConversationCenter: ObservableObject {
 
         beginLaunch()
         defer { finishLaunch() }
+        try await captureIngressSecrets(
+            ingress.captures,
+            owner: workspaceID.map(CredentialOwner.workspace) ?? .vault
+        )
         let runID = UUID()
         let prepared = try await prepareRunLaunch(RunLaunchRequest(
             conversationTitle: title,
@@ -1098,6 +1120,23 @@ final class ConversationCenter: ObservableObject {
         let memoryLines = recalled.map { "- \(String($0.content.prefix(500)))" }
             + selected.filter { !recalledIDs.contains($0.id) }
                 .map { "- \(String($0.content.prefix(500)))" }
+        var credentialRecords = (try? await environment.credentialStore.records(
+            owner: .conversation(conversationID)
+        )) ?? []
+        if let workspaceID {
+            credentialRecords += (try? await environment.credentialStore.records(
+                owner: .workspace(workspaceID)
+            )) ?? []
+        }
+        credentialRecords += (try? await environment.credentialStore.records(owner: .vault)) ?? []
+        let credentialLines = credentialRecords
+            .reduce(into: [UUID: CredentialRecord]()) { $0[$1.id] = $1 }
+            .values
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .prefix(12)
+            .map {
+                "- Secure credential card: \($0.label); reference \(CapturedSecret.placeholder(for: $0.id)); kind \($0.kind.rawValue)"
+            }
         let workspaceSoulValue = try? await workspaceSoul
         let globalSoulValue = try? await globalSoul
         let workspaceProfileValue = try? await workspaceProfile
@@ -1105,7 +1144,9 @@ final class ConversationCenter: ObservableObject {
         let soul = workspaceSoulValue ?? globalSoulValue
         let profile = workspaceProfileValue ?? globalProfileValue
         return RuntimePersonalizationContext(
-            memory: memoryLines.isEmpty ? nil : Array(memoryLines.prefix(8)).joined(separator: "\n"),
+            memory: (Array(memoryLines.prefix(8)) + credentialLines).isEmpty
+                ? nil
+                : (Array(memoryLines.prefix(8)) + credentialLines).joined(separator: "\n"),
             soul: soul?.content,
             profile: profile?.content
         )
@@ -1113,18 +1154,8 @@ final class ConversationCenter: ObservableObject {
 
     private func captureIngressSecrets(
         _ captures: [CapturedSecret],
-        prepared: PreparedRun
-    ) async {
-        let owner: CredentialOwner = prepared.workspace.kind == .project
-            ? .workspace(prepared.workspace.id)
-            : .conversation(prepared.conversation.id)
-        await captureIngressSecrets(captures, owner: owner)
-    }
-
-    private func captureIngressSecrets(
-        _ captures: [CapturedSecret],
         owner: CredentialOwner
-    ) async {
+    ) async throws {
         guard !captures.isEmpty else { return }
         for capture in captures {
             let lower = capture.label.lowercased()
@@ -1132,14 +1163,37 @@ final class ConversationCenter: ObservableObject {
                 ? .sshPrivateKey
                 : (lower.contains("password") || lower.contains("密码")
                     ? .websitePassword : .genericToken)
-            _ = try? await environment.credentialVault.capture(
+            _ = try await environment.credentialVault.capture(
                 capture.value,
                 kind: kind,
                 owner: owner,
                 label: capture.label,
+                origin: "chat-ingress",
                 id: capture.id
             )
         }
+    }
+
+    /// Converts model-generated raw credential arguments into durable handles
+    /// before approval, audit or checkpoint code can observe the call.
+    private static func normalizeCredentialArguments(
+        in call: ToolCall,
+        vault: CredentialVaultService,
+        owner: CredentialOwner
+    ) async throws -> ToolCall {
+        let normalizedJSON = try await CredentialArgumentNormalizer.normalize(
+            call.argumentsJSON,
+            toolName: call.toolName,
+            vault: vault,
+            owner: owner
+        )
+        guard normalizedJSON != call.argumentsJSON else { return call }
+        return try ToolCall(
+            id: call.id,
+            toolName: call.toolName,
+            argumentsJSON: normalizedJSON,
+            scope: call.scope
+        )
     }
 
     /// Sends image evidence directly to a vision-capable primary model, or
@@ -2728,10 +2782,7 @@ final class ConversationCenter: ObservableObject {
         let enabledProviderIDs = Set(providers.map(\.id))
         return modelsByProvider.values.flatMap { $0 }
             .filter {
-                $0.isEnabled && $0.capabilities.contains(.text)
-                    && !$0.capabilities.contains(.imageGeneration)
-                    && !$0.capabilities.contains(.imageEditing)
-                    && !$0.capabilities.contains(.videoGeneration)
+                $0.isEnabled && $0.supportsChatAgentSurface
                     && enabledProviderIDs.contains($0.providerID)
             }
             .sorted {
@@ -2754,8 +2805,7 @@ final class ConversationCenter: ObservableObject {
         let enabledProviderIDs = Set(providers.map(\.id))
         return modelsByProvider.values.flatMap { $0 }
             .filter {
-                $0.isEnabled && ($0.capabilities.contains(.imageGeneration)
-                    || $0.capabilities.contains(.imageEditing))
+                $0.isEnabled && $0.effectiveUseSurfaces.contains(.imageGeneration)
                     && enabledProviderIDs.contains($0.providerID)
             }
             .sorted {
@@ -2767,7 +2817,7 @@ final class ConversationCenter: ObservableObject {
         let enabledProviderIDs = Set(providers.map(\.id))
         return modelsByProvider.values.flatMap { $0 }
             .filter {
-                $0.isEnabled && $0.capabilities.contains(.videoGeneration)
+                $0.isEnabled && $0.effectiveUseSurfaces.contains(.videoGeneration)
                     && enabledProviderIDs.contains($0.providerID)
             }
             .sorted {
@@ -2779,7 +2829,7 @@ final class ConversationCenter: ObservableObject {
         let enabledProviderIDs = Set(providers.map(\.id))
         return modelsByProvider.values.flatMap { $0 }
             .filter {
-                $0.isEnabled && $0.capabilities.contains(.vision)
+                $0.isEnabled && $0.effectiveUseSurfaces.contains(.auxiliaryVision)
                     && enabledProviderIDs.contains($0.providerID)
             }
             .sorted {
@@ -2790,7 +2840,7 @@ final class ConversationCenter: ObservableObject {
     var approvalModels: [ModelProfile] {
         let enabledProviderIDs = Set(providers.map(\.id))
         return modelsByProvider.values.flatMap { $0 }
-            .filter { $0.isEnabled && $0.capabilities.contains(.text)
+            .filter { $0.isEnabled && $0.effectiveUseSurfaces.contains(.approval)
                 && enabledProviderIDs.contains($0.providerID) }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }

@@ -30,6 +30,21 @@ public struct ModelCapabilities: OptionSet, Sendable, Codable, Hashable {
     }
 }
 
+/// Product surfaces where a model may be selected. This is intentionally
+/// independent from wire-protocol capabilities: an OpenAI-compatible image
+/// endpoint may advertise text-shaped request fields without being a chat
+/// agent, while a hidden vision model may remain available to Canvas.
+public struct ModelUseSurfaces: OptionSet, Sendable, Codable, Hashable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+
+    public static let chatAgent       = ModelUseSurfaces(rawValue: 1 << 0)
+    public static let auxiliaryVision = ModelUseSurfaces(rawValue: 1 << 1)
+    public static let approval        = ModelUseSurfaces(rawValue: 1 << 2)
+    public static let imageGeneration = ModelUseSurfaces(rawValue: 1 << 3)
+    public static let videoGeneration = ModelUseSurfaces(rawValue: 1 << 4)
+}
+
 /// Hard limits enforced client-side before sending a request.
 public struct ModelLimits: Sendable, Codable, Hashable {
     public var contextTokens: Int
@@ -96,6 +111,9 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
     public var limits: ModelLimits
     public var pricing: PricingMetadata?
     public var capabilities: ModelCapabilities
+    /// Explicit product routing. Nil is retained for synced legacy records and
+    /// is deterministically derived from capabilities by `effectiveUseSurfaces`.
+    public var useSurfaces: ModelUseSurfaces?
     /// Optional keeps older CloudKit/config payloads source-compatible;
     /// `nil` has the same meaning as `.automatic`.
     public var reasoningEffort: ModelReasoningEffort?
@@ -115,6 +133,7 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
         limits: ModelLimits,
         pricing: PricingMetadata? = nil,
         capabilities: ModelCapabilities = [.text],
+        useSurfaces: ModelUseSurfaces? = nil,
         reasoningEffort: ModelReasoningEffort? = nil,
         isEnabled: Bool = true,
         isHiddenFromPrimaryPicker: Bool? = false
@@ -126,6 +145,7 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
         self.limits = limits
         self.pricing = pricing
         self.capabilities = capabilities
+        self.useSurfaces = useSurfaces
         self.reasoningEffort = reasoningEffort
         self.isEnabled = isEnabled
         self.isHiddenFromPrimaryPicker = isHiddenFromPrimaryPicker
@@ -133,6 +153,26 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
 
     public var effectiveReasoningEffort: ModelReasoningEffort {
         reasoningEffort ?? .automatic
+    }
+
+    public var effectiveUseSurfaces: ModelUseSurfaces {
+        if let useSurfaces { return useSurfaces }
+        var result: ModelUseSurfaces = []
+        let isMedia = capabilities.contains(.imageGeneration)
+            || capabilities.contains(.imageEditing)
+            || capabilities.contains(.videoGeneration)
+        if capabilities.contains(.text), !isMedia { result.insert(.chatAgent) }
+        if capabilities.contains(.vision) { result.insert(.auxiliaryVision) }
+        if capabilities.contains(.approval) { result.insert(.approval) }
+        if capabilities.contains(.imageGeneration) || capabilities.contains(.imageEditing) {
+            result.insert(.imageGeneration)
+        }
+        if capabilities.contains(.videoGeneration) { result.insert(.videoGeneration) }
+        return result
+    }
+
+    public var supportsChatAgentSurface: Bool {
+        effectiveUseSurfaces.contains(.chatAgent)
     }
 
     public var isVisibleInPrimaryPicker: Bool {
