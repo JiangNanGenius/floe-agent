@@ -16,7 +16,8 @@ struct V28CanvasModelRoutingTests {
         }
         #expect(columns.contains("canvas_agent_model_id"))
         #expect(columns.contains("canvas_vision_model_id"))
-        #expect(try await database.userVersion() == 28)
+        #expect(try await database.userVersion() == DatabaseManager.currentSchemaVersion)
+        #expect(DatabaseManager.currentSchemaVersion >= 28)
     }
 
     private func temporaryDatabaseURL() -> URL {
