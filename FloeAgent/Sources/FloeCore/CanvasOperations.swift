@@ -191,7 +191,21 @@ public enum CanvasCommandService {
                 guard !ids.isEmpty, ids.allSatisfy(nodeIDs.contains) else {
                     throw FloeError.validationFailed("operation references missing nodes")
                 }
-                if operation.kind == .delete { nodeIDs.subtract(ids) }
+                if operation.kind == .group {
+                    guard let memberIDs = operation.nodeIDs, memberIDs.count > 1 else {
+                        throw FloeError.validationFailed("group requires at least two member nodes")
+                    }
+                    let groupID = operation.nodeID ?? operation.id
+                    if nodeIDs.contains(groupID) {
+                        guard document.nodes.first(where: { $0.id == groupID })?.kind == .group else {
+                            throw FloeError.validationFailed("group container id belongs to another node")
+                        }
+                    } else {
+                        nodeIDs.insert(groupID)
+                    }
+                } else if operation.kind == .delete {
+                    nodeIDs.subtract(ids)
+                }
             case .connect:
                 guard let source = operation.sourceNodeID,
                       let destination = operation.destinationNodeID,
@@ -233,14 +247,42 @@ public enum CanvasCommandService {
                 throw FloeError.validationFailed("Locked nodes must be unlocked before editing")
             }
             if let text = operation.text { document.nodes[index].text = text }
-            if let position = operation.position { document.nodes[index].position = position }
+            if let nodeKind = operation.nodeKind { document.nodes[index].kind = nodeKind }
+            if let position = operation.position {
+                let previous = document.nodes[index].position
+                document.nodes[index].position = position
+                if document.nodes[index].kind == .group {
+                    let dx = position.x - previous.x
+                    let dy = position.y - previous.y
+                    for childIndex in document.nodes.indices
+                    where document.nodes[childIndex].groupID == id {
+                        document.nodes[childIndex].position.x += dx
+                        document.nodes[childIndex].position.y += dy
+                        changedNodes.insert(document.nodes[childIndex].id)
+                    }
+                }
+            }
             if let size = operation.size { document.nodes[index].size = size }
             if let rotation = operation.rotation { document.nodes[index].rotation = rotation }
             if let locked = operation.isLocked { document.nodes[index].isLocked = locked }
             if let shape = operation.shape { document.nodes[index].shape = shape }
+            if let asset = operation.asset {
+                document.nodes[index].asset = asset
+                document.nodes[index].metadata["placeholder"] = nil
+            }
             changedNodes.insert(id)
         case .delete:
             let ids = Set(operation.nodeIDs ?? operation.nodeID.map { [$0] } ?? [])
+            let deletedGroupIDs = Set(document.nodes.compactMap { node in
+                ids.contains(node.id) && node.kind == .group ? node.id : nil
+            })
+            if !deletedGroupIDs.isEmpty {
+                for index in document.nodes.indices
+                where document.nodes[index].groupID.map(deletedGroupIDs.contains) == true {
+                    document.nodes[index].groupID = nil
+                    changedNodes.insert(document.nodes[index].id)
+                }
+            }
             document.nodes.removeAll { ids.contains($0.id) }
             let removed = document.connections.filter {
                 ids.contains($0.sourceNodeID) || ids.contains($0.destinationNodeID)
@@ -260,16 +302,50 @@ public enum CanvasCommandService {
             let id = operation.connectionID!
             document.connections.removeAll { $0.id == id }; changedConnections.insert(id)
         case .group:
-            let ids = Set(operation.nodeIDs ?? [])
+            let ids = Set(operation.nodeIDs ?? []).subtracting([operation.nodeID ?? operation.id])
             let groupID = operation.nodeID ?? operation.id
+            let members = document.nodes.filter { ids.contains($0.id) }
+            guard !members.isEmpty else { return }
+            if !document.nodes.contains(where: { $0.id == groupID }) {
+                let minX = members.map { $0.position.x - $0.size.width / 2 }.min() ?? 0
+                let maxX = members.map { $0.position.x + $0.size.width / 2 }.max() ?? 0
+                let minY = members.map { $0.position.y - $0.size.height / 2 }.min() ?? 0
+                let maxY = members.map { $0.position.y + $0.size.height / 2 }.max() ?? 0
+                var container = CanvasNode.placeholder(
+                    kind: .group,
+                    position: .init(x: (minX + maxX) / 2, y: (minY + maxY) / 2),
+                    zIndex: (members.map(\.zIndex).min() ?? 0) - 1
+                )
+                container.id = groupID
+                container.size = .init(
+                    width: max(180, maxX - minX + 48),
+                    height: max(120, maxY - minY + 72)
+                )
+                container.metadata["container"] = "true"
+                document.nodes.append(container)
+                changedNodes.insert(groupID)
+            }
             for index in document.nodes.indices where ids.contains(document.nodes[index].id) {
                 document.nodes[index].groupID = groupID; changedNodes.insert(document.nodes[index].id)
             }
         case .ungroup:
             let ids = Set(operation.nodeIDs ?? operation.nodeID.map { [$0] } ?? [])
-            for index in document.nodes.indices where ids.contains(document.nodes[index].id) {
-                document.nodes[index].groupID = nil; changedNodes.insert(document.nodes[index].id)
+            let groupIDs = Set(document.nodes.compactMap { node -> UUID? in
+                guard ids.contains(node.id) else { return nil }
+                return node.kind == .group ? node.id : node.groupID
+            })
+            for index in document.nodes.indices
+            where document.nodes[index].groupID.map(groupIDs.contains) == true {
+                document.nodes[index].groupID = nil
+                changedNodes.insert(document.nodes[index].id)
             }
+            let removedConnections = document.connections.filter {
+                groupIDs.contains($0.sourceNodeID) || groupIDs.contains($0.destinationNodeID)
+            }.map(\.id)
+            document.connections.removeAll { removedConnections.contains($0.id) }
+            document.nodes.removeAll { $0.kind == .group && groupIDs.contains($0.id) }
+            changedNodes.formUnion(groupIDs)
+            changedConnections.formUnion(removedConnections)
         case .arrange:
             let ids = Set(operation.nodeIDs ?? [])
             let selected = document.nodes.filter { ids.contains($0.id) }

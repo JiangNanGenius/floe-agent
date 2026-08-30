@@ -1026,13 +1026,14 @@ private final class CanvasDocumentStore: ObservableObject {
     /// an already-submitted provider job.
     @discardableResult
     func addPlaceholder(kind: CanvasNodeKind, at point: CGPoint) -> UUID {
-        let node = FloeCanvasNode.placeholder(
-            kind: kind,
-            position: CanvasPoint(point),
-            zIndex: selectedDocument?.nodes.count ?? 0
-        )
-        mutateSelectedDocument { $0.nodes.append(node) }
-        return node.id
+        let id = UUID()
+        _ = applyCommand([
+            CanvasPatchOperation(
+                kind: .create, nodeID: id, nodeKind: kind,
+                position: CanvasPoint(point)
+            )
+        ])
+        return id
     }
 
     func attachAsset(
@@ -1041,16 +1042,14 @@ private final class CanvasDocumentStore: ObservableObject {
         to nodeID: UUID
     ) {
         guard [.image, .video, .audio, .file].contains(kind) else { return }
-        var previousAssetID: UUID?
-        mutateSelectedDocument { document in
-            guard let index = document.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
-            previousAssetID = document.nodes[index].asset?.id
-            document.nodes[index].kind = kind
-            document.nodes[index].asset = asset
-            document.nodes[index].text = asset.localRelativePath?
-                .split(separator: "/").last.map(String.init) ?? document.nodes[index].text
-            document.nodes[index].metadata["placeholder"] = nil
-        }
+        let previousAssetID = selectedDocument?.nodes.first(where: { $0.id == nodeID })?.asset?.id
+        let displayName = asset.localRelativePath?.split(separator: "/").last.map(String.init)
+        guard applyCommand([
+            CanvasPatchOperation(
+                kind: .update, nodeID: nodeID, nodeKind: kind,
+                text: displayName, asset: asset
+            )
+        ]) != nil else { return }
         if let previousAssetID, previousAssetID != asset.id {
             Task { try? await creativeAssetStore?.adjustReference(assetID: previousAssetID, by: -1) }
         }
@@ -1062,15 +1061,15 @@ private final class CanvasDocumentStore: ObservableObject {
     @discardableResult
     func addAsset(_ asset: CanvasAssetReference, kind: CanvasNodeKind, at point: CGPoint) -> UUID {
         let id = UUID()
-        mutateSelectedDocument { document in
-            document.nodes.append(FloeCanvasNode(
-                id: id,
+        guard applyCommand([
+            CanvasPatchOperation(
+                kind: .create, nodeID: id, nodeKind: kind,
                 text: asset.localRelativePath?.split(separator: "/").last.map(String.init) ?? "素材",
-                x: point.x, y: point.y, width: 320, height: kind == .video ? 220 : 260,
-                kind: kind, rotation: 0, zIndex: document.nodes.count,
-                isLocked: false, asset: asset
-            ))
-        }
+                position: CanvasPoint(point),
+                size: .init(width: 320, height: kind == .video ? 220 : 260),
+                asset: asset
+            )
+        ]) != nil else { return id }
         Task { try? await creativeAssetStore?.adjustReference(assetID: asset.id, by: 1) }
         return id
     }
@@ -1164,28 +1163,20 @@ private final class CanvasDocumentStore: ObservableObject {
         destinationPort: CanvasConnectionPort? = nil
     ) {
         guard source != destination else { return }
-        mutateSelectedDocument { document in
-            var connections = document.connections
-            let connection = CanvasConnection(
-                sourceNodeID: source,
-                destinationNodeID: destination,
-                kind: kind,
-                sourcePort: sourcePort,
-                destinationPort: destinationPort
+        guard selectedDocument?.connections.contains(where: {
+            $0.sourceNodeID == source && $0.destinationNodeID == destination && $0.kind == kind
+                && $0.sourcePort == sourcePort && $0.destinationPort == destinationPort
+        }) != true else { return }
+        _ = applyCommand([
+            CanvasPatchOperation(
+                kind: .connect, sourceNodeID: source, destinationNodeID: destination,
+                sourcePort: sourcePort, destinationPort: destinationPort
             )
-            guard !connections.contains(where: {
-                $0.sourceNodeID == source && $0.destinationNodeID == destination && $0.kind == kind
-                    && $0.sourcePort == sourcePort && $0.destinationPort == destinationPort
-            }) else { return }
-            connections.append(connection)
-            document.connections = connections
-        }
+        ])
     }
 
     func deleteConnection(_ id: UUID) {
-        mutateSelectedDocument { document in
-            document.connections.removeAll { $0.id == id }
-        }
+        _ = applyCommand([CanvasPatchOperation(kind: .disconnect, connectionID: id)])
     }
 
     func reverseConnection(_ id: UUID) {
@@ -1277,11 +1268,8 @@ private final class CanvasDocumentStore: ObservableObject {
         let assetIDs = selectedDocument?.nodes
             .filter { ids.contains($0.id) }
             .compactMap(\.asset?.id) ?? []
-        mutateSelectedDocument { document in
-            document.nodes.removeAll { ids.contains($0.id) }
-            document.connections.removeAll {
-                ids.contains($0.sourceNodeID) || ids.contains($0.destinationNodeID)
-            }
+        guard applyCommand([CanvasPatchOperation(kind: .delete, nodeIDs: Array(ids))]) != nil else {
+            return
         }
         for assetID in assetIDs {
             Task { try? await creativeAssetStore?.adjustReference(assetID: assetID, by: -1) }
@@ -1300,21 +1288,17 @@ private final class CanvasDocumentStore: ObservableObject {
     }
 
     func setLocked(_ ids: Set<UUID>, locked: Bool) {
-        mutateSelectedDocument { document in
-            for index in document.nodes.indices where ids.contains(document.nodes[index].id) {
-                document.nodes[index].isLocked = locked
-            }
-        }
+        _ = applyCommand(ids.map {
+            CanvasPatchOperation(kind: .update, nodeID: $0, isLocked: locked)
+        })
     }
 
     func group(_ ids: Set<UUID>) {
         guard ids.count > 1 else { return }
         let groupID = UUID()
-        mutateSelectedDocument { document in
-            for index in document.nodes.indices where ids.contains(document.nodes[index].id) {
-                document.nodes[index].groupID = groupID
-            }
-        }
+        _ = applyCommand([
+            CanvasPatchOperation(kind: .group, nodeID: groupID, nodeIDs: Array(ids))
+        ])
     }
 
     func setSyncEnabled(_ enabled: Bool) {
@@ -1427,6 +1411,15 @@ private final class CanvasDocumentStore: ObservableObject {
         position: CGPoint? = nil,
         persistAfter: Bool = true
     ) {
+        if persistAfter {
+            _ = applyCommand([
+                CanvasPatchOperation(
+                    kind: .update, nodeID: id, text: text,
+                    position: position.map(CanvasPoint.init)
+                )
+            ])
+            return
+        }
         mutateSelectedDocument(persistAfter: persistAfter) { document in
             guard let index = document.nodes.firstIndex(where: { $0.id == id }) else { return }
             if let text { document.nodes[index].text = text }
@@ -1444,6 +1437,26 @@ private final class CanvasDocumentStore: ObservableObject {
         rotation: Double? = nil,
         persistAfter: Bool = false
     ) {
+        if persistAfter {
+            let commandSize: CanvasSize?
+            if width != nil || height != nil {
+                let current = selectedDocument?.nodes.first(where: { $0.id == id })?.size
+                commandSize = CanvasSize(
+                    width: width ?? current?.width ?? 300,
+                    height: height ?? current?.height ?? 180
+                )
+            } else {
+                commandSize = nil
+            }
+            _ = applyCommand([
+                CanvasPatchOperation(
+                    kind: .update, nodeID: id,
+                    size: commandSize,
+                    rotation: rotation
+                )
+            ])
+            return
+        }
         mutateSelectedDocument(persistAfter: persistAfter) { document in
             guard let index = document.nodes.firstIndex(where: { $0.id == id }),
                   !document.nodes[index].isLocked else { return }
@@ -1457,7 +1470,9 @@ private final class CanvasDocumentStore: ObservableObject {
 
     func deleteNode(_ id: UUID) {
         let assetID = selectedDocument?.nodes.first(where: { $0.id == id })?.asset?.id
-        mutateSelectedDocument { $0.nodes.removeAll { $0.id == id } }
+        guard applyCommand([CanvasPatchOperation(kind: .delete, nodeID: id)]) != nil else {
+            return
+        }
         if let assetID {
             Task { try? await creativeAssetStore?.adjustReference(assetID: assetID, by: -1) }
         }
@@ -1578,11 +1593,7 @@ private final class CanvasDocumentStore: ObservableObject {
     }
 
     func ungroup(_ ids: Set<UUID>) {
-        mutateSelectedDocument { document in
-            for index in document.nodes.indices where ids.contains(document.nodes[index].id) {
-                document.nodes[index].groupID = nil
-            }
-        }
+        _ = applyCommand([CanvasPatchOperation(kind: .ungroup, nodeIDs: Array(ids))])
     }
 
     func clearDrawing() {
@@ -1861,6 +1872,30 @@ private final class CanvasDocumentStore: ObservableObject {
                 context.restoreGState()
             }
             context.restoreGState()
+        }
+    }
+
+    @discardableResult
+    private func applyCommand(
+        _ operations: [CanvasPatchOperation],
+        documentID: UUID? = nil
+    ) -> CanvasOperationResult? {
+        let targetDocumentID = documentID ?? project.selectedDocumentID
+        do {
+            let patch = CanvasPatch(
+                canvasID: project.id,
+                documentID: targetDocumentID,
+                expectedRevision: project.revision,
+                operations: operations
+            )
+            let (updated, result) = try CanvasCommandService.applying(patch, to: project)
+            recordHistory()
+            project = updated
+            persist(incrementRevision: false)
+            return result
+        } catch {
+            saveError = error.localizedDescription
+            return nil
         }
     }
 
@@ -2776,8 +2811,9 @@ struct WorkspaceCanvasView: View {
     }
 
     private func groupLayer(_ document: FloeCanvasDocument) -> some View {
+        let containerIDs = Set(document.nodes.filter { $0.kind == .group }.map(\.id))
         let grouped = Dictionary(grouping: document.nodes.compactMap { node in
-            node.groupID.map { ($0, node) }
+            node.groupID.flatMap { containerIDs.contains($0) ? nil : ($0, node) }
         }, by: { $0.0 })
         return ZStack {
             ForEach(grouped.keys.sorted(by: { $0.uuidString < $1.uuidString }), id: \.self) { groupID in
@@ -2934,7 +2970,11 @@ struct WorkspaceCanvasView: View {
             .onTapGesture(count: 2) {
                 guard mode == .select else { return }
                 selectedConnectionID = nil
-                if let groupID = node.groupID, enteredGroupID != groupID {
+                if node.kind == .group {
+                    enteredGroupID = node.id
+                    selectedNodeIDs = [node.id]
+                    editingNodeID = nil
+                } else if let groupID = node.groupID, enteredGroupID != groupID {
                     enteredGroupID = groupID
                     selectedNodeIDs = [node.id]
                     editingNodeID = nil
@@ -3068,10 +3108,17 @@ struct WorkspaceCanvasView: View {
     }
 
     private func selectionForNode(_ node: FloeCanvasNode) -> Set<UUID> {
+        if node.kind == .group {
+            let children = store.selectedDocument?.nodes.compactMap {
+                $0.groupID == node.id ? $0.id : nil
+            } ?? []
+            return Set(children).union([node.id])
+        }
         guard let groupID = node.groupID, enteredGroupID != groupID else { return [node.id] }
-        return Set(store.selectedDocument?.nodes.compactMap {
+        let members = Set(store.selectedDocument?.nodes.compactMap {
             $0.groupID == groupID ? $0.id : nil
         } ?? [node.id])
+        return members.union([groupID])
     }
 
     private func contextSelection(for node: FloeCanvasNode) -> Set<UUID> {
@@ -3550,6 +3597,9 @@ struct WorkspaceCanvasView: View {
 
     private var selectedGroupID: UUID? {
         let selectedNodes = store.selectedDocument?.nodes.filter { selectedNodeIDs.contains($0.id) } ?? []
+        if let container = selectedNodes.first(where: { $0.kind == .group }) {
+            return container.id
+        }
         let groups = Set(selectedNodes.compactMap(\.groupID))
         guard groups.count == 1, selectedNodes.allSatisfy({ $0.groupID == groups.first }) else { return nil }
         return groups.first
@@ -4447,7 +4497,7 @@ private struct CanvasNodeCard: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(isSelected ? FloeTheme.primary : .secondary.opacity(0.25), lineWidth: isSelected ? 2 : 1)
         }
-        .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
+        .shadow(color: node.kind == .group ? .clear : .black.opacity(0.08), radius: 8, y: 3)
         .contextMenu {
             Button("编辑", systemImage: "pencil", action: onBeginEditing)
             Button("节点内提问", systemImage: "sparkles", action: onAskAI)
@@ -4460,10 +4510,10 @@ private struct CanvasNodeCard: View {
             Button(node.isLocked ? "解锁" : "锁定", systemImage: node.isLocked ? "lock.open" : "lock", action: onToggleLock)
             Button("移到最前", systemImage: "arrow.up.to.line", action: onBringToFront)
             Button("移到最后", systemImage: "arrow.down.to.line", action: onSendToBack)
-            if node.groupID == nil {
-                Button("分组", systemImage: "square.3.layers.3d", action: onGroup)
-            } else {
+            if node.kind == .group || node.groupID != nil {
                 Button("解除分组", systemImage: "square.2.layers.3d", action: onUngroup)
+            } else {
+                Button("分组", systemImage: "square.3.layers.3d", action: onGroup)
             }
             Divider()
             Button("删除节点", role: .destructive, action: onDelete)
@@ -4472,7 +4522,8 @@ private struct CanvasNodeCard: View {
     }
 
     private var nodeBackground: Color {
-        node.kind == .stickyNote
+        if node.kind == .group { return .clear }
+        return node.kind == .stickyNote
             ? Color(uiColor: .systemYellow).opacity(0.24)
             : Color(uiColor: .secondarySystemBackground)
     }
@@ -4534,7 +4585,18 @@ private struct CanvasNodeCard: View {
         case .file:
             CanvasAssetNodeContent(node: node, fallbackIcon: "doc", title: text.isEmpty ? "文件" : text)
         case .group:
-            assetPlaceholder(icon: "square.3.layers.3d", title: text.isEmpty ? "分组" : text)
+            VStack(alignment: .leading) {
+                Label(text.isEmpty ? "分组" : text, systemImage: "square.3.layers.3d")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(FloeTheme.primary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.regularMaterial, in: Capsule())
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(8)
+            .contentShape(Rectangle())
         case .generationTask:
             VStack(spacing: 10) {
                 if node.generationJobID == nil {

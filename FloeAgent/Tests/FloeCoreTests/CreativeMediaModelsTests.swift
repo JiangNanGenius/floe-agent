@@ -170,6 +170,55 @@ struct CreativeMediaModelsTests {
         #expect(project.revision == 0)
     }
 
+    @Test func canvasGroupCreatesMovableContainerAndUngroupRemovesIt() throws {
+        let first = CanvasNode.placeholder(kind: .card, position: .init(x: 100, y: 120))
+        let second = CanvasNode.placeholder(kind: .stickyNote, position: .init(x: 420, y: 180))
+        let document = CanvasDocument(name: "Canvas", nodes: [first, second])
+        let project = CanvasProject(
+            id: UUID(), name: "Groups", documents: [document],
+            selectedDocumentID: document.id
+        )
+        let groupID = UUID()
+        let groupPatch = CanvasPatch(
+            canvasID: project.id, documentID: document.id, expectedRevision: 0,
+            operations: [CanvasPatchOperation(
+                kind: .group, nodeID: groupID, nodeIDs: [first.id, second.id]
+            )]
+        )
+        let (grouped, _) = try CanvasCommandService.applying(groupPatch, to: project)
+        let container = try #require(grouped.documents[0].nodes.first { $0.id == groupID })
+        #expect(container.kind == .group)
+        #expect(grouped.documents[0].nodes.filter { $0.groupID == groupID }.count == 2)
+
+        let originalFirst = try #require(
+            grouped.documents[0].nodes.first { $0.id == first.id }
+        )
+        let oldFirstPosition = originalFirst.position
+        let movedPosition = CanvasPoint(
+            x: container.position.x + 75, y: container.position.y - 30
+        )
+        let movePatch = CanvasPatch(
+            canvasID: grouped.id, documentID: document.id,
+            expectedRevision: grouped.revision,
+            operations: [CanvasPatchOperation(
+                kind: .update, nodeID: groupID, position: movedPosition
+            )]
+        )
+        let (moved, _) = try CanvasCommandService.applying(movePatch, to: grouped)
+        let movedFirst = try #require(moved.documents[0].nodes.first { $0.id == first.id })
+        #expect(movedFirst.position.x == oldFirstPosition.x + 75)
+        #expect(movedFirst.position.y == oldFirstPosition.y - 30)
+
+        let ungroupPatch = CanvasPatch(
+            canvasID: moved.id, documentID: document.id,
+            expectedRevision: moved.revision,
+            operations: [CanvasPatchOperation(kind: .ungroup, nodeID: groupID)]
+        )
+        let (ungrouped, _) = try CanvasCommandService.applying(ungroupPatch, to: moved)
+        #expect(!ungrouped.documents[0].nodes.contains { $0.id == groupID })
+        #expect(ungrouped.documents[0].nodes.allSatisfy { $0.groupID == nil })
+    }
+
     @Test func legacyCanvasDecodesIntoCanonicalStoreWithoutLosingGeometry() throws {
         let fallbackID = UUID()
         let nodeID = UUID()
