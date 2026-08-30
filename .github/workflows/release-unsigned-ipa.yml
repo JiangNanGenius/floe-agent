@@ -193,6 +193,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       REQUIRED_XCODE_VERSION: Xcode 26.6
+      REQUIRED_XCODE_BUILD: 17F113
     defaults:
       run:
         working-directory: FloeAgent
@@ -208,7 +209,13 @@ jobs:
           XCODE_VERSION="$(xcodebuild -version)"
           printf '%s\n' "$XCODE_VERSION"
           printf '%s\n' "$XCODE_VERSION" | grep -F "$REQUIRED_XCODE_VERSION"
-          test "$(xcrun --sdk iphoneos --show-sdk-version)" = 26.6
+          printf '%s\n' "$XCODE_VERSION" | grep -F "Build version $REQUIRED_XCODE_BUILD"
+          SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
+          printf 'iPhoneOS SDK %s\n' "$SDK_VERSION"
+          case "$SDK_VERSION" in
+            26.*) ;;
+            *) exit 1 ;;
+          esac
 
       - name: Download the tested and attested unsigned application
         uses: actions/download-artifact@v5
