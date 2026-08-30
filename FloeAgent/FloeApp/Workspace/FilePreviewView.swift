@@ -105,7 +105,10 @@ struct FilePreviewView: View {
     }
 
     private var officeEditingAvailable: Bool {
-        isOfficeDocument && !center.isCloudWorkspacePath(relativePath) && center.fileService != nil
+        isOfficeDocument
+            && !center.isCloudWorkspacePath(relativePath)
+            && !center.isNetworkWorkspacePath(relativePath)
+            && center.fileService != nil
     }
 
     @ToolbarContentBuilder
@@ -132,7 +135,8 @@ struct FilePreviewView: View {
             if allowsIDEExpansion,
                isTextual,
                content != nil,
-               !center.isCloudWorkspacePath(relativePath) {
+               !center.isCloudWorkspacePath(relativePath),
+               !center.isNetworkWorkspacePath(relativePath) {
                 Button {
                     isIDEPresented = true
                 } label: {

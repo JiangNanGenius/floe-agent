@@ -96,6 +96,29 @@ struct V3AgentDailyTests {
         #expect(loaded[0].parts[2].metadata["w"] == "512")
     }
 
+    @Test("Recent message window returns the newest page in chronological order")
+    func recentMessageWindow() async throws {
+        let db = try await makeDatabase()
+        let store = makeConversationStore(db)
+        let conversationID = UUID()
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        try await store.saveConversation(ConversationRecord(
+            id: conversationID, title: "Long task", createdAt: origin, updatedAt: origin
+        ))
+        for index in 0..<5 {
+            try await store.appendMessage(PersistedMessage(
+                id: UUID(),
+                conversationID: conversationID,
+                role: index.isMultiple(of: 2) ? "user" : "assistant",
+                content: "message-\(index)",
+                createdAt: origin.addingTimeInterval(Double(index))
+            ))
+        }
+
+        let recent = try await store.recentMessages(conversationID: conversationID, limit: 3)
+        #expect(recent.map(\.content) == ["message-2", "message-3", "message-4"])
+    }
+
     @Test("Attachment round-trip preserves security-scoped bookmark bytes")
     func attachmentRoundTrip() async throws {
         let db = try await makeDatabase()

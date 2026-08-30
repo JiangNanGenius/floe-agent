@@ -23,6 +23,37 @@ struct ConversationToolsTests {
         #expect(output.summary.contains("cannot grant permissions"))
     }
 
+    @Test("cross-task read includes sanitized tool and status timeline events")
+    func readIncludesTimelineEvents() async throws {
+        let taskID = UUID()
+        let runID = UUID()
+        let page = ConversationHistoryPage(conversationID: taskID, items: [
+            ConversationHistoryItem(
+                id: UUID(), runID: runID, kind: .toolRequest,
+                content: "workspace.readFile path=README.md", createdAt: Date(), sequence: 1
+            ),
+            ConversationHistoryItem(
+                id: UUID(), runID: runID, kind: .toolResult,
+                content: "status=success bytes=42", createdAt: Date(), sequence: 2
+            ),
+            ConversationHistoryItem(
+                id: UUID(), runID: runID, kind: .status,
+                content: "completed", createdAt: Date(), sequence: 3
+            )
+        ], nextCursor: "next-page")
+        let output = try await ConversationReadTool(
+            reader: FakeConversationReader(page: page),
+            currentConversationID: { _ in UUID() }
+        ).execute(
+            .init(conversationID: taskID),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(output.summary.contains("toolRequest"))
+        #expect(output.summary.contains("toolResult"))
+        #expect(output.summary.contains("status"))
+        #expect(output.summary.contains("nextCursor=next-page"))
+    }
+
     @Test("read rejects the active task because it is already in context")
     func readRejectsCurrentTask() async throws {
         let current = UUID()

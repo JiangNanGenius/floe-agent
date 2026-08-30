@@ -235,6 +235,14 @@ struct ThreadDetailView: View {
             ZStack(alignment: .bottomTrailing) {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
+                    if viewModel.hasEarlierMessages {
+                        Button("加载更早消息", systemImage: "arrow.up.circle") {
+                            Task { await viewModel.loadEarlierMessages() }
+                        }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityHint("每次加载更早的一百条消息")
+                    }
                     // The unified timeline: user goal → run events in stored
                     // sequence → live tail → approvals → terminal last.
                     // "Completed" can never float above the final reply.

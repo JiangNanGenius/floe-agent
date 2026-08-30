@@ -18,6 +18,7 @@ import FloeModels
 import FloePersistence
 import FloeWorkspace
 import FloeExecution
+import FloeSync
 
 /// Coordinates workspaces for the UI layer. Views bind only to this center,
 /// never to WorkspaceStore or WorkspaceFileService directly.
@@ -83,6 +84,8 @@ final class WorkspaceCenter: ObservableObject {
     @Published private(set) var activeMountNames: [String] = []
     /// Cloud workspace markers currently linked into the private workspace.
     @Published private(set) var cloudWorkspaceLinks: [CloudWorkspaceLink] = []
+    /// SMB/WebDAV roots available below `Network/<name>`.
+    @Published private(set) var networkWorkspaceMounts: [NetworkWorkspaceMount] = []
 
     /// A write conflict on a workspace file: the editor's base snapshot no
     /// longer matches the on-disk mtime/sha256. Identifiable so it can drive
@@ -116,6 +119,7 @@ final class WorkspaceCenter: ObservableObject {
     static let instructionsFileName = "FLOE.md"
     private static let mountsDirectoryName = "WorkspaceMounts"
     private static let cloudLinksFileName = ".floe-cloud-workspaces.json"
+    private static let networkMountsDirectoryName = "NetworkWorkspaceMounts"
 
     init(environment: AppEnvironment) {
         self.environment = environment
@@ -204,6 +208,10 @@ final class WorkspaceCenter: ObservableObject {
            FileManager.default.fileExists(atPath: mountsURL.path) {
             try? FileManager.default.removeItem(at: mountsURL)
         }
+        if let networkURL = try? networkMountsStoreURL(workspaceID: id),
+           FileManager.default.fileExists(atPath: networkURL.path) {
+            try? FileManager.default.removeItem(at: networkURL)
+        }
         await environment.credentialVault.drainDeletionQueue()
         await reload()
     }
@@ -256,6 +264,7 @@ final class WorkspaceCenter: ObservableObject {
         currentRootURL = url
         currentRootUsesSecurityScope = true
         let mounts = try activateMounts(for: record, rootURL: url)
+        await activateNetworkMounts(for: record, rootURL: url)
         fileService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: url, mounts: mounts))
         var opened = record
         opened.lastOpenedAt = Date()
@@ -281,11 +290,13 @@ final class WorkspaceCenter: ObservableObject {
         }
         if let root = currentRootURL {
             WorkspaceMountRegistry.shared.unregister(rootURL: root)
+            Task { await NetworkWorkspaceMountRegistry.shared.unregister(rootURL: root) }
         }
         currentMountScopeURLs.forEach { $0.stopAccessingSecurityScopedResource() }
         currentMountScopeURLs = []
         activeMountNames = []
         cloudWorkspaceLinks = []
+        networkWorkspaceMounts = []
         currentRootUsesSecurityScope = false
         currentRootURL = nil
         fileService = nil
@@ -338,8 +349,10 @@ final class WorkspaceCenter: ObservableObject {
                 .appendingPathComponent(relative, isDirectory: true)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             let activation = try activateMountsForLease(for: record, rootURL: root)
+            await activateNetworkMounts(for: record, rootURL: root, publishToInspector: false)
             return TaskRootLease(url: root, release: {
                 WorkspaceMountRegistry.shared.unregister(rootURL: root)
+                Task { await NetworkWorkspaceMountRegistry.shared.unregister(rootURL: root) }
                 activation.scopeURLs.forEach { $0.stopAccessingSecurityScopedResource() }
             })
         }
@@ -349,8 +362,10 @@ final class WorkspaceCenter: ObservableObject {
             throw FloeError.validationFailed("Workspace folder is not accessible")
         }
         let activation = try activateMountsForLease(for: record, rootURL: root)
+        await activateNetworkMounts(for: record, rootURL: root, publishToInspector: false)
         return TaskRootLease(url: root, release: {
             WorkspaceMountRegistry.shared.unregister(rootURL: root)
+            Task { await NetworkWorkspaceMountRegistry.shared.unregister(rootURL: root) }
             activation.scopeURLs.forEach { $0.stopAccessingSecurityScopedResource() }
             root.stopAccessingSecurityScopedResource()
         })
@@ -405,6 +420,7 @@ final class WorkspaceCenter: ObservableObject {
         currentRootURL = root
         currentRootUsesSecurityScope = false
         let mounts = try activateMounts(for: record, rootURL: root)
+        await activateNetworkMounts(for: record, rootURL: root)
         fileService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root, mounts: mounts))
         currentWorkspace = record
         Self.sharedRootOverride = root
@@ -544,6 +560,27 @@ final class WorkspaceCenter: ObservableObject {
     /// links stay live: the UI asks the remote helper through the verified
     /// SSH tunnel instead of displaying stale local marker contents.
     func listDirectory(relativePath: String) async throws -> DirectoryPage {
+        let normalized = normalizedInspectorPath(relativePath)
+        if normalized == "Network" {
+            return DirectoryPage(
+                entries: networkWorkspaceMounts.map {
+                    FileNode(name: $0.name, relativePath: "Network/\($0.name)", isDirectory: true, size: 0)
+                },
+                nextPageToken: nil
+            )
+        }
+        if let root = currentRootURL,
+           let route = try await NetworkWorkspaceMountRegistry.shared.route(rootURL: root, virtualPath: normalized) {
+            let entries = try await route.adapter.list(path: route.relativePath).prefix(200).map {
+                FileNode(
+                    name: $0.name,
+                    relativePath: "Network/\(route.mount.name)/\($0.path)",
+                    isDirectory: $0.isDirectory,
+                    size: $0.byteCount
+                )
+            }
+            return DirectoryPage(entries: entries, nextPageToken: nil)
+        }
         if let route = cloudRoute(for: relativePath) {
             let data = try await environment.cloudWorkspaceService.request(
                 hostID: route.link.hostID,
@@ -570,13 +607,34 @@ final class WorkspaceCenter: ObservableObject {
         guard let service = fileService else {
             throw FloeError.validationFailed("No workspace is open")
         }
-        return try service.listDirectory(relativePath, pageToken: nil)
+        var page = try service.listDirectory(relativePath, pageToken: nil)
+        if normalized.isEmpty || normalized == ".", !networkWorkspaceMounts.isEmpty,
+           !page.entries.contains(where: { $0.name == "Network" }) {
+            page.entries.insert(
+                FileNode(name: "Network", relativePath: "Network", isDirectory: true, size: 0),
+                at: 0
+            )
+        }
+        return page
     }
 
     /// Reads a bounded UTF-8 file from local storage or a linked cloud
     /// workspace. Remote data is decoded in memory and is not mirrored into
     /// the task directory.
     func readFile(relativePath: String) async throws -> FileContent {
+        if let root = currentRootURL,
+           let route = try await NetworkWorkspaceMountRegistry.shared.route(rootURL: root, virtualPath: normalizedInspectorPath(relativePath)) {
+            let bytes = try await route.adapter.read(path: route.relativePath, offset: 0, limit: WorkspaceFileService.readChunkBytes + 1)
+            let truncated = bytes.count > WorkspaceFileService.readChunkBytes
+            let visible = truncated ? bytes.prefix(WorkspaceFileService.readChunkBytes) : bytes[...]
+            let text = String(decoding: visible, as: UTF8.self)
+            return FileContent(
+                text: text,
+                truncated: truncated,
+                totalLines: text.isEmpty ? 0 : text.split(separator: "\n", omittingEmptySubsequences: false).count,
+                byteOffset: 0
+            )
+        }
         if let route = cloudRoute(for: relativePath) {
             let data = try await environment.cloudWorkspaceService.request(
                 hostID: route.link.hostID,
@@ -605,6 +663,85 @@ final class WorkspaceCenter: ObservableObject {
 
     func isCloudWorkspacePath(_ relativePath: String) -> Bool {
         cloudRoute(for: relativePath) != nil
+    }
+
+    func isNetworkWorkspacePath(_ relativePath: String) -> Bool {
+        normalizedInspectorPath(relativePath).hasPrefix("Network/")
+    }
+
+    @discardableResult
+    func addNetworkMount(
+        name: String,
+        transport: NetworkWorkspaceProtocol,
+        endpoint: URL,
+        rootPath: String,
+        username: String,
+        password: String,
+        readOnly: Bool
+    ) async throws -> NetworkWorkspaceMount {
+        guard let workspace = currentWorkspace,
+              workspace.kind == .privateTask || workspace.kind == .project,
+              let root = currentRootURL else {
+            throw FloeError.validationFailed("Network mounts require a private or project workspace")
+        }
+        let safeName = uniqueMountName(
+            preferred: name.isEmpty ? (endpoint.host ?? "Network") : name,
+            existing: networkWorkspaceMounts.map(\.name)
+        )
+        let credentialRef: UUID?
+        if password.isEmpty {
+            credentialRef = nil
+        } else {
+            let handle = try await environment.credentialVault.capture(
+                Data(password.utf8),
+                kind: .genericToken,
+                owner: .workspace(workspace.id),
+                label: "\(safeName) \(transport == .smb ? "SMB" : "WebDAV") password",
+                origin: "network-workspace-mount"
+            )
+            credentialRef = handle.id
+        }
+        let mount = NetworkWorkspaceMount(
+            workspaceID: workspace.id,
+            name: safeName,
+            transport: transport,
+            endpoint: endpoint,
+            rootPath: rootPath,
+            username: username,
+            credentialRef: credentialRef,
+            readOnly: readOnly
+        )
+        var mounts = try loadPersistedNetworkMounts(workspaceID: workspace.id)
+        mounts.append(mount)
+        do {
+            try savePersistedNetworkMounts(mounts, workspaceID: workspace.id)
+            await activateNetworkMounts(for: workspace, rootURL: root)
+            guard let route = try await NetworkWorkspaceMountRegistry.shared.route(rootURL: root, virtualPath: mount.virtualRoot) else {
+                throw FloeError.validationFailed("Network mount registration failed")
+            }
+            _ = try await route.adapter.list(path: "")
+            return mount
+        } catch {
+            mounts.removeAll { $0.id == mount.id }
+            try? savePersistedNetworkMounts(mounts, workspaceID: workspace.id)
+            if let credentialRef { try? await environment.credentialVault.delete(CredentialHandle(id: credentialRef)) }
+            await activateNetworkMounts(for: workspace, rootURL: root)
+            throw error
+        }
+    }
+
+    func removeNetworkMount(id: UUID) async throws {
+        guard let workspace = currentWorkspace, let root = currentRootURL else {
+            throw FloeError.validationFailed("No workspace is open")
+        }
+        var mounts = try loadPersistedNetworkMounts(workspaceID: workspace.id)
+        guard let removed = mounts.first(where: { $0.id == id }) else { return }
+        mounts.removeAll { $0.id == id }
+        try savePersistedNetworkMounts(mounts, workspaceID: workspace.id)
+        await activateNetworkMounts(for: workspace, rootURL: root)
+        if let ref = removed.credentialRef {
+            try? await environment.credentialVault.delete(CredentialHandle(id: ref))
+        }
     }
 
     private func cloudRoute(for relativePath: String) -> (link: CloudWorkspaceLink, remotePath: String)? {
@@ -755,6 +892,9 @@ final class WorkspaceCenter: ObservableObject {
         notes += loadCloudWorkspaceLinks(rootURL: rootURL).map {
             "Cloud workspace '\($0.name)' is linked at Cloud/\($0.name) to host \($0.hostID.uuidString), remote path \($0.remotePath), daemon port \($0.daemonPort). Use cloudWorkspace.* tools rather than reading the local marker."
         }
+        notes += networkWorkspaceMounts.map {
+            "Network \($0.transport.rawValue) mount '\($0.name)' is available at Network/\($0.name) (\($0.readOnly ? "read-only" : "read-write")). Credentials remain in Keychain."
+        }
         return Array(notes.prefix(16))
     }
 
@@ -767,6 +907,50 @@ final class WorkspaceCenter: ObservableObject {
             .appendingPathComponent(Self.mountsDirectoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory.appendingPathComponent("\(workspaceID.uuidString).json")
+    }
+
+    private func networkMountsStoreURL(workspaceID: UUID) throws -> URL {
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true
+        )
+        let directory = support.appendingPathComponent("FloeAgent", isDirectory: true)
+            .appendingPathComponent(Self.networkMountsDirectoryName, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("\(workspaceID.uuidString).json")
+    }
+
+    private func loadPersistedNetworkMounts(workspaceID: UUID) throws -> [NetworkWorkspaceMount] {
+        let url = try networkMountsStoreURL(workspaceID: workspaceID)
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        return try JSONDecoder().decode([NetworkWorkspaceMount].self, from: data)
+    }
+
+    private func savePersistedNetworkMounts(_ mounts: [NetworkWorkspaceMount], workspaceID: UUID) throws {
+        try JSONEncoder().encode(mounts).write(
+            to: networkMountsStoreURL(workspaceID: workspaceID),
+            options: .atomic
+        )
+    }
+
+    private func activateNetworkMounts(
+        for record: WorkspaceRecord,
+        rootURL: URL,
+        publishToInspector: Bool = true
+    ) async {
+        let mounts = (try? loadPersistedNetworkMounts(workspaceID: record.id)) ?? []
+        if publishToInspector {
+            networkWorkspaceMounts = mounts.sorted {
+                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+        }
+        await NetworkWorkspaceMountRegistry.shared.register(
+            rootURL: rootURL,
+            mounts: mounts,
+            credentialResolver: { [vault = environment.credentialVault] id in
+                try await vault.resolveForApprovedUse(CredentialHandle(id: id))
+            }
+        )
     }
 
     private func loadPersistedMounts(workspaceID: UUID) throws -> [WorkspaceMount] {

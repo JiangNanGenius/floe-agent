@@ -80,6 +80,28 @@ struct MemoryToolsTests {
         #expect(output.summary.contains("No active memories"))
     }
 
+    @Test("memory.list enumerates concrete entries instead of only aggregate counts")
+    func listEntries() async throws {
+        let store = FakeMemoryStore()
+        let entry = MemoryEntry(
+            scope: .agentGlobal,
+            status: .active,
+            content: "HK4H4G agent version is 1.4.1",
+            confidence: 1,
+            importance: 0.8,
+            sourceKind: .explicitUserRequest,
+            factIdentity: MemoryFactIdentity(subjectKey: "host:hk4h4g", attributeKey: "agent-version")
+        )
+        await store.preload([entry])
+        let output = try await MemoryListTool(store: store).execute(
+            .init(scope: "global", limit: 100),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(output.summary.contains("trust=untrustedStoredFacts"))
+        #expect(output.summary.contains(entry.id.uuidString))
+        #expect(output.summary.contains("HK4H4G agent version is 1.4.1"))
+    }
+
     @Test("memory.update changes an existing fact instead of adding a duplicate")
     func updateFact() async throws {
         let store = FakeMemoryStore()

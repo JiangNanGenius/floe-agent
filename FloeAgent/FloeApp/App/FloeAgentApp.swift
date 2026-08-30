@@ -106,12 +106,14 @@ private struct FloeAgentCommands: Commands {
                 .keyboardShortcut("3", modifiers: .option)
             Button("橡皮") { canvas?.chooseTool(3) }
                 .keyboardShortcut("4", modifiers: .option)
-            Button("文本") { canvas?.chooseTool(4) }
+            Button("卡片") { canvas?.chooseTool(4) }
                 .keyboardShortcut("5", modifiers: .option)
-            Button("形状") { canvas?.chooseTool(5) }
+            Button("文本") { canvas?.chooseTool(5) }
                 .keyboardShortcut("6", modifiers: .option)
-            Button("连接线") { canvas?.chooseTool(6) }
+            Button("形状") { canvas?.chooseTool(6) }
                 .keyboardShortcut("7", modifiers: .option)
+            Button("连接线") { canvas?.chooseTool(7) }
+                .keyboardShortcut("8", modifiers: .option)
             Divider()
             Button("复制所选节点") { canvas?.copy() }
                 .keyboardShortcut("c", modifiers: [.command, .option])

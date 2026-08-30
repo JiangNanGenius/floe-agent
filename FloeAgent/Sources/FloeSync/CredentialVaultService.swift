@@ -135,6 +135,14 @@ public actor CredentialVaultService {
         }
     }
 
+    /// Deletes secret metadata and lets the durable deletion queue remove
+    /// every local/synchronizable Keychain copy. Callers never receive the
+    /// Keychain account or secret body.
+    public func delete(_ handle: CredentialHandle) async throws {
+        try await records.delete(id: handle.id)
+        await drainDeletionQueue()
+    }
+
     /// Crash-recoverable cleanup for rows enqueued by SQLite cascade triggers.
     public func drainDeletionQueue() async {
         guard let pending = try? await records.pendingDeletions() else { return }

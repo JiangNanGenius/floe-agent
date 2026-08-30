@@ -124,8 +124,10 @@ final class ThreadDetailViewModel: ObservableObject {
     /// must stay visible until the display catches up — no flicker, no
     /// gap before the persisted message takes over.
     @Published private(set) var isDraining = false
+    @Published private(set) var hasEarlierMessages = false
 
     private var liveEventTask: Task<Void, Never>?
+    private var messageWindowLimit = 100
     /// Run whose concrete runtime service is currently being observed. A
     /// durable run exists before attachment/vision preprocessing finishes,
     /// so `selectedRunID` alone cannot tell us whether the live subscription
@@ -351,8 +353,10 @@ final class ThreadDetailViewModel: ObservableObject {
                 didRestoreConversationModel = true
             }
             stage = "messageList"
+            messageWindowLimit = 100
             messages = try await center.environment.conversationStore
-                .messages(conversationID: conversationID)
+                .recentMessages(conversationID: conversationID, limit: messageWindowLimit)
+            hasEarlierMessages = messages.count == messageWindowLimit
             stage = "planLoad"
             latestPlan = try await center.environment.intelligenceStore
                 .latestPlan(conversationID: conversationID)
@@ -376,9 +380,8 @@ final class ThreadDetailViewModel: ObservableObject {
             if selectedRunID.flatMap({ id in runs.first(where: { $0.id == id }) }) == nil {
                 selectedRunID = runs.first?.id
             }
-            stage = "eventLoad"
-            try await loadAllEvents()
-            try await loadAllUsage()
+            stage = "latestRunDetails"
+            try await loadSelectedRunDetails()
             startSessionUpdates()
             startLiveUpdates()
         } catch {
@@ -390,43 +393,41 @@ final class ThreadDetailViewModel: ObservableObject {
     func selectRun(_ runID: UUID) async {
         selectedRunID = runID
         do {
-            try await loadEvents()
+            try await loadSelectedRunDetails()
         } catch {
             actionError = presentableError(error, stage: "selectRunEvents")
         }
         startLiveUpdates()
     }
 
-    private func loadEvents() async throws {
+    private func loadSelectedRunDetails() async throws {
         guard let runID = selectedRun?.id else {
             events = []
             return
         }
-        // assistantText events stay in the timeline: they carry the final
-        // reply in stored sequence order (before terminal).
-        events = try await center.environment.runStore.events(runID: runID)
-        eventsByRun[runID] = events
-        // Historical run failures already live in the selected run's ordered
-        // timeline. Never resurrect one as a new composer error when the user
-        // opens the task or starts a later run.
+        async let selectedEvents = center.environment.runStore.events(runID: runID)
+        async let selectedUsage = center.environment.runStore.usage(runID: runID)
+        let (loadedEvents, loadedUsage) = try await (selectedEvents, selectedUsage)
+        events = loadedEvents
+        eventsByRun[runID] = loadedEvents
+        usageByRun[runID] = loadedUsage
+        // Historical failures already live in this run's ordered timeline.
+        // Never resurrect one as a new composer error when it is selected.
         actionError = nil
     }
 
-    private func loadAllEvents() async throws {
-        var loaded: [UUID: [RunEventRecord]] = [:]
-        for run in runs {
-            loaded[run.id] = try await center.environment.runStore.events(runID: run.id)
+    func loadEarlierMessages() async {
+        guard hasEarlierMessages else { return }
+        let nextLimit = min(messageWindowLimit + 100, 10_000)
+        do {
+            let loaded = try await center.environment.conversationStore
+                .recentMessages(conversationID: conversationID, limit: nextLimit)
+            messageWindowLimit = nextLimit
+            messages = loaded
+            hasEarlierMessages = loaded.count == nextLimit && nextLimit < 10_000
+        } catch {
+            actionError = presentableError(error, stage: "olderMessages")
         }
-        eventsByRun = loaded
-        events = selectedRun.flatMap { loaded[$0.id] } ?? []
-    }
-
-    private func loadAllUsage() async throws {
-        var loaded: [UUID: [RunUsageRecord]] = [:]
-        for run in runs {
-            loaded[run.id] = try await center.environment.runStore.usage(runID: run.id)
-        }
-        usageByRun = loaded
     }
 
     func dismissActionError() {
@@ -499,7 +500,7 @@ final class ThreadDetailViewModel: ObservableObject {
             // waits for the first token or races a very fast completion.
             runs = try await center.environment.runStore.runs(conversationID: conversationID)
             selectedRunID = started.runID
-            try await loadAllEvents()
+            try await loadSelectedRunDetails()
             startLiveUpdates()
             switch await started.result.value {
             case .success:
@@ -571,8 +572,7 @@ final class ThreadDetailViewModel: ObservableObject {
             let started = try await center.retry(runID: runID)
             runs = try await center.environment.runStore.runs(conversationID: conversationID)
             selectedRunID = started.runID
-            try await loadAllEvents()
-            try await loadAllUsage()
+            try await loadSelectedRunDetails()
             startLiveUpdates()
         } catch {
             actionError = presentableError(error, stage: "retryRun")
@@ -941,17 +941,15 @@ final class ThreadDetailViewModel: ObservableObject {
         isDraining = false
         // Refresh persisted state even if the selection moved on during the
         // drain. A finished run must never strand the UI in a non-terminal
-        // "thinking" state merely because loadAllEvents was skipped.
+        // "thinking" state merely because historical runs were not prefetched.
         guard !Task.isCancelled else { return }
         messages = (try? await center.environment.conversationStore
             .messages(conversationID: conversationID)) ?? messages
         runs = (try? await center.environment.runStore
             .runs(conversationID: conversationID)) ?? runs
-        // `loadAllEvents` iterates `runs`; refresh the run list first so a
-        // queued follow-up that started while the animator drained is not
-        // omitted from the timeline snapshot.
-        try? await loadAllEvents()
-        try? await loadAllUsage()
+        // Refresh only the selected run. Other run details remain lazy and are
+        // loaded by `selectRun`, so completion remains bounded on long tasks.
+        try? await loadSelectedRunDetails()
         if selectedRunID == runID {
             liveStateName = runs.first(where: { $0.id == runID })?.state ?? liveStateName
         }

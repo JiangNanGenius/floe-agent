@@ -12,6 +12,7 @@
 import SwiftUI
 import FloeModels
 import FloeExecution
+import FloeWorkspace
 import UniformTypeIdentifiers
 
 /// The file inspector surface: workspace header + tree/search + preview
@@ -27,6 +28,7 @@ struct FileInspectorView: View {
     @State private var showMountPicker = false
     @State private var showImportPicker = false
     @State private var showCloudWorkspaceLink = false
+    @State private var showNetworkMount = false
     @State private var canvasWorkspace: WorkspaceRecord?
     @State private var exportURL: URL?
     @State private var inspectorMode: InspectorMode = .files
@@ -82,6 +84,9 @@ struct FileInspectorView: View {
         }
         .sheet(isPresented: $showCloudWorkspaceLink) {
             CloudWorkspaceLinkSheet(center: center)
+        }
+        .sheet(isPresented: $showNetworkMount) {
+            NetworkWorkspaceMountSheet(center: center)
         }
         .fullScreenCover(item: $canvasWorkspace) { workspace in
             WorkspaceCanvasView(canvasID: workspace.id, name: workspace.name, workspace: workspace)
@@ -183,7 +188,7 @@ struct FileInspectorView: View {
                     .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                     .accessibilityHint("打开这个工作区唯一的画布入口")
                 }
-                if workspace.kind == .privateTask {
+                if workspace.kind == .privateTask || workspace.kind == .project {
                     ToolbarItem(placement: .topBarTrailing) {
                         workspaceActions
                     }
@@ -210,20 +215,27 @@ struct FileInspectorView: View {
 
     private var workspaceActions: some View {
         Menu {
-            Button {
-                showMountPicker = true
-            } label: {
-                Label("链接外部文件夹", systemImage: "folder.badge.plus")
+            if center.currentWorkspace?.kind == .privateTask {
+                Button {
+                    showMountPicker = true
+                } label: {
+                    Label("链接外部文件夹", systemImage: "folder.badge.plus")
+                }
+                Button {
+                    showImportPicker = true
+                } label: {
+                    Label("导入整个文件夹", systemImage: "square.and.arrow.down")
+                }
+                Button {
+                    showCloudWorkspaceLink = true
+                } label: {
+                    Label("链接云工作区", systemImage: "cloud")
+                }
             }
             Button {
-                showImportPicker = true
+                showNetworkMount = true
             } label: {
-                Label("导入整个文件夹", systemImage: "square.and.arrow.down")
-            }
-            Button {
-                showCloudWorkspaceLink = true
-            } label: {
-                Label("链接云工作区", systemImage: "cloud")
+                Label("挂载 SMB / WebDAV", systemImage: "externaldrive.connected.to.line.below")
             }
             Button {
                 do { exportURL = try center.prepareWorkspaceExport() }
@@ -289,6 +301,12 @@ struct FileInspectorView: View {
                         .foregroundStyle(FloeTheme.primary)
                         .accessibilityLabel("已链接 \(center.cloudWorkspaceLinks.count) 个云工作区")
                 }
+                if !center.networkWorkspaceMounts.isEmpty {
+                    Label("\(center.networkWorkspaceMounts.count)", systemImage: "network")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.primary)
+                        .accessibilityLabel("已挂载 \(center.networkWorkspaceMounts.count) 个网络存储")
+                }
                 Spacer()
                 if showsSwitch {
                     Text("workspace.switch")
@@ -342,6 +360,123 @@ struct FileInspectorView: View {
             }
             try? await Task.sleep(for: .seconds(2))
             withAnimation(.snappy) { contextNotice = nil }
+        }
+    }
+}
+
+private struct NetworkWorkspaceMountSheet: View {
+    @ObservedObject var center: WorkspaceCenter
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var transport: NetworkWorkspaceProtocol = .webDAV
+    @State private var name = ""
+    @State private var endpoint = ""
+    @State private var rootPath = ""
+    @State private var username = ""
+    @State private var password = ""
+    @State private var readOnly = false
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("网络存储") {
+                    Picker("协议", selection: $transport) {
+                        Text("WebDAV").tag(NetworkWorkspaceProtocol.webDAV)
+                        Text("SMB2").tag(NetworkWorkspaceProtocol.smb)
+                    }
+                    .pickerStyle(.segmented)
+                    TextField("显示名称", text: $name)
+                    TextField(
+                        transport == .smb ? "smb://server/share" : "https://server/dav/",
+                        text: $endpoint
+                    )
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    TextField("远程子目录（可选）", text: $rootPath)
+                        .textInputAutocapitalization(.never)
+                }
+                Section("认证") {
+                    TextField("用户名", text: $username)
+                        .textInputAutocapitalization(.never)
+                    SecureField("密码", text: $password)
+                    Text("密码只写入 Keychain；挂载配置、同步、日志和模型上下文只保存凭据引用。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Section("权限") {
+                    Toggle("只读挂载", isOn: $readOnly)
+                    Text(readOnly ? "禁止写入、移动和删除。" : "首次写操作仍会经过 Floe 的文件写入审批。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if let errorMessage {
+                    Section {
+                        Label(errorMessage, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                    }
+                }
+                if !center.networkWorkspaceMounts.isEmpty {
+                    Section("已挂载") {
+                        ForEach(center.networkWorkspaceMounts) { mount in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(mount.name)
+                                    Text("\(mount.transport == .smb ? "SMB2" : "WebDAV") · \(mount.readOnly ? "只读" : "读写")")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button(role: .destructive) {
+                                    Task {
+                                        try? await center.removeNetworkMount(id: mount.id)
+                                    }
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("网络存储")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(isSaving ? "连接中…" : "连接并保存") {
+                        Task { await save() }
+                    }
+                    .disabled(isSaving || endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+
+    private func save() async {
+        guard let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            errorMessage = "地址格式无效。"
+            return
+        }
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            _ = try await center.addNetworkMount(
+                name: name,
+                transport: transport,
+                endpoint: url,
+                rootPath: rootPath,
+                username: username,
+                password: password,
+                readOnly: readOnly
+            )
+            password = ""
+            dismiss()
+        } catch {
+            password = ""
+            errorMessage = error.localizedDescription
         }
     }
 }

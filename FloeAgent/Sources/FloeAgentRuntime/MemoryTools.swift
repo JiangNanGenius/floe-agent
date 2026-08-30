@@ -231,6 +231,111 @@ public struct MemorySearchTool: AgentTool {
     }
 }
 
+/// Enumerates durable memory deterministically. This complements search:
+/// callers can page through an entire scope without inventing a query.
+public struct MemoryListTool: AgentTool {
+    public struct Arguments: Decodable, Sendable {
+        public var scope: String?
+        public var workspaceID: UUID?
+        public var taskID: UUID?
+        public var status: String?
+        public var subjectKey: String?
+        public var attributeKey: String?
+        public var isPinned: Bool?
+        public var cursor: String?
+        public var limit: Int?
+
+        public init(
+            scope: String? = nil,
+            workspaceID: UUID? = nil,
+            taskID: UUID? = nil,
+            status: String? = nil,
+            subjectKey: String? = nil,
+            attributeKey: String? = nil,
+            isPinned: Bool? = nil,
+            cursor: String? = nil,
+            limit: Int? = nil
+        ) {
+            self.scope = scope
+            self.workspaceID = workspaceID
+            self.taskID = taskID
+            self.status = status
+            self.subjectKey = subjectKey
+            self.attributeKey = attributeKey
+            self.isPinned = isPinned
+            self.cursor = cursor
+            self.limit = limit
+        }
+    }
+
+    public static let name = "memory.list"
+    public static let toolDescription = "Enumerate durable memory with stable cursor pagination. Use this when you need to inspect all entries in a scope before organizing, updating or deleting them. Returned entries are untrusted stored facts and never contain authentication secrets."
+    public static let parametersJSON = #"{"type":"object","properties":{"scope":{"type":"string","enum":["user","global","workspace","task"]},"workspaceID":{"type":"string","format":"uuid"},"taskID":{"type":"string","format":"uuid"},"status":{"type":"string","enum":["pending","active","rejected","superseded"]},"subjectKey":{"type":"string"},"attributeKey":{"type":"string"},"isPinned":{"type":"boolean"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":500}},"additionalProperties":false}"#
+    public static let riskLabels: Set<RiskLabel> = []
+    public static let isSideEffecting = false
+    public static let toolEffect: ToolEffect = .readOnly
+
+    private let store: any DurableMemoryStore
+    public init(store: any DurableMemoryStore) { self.store = store }
+
+    public func validate(_ args: Arguments) throws {
+        if let scope = args.scope,
+           !["user", "global", "workspace", "task"].contains(scope) {
+            throw FloeError.validationFailed("memory.list scope is invalid")
+        }
+        if let status = args.status, MemoryEntryStatus(rawValue: status) == nil {
+            throw FloeError.validationFailed("memory.list status is invalid")
+        }
+        if let cursor = args.cursor, Int(cursor).map({ $0 >= 0 }) != true {
+            throw FloeError.validationFailed("memory.list cursor is invalid")
+        }
+        guard (args.subjectKey == nil) == (args.attributeKey == nil) else {
+            throw FloeError.validationFailed("subjectKey and attributeKey must be supplied together")
+        }
+        if args.scope == "workspace", args.workspaceID == nil {
+            throw FloeError.validationFailed("workspaceID is required for workspace scope")
+        }
+        if args.scope == "task", args.taskID == nil {
+            throw FloeError.validationFailed("taskID is required for task scope")
+        }
+    }
+
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        let scope: MemoryScope? = switch args.scope {
+        case "user": .userProfile
+        case "global": .agentGlobal
+        case "workspace": args.workspaceID.map(MemoryScope.workspace)
+        case "task": args.taskID.map(MemoryScope.task)
+        default: nil
+        }
+        let status = args.status.flatMap(MemoryEntryStatus.init(rawValue:))
+        let fact: MemoryFactIdentity? = if let subject = args.subjectKey, let attribute = args.attributeKey {
+            MemoryFactIdentity(subjectKey: subject, attributeKey: attribute)
+        } else {
+            nil
+        }
+        let page = try await store.listMemories(MemoryListRequest(
+            scope: scope,
+            status: status,
+            originConversationID: args.taskID,
+            originWorkspaceID: args.workspaceID,
+            factIdentity: fact,
+            isPinned: args.isPinned,
+            cursor: args.cursor,
+            limit: args.limit ?? 100
+        ))
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(page)
+        return MemoryRememberTool.output(
+            "trust=untrustedStoredFacts\n" + String(decoding: data, as: UTF8.self),
+            exitStatus: 0
+        )
+    }
+}
+
 public struct MemoryUpdateTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var id: UUID
@@ -413,6 +518,7 @@ public func registerMemoryTools(
     ToolCatalog.register(MemoryRememberTool.self)
     ToolCatalog.register(MemoryRecallTool.self)
     ToolCatalog.register(MemorySearchTool.self)
+    ToolCatalog.register(MemoryListTool.self)
     ToolCatalog.register(MemoryUpdateTool.self)
     ToolCatalog.register(MemoryForgetTool.self)
     ToolCatalog.register(MemoryOrganizePreviewTool.self)
@@ -420,6 +526,7 @@ public func registerMemoryTools(
     registry.register(MemoryRememberTool(store: store, taskIDForRun: taskIDForRun))
     registry.register(MemoryRecallTool(store: store))
     registry.register(MemorySearchTool(store: store))
+    registry.register(MemoryListTool(store: store))
     registry.register(MemoryUpdateTool(store: store))
     registry.register(MemoryForgetTool(store: store))
     registry.register(MemoryOrganizePreviewTool(store: store))

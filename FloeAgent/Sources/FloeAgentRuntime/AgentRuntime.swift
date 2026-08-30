@@ -307,7 +307,7 @@ public actor FloeAgentRuntime {
             maxToolSteps: Int = Int.max / 4,
             verifyFinalAnswer: Bool = false,
             forceInitialCompaction: Bool = false,
-            maxProviderRetries: Int = 3,
+            maxProviderRetries: Int = 5,
             providerFirstEventTimeout: TimeInterval = 30,
             providerStreamIdleTimeout: TimeInterval = 45,
             providerRetryBaseDelay: TimeInterval = 1,

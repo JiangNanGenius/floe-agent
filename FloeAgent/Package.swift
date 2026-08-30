@@ -87,6 +87,12 @@ let package = Package(
         .package(
             url: "https://github.com/ibrahimcetin/libgit2.git",
             exact: "1.9.2"
+        ),
+        // Pure Swift SMB2 client. Keep this exact pin: network workspace
+        // mounts are audited at install/update time and never enable SMB1.
+        .package(
+            url: "https://github.com/kishikawakatsumi/SMBClient.git",
+            exact: "0.2.1"
         )
     ],
     targets: [
@@ -390,6 +396,7 @@ let package = Package(
                 "FloeCore",
                 "FloeModels",
                 "FloeTools",
+                .product(name: "SMBClient", package: "SMBClient"),
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeWorkspace",

@@ -64,6 +64,18 @@ public struct WorkspaceMoveFileTool: AgentTool {
         }
         try context.authorizeWorkspacePath(args.from)
         try context.authorizeWorkspacePath(args.to)
+        let fromRoute = try await environment.networkRoute(path: args.from, context: context)
+        let toRoute = try await environment.networkRoute(path: args.to, context: context)
+        if let fromRoute, let toRoute {
+            guard fromRoute.mount.id == toRoute.mount.id else {
+                throw NetworkWorkspaceError(code: .unsupported, stage: "move", retryable: false, safeDetail: "Moving between different network mounts is not supported; copy then delete explicitly.")
+            }
+            let metadata = try await fromRoute.adapter.metadata(path: fromRoute.relativePath)
+            try await fromRoute.adapter.move(from: fromRoute.relativePath, to: toRoute.relativePath, expectedEntityTag: metadata.entityTag)
+            return WorkspaceToolSupport.output("moved=\(args.from) -> \(args.to) network=true")
+        } else if fromRoute != nil || toRoute != nil {
+            throw NetworkWorkspaceError(code: .unsupported, stage: "move", retryable: false, safeDetail: "Moving between local and network storage is not supported; use copy then delete explicitly.")
+        }
         let service = try environment.makeService(context: context)
         try service.move(args.from, to: args.to, cancellation: context.cancellation)
         return WorkspaceToolSupport.output("moved=\(args.from) -> \(args.to)")
@@ -122,6 +134,14 @@ public struct WorkspaceDeleteFileTool: AgentTool {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
         try context.authorizeWorkspacePath(args.path)
+        if let route = try await environment.networkRoute(path: args.path, context: context) {
+            let metadata = try await route.adapter.metadata(path: route.relativePath)
+            if metadata.isDirectory, args.recursive == true {
+                throw NetworkWorkspaceError(code: .unsupported, stage: "delete", retryable: false, safeDetail: "Recursive network deletion is intentionally unsupported; delete children explicitly.")
+            }
+            try await route.adapter.delete(path: route.relativePath, expectedEntityTag: metadata.entityTag)
+            return WorkspaceToolSupport.output("deleted=\(args.path) recursive=false network=true")
+        }
         let service = try environment.makeService(context: context)
         try service.delete(args.path, recursive: args.recursive ?? false, cancellation: context.cancellation)
         return WorkspaceToolSupport.output("deleted=\(args.path) recursive=\(args.recursive ?? false)")
@@ -184,6 +204,18 @@ public struct WorkspaceCopyFileTool: AgentTool {
         }
         try context.authorizeWorkspacePath(args.from)
         try context.authorizeWorkspacePath(args.to)
+        let fromRoute = try await environment.networkRoute(path: args.from, context: context)
+        let toRoute = try await environment.networkRoute(path: args.to, context: context)
+        if let fromRoute, let toRoute {
+            guard fromRoute.mount.id == toRoute.mount.id else {
+                throw NetworkWorkspaceError(code: .unsupported, stage: "copy", retryable: false, safeDetail: "Copying between different network mounts is not supported.")
+            }
+            let data = try await fromRoute.adapter.read(path: fromRoute.relativePath, offset: 0, limit: environment.maxReadBytes)
+            _ = try await toRoute.adapter.write(path: toRoute.relativePath, data: data, expectedEntityTag: nil)
+            return WorkspaceToolSupport.output("copied=\(args.from) -> \(args.to) network=true")
+        } else if fromRoute != nil || toRoute != nil {
+            throw NetworkWorkspaceError(code: .unsupported, stage: "copy", retryable: false, safeDetail: "Use workspace.readFile/writeFile for an explicit bounded local/network transfer.")
+        }
         let service = try environment.makeService(context: context)
         try service.copy(args.from, to: args.to, cancellation: context.cancellation)
         return WorkspaceToolSupport.output("copied=\(args.from) -> \(args.to)")

@@ -78,10 +78,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             "pictureInPicturePrepareStarted generation=\(generation)"
         )
         defer { isPreparingPiP = false }
-        // PiP with a playing video requires the audio background mode. Set the
-        // session active so the system registers that capability at task start
-        // instead of suspending the app the moment it backgrounds.
-        configureAudioSession()
+        // Build the visual PiP source without owning the device audio session.
+        // The session is activated only at the actual PiP start boundary so a
+        // foreground agent run never pauses Music, podcasts or another app.
         guard prepareInlinePreview() else {
             lastError = "画中画需要可见的应用窗口"
             FloeLogger(category: .app).warning(
@@ -206,6 +205,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         guard let controller = pipController,
               controller.isPictureInPicturePossible,
               !controller.isPictureInPictureActive else { return }
+        configureAudioSession()
         FloeLogger(category: .app).info(
             "pictureInPictureStartRequested generation=\(startGeneration) attempt=\(startAttemptCount + 1) playerStatus=\(String(describing: player?.timeControlStatus)) itemStatus=\(String(describing: player?.currentItem?.status))"
         )
@@ -356,6 +356,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         if isProgrammaticRetraction {
             isProgrammaticRetraction = false
             isPiPActive = false
+            deactivateAudioSession()
             FloeLogger(category: .app).info("pictureInPictureRetractionCompleted")
             let generation = startGeneration
             refreshTask?.cancel()
@@ -808,6 +809,7 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
                 // app departure can try it again without attempting to attach
                 // a new source view while already backgrounded.
                 self.isPiPPrepared = self.pipController != nil
+                self.deactivateAudioSession()
                 return
             }
             let generation = self.startGeneration

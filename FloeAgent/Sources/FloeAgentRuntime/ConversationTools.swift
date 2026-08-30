@@ -196,7 +196,7 @@ public struct ConversationReadTool: AgentTool {
         }
         let block = ConversationHistoryInjection.referenceBlock(
             title: "Floe task \(args.conversationID.uuidString)",
-            messages: page.messages
+            items: page.items
         )
         let cursor = page.nextCursor.map { "\nnextCursor=\($0)" } ?? ""
         return ConversationSearchTool.output(block + cursor)

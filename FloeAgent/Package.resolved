@@ -1,5 +1,5 @@
 {
-  "originHash" : "96918d0770069677800afcca98c1c5a29dcb83bfe03eca29986c0a76562451b3",
+  "originHash" : "344df964c22a6fa85b8fd7afb5f61cca62d7e0ca5a2857ad4ecd169cdec80c9f",
   "pins" : [
     {
       "identity" : "bigint",
@@ -86,6 +86,15 @@
       "location" : "https://github.com/royalapplications/royalvnc.git",
       "state" : {
         "revision" : "92d4427c73817d8f849bb289ff190aa4b40c44ea"
+      }
+    },
+    {
+      "identity" : "smbclient",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/kishikawakatsumi/SMBClient.git",
+      "state" : {
+        "revision" : "78ecf6cb8055c4f6d9e6af6022091e06c927004e",
+        "version" : "0.2.1"
       }
     },
     {

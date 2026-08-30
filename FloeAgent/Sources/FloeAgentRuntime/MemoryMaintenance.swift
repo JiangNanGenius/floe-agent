@@ -52,22 +52,49 @@ public struct MemoryOrganizationSuggestion: Sendable, Codable, Hashable, Identif
     }
 }
 
+public struct MemoryOrganizationEntrySummary: Sendable, Codable, Hashable, Identifiable {
+    public var id: UUID
+    public var scope: MemoryScope
+    public var status: MemoryEntryStatus
+    public var content: String
+    public var factIdentity: MemoryFactIdentity?
+    public var originConversationID: UUID?
+    public var originWorkspaceID: UUID?
+    public var updatedAt: Date
+
+    public init(_ entry: MemoryEntry) {
+        id = entry.id
+        scope = entry.scope
+        status = entry.status
+        content = String(entry.content.prefix(1_024))
+        factIdentity = entry.factIdentity
+        originConversationID = entry.originConversationID
+        originWorkspaceID = entry.originWorkspaceID
+        updatedAt = entry.updatedAt
+    }
+}
+
 public struct MemoryOrganizationProposal: Sendable, Codable, Hashable, Identifiable {
     public var id: UUID
     public var generatedAt: Date
     public var scannedCount: Int
     public var suggestions: [MemoryOrganizationSuggestion]
+    /// Exact bounded entries referenced by suggestions. This makes a preview
+    /// reviewable without a second guess-based search pass.
+    public var entries: [MemoryOrganizationEntrySummary]
 
     public init(
         id: UUID = UUID(),
         generatedAt: Date = Date(),
         scannedCount: Int,
-        suggestions: [MemoryOrganizationSuggestion]
+        suggestions: [MemoryOrganizationSuggestion],
+        entries: [MemoryOrganizationEntrySummary] = []
     ) {
         self.id = id
         self.generatedAt = generatedAt
         self.scannedCount = scannedCount
         self.suggestions = suggestions
+        self.entries = entries
     }
 }
 
@@ -107,5 +134,49 @@ public struct MemoryMaintenanceBatchResult: Sendable, Codable, Hashable {
         self.deletedCount = deletedCount
         self.replacedCount = replacedCount
         self.wasAlreadyApplied = wasAlreadyApplied
+    }
+}
+
+/// Bounded, filterable enumeration used by the model and memory-management UI.
+/// Unlike semantic recall this is an inventory API: results are ordered and
+/// cursor based so a caller can eventually inspect every matching entry.
+public struct MemoryListRequest: Sendable, Codable, Hashable {
+    public var scope: MemoryScope?
+    public var status: MemoryEntryStatus?
+    public var originConversationID: UUID?
+    public var originWorkspaceID: UUID?
+    public var factIdentity: MemoryFactIdentity?
+    public var isPinned: Bool?
+    public var cursor: String?
+    public var limit: Int
+
+    public init(
+        scope: MemoryScope? = nil,
+        status: MemoryEntryStatus? = nil,
+        originConversationID: UUID? = nil,
+        originWorkspaceID: UUID? = nil,
+        factIdentity: MemoryFactIdentity? = nil,
+        isPinned: Bool? = nil,
+        cursor: String? = nil,
+        limit: Int = 100
+    ) {
+        self.scope = scope
+        self.status = status
+        self.originConversationID = originConversationID
+        self.originWorkspaceID = originWorkspaceID
+        self.factIdentity = factIdentity?.isValid == true ? factIdentity : nil
+        self.isPinned = isPinned
+        self.cursor = cursor
+        self.limit = min(500, max(1, limit))
+    }
+}
+
+public struct MemoryListPage: Sendable, Codable, Hashable {
+    public var entries: [MemoryEntry]
+    public var nextCursor: String?
+
+    public init(entries: [MemoryEntry], nextCursor: String? = nil) {
+        self.entries = entries
+        self.nextCursor = nextCursor
     }
 }

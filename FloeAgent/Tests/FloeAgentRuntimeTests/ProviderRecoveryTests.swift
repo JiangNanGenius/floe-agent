@@ -12,6 +12,17 @@ import FloeTestSupport
 @Suite("FloeAgentRuntime.ProviderRecovery")
 struct ProviderRecoveryTests {
 
+    @Test("cloud provider retry budget defaults to five reconnects")
+    func defaultRetryBudgetIsFive() {
+        let provider = TestFixtures.localhostProvider()
+        let configuration = FloeAgentRuntime.Configuration(
+            conversationID: UUID(),
+            provider: provider,
+            model: TestFixtures.testModel(providerID: provider.id)
+        )
+        #expect(configuration.maxProviderRetries == 5)
+    }
+
     private func configuration(
         conversationID: UUID = UUID(),
         maxProviderRetries: Int = 2,

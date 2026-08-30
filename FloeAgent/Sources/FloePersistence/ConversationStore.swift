@@ -78,6 +78,9 @@ public protocol ConversationStore: Sendable {
 
     func appendMessage(_ message: PersistedMessage) async throws
     func messages(conversationID: UUID) async throws -> [PersistedMessage]
+    /// Fast first-screen page in chronological order. Full history remains
+    /// available through `messages(conversationID:)` and is hydrated later.
+    func recentMessages(conversationID: UUID, limit: Int) async throws -> [PersistedMessage]
     func parts(messageID: UUID) async throws -> [MessagePart]
 
     func saveAttachment(_ attachment: AttachmentRef) async throws
@@ -95,6 +98,10 @@ public extension ConversationStore {
 
     func setArchived(id: UUID, archived: Bool) async throws {
         throw FloeError.invalidConfiguration("This conversation store does not support archives")
+    }
+
+    func recentMessages(conversationID: UUID, limit: Int) async throws -> [PersistedMessage] {
+        Array(try await messages(conversationID: conversationID).suffix(max(1, limit)))
     }
 }
 
@@ -241,6 +248,36 @@ public actor SQLiteConversationStore: ConversationStore {
                     content: row["content"],
                     createdAt: try PersistenceCodec.decodeDate(row["created_at"]),
                     parts: parts,
+                    runID: (row["run_id"] as String?).flatMap(UUID.init(uuidString:))
+                )
+            }
+        }
+    }
+
+    public func recentMessages(conversationID: UUID, limit: Int) async throws -> [PersistedMessage] {
+        let bounded = min(500, max(1, limit))
+        return try await database.reader { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM (
+                        SELECT messages.*, rowid AS stable_order FROM messages
+                        WHERE conversation_id = ?
+                        ORDER BY created_at DESC, rowid DESC
+                        LIMIT ?
+                    ) ORDER BY created_at, stable_order
+                    """,
+                arguments: [conversationID.uuidString, bounded]
+            )
+            return try rows.map { row in
+                let id = try Self.messageID(from: row)
+                return PersistedMessage(
+                    id: id,
+                    conversationID: conversationID,
+                    role: row["role"],
+                    content: row["content"],
+                    createdAt: try PersistenceCodec.decodeDate(row["created_at"]),
+                    parts: try Self.fetchParts(messageID: id, db: db),
                     runID: (row["run_id"] as String?).flatMap(UUID.init(uuidString:))
                 )
             }

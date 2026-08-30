@@ -32,9 +32,7 @@ public struct WorkspaceToolEnvironment: Sendable {
 
     /// Builds a file service for the current workspace root.
     public func makeService(context: ToolContext) throws -> WorkspaceFileService {
-        guard let root = context.workspaceRootURL ?? rootProvider() else {
-            throw WorkspaceToolError.notFound("workspace (no workspace is currently open)")
-        }
+        let root = try rootURL(context: context)
         let guardResolver = WorkspacePathGuard(
             rootURL: root,
             maxReadBytes: maxReadBytes,
@@ -42,6 +40,27 @@ public struct WorkspaceToolEnvironment: Sendable {
             mounts: WorkspaceMountRegistry.shared.mounts(for: root)
         )
         return WorkspaceFileService(guard: guardResolver)
+    }
+
+    public func rootURL(context: ToolContext) throws -> URL {
+        guard let root = context.workspaceRootURL ?? rootProvider() else {
+            throw WorkspaceToolError.notFound("workspace (no workspace is currently open)")
+        }
+        return root
+    }
+
+    public func networkRoute(
+        path: String,
+        context: ToolContext
+    ) async throws -> NetworkWorkspaceMountRegistry.Route? {
+        try await NetworkWorkspaceMountRegistry.shared.route(
+            rootURL: rootURL(context: context),
+            virtualPath: path
+        )
+    }
+
+    public func networkMounts(context: ToolContext) async throws -> [NetworkWorkspaceMount] {
+        await NetworkWorkspaceMountRegistry.shared.mounts(rootURL: try rootURL(context: context))
     }
 
     /// Direct UI/test access retains the legacy environment-root behavior.
@@ -173,6 +192,24 @@ public struct WorkspaceListDirectoryTool: AgentTool {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
         try context.authorizeWorkspacePath(args.path)
+        if args.path == "Network" || args.path == "Network/" {
+            let mounts = try await environment.networkMounts(context: context)
+            var lines = ["path=Network entries=\(mounts.count)"]
+            lines += mounts.map { "dir\t0\tNetwork/\($0.name)" }
+            return WorkspaceToolSupport.output(lines.joined(separator: "\n"))
+        }
+        if let route = try await environment.networkRoute(path: args.path, context: context) {
+            let entries = try await route.adapter.list(path: route.relativePath)
+            let offset = Int(args.pageToken ?? "0") ?? 0
+            let end = min(entries.count, offset + WorkspaceFileService.pageSize)
+            let page = offset < entries.count ? Array(entries[offset..<end]) : []
+            var lines = page.map { entry in
+                "\(entry.isDirectory ? "dir" : "file")\t\(entry.byteCount)\tNetwork/\(route.mount.name)/\(entry.path)"
+            }
+            lines.insert("path=\(args.path) entries=\(page.count) network=true", at: 0)
+            if end < entries.count { lines.append("nextPageToken=\(end)") }
+            return WorkspaceToolSupport.output(lines.joined(separator: "\n"))
+        }
         let service = try environment.makeService(context: context)
         let page = try service.listDirectory(args.path, pageToken: args.pageToken, cancellation: context.cancellation)
         var lines = page.entries.map { entry in
@@ -250,6 +287,16 @@ public struct WorkspaceReadFileTool: AgentTool {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
         try context.authorizeWorkspacePath(args.path)
+        if let route = try await environment.networkRoute(path: args.path, context: context) {
+            let offset = args.offset ?? 0
+            let limit = min(args.limit ?? WorkspaceFileService.readChunkBytes, WorkspaceFileService.readChunkBytes)
+            let data = try await route.adapter.read(path: route.relativePath, offset: offset, limit: limit + 1)
+            let truncated = data.count > limit
+            let visible = truncated ? data.prefix(limit) : data[...]
+            let text = String(decoding: visible, as: UTF8.self)
+            let totalLines = text.reduce(into: 1) { if $1 == "\n" { $0 += 1 } }
+            return WorkspaceToolSupport.output("path=\(args.path) offset=\(offset) truncated=\(truncated) totalLines=\(totalLines) network=true\n\(text)")
+        }
         let service = try environment.makeService(context: context)
         let content = try service.readFile(
             args.path,
@@ -331,6 +378,20 @@ public struct WorkspaceSearchFilesTool: AgentTool {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
         try context.authorizeWorkspacePath(args.path ?? ".")
+        if let requestedPath = args.path,
+           let route = try await environment.networkRoute(path: requestedPath, context: context) {
+            let limit = min(args.maxResults ?? WorkspaceFileService.maxSearchHits, WorkspaceFileService.maxSearchHits)
+            let hits = try await searchNetwork(
+                route: route,
+                virtualRoot: requestedPath,
+                query: args.query,
+                maxResults: limit,
+                cancellation: context.cancellation
+            )
+            return WorkspaceToolSupport.output(
+                (["query=\(args.query) hits=\(hits.count) network=true"] + hits).joined(separator: "\n")
+            )
+        }
         let service = try environment.makeService(context: context)
         let hits = try service.search(
             query: args.query,
@@ -343,6 +404,50 @@ public struct WorkspaceSearchFilesTool: AgentTool {
             lines.append("\(hit.relativePath):\(hit.lineNumber): \(hit.context)")
         }
         return WorkspaceToolSupport.output(lines.joined(separator: "\n"))
+    }
+
+    /// Network storage is intentionally searched as a virtual hierarchy. It is
+    /// not mounted into the process filesystem, so symlinks and POSIX path
+    /// assumptions can never escape the configured SMB/WebDAV root.
+    private func searchNetwork(
+        route: NetworkWorkspaceMountRegistry.Route,
+        virtualRoot: String,
+        query: String,
+        maxResults: Int,
+        cancellation: CancellationToken
+    ) async throws -> [String] {
+        let normalizedQuery = query.lowercased()
+        var pending = [route.relativePath]
+        var visited = 0
+        var results: [String] = []
+
+        while let path = pending.popLast(), results.count < maxResults {
+            try cancellation.throwIfCancelled()
+            guard visited < WorkspaceFileService.maxSearchFiles else {
+                throw WorkspaceToolError.tooLarge(limit: WorkspaceFileService.maxSearchFiles)
+            }
+            visited += 1
+
+            let metadata = try await route.adapter.metadata(path: path)
+            if metadata.isDirectory {
+                let children = try await route.adapter.list(path: path)
+                pending.append(contentsOf: children.reversed().map(\.path))
+                continue
+            }
+            guard metadata.byteCount <= 4 * 1_024 * 1_024 else { continue }
+            let data = try await route.adapter.read(path: path, offset: 0, limit: Int(metadata.byteCount))
+            guard let text = String(data: data, encoding: .utf8), !text.contains("\0") else { continue }
+            for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()
+                where line.lowercased().contains(normalizedQuery) {
+                let relativeSuffix = path.isEmpty ? "" : "/\(path)"
+                let displayPath = virtualRoot.hasSuffix(relativeSuffix)
+                    ? virtualRoot
+                    : "\(route.mount.virtualRoot)\(relativeSuffix)"
+                results.append("\(displayPath):\(index + 1): \(line.prefix(500))")
+                if results.count >= maxResults { break }
+            }
+        }
+        return results
     }
 }
 
@@ -395,6 +500,20 @@ public struct WorkspaceInspectMetadataTool: AgentTool {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
         try context.authorizeWorkspacePath(args.path)
+        if let route = try await environment.networkRoute(path: args.path, context: context) {
+            let metadata = try await route.adapter.metadata(path: route.relativePath)
+            let summary = """
+            path=\(args.path)
+            isDirectory=\(metadata.isDirectory)
+            size=\(metadata.byteCount)
+            mtime=\(metadata.modifiedAt?.timeIntervalSince1970 ?? 0)
+            uti=public.data
+            entityTag=\(metadata.entityTag ?? "")
+            isSymlink=false
+            network=true
+            """
+            return WorkspaceToolSupport.output(summary)
+        }
         let service = try environment.makeService(context: context)
         let metadata = try service.metadata(args.path)
         let summary = """

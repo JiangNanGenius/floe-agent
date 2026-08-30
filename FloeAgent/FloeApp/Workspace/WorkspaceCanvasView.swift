@@ -469,6 +469,133 @@ private struct CanvasNodeClipboard: Codable {
     let connections: [CanvasConnection]
 }
 
+private enum CanvasNodeCreationSection: String, CaseIterable, Identifiable {
+    case basic, media, creation
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .basic: "基础节点"
+        case .media: "媒体与文件"
+        case .creation: "创作节点"
+        }
+    }
+}
+
+/// One source of truth for every node-creation surface: toolbar, blank-canvas
+/// double click, pointer context menu, Pencil palette and keyboard commands.
+private enum CanvasNodeCreationKind: String, CaseIterable, Identifiable {
+    case text, stickyNote, card, shape, group, image, video, audio, file
+    case imageGeneration, videoGeneration, scene3D
+
+    var id: String { rawValue }
+    var section: CanvasNodeCreationSection {
+        switch self {
+        case .text, .stickyNote, .card, .shape, .group: .basic
+        case .image, .video, .audio, .file: .media
+        case .imageGeneration, .videoGeneration, .scene3D: .creation
+        }
+    }
+    var title: String {
+        switch self {
+        case .text: "文本"
+        case .stickyNote: "便签"
+        case .card: "基础卡片"
+        case .shape: "形状"
+        case .group: "分组"
+        case .image: "图片卡片"
+        case .video: "视频卡片"
+        case .audio: "音频卡片"
+        case .file: "文件卡片"
+        case .imageGeneration: "图片生成"
+        case .videoGeneration: "视频生成"
+        case .scene3D: "3D 场景"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .text: "textformat"
+        case .stickyNote: "note.text"
+        case .card: "rectangle.and.text.magnifyingglass"
+        case .shape: "square.on.circle"
+        case .group: "square.3.layers.3d"
+        case .image: "photo"
+        case .video: "film"
+        case .audio: "waveform"
+        case .file: "doc"
+        case .imageGeneration: "photo.badge.plus"
+        case .videoGeneration: "video.badge.plus"
+        case .scene3D: "cube.transparent"
+        }
+    }
+}
+
+private enum CanvasContextTarget: Equatable {
+    case canvas(CGPoint)
+    case nodes(Set<UUID>)
+    case connection(UUID)
+    case ink(Set<UUID>)
+}
+
+private enum CanvasContextAction: String, CaseIterable, Identifiable {
+    case create, paste, importAsset, fitCanvas, edit, askAI, duplicate, connect
+    case group, ungroup, lock, unlock, bringToFront, sendToBack, export, delete
+    case reverseConnection, interpretInk, inkToCard, inkToText, inkToShape
+    var id: String { rawValue }
+}
+
+private struct CanvasNodeCreationMenu: View {
+    let onCreate: (CanvasNodeCreationKind) -> Void
+
+    var body: some View {
+        ForEach(CanvasNodeCreationSection.allCases) { section in
+            Section(section.title) {
+                ForEach(CanvasNodeCreationKind.allCases.filter { $0.section == section }) { kind in
+                    Button(kind.title, systemImage: kind.icon) { onCreate(kind) }
+                }
+            }
+        }
+    }
+}
+
+private struct CanvasNodeCreationPalette: View {
+    let onCreate: (CanvasNodeCreationKind) -> Void
+    let onDismiss: () -> Void
+    private let columns = [GridItem(.adaptive(minimum: 92), spacing: 8)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("新建节点").font(.headline)
+                Spacer()
+                Button("关闭", systemImage: "xmark", action: onDismiss)
+                    .labelStyle(.iconOnly)
+            }
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 8) {
+                    ForEach(CanvasNodeCreationKind.allCases) { kind in
+                        Button {
+                            onCreate(kind)
+                        } label: {
+                            VStack(spacing: 7) {
+                                Image(systemName: kind.icon).font(.title3)
+                                Text(kind.title).font(.caption).lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 64)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("canvas.node.create.\(kind.rawValue)")
+                    }
+                }
+            }
+            .frame(maxHeight: 240)
+        }
+        .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
+    }
+}
+
 /// Product-level presence contract for the one optional CanvasProject owned
 /// by a Workspace. Merely opening the file inspector must never manufacture a
 /// canvas; creation happens only from an explicit Workspace action.
@@ -835,11 +962,18 @@ private final class CanvasDocumentStore: ObservableObject {
         return id
     }
 
-    /// Creates a real sticky-note node. Keeping this separate from `addNote`
-    /// prevents card entry points from silently producing plain text nodes.
+    /// Creates a real sticky-note node. Keeping it distinct from a structured
+    /// card lets every creation entry point expose both concepts honestly.
+    @discardableResult
+    func addStickyNote(at point: CGPoint, text: String = "新建便签") -> UUID {
+        let id = addPlaceholder(kind: .stickyNote, at: point)
+        if text != "新建便签" { updateNode(id, text: text) }
+        return id
+    }
+
     @discardableResult
     func addCard(at point: CGPoint, text: String = "新建卡片") -> UUID {
-        let id = addPlaceholder(kind: .stickyNote, at: point)
+        let id = addPlaceholder(kind: .card, at: point)
         if text != "新建卡片" { updateNode(id, text: text) }
         return id
     }
@@ -1154,7 +1288,7 @@ private final class CanvasDocumentStore: ObservableObject {
     }
 
     func setSyncEnabled(_ enabled: Bool) {
-        var sync = project.sync ?? CanvasSyncSettings()
+        var sync = project.sync
         sync.isEnabled = enabled
         sync.revision += 1
         project.sync = sync
@@ -1786,6 +1920,9 @@ struct WorkspaceCanvasView: View {
     @State private var exportDocument: CanvasBinaryDocument?
     @State private var exportContentType: UTType = .floeCanvasPackage
     @State private var exportFilename = "Floe 画布"
+    @State private var nodeCreationPoint: CGPoint?
+    @State private var lastCanvasPointerPoint: CGPoint?
+    @State private var pencilContextPoint: CGPoint?
 
     private static let nodePasteboardType = "org.floeagent.canvas.nodes"
 
@@ -2080,6 +2217,30 @@ struct WorkspaceCanvasView: View {
                     )
                     .zIndex(15)
                 }
+                if let nodeCreationPoint {
+                    CanvasNodeCreationPalette { kind in
+                        createNode(kind, at: canvasPoint(nodeCreationPoint))
+                        withAnimation(.snappy) { self.nodeCreationPoint = nil }
+                    } onDismiss: {
+                        withAnimation(.snappy) { self.nodeCreationPoint = nil }
+                    }
+                    .frame(width: min(360, geometry.size.width - 28))
+                    .position(
+                        x: min(max(190, nodeCreationPoint.x), geometry.size.width - 190),
+                        y: min(max(170, nodeCreationPoint.y), geometry.size.height - 170)
+                    )
+                    .transition(.scale(scale: 0.92).combined(with: .opacity))
+                    .zIndex(40)
+                }
+                if let pencilContextPoint {
+                    pencilContextMenu(size: geometry.size)
+                        .position(
+                            x: min(max(150, pencilContextPoint.x), geometry.size.width - 150),
+                            y: min(max(42, pencilContextPoint.y), geometry.size.height - 42)
+                        )
+                        .transition(.scale(scale: 0.9).combined(with: .opacity))
+                        .zIndex(45)
+                }
                 if showsAgent {
                     CanvasAgentFloatingPanel(
                         store: store,
@@ -2134,7 +2295,7 @@ struct WorkspaceCanvasView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .zIndex(30)
                 }
-                CanvasPencilInteractionBridge {
+                CanvasPencilInteractionBridge(onTap: {
                     switch canvasPreferences.doubleTapAction {
                     case .toggleEraser:
                         withAnimation(.snappy) {
@@ -2150,14 +2311,26 @@ struct WorkspaceCanvasView: View {
                         mode = .select
                     }
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
-                }
-                .frame(width: 1, height: 1)
+                }, onSqueeze: { location in
+                    withAnimation(.snappy) {
+                        pencilContextPoint = location ?? CGPoint(
+                            x: geometry.size.width / 2,
+                            y: geometry.size.height / 2
+                        )
+                    }
+                    UISelectionFeedbackGenerator().selectionChanged()
+                })
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .allowsHitTesting(false)
             }
             .clipped()
             .overlay(alignment: .bottomTrailing) { zoomControls }
-            .overlay(alignment: .topLeading) { modeControls(size: geometry.size) }
-            .overlay(alignment: .bottom) { selectionToolbar }
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 6) {
+                    selectionToolbar
+                    modeControls(size: geometry.size)
+                }
+            }
             .navigationTitle(store.selectedDocument?.name ?? "画布")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -2176,41 +2349,14 @@ struct WorkspaceCanvasView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack {
                         Menu {
-                            Section("基础节点") {
-                                Button("文本", systemImage: "textformat") {
-                                    createNode { store.addNote(at: $0) }
-                                }
-                                Button("卡片", systemImage: "note.text") {
-                                    createNode { store.addCard(at: $0) }
-                                }
-                                Button("形状", systemImage: "square.on.circle") {
-                                    createNode { store.addShape(at: $0) }
-                                }
-                                Button("分组", systemImage: "square.3.layers.3d") {
-                                    createNode { store.addGroup(at: $0) }
-                                }
+                            CanvasNodeCreationMenu { kind in
+                                createNode(kind, at: canvasPoint(CGPoint(x: 520, y: 380)))
                             }
-                            Section("媒体与文件") {
-                                placeholderCreationButton("图片卡片", icon: "photo", kind: .image)
-                                placeholderCreationButton("视频卡片", icon: "film", kind: .video)
-                                placeholderCreationButton("音频卡片", icon: "waveform", kind: .audio)
-                                placeholderCreationButton("文件卡片", icon: "doc", kind: .file)
-                                Button("从素材库添加…", systemImage: "photo.on.rectangle.angled") {
-                                    materialTargetNodeID = nil
-                                    materialKindFilter = [.image, .video, .audio, .file]
-                                    showsMaterials = true
-                                }
-                            }
-                            Section("创作节点") {
-                                placeholderCreationButton(
-                                    "生成配置", icon: "wand.and.stars", kind: .generationTask
-                                )
-                                Button("3D 场景", systemImage: "cube.transparent") {
-                                    let point = canvasPoint(CGPoint(x: 520, y: 380))
-                                    let nodeID = store.addScene3D(at: point)
-                                    selectedNodeIDs = [nodeID]
-                                    directorPresentation = Canvas3DDirectorPresentation(nodeID: nodeID)
-                                }
+                            Divider()
+                            Button("从素材库添加…", systemImage: "photo.on.rectangle.angled") {
+                                materialTargetNodeID = nil
+                                materialKindFilter = [.image, .video, .audio, .file]
+                                showsMaterials = true
                             }
                         } label: {
                             Label("新建节点", systemImage: "plus")
@@ -2316,6 +2462,34 @@ struct WorkspaceCanvasView: View {
         selectedStrokeIDs.removeAll()
         selectedConnectionID = nil
         mode = .select
+    }
+
+    private func createNode(_ kind: CanvasNodeCreationKind, at point: CGPoint) {
+        let nodeID: UUID
+        switch kind {
+        case .text: nodeID = store.addNote(at: point)
+        case .stickyNote: nodeID = store.addStickyNote(at: point)
+        case .card: nodeID = store.addCard(at: point)
+        case .shape: nodeID = store.addShape(at: point)
+        case .group: nodeID = store.addGroup(at: point)
+        case .image: nodeID = store.addPlaceholder(kind: .image, at: point)
+        case .video: nodeID = store.addPlaceholder(kind: .video, at: point)
+        case .audio: nodeID = store.addPlaceholder(kind: .audio, at: point)
+        case .file: nodeID = store.addPlaceholder(kind: .file, at: point)
+        case .imageGeneration:
+            nodeID = store.addGenerationTask(kind: .image, prompt: "", at: point)
+        case .videoGeneration:
+            nodeID = store.addGenerationTask(kind: .video, prompt: "", at: point)
+        case .scene3D:
+            nodeID = store.addScene3D(at: point)
+        }
+        selectedNodeIDs = [nodeID]
+        selectedStrokeIDs.removeAll()
+        selectedConnectionID = nil
+        editingNodeID = kind == .text || kind == .stickyNote || kind == .card ? nodeID : nil
+        mode = .select
+        if kind == .imageGeneration || kind == .videoGeneration { showsGeneration = true }
+        if kind == .scene3D { directorPresentation = Canvas3DDirectorPresentation(nodeID: nodeID) }
     }
 
     private func placeholderCreationButton(
@@ -2490,6 +2664,11 @@ struct WorkspaceCanvasView: View {
                     selectedConnectionID = nil
                     editingNodeID = node.id
                 },
+                onAskAI: {
+                    selectedNodeIDs = [node.id]
+                    selectedConnectionID = nil
+                    editingNodeID = nil
+                },
                 onDuplicate: {
                     selectedNodeIDs = store.duplicateNodes(contextSelection(for: node))
                     selectedConnectionID = nil
@@ -2530,6 +2709,16 @@ struct WorkspaceCanvasView: View {
                     if selectedNodeIDs.contains(node.id), mode == .select, !node.isLocked {
                         CanvasNodeSelectionChrome(
                             node: node,
+                            onOpenMenu: {
+                                selectedNodeIDs = contextSelection(for: node)
+                                selectedConnectionID = nil
+                                editingNodeID = nil
+                                withAnimation(.snappy) {
+                                    pencilContextPoint = screenPoint(
+                                        CGPoint(x: node.x, y: node.y + node.height / 2)
+                                    )
+                                }
+                            },
                             onBegin: store.beginInteractiveMutation,
                             onGeometryChanged: { width, height, rotation in
                                 store.updateNodeGeometry(
@@ -2740,6 +2929,11 @@ struct WorkspaceCanvasView: View {
     private func interactionLayer(size: CGSize) -> some View {
         Color.clear
             .contentShape(Rectangle())
+            .onContinuousHover { phase in
+                if case .active(let location) = phase {
+                    lastCanvasPointerPoint = location
+                }
+            }
             .gesture(
                 DragGesture(minimumDistance: mode == .pencil || mode == .eraser ? 0 : 4)
                     .onChanged { value in
@@ -2814,25 +3008,184 @@ struct WorkspaceCanvasView: View {
                         scaleStart = scale
                     }
             )
-            .gesture(SpatialTapGesture().onEnded { value in
-                switch mode {
-                case .select:
-                    selectedNodeIDs.removeAll()
-                    selectedStrokeIDs.removeAll()
-                    selectedConnectionID = nil
-                    editingNodeID = nil
-                case .text:
-                    selectedNodeIDs = [store.addNote(at: canvasPoint(value.location))]
-                    mode = .select
-                case .card:
-                    selectedNodeIDs = [store.addCard(at: canvasPoint(value.location))]
-                    mode = .select
-                case .shape:
-                    selectedNodeIDs = [store.addShape(at: canvasPoint(value.location))]
-                    mode = .select
-                case .hand, .pencil, .eraser, .connector: break
+            .gesture(
+                SpatialTapGesture(count: 2)
+                    .onEnded { value in
+                        guard mode == .select else { return }
+                        lastCanvasPointerPoint = value.location
+                        withAnimation(.snappy) { nodeCreationPoint = value.location }
+                    }
+                    .exclusively(before: SpatialTapGesture().onEnded { value in
+                        handleCanvasTap(at: value.location)
+                    })
+            )
+            .contextMenu {
+                CanvasNodeCreationMenu { kind in
+                    let point = lastCanvasPointerPoint ?? CGPoint(
+                        x: size.width / 2, y: size.height / 2
+                    )
+                    createNode(kind, at: canvasPoint(point))
                 }
-            })
+                Divider()
+                Button("粘贴", systemImage: "doc.on.clipboard", action: pasteFromClipboard)
+                Button("从素材库导入", systemImage: "photo.on.rectangle.angled") {
+                    materialTargetNodeID = nil
+                    materialKindFilter = nil
+                    showsMaterials = true
+                }
+                Button("适配画布", systemImage: "arrow.up.left.and.arrow.down.right") {
+                    scale = 1
+                    scaleStart = 1
+                    pan = .zero
+                    panStart = .zero
+                }
+            }
+    }
+
+    private func handleCanvasTap(at location: CGPoint) {
+        lastCanvasPointerPoint = location
+        nodeCreationPoint = nil
+        switch mode {
+        case .select:
+            selectedNodeIDs.removeAll()
+            selectedStrokeIDs.removeAll()
+            selectedConnectionID = nil
+            editingNodeID = nil
+        case .text:
+            selectedNodeIDs = [store.addNote(at: canvasPoint(location))]
+            mode = .select
+        case .card:
+            selectedNodeIDs = [store.addCard(at: canvasPoint(location))]
+            mode = .select
+        case .shape:
+            selectedNodeIDs = [store.addShape(at: canvasPoint(location))]
+            mode = .select
+        case .hand, .pencil, .eraser, .connector:
+            break
+        }
+    }
+
+    @ViewBuilder
+    private func pencilContextMenu(size: CGSize) -> some View {
+        if !selectedNodeIDs.isEmpty {
+            HStack(spacing: 5) {
+                if selectedNodeIDs.count == 1, let nodeID = selectedNodeIDs.first {
+                    Button("编辑", systemImage: "pencil") {
+                        editingNodeID = nodeID
+                        pencilContextPoint = nil
+                    }
+                }
+                Button("复制", systemImage: "plus.square.on.square") {
+                    selectedNodeIDs = store.duplicateNodes(selectedNodeIDs)
+                    pencilContextPoint = nil
+                }
+                Button("连接", systemImage: "point.topleft.down.to.point.bottomright.curvepath") {
+                    connectionStartID = selectedNodeIDs.first
+                    mode = .connector
+                    pencilContextPoint = nil
+                }
+                Menu("更多", systemImage: "ellipsis.circle") {
+                    if selectedNodeIDs.count == 1, let nodeID = selectedNodeIDs.first {
+                        Button("节点内提问", systemImage: "sparkles") {
+                            pendingAgentRequest = CanvasAgentRequest(nodeID: nodeID, prompt: "")
+                            showsAgent = true
+                            isAgentCollapsed = false
+                            pencilContextPoint = nil
+                        }
+                    }
+                    if let selectedNode = store.selectedDocument?.nodes.first(where: {
+                        selectedNodeIDs.contains($0.id)
+                    }) {
+                        Button(selectedNode.isLocked ? "解锁" : "锁定",
+                               systemImage: selectedNode.isLocked ? "lock.open" : "lock") {
+                            store.setLocked(selectedNodeIDs, locked: !selectedNode.isLocked)
+                            pencilContextPoint = nil
+                        }
+                    }
+                    Button("移到最前", systemImage: "arrow.up.to.line") {
+                        store.changeLayer(selectedNodeIDs, bringToFront: true)
+                        pencilContextPoint = nil
+                    }
+                    Button("移到最后", systemImage: "arrow.down.to.line") {
+                        store.changeLayer(selectedNodeIDs, bringToFront: false)
+                        pencilContextPoint = nil
+                    }
+                    if selectedNodeIDs.count > 1 {
+                        Button("分组", systemImage: "square.3.layers.3d") {
+                            store.group(selectedNodeIDs)
+                            pencilContextPoint = nil
+                        }
+                    } else if let selectedNode = store.selectedDocument?.nodes.first(where: {
+                        selectedNodeIDs.contains($0.id)
+                    }), selectedNode.groupID != nil {
+                        Button("解除分组", systemImage: "square.2.layers.3d") {
+                            store.ungroup(selectedNodeIDs)
+                            pencilContextPoint = nil
+                        }
+                    }
+                }
+                Button("删除", systemImage: "trash", role: .destructive) {
+                    deleteSelection()
+                    pencilContextPoint = nil
+                }
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.bordered)
+            .padding(7)
+            .background(.regularMaterial, in: Capsule())
+            .shadow(color: .black.opacity(0.14), radius: 10, y: 4)
+        } else if !selectedStrokeIDs.isEmpty || store.hasNativeInk {
+            HStack(spacing: 5) {
+                Button("整理笔迹", systemImage: "wand.and.rays") {
+                    interpretSelectedInk()
+                    pencilContextPoint = nil
+                }
+                Button("橡皮", systemImage: "eraser") {
+                    mode = .eraser
+                    pencilContextPoint = nil
+                }
+                Button("新建卡片", systemImage: "note.text.badge.plus") {
+                    createNode(.card, at: canvasPoint(pencilContextPoint ?? CGPoint(
+                        x: size.width / 2, y: size.height / 2
+                    )))
+                    pencilContextPoint = nil
+                }
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.bordered)
+            .padding(7)
+            .background(.regularMaterial, in: Capsule())
+            .shadow(color: .black.opacity(0.14), radius: 10, y: 4)
+        } else {
+            HStack(spacing: 5) {
+                Button("画笔", systemImage: "pencil.tip") {
+                    mode = .pencil
+                    showsPencilPalette = true
+                    pencilContextPoint = nil
+                }
+                Button("卡片", systemImage: "note.text.badge.plus") {
+                    createNode(.card, at: canvasPoint(pencilContextPoint ?? CGPoint(
+                        x: size.width / 2, y: size.height / 2
+                    )))
+                    pencilContextPoint = nil
+                }
+                Button("文本", systemImage: "textformat") {
+                    createNode(.text, at: canvasPoint(pencilContextPoint ?? CGPoint(
+                        x: size.width / 2, y: size.height / 2
+                    )))
+                    pencilContextPoint = nil
+                }
+                Button("更多节点", systemImage: "plus") {
+                    nodeCreationPoint = pencilContextPoint
+                    pencilContextPoint = nil
+                }
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.bordered)
+            .padding(7)
+            .background(.regularMaterial, in: Capsule())
+            .shadow(color: .black.opacity(0.14), radius: 10, y: 4)
+        }
     }
 
     private func modeControls(size: CGSize) -> some View {
@@ -2952,7 +3305,6 @@ struct WorkspaceCanvasView: View {
             .padding(8)
             .background(.regularMaterial, in: Capsule())
             .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
-            .padding(.bottom, 18)
             .accessibilityIdentifier("canvas.connection.toolbar")
         } else if !selectedNodeIDs.isEmpty, mode == .select {
             HStack(spacing: 4) {
@@ -3004,7 +3356,6 @@ struct WorkspaceCanvasView: View {
             .padding(8)
             .background(.regularMaterial, in: Capsule())
             .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
-            .padding(.bottom, 18)
             .transition(.move(edge: .bottom).combined(with: .opacity))
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("canvas.node.toolbar")
@@ -3601,8 +3952,11 @@ private struct CanvasPencilPalette: View {
 
 private struct CanvasPencilInteractionBridge: UIViewRepresentable {
     let onTap: @MainActor () -> Void
+    let onSqueeze: @MainActor (CGPoint?) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(onTap: onTap) }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onTap: onTap, onSqueeze: onSqueeze)
+    }
 
     func makeUIView(context: Context) -> UIView {
         let view = UIView(frame: .zero)
@@ -3613,14 +3967,20 @@ private struct CanvasPencilInteractionBridge: UIViewRepresentable {
 
     func updateUIView(_ uiView: UIView, context: Context) {
         context.coordinator.onTap = onTap
+        context.coordinator.onSqueeze = onSqueeze
     }
 
     @MainActor
     final class Coordinator: NSObject, UIPencilInteractionDelegate {
         var onTap: @MainActor () -> Void
+        var onSqueeze: @MainActor (CGPoint?) -> Void
 
-        init(onTap: @escaping @MainActor () -> Void) {
+        init(
+            onTap: @escaping @MainActor () -> Void,
+            onSqueeze: @escaping @MainActor (CGPoint?) -> Void
+        ) {
             self.onTap = onTap
+            self.onSqueeze = onSqueeze
         }
 
         func pencilInteraction(
@@ -3628,6 +3988,14 @@ private struct CanvasPencilInteractionBridge: UIViewRepresentable {
             didReceiveTap tap: UIPencilInteraction.Tap
         ) {
             onTap()
+        }
+
+        func pencilInteraction(
+            _ interaction: UIPencilInteraction,
+            didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze
+        ) {
+            guard squeeze.phase == .ended else { return }
+            onSqueeze(squeeze.hoverPose?.location)
         }
     }
 }
@@ -3838,6 +4206,7 @@ private struct CanvasNodeCard: View {
     let licenseStatus: String?
     let onOpen3D: (() -> Void)?
     let onBeginEditing: () -> Void
+    let onAskAI: () -> Void
     let onDuplicate: () -> Void
     let onConnect: () -> Void
     let onToggleLock: () -> Void
@@ -3873,6 +4242,7 @@ private struct CanvasNodeCard: View {
         .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
         .contextMenu {
             Button("编辑", systemImage: "pencil", action: onBeginEditing)
+            Button("节点内提问", systemImage: "sparkles", action: onAskAI)
             Button("复制", systemImage: "plus.square.on.square", action: onDuplicate)
             Button("连接", systemImage: "point.topleft.down.to.point.bottomright.curvepath", action: onConnect)
             if let onOpen3D {
@@ -3916,6 +4286,24 @@ private struct CanvasNodeCard: View {
                     .padding(14)
                     .contentShape(Rectangle())
             }
+        case .card:
+            VStack(alignment: .leading, spacing: 8) {
+                Label("基础卡片", systemImage: "rectangle.and.text.magnifyingglass")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Divider()
+                if isEditing {
+                    TextEditor(text: $text)
+                        .font(.body)
+                        .scrollContentBackground(.hidden)
+                } else {
+                    Text(text.isEmpty ? "卡片内容" : text)
+                        .font(.body)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .contentShape(Rectangle())
+                }
+            }
+            .padding(14)
         case .shape:
             ZStack {
                 CanvasNodeShapeView(shape: node.shape ?? .roundedRectangle)
@@ -4163,6 +4551,7 @@ private struct CanvasNodeInlineAIComposer: View {
 
 private struct CanvasNodeSelectionChrome: View {
     let node: FloeCanvasNode
+    let onOpenMenu: () -> Void
     let onBegin: () -> Void
     let onGeometryChanged: (_ width: Double?, _ height: Double?, _ rotation: Double?) -> Void
     let onEnd: () -> Void
@@ -4199,6 +4588,11 @@ private struct CanvasNodeSelectionChrome: View {
 
     var body: some View {
         ZStack {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(Color.black.opacity(0.001), lineWidth: 22)
+                .contentShape(RoundedRectangle(cornerRadius: 14))
+                .onTapGesture(count: 2, perform: onOpenMenu)
+                .accessibilityLabel("打开节点操作菜单")
             RoundedRectangle(cornerRadius: 14)
                 .stroke(FloeTheme.primary, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
                 .allowsHitTesting(false)
@@ -4645,12 +5039,37 @@ private struct CanvasAgentFloatingPanel: View {
                         workspaceID: workspace.id,
                         conversationID: id
                     )
+                } else {
+                    // Private canvases still need a canonical private-task
+                    // execution context. It is app-owned and hidden with the
+                    // assistant conversation; it is not a project binding.
+                    _ = try await workspaceStore.ensureWorkspace(
+                        conversationID: id,
+                        title: "画布助手 · \(store.project.name)"
+                    )
                 }
                 store.setAgentConversationID(id)
                 conversationID = id
             } catch {
                 try? await environment.conversationStore.deleteConversation(id: id)
                 throw error
+            }
+        }
+
+        // Repair canvas-agent conversations created by older builds before
+        // private canvas ownership was durable. Run launch is fail-closed when
+        // the canonical workspace is absent, so heal it before policy/run use.
+        if try await workspaceStore.workspaceID(conversationID: conversationID) == nil {
+            if let workspace {
+                try await workspaceStore.linkConversation(
+                    workspaceID: workspace.id,
+                    conversationID: conversationID
+                )
+            } else {
+                _ = try await workspaceStore.ensureWorkspace(
+                    conversationID: conversationID,
+                    title: "画布助手 · \(store.project.name)"
+                )
             }
         }
 

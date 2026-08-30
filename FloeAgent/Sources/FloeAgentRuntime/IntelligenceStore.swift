@@ -90,6 +90,39 @@ public protocol DurableMemoryStore: Sendable {
     func memories(factIdentity: MemoryFactIdentity, scope: MemoryScope?) async throws -> [MemoryEntry]
     func organizationPreview(limit: Int) async throws -> MemoryOrganizationProposal
     func applyMaintenanceBatch(_ batch: MemoryMaintenanceBatch) async throws -> MemoryMaintenanceBatchResult
+    func listMemories(_ request: MemoryListRequest) async throws -> MemoryListPage
+}
+
+public extension DurableMemoryStore {
+    /// Compatibility fallback for lightweight stores used by extensions and
+    /// tests. Production SQLite storage overrides this with true SQL paging.
+    func listMemories(_ request: MemoryListRequest) async throws -> MemoryListPage {
+        let scopes: [MemoryScope] = request.scope.map { [$0] } ?? [.userProfile, .agentGlobal]
+        var values: [MemoryEntry] = []
+        for scope in scopes {
+            values += try await memories(scope: scope, status: request.status)
+        }
+        values = values.filter { entry in
+            if let id = request.originConversationID, entry.originConversationID != id { return false }
+            if let id = request.originWorkspaceID, entry.originWorkspaceID != id { return false }
+            if let fact = request.factIdentity, entry.factIdentity != fact { return false }
+            if let pinned = request.isPinned, entry.isPinned != pinned { return false }
+            return true
+        }.sorted {
+            if $0.isPinned != $1.isPinned { return $0.isPinned }
+            if $0.importance != $1.importance { return $0.importance > $1.importance }
+            return $0.updatedAt > $1.updatedAt
+        }
+        guard let offset = Int(request.cursor ?? "0"), offset >= 0 else {
+            throw FloeError.validationFailed("memory.list cursor is invalid")
+        }
+        let start = min(offset, values.count)
+        let end = min(start + request.limit, values.count)
+        return MemoryListPage(
+            entries: Array(values[start..<end]),
+            nextCursor: end < values.count ? String(end) : nil
+        )
+    }
 }
 
 /// One durable implementation for plans, goals, bounded memory and explicit
@@ -376,6 +409,63 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         }
     }
 
+    public func listMemories(_ request: MemoryListRequest) async throws -> MemoryListPage {
+        guard let offset = Int(request.cursor ?? "0"), offset >= 0 else {
+            throw FloeError.validationFailed("memory.list cursor is invalid")
+        }
+        return try await database.reader { db in
+            var filters: [String] = []
+            var arguments = StatementArguments()
+            if let scope = request.scope {
+                let (scopeName, workspaceID, conversationID) = Self.scope(scope)
+                filters.append("scope = ?")
+                arguments += [scopeName]
+                if let workspaceID {
+                    filters.append("(workspace_id = ? OR origin_workspace_id = ?)")
+                    arguments += [workspaceID.uuidString, workspaceID.uuidString]
+                }
+                if let conversationID {
+                    filters.append("(conversation_id = ? OR origin_conversation_id = ?)")
+                    arguments += [conversationID.uuidString, conversationID.uuidString]
+                }
+            }
+            if let status = request.status {
+                filters.append("status = ?")
+                arguments += [status.rawValue]
+            }
+            if let conversationID = request.originConversationID {
+                filters.append("origin_conversation_id = ?")
+                arguments += [conversationID.uuidString]
+            }
+            if let workspaceID = request.originWorkspaceID {
+                filters.append("origin_workspace_id = ?")
+                arguments += [workspaceID.uuidString]
+            }
+            if let fact = request.factIdentity {
+                filters.append("subject_key = ? AND attribute_key = ?")
+                arguments += [fact.subjectKey, fact.attributeKey]
+            }
+            if let isPinned = request.isPinned {
+                filters.append("is_pinned = ?")
+                arguments += [isPinned]
+            }
+            let whereClause = filters.isEmpty ? "" : "WHERE " + filters.joined(separator: " AND ")
+            arguments += [request.limit + 1, offset]
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT * FROM memory_entries
+                \(whereClause)
+                ORDER BY is_pinned DESC, importance DESC, updated_at DESC, id
+                LIMIT ? OFFSET ?
+                """, arguments: arguments)
+            let hasMore = rows.count > request.limit
+            let entries = try rows.prefix(request.limit).map(Self.memory)
+            return MemoryListPage(
+                entries: entries,
+                nextCursor: hasMore ? String(offset + request.limit) : nil
+            )
+        }
+    }
+
     public func memories(factIdentity: MemoryFactIdentity, scope: MemoryScope? = nil) async throws -> [MemoryEntry] {
         try await database.reader { db in
             var sql = "SELECT * FROM memory_entries WHERE subject_key = ? AND attribute_key = ?"
@@ -434,7 +524,13 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                 canApplyAutomatically: false
             ))
         }
-        return MemoryOrganizationProposal(scannedCount: entries.count, suggestions: suggestions)
+        let referencedIDs = Set(suggestions.flatMap(\.memoryIDs))
+        return MemoryOrganizationProposal(
+            scannedCount: entries.count,
+            suggestions: suggestions,
+            entries: entries.filter { referencedIDs.contains($0.id) }
+                .map(MemoryOrganizationEntrySummary.init)
+        )
     }
 
     public func applyMaintenanceBatch(_ batch: MemoryMaintenanceBatch) async throws -> MemoryMaintenanceBatchResult {
@@ -882,14 +978,34 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                 throw FloeError.validationFailed("The requested task no longer exists")
             }
             let rows = try Row.fetchAll(db, sql: """
-                SELECT id, role, content, created_at FROM messages
-                WHERE conversation_id = ? ORDER BY created_at, rowid LIMIT ? OFFSET ?
-                """, arguments: [request.conversationID.uuidString, request.limit + 1, offset])
+                SELECT item_id, run_id, item_kind, role, content, created_at, sequence
+                FROM (
+                    SELECT m.id AS item_id, m.run_id AS run_id, 'message' AS item_kind,
+                           m.role AS role, m.content AS content, m.created_at AS created_at,
+                           NULL AS sequence, m.rowid AS stable_order
+                    FROM messages m
+                    WHERE m.conversation_id = ?
+                    UNION ALL
+                    SELECT e.id AS item_id, e.run_id AS run_id, e.kind AS item_kind,
+                           NULL AS role, e.payload_json AS content, e.created_at AS created_at,
+                           e.sequence AS sequence, e.rowid AS stable_order
+                    FROM run_events e
+                    JOIN runs r ON r.id = e.run_id
+                    WHERE r.conversation_id = ?
+                )
+                ORDER BY created_at, COALESCE(sequence, -1), stable_order
+                LIMIT ? OFFSET ?
+                """, arguments: [
+                    request.conversationID.uuidString,
+                    request.conversationID.uuidString,
+                    request.limit + 1,
+                    offset
+                ])
             let hasMore = rows.count > request.limit
-            let messages = try rows.prefix(request.limit).map(Self.historyMessage)
+            let items = try rows.prefix(request.limit).map(Self.historyItem)
             return ConversationHistoryPage(
                 conversationID: request.conversationID,
-                messages: messages,
+                items: items,
                 nextCursor: hasMore ? String(offset + request.limit) : nil
             )
         }
@@ -1001,6 +1117,21 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     private static func historyMessage(_ row: Row) throws -> ConversationHistoryMessage {
         guard let id = UUID(uuidString: row["id"]) else { throw FloeError.storageCorrupted("Invalid message row") }
         return ConversationHistoryMessage(id: id, role: row["role"], content: row["content"], createdAt: parseDate(row["created_at"]))
+    }
+
+    private static func historyItem(_ row: Row) throws -> ConversationHistoryItem {
+        guard let id = UUID(uuidString: row["item_id"]),
+              let kind = ConversationHistoryItemKind(rawValue: row["item_kind"])
+        else { throw FloeError.storageCorrupted("Invalid conversation history item") }
+        return ConversationHistoryItem(
+            id: id,
+            runID: (row["run_id"] as String?).flatMap(UUID.init(uuidString:)),
+            kind: kind,
+            role: row["role"],
+            content: row["content"],
+            createdAt: parseDate(row["created_at"]),
+            sequence: row["sequence"]
+        )
     }
 
     private static func hybridRow(_ row: Row) -> HybridRecallDatabaseRow? {

@@ -13,7 +13,7 @@ public struct CanvasSize: Sendable, Codable, Hashable {
 }
 
 public enum CanvasNodeKind: String, Sendable, Codable, CaseIterable, Hashable {
-    case text, stickyNote, shape, image, video, audio, file, group, generationTask, scene3D
+    case text, stickyNote, card, shape, image, video, audio, file, group, generationTask, scene3D
 }
 
 public enum CanvasShapeKind: String, Sendable, Codable, CaseIterable, Hashable {
@@ -329,7 +329,8 @@ public extension CanvasNode {
     ) -> CanvasNode {
         let defaults: (text: String, size: CanvasSize) = switch kind {
         case .text: ("新建文本", .init(width: 260, height: 150))
-        case .stickyNote: ("新建卡片", .init(width: 260, height: 180))
+        case .stickyNote: ("新建便签", .init(width: 260, height: 180))
+        case .card: ("新建卡片", .init(width: 300, height: 200))
         case .shape: ("", .init(width: 220, height: 140))
         case .image: ("图片", .init(width: 320, height: 260))
         case .video: ("视频", .init(width: 320, height: 220))
