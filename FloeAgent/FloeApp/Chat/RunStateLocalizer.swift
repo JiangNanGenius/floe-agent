@@ -22,6 +22,8 @@ enum RunStateLocalizer {
         switch stateName {
         case "preparing", "idle": "state.preparing"
         case "streamingModel": "state.streaming"
+        case "reconnecting": "state.reconnecting"
+        case "committingResults": "state.committing_results"
         case "reviewingApproval": "审批模型正在审核…"
         case "verifying": "state.verifying"
         case "executingTool": "state.executing_tool"
@@ -29,6 +31,7 @@ enum RunStateLocalizer {
         case "compacting", "checkpointed", "paused", "interrupted": "state.paused"
         case "cancelling": "state.cancelling"
         case "completed": "state.completed"
+        case "recoveryFailed": "state.recovery_failed"
         case "failed": "state.failed"
         default: "state.unknown"
         }
@@ -37,11 +40,11 @@ enum RunStateLocalizer {
     /// Semantic color for a machine state name (§6.2 mapping table).
     static func color(for stateName: String) -> Color {
         switch stateName {
-        case "preparing", "idle", "streamingModel", "reviewingApproval", "executingTool", "verifying":
+        case "preparing", "idle", "streamingModel", "reconnecting", "committingResults", "reviewingApproval", "executingTool", "verifying":
             FloeTheme.primary
         case "waitingApproval", "compacting", "checkpointed", "paused", "interrupted":
             FloeTheme.pending
-        case "cancelling", "failed":
+        case "cancelling", "recoveryFailed", "failed":
             FloeTheme.destructive
         case "completed":
             FloeTheme.success
@@ -58,7 +61,7 @@ enum RunStateLocalizer {
     static func isLoading(stateName: String, hasError: Bool) -> Bool {
         if hasError { return false }
         switch stateName {
-        case "preparing", "streamingModel", "reviewingApproval", "executingTool", "cancelling":
+        case "preparing", "streamingModel", "reconnecting", "committingResults", "reviewingApproval", "executingTool", "cancelling":
             return true
         default:
             return false
@@ -67,7 +70,7 @@ enum RunStateLocalizer {
 
     /// Whether the state name is terminal (completed or failed).
     static func isTerminal(_ stateName: String) -> Bool {
-        stateName == "completed" || stateName == "failed" || stateName == "interrupted"
+        stateName == "completed" || stateName == "failed" || stateName == "recoveryFailed" || stateName == "interrupted"
     }
 
     /// Localized, user-comprehensible title for a terminal stop reason.

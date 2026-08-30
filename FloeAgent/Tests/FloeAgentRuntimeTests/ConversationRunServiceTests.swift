@@ -16,6 +16,36 @@ import FloeTestSupport
 @Suite("FloeAgentRuntime.ConversationRunService")
 struct ConversationRunServiceTests {
 
+    @Test("Live state projection exposes reconnect, commit, and recoverable restore failure")
+    func liveStateProjectionUsesLivenessPhases() throws {
+        let streaming = AgentState.streamingModel(.init(modelRemoteID: "cloud-model"))
+        let reconnecting = ConversationRunService.presentationStateName(
+            state: streaming,
+            isReviewingApproval: false,
+            liveness: .init(phase: .retrying, message: "retry", isRecoverable: true)
+        )
+        #expect(reconnecting == "reconnecting")
+
+        let committing = ConversationRunService.presentationStateName(
+            state: .executingTool(.init(toolCall: try ToolCall(
+                id: "call-1",
+                toolName: "workspace.readFile",
+                argumentsJSON: Data("{}".utf8),
+                scope: .local
+            ))),
+            isReviewingApproval: false,
+            liveness: .init(phase: .persisting, message: "commit", isRecoverable: true)
+        )
+        #expect(committing == "committingResults")
+
+        let recoveryFailed = ConversationRunService.presentationStateName(
+            state: .failed(.init(message: "checkpoint mismatch", isRecoverable: true)),
+            isReviewingApproval: false,
+            liveness: .init(phase: .failed, message: "checkpoint mismatch", isRecoverable: true)
+        )
+        #expect(recoveryFailed == "recoveryFailed")
+    }
+
     private func makeStores() async throws -> (SQLiteConversationStore, SQLiteRunStore) {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()

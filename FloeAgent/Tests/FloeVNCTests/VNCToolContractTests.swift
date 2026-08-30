@@ -8,6 +8,40 @@ import FloeTools
 struct VNCToolContractTests {
     private let unavailable: VNCSessionProvider = { nil }
 
+    @Test("Lifecycle tools expose explicit connection control")
+    func lifecycleDescriptors() async throws {
+        #expect(VNCStatusTool.name == "vnc.status")
+        #expect(VNCConnectTool.name == "vnc.connect")
+        #expect(VNCReconnectTool.name == "vnc.reconnect")
+        #expect(VNCDisconnectTool.name == "vnc.disconnect")
+        #expect(VNCStatusTool.toolEffect == .readOnly)
+        #expect(VNCReconnectTool.toolDescription.contains("fresh handshake"))
+
+        let failure = VNCConnectionFailure(
+            category: .connectionRefused,
+            stage: .transport,
+            retryable: true,
+            host: "display.example",
+            port: 5900,
+            message: "The VNC service refused the connection."
+        )
+        let tool = VNCStatusTool(statusProvider: {
+            VNCToolConnectionStatus(
+                state: .failed,
+                configuredEndpointCount: 1,
+                target: "display.example:5900",
+                failure: failure
+            )
+        })
+        let output = try await tool.execute(
+            .init(),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(output.summary.contains(#""connectionState":"failed""#))
+        #expect(output.summary.contains(#""category":"connectionRefused""#))
+        #expect(output.summary.contains(#""retryable":true"#))
+    }
+
     @Test("Observe advertises evidence-backed framebuffer coordinates")
     func observeDescriptor() {
         #expect(VNCObserveTool.name == "vnc.observe")

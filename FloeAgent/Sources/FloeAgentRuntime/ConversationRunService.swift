@@ -319,7 +319,11 @@ public actor ConversationRunService {
         return Snapshot(
             runID: runID,
             conversationID: conversationID,
-            stateName: isReviewingApproval ? "reviewingApproval" : latestState.name,
+            stateName: Self.presentationStateName(
+                state: latestState,
+                isReviewingApproval: isReviewingApproval,
+                liveness: liveness
+            ),
             streamedText: streamedText,
             reasoningText: reasoningText,
             hasProviderActivity: hasProviderActivity,
@@ -329,6 +333,31 @@ public actor ConversationRunService {
             pendingApproval: pendingApproval,
             checkpointReason: checkpointReason
         )
+    }
+
+    /// Keeps the durable state vocabulary checkpoint-compatible while making
+    /// the live product state honest about where progress is currently
+    /// blocked. Liveness is deliberately a projection: an older app can still
+    /// decode the persisted `AgentState`, while a current UI no longer turns a
+    /// reconnect, batch commit, or recoverable restore failure into the vague
+    /// "streaming" / "unknown" labels.
+    static func presentationStateName(
+        state: AgentState,
+        isReviewingApproval: Bool,
+        liveness: AgentLivenessSnapshot
+    ) -> String {
+        if isReviewingApproval { return "reviewingApproval" }
+        if case .failed(let failure) = state, failure.isRecoverable {
+            return "recoveryFailed"
+        }
+        switch liveness.phase {
+        case .retrying:
+            return "reconnecting"
+        case .persisting:
+            return "committingResults"
+        default:
+            return state.name
+        }
     }
 
     public nonisolated func events() -> AsyncStream<HarnessEvent> {

@@ -36,7 +36,13 @@ struct CreativeMediaModelsTests {
         )
         let document = CanvasDocument(
             name: "Canvas 1", nodes: [source, result],
-            connections: [.init(sourceNodeID: source.id, destinationNodeID: result.id, kind: .generatedFrom)]
+            connections: [.init(
+                sourceNodeID: source.id,
+                destinationNodeID: result.id,
+                kind: .generatedFrom,
+                sourcePort: .trailing,
+                destinationPort: .leading
+            )]
         )
         let project = CanvasProject(
             id: UUID(), name: "Private", documents: [document], selectedDocumentID: document.id
@@ -44,6 +50,24 @@ struct CreativeMediaModelsTests {
         let decoded = try JSONDecoder().decode(CanvasProject.self, from: JSONEncoder().encode(project))
         #expect(decoded == project)
         #expect(decoded.schemaVersion == CanvasProject.currentSchemaVersion)
+        #expect(decoded.documents[0].connections[0].sourcePort == .trailing)
+        #expect(decoded.documents[0].connections[0].destinationPort == .leading)
+    }
+
+    @Test func legacyConnectionWithoutPortsRemainsReadable() throws {
+        let sourceID = UUID(), destinationID = UUID()
+        let data = Data("""
+        {
+          "id":"\(UUID().uuidString)",
+          "sourceNodeID":"\(sourceID.uuidString)",
+          "destinationNodeID":"\(destinationID.uuidString)",
+          "kind":"arrow"
+        }
+        """.utf8)
+
+        let connection = try JSONDecoder().decode(CanvasConnection.self, from: data)
+        #expect(connection.sourcePort == nil)
+        #expect(connection.destinationPort == nil)
     }
 
     @Test func canvasSchemaRoundTripsNative3DDirectorScene() throws {

@@ -321,19 +321,28 @@ public enum CanvasConnectionKind: String, Sendable, Codable, Hashable {
     case line, arrow, source, generatedFrom
 }
 
+public enum CanvasConnectionPort: String, Sendable, Codable, CaseIterable, Hashable {
+    case top, trailing, bottom, leading
+}
+
 public struct CanvasConnection: Sendable, Codable, Identifiable, Hashable {
     public var id: UUID
     public var sourceNodeID: UUID
     public var destinationNodeID: UUID
     public var kind: CanvasConnectionKind
     public var label: String?
+    public var sourcePort: CanvasConnectionPort?
+    public var destinationPort: CanvasConnectionPort?
 
     public init(
         id: UUID = UUID(), sourceNodeID: UUID, destinationNodeID: UUID,
-        kind: CanvasConnectionKind = .arrow, label: String? = nil
+        kind: CanvasConnectionKind = .arrow, label: String? = nil,
+        sourcePort: CanvasConnectionPort? = nil,
+        destinationPort: CanvasConnectionPort? = nil
     ) {
         self.id = id; self.sourceNodeID = sourceNodeID
         self.destinationNodeID = destinationNodeID; self.kind = kind; self.label = label
+        self.sourcePort = sourcePort; self.destinationPort = destinationPort
     }
 }
 

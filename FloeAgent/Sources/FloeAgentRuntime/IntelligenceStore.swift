@@ -18,6 +18,7 @@ public struct MemoryEntry: Sendable, Codable, Hashable, Identifiable {
     public var sourceKind: MemoryCandidateOrigin
     public var originConversationID: UUID?
     public var originWorkspaceID: UUID?
+    public var factIdentity: MemoryFactIdentity?
     public var expiresAt: Date?
     public var createdAt: Date
     public var updatedAt: Date
@@ -27,6 +28,7 @@ public struct MemoryEntry: Sendable, Codable, Hashable, Identifiable {
         content: String, confidence: Double, importance: Double,
         isPinned: Bool = false, sourceKind: MemoryCandidateOrigin,
         originConversationID: UUID? = nil, originWorkspaceID: UUID? = nil,
+        factIdentity: MemoryFactIdentity? = nil,
         expiresAt: Date? = nil, createdAt: Date = Date(), updatedAt: Date = Date()
     ) {
         self.id = id
@@ -47,6 +49,7 @@ public struct MemoryEntry: Sendable, Codable, Hashable, Identifiable {
         } else {
             self.originWorkspaceID = originWorkspaceID
         }
+        self.factIdentity = factIdentity?.isValid == true ? factIdentity : nil
         self.expiresAt = expiresAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -83,6 +86,10 @@ public protocol DurableMemoryStore: Sendable {
     ) async throws -> Bool
     func hybridRecall(_ request: HybridMemoryRecallRequest) async throws -> [HybridMemoryRecallItem]
     func deleteMemory(id: UUID, syncRevision: Int64) async throws
+    func memory(id: UUID) async throws -> MemoryEntry?
+    func memories(factIdentity: MemoryFactIdentity, scope: MemoryScope?) async throws -> [MemoryEntry]
+    func organizationPreview(limit: Int) async throws -> MemoryOrganizationProposal
+    func applyMaintenanceBatch(_ batch: MemoryMaintenanceBatch) async throws -> MemoryMaintenanceBatchResult
 }
 
 /// One durable implementation for plans, goals, bounded memory and explicit
@@ -302,17 +309,43 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         guard !Self.looksLikeSecret(normalized) else {
             throw FloeError.validationFailed("Authentication material cannot be saved to memory")
         }
+        let replacementRevision = Int64(Date().timeIntervalSince1970 * 1_000)
         try await database.writer { db in
+            if let identity = entry.factIdentity {
+                let arguments: StatementArguments = [
+                    identity.subjectKey, identity.attributeKey, entry.id.uuidString, scope,
+                    workspaceID?.uuidString, workspaceID?.uuidString,
+                    conversationID?.uuidString, conversationID?.uuidString
+                ]
+                let superseded = try String.fetchAll(db, sql: """
+                    SELECT id FROM memory_entries
+                    WHERE subject_key = ? AND attribute_key = ? AND id <> ? AND scope = ?
+                      AND (workspace_id IS ? OR origin_workspace_id IS ?)
+                      AND (conversation_id IS ? OR origin_conversation_id IS ?)
+                    """, arguments: arguments)
+                let deletedAt = Self.date(Date())
+                for oldID in superseded {
+                    try db.execute(sql: "DELETE FROM memory_entries WHERE id = ?", arguments: [oldID])
+                    try db.execute(sql: """
+                        INSERT INTO memory_tombstones (memory_id, deleted_at, sync_revision)
+                        VALUES (?, ?, ?) ON CONFLICT(memory_id) DO UPDATE SET
+                            deleted_at=excluded.deleted_at,
+                            sync_revision=MAX(memory_tombstones.sync_revision, excluded.sync_revision)
+                        """, arguments: [oldID, deletedAt, replacementRevision])
+                }
+            }
             try db.execute(sql: """
                 INSERT INTO memory_entries (
                     id, scope, workspace_id, conversation_id, status, content, normalized_content,
                     confidence, importance, is_pinned, source_kind, expires_at,
-                    origin_conversation_id, origin_workspace_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    origin_conversation_id, origin_workspace_id, subject_key, attribute_key,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET status=excluded.status, content=excluded.content,
                     normalized_content=excluded.normalized_content, confidence=excluded.confidence,
                     importance=excluded.importance, is_pinned=excluded.is_pinned,
                     expires_at=excluded.expires_at,
+                    subject_key=excluded.subject_key, attribute_key=excluded.attribute_key,
                     origin_conversation_id=COALESCE(memory_entries.origin_conversation_id, excluded.origin_conversation_id),
                     origin_workspace_id=COALESCE(memory_entries.origin_workspace_id, excluded.origin_workspace_id),
                     updated_at=excluded.updated_at
@@ -321,7 +354,8 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                     entry.status.rawValue, entry.content, normalized, entry.confidence,
                     entry.importance, entry.isPinned, entry.sourceKind.rawValue,
                     entry.expiresAt.map(Self.date), entry.originConversationID?.uuidString,
-                    entry.originWorkspaceID?.uuidString, Self.date(entry.createdAt), Self.date(entry.updatedAt)])
+                    entry.originWorkspaceID?.uuidString, entry.factIdentity?.subjectKey,
+                    entry.factIdentity?.attributeKey, Self.date(entry.createdAt), Self.date(entry.updatedAt)])
             try db.execute(sql: "DELETE FROM memory_evidence WHERE memory_id = ?", arguments: [entry.id.uuidString])
             for reference in evidence {
                 try db.execute(sql: """
@@ -332,6 +366,145 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                         entry.originConversationID?.uuidString, reference.messageID.uuidString,
                         Self.stableDigest(reference.excerpt), Self.date(entry.updatedAt)])
             }
+        }
+    }
+
+    public func memory(id: UUID) async throws -> MemoryEntry? {
+        try await database.reader { db in
+            try Row.fetchOne(db, sql: "SELECT * FROM memory_entries WHERE id = ?", arguments: [id.uuidString])
+                .map(Self.memory)
+        }
+    }
+
+    public func memories(factIdentity: MemoryFactIdentity, scope: MemoryScope? = nil) async throws -> [MemoryEntry] {
+        try await database.reader { db in
+            var sql = "SELECT * FROM memory_entries WHERE subject_key = ? AND attribute_key = ?"
+            var arguments: StatementArguments = [factIdentity.subjectKey, factIdentity.attributeKey]
+            if let scope {
+                let (scopeName, workspaceID, conversationID) = Self.scope(scope)
+                sql += " AND scope = ? AND (workspace_id IS ? OR origin_workspace_id IS ?)"
+                sql += " AND (conversation_id IS ? OR origin_conversation_id IS ?)"
+                arguments += [scopeName, workspaceID?.uuidString, workspaceID?.uuidString,
+                              conversationID?.uuidString, conversationID?.uuidString]
+            }
+            sql += " ORDER BY updated_at DESC"
+            return try Row.fetchAll(db, sql: sql, arguments: arguments).map(Self.memory)
+        }
+    }
+
+    public func organizationPreview(limit: Int = 10_000) async throws -> MemoryOrganizationProposal {
+        let entries = try await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT * FROM memory_entries ORDER BY updated_at DESC LIMIT ?
+                """, arguments: [min(10_000, max(1, limit))]).map(Self.memory)
+        }
+        var suggestions: [MemoryOrganizationSuggestion] = []
+        let exactGroups = Dictionary(grouping: entries) {
+            $0.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        for group in exactGroups.values where group.count > 1 {
+            let ordered = group.sorted { $0.updatedAt > $1.updatedAt }
+            suggestions.append(MemoryOrganizationSuggestion(
+                kind: .exactDuplicate,
+                memoryIDs: ordered.map(\.id),
+                preferredMemoryID: ordered.first?.id,
+                reason: "内容完全相同；跨范围删除仍需确认。",
+                canApplyAutomatically: Set(ordered.map(\.scope)).count == 1
+            ))
+        }
+        let factGroups = Dictionary(grouping: entries.filter { $0.factIdentity != nil }) {
+            $0.factIdentity!
+        }
+        for group in factGroups.values where group.count > 1 {
+            let ordered = group.sorted { $0.updatedAt > $1.updatedAt }
+            let staysWithinOneScope = Set(ordered.map(\.scope)).count == 1
+            suggestions.append(MemoryOrganizationSuggestion(
+                kind: .sameFactReplacement,
+                memoryIDs: ordered.map(\.id),
+                preferredMemoryID: ordered.first?.id,
+                reason: staysWithinOneScope
+                    ? "同一范围的事实槽位存在多个当前值，应保留最新值。"
+                    : "同一事实槽位跨多个范围存在不同值，需要确认后再整理。",
+                canApplyAutomatically: staysWithinOneScope
+            ))
+        }
+        for entry in entries where entry.expiresAt.map({ $0 <= Date() }) == true {
+            suggestions.append(MemoryOrganizationSuggestion(
+                kind: .expired, memoryIDs: [entry.id], reason: "记忆已超过有效期。",
+                canApplyAutomatically: false
+            ))
+        }
+        return MemoryOrganizationProposal(scannedCount: entries.count, suggestions: suggestions)
+    }
+
+    public func applyMaintenanceBatch(_ batch: MemoryMaintenanceBatch) async throws -> MemoryMaintenanceBatchResult {
+        try await database.writer { db in
+            if try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM memory_maintenance_batches WHERE id = ?)", arguments: [batch.id.uuidString]) == true {
+                return MemoryMaintenanceBatchResult(
+                    batchID: batch.id, appliedCount: 0, deletedCount: 0,
+                    replacedCount: 0, wasAlreadyApplied: true
+                )
+            }
+            var addressedIDs = Set<UUID>()
+            for operation in batch.operations {
+                let memoryID: UUID
+                switch operation {
+                case .delete(let id): memoryID = id
+                case .replace(let id, let entry):
+                    guard id == entry.id else {
+                        throw FloeError.validationFailed("Replacement must preserve the memory ID")
+                    }
+                    memoryID = id
+                }
+                guard addressedIDs.insert(memoryID).inserted else {
+                    throw FloeError.validationFailed("A maintenance batch cannot modify the same memory twice")
+                }
+                let exists = try Bool.fetchOne(
+                    db,
+                    sql: "SELECT EXISTS(SELECT 1 FROM memory_entries WHERE id = ?)",
+                    arguments: [memoryID.uuidString]
+                ) ?? false
+                guard exists else {
+                    throw FloeError.validationFailed("Memory \(memoryID.uuidString) no longer exists")
+                }
+            }
+            var deleted = 0
+            var replaced = 0
+            let deletedAt = Self.date(Date())
+            for operation in batch.operations {
+                switch operation {
+                case .delete(let memoryID):
+                    try Self.deleteMemory(memoryID, revision: batch.syncRevision, deletedAt: deletedAt, db: db)
+                    deleted += 1
+                case .replace(let memoryID, let entry):
+                    let normalized = entry.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    guard !normalized.isEmpty, !Self.looksLikeSecret(normalized) else {
+                        throw FloeError.validationFailed("Replacement memory is empty or contains authentication material")
+                    }
+                    try db.execute(sql: """
+                        UPDATE memory_entries SET content = ?, normalized_content = ?, status = ?,
+                            confidence = ?, importance = ?, is_pinned = ?, expires_at = ?,
+                            subject_key = ?, attribute_key = ?, updated_at = ? WHERE id = ?
+                        """, arguments: [entry.content, normalized, entry.status.rawValue,
+                            entry.confidence, entry.importance, entry.isPinned,
+                            entry.expiresAt.map(Self.date), entry.factIdentity?.subjectKey,
+                            entry.factIdentity?.attributeKey, Self.date(entry.updatedAt), memoryID.uuidString])
+                    guard db.changesCount == 1 else {
+                        throw FloeError.validationFailed("Memory \(memoryID.uuidString) no longer exists")
+                    }
+                    replaced += 1
+                }
+            }
+            try db.execute(sql: """
+                INSERT INTO memory_maintenance_batches (
+                    id, operation_count, deleted_count, replaced_count, sync_revision, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """, arguments: [batch.id.uuidString, batch.operations.count, deleted, replaced,
+                    batch.syncRevision, Self.date(Date())])
+            return MemoryMaintenanceBatchResult(
+                batchID: batch.id, appliedCount: batch.operations.count,
+                deletedCount: deleted, replacedCount: replaced
+            )
         }
     }
 
@@ -646,17 +819,27 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         let deletedAt = Self.date(Date())
         try await database.writer { db in
             for id in ids {
-                try db.execute(
-                    sql: "DELETE FROM memory_entries WHERE id = ?",
-                    arguments: [id.uuidString]
-                )
-                try db.execute(sql: """
-                    INSERT INTO memory_tombstones (memory_id, deleted_at, sync_revision)
-                    VALUES (?, ?, ?) ON CONFLICT(memory_id) DO UPDATE SET
-                    deleted_at=excluded.deleted_at, sync_revision=excluded.sync_revision
-                    """, arguments: [id.uuidString, deletedAt, syncRevision])
+                try Self.deleteMemory(id, revision: syncRevision, deletedAt: deletedAt, db: db)
             }
         }
+    }
+
+    private static func deleteMemory(
+        _ id: UUID,
+        revision: Int64,
+        deletedAt: String,
+        db: Database
+    ) throws {
+        try db.execute(sql: "DELETE FROM memory_entries WHERE id = ?", arguments: [id.uuidString])
+        try db.execute(sql: """
+            INSERT INTO memory_tombstones (memory_id, deleted_at, sync_revision)
+            VALUES (?, ?, ?) ON CONFLICT(memory_id) DO UPDATE SET
+            deleted_at=CASE
+                WHEN excluded.sync_revision >= memory_tombstones.sync_revision THEN excluded.deleted_at
+                ELSE memory_tombstones.deleted_at
+            END,
+            sync_revision=MAX(memory_tombstones.sync_revision, excluded.sync_revision)
+            """, arguments: [id.uuidString, deletedAt, revision])
     }
 
     public func search(_ request: ConversationSearchRequest) async throws -> [ConversationSearchHit] {
@@ -777,10 +960,16 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             scope = scopeName == "user" ? .userProfile : .agentGlobal
         }
         let expires: String? = row["expires_at"]
+        let subjectKey: String? = row["subject_key"]
+        let attributeKey: String? = row["attribute_key"]
+        let factIdentity = subjectKey.flatMap { subject in
+            attributeKey.map { MemoryFactIdentity(subjectKey: subject, attributeKey: $0) }
+        }
         return MemoryEntry(id: id, scope: scope, status: status, content: row["content"], confidence: row["confidence"],
             importance: row["importance"], isPinned: row["is_pinned"], sourceKind: source,
             originConversationID: originConversation.flatMap(UUID.init(uuidString:)),
             originWorkspaceID: originWorkspace.flatMap(UUID.init(uuidString:)),
+            factIdentity: factIdentity,
             expiresAt: expires.map(Self.parseDate), createdAt: Self.parseDate(row["created_at"]), updatedAt: Self.parseDate(row["updated_at"]))
     }
 

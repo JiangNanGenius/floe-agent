@@ -17,6 +17,8 @@ final class MemoryCenter: ObservableObject {
     @Published private(set) var profileAutomaticUpdates = true
     @Published private(set) var soulAutomaticUpdates = true
     @Published private(set) var searchResults: [HybridMemoryRecallItem] = []
+    @Published private(set) var organizationProposal: MemoryOrganizationProposal?
+    @Published private(set) var organizationPhase: String?
     @Published private(set) var isWorking = false
     @Published private(set) var operationNotice: String?
     @Published var errorMessage: String?
@@ -130,17 +132,38 @@ final class MemoryCenter: ObservableObject {
     func quickOrganize() async {
         isWorking = true
         errorMessage = nil
-        operationNotice = "正在整理画像并维护长期记忆…"
+        organizationPhase = "扫描"
+        operationNotice = "正在扫描长期记忆…"
         defer { isWorking = false }
         do {
             try await environment.intelligenceStore.maintainMemoryLifecycle()
-            let generator = try modelGenerator()
-            for kind in PersonalizationDocumentKind.allCases {
-                _ = try await personalizationService.generateNow(kind: kind, generator: generator)
+            organizationPhase = "分析"
+            let proposal = try await environment.intelligenceStore.organizationPreview(limit: 10_000)
+            organizationProposal = proposal
+            let automaticDeletes: Set<UUID> = Set(proposal.suggestions.flatMap { suggestion -> [UUID] in
+                guard suggestion.canApplyAutomatically, let preferred = suggestion.preferredMemoryID else {
+                    return []
+                }
+                return suggestion.memoryIDs.filter { $0 != preferred }
+            })
+            var autoResult: MemoryMaintenanceBatchResult?
+            if !automaticDeletes.isEmpty {
+                organizationPhase = "应用"
+                autoResult = try await environment.intelligenceStore.applyMaintenanceBatch(
+                    MemoryMaintenanceBatch(
+                        operations: automaticDeletes.map { .delete(memoryID: $0) },
+                        syncRevision: Int64(Date().timeIntervalSince1970 * 1_000)
+                    )
+                )
             }
             await load()
-            operationNotice = "整理完成：画像已更新，长期记忆已按保留规则维护。"
+            organizationPhase = proposal.suggestions.contains(where: { !$0.canApplyAutomatically })
+                ? "等待审核" : "完成"
+            let autoCount = autoResult?.deletedCount ?? 0
+            let reviewCount = proposal.suggestions.filter { !$0.canApplyAutomatically }.count
+            operationNotice = "整理完成：扫描 \(proposal.scannedCount) 条，自动清理 \(autoCount) 条，待审核 \(reviewCount) 项。"
         } catch {
+            organizationPhase = nil
             operationNotice = nil
             errorMessage = error.localizedDescription
         }
@@ -217,8 +240,26 @@ struct MemoryView: View {
                 if !query.isEmpty { searchSection } else { memorySection }
                 if let notice = center.operationNotice {
                     Section {
-                        Label(notice, systemImage: center.isWorking ? "hourglass" : "checkmark.circle.fill")
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label(notice, systemImage: center.isWorking ? "hourglass" : "checkmark.circle.fill")
+                            if let phase = center.organizationPhase {
+                                Text("阶段：\(phase)").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                             .foregroundStyle(center.isWorking ? Color.secondary : Color.green)
+                    }
+                }
+                if let proposal = center.organizationProposal,
+                   !proposal.suggestions.filter({ !$0.canApplyAutomatically }).isEmpty {
+                    Section("整理建议") {
+                        ForEach(proposal.suggestions.filter { !$0.canApplyAutomatically }) { suggestion in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(suggestion.kind.rawValue).font(.subheadline.weight(.semibold))
+                                Text(suggestion.reason).font(.caption).foregroundStyle(.secondary)
+                                Text("涉及 \(suggestion.memoryIDs.count) 条记忆")
+                                    .font(.caption2).foregroundStyle(.tertiary)
+                            }
+                        }
                     }
                 }
                 if let error = center.errorMessage { Section { Text(error).foregroundStyle(.red).font(.footnote) } }
@@ -249,7 +290,7 @@ struct MemoryView: View {
                         Task { await center.quickOrganize() }
                     }
                     .disabled(center.isWorking)
-                    .accessibilityHint("更新画像并维护长期记忆；完成或失败后显示结果")
+                    .accessibilityHint("扫描长期记忆、自动处理确定性重复，并显示需要审核的建议")
                     Menu("管理记忆", systemImage: "checklist") {
                         Button("选择多条记忆", systemImage: "checkmark.circle") {
                             isSelecting = true

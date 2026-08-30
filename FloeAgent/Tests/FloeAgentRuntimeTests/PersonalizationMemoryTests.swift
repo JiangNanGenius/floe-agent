@@ -235,6 +235,136 @@ struct PersonalizationMemoryTests {
         #expect(tombstones == 2)
     }
 
+    @Test("A stale delete cannot lower a memory tombstone revision")
+    func tombstoneRevisionIsMonotonic() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = SQLiteIntelligenceStore(database: database)
+        let memory = MemoryEntry(
+            scope: .userProfile, status: .active, content: "Delete monotonically",
+            confidence: 1, importance: 0.5, sourceKind: .explicitUserRequest
+        )
+        try await store.saveMemory(memory, evidence: [])
+        try await store.deleteMemory(id: memory.id, syncRevision: 9)
+        try await store.deleteMemory(id: memory.id, syncRevision: 3)
+
+        let revision = try await database.reader { db in
+            try Int64.fetchOne(
+                db,
+                sql: "SELECT sync_revision FROM memory_tombstones WHERE memory_id = ?",
+                arguments: [memory.id.uuidString]
+            )
+        }
+        #expect(revision == 9)
+    }
+
+    @Test("Saving a newer fact replaces the old slot and writes a tombstone")
+    func factSlotReplacement() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = SQLiteIntelligenceStore(database: database)
+        let identity = MemoryFactIdentity(subjectKey: "host:hk4h4g", attributeKey: "agent-version")
+        let old = MemoryEntry(
+            scope: .agentGlobal, status: .active, content: "Agent version is 1.2.0",
+            confidence: 1, importance: 0.8, sourceKind: .explicitUserRequest,
+            factIdentity: identity
+        )
+        let current = MemoryEntry(
+            scope: .agentGlobal, status: .active, content: "Agent version is 1.4.1",
+            confidence: 1, importance: 0.8, sourceKind: .explicitUserRequest,
+            factIdentity: identity
+        )
+        try await store.saveMemory(old, evidence: [])
+        try await store.saveMemory(current, evidence: [])
+
+        let stored = try await store.memories(factIdentity: identity, scope: .agentGlobal)
+        #expect(stored.map(\.id) == [current.id])
+        #expect(stored.map(\.content) == ["Agent version is 1.4.1"])
+        let tombstoneCount = try await database.reader { db in
+            try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM memory_tombstones WHERE memory_id = ?",
+                arguments: [old.id.uuidString]
+            ) ?? 0
+        }
+        #expect(tombstoneCount == 1)
+        let tombstoneRevision = try await database.reader { db in
+            try Int64.fetchOne(
+                db, sql: "SELECT sync_revision FROM memory_tombstones WHERE memory_id = ?",
+                arguments: [old.id.uuidString]
+            ) ?? 0
+        }
+        #expect(tombstoneRevision > 0)
+    }
+
+    @Test("Organization preview never auto-applies one fact slot across scopes")
+    func organizationPreviewKeepsScopeBoundary() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = SQLiteIntelligenceStore(database: database)
+        let identity = MemoryFactIdentity(subjectKey: "host:shared", attributeKey: "address")
+        try await store.saveMemory(MemoryEntry(
+            scope: .agentGlobal, status: .active, content: "Global address is 10.0.0.1",
+            confidence: 1, importance: 0.8, sourceKind: .explicitUserRequest,
+            factIdentity: identity
+        ), evidence: [])
+        try await store.saveMemory(MemoryEntry(
+            scope: .userProfile, status: .active, content: "Profile address is 10.0.0.2",
+            confidence: 1, importance: 0.8, sourceKind: .explicitUserRequest,
+            factIdentity: identity
+        ), evidence: [])
+
+        let proposal = try await store.organizationPreview(limit: 100)
+        let suggestion = try #require(proposal.suggestions.first {
+            $0.kind == .sameFactReplacement
+        })
+        #expect(!suggestion.canApplyAutomatically)
+    }
+
+    @Test("Maintenance batch rolls back every operation when one item is stale")
+    func maintenanceBatchRollback() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = SQLiteIntelligenceStore(database: database)
+        let memory = MemoryEntry(
+            scope: .userProfile, status: .active, content: "Keep this entry",
+            confidence: 1, importance: 0.5, sourceKind: .explicitUserRequest
+        )
+        try await store.saveMemory(memory, evidence: [])
+        let batch = MemoryMaintenanceBatch(
+            operations: [.delete(memoryID: memory.id), .delete(memoryID: UUID())],
+            syncRevision: 42
+        )
+
+        await #expect(throws: (any Error).self) {
+            try await store.applyMaintenanceBatch(batch)
+        }
+        #expect(try await store.memory(id: memory.id) != nil)
+        let tombstones = try await database.reader { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM memory_tombstones") ?? 0
+        }
+        #expect(tombstones == 0)
+    }
+
+    @Test("Maintenance batch is idempotent by stable batch ID")
+    func maintenanceBatchIdempotency() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = SQLiteIntelligenceStore(database: database)
+        let memory = MemoryEntry(
+            scope: .agentGlobal, status: .active, content: "Remove once",
+            confidence: 1, importance: 0.5, sourceKind: .explicitUserRequest
+        )
+        try await store.saveMemory(memory, evidence: [])
+        let batch = MemoryMaintenanceBatch(
+            id: UUID(), operations: [.delete(memoryID: memory.id)], syncRevision: 43
+        )
+        let first = try await store.applyMaintenanceBatch(batch)
+        let repeated = try await store.applyMaintenanceBatch(batch)
+        #expect(first.deletedCount == 1)
+        #expect(repeated.wasAlreadyApplied)
+        #expect(repeated.appliedCount == 0)
+    }
+
     @Test("sensitive and conflicting candidates require confirmation")
     func candidateReview() async throws {
         let database = try DatabaseManager.inMemory()

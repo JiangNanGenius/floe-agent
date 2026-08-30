@@ -3338,12 +3338,15 @@ final class ConversationCenter: ObservableObject {
         let progress: (stage: String, value: Int64) = switch snapshot.stateName {
         case "preparing": ("正在准备", 8)
         case "streamingModel": ("模型正在处理", 30)
+        case "reconnecting": ("正在重新连接模型", 34)
         case "executingTool": ("正在调用工具", 50)
+        case "committingResults": ("正在提交工具结果", 66)
         case "waitingApproval": ("等待你的审批", 60)
         case "compacting": ("正在整理上下文", 72)
         case "verifying": ("正在复核答案", 88)
         case "completed": ("已完成", 100)
         case "failed": ("运行失败", 100)
+        case "recoveryFailed": ("恢复失败，可安全继续", 100)
         case "checkpointed": (snapshot.checkpointReason ?? "任务已暂停", 70)
         default: ("正在运行", 20)
         }

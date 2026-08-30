@@ -23,6 +23,44 @@ public struct VNCSessionHandle: @unchecked Sendable {
 
 public typealias VNCSessionProvider = @Sendable () async throws -> VNCSessionHandle?
 public typealias VNCCredentialResolver = @Sendable (UUID) async throws -> Data
+public typealias VNCStatusProvider = @Sendable () async -> VNCToolConnectionStatus
+public typealias VNCReconnectAction = @Sendable () async throws -> VNCSessionHandle?
+public typealias VNCDisconnectAction = @Sendable () async -> VNCToolConnectionStatus
+
+/// Secret-free connection state shared by the model tools and the UI session
+/// coordinator. A status read never opens a socket; connect/reconnect are
+/// separate explicit operations so the model can reason about failures.
+public struct VNCToolConnectionStatus: Sendable, Codable, Hashable {
+    public enum State: String, Sendable, Codable, Hashable {
+        case unconfigured, disconnected, connecting, connected, failed
+    }
+
+    public var state: State
+    public var configuredEndpointCount: Int
+    public var sessionID: UUID?
+    public var target: String?
+    public var toolManaged: Bool
+    public var idleTimeoutSeconds: Int?
+    public var failure: VNCConnectionFailure?
+
+    public init(
+        state: State,
+        configuredEndpointCount: Int,
+        sessionID: UUID? = nil,
+        target: String? = nil,
+        toolManaged: Bool = false,
+        idleTimeoutSeconds: Int? = nil,
+        failure: VNCConnectionFailure? = nil
+    ) {
+        self.state = state
+        self.configuredEndpointCount = configuredEndpointCount
+        self.sessionID = sessionID
+        self.target = target
+        self.toolManaged = toolManaged
+        self.idleTimeoutSeconds = idleTimeoutSeconds
+        self.failure = failure
+    }
+}
 
 private struct VNCCapturedArtifact {
     let capture: VNCFrameCapture
@@ -30,6 +68,29 @@ private struct VNCCapturedArtifact {
 }
 
 private enum VNCToolSupport {
+    static func statusOutput(_ status: VNCToolConnectionStatus) throws -> ToolExecutionOutput {
+        var payload: [String: Any] = [
+            "status": "ok",
+            "connectionState": status.state.rawValue,
+            "configuredEndpointCount": status.configuredEndpointCount,
+            "sessionID": status.sessionID?.uuidString ?? NSNull(),
+            "target": status.target ?? NSNull(),
+            "toolManaged": status.toolManaged,
+            "idleTimeoutSeconds": status.idleTimeoutSeconds ?? NSNull(),
+            "failure": NSNull()
+        ]
+        if let failure = status.failure {
+            payload["failure"] = [
+                "category": failure.category.rawValue,
+                "stage": failure.stage.rawValue,
+                "retryable": failure.retryable,
+                "reason": failure.message,
+                "underlyingCode": failure.underlyingCode ?? NSNull()
+            ] as [String: Any]
+        }
+        return try output(payload)
+    }
+
     static func connectedSession(from provider: VNCSessionProvider) async throws -> VNCSessionHandle {
         let handle: VNCSessionHandle?
         do {
@@ -183,6 +244,96 @@ private enum VNCToolSupport {
                 try? FileManager.default.removeItem(at: file)
             }
         }
+    }
+}
+
+public struct VNCStatusTool: AgentTool {
+    public struct Arguments: Decodable, Sendable { public init() {} }
+    public static let name = "vnc.status"
+    public static let toolDescription =
+        "Read the current VNC connection state without opening a connection. Returns configured endpoint count, active session, idle policy, and the latest structured failure when available."
+    public static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
+    public static let riskLabels: Set<RiskLabel> = []
+    public static let isSideEffecting = false
+    public static let toolEffect: ToolEffect = .readOnly
+    public static let requiresHostScope = false
+    private let statusProvider: VNCStatusProvider
+
+    public init(statusProvider: @escaping VNCStatusProvider) { self.statusProvider = statusProvider }
+    public func validate(_ args: Arguments) throws {}
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        return try VNCToolSupport.statusOutput(await statusProvider())
+    }
+}
+
+public struct VNCConnectTool: AgentTool {
+    public struct Arguments: Decodable, Sendable { public init() {} }
+    public static let name = "vnc.connect"
+    public static let toolDescription =
+        "Connect the single configured or previously selected VNC endpoint and keep the tool-managed session alive for the idle grace period. Use vnc.status first when the connection is ambiguous."
+    public static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
+    public static let riskLabels: Set<RiskLabel> = [.controlsGUI, .accessesCredentials]
+    public static let isSideEffecting = true
+    public static let toolEffect: ToolEffect = .mutating
+    public static let requiresHostScope = false
+    private let connection: VNCReconnectAction
+    private let statusProvider: VNCStatusProvider
+
+    public init(connection: @escaping VNCReconnectAction, statusProvider: @escaping VNCStatusProvider) {
+        self.connection = connection
+        self.statusProvider = statusProvider
+    }
+    public func validate(_ args: Arguments) throws {}
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        _ = try await connection()
+        return try VNCToolSupport.statusOutput(await statusProvider())
+    }
+}
+
+public struct VNCReconnectTool: AgentTool {
+    public struct Arguments: Decodable, Sendable { public init() {} }
+    public static let name = "vnc.reconnect"
+    public static let toolDescription =
+        "Discard a stale tool-managed VNC session and perform a fresh handshake. A non-retryable authentication failure remains blocked until the saved credential or endpoint is updated."
+    public static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
+    public static let riskLabels: Set<RiskLabel> = [.controlsGUI, .accessesCredentials]
+    public static let isSideEffecting = true
+    public static let toolEffect: ToolEffect = .mutating
+    public static let requiresHostScope = false
+    private let reconnect: VNCReconnectAction
+    private let statusProvider: VNCStatusProvider
+
+    public init(reconnect: @escaping VNCReconnectAction, statusProvider: @escaping VNCStatusProvider) {
+        self.reconnect = reconnect
+        self.statusProvider = statusProvider
+    }
+    public func validate(_ args: Arguments) throws {}
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        _ = try await reconnect()
+        return try VNCToolSupport.statusOutput(await statusProvider())
+    }
+}
+
+public struct VNCDisconnectTool: AgentTool {
+    public struct Arguments: Decodable, Sendable { public init() {} }
+    public static let name = "vnc.disconnect"
+    public static let toolDescription =
+        "Close tool-managed VNC sessions. User-opened viewer sessions are left alone. Returns the resulting connection state."
+    public static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
+    public static let riskLabels: Set<RiskLabel> = [.controlsGUI]
+    public static let isSideEffecting = true
+    public static let toolEffect: ToolEffect = .mutating
+    public static let requiresHostScope = false
+    private let disconnect: VNCDisconnectAction
+
+    public init(disconnect: @escaping VNCDisconnectAction) { self.disconnect = disconnect }
+    public func validate(_ args: Arguments) throws {}
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        return try VNCToolSupport.statusOutput(await disconnect())
     }
 }
 
@@ -671,8 +822,17 @@ public func registerVNCTools(
     credentialResolver: @escaping VNCCredentialResolver = { _ in
         throw FloeError.invalidConfiguration("Credential resolver is unavailable")
     },
+    statusProvider: @escaping VNCStatusProvider = {
+        VNCToolConnectionStatus(state: .unconfigured, configuredEndpointCount: 0)
+    },
+    reconnect: VNCReconnectAction? = nil,
+    disconnect: VNCDisconnectAction? = nil,
     sessionProvider: @escaping VNCSessionProvider
 ) -> VNCSessionProvider {
+    ToolCatalog.register(VNCStatusTool.self)
+    ToolCatalog.register(VNCConnectTool.self)
+    ToolCatalog.register(VNCReconnectTool.self)
+    ToolCatalog.register(VNCDisconnectTool.self)
     ToolCatalog.register(VNCObserveTool.self)
     ToolCatalog.register(VNCClickElementTool.self)
     ToolCatalog.register(VNCClickTool.self)
@@ -681,6 +841,13 @@ public func registerVNCTools(
     ToolCatalog.register(VNCScrollTool.self)
     ToolCatalog.register(VNCDragTool.self)
     ToolCatalog.register(VNCKeyPressTool.self)
+    registry.register(VNCStatusTool(statusProvider: statusProvider))
+    registry.register(VNCConnectTool(connection: sessionProvider, statusProvider: statusProvider))
+    registry.register(VNCReconnectTool(
+        reconnect: reconnect ?? sessionProvider,
+        statusProvider: statusProvider
+    ))
+    registry.register(VNCDisconnectTool(disconnect: disconnect ?? { await statusProvider() }))
     registry.register(VNCObserveTool(sessionProvider: sessionProvider))
     registry.register(VNCClickElementTool(sessionProvider: sessionProvider))
     registry.register(VNCClickTool(sessionProvider: sessionProvider))

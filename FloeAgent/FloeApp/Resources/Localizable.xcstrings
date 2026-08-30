@@ -7792,6 +7792,23 @@
         }
       }
     },
+    "state.committing_results": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Committing tool results"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在提交工具结果"
+          }
+        }
+      }
+    },
     "state.disconnected": {
       "extractionState": "manual",
       "localizations": {
@@ -7873,6 +7890,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在准备"
+          }
+        }
+      }
+    },
+    "state.reconnecting": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reconnecting"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在重新连接"
+          }
+        }
+      }
+    },
+    "state.recovery_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recovery failed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复失败"
           }
         }
       }

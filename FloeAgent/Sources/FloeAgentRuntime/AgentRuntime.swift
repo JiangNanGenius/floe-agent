@@ -2084,6 +2084,11 @@ public actor FloeAgentRuntime {
         // calls outcome-unknown and force redundant verification. Commit the
         // complete ordered call/result set before publishing any result card
         // or asking the provider for the next step.
+        await publishLiveness(
+            phase: .persisting,
+            message: "Committing the complete ordered tool batch before continuing",
+            isRecoverable: true
+        )
         var orderedResults: [(call: ToolCall, result: ToolResult)] = []
         var needsUserResult: ToolResult?
         var noProgressDetected = false

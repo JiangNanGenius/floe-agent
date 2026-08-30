@@ -331,6 +331,100 @@ final class RemoteSessionCenter: ObservableObject {
         return try await waitForVNCConnection(sessionID: sessionID, endpoint: candidate.endpoint)
     }
 
+    /// Secret-free state for the model-facing lifecycle tools. Reading this
+    /// value never opens a socket or extends a session's idle lifetime.
+    func toolVNCStatus() async -> VNCToolConnectionStatus {
+        if hosts.isEmpty { await loadHosts() }
+        let candidates = hosts.flatMap { host in
+            host.vncEndpoints.map { (host: host, endpoint: $0) }
+        }
+        guard !candidates.isEmpty else {
+            return VNCToolConnectionStatus(state: .unconfigured, configuredEndpointCount: 0)
+        }
+
+        func target(for sessionID: UUID) -> String? {
+            guard let endpointID = vncEndpointBySessionID[sessionID],
+                  let endpoint = candidates.first(where: { $0.endpoint.id == endpointID })?.endpoint
+            else { return nil }
+            return "\(endpoint.host):\(endpoint.port)"
+        }
+
+        if let (sessionID, owner) = vncOwners.first(where: {
+            if case .connected = $0.value.connectionState { return true }
+            return false
+        }) {
+            return VNCToolConnectionStatus(
+                state: .connected,
+                configuredEndpointCount: candidates.count,
+                sessionID: sessionID,
+                target: target(for: sessionID),
+                toolManaged: toolManagedVNCSessionIDs.contains(sessionID),
+                idleTimeoutSeconds: toolManagedVNCSessionIDs.contains(sessionID)
+                    ? Int(toolManagedVNCIdleTimeout) : nil
+            )
+        }
+        if let (sessionID, _) = vncOwners.first(where: {
+            if case .connecting = $0.value.connectionState { return true }
+            return false
+        }) {
+            return VNCToolConnectionStatus(
+                state: .connecting,
+                configuredEndpointCount: candidates.count,
+                sessionID: sessionID,
+                target: target(for: sessionID),
+                toolManaged: toolManagedVNCSessionIDs.contains(sessionID),
+                idleTimeoutSeconds: toolManagedVNCSessionIDs.contains(sessionID)
+                    ? Int(toolManagedVNCIdleTimeout) : nil
+            )
+        }
+        if let (sessionID, owner) = vncOwners.first(where: {
+            if case .failed = $0.value.connectionState { return true }
+            return false
+        }), case .failed(let failure) = owner.connectionState {
+            return VNCToolConnectionStatus(
+                state: .failed,
+                configuredEndpointCount: candidates.count,
+                sessionID: sessionID,
+                target: target(for: sessionID),
+                toolManaged: toolManagedVNCSessionIDs.contains(sessionID),
+                failure: failure
+            )
+        }
+        if let candidate = candidates.first(where: {
+            latestVNCFailureByEndpointID[$0.endpoint.id] != nil
+        }), let failure = latestVNCFailureByEndpointID[candidate.endpoint.id] {
+            return VNCToolConnectionStatus(
+                state: .failed,
+                configuredEndpointCount: candidates.count,
+                target: "\(candidate.endpoint.host):\(candidate.endpoint.port)",
+                failure: failure
+            )
+        }
+        return VNCToolConnectionStatus(
+            state: .disconnected,
+            configuredEndpointCount: candidates.count,
+            target: candidates.count == 1
+                ? "\(candidates[0].endpoint.host):\(candidates[0].endpoint.port)" : nil
+        )
+    }
+
+    /// Performs a fresh handshake for tool-owned sessions. A saved
+    /// authentication failure remains blocked until the endpoint is edited,
+    /// preventing an accidental retry storm with the same password.
+    func reconnectToolVNCSession() async throws -> VNCSessionHandle? {
+        let toolSessions = Array(toolManagedVNCSessionIDs)
+        for sessionID in toolSessions { await disconnectVNC(sessionID: sessionID) }
+        return try await activeOrConnectVNCSession()
+    }
+
+    /// Closes only model-created sessions. A viewer opened by the user is not
+    /// interrupted by a model lifecycle command.
+    func disconnectToolVNCSessions() async -> VNCToolConnectionStatus {
+        let toolSessions = Array(toolManagedVNCSessionIDs)
+        for sessionID in toolSessions { await disconnectVNC(sessionID: sessionID) }
+        return await toolVNCStatus()
+    }
+
     func vncConnectionState(for sessionID: UUID) -> VNCSessionState {
         vncOwners[sessionID]?.connectionState ?? .disconnected
     }

@@ -376,12 +376,73 @@ final class AppEnvironment: ObservableObject {
         registerMemoryTools(store: intelligenceStore) { [runStore] runID in
             try await runStore.run(id: runID)?.conversationID
         }
+        // Cross-task history is quoted as untrusted data. Spawning is a
+        // separate visible task, never an internal subagent, and is gated by
+        // an explicit request in the latest user message.
+        registerConversationTools(
+            reader: intelligenceStore,
+            currentConversationID: { [runStore] runID in
+                try await runStore.run(id: runID)?.conversationID
+            },
+            hasExplicitUserAuthority: { [runStore, conversationStore] runID in
+                guard let conversationID = try await runStore.run(id: runID)?.conversationID else {
+                    return false
+                }
+                let latestUserText = try await conversationStore.messages(conversationID: conversationID)
+                    .last(where: { $0.role == "user" })?.content ?? ""
+                return ConversationSpawnAuthority.isExplicitRequest(latestUserText)
+            },
+            spawner: { [conversationStore, database] request in
+                let now = Date()
+                let record = ConversationRecord(
+                    id: UUID(), title: request.title, createdAt: now, updatedAt: now,
+                    titleOrigin: .manual
+                )
+                try await conversationStore.saveConversation(record)
+                do {
+                    if let workspaceID = request.workspaceID {
+                        try await SQLiteWorkspaceStore(database: database).assignConversation(
+                            workspaceID: workspaceID,
+                            conversationID: record.id
+                        )
+                    }
+                    try await conversationStore.appendMessage(PersistedMessage(
+                        id: UUID(), conversationID: record.id, role: "user",
+                        content: request.objective, createdAt: now
+                    ))
+                } catch {
+                    try? await conversationStore.deleteConversation(id: record.id)
+                    throw error
+                }
+                await MainActor.run { [weak self] in
+                    Task { await self?.conversationCenter.reload() }
+                }
+                return ConversationSpawnResult(
+                    conversationID: record.id,
+                    title: record.title,
+                    workspaceID: request.workspaceID
+                )
+            }
+        )
         // Supervisor-Worker delegation.
         registerDelegateTool(runners: subagentRunnerRegistry)
         // VNC remote-desktop driving.
-        registerVNCTools(credentialResolver: { credentialID in
-            try await credentialVault.resolveForApprovedUse(CredentialHandle(id: credentialID))
-        }) { [weak remoteSessionCenter] in
+        registerVNCTools(
+            credentialResolver: { credentialID in
+                try await credentialVault.resolveForApprovedUse(CredentialHandle(id: credentialID))
+            },
+            statusProvider: { [weak remoteSessionCenter] in
+                await remoteSessionCenter?.toolVNCStatus()
+                    ?? VNCToolConnectionStatus(state: .unconfigured, configuredEndpointCount: 0)
+            },
+            reconnect: { [weak remoteSessionCenter] in
+                try await remoteSessionCenter?.reconnectToolVNCSession()
+            },
+            disconnect: { [weak remoteSessionCenter] in
+                await remoteSessionCenter?.disconnectToolVNCSessions()
+                    ?? VNCToolConnectionStatus(state: .unconfigured, configuredEndpointCount: 0)
+            }
+        ) { [weak remoteSessionCenter] in
             try await remoteSessionCenter?.activeOrConnectVNCSession()
         }
         // Standard remote MCP servers are configuration-driven tool sources.
