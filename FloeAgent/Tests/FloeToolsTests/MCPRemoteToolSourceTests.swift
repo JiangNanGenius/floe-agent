@@ -91,7 +91,7 @@ struct MCPRemoteToolSourceTests {
             discoveredTools: [server.id: [tool]]
         )
 
-        #expect(names == ["web.search", "web.fetch"])
+        #expect(names == CanvasAgentToolPolicy.nativeToolNames)
         #expect(!names.contains("web.searchAI"))
         #expect(!names.contains(where: { $0.hasPrefix("browser.") }))
     }
@@ -133,7 +133,7 @@ struct MCPRemoteToolSourceTests {
             remoteName: "asset.delete"
         )
 
-        #expect(names == ["web.search", "web.fetch", expected])
+        #expect(names == CanvasAgentToolPolicy.nativeToolNames.union([expected]))
         #expect(!names.contains(rejected))
     }
 
