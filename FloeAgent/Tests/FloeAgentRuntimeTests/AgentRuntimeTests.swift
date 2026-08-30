@@ -750,7 +750,7 @@ struct AgentRuntimeTests {
 
     // MARK: Checkpoint / resume
 
-    @Test("Checkpoint v4 golden: format is stable and decode-validates")
+    @Test("Checkpoint v5 golden: format is stable and decode-validates")
     func checkpointGolden() async throws {
         let runID = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
         let conversationID = UUID(uuidString: "55555555-5555-5555-5555-555555555555")!
@@ -774,7 +774,7 @@ struct AgentRuntimeTests {
         let data = try checkpoint.encoded()
         // Golden field assertions (stable contract for v1 readers).
         let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        #expect(object["formatVersion"] as? Int == 4)
+        #expect(object["formatVersion"] as? Int == 5)
         #expect(object["schemaVersion"] as? Int == 1)
         #expect(object["runID"] as? String == runID.uuidString)
         // Round-trip decode.
@@ -782,8 +782,26 @@ struct AgentRuntimeTests {
         #expect(decoded == checkpoint)
     }
 
-    @Test("Checkpoint v4 preserves the provider dispatch envelope")
+    @Test("Checkpoint v5 preserves the provider dispatch envelope and replay request")
     func checkpointDispatchEnvelopeRoundTrip() throws {
+        let provider = TestFixtures.localhostProvider()
+        let model = TestFixtures.testModel(providerID: provider.id)
+        let request = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            contentMessages: [ProviderMessage(role: "user", content: [
+                .text("resume exactly"),
+                .imageURL(URL(string: "https://example.com/evidence.png")!)
+            ])],
+            toolResults: [(callID: "call-1", output: "ok")],
+            pendingToolCalls: [try TestFixtures.toolCall(id: "call-1")],
+            pendingAssistantReasoning: "reasoning",
+            toolSchemas: [ToolSchemaDescriptor(
+                name: "test.echo", description: "Echo", parametersJSON: #"{"type":"object"}"#
+            )],
+            reasoningPolicy: .disabled
+        )
+        let snapshot = ProviderDispatchRequestSnapshot(request: request)
         let envelope = ProviderDispatchEnvelope(
             providerID: UUID(),
             providerKind: "openAICompatible",
@@ -803,11 +821,20 @@ struct AgentRuntimeTests {
             conversationID: UUID(),
             state: .preparing(.init(goal: "test")),
             messages: [ConversationMessage(role: "user", content: "test")],
-            providerDispatchEnvelope: envelope
+            providerDispatchEnvelope: envelope,
+            providerDispatchRequest: snapshot
         )
 
         let decoded = try AgentCheckpoint.decoded(from: checkpoint.encoded())
         #expect(decoded.providerDispatchEnvelope == envelope)
+        #expect(decoded.providerDispatchRequest == snapshot)
+        let replay = try #require(decoded.providerDispatchRequest).request()
+        #expect(replay.provider == provider)
+        #expect(replay.model == model)
+        #expect(replay.effectiveMessages == request.effectiveMessages)
+        #expect(replay.pendingToolCalls == request.pendingToolCalls)
+        #expect(replay.toolSchemas == request.toolSchemas)
+        #expect(replay.reasoningPolicy == .disabled)
     }
 
     @Test("Newer formatVersion is rejected on decode")
@@ -882,7 +909,12 @@ struct AgentRuntimeTests {
                 pendingCallIDs: [],
                 pendingResultCallIDs: [],
                 reasoningDigest: "wrong-reasoning"
-            )
+            ),
+            providerDispatchRequest: ProviderDispatchRequestSnapshot(request: ProviderStreamRequest(
+                provider: provider,
+                model: model,
+                contentMessages: [ProviderMessage(role: "user", content: [.text("resume safely")])]
+            ))
         )
 
         try await runtime.resume(from: checkpoint)
@@ -894,6 +926,88 @@ struct AgentRuntimeTests {
         #expect(failure.isRecoverable)
         #expect(failure.message.contains("dispatch checkpoint"))
         #expect(adapter.requests.isEmpty)
+    }
+
+    @Test("Legacy digest-only checkpoints resume from the committed ledger boundary")
+    func resumeLegacyDigestOnlyCheckpoint() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+        let provider = TestFixtures.localhostProvider()
+        let model = TestFixtures.testModel(providerID: provider.id)
+        let runtime = FloeAgentRuntime(
+            configuration: .init(provider: provider, model: model),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            checkpointStore: MockCheckpointStore()
+        )
+        let checkpoint = AgentCheckpoint(
+            formatVersion: 4,
+            runID: UUID(),
+            conversationID: UUID(),
+            state: .preparing(.init(goal: "continue after update")),
+            messages: [ConversationMessage(role: "user", content: "continue after update")],
+            providerDispatchEnvelope: ProviderDispatchEnvelope(
+                providerID: provider.id,
+                providerKind: provider.kind.rawValue,
+                wireProtocol: provider.wireProtocol.rawValue,
+                modelID: model.id,
+                remoteModelID: model.remoteModelID,
+                conversationMode: ConversationMode.chat.rawValue,
+                messagesDigest: "legacy-message-digest",
+                toolSchemasDigest: "legacy-schema-digest",
+                pendingCallIDs: [],
+                pendingResultCallIDs: [],
+                reasoningDigest: nil
+            )
+        )
+
+        try await runtime.resume(from: checkpoint)
+
+        #expect(adapter.requests.count == 1)
+        #expect(await runtime.state.name == "completed")
+    }
+
+    @Test("Resume replays the exact persisted provider request instead of rebuilding it")
+    func resumeReplaysPersistedProviderRequest() async throws {
+        let provider = TestFixtures.localhostProvider()
+        let model = TestFixtures.testModel(providerID: provider.id)
+        let originalAdapter = MockAdapter()
+        originalAdapter.script = [[.completed(.init(stopReason: .endTurn))]]
+        let checkpointStore = MockCheckpointStore()
+        let original = FloeAgentRuntime(
+            configuration: .init(provider: provider, model: model),
+            adapter: originalAdapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            checkpointStore: checkpointStore
+        )
+
+        try await original.start(goal: "preserve this provider boundary")
+
+        let dispatchCheckpoint = try #require(checkpointStore.saved.first {
+            $0.providerDispatchEnvelope != nil && $0.providerDispatchRequest != nil
+        })
+        let expectedRequest = try #require(dispatchCheckpoint.providerDispatchRequest).request()
+
+        let replayAdapter = MockAdapter()
+        replayAdapter.script = [[.completed(.init(stopReason: .endTurn))]]
+        let replay = FloeAgentRuntime(
+            configuration: .init(provider: provider, model: model),
+            adapter: replayAdapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            checkpointStore: MockCheckpointStore()
+        )
+
+        try await replay.resume(from: dispatchCheckpoint)
+
+        let actualRequest = try #require(replayAdapter.requests.first)
+        #expect(actualRequest.effectiveMessages == expectedRequest.effectiveMessages)
+        #expect(actualRequest.toolSchemas == expectedRequest.toolSchemas)
+        #expect(actualRequest.pendingToolCalls == expectedRequest.pendingToolCalls)
+        #expect(actualRequest.toolResults.map(\.callID) == expectedRequest.toolResults.map(\.callID))
+        #expect(await replay.state.name == "completed")
     }
 
     @Test("Recovery ledger prevents a completed tool from executing twice")

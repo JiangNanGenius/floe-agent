@@ -394,8 +394,18 @@ final class AppEnvironment: ObservableObject {
             },
             spawner: { [conversationStore, database] request in
                 let now = Date()
+                let conversationID = ConversationSpawnIdentity.uuid(
+                    operationID: request.operationID,
+                    suffix: "conversation"
+                )
+                let initialMessageID = ConversationSpawnIdentity.uuid(
+                    operationID: request.operationID,
+                    suffix: "initial-message"
+                )
+                let existing = try await conversationStore.conversation(id: conversationID)
                 let record = ConversationRecord(
-                    id: UUID(), title: request.title, createdAt: now, updatedAt: now,
+                    id: conversationID, title: request.title,
+                    createdAt: existing?.createdAt ?? now, updatedAt: now,
                     titleOrigin: .manual
                 )
                 try await conversationStore.saveConversation(record)
@@ -407,7 +417,7 @@ final class AppEnvironment: ObservableObject {
                         )
                     }
                     try await conversationStore.appendMessage(PersistedMessage(
-                        id: UUID(), conversationID: record.id, role: "user",
+                        id: initialMessageID, conversationID: record.id, role: "user",
                         content: request.objective, createdAt: now
                     ))
                 } catch {
@@ -420,7 +430,8 @@ final class AppEnvironment: ObservableObject {
                 return ConversationSpawnResult(
                     conversationID: record.id,
                     title: record.title,
-                    workspaceID: request.workspaceID
+                    workspaceID: request.workspaceID,
+                    wasCreated: existing == nil
                 )
             }
         )

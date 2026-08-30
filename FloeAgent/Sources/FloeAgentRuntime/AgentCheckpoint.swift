@@ -7,6 +7,7 @@
 import Foundation
 import FloeCore
 import FloeModels
+import FloeProviders
 import FloeSecurity
 
 /// Codable, provider-neutral form of the bounded execution ledger. Keeping it
@@ -118,10 +119,97 @@ public struct ProviderDispatchEnvelope: Sendable, Codable, Hashable {
     }
 }
 
+/// Secret-free, wire-neutral copy of the exact request that crossed the
+/// provider boundary. A digest alone can detect drift, but cannot replay the
+/// original request after a process restart. Persisting this snapshot keeps
+/// recovery independent from a second compaction pass or catalog ordering.
+public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
+    public struct Message: Sendable, Codable, Hashable {
+        public enum Part: Sendable, Codable, Hashable {
+            case text(String)
+            case imageData(mimeType: String, base64: String)
+            case imageURL(URL)
+        }
+
+        public var role: String
+        public var content: [Part]
+    }
+
+    public struct Result: Sendable, Codable, Hashable {
+        public var callID: String
+        public var output: String
+    }
+
+    public struct Schema: Sendable, Codable, Hashable {
+        public var name: String
+        public var description: String
+        public var parametersJSON: String
+    }
+
+    public var provider: ProviderProfile
+    public var model: ModelProfile
+    public var messages: [Message]
+    public var toolResults: [Result]
+    public var pendingToolCalls: [ToolCall]
+    public var pendingAssistantReasoning: String?
+    public var toolSchemas: [Schema]
+    public var reasoningDisabled: Bool
+
+    public init(request: ProviderStreamRequest) {
+        provider = request.provider
+        model = request.model
+        messages = request.effectiveMessages.map { message in
+            Message(role: message.role, content: message.content.map { part in
+                switch part {
+                case .text(let value): return .text(value)
+                case .imageData(let mimeType, let base64):
+                    return .imageData(mimeType: mimeType, base64: base64)
+                case .imageURL(let url): return .imageURL(url)
+                }
+            })
+        }
+        toolResults = request.toolResults.map { Result(callID: $0.callID, output: $0.output) }
+        pendingToolCalls = request.pendingToolCalls
+        pendingAssistantReasoning = request.pendingAssistantReasoning
+        toolSchemas = request.toolSchemas.map {
+            Schema(name: $0.name, description: $0.description, parametersJSON: $0.parametersJSON)
+        }
+        reasoningDisabled = request.reasoningPolicy == .disabled
+    }
+
+    public func request() -> ProviderStreamRequest {
+        ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            contentMessages: messages.map { message in
+                ProviderMessage(role: message.role, content: message.content.map { part in
+                    switch part {
+                    case .text(let value): return .text(value)
+                    case .imageData(let mimeType, let base64):
+                        return .imageData(mimeType: mimeType, base64: base64)
+                    case .imageURL(let url): return .imageURL(url)
+                    }
+                })
+            },
+            toolResults: toolResults.map { (callID: $0.callID, output: $0.output) },
+            pendingToolCalls: pendingToolCalls,
+            pendingAssistantReasoning: pendingAssistantReasoning,
+            toolSchemas: toolSchemas.map {
+                ToolSchemaDescriptor(
+                    name: $0.name,
+                    description: $0.description,
+                    parametersJSON: $0.parametersJSON
+                )
+            },
+            reasoningPolicy: reasoningDisabled ? .disabled : .modelDefault
+        )
+    }
+}
+
 /// Serializable snapshot of an agent run, written on cancellation, app
 /// suspension, or explicit user pause timeout.
 public struct AgentCheckpoint: Sendable, Codable, Hashable {
-    /// Checkpoint file format version. Current: 4.
+    /// Checkpoint file format version. Current: 5.
     public var formatVersion: Int
     public var runID: UUID
     public var conversationID: UUID
@@ -159,9 +247,13 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     public var toolLifecycleEntries: [AgentToolLifecycleEntry]?
     /// Last committed provider request boundary. Optional for legacy files.
     public var providerDispatchEnvelope: ProviderDispatchEnvelope?
+    /// Exact request paired with `providerDispatchEnvelope`. Optional keeps
+    /// older checkpoints decodable; legacy files use conservative rebuild and
+    /// digest validation.
+    public var providerDispatchRequest: ProviderDispatchRequestSnapshot?
 
     /// Current checkpoint file format.
-    public static let currentFormatVersion = 4
+    public static let currentFormatVersion = 5
     /// Current GRDB schema version.
     public static let currentSchemaVersion = 1
 
@@ -187,7 +279,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         totalIterationCount: Int? = nil,
         executionLedgerEntries: [AgentExecutionLedgerEntry]? = nil,
         toolLifecycleEntries: [AgentToolLifecycleEntry]? = nil,
-        providerDispatchEnvelope: ProviderDispatchEnvelope? = nil
+        providerDispatchEnvelope: ProviderDispatchEnvelope? = nil,
+        providerDispatchRequest: ProviderDispatchRequestSnapshot? = nil
     ) {
         self.formatVersion = formatVersion
         self.runID = runID
@@ -211,6 +304,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         self.executionLedgerEntries = executionLedgerEntries
         self.toolLifecycleEntries = toolLifecycleEntries
         self.providerDispatchEnvelope = providerDispatchEnvelope
+        self.providerDispatchRequest = providerDispatchRequest
     }
 
     public func encoded() throws -> Data {

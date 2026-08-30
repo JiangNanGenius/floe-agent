@@ -6,17 +6,22 @@ import FloeCore
 import FloeTools
 
 public struct ConversationSpawnRequest: Sendable, Codable, Hashable {
+    /// Stable identity of the provider tool call. The application must use
+    /// this value to make visible task creation idempotent across relaunch.
+    public var operationID: String
     public var sourceConversationID: UUID
     public var title: String
     public var objective: String
     public var workspaceID: UUID?
 
     public init(
+        operationID: String,
         sourceConversationID: UUID,
         title: String,
         objective: String,
         workspaceID: UUID? = nil
     ) {
+        self.operationID = operationID
         self.sourceConversationID = sourceConversationID
         self.title = title
         self.objective = objective
@@ -28,11 +33,28 @@ public struct ConversationSpawnResult: Sendable, Codable, Hashable {
     public var conversationID: UUID
     public var title: String
     public var workspaceID: UUID?
+    public var wasCreated: Bool
 
-    public init(conversationID: UUID, title: String, workspaceID: UUID?) {
+    public init(conversationID: UUID, title: String, workspaceID: UUID?, wasCreated: Bool = true) {
         self.conversationID = conversationID
         self.title = title
         self.workspaceID = workspaceID
+        self.wasCreated = wasCreated
+    }
+}
+
+public enum ConversationSpawnIdentity {
+    /// RFC 4122-shaped deterministic UUID derived without retaining the
+    /// objective text. Suffixes provide separate IDs for the task and its
+    /// initial message while preserving one idempotency domain.
+    public static func uuid(operationID: String, suffix: String) -> UUID {
+        var bytes = Array(SHA256.hash(data: Data("\(operationID)|\(suffix)".utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0f) | 0x50
+        bytes[8] = (bytes[8] & 0x3f) | 0x80
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
     }
 }
 
@@ -158,17 +180,34 @@ public struct ConversationReadTool: AgentTool {
                 exitStatus: 1
             )
         }
-        let page = try await reader.read(ConversationPageRequest(
-            conversationID: args.conversationID,
-            cursor: args.cursor,
-            limit: args.limit ?? 50
-        ))
+        let page: ConversationHistoryPage
+        do {
+            page = try await reader.read(ConversationPageRequest(
+                conversationID: args.conversationID,
+                cursor: args.cursor,
+                limit: args.limit ?? 50
+            ))
+        } catch {
+            return ConversationSearchTool.output(
+                "status=targetUnavailable conversationID=\(args.conversationID.uuidString) "
+                    + "reason=\(Self.sanitizedReason(error)) retryable=false",
+                exitStatus: 1
+            )
+        }
         let block = ConversationHistoryInjection.referenceBlock(
             title: "Floe task \(args.conversationID.uuidString)",
             messages: page.messages
         )
         let cursor = page.nextCursor.map { "\nnextCursor=\($0)" } ?? ""
         return ConversationSearchTool.output(block + cursor)
+    }
+
+    private static func sanitizedReason(_ error: Error) -> String {
+        let reason = error.localizedDescription
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.isEmpty ? "the requested task could not be read" : reason
     }
 }
 
@@ -227,14 +266,20 @@ public struct ConversationSpawnTool: AgentTool {
         guard let sourceID = try await sourceConversationID(context.runID) else {
             return ConversationSearchTool.output("status=failed reason=source task is unavailable", exitStatus: 1)
         }
+        let callIdentity = context.toolCallID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let operationID = "\(context.runID.uuidString):\((callIdentity?.isEmpty == false ? callIdentity : nil) ?? "conversation.spawn")"
         let result = try await spawner(ConversationSpawnRequest(
+            operationID: operationID,
             sourceConversationID: sourceID,
             title: String(args.title.prefix(160)),
             objective: String(args.objective.prefix(16_384)),
             workspaceID: args.workspaceID
         ))
         let data = try JSONEncoder().encode(result)
-        return ConversationSearchTool.output("status=created\n" + String(decoding: data, as: UTF8.self))
+        return ConversationSearchTool.output(
+            "status=\(result.wasCreated ? "created" : "reusedExisting")\n"
+                + String(decoding: data, as: UTF8.self)
+        )
     }
 }
 

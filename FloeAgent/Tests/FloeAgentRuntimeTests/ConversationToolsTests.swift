@@ -38,6 +38,23 @@ struct ConversationToolsTests {
         #expect(output.summary.contains("invalidTarget"))
     }
 
+    @Test("read returns an actionable tool failure when the target disappeared")
+    func readReportsUnavailableTarget() async throws {
+        let target = UUID()
+        let reader = FakeConversationReader(readError: FloeError.validationFailed("The requested task no longer exists"))
+        let output = try await ConversationReadTool(
+            reader: reader,
+            currentConversationID: { _ in UUID() }
+        ).execute(
+            .init(conversationID: target),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(output.exitStatus == 1)
+        #expect(output.summary.contains("status=targetUnavailable"))
+        #expect(output.summary.contains(target.uuidString))
+        #expect(output.summary.contains("retryable=false"))
+    }
+
     @Test("search omits the current task")
     func searchOmitsCurrentTask() async throws {
         let current = UUID()
@@ -82,15 +99,25 @@ struct ConversationToolsTests {
             hasExplicitUserAuthority: { _ in true },
             spawner: { request in try await recorder.spawn(request) }
         )
+        let runID = UUID()
         let output = try await tool.execute(
             .init(title: "Separate work", objective: "Do the work"),
-            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+            context: ToolContext(
+                runID: runID,
+                toolCallID: "provider-call-42",
+                cancellation: CancellationToken()
+            )
         )
         #expect(output.exitStatus == 0)
         #expect(output.summary.contains(spawnedID.uuidString))
         let request = try #require(await recorder.request)
         #expect(request.sourceConversationID == sourceID)
         #expect(request.workspaceID == nil)
+        #expect(request.operationID == "\(runID.uuidString):provider-call-42")
+        #expect(
+            ConversationSpawnIdentity.uuid(operationID: request.operationID, suffix: "conversation")
+                == ConversationSpawnIdentity.uuid(operationID: request.operationID, suffix: "conversation")
+        )
     }
 
     @Test("spawn authority recognizes direct Chinese and English requests only")
@@ -104,12 +131,21 @@ struct ConversationToolsTests {
 private actor FakeConversationReader: ConversationHistoryReader {
     let hits: [ConversationSearchHit]
     let page: ConversationHistoryPage
-    init(hits: [ConversationSearchHit] = [], page: ConversationHistoryPage? = nil) {
+    let readError: Error?
+    init(
+        hits: [ConversationSearchHit] = [],
+        page: ConversationHistoryPage? = nil,
+        readError: Error? = nil
+    ) {
         self.hits = hits
         self.page = page ?? ConversationHistoryPage(conversationID: UUID(), messages: [])
+        self.readError = readError
     }
     func search(_ request: ConversationSearchRequest) async throws -> [ConversationSearchHit] { hits }
-    func read(_ request: ConversationPageRequest) async throws -> ConversationHistoryPage { page }
+    func read(_ request: ConversationPageRequest) async throws -> ConversationHistoryPage {
+        if let readError { throw readError }
+        return page
+    }
     func readMessages(ids: [UUID]) async throws -> [ConversationHistoryMessage] {
         page.messages.filter { ids.contains($0.id) }
     }

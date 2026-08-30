@@ -870,8 +870,17 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     }
 
     public func read(_ request: ConversationPageRequest) async throws -> ConversationHistoryPage {
-        let offset = Int(request.cursor ?? "0") ?? 0
+        guard let offset = Int(request.cursor ?? "0"), offset >= 0 else {
+            throw FloeError.validationFailed("conversation.read cursor is invalid")
+        }
         return try await database.reader { db in
+            guard try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?)",
+                arguments: [request.conversationID.uuidString]
+            ) == true else {
+                throw FloeError.validationFailed("The requested task no longer exists")
+            }
             let rows = try Row.fetchAll(db, sql: """
                 SELECT id, role, content, created_at FROM messages
                 WHERE conversation_id = ? ORDER BY created_at, rowid LIMIT ? OFFSET ?

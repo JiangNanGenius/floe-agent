@@ -883,6 +883,24 @@ private final class CanvasDocumentStore: ObservableObject {
         return id
     }
 
+    /// Creates an empty container that can receive nodes through grouping or
+    /// drag/drop. Generation tasks are intentionally excluded from direct
+    /// creation; they are produced only by a submitted media workflow.
+    @discardableResult
+    func addGroup(at point: CGPoint, text: String = "新建分组") -> UUID {
+        let id = UUID()
+        mutateSelectedDocument { document in
+            document.nodes.append(FloeCanvasNode(
+                id: id,
+                text: text,
+                x: point.x, y: point.y, width: 420, height: 280,
+                kind: .group, rotation: 0, zIndex: document.nodes.count,
+                isLocked: false
+            ))
+        }
+        return id
+    }
+
     @discardableResult
     func addAsset(_ asset: CanvasAssetReference, kind: CanvasNodeKind, at point: CGPoint) -> UUID {
         let id = UUID()
@@ -1773,6 +1791,7 @@ struct WorkspaceCanvasView: View {
     @State private var isAgentCollapsed = false
     @State private var agentPanelOffset = CGSize.zero
     @State private var showsMaterials = false
+    @State private var materialKindFilter: Set<CanvasNodeKind>?
     @State private var connectionStartID: UUID?
     @State private var connectionStartPort: CanvasConnectionPort?
     @State private var selectedConnectionID: UUID?
@@ -1856,9 +1875,10 @@ struct WorkspaceCanvasView: View {
         }
         .sheet(isPresented: $showsMaterials) {
             NavigationStack {
-                CanvasMaterialLibraryView { asset, kind in
+                CanvasMaterialLibraryView(allowedKinds: materialKindFilter) { asset, kind in
                     store.addAsset(asset, kind: kind, at: canvasPoint(CGPoint(x: 520, y: 380)))
                     showsMaterials = false
+                    materialKindFilter = nil
                 }
             }
         }
@@ -2161,6 +2181,37 @@ struct WorkspaceCanvasView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack {
+                        Menu {
+                            Section("基础节点") {
+                                Button("文本", systemImage: "textformat") {
+                                    createNode { store.addNote(at: $0) }
+                                }
+                                Button("卡片", systemImage: "note.text") {
+                                    createNode { store.addCard(at: $0) }
+                                }
+                                Button("形状", systemImage: "square.on.circle") {
+                                    createNode { store.addShape(at: $0) }
+                                }
+                                Button("分组", systemImage: "square.3.layers.3d") {
+                                    createNode { store.addGroup(at: $0) }
+                                }
+                                Button("3D 场景", systemImage: "cube.transparent") {
+                                    let point = canvasPoint(CGPoint(x: 520, y: 380))
+                                    let nodeID = store.addScene3D(at: point)
+                                    selectedNodeIDs = [nodeID]
+                                    directorPresentation = Canvas3DDirectorPresentation(nodeID: nodeID)
+                                }
+                            }
+                            Section("素材节点") {
+                                materialCreationButton("图片", icon: "photo", kind: .image)
+                                materialCreationButton("视频", icon: "film", kind: .video)
+                                materialCreationButton("音频", icon: "waveform", kind: .audio)
+                                materialCreationButton("文件", icon: "doc", kind: .file)
+                            }
+                        } label: {
+                            Label("新建节点", systemImage: "plus")
+                        }
+                        .accessibilityIdentifier("canvas.node.create")
                         Button("撤销", systemImage: "arrow.uturn.backward") { store.undo() }
                             .disabled(!store.canUndo)
                         Button("重做", systemImage: "arrow.uturn.forward") { store.redo() }
@@ -2174,6 +2225,7 @@ struct WorkspaceCanvasView: View {
                             Label("画布助手", systemImage: "sparkles")
                         }
                         Button {
+                            materialKindFilter = nil
                             showsMaterials = true
                         } label: {
                             Label("素材库", systemImage: "photo.on.rectangle.angled")
@@ -2251,6 +2303,24 @@ struct WorkspaceCanvasView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func createNode(_ factory: (CGPoint) -> UUID) {
+        selectedNodeIDs = [factory(canvasPoint(CGPoint(x: 520, y: 380)))]
+        selectedStrokeIDs.removeAll()
+        selectedConnectionID = nil
+        mode = .select
+    }
+
+    private func materialCreationButton(
+        _ title: String,
+        icon: String,
+        kind: CanvasNodeKind
+    ) -> some View {
+        Button(title, systemImage: icon) {
+            materialKindFilter = [kind]
+            showsMaterials = true
         }
     }
 
@@ -4940,18 +5010,35 @@ private struct CanvasMaterialLibraryView: View {
     @State private var editingItem: CanvasMaterialLibraryStore.Item?
 
     var onChoose: ((CanvasAssetReference, CanvasNodeKind) -> Void)?
+    let allowedKinds: Set<CanvasNodeKind>?
 
-    init(onChoose: ((CanvasAssetReference, CanvasNodeKind) -> Void)? = nil) {
+    init(
+        allowedKinds: Set<CanvasNodeKind>? = nil,
+        onChoose: ((CanvasAssetReference, CanvasNodeKind) -> Void)? = nil
+    ) {
+        self.allowedKinds = allowedKinds
         self.onChoose = onChoose
     }
 
     private var filtered: [CanvasMaterialLibraryStore.Item] {
-        search.isEmpty ? store.items : store.items.filter {
+        let byKind = allowedKinds.map { kinds in store.items.filter { kinds.contains($0.kind) } }
+            ?? store.items
+        return search.isEmpty ? byKind : byKind.filter {
             $0.name.localizedCaseInsensitiveContains(search)
                 || $0.tags.contains(where: { $0.localizedCaseInsensitiveContains(search) })
                 || ($0.sourceURL?.absoluteString.localizedCaseInsensitiveContains(search) ?? false)
                 || ($0.license?.localizedCaseInsensitiveContains(search) ?? false)
         }
+    }
+
+    private var allowedContentTypes: [UTType] {
+        guard let allowedKinds else { return [.image, .movie, .audio, .pdf, .data] }
+        var types: [UTType] = []
+        if allowedKinds.contains(.image) { types.append(.image) }
+        if allowedKinds.contains(.video) { types.append(.movie) }
+        if allowedKinds.contains(.audio) { types.append(.audio) }
+        if allowedKinds.contains(.file) { types.append(contentsOf: [.pdf, .data]) }
+        return types.isEmpty ? [.data] : types
     }
 
     var body: some View {
@@ -5016,7 +5103,7 @@ private struct CanvasMaterialLibraryView: View {
         }
         .fileImporter(
             isPresented: $importsFiles,
-            allowedContentTypes: [.image, .movie, .audio, .pdf, .data],
+            allowedContentTypes: allowedContentTypes,
             allowsMultipleSelection: true
         ) { result in
             switch result {

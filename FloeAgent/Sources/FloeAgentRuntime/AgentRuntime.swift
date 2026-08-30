@@ -424,6 +424,9 @@ public actor FloeAgentRuntime {
     /// provider dispatch. It survives streaming recovery points after the
     /// pending call/result arrays have been consumed in memory.
     private var latestProviderDispatchEnvelope: ProviderDispatchEnvelope?
+    /// Cross-process replay copy paired with the envelope. Unlike
+    /// `providerRetryRequest`, this value is Codable and survives relaunch.
+    private var latestProviderDispatchRequest: ProviderDispatchRequestSnapshot?
     /// When recovery parked the run during an unfinished provider request,
     /// the first replay must reconstruct the same secret-free boundary before
     /// another request is allowed onto the wire. Completed provider turns
@@ -491,6 +494,7 @@ public actor FloeAgentRuntime {
         self.runID = runID
         self.forceCompactionOnNextTurn = configuration.forceInitialCompaction
         self.latestContextCompaction = nil
+        self.latestProviderDispatchRequest = nil
         self.providerRetryRequest = nil
         self.budgetLedger = HarnessBudgetLedger(
             rootRunID: runID,
@@ -764,8 +768,29 @@ public actor FloeAgentRuntime {
                 )
             }
         }
-        latestProviderDispatchEnvelope = checkpoint.providerDispatchEnvelope
-        restoredProviderDispatchEnvelope = checkpoint.providerDispatchEnvelope
+        latestProviderDispatchRequest = checkpoint.providerDispatchRequest
+        if let snapshot = checkpoint.providerDispatchRequest {
+            let restoredRequest = snapshot.request()
+            guard restoredRequest.provider.id == configuration.provider.id,
+                  restoredRequest.model.id == configuration.model.id else {
+                throw FloeError.validationFailed(
+                    "Checkpoint provider request does not match the resumed run configuration"
+                )
+            }
+            latestProviderDispatchEnvelope = checkpoint.providerDispatchEnvelope
+            restoredProviderDispatchEnvelope = checkpoint.providerDispatchEnvelope
+            providerRetryRequest = restoredRequest
+        } else {
+            // v4 and older checkpoints persisted only a digest. Rebuilding
+            // after an app update can legitimately change catalog ordering or
+            // prompt compaction, so that digest cannot act as a replay lock.
+            // The execution ledger/lifecycle still prevent settled tools from
+            // being replayed; start a fresh provider boundary from that
+            // committed state and upgrade the next checkpoint to v5.
+            latestProviderDispatchEnvelope = nil
+            restoredProviderDispatchEnvelope = nil
+            providerRetryRequest = nil
+        }
         // Older checkpoints may already contain a complete provider pair but
         // predate lifecycle metadata. Normalize those pairs before enforcing
         // the v3 provider/checkpoint invariants.
@@ -944,6 +969,8 @@ public actor FloeAgentRuntime {
             // boundary, so it supersedes an unfinished replay reservation.
             restoredProviderDispatchEnvelope = nil
             latestProviderDispatchEnvelope = nil
+            latestProviderDispatchRequest = nil
+            providerRetryRequest = nil
         }
         // Sink callbacks perform durable persistence and therefore suspend.
         // A user cancel/pause can win during that suspension; never revive a
@@ -1163,6 +1190,7 @@ public actor FloeAgentRuntime {
         }
         restoredProviderDispatchEnvelope = nil
         latestProviderDispatchEnvelope = dispatchEnvelope
+        latestProviderDispatchRequest = ProviderDispatchRequestSnapshot(request: request)
         logger.info(
             "promptAssembly run=\(runID.uuidString) digest=\(Self.promptAssemblyDigest(messages: legacyMessages, descriptors: catalogDescriptors)) tools=\(request.toolSchemas.count) pendingCalls=\(request.pendingToolCalls.count) pendingResults=\(request.toolResults.count) mode=\(configuration.conversationMode.rawValue)"
         )
@@ -1483,6 +1511,7 @@ public actor FloeAgentRuntime {
                 // pre-compaction dispatch envelope.
                 providerRetryRequest = nil
                 latestProviderDispatchEnvelope = nil
+                latestProviderDispatchRequest = nil
                 restoredProviderDispatchEnvelope = nil
                 modelTurnContinuationRequested = true
             case .cancelled:
@@ -2660,7 +2689,8 @@ public actor FloeAgentRuntime {
                 if $0.updatedAt == $1.updatedAt { return $0.callID < $1.callID }
                 return $0.updatedAt < $1.updatedAt
             },
-            providerDispatchEnvelope: latestProviderDispatchEnvelope
+            providerDispatchEnvelope: latestProviderDispatchEnvelope,
+            providerDispatchRequest: latestProviderDispatchRequest
         )
         let invariantViolations = HarnessInvariantRegistry.validateCheckpoint(checkpoint)
         guard invariantViolations.isEmpty else {
@@ -2762,7 +2792,11 @@ public actor FloeAgentRuntime {
             }.joined(separator: "|")
             return "\(message.role):\(parts)"
         }.joined(separator: "\n")
-        let schemaMaterial: String = request.toolSchemas.map { schema -> String in
+        let schemaMaterial: String = request.toolSchemas.sorted {
+            if $0.name != $1.name { return $0.name < $1.name }
+            if $0.description != $1.description { return $0.description < $1.description }
+            return $0.parametersJSON < $1.parametersJSON
+        }.map { schema -> String in
             "\(schema.name)|\(schema.description)|\(schema.parametersJSON)"
         }.joined(separator: "\n")
         return ProviderDispatchEnvelope(
@@ -2799,6 +2833,7 @@ public actor FloeAgentRuntime {
 
     private func clearCompletedProviderDispatch() {
         latestProviderDispatchEnvelope = nil
+        latestProviderDispatchRequest = nil
         restoredProviderDispatchEnvelope = nil
         providerRetryRequest = nil
         activeProviderPendingCalls.removeAll(keepingCapacity: true)
