@@ -830,19 +830,8 @@ private final class CanvasDocumentStore: ObservableObject {
 
     @discardableResult
     func addNote(at point: CGPoint, text: String = "新建文本") -> UUID {
-        let id = UUID()
-        mutateSelectedDocument { document in
-            document.nodes.append(FloeCanvasNode(
-                id: id,
-                text: text,
-                x: point.x,
-                y: point.y,
-                kind: .text,
-                rotation: 0,
-                zIndex: document.nodes.count,
-                isLocked: false
-            ))
-        }
+        let id = addPlaceholder(kind: .text, at: point)
+        if text != "新建文本" { updateNode(id, text: text) }
         return id
     }
 
@@ -850,55 +839,60 @@ private final class CanvasDocumentStore: ObservableObject {
     /// prevents card entry points from silently producing plain text nodes.
     @discardableResult
     func addCard(at point: CGPoint, text: String = "新建卡片") -> UUID {
-        let id = UUID()
-        mutateSelectedDocument { document in
-            document.nodes.append(FloeCanvasNode(
-                id: id,
-                text: text,
-                x: point.x,
-                y: point.y,
-                width: 260,
-                height: 180,
-                kind: .stickyNote,
-                rotation: 0,
-                zIndex: document.nodes.count,
-                isLocked: false
-            ))
-        }
+        let id = addPlaceholder(kind: .stickyNote, at: point)
+        if text != "新建卡片" { updateNode(id, text: text) }
         return id
     }
 
     @discardableResult
     func addShape(at point: CGPoint) -> UUID {
-        let id = UUID()
-        mutateSelectedDocument { document in
-            document.nodes.append(FloeCanvasNode(
-                id: id,
-                text: "",
-                x: point.x, y: point.y, width: 220, height: 140,
-                kind: .shape, rotation: 0, zIndex: document.nodes.count,
-                isLocked: false, shape: .roundedRectangle
-            ))
-        }
-        return id
+        addPlaceholder(kind: .shape, at: point)
     }
 
     /// Creates an empty container that can receive nodes through grouping or
-    /// drag/drop. Generation tasks are intentionally excluded from direct
-    /// creation; they are produced only by a submitted media workflow.
+    /// drag/drop.
     @discardableResult
     func addGroup(at point: CGPoint, text: String = "新建分组") -> UUID {
-        let id = UUID()
-        mutateSelectedDocument { document in
-            document.nodes.append(FloeCanvasNode(
-                id: id,
-                text: text,
-                x: point.x, y: point.y, width: 420, height: 280,
-                kind: .group, rotation: 0, zIndex: document.nodes.count,
-                isLocked: false
-            ))
-        }
+        let id = addPlaceholder(kind: .group, at: point)
+        if text != "新建分组" { updateNode(id, text: text) }
         return id
+    }
+
+    /// Creates every native node kind without requiring an imported asset or
+    /// an already-submitted provider job.
+    @discardableResult
+    func addPlaceholder(kind: CanvasNodeKind, at point: CGPoint) -> UUID {
+        let node = FloeCanvasNode.placeholder(
+            kind: kind,
+            position: CanvasPoint(point),
+            zIndex: selectedDocument?.nodes.count ?? 0
+        )
+        mutateSelectedDocument { $0.nodes.append(node) }
+        return node.id
+    }
+
+    func attachAsset(
+        _ asset: CanvasAssetReference,
+        kind: CanvasNodeKind,
+        to nodeID: UUID
+    ) {
+        guard [.image, .video, .audio, .file].contains(kind) else { return }
+        var previousAssetID: UUID?
+        mutateSelectedDocument { document in
+            guard let index = document.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
+            previousAssetID = document.nodes[index].asset?.id
+            document.nodes[index].kind = kind
+            document.nodes[index].asset = asset
+            document.nodes[index].text = asset.localRelativePath?
+                .split(separator: "/").last.map(String.init) ?? document.nodes[index].text
+            document.nodes[index].metadata["placeholder"] = nil
+        }
+        if let previousAssetID, previousAssetID != asset.id {
+            Task { try? await creativeAssetStore?.adjustReference(assetID: previousAssetID, by: -1) }
+        }
+        if previousAssetID != asset.id {
+            Task { try? await creativeAssetStore?.adjustReference(assetID: asset.id, by: 1) }
+        }
     }
 
     @discardableResult
@@ -934,23 +928,7 @@ private final class CanvasDocumentStore: ObservableObject {
 
     @discardableResult
     func addScene3D(at point: CGPoint) -> UUID {
-        let id = UUID()
-        mutateSelectedDocument { document in
-            document.nodes.append(FloeCanvasNode(
-                id: id,
-                text: "3D 场景",
-                x: point.x,
-                y: point.y,
-                width: 420,
-                height: 300,
-                kind: .scene3D,
-                rotation: 0,
-                zIndex: document.nodes.count,
-                isLocked: false,
-                scene3D: .starter()
-            ))
-        }
-        return id
+        addPlaceholder(kind: .scene3D, at: point)
     }
 
     func updateScene3D(_ scene: CanvasScene3D, for nodeID: UUID) {
@@ -1792,6 +1770,7 @@ struct WorkspaceCanvasView: View {
     @State private var agentPanelOffset = CGSize.zero
     @State private var showsMaterials = false
     @State private var materialKindFilter: Set<CanvasNodeKind>?
+    @State private var materialTargetNodeID: UUID?
     @State private var connectionStartID: UUID?
     @State private var connectionStartPort: CanvasConnectionPort?
     @State private var selectedConnectionID: UUID?
@@ -1876,9 +1855,18 @@ struct WorkspaceCanvasView: View {
         .sheet(isPresented: $showsMaterials) {
             NavigationStack {
                 CanvasMaterialLibraryView(allowedKinds: materialKindFilter) { asset, kind in
-                    store.addAsset(asset, kind: kind, at: canvasPoint(CGPoint(x: 520, y: 380)))
+                    if let materialTargetNodeID {
+                        store.attachAsset(asset, kind: kind, to: materialTargetNodeID)
+                        selectedNodeIDs = [materialTargetNodeID]
+                    } else {
+                        selectedNodeIDs = [store.addAsset(
+                            asset, kind: kind,
+                            at: canvasPoint(CGPoint(x: 520, y: 380))
+                        )]
+                    }
                     showsMaterials = false
                     materialKindFilter = nil
+                    materialTargetNodeID = nil
                 }
             }
         }
@@ -1950,6 +1938,12 @@ struct WorkspaceCanvasView: View {
             )
             if enabled {
                 Task { await store.synchronizeFromCloud(environment.canvasCloudAssetService) }
+            }
+        }
+        .onChange(of: showsMaterials) { _, presented in
+            if !presented {
+                materialTargetNodeID = nil
+                materialKindFilter = nil
             }
         }
         .onChange(of: mode) { oldMode, newMode in
@@ -2195,18 +2189,28 @@ struct WorkspaceCanvasView: View {
                                 Button("分组", systemImage: "square.3.layers.3d") {
                                     createNode { store.addGroup(at: $0) }
                                 }
+                            }
+                            Section("媒体与文件") {
+                                placeholderCreationButton("图片卡片", icon: "photo", kind: .image)
+                                placeholderCreationButton("视频卡片", icon: "film", kind: .video)
+                                placeholderCreationButton("音频卡片", icon: "waveform", kind: .audio)
+                                placeholderCreationButton("文件卡片", icon: "doc", kind: .file)
+                                Button("从素材库添加…", systemImage: "photo.on.rectangle.angled") {
+                                    materialTargetNodeID = nil
+                                    materialKindFilter = [.image, .video, .audio, .file]
+                                    showsMaterials = true
+                                }
+                            }
+                            Section("创作节点") {
+                                placeholderCreationButton(
+                                    "生成配置", icon: "wand.and.stars", kind: .generationTask
+                                )
                                 Button("3D 场景", systemImage: "cube.transparent") {
                                     let point = canvasPoint(CGPoint(x: 520, y: 380))
                                     let nodeID = store.addScene3D(at: point)
                                     selectedNodeIDs = [nodeID]
                                     directorPresentation = Canvas3DDirectorPresentation(nodeID: nodeID)
                                 }
-                            }
-                            Section("素材节点") {
-                                materialCreationButton("图片", icon: "photo", kind: .image)
-                                materialCreationButton("视频", icon: "film", kind: .video)
-                                materialCreationButton("音频", icon: "waveform", kind: .audio)
-                                materialCreationButton("文件", icon: "doc", kind: .file)
                             }
                         } label: {
                             Label("新建节点", systemImage: "plus")
@@ -2225,6 +2229,7 @@ struct WorkspaceCanvasView: View {
                             Label("画布助手", systemImage: "sparkles")
                         }
                         Button {
+                            materialTargetNodeID = nil
                             materialKindFilter = nil
                             showsMaterials = true
                         } label: {
@@ -2313,14 +2318,13 @@ struct WorkspaceCanvasView: View {
         mode = .select
     }
 
-    private func materialCreationButton(
+    private func placeholderCreationButton(
         _ title: String,
         icon: String,
         kind: CanvasNodeKind
     ) -> some View {
         Button(title, systemImage: icon) {
-            materialKindFilter = [kind]
-            showsMaterials = true
+            createNode { store.addPlaceholder(kind: kind, at: $0) }
         }
     }
 
@@ -2981,6 +2985,16 @@ struct WorkspaceCanvasView: View {
                         editingNodeID = nil
                     }
                 }
+                if let attachable = selectedAttachableNode {
+                    Button(
+                        attachable.asset == nil ? "选择素材" : "替换素材",
+                        systemImage: "photo.badge.plus"
+                    ) {
+                        materialTargetNodeID = attachable.id
+                        materialKindFilter = [attachable.kind]
+                        showsMaterials = true
+                    }
+                }
                 Button("属性", systemImage: "slider.horizontal.3") { showsInspector = true }
                 Button("生成", systemImage: "wand.and.stars") { showsGeneration = true }
                 Button("删除", systemImage: "trash", role: .destructive) { deleteSelection() }
@@ -3002,6 +3016,14 @@ struct WorkspaceCanvasView: View {
         let groups = Set(selectedNodes.compactMap(\.groupID))
         guard groups.count == 1, selectedNodes.allSatisfy({ $0.groupID == groups.first }) else { return nil }
         return groups.first
+    }
+
+    private var selectedAttachableNode: FloeCanvasNode? {
+        guard selectedNodeIDs.count == 1,
+              let id = selectedNodeIDs.first,
+              let node = store.selectedDocument?.nodes.first(where: { $0.id == id }),
+              [.image, .video, .audio, .file].contains(node.kind) else { return nil }
+        return node
     }
 
     private var zoomControls: some View {
@@ -3919,10 +3941,19 @@ private struct CanvasNodeCard: View {
             assetPlaceholder(icon: "square.3.layers.3d", title: text.isEmpty ? "分组" : text)
         case .generationTask:
             VStack(spacing: 10) {
-                ProgressView()
-                Text(text.isEmpty ? "生成任务" : text).font(.headline)
-                Text("任务状态会在重新打开 App 后继续恢复")
-                    .font(.caption).foregroundStyle(.secondary)
+                if node.generationJobID == nil {
+                    Image(systemName: "wand.and.stars")
+                        .font(.largeTitle)
+                        .foregroundStyle(FloeTheme.primary)
+                    Text(text.isEmpty ? "生成配置" : text).font(.headline)
+                    Text("选中后点“生成”配置图片或视频任务")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ProgressView()
+                    Text(text.isEmpty ? "生成任务" : text).font(.headline)
+                    Text("任务状态会在重新打开 App 后继续恢复")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding()

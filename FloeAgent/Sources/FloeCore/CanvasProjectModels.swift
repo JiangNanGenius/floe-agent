@@ -317,6 +317,42 @@ public struct CanvasNode: Sendable, Codable, Identifiable, Hashable {
     }
 }
 
+public extension CanvasNode {
+    /// Creates an editable native node before external content exists. Media
+    /// placeholders can later receive an asset; generation placeholders can
+    /// later receive a durable provider job. Keeping this factory in FloeCore
+    /// gives every canvas entry point the same defaults.
+    static func placeholder(
+        kind: CanvasNodeKind,
+        position: CanvasPoint,
+        zIndex: Int = 0
+    ) -> CanvasNode {
+        let defaults: (text: String, size: CanvasSize) = switch kind {
+        case .text: ("新建文本", .init(width: 260, height: 150))
+        case .stickyNote: ("新建卡片", .init(width: 260, height: 180))
+        case .shape: ("", .init(width: 220, height: 140))
+        case .image: ("图片", .init(width: 320, height: 260))
+        case .video: ("视频", .init(width: 320, height: 220))
+        case .audio: ("音频", .init(width: 320, height: 170))
+        case .file: ("文件", .init(width: 320, height: 170))
+        case .group: ("新建分组", .init(width: 420, height: 280))
+        case .generationTask: ("生成配置", .init(width: 340, height: 210))
+        case .scene3D: ("3D 场景", .init(width: 420, height: 300))
+        }
+        return CanvasNode(
+            kind: kind,
+            text: defaults.text,
+            position: position,
+            size: defaults.size,
+            zIndex: zIndex,
+            shape: kind == .shape ? .roundedRectangle : nil,
+            scene3D: kind == .scene3D ? .starter() : nil,
+            metadata: [.image, .video, .audio, .file, .generationTask].contains(kind)
+                ? ["placeholder": "true"] : [:]
+        )
+    }
+}
+
 public enum CanvasConnectionKind: String, Sendable, Codable, Hashable {
     case line, arrow, source, generatedFrom
 }
