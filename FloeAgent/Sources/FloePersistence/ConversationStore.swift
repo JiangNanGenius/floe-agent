@@ -62,6 +62,35 @@ public struct PersistedMessage: Sendable, Hashable, Identifiable {
     }
 }
 
+/// Stable keyset cursor for long conversation timelines. UUID is the
+/// deterministic tie-breaker when several events share a timestamp.
+public struct ConversationMessageCursor: Sendable, Codable, Hashable {
+    public var createdAt: Date
+    public var messageID: UUID
+
+    public init(createdAt: Date, messageID: UUID) {
+        self.createdAt = createdAt
+        self.messageID = messageID
+    }
+}
+
+public struct ConversationMessagePage: Sendable, Hashable {
+    /// Chronological rows for direct insertion into the UI timeline.
+    public var messages: [PersistedMessage]
+    public var earlierCursor: ConversationMessageCursor?
+    public var hasEarlier: Bool
+
+    public init(
+        messages: [PersistedMessage],
+        earlierCursor: ConversationMessageCursor?,
+        hasEarlier: Bool
+    ) {
+        self.messages = messages
+        self.earlierCursor = earlierCursor
+        self.hasEarlier = hasEarlier
+    }
+}
+
 /// Durable conversation, message, content-part and attachment access.
 /// Deterministic ordering throughout; writes are cancellation-safe because
 /// GRDB serialises writers.
@@ -81,6 +110,11 @@ public protocol ConversationStore: Sendable {
     /// Fast first-screen page in chronological order. Full history remains
     /// available through `messages(conversationID:)` and is hydrated later.
     func recentMessages(conversationID: UUID, limit: Int) async throws -> [PersistedMessage]
+    func messagePage(
+        conversationID: UUID,
+        before cursor: ConversationMessageCursor?,
+        limit: Int
+    ) async throws -> ConversationMessagePage
     func parts(messageID: UUID) async throws -> [MessagePart]
 
     func saveAttachment(_ attachment: AttachmentRef) async throws
@@ -102,6 +136,30 @@ public extension ConversationStore {
 
     func recentMessages(conversationID: UUID, limit: Int) async throws -> [PersistedMessage] {
         Array(try await messages(conversationID: conversationID).suffix(max(1, limit)))
+    }
+
+    func messagePage(
+        conversationID: UUID,
+        before cursor: ConversationMessageCursor?,
+        limit: Int
+    ) async throws -> ConversationMessagePage {
+        let ordered = try await messages(conversationID: conversationID).sorted {
+            ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString)
+        }
+        let eligible = cursor.map { cursor in
+            ordered.filter {
+                ($0.createdAt, $0.id.uuidString) < (cursor.createdAt, cursor.messageID.uuidString)
+            }
+        } ?? ordered
+        let bounded = max(1, limit)
+        let page = Array(eligible.suffix(bounded))
+        return ConversationMessagePage(
+            messages: page,
+            earlierCursor: page.first.map {
+                ConversationMessageCursor(createdAt: $0.createdAt, messageID: $0.id)
+            },
+            hasEarlier: eligible.count > page.count
+        )
     }
 }
 
@@ -255,7 +313,12 @@ public actor SQLiteConversationStore: ConversationStore {
     }
 
     public func recentMessages(conversationID: UUID, limit: Int) async throws -> [PersistedMessage] {
-        let bounded = min(500, max(1, limit))
+        // The thread UI grows this window in bounded increments while the
+        // user explicitly asks for older history. Capping this method at 500
+        // made the UI believe another page had loaded while returning the
+        // same rows forever, and orphaned the corresponding historical tool
+        // events from the timeline.
+        let bounded = min(10_000, max(1, limit))
         return try await database.reader { db in
             let rows = try Row.fetchAll(
                 db,
@@ -281,6 +344,59 @@ public actor SQLiteConversationStore: ConversationStore {
                     runID: (row["run_id"] as String?).flatMap(UUID.init(uuidString:))
                 )
             }
+        }
+    }
+
+    public func messagePage(
+        conversationID: UUID,
+        before cursor: ConversationMessageCursor?,
+        limit: Int
+    ) async throws -> ConversationMessagePage {
+        let bounded = min(500, max(1, limit))
+        return try await database.reader { db in
+            let predicate: String
+            var arguments: StatementArguments = [conversationID.uuidString]
+            if let cursor {
+                predicate = """
+                    AND (created_at < ? OR (created_at = ? AND id < ?))
+                    """
+                let date = PersistenceCodec.encode(cursor.createdAt)
+                arguments += [date, date, cursor.messageID.uuidString]
+            } else {
+                predicate = ""
+            }
+            arguments += [bounded + 1]
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM messages
+                    WHERE conversation_id = ? \(predicate)
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                arguments: arguments
+            )
+            let hasEarlier = rows.count > bounded
+            let pageRows = Array(rows.prefix(bounded).reversed())
+            let messages = try pageRows.map { row in
+                let id = try Self.messageID(from: row)
+                return PersistedMessage(
+                    id: id,
+                    conversationID: conversationID,
+                    role: row["role"],
+                    content: row["content"],
+                    createdAt: try PersistenceCodec.decodeDate(row["created_at"]),
+                    parts: try Self.fetchParts(messageID: id, db: db),
+                    runID: (row["run_id"] as String?).flatMap(UUID.init(uuidString:))
+                )
+            }
+            return ConversationMessagePage(
+                messages: messages,
+                earlierCursor: messages.first.map {
+                    ConversationMessageCursor(createdAt: $0.createdAt, messageID: $0.id)
+                },
+                hasEarlier: hasEarlier
+            )
         }
     }
 

@@ -192,6 +192,7 @@
 		B2EFAC62B0DD7A4420F4B579 /* _asyncio.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 28E0216FA93D4EE0E28FC155 /* _asyncio.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B30C1248DF0B9FE004549E3F /* ConversationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA165A2C7BD607DB6F26AD7B /* ConversationListView.swift */; };
 		B33934D6A8A4190628D89B73 /* WorkspaceCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C71624FFDB9B76CB148DA3CE /* WorkspaceCanvasView.swift */; };
+		F10ECA0108312026A61E0001 /* CanvasAgentTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10ECA0108312026A61E0002 /* CanvasAgentTools.swift */; };
 		B45AF4990B10532F1D1CD4CE /* _blake2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 620E189ED0BE974C6B1EA3DB /* _blake2.xcframework */; };
 		B81C50AA905334687754F195 /* Python.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7EC6304EFEA8100679656E2D /* Python.xcframework */; };
 		B850872108F008D942A08193 /* BrowserModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D499B038C15DC8EA198B669A /* BrowserModels.swift */; };
@@ -534,6 +535,7 @@
 		C43555513E313C954D2E39B3 /* ProviderListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderListViewModel.swift; sourceTree = "<group>"; };
 		C4CD5173D18CDDB6549BBD7D /* RemoteSessionCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionCenter.swift; sourceTree = "<group>"; };
 		C71624FFDB9B76CB148DA3CE /* WorkspaceCanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceCanvasView.swift; sourceTree = "<group>"; };
+		F10ECA0108312026A61E0002 /* CanvasAgentTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasAgentTools.swift; sourceTree = "<group>"; };
 		C962FC08AA34E0D75F5600E4 /* _elementtree.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _elementtree.xcframework; path = Vendor/PythonExtensions/_elementtree.xcframework; sourceTree = "<group>"; };
 		CB4807D41A6BD7259F8D0356 /* DiagnosticsExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsExporter.swift; sourceTree = "<group>"; };
 		CB9397357FA8DE45F2E2112C /* _lzma.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _lzma.xcframework; path = Vendor/PythonExtensions/_lzma.xcframework; sourceTree = "<group>"; };
@@ -744,6 +746,7 @@
 		19EE8B16BC5E1462CE6B18DF /* Workspace */ = {
 			isa = PBXGroup;
 			children = (
+				F10ECA0108312026A61E0002 /* CanvasAgentTools.swift */,
 				891BEBD07BB7F67542319E7C /* Canvas3DDirectorView.swift */,
 				05CD3FCDF6CC1F08B06B9119 /* DiffView.swift */,
 				B411EDF873B55072F23B97F0 /* FileInspectorView.swift */,
@@ -1563,6 +1566,7 @@
 				FB6996DA07A08B986A011ED7 /* VoiceInputLive.swift in Sources */,
 				436FDD6DD750FD77FF840D91 /* WebSearchSettingsCenter.swift in Sources */,
 				B33934D6A8A4190628D89B73 /* WorkspaceCanvasView.swift in Sources */,
+				F10ECA0108312026A61E0001 /* CanvasAgentTools.swift in Sources */,
 				31A880D7E77E4D90E1CA89EF /* WorkspaceCenter.swift in Sources */,
 				A0EFEF2762FAA6FF528D5710 /* WorkspaceFileType.swift in Sources */,
 				86B3B6255EE780A3692A46C8 /* WorkspaceIDEView.swift in Sources */,

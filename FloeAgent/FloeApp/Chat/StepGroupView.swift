@@ -10,6 +10,14 @@ import FloeModels
 import FloePersistence
 import FloeSecurity
 
+enum StepGroupDisclosurePolicy {
+    static func initiallyExpanded(
+        isLatest: Bool, isLive: Bool, hasError: Bool, hasPendingApproval: Bool
+    ) -> Bool {
+        isLatest || isLive || hasError || hasPendingApproval
+    }
+}
+
 struct StepGroupView: View {
     let events: [RunEventRecord]
     let isLatest: Bool
@@ -33,11 +41,13 @@ struct StepGroupView: View {
         self.hasError = hasError
         self.pendingApprovals = pendingApprovals
         self.onResolveApproval = onResolveApproval
-        // Keep the transcript readable while tools stream: the newest group
-        // updates this summary row instead of expanding every event inline.
-        // A human decision is the exception: open its owning tool group so
-        // the controls and reason are visible at the exact call site.
-        self._isExpanded = State(initialValue: !pendingApprovals.isEmpty)
+        // The active/latest group is the user's only view into current tool
+        // progress. Historical groups stay compact, while the latest group
+        // and human decisions open at their exact call site.
+        self._isExpanded = State(initialValue: StepGroupDisclosurePolicy.initiallyExpanded(
+            isLatest: isLatest, isLive: isLive, hasError: hasError,
+            hasPendingApproval: !pendingApprovals.isEmpty
+        ))
     }
 
     private var summary: String {
@@ -102,6 +112,11 @@ struct StepGroupView: View {
         .padding(.vertical, 2)
         .onChange(of: pendingApprovals.map(\.id)) { _, approvalIDs in
             if !approvalIDs.isEmpty {
+                withAnimation(.snappy) { isExpanded = true }
+            }
+        }
+        .onChange(of: events.map(\.id)) { _, _ in
+            if isLatest || isLive || hasError {
                 withAnimation(.snappy) { isExpanded = true }
             }
         }

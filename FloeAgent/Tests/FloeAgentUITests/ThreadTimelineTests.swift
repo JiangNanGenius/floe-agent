@@ -13,6 +13,18 @@ import FloePersistence
 
 @Suite("FloeApp.ThreadTimeline")
 struct ThreadTimelineTests {
+    @Test("Latest and live tool groups are visible without an extra tap")
+    func latestToolGroupExpansionPolicy() {
+        #expect(StepGroupDisclosurePolicy.initiallyExpanded(
+            isLatest: true, isLive: false, hasError: false, hasPendingApproval: false
+        ))
+        #expect(StepGroupDisclosurePolicy.initiallyExpanded(
+            isLatest: false, isLive: true, hasError: false, hasPendingApproval: false
+        ))
+        #expect(!StepGroupDisclosurePolicy.initiallyExpanded(
+            isLatest: false, isLive: false, hasError: false, hasPendingApproval: false
+        ))
+    }
 
     private func makeEvent(
         runID: UUID,

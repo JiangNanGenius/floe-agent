@@ -696,7 +696,8 @@ enum WorkspaceCanvasRegistry {
     @discardableResult
     static func importPackage(from source: URL) throws -> UUID {
         var project = try decodeProject(at: source)
-        guard !project.documents.isEmpty, (1...5).contains(project.schemaVersion) else {
+        guard !project.documents.isEmpty,
+              (1...CanvasProject.currentSchemaVersion).contains(project.schemaVersion) else {
             throw FloeError.validationFailed("这不是受支持的 Floe 画布包。")
         }
         let id = UUID()
@@ -815,16 +816,18 @@ private final class CanvasDocumentStore: ObservableObject {
                    decoded.workspaceID == workspaceID,
                    !decoded.documents.isEmpty {
                     project = decoded
-                    persist()
+                    // Canonicalize legacy schema without manufacturing an
+                    // edit revision merely because the document was opened.
+                    persist(incrementRevision: false)
                 } else {
                     let backup = try Self.preserveReadOnlyBackup(of: fileURL)
                     project = fallback
-                    persist()
+                    persist(incrementRevision: false)
                     saveError = "原画布无法迁移，已保留只读备份：\(backup.lastPathComponent)"
                 }
             } else {
                 project = fallback
-                persist()
+                persist(incrementRevision: false)
             }
         } catch {
             fileURL = FileManager.default.temporaryDirectory
@@ -902,17 +905,44 @@ private final class CanvasDocumentStore: ObservableObject {
 
     func undo() {
         guard let previous = undoStack.popLast() else { return }
+        let currentRevision = project.revision
         redoStack.append(project)
         project = previous
+        project.revision = currentRevision
         project.updatedAt = Date()
         persist()
     }
 
     func redo() {
         guard let next = redoStack.popLast() else { return }
+        let currentRevision = project.revision
         undoStack.append(project)
         project = next
+        project.revision = currentRevision
         project.updatedAt = Date()
+        persist()
+    }
+
+    func reloadExternalChange() {
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let incoming = try CanvasProjectCodec.decode(
+                Data(contentsOf: fileURL), fallbackID: project.id, decoder: decoder
+            )
+            guard incoming.id == project.id, incoming.revision > project.revision else { return }
+            recordHistory()
+            project = incoming
+            saveError = nil
+        } catch {
+            saveError = "重新载入画布失败：\(error.localizedDescription)"
+        }
+    }
+
+    func updateViewport(center: CanvasPoint, scale: Double) {
+        project.viewports[project.selectedDocumentID] = CanvasViewportState(
+            center: center, scale: scale
+        )
         persist()
     }
 
@@ -1316,10 +1346,78 @@ private final class CanvasDocumentStore: ObservableObject {
         }
     }
 
+    @discardableResult
+    func applyAgentResult(text: String, to sourceNodeID: UUID, runID: UUID) -> UUID? {
+        guard let source = selectedDocument?.nodes.first(where: { $0.id == sourceNodeID }) else {
+            return nil
+        }
+        if source.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            mutateSelectedDocument { document in
+                guard let index = document.nodes.firstIndex(where: { $0.id == sourceNodeID }) else { return }
+                document.nodes[index].text = text
+                document.nodes[index].createdByRunID = runID
+            }
+            return sourceNodeID
+        }
+        var resultID: UUID?
+        mutateSelectedDocument { document in
+            let id = UUID()
+            document.nodes.append(FloeCanvasNode(
+                id: id, text: text,
+                x: source.x + source.width / 2 + 250,
+                y: source.y, width: max(300, source.width), height: max(180, source.height),
+                createdByRunID: runID,
+                kind: .card, zIndex: (document.nodes.map(\.zIndex).max() ?? 0) + 1,
+                metadata: ["generatedFromNodeID": sourceNodeID.uuidString]
+            ))
+            document.connections.append(CanvasConnection(
+                sourceNodeID: sourceNodeID, destinationNodeID: id,
+                kind: .generatedFrom, label: "AI 结果",
+                sourcePort: .trailing, destinationPort: .leading
+            ))
+            resultID = id
+        }
+        return resultID
+    }
+
     func setAgentConversationID(_ id: UUID) {
         project.agentConversationID = id
-        project.schemaVersion = 5
+        project.schemaVersion = CanvasProject.currentSchemaVersion
+        if project.assistantSessions.isEmpty {
+            let session = CanvasAssistantSession(conversationID: id, title: "画布助手")
+            project.assistantSessions = [session]
+            project.selectedAssistantSessionID = session.id
+        }
         project.updatedAt = Date()
+        persist()
+    }
+
+    var selectedAssistantSession: CanvasAssistantSession? {
+        project.assistantSessions.first { $0.id == project.selectedAssistantSessionID }
+            ?? project.assistantSessions.first
+    }
+
+    func selectAssistantSession(_ id: UUID) {
+        guard project.assistantSessions.contains(where: { $0.id == id }) else { return }
+        project.selectedAssistantSessionID = id
+        project.agentConversationID = selectedAssistantSession?.conversationID
+        persist()
+    }
+
+    func addAssistantSession(conversationID: UUID, title: String) {
+        let session = CanvasAssistantSession(conversationID: conversationID, title: title)
+        project.assistantSessions.append(session)
+        project.selectedAssistantSessionID = session.id
+        project.agentConversationID = conversationID
+        persist()
+    }
+
+    func removeAssistantSession(_ id: UUID) {
+        project.assistantSessions.removeAll { $0.id == id }
+        if project.selectedAssistantSessionID == id {
+            project.selectedAssistantSessionID = project.assistantSessions.first?.id
+            project.agentConversationID = project.assistantSessions.first?.conversationID
+        }
         persist()
     }
 
@@ -1792,11 +1890,12 @@ private final class CanvasDocumentStore: ObservableObject {
         redoStack.removeAll()
     }
 
-    private func persist() {
+    private func persist(incrementRevision: Bool = true) {
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
+            if incrementRevision { project.revision += 1 }
             if syncOperationStore != nil, globalSyncEnabled,
                project.sync.isEnabled {
                 var sync = project.sync
@@ -1923,6 +2022,7 @@ struct WorkspaceCanvasView: View {
     @State private var nodeCreationPoint: CGPoint?
     @State private var lastCanvasPointerPoint: CGPoint?
     @State private var pencilContextPoint: CGPoint?
+    @State private var showsMiniMap = true
 
     private static let nodePasteboardType = "org.floeagent.canvas.nodes"
 
@@ -2056,6 +2156,7 @@ struct WorkspaceCanvasView: View {
                 assetStore: environment.creativeAssetStore,
                 globalEnabled: globalCanvasSyncEnabled
             )
+            restoreViewport()
             await store.synchronizeFromCloud(environment.canvasCloudAssetService)
             while !Task.isCancelled {
                 let canvasID = store.project.id
@@ -2067,6 +2168,10 @@ struct WorkspaceCanvasView: View {
                 try? await Task.sleep(for: .seconds(5))
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .floeCanvasProjectDidChange)) { note in
+            guard note.userInfo?["canvasID"] as? UUID == store.project.id else { return }
+            store.reloadExternalChange()
+        }
         .onChange(of: globalCanvasSyncEnabled) { _, enabled in
             store.configureSync(
                 store: environment.canvasSyncOperationStore,
@@ -2076,6 +2181,12 @@ struct WorkspaceCanvasView: View {
             if enabled {
                 Task { await store.synchronizeFromCloud(environment.canvasCloudAssetService) }
             }
+        }
+        .onChange(of: store.project.selectedDocumentID) { _, _ in
+            restoreViewport()
+            selectedNodeIDs.removeAll()
+            selectedConnectionID = nil
+            editingNodeID = nil
         }
         .onChange(of: showsMaterials) { _, presented in
             if !presented {
@@ -2178,6 +2289,8 @@ struct WorkspaceCanvasView: View {
                     if mode != .pencil && mode != .eraser {
                         interactionLayer(size: geometry.size)
                     }
+                    groupLayer(document)
+                        .allowsHitTesting(false)
                     connectionLayer(document)
                         .allowsHitTesting(mode == .select)
                     nodeLayer(document)
@@ -2325,6 +2438,20 @@ struct WorkspaceCanvasView: View {
             }
             .clipped()
             .overlay(alignment: .bottomTrailing) { zoomControls }
+            .overlay(alignment: .bottomLeading) {
+                if showsMiniMap, let document = store.selectedDocument {
+                    CanvasMiniMap(
+                        document: document,
+                        viewportCenter: CanvasPoint(x: -pan.width / scale, y: -pan.height / scale),
+                        viewportScale: scale
+                    ) { center in
+                        pan = CGSize(width: -center.x * scale, height: -center.y * scale)
+                        panStart = pan
+                        persistViewport()
+                    }
+                    .padding(12)
+                }
+            }
             .overlay(alignment: .bottom) {
                 VStack(spacing: 6) {
                     selectionToolbar
@@ -2409,6 +2536,7 @@ struct WorkspaceCanvasView: View {
                                 get: { store.project.sync.isEnabled },
                                 set: { store.setSyncEnabled($0) }
                             ))
+                            Toggle("显示缩略导航", isOn: $showsMiniMap)
                             if !selectedNodeIDs.isEmpty {
                                 Button("属性") { showsInspector = true }
                                 Button("复制到剪贴板", action: copySelection)
@@ -2597,9 +2725,12 @@ struct WorkspaceCanvasView: View {
                     path.move(to: start)
                     path.addLine(to: end)
                     let selected = selectedConnectionID == connection.id
+                    let related = selectedNodeIDs.isEmpty
+                        || selectedNodeIDs.contains(connection.sourceNodeID)
+                        || selectedNodeIDs.contains(connection.destinationNodeID)
                     context.stroke(
                         path,
-                        with: .color(selected ? FloeTheme.primary : FloeTheme.primary.opacity(0.65)),
+                        with: .color(selected ? FloeTheme.primary : FloeTheme.primary.opacity(related ? 0.72 : 0.18)),
                         style: StrokeStyle(
                             lineWidth: selected ? 4 : 2,
                             dash: connection.kind == .source ? [7, 5] : []
@@ -2639,6 +2770,42 @@ struct WorkspaceCanvasView: View {
                         .accessibilityLabel("连接线")
                         .accessibilityHint("点按后可反向或删除")
                         .accessibilityIdentifier("canvas.connection.\(connection.id.uuidString)")
+                }
+            }
+        }
+    }
+
+    private func groupLayer(_ document: FloeCanvasDocument) -> some View {
+        let grouped = Dictionary(grouping: document.nodes.compactMap { node in
+            node.groupID.map { ($0, node) }
+        }, by: { $0.0 })
+        return ZStack {
+            ForEach(grouped.keys.sorted(by: { $0.uuidString < $1.uuidString }), id: \.self) { groupID in
+                let nodes = grouped[groupID, default: []].map(\.1)
+                if nodes.count > 1 {
+                    let minX = nodes.map { $0.x - $0.width / 2 }.min() ?? 0
+                    let maxX = nodes.map { $0.x + $0.width / 2 }.max() ?? 0
+                    let minY = nodes.map { $0.y - $0.height / 2 }.min() ?? 0
+                    let maxY = nodes.map { $0.y + $0.height / 2 }.max() ?? 0
+                    let topLeft = screenPoint(CGPoint(x: minX - 24, y: minY - 36))
+                    let bottomRight = screenPoint(CGPoint(x: maxX + 24, y: maxY + 24))
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(FloeTheme.primary.opacity(enteredGroupID == groupID ? 0.08 : 0.035))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 20)
+                                .stroke(
+                                    FloeTheme.primary.opacity(enteredGroupID == groupID ? 0.65 : 0.28),
+                                    style: StrokeStyle(lineWidth: 1.5, dash: [7, 5])
+                                )
+                        }
+                        .frame(
+                            width: max(80, bottomRight.x - topLeft.x),
+                            height: max(60, bottomRight.y - topLeft.y)
+                        )
+                        .position(
+                            x: (topLeft.x + bottomRight.x) / 2,
+                            y: (topLeft.y + bottomRight.y) / 2
+                        )
                 }
             }
         }
@@ -2742,10 +2909,15 @@ struct WorkspaceCanvasView: View {
                        selectedNodeIDs.contains(node.id),
                        mode == .select,
                        editingNodeID == nil {
-                        CanvasNodeInlineAIComposer(nodeTitle: node.text) { request in
+                        CanvasNodeInlineAIComposer(
+                            nodeTitle: node.text,
+                            referenceCandidates: referenceCandidates(for: node.id)
+                        ) { request, referenceNodeIDs in
+                            selectedNodeIDs = Set(referenceNodeIDs).union([node.id])
                             pendingAgentRequest = CanvasAgentRequest(
                                 nodeID: node.id,
-                                prompt: request
+                                prompt: request,
+                                referenceNodeIDs: referenceNodeIDs
                             )
                             withAnimation(.snappy) {
                                 showsAgent = true
@@ -2825,6 +2997,18 @@ struct WorkspaceCanvasView: View {
             mode = .connector
             UISelectionFeedbackGenerator().selectionChanged()
         }
+    }
+
+    private func referenceCandidates(for nodeID: UUID) -> [FloeCanvasNode] {
+        guard let document = store.selectedDocument else { return [] }
+        let relatedIDs = Set(document.connections.compactMap { connection -> UUID? in
+            if connection.sourceNodeID == nodeID { return connection.destinationNodeID }
+            if connection.destinationNodeID == nodeID { return connection.sourceNodeID }
+            return nil
+        })
+        let preferred = document.nodes.filter { relatedIDs.contains($0.id) }
+        let remaining = document.nodes.filter { $0.id != nodeID && !relatedIDs.contains($0.id) }
+        return Array((preferred + remaining).prefix(24))
     }
 
     private func connectionAnchor(
@@ -2969,6 +3153,7 @@ struct WorkspaceCanvasView: View {
                     .onEnded { _ in
                         if mode == .hand {
                             panStart = pan
+                            persistViewport()
                         } else if mode == .pencil || mode == .eraser {
                             activeStrokeID = nil
                             store.finishStroke()
@@ -3006,6 +3191,7 @@ struct WorkspaceCanvasView: View {
                     }
                     .onEnded { _ in
                         scaleStart = scale
+                        persistViewport()
                     }
             )
             .gesture(
@@ -3399,6 +3585,7 @@ struct WorkspaceCanvasView: View {
                 scaleStart = 1
                 pan = .zero
                 panStart = .zero
+                persistViewport()
             } label: {
                 Image(systemName: "scope")
             }
@@ -3439,13 +3626,16 @@ struct WorkspaceCanvasView: View {
             zoomIn: {
                 scale = min(3, scale + 0.2)
                 scaleStart = scale
+                persistViewport()
             },
             zoomOut: {
                 scale = max(0.3, scale - 0.2)
                 scaleStart = scale
+                persistViewport()
             },
             resetView: {
                 scale = 1; scaleStart = 1; pan = .zero; panStart = .zero
+                persistViewport()
             },
             nudge: { dx, dy in store.nudgeNodes(selectedNodeIDs, dx: dx, dy: dy) }
         )
@@ -3656,6 +3846,24 @@ struct WorkspaceCanvasView: View {
 
     private func canvasPoint(_ point: CGPoint) -> CGPoint {
         CGPoint(x: (point.x - pan.width) / scale, y: (point.y - pan.height) / scale)
+    }
+
+    private func restoreViewport() {
+        guard let viewport = store.project.viewports[store.project.selectedDocumentID] else { return }
+        scale = viewport.scale
+        scaleStart = viewport.scale
+        pan = CGSize(
+            width: -viewport.center.x * viewport.scale,
+            height: -viewport.center.y * viewport.scale
+        )
+        panStart = pan
+    }
+
+    private func persistViewport() {
+        store.updateViewport(
+            center: CanvasPoint(x: -pan.width / scale, y: -pan.height / scale),
+            scale: scale
+        )
     }
 
     private func prepareExport(_ format: CanvasDocumentStore.ExportFormat) {
@@ -4453,6 +4661,7 @@ private struct CanvasAgentRequest: Identifiable, Equatable {
     let id = UUID()
     let nodeID: UUID
     let prompt: String
+    var referenceNodeIDs: [UUID] = []
 }
 
 private struct CanvasConnectionPortsOverlay: View {
@@ -4513,13 +4722,39 @@ private extension CanvasConnectionPort {
 
 private struct CanvasNodeInlineAIComposer: View {
     let nodeTitle: String
-    let onSubmit: (String) -> Void
+    let referenceCandidates: [FloeCanvasNode]
+    let onSubmit: (String, [UUID]) -> Void
     @State private var prompt = ""
+    @State private var referenceNodeIDs = Set<UUID>()
 
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "sparkles")
                 .foregroundStyle(FloeTheme.primary)
+            if !referenceCandidates.isEmpty {
+                Menu {
+                    ForEach(referenceCandidates) { node in
+                        Button {
+                            if referenceNodeIDs.contains(node.id) {
+                                referenceNodeIDs.remove(node.id)
+                            } else {
+                                referenceNodeIDs.insert(node.id)
+                            }
+                        } label: {
+                            Label(
+                                node.text.isEmpty ? node.kind.rawValue : String(node.text.prefix(28)),
+                                systemImage: referenceNodeIDs.contains(node.id)
+                                    ? "checkmark.circle.fill" : "circle"
+                            )
+                        }
+                    }
+                } label: {
+                    Text(referenceNodeIDs.isEmpty ? "@" : "@\(referenceNodeIDs.count)")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("引用节点")
+            }
             TextField(
                 nodeTitle.isEmpty ? "让 AI 处理这个节点" : "让 AI 处理“\(nodeTitle.prefix(18))”",
                 text: $prompt
@@ -4545,7 +4780,89 @@ private struct CanvasNodeInlineAIComposer: View {
         let request = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !request.isEmpty else { return }
         prompt = ""
-        onSubmit(request)
+        let references = referenceNodeIDs.sorted { $0.uuidString < $1.uuidString }
+        referenceNodeIDs.removeAll()
+        onSubmit(request, references)
+    }
+}
+
+private struct CanvasMiniMap: View {
+    let document: FloeCanvasDocument
+    let viewportCenter: CanvasPoint
+    let viewportScale: Double
+    let onNavigate: (CanvasPoint) -> Void
+
+    private var bounds: CGRect {
+        guard let first = document.nodes.first else {
+            return CGRect(x: -500, y: -350, width: 1_000, height: 700)
+        }
+        return document.nodes.dropFirst().reduce(CGRect(
+            x: first.x - first.width / 2, y: first.y - first.height / 2,
+            width: first.width, height: first.height
+        )) { partial, node in
+            partial.union(CGRect(
+                x: node.x - node.width / 2, y: node.y - node.height / 2,
+                width: node.width, height: node.height
+            ))
+        }.insetBy(dx: -120, dy: -90)
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let mapBounds = bounds
+            let sx = geometry.size.width / max(1, mapBounds.width)
+            let sy = geometry.size.height / max(1, mapBounds.height)
+            let mapScale = min(sx, sy)
+            ZStack {
+                RoundedRectangle(cornerRadius: 10).fill(.regularMaterial)
+                ForEach(document.nodes) { node in
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(node.kind == .image || node.kind == .video
+                              ? FloeTheme.primary.opacity(0.65)
+                              : Color.secondary.opacity(0.42))
+                        .frame(
+                            width: max(3, node.width * mapScale),
+                            height: max(3, node.height * mapScale)
+                        )
+                        .position(mapPoint(CanvasPoint(x: node.x, y: node.y), size: geometry.size))
+                }
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(FloeTheme.primary, lineWidth: 1.5)
+                    .frame(
+                        width: min(geometry.size.width, 180 / max(0.3, viewportScale)),
+                        height: min(geometry.size.height, 110 / max(0.3, viewportScale))
+                    )
+                    .position(mapPoint(viewportCenter, size: geometry.size))
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { location in
+                onNavigate(canvasPoint(location, size: geometry.size))
+            }
+        }
+        .frame(width: 180, height: 112)
+        .overlay { RoundedRectangle(cornerRadius: 10).stroke(.separator.opacity(0.5), lineWidth: 0.5) }
+        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+        .accessibilityLabel("画布缩略导航")
+    }
+
+    private func mapPoint(_ point: CanvasPoint, size: CGSize) -> CGPoint {
+        let sx = size.width / max(1, bounds.width)
+        let sy = size.height / max(1, bounds.height)
+        let scale = min(sx, sy)
+        return CGPoint(
+            x: (point.x - bounds.minX) * scale,
+            y: (point.y - bounds.minY) * scale
+        )
+    }
+
+    private func canvasPoint(_ point: CGPoint, size: CGSize) -> CanvasPoint {
+        let sx = size.width / max(1, bounds.width)
+        let sy = size.height / max(1, bounds.height)
+        let scale = max(0.0001, min(sx, sy))
+        return CanvasPoint(
+            x: bounds.minX + point.x / scale,
+            y: bounds.minY + point.y / scale
+        )
     }
 }
 
@@ -4727,6 +5044,8 @@ private struct CanvasAgentFloatingPanel: View {
     @State private var prompt = ""
     @State private var selectedModelID: UUID?
     @State private var messages: [PersistedMessage] = []
+    @State private var runs: [RunRecord] = []
+    @State private var eventsByRun: [UUID: [RunEventRecord]] = [:]
     @State private var isRunning = false
     @State private var statusText: String?
     @State private var errorText: String?
@@ -4735,6 +5054,7 @@ private struct CanvasAgentFloatingPanel: View {
     @State private var insertedRunIDs: Set<UUID> = []
     @State private var dragOrigin = CGSize.zero
     @State private var isDragging = false
+    @State private var resultTargetNodeID: UUID?
 
     private var center: ConversationCenter { environment.conversationCenter }
     private var mcpCenter: MCPSettingsCenter { environment.mcpSettingsCenter }
@@ -4781,6 +5101,38 @@ private struct CanvasAgentFloatingPanel: View {
                 .foregroundStyle(FloeTheme.primary)
             Text("画布助手")
                 .font(.headline)
+            if !store.project.assistantSessions.isEmpty {
+                Menu {
+                    ForEach(store.project.assistantSessions) { session in
+                        Button {
+                            store.selectAssistantSession(session.id)
+                            Task { await reloadMessages() }
+                        } label: {
+                            if session.id == store.project.selectedAssistantSessionID {
+                                Label(session.title, systemImage: "checkmark")
+                            } else {
+                                Text(session.title)
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("新建会话", systemImage: "plus", action: createSession)
+                    if store.project.assistantSessions.count > 1,
+                       let selected = store.selectedAssistantSession {
+                        Button("删除当前会话", systemImage: "trash", role: .destructive) {
+                            deleteSession(selected)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "rectangle.stack")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("画布助手会话")
+            } else {
+                Button(action: createSession) { Image(systemName: "plus") }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("新建画布助手会话")
+            }
             if isRunning {
                 ProgressView()
                     .controlSize(.small)
@@ -4865,22 +5217,8 @@ private struct CanvasAgentFloatingPanel: View {
                         description: Text("搜索资料、读取网址、整理画面，或生成可加入当前画布的素材。")
                     )
                 }
-                ForEach(messages.suffix(12)) { message in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(message.role == "user" ? "你" : "画布助手")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Text(displayContent(message))
-                            .textSelection(.enabled)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(
-                        message.role == "user"
-                            ? FloeTheme.primary.opacity(0.10)
-                            : Color.secondary.opacity(0.08),
-                        in: RoundedRectangle(cornerRadius: 12)
-                    )
+                ForEach(Array(assistantTimeline.suffix(30))) { item in
+                    canvasTimelineRow(item)
                 }
                 if isRunning {
                     HStack(spacing: 8) {
@@ -4924,6 +5262,13 @@ private struct CanvasAgentFloatingPanel: View {
                     }
                     .buttonStyle(.bordered)
                 }
+                if let lastUser = messages.last(where: { $0.role == "user" }), !isRunning {
+                    Button("重试", systemImage: "arrow.clockwise") {
+                        prompt = displayContent(lastUser)
+                        Task { await runResearch() }
+                    }
+                    .buttonStyle(.bordered)
+                }
                 Spacer()
                 Button {
                     Task { await runResearch() }
@@ -4937,6 +5282,99 @@ private struct CanvasAgentFloatingPanel: View {
         }
         .padding()
         .background(.regularMaterial)
+    }
+
+    private var assistantTimeline: [ThreadTimelineItem] {
+        ThreadTimelineBuilder.buildConversation(
+            messages: messages,
+            runs: runs,
+            eventsByRun: eventsByRun,
+            liveRunID: isRunning ? runs.first?.id : nil,
+            isRunning: isRunning,
+            liveStreamedText: "",
+            liveReasoningText: "",
+            pendingApprovals: []
+        )
+    }
+
+    @ViewBuilder
+    private func canvasTimelineRow(_ item: ThreadTimelineItem) -> some View {
+        switch item {
+        case .userMessage(let message):
+            canvasMessageBubble(title: "你", text: displayContent(message), isUser: true)
+        case .assistantMessage(let text, _):
+            canvasMessageBubble(title: "画布助手", text: text, isUser: false)
+        case .stepGroup(let events, let isLatest):
+            StepGroupView(
+                events: events, isLatest: isLatest,
+                isLive: isRunning && isLatest,
+                hasError: events.contains { $0.kind == .error }
+            )
+        case .event(let event), .terminal(let event):
+            ThreadEventView(
+                event: event, isLive: isRunning,
+                hasError: event.kind == .error
+            )
+        case .missingFinalMessage:
+            Label("模型未返回最终文本", systemImage: "exclamationmark.triangle")
+                .font(.caption).foregroundStyle(.orange)
+        case .liveReasoning, .liveAssistantTail, .liveThinking:
+            HStack { ProgressView(); Text(statusText ?? "正在处理…") }
+                .font(.caption).foregroundStyle(.secondary)
+        case .approval:
+            EmptyView()
+        }
+    }
+
+    private func canvasMessageBubble(title: String, text: String, isUser: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(text).textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            isUser ? FloeTheme.primary.opacity(0.10) : Color.secondary.opacity(0.08),
+            in: RoundedRectangle(cornerRadius: 12)
+        )
+    }
+
+    private func createSession() {
+        Task { @MainActor in
+            let conversationID = UUID()
+            let number = store.project.assistantSessions.count + 1
+            let now = Date()
+            do {
+                try await environment.conversationStore.saveConversation(ConversationRecord(
+                    id: conversationID,
+                    title: "\(CanvasAgentIdentity.conversationTitlePrefix)\(store.project.name) · \(number)",
+                    createdAt: now, updatedAt: now, titleOrigin: .manual
+                ))
+                try await environment.conversationStore.setArchived(
+                    id: conversationID, archived: true
+                )
+                store.addAssistantSession(
+                    conversationID: conversationID, title: "会话 \(number)"
+                )
+                _ = try await ensureConversationAndPolicy()
+                await reloadMessages()
+            } catch {
+                try? await environment.conversationStore.deleteConversation(id: conversationID)
+                errorText = error.localizedDescription
+            }
+        }
+    }
+
+    private func deleteSession(_ session: CanvasAssistantSession) {
+        Task { @MainActor in
+            do {
+                try await environment.conversationStore.deleteConversation(id: session.conversationID)
+                store.removeAssistantSession(session.id)
+                await reloadMessages()
+            } catch {
+                errorText = error.localizedDescription
+            }
+        }
     }
 
     @MainActor
@@ -4956,7 +5394,7 @@ private struct CanvasAgentFloatingPanel: View {
     }
 
     @MainActor
-    private func runResearch() async {
+    private func runResearch(targetNodeID: UUID? = nil) async {
         let userPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !userPrompt.isEmpty,
               let pair = center.providerAndModel(modelID: selectedModelID),
@@ -4998,6 +5436,10 @@ private struct CanvasAgentFloatingPanel: View {
             }
             resultText = answer
             resultRunID = started.runID
+            if let targetNodeID {
+                _ = store.applyAgentResult(text: answer, to: targetNodeID, runID: started.runID)
+                insertedRunIDs.insert(started.runID)
+            }
             prompt = ""
             statusText = "已完成"
         } catch {
@@ -5011,15 +5453,22 @@ private struct CanvasAgentFloatingPanel: View {
     private func consumePendingRequest() async {
         guard !isRunning, let request = pendingRequest else { return }
         prompt = request.prompt
+        if !request.referenceNodeIDs.isEmpty {
+            let references = request.referenceNodeIDs.map { "@node:\($0.uuidString)" }.joined(separator: " ")
+            prompt += "\n\n引用节点：\(references)"
+        }
+        resultTargetNodeID = request.nodeID
         pendingRequest = nil
-        await runResearch()
+        await runResearch(targetNodeID: request.nodeID)
+        resultTargetNodeID = nil
     }
 
     @MainActor
     private func ensureConversationAndPolicy() async throws -> UUID {
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
         let conversationID: UUID
-        if let existing = store.project.agentConversationID,
+        if let existing = store.selectedAssistantSession?.conversationID
+            ?? store.project.agentConversationID,
            try await environment.conversationStore.conversation(id: existing) != nil {
             conversationID = existing
         } else {
@@ -5094,10 +5543,22 @@ private struct CanvasAgentFloatingPanel: View {
 
     @MainActor
     private func reloadMessages() async {
-        guard let conversationID = store.project.agentConversationID else { return }
+        guard let conversationID = store.selectedAssistantSession?.conversationID
+            ?? store.project.agentConversationID else { return }
         messages = (try? await environment.conversationStore.messages(
             conversationID: conversationID
         ))?.filter { $0.role == "user" || $0.role == "assistant" } ?? []
+        runs = (try? await environment.runStore.runs(conversationID: conversationID)) ?? []
+        var loaded: [UUID: [RunEventRecord]] = [:]
+        await withTaskGroup(of: (UUID, [RunEventRecord]).self) { group in
+            for run in runs {
+                group.addTask { [runStore = environment.runStore] in
+                    (run.id, (try? await runStore.events(runID: run.id)) ?? [])
+                }
+            }
+            for await (id, events) in group { loaded[id] = events }
+        }
+        eventsByRun = loaded
     }
 
     private func researchGoal(_ request: String) -> String {

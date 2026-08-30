@@ -102,7 +102,72 @@ struct CreativeMediaModelsTests {
         let decoded = try JSONDecoder().decode(CanvasProject.self, from: data)
         #expect(decoded == project)
         #expect(decoded.documents[0].nodes[0].scene3D?.objects.count == 2)
-        #expect(decoded.schemaVersion == 5)
+        #expect(decoded.schemaVersion == CanvasProject.currentSchemaVersion)
+    }
+
+    @Test func canvasPatchIsAtomicRevisionCheckedAndConnectsCreatedNodes() throws {
+        let document = CanvasDocument(name: "Canvas")
+        let project = CanvasProject(
+            id: UUID(), name: "Patch", documents: [document],
+            selectedDocumentID: document.id, revision: 7
+        )
+        let sourceID = UUID(), resultID = UUID(), connectionID = UUID()
+        let patch = CanvasPatch(
+            canvasID: project.id, documentID: document.id, expectedRevision: 7,
+            operations: [
+                CanvasPatchOperation(
+                    kind: .create, nodeID: sourceID, nodeKind: .text,
+                    text: "Prompt", position: .init(x: 100, y: 100)
+                ),
+                CanvasPatchOperation(
+                    kind: .create, nodeID: resultID, nodeKind: .card,
+                    text: "Result", position: .init(x: 460, y: 100)
+                ),
+                CanvasPatchOperation(
+                    kind: .connect, sourceNodeID: sourceID,
+                    destinationNodeID: resultID, connectionID: connectionID,
+                    sourcePort: .trailing, destinationPort: .leading,
+                    label: "AI result"
+                )
+            ]
+        )
+        let (updated, result) = try CanvasCommandService.applying(patch, to: project)
+        #expect(updated.revision == 8)
+        #expect(Set(result.changedNodeIDs) == [sourceID, resultID])
+        #expect(result.changedConnectionIDs == [connectionID])
+        #expect(updated.documents[0].connections[0].sourcePort == .trailing)
+
+        var stale = patch
+        stale.expectedRevision = 6
+        #expect(throws: FloeError.self) {
+            _ = try CanvasCommandService.applying(stale, to: project)
+        }
+    }
+
+    @Test func invalidCanvasPatchDoesNotPartiallyMutateInput() throws {
+        let existing = CanvasNode.placeholder(kind: .card, position: .init(x: 0, y: 0))
+        let document = CanvasDocument(name: "Canvas", nodes: [existing])
+        let project = CanvasProject(
+            id: UUID(), name: "Atomic", documents: [document],
+            selectedDocumentID: document.id
+        )
+        let patch = CanvasPatch(
+            canvasID: project.id, documentID: document.id, expectedRevision: 0,
+            operations: [
+                CanvasPatchOperation(
+                    kind: .update, nodeID: existing.id, text: "changed"
+                ),
+                CanvasPatchOperation(
+                    kind: .connect, sourceNodeID: existing.id,
+                    destinationNodeID: UUID()
+                )
+            ]
+        )
+        #expect(throws: FloeError.self) {
+            _ = try CanvasCommandService.applying(patch, to: project)
+        }
+        #expect(project.documents[0].nodes[0].text == existing.text)
+        #expect(project.revision == 0)
     }
 
     @Test func legacyCanvasDecodesIntoCanonicalStoreWithoutLosingGeometry() throws {

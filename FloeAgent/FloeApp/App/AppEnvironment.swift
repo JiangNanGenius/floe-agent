@@ -319,6 +319,9 @@ final class AppEnvironment: ObservableObject {
         registerFontTools(store: fontStore)
         // Image tools (Core Image processing).
         registerImageTools(rootProvider: WorkspaceCenter.toolRootProvider)
+        // Native canvas inspection and mutation tools. Canvas runs are scoped
+        // back to their durable hidden assistant conversation at execution.
+        registerCanvasAgentTools(environment: self)
         // Provider-backed semantic visual inspection plus generation through
         // the independently configured auxiliary models. These must be in
         // the agent catalog, not UI-only.

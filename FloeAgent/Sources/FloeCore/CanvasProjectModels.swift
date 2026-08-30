@@ -469,8 +469,34 @@ public struct CanvasSyncSettings: Sendable, Codable, Hashable {
     }
 }
 
+public struct CanvasViewportState: Sendable, Codable, Hashable {
+    public var center: CanvasPoint
+    public var scale: Double
+
+    public init(center: CanvasPoint = .init(x: 0, y: 0), scale: Double = 1) {
+        self.center = center
+        self.scale = min(3, max(0.3, scale))
+    }
+}
+
+public struct CanvasAssistantSession: Sendable, Codable, Identifiable, Hashable {
+    public var id: UUID
+    public var conversationID: UUID
+    public var title: String
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        id: UUID = UUID(), conversationID: UUID, title: String,
+        createdAt: Date = Date(), updatedAt: Date = Date()
+    ) {
+        self.id = id; self.conversationID = conversationID; self.title = title
+        self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+}
+
 public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
-    public static let currentSchemaVersion = 5
+    public static let currentSchemaVersion = 6
 
     public var id: UUID
     public var schemaVersion: Int
@@ -479,6 +505,10 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
     public var documents: [CanvasDocument]
     public var selectedDocumentID: UUID
     public var agentConversationID: UUID?
+    public var assistantSessions: [CanvasAssistantSession]
+    public var selectedAssistantSessionID: UUID?
+    public var viewports: [UUID: CanvasViewportState]
+    public var revision: Int64
     public var sync: CanvasSyncSettings
     public var createdAt: Date
     public var updatedAt: Date
@@ -487,19 +517,26 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         id: UUID, schemaVersion: Int = Self.currentSchemaVersion,
         workspaceID: UUID? = nil, name: String, documents: [CanvasDocument],
         selectedDocumentID: UUID, agentConversationID: UUID? = nil,
+        assistantSessions: [CanvasAssistantSession] = [],
+        selectedAssistantSessionID: UUID? = nil,
+        viewports: [UUID: CanvasViewportState] = [:], revision: Int64 = 0,
         sync: CanvasSyncSettings = .init(), createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
         self.id = id; self.schemaVersion = schemaVersion; self.workspaceID = workspaceID
         self.name = name; self.documents = documents
         self.selectedDocumentID = selectedDocumentID
-        self.agentConversationID = agentConversationID; self.sync = sync
+        self.agentConversationID = agentConversationID
+        self.assistantSessions = assistantSessions
+        self.selectedAssistantSessionID = selectedAssistantSessionID
+        self.viewports = viewports; self.revision = revision; self.sync = sync
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, schemaVersion, workspaceID, name, documents, selectedDocumentID
-        case agentConversationID, sync, createdAt, updatedAt
+        case agentConversationID, assistantSessions, selectedAssistantSessionID
+        case viewports, revision, sync, createdAt, updatedAt
     }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -511,6 +548,18 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         selectedDocumentID = try values.decodeIfPresent(UUID.self, forKey: .selectedDocumentID)
             ?? documents.first?.id ?? UUID()
         agentConversationID = try values.decodeIfPresent(UUID.self, forKey: .agentConversationID)
+        assistantSessions = try values.decodeIfPresent(
+            [CanvasAssistantSession].self, forKey: .assistantSessions
+        ) ?? agentConversationID.map {
+            [CanvasAssistantSession(conversationID: $0, title: "画布助手")]
+        } ?? []
+        selectedAssistantSessionID = try values.decodeIfPresent(
+            UUID.self, forKey: .selectedAssistantSessionID
+        ) ?? assistantSessions.first?.id
+        viewports = try values.decodeIfPresent(
+            [UUID: CanvasViewportState].self, forKey: .viewports
+        ) ?? [:]
+        revision = try values.decodeIfPresent(Int64.self, forKey: .revision) ?? 0
         sync = try values.decodeIfPresent(CanvasSyncSettings.self, forKey: .sync) ?? .init()
         createdAt = try values.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt

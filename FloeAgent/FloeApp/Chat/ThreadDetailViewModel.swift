@@ -127,7 +127,7 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var hasEarlierMessages = false
 
     private var liveEventTask: Task<Void, Never>?
-    private var messageWindowLimit = 100
+    private var earlierMessageCursor: ConversationMessageCursor?
     /// Run whose concrete runtime service is currently being observed. A
     /// durable run exists before attachment/vision preprocessing finishes,
     /// so `selectedRunID` alone cannot tell us whether the live subscription
@@ -353,10 +353,14 @@ final class ThreadDetailViewModel: ObservableObject {
                 didRestoreConversationModel = true
             }
             stage = "messageList"
-            messageWindowLimit = 100
-            messages = try await center.environment.conversationStore
-                .recentMessages(conversationID: conversationID, limit: messageWindowLimit)
-            hasEarlierMessages = messages.count == messageWindowLimit
+            let page = try await center.environment.conversationStore.messagePage(
+                conversationID: conversationID, before: nil, limit: 100
+            )
+            messages = page.messages
+            earlierMessageCursor = page.earlierCursor
+            hasEarlierMessages = page.hasEarlier
+            stage = "visibleRunDetails"
+            try await hydrateVisibleRunDetails()
             stage = "planLoad"
             latestPlan = try await center.environment.intelligenceStore
                 .latestPlan(conversationID: conversationID)
@@ -416,15 +420,45 @@ final class ThreadDetailViewModel: ObservableObject {
         actionError = nil
     }
 
+    /// Hydrates every run represented by the visible message window. The
+    /// conversation projection renders runs, messages and events together;
+    /// loading only the selected run caused older tool calls to disappear
+    /// even though their messages remained on screen.
+    private func hydrateVisibleRunDetails() async throws {
+        var visibleRunIDs = Set(messages.compactMap(\.runID))
+        if let selectedRunID { visibleRunIDs.insert(selectedRunID) }
+        let missing = visibleRunIDs.filter { eventsByRun[$0] == nil || usageByRun[$0] == nil }
+        guard !missing.isEmpty else { return }
+
+        try await withThrowingTaskGroup(
+            of: (UUID, [RunEventRecord], [RunUsageRecord]).self
+        ) { group in
+            for runID in missing {
+                group.addTask { [center] in
+                    async let events = center.environment.runStore.events(runID: runID)
+                    async let usage = center.environment.runStore.usage(runID: runID)
+                    return try await (runID, events, usage)
+                }
+            }
+            for try await (runID, loadedEvents, loadedUsage) in group {
+                eventsByRun[runID] = loadedEvents
+                usageByRun[runID] = loadedUsage
+            }
+        }
+        events = selectedRunID.flatMap { eventsByRun[$0] } ?? []
+    }
+
     func loadEarlierMessages() async {
-        guard hasEarlierMessages else { return }
-        let nextLimit = min(messageWindowLimit + 100, 10_000)
+        guard hasEarlierMessages, let earlierMessageCursor else { return }
         do {
-            let loaded = try await center.environment.conversationStore
-                .recentMessages(conversationID: conversationID, limit: nextLimit)
-            messageWindowLimit = nextLimit
-            messages = loaded
-            hasEarlierMessages = loaded.count == nextLimit && nextLimit < 10_000
+            let page = try await center.environment.conversationStore.messagePage(
+                conversationID: conversationID, before: earlierMessageCursor, limit: 100
+            )
+            let knownIDs = Set(messages.map(\.id))
+            messages = page.messages.filter { !knownIDs.contains($0.id) } + messages
+            self.earlierMessageCursor = page.earlierCursor
+            hasEarlierMessages = page.hasEarlier
+            try await hydrateVisibleRunDetails()
         } catch {
             actionError = presentableError(error, stage: "olderMessages")
         }
@@ -436,9 +470,11 @@ final class ThreadDetailViewModel: ObservableObject {
 
     /// The unified, sequence-ordered timeline for the selected run.
     var timeline: [ThreadTimelineItem] {
-        ThreadTimelineBuilder.buildConversation(
+        let visibleRunIDs = Set(messages.compactMap(\.runID))
+            .union(selectedRunID.map { [$0] } ?? [])
+        return ThreadTimelineBuilder.buildConversation(
             messages: messages,
-            runs: runs,
+            runs: runs.filter { visibleRunIDs.contains($0.id) },
             eventsByRun: eventsByRun,
             liveRunID: selectedRun?.id,
             isRunning: showsLiveTail,

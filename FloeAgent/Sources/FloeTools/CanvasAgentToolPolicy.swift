@@ -11,7 +11,12 @@ import Foundation
 /// individual tool are both enabled and the user explicitly grants that
 /// server access to canvas runs.
 public enum CanvasAgentToolPolicy {
-    public static let nativeToolNames: Set<String> = ["web.search", "web.fetch"]
+    public static let nativeToolNames: Set<String> = [
+        "web.search", "web.fetch",
+        "canvas.inspect", "canvas.applyPatch",
+        "canvas.assetSearch", "canvas.assetInsert",
+        "canvas.generateMedia", "canvas.mediaStatus"
+    ]
 
     public static func allowedToolNames(
         servers: [MCPServerConfiguration],

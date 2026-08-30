@@ -119,6 +119,41 @@ struct V3AgentDailyTests {
         #expect(recent.map(\.content) == ["message-2", "message-3", "message-4"])
     }
 
+    @Test("Message cursor pages do not repeat or omit equal-timestamp rows")
+    func messageCursorPages() async throws {
+        let db = try await makeDatabase()
+        let store = makeConversationStore(db)
+        let conversationID = UUID()
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_100)
+        try await store.saveConversation(ConversationRecord(
+            id: conversationID, title: "Paged", createdAt: timestamp, updatedAt: timestamp
+        ))
+        let IDs = (0..<7).map { _ in UUID() }.sorted { $0.uuidString < $1.uuidString }
+        for (index, id) in IDs.enumerated() {
+            try await store.appendMessage(PersistedMessage(
+                id: id, conversationID: conversationID, role: "user",
+                content: "message-\(index)", createdAt: timestamp
+            ))
+        }
+
+        let newest = try await store.messagePage(
+            conversationID: conversationID, before: nil, limit: 3
+        )
+        let middle = try await store.messagePage(
+            conversationID: conversationID, before: newest.earlierCursor, limit: 3
+        )
+        let oldest = try await store.messagePage(
+            conversationID: conversationID, before: middle.earlierCursor, limit: 3
+        )
+
+        #expect(newest.hasEarlier)
+        #expect(middle.hasEarlier)
+        #expect(!oldest.hasEarlier)
+        let all = oldest.messages + middle.messages + newest.messages
+        #expect(all.map(\.id) == IDs)
+        #expect(Set(all.map(\.id)).count == 7)
+    }
+
     @Test("Attachment round-trip preserves security-scoped bookmark bytes")
     func attachmentRoundTrip() async throws {
         let db = try await makeDatabase()
