@@ -1116,7 +1116,11 @@ struct AgentRuntimeTests {
         let adapter = MockAdapter()
         adapter.script = Array(repeating: [
             .error(AgentEvent.NormalizedError(kind: .server, providerMessage: "boom"))
-        ], count: 4)
+        // The production retry budget is five reconnects, so provide the
+        // initial failure plus all five retry failures. An exhausted scripted
+        // adapter would otherwise look like an empty stream and hide the
+        // actual provider error this test is meant to preserve.
+        ], count: 6)
         let runtime = makeRuntime(adapter: adapter)
         try await runtime.start(goal: "go")
         let state = await runtime.state
