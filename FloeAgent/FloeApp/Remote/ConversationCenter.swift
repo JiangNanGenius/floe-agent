@@ -193,6 +193,11 @@ final class ConversationCenter: ObservableObject {
     private var sessionRevisions: [UUID: Int] = [:]
     private var sessionContinuations: [UUID: [UUID: AsyncStream<ConversationSessionSnapshot>.Continuation]] = [:]
     private var pendingSessionPublishes: [UUID: Task<Void, Never>] = [:]
+    /// Reuses immutable historical event pages across live projections. A run
+    /// that is no longer newest cannot acquire more events, so repeatedly
+    /// decoding up to 1,000 rows for every visible historical run only makes
+    /// long conversations slower without changing the UI.
+    private var sessionSnapshotCache: [UUID: ConversationSessionSnapshot] = [:]
     /// Launch/delete coordination. A delete first closes the conversation to
     /// new launches, then waits for any transaction already in progress.
     private var launchCount = 0
@@ -298,16 +303,26 @@ final class ConversationCenter: ObservableObject {
         visibleRunIDs.formUnion(
             pendingApprovals.lazy.filter { $0.conversationID == conversationID }.map(\.runID)
         )
+        let cachedEvents = sessionSnapshotCache[conversationID]?.eventsByRun ?? [:]
+        let mutableRunIDs = Set(runs.prefix(1).map(\.id)).union(
+            pendingApprovals.lazy
+                .filter { $0.conversationID == conversationID }
+                .map(\.runID)
+        )
         var events: [UUID: [RunEventRecord]] = [:]
         try await withThrowingTaskGroup(of: (UUID, [RunEventRecord]).self) { group in
             for runID in visibleRunIDs {
-                group.addTask { [runStore = environment.runStore] in
-                    (runID, try await runStore.recentEvents(runID: runID, limit: 1_000))
+                if !mutableRunIDs.contains(runID), let cached = cachedEvents[runID] {
+                    events[runID] = cached
+                } else {
+                    group.addTask { [runStore = environment.runStore] in
+                        (runID, try await runStore.recentEvents(runID: runID, limit: 1_000))
+                    }
                 }
             }
             for try await (runID, loaded) in group { events[runID] = loaded }
         }
-        return ConversationSessionSnapshot(
+        let snapshot = ConversationSessionSnapshot(
             revision: sessionRevisions[conversationID, default: 0],
             conversation: conversation,
             messages: messages,
@@ -321,6 +336,8 @@ final class ConversationCenter: ObservableObject {
             taskPolicy: taskPolicy,
             pendingInputs: try await environment.runningInputStore.pending(conversationID: conversationID)
         )
+        sessionSnapshotCache[conversationID] = snapshot
+        return snapshot
     }
 
     func sessionEvents(conversationID: UUID) -> AsyncStream<ConversationSessionSnapshot> {
@@ -330,6 +347,10 @@ final class ConversationCenter: ObservableObject {
             continuation.onTermination = { [weak self] _ in
                 Task { @MainActor in
                     self?.sessionContinuations[conversationID]?[subscriberID] = nil
+                    if self?.sessionContinuations[conversationID]?.isEmpty != false {
+                        self?.sessionContinuations[conversationID] = nil
+                        self?.sessionSnapshotCache[conversationID] = nil
+                    }
                 }
             }
             Task { @MainActor [weak self] in
@@ -790,6 +811,7 @@ final class ConversationCenter: ObservableObject {
         attachments: [AttachmentRef] = [],
         executionMode: AgentExecutionMode = .agent,
         runSurface: AgentRunSurface = .ordinary,
+        canvasContext: CanvasRunContextSeed? = nil,
         isGoalContinuation: Bool = false
     ) async throws -> StartedConversationRun {
         let ingress = SecretIngressScanner.scan(goal)
@@ -831,6 +853,27 @@ final class ConversationCenter: ObservableObject {
             providerProfile: provider,
             modelProfile: model
         ))
+        if let canvasContext {
+            do {
+                try await CanvasRunContextStore(database: environment.database).save(
+                    CanvasRunContext(
+                        runID: prepared.run.id,
+                        conversationID: prepared.conversation.id,
+                        canvasID: canvasContext.canvasID,
+                        documentID: canvasContext.documentID,
+                        selectedNodeIDs: canvasContext.selectedNodeIDs,
+                        projectRevision: canvasContext.projectRevision
+                    )
+                )
+            } catch {
+                try? await environment.runStore.updateRunState(
+                    id: prepared.run.id,
+                    state: "failed",
+                    endedAt: Date()
+                )
+                throw error
+            }
+        }
         if runSurface == .ordinary {
             await recordPersonalizationActivity(userMessages: 1, workspaceID: workspaceID)
         }

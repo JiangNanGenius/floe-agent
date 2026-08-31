@@ -39,6 +39,7 @@ actor CanvasToolCoordinator {
     private let repository: any CanvasDocumentRepository
     private let assetStore: CreativeAssetStore
     private let jobs: MediaGenerationJobStore
+    private let runContexts: CanvasRunContextStore
     private let conversationIDForRun: @Sendable (UUID) async throws -> UUID?
     private let generateImage: @Sendable (String, ImageGenerationOptions) async throws -> CanvasAssetReference
     private let submitVideo: @Sendable (
@@ -49,6 +50,7 @@ actor CanvasToolCoordinator {
         repository: any CanvasDocumentRepository,
         assetStore: CreativeAssetStore,
         jobs: MediaGenerationJobStore,
+        runContexts: CanvasRunContextStore,
         conversationIDForRun: @escaping @Sendable (UUID) async throws -> UUID?,
         generateImage: @escaping @Sendable (String, ImageGenerationOptions) async throws -> CanvasAssetReference,
         submitVideo: @escaping @Sendable (
@@ -56,11 +58,17 @@ actor CanvasToolCoordinator {
         ) async throws -> MediaGenerationJob
     ) {
         self.repository = repository; self.assetStore = assetStore; self.jobs = jobs
+        self.runContexts = runContexts
         self.conversationIDForRun = conversationIDForRun
         self.generateImage = generateImage; self.submitVideo = submitVideo
     }
 
     func project(for runID: UUID) async throws -> CanvasProject {
+        if let context = try await runContexts.context(runID: runID) {
+            return try await repository.project(canvasID: context.canvasID)
+        }
+        // Compatibility for interrupted runs created before schema v32. New
+        // runs always resolve in O(1) through canvas_run_contexts.
         guard let conversationID = try await conversationIDForRun(runID) else {
             throw FloeError.validationFailed("Canvas run has no owning conversation")
         }
@@ -77,10 +85,12 @@ actor CanvasToolCoordinator {
 
     func inspect(runID: UUID, documentID: UUID?, selectedNodeIDs: [UUID]) async throws -> CanvasContextSnapshot {
         let activeProject = try await project(for: runID)
+        let persisted = try await runContexts.context(runID: runID)
         return try CanvasCommandService.snapshot(
             project: activeProject,
-            documentID: documentID,
-            selectedNodeIDs: selectedNodeIDs
+            documentID: documentID ?? persisted?.documentID,
+            selectedNodeIDs: selectedNodeIDs.isEmpty
+                ? (persisted?.selectedNodeIDs ?? []) : selectedNodeIDs
         )
     }
 
@@ -270,7 +280,7 @@ private struct CanvasInspectTool: AgentTool {
         var documentID: UUID?; var selectedNodeIDs: [UUID]?
         var afterNodeID: UUID?; var limit: Int?
     }
-    static let name = "canvas.inspect"
+    static let name = "canvas.getState"
     static let toolDescription = "Inspect the active canvas, selected nodes and relationships before editing."
     static let parametersJSON = #"{"type":"object","properties":{"documentID":{"type":"string","format":"uuid"},"selectedNodeIDs":{"type":"array","items":{"type":"string","format":"uuid"}},"afterNodeID":{"type":"string","format":"uuid"},"limit":{"type":"integer","minimum":1,"maximum":30}},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = []
@@ -337,18 +347,16 @@ private struct CanvasInspectTool: AgentTool {
 
 private struct CanvasApplyPatchTool: AgentTool {
     struct Arguments: Decodable, Sendable { var patch: CanvasPatch }
-    static let name = "canvas.applyPatch"
+    static let name = "canvas.applyOperations"
     static let toolDescription = "Atomically create, edit, connect, group or arrange nodes on the active canvas. Inspect first and pass its exact revision. Deletion is approval-gated."
     static let parametersJSON = #"{"type":"object","properties":{"patch":{"type":"object","properties":{"canvasID":{"type":"string","format":"uuid"},"documentID":{"type":"string","format":"uuid"},"expectedRevision":{"type":"integer"},"operations":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"id":{"type":"string","format":"uuid"},"kind":{"type":"string","enum":["create","update","delete","connect","disconnect","group","ungroup","arrange"]},"nodeID":{"type":"string","format":"uuid"},"nodeIDs":{"type":"array","items":{"type":"string","format":"uuid"}},"nodeKind":{"type":"string","enum":["text","stickyNote","card","shape","image","video","audio","file","group","generationTask","scene3D"]},"text":{"type":"string"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false},"size":{"type":"object","properties":{"width":{"type":"number"},"height":{"type":"number"}},"required":["width","height"],"additionalProperties":false},"rotation":{"type":"number"},"isLocked":{"type":"boolean"},"shape":{"type":"string","enum":["rectangle","roundedRectangle","ellipse","diamond","triangle"]},"sourceNodeID":{"type":"string","format":"uuid"},"destinationNodeID":{"type":"string","format":"uuid"},"connectionID":{"type":"string","format":"uuid"},"sourcePort":{"type":"string","enum":["top","trailing","bottom","leading"]},"destinationPort":{"type":"string","enum":["top","trailing","bottom","leading"]},"label":{"type":"string"},"arrangement":{"type":"string","enum":["horizontal","vertical"]}},"required":["kind"],"additionalProperties":false}}},"required":["canvasID","documentID","expectedRevision","operations"],"additionalProperties":false}},"required":["patch"],"additionalProperties":false}"#
-    static let riskLabels: Set<RiskLabel> = [.persistsPersonalData, .deletesFiles]
+    static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .internalState
     let coordinator: CanvasToolCoordinator
     func validate(_ args: Arguments) throws {
         guard !args.patch.operations.contains(where: { $0.kind == .delete }) else {
-            // Side-effect approval still applies to every patch. This marker
-            // keeps destructive intent visible in the tool card/result.
-            return
+            throw FloeError.validationFailed("Use canvas.delete for destructive operations")
         }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
@@ -402,7 +410,7 @@ private struct CanvasGenerateMediaTool: AgentTool {
         var expectedRevision: Int64; var aspectRatio: String?
         var durationSeconds: Int?
     }
-    static let name = "canvas.generateMedia"
+    static let name = "canvas.generate"
     static let toolDescription = "Generate an image or submit a durable video job and insert its result/task node. This may incur provider charges and requires approval."
     static let parametersJSON = #"{"type":"object","properties":{"kind":{"type":"string","enum":["image","video"]},"prompt":{"type":"string"},"modelID":{"type":"string","format":"uuid"},"documentID":{"type":"string","format":"uuid"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false},"expectedRevision":{"type":"integer"},"aspectRatio":{"type":"string"},"durationSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["kind","prompt","position","expectedRevision"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.networkAccess, .sendsDataToProvider, .persistsPersonalData]
@@ -436,7 +444,7 @@ private struct CanvasGenerateMediaTool: AgentTool {
 
 private struct CanvasMediaStatusTool: AgentTool {
     struct Arguments: Decodable, Sendable {}
-    static let name = "canvas.mediaStatus"
+    static let name = "canvas.generationStatus"
     static let toolDescription = "Read durable image/video generation job status for the active canvas."
     static let parametersJSON = #"{"type":"object","additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = []
@@ -448,12 +456,93 @@ private struct CanvasMediaStatusTool: AgentTool {
     }
 }
 
+private struct CanvasDeleteTool: AgentTool {
+    typealias Arguments = CanvasApplyPatchTool.Arguments
+    static let name = "canvas.delete"
+    static let toolDescription = "Delete nodes from the active canvas using an exact inspected revision. This is always approval-gated."
+    static let parametersJSON = CanvasApplyPatchTool.parametersJSON
+    static let riskLabels: Set<RiskLabel> = [.persistsPersonalData, .deletesFiles]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .internalState
+    let coordinator: CanvasToolCoordinator
+    func validate(_ args: Arguments) throws {
+        guard !args.patch.operations.isEmpty,
+              args.patch.operations.allSatisfy({ $0.kind == .delete }) else {
+            throw FloeError.validationFailed("canvas.delete accepts delete operations only")
+        }
+    }
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await CanvasToolOutput.make(coordinator.apply(runID: context.runID, patch: args.patch))
+    }
+}
+
+// Recovered checkpoints keep the exact tool name that was originally
+// dispatched. Register legacy names internally, but exclude them from the
+// current canvas capability ceiling so models see only one canonical API.
+private struct LegacyCanvasInspectTool: AgentTool {
+    typealias Arguments = CanvasInspectTool.Arguments
+    static let name = "canvas.inspect"
+    static let toolDescription = CanvasInspectTool.toolDescription
+    static let parametersJSON = CanvasInspectTool.parametersJSON
+    static let riskLabels: Set<RiskLabel> = []
+    static let isSideEffecting = false
+    let coordinator: CanvasToolCoordinator
+    func validate(_ args: Arguments) throws { try CanvasInspectTool(coordinator: coordinator).validate(args) }
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await CanvasInspectTool(coordinator: coordinator).execute(args, context: context)
+    }
+}
+
+private struct LegacyCanvasApplyPatchTool: AgentTool {
+    typealias Arguments = CanvasApplyPatchTool.Arguments
+    static let name = "canvas.applyPatch"
+    static let toolDescription = CanvasApplyPatchTool.toolDescription
+    static let parametersJSON = CanvasApplyPatchTool.parametersJSON
+    static let riskLabels: Set<RiskLabel> = [.persistsPersonalData, .deletesFiles]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .internalState
+    let coordinator: CanvasToolCoordinator
+    func validate(_ args: Arguments) throws {}
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await CanvasToolOutput.make(coordinator.apply(runID: context.runID, patch: args.patch))
+    }
+}
+
+private struct LegacyCanvasGenerateMediaTool: AgentTool {
+    typealias Arguments = CanvasGenerateMediaTool.Arguments
+    static let name = "canvas.generateMedia"
+    static let toolDescription = CanvasGenerateMediaTool.toolDescription
+    static let parametersJSON = CanvasGenerateMediaTool.parametersJSON
+    static let riskLabels = CanvasGenerateMediaTool.riskLabels
+    static let isSideEffecting = true
+    let coordinator: CanvasToolCoordinator
+    func validate(_ args: Arguments) throws { try CanvasGenerateMediaTool(coordinator: coordinator).validate(args) }
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await CanvasGenerateMediaTool(coordinator: coordinator).execute(args, context: context)
+    }
+}
+
+private struct LegacyCanvasMediaStatusTool: AgentTool {
+    typealias Arguments = CanvasMediaStatusTool.Arguments
+    static let name = "canvas.mediaStatus"
+    static let toolDescription = CanvasMediaStatusTool.toolDescription
+    static let parametersJSON = CanvasMediaStatusTool.parametersJSON
+    static let riskLabels: Set<RiskLabel> = []
+    static let isSideEffecting = false
+    let coordinator: CanvasToolCoordinator
+    func validate(_ args: Arguments) throws {}
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await CanvasMediaStatusTool(coordinator: coordinator).execute(args, context: context)
+    }
+}
+
 @MainActor
 func registerCanvasAgentTools(environment: AppEnvironment, registry: ToolRunnerRegistry = .shared) {
     let coordinator = CanvasToolCoordinator(
         repository: FileCanvasDocumentRepository(),
         assetStore: environment.creativeAssetStore,
         jobs: MediaGenerationJobStore(database: environment.database),
+        runContexts: CanvasRunContextStore(database: environment.database),
         conversationIDForRun: { [runStore = environment.runStore] runID in
             try await runStore.run(id: runID)?.conversationID
         },
@@ -476,9 +565,14 @@ func registerCanvasAgentTools(environment: AppEnvironment, registry: ToolRunnerR
     )
     ToolCatalog.register(CanvasInspectTool.self); registry.register(CanvasInspectTool(coordinator: coordinator))
     ToolCatalog.register(CanvasApplyPatchTool.self); registry.register(CanvasApplyPatchTool(coordinator: coordinator))
+    ToolCatalog.register(CanvasDeleteTool.self); registry.register(CanvasDeleteTool(coordinator: coordinator))
     ToolCatalog.register(CanvasAssetSearchTool.self); registry.register(CanvasAssetSearchTool(coordinator: coordinator))
     ToolCatalog.register(CanvasAssetInsertTool.self); registry.register(CanvasAssetInsertTool(coordinator: coordinator))
     ToolCatalog.register(CanvasGenerateMediaTool.self); registry.register(CanvasGenerateMediaTool(coordinator: coordinator))
     ToolCatalog.register(CanvasMediaStatusTool.self); registry.register(CanvasMediaStatusTool(coordinator: coordinator))
+    ToolCatalog.register(LegacyCanvasInspectTool.self); registry.register(LegacyCanvasInspectTool(coordinator: coordinator))
+    ToolCatalog.register(LegacyCanvasApplyPatchTool.self); registry.register(LegacyCanvasApplyPatchTool(coordinator: coordinator))
+    ToolCatalog.register(LegacyCanvasGenerateMediaTool.self); registry.register(LegacyCanvasGenerateMediaTool(coordinator: coordinator))
+    ToolCatalog.register(LegacyCanvasMediaStatusTool.self); registry.register(LegacyCanvasMediaStatusTool(coordinator: coordinator))
 }
 #endif

@@ -13,9 +13,9 @@ import Foundation
 public enum CanvasAgentToolPolicy {
     public static let nativeToolNames: Set<String> = [
         "web.search", "web.fetch",
-        "canvas.inspect", "canvas.applyPatch",
+        "canvas.getState", "canvas.applyOperations", "canvas.delete",
         "canvas.assetSearch", "canvas.assetInsert",
-        "canvas.generateMedia", "canvas.mediaStatus"
+        "canvas.generate", "canvas.generationStatus"
     ]
 
     public static func allowedToolNames(

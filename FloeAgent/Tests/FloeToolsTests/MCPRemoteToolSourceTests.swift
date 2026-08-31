@@ -92,13 +92,21 @@ struct MCPRemoteToolSourceTests {
         )
 
         #expect(names == CanvasAgentToolPolicy.nativeToolNames)
+        #expect(names == [
+            "web.search", "web.fetch",
+            "canvas.getState", "canvas.applyOperations", "canvas.delete",
+            "canvas.assetSearch", "canvas.assetInsert",
+            "canvas.generate", "canvas.generationStatus",
+        ])
+        #expect(!names.contains("canvas.inspect"))
+        #expect(!names.contains("canvas.applyPatch"))
         #expect(!names.contains("web.searchAI"))
         #expect(!names.contains(where: { $0.hasPrefix("browser.") }))
     }
 
     @Test("Canvas policy includes only enabled tools from an explicitly granted MCP server")
     func canvasPolicyFiltersMCPTools() {
-        var allowed = MCPServerConfiguration(
+        let allowed = MCPServerConfiguration(
             displayName: "Assets",
             endpoint: URL(string: "https://mcp.example.test/api")!,
             allowInCanvas: true,

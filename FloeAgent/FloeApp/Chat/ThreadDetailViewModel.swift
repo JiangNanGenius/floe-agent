@@ -493,10 +493,17 @@ final class ThreadDetailViewModel: ObservableObject {
 
     // MARK: - Actions
 
-    /// Sends the composer draft as a new run in this conversation.
-    func send() async {
-        guard canSend, let (provider, model) = center.providerAndModel(modelID: selectedModelID) else { return }
-        let goal = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Sends through the canonical conversation lifecycle. Canvas and future
+    /// focused surfaces may supply a contextual goal while retaining the same
+    /// run owner, queue/steer path, checkpoint recovery, and live projection.
+    func send(
+        goalOverride: String? = nil,
+        runSurface: AgentRunSurface = .ordinary,
+        canvasContext: CanvasRunContextSeed? = nil
+    ) async {
+        let goal = (goalOverride ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isConversationMissing, !goal.isEmpty,
+              let (provider, model) = center.providerAndModel(modelID: selectedModelID) else { return }
         let stagedAttachments = attachments
         actionError = nil
         if isRunning, let expectedRunID = selectedRun?.id {
@@ -529,7 +536,9 @@ final class ThreadDetailViewModel: ObservableObject {
                 model: model,
                 workspaceID: selectedProjectID,
                 attachments: stagedAttachments,
-                executionMode: agentMode
+                executionMode: agentMode,
+                runSurface: runSurface,
+                canvasContext: canvasContext
             )
             // The atomic launch returns a durable run identity immediately.
             // Subscribe before awaiting the provider loop so the UI no longer

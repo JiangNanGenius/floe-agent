@@ -2158,7 +2158,7 @@ struct WorkspaceCanvasView: View {
     private static let nodePasteboardType = "org.floeagent.canvas.nodes"
 
     private enum CanvasMode: String, CaseIterable, Identifiable {
-        case select, hand, pencil, eraser, card, text, shape, connector
+        case select, hand, pencil, eraser, connector
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -2166,9 +2166,6 @@ struct WorkspaceCanvasView: View {
             case .hand: "移动画布"
             case .pencil: "画笔"
             case .eraser: "橡皮"
-            case .card: "卡片"
-            case .text: "文本"
-            case .shape: "形状"
             case .connector: "连接线"
             }
         }
@@ -2178,9 +2175,6 @@ struct WorkspaceCanvasView: View {
             case .hand: "hand.draw"
             case .pencil: "pencil.tip"
             case .eraser: "eraser"
-            case .card: "note.text"
-            case .text: "textformat"
-            case .shape: "square.on.circle"
             case .connector: "point.topleft.down.to.point.bottomright.curvepath"
             }
         }
@@ -2207,10 +2201,6 @@ struct WorkspaceCanvasView: View {
             canvasAppearance == "light" ? .light
                 : canvasAppearance == "dark" ? .dark : nil
         )
-        // The app already owns the system sidebar toggle. Suppress the nested
-        // automatic copy and expose the canvas-document list with a distinct,
-        // labelled control inside the canvas toolbar.
-        .toolbar(removing: .sidebarToggle)
         .alert("画布无法保存", isPresented: Binding(
             get: { store.saveError != nil },
             set: { if !$0 { store.saveError = nil } }
@@ -2521,6 +2511,7 @@ struct WorkspaceCanvasView: View {
                         store: store,
                         workspace: workspace,
                         contextSnapshot: canvasAgentContext,
+                        selectedNodeIDs: selectedNodeIDs,
                         pendingRequest: $pendingAgentRequest,
                         availableSize: geometry.size,
                         offset: $agentPanelOffset,
@@ -2623,18 +2614,6 @@ struct WorkspaceCanvasView: View {
             .navigationTitle(store.selectedDocument?.name ?? "画布")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        withAnimation(.snappy) {
-                            columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
-                        }
-                    } label: {
-                        Label(
-                            columnVisibility == .detailOnly ? "显示画布列表" : "隐藏画布列表",
-                            systemImage: "rectangle.split.1x2"
-                        )
-                    }
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack {
                         Menu {
@@ -3378,7 +3357,7 @@ struct WorkspaceCanvasView: View {
                     lastCanvasPointerPoint = location
                 }
             }
-            .gesture(
+            .simultaneousGesture(
                 DragGesture(minimumDistance: mode == .pencil || mode == .eraser ? 0 : 4)
                     .onChanged { value in
                         switch mode {
@@ -3407,7 +3386,7 @@ struct WorkspaceCanvasView: View {
                         case .select:
                             if marqueeStart == nil { marqueeStart = value.startLocation }
                             marqueeCurrent = value.location
-                        case .card, .text, .shape, .connector: break
+                        case .connector: break
                         }
                     }
                     .onEnded { _ in
@@ -3454,7 +3433,7 @@ struct WorkspaceCanvasView: View {
                         persistViewport()
                     }
             )
-            .gesture(
+            .highPriorityGesture(
                 SpatialTapGesture(count: 2)
                     .onEnded { value in
                         guard mode == .select else { return }
@@ -3497,15 +3476,6 @@ struct WorkspaceCanvasView: View {
             selectedStrokeIDs.removeAll()
             selectedConnectionID = nil
             editingNodeID = nil
-        case .text:
-            selectedNodeIDs = [store.addNote(at: canvasPoint(location))]
-            mode = .select
-        case .card:
-            selectedNodeIDs = [store.addCard(at: canvasPoint(location))]
-            mode = .select
-        case .shape:
-            selectedNodeIDs = [store.addShape(at: canvasPoint(location))]
-            mode = .select
         case .hand, .pencil, .eraser, .connector:
             break
         }
@@ -3663,6 +3633,27 @@ struct WorkspaceCanvasView: View {
             }
 
             Divider().frame(height: 24).padding(.horizontal, 2)
+
+            Menu {
+                CanvasNodeCreationMenu { kind in
+                    createNode(kind, at: canvasPoint(CGPoint(
+                        x: size.width / 2,
+                        y: size.height / 2
+                    )))
+                }
+                Divider()
+                Button("从素材库添加…", systemImage: "photo.on.rectangle.angled") {
+                    materialTargetNodeID = nil
+                    materialKindFilter = [.image, .video, .audio, .file]
+                    showsMaterials = true
+                }
+            } label: {
+                Image(systemName: "plus")
+                    .frame(width: 32, height: 32)
+            }
+            .accessibilityLabel("添加节点")
+            .accessibilityHint("显示全部可用节点类型")
+            .accessibilityIdentifier("canvas.node.create.bottom")
 
             Menu {
                 Picker("整理方式", selection: $inkOutputPreference) {
@@ -5603,26 +5594,18 @@ private struct CanvasAgentFloatingPanel: View {
 
     let workspace: WorkspaceRecord?
     let contextSnapshot: String
+    let selectedNodeIDs: Set<UUID>
     @Binding var pendingRequest: CanvasAgentRequest?
     let availableSize: CGSize
     @Binding var offset: CGSize
     @Binding var isCollapsed: Bool
     let onClose: () -> Void
 
-    @State private var prompt = ""
-    @State private var selectedModelID: UUID?
-    @State private var messages: [PersistedMessage] = []
-    @State private var runs: [RunRecord] = []
-    @State private var eventsByRun: [UUID: [RunEventRecord]] = [:]
     @State private var isRunning = false
-    @State private var statusText: String?
-    @State private var errorText: String?
-    @State private var resultText: String?
-    @State private var resultRunID: UUID?
-    @State private var insertedRunIDs: Set<UUID> = []
+    @State private var setupError: String?
     @State private var dragOrigin = CGSize.zero
     @State private var isDragging = false
-    @State private var resultTargetNodeID: UUID?
+    @State private var activeConversationID: UUID?
 
     private var center: ConversationCenter { environment.conversationCenter }
     private var mcpCenter: MCPSettingsCenter { environment.mcpSettingsCenter }
@@ -5642,9 +5625,27 @@ private struct CanvasAgentFloatingPanel: View {
             if !isCollapsed {
                 capabilityBanner
                 Divider()
-                transcript
-                Divider()
-                composer
+                if let activeConversationID {
+                    SharedCanvasAgentConversation(
+                        conversationID: activeConversationID,
+                        center: center,
+                        store: store,
+                        workspace: workspace,
+                        contextSnapshot: contextSnapshot,
+                        selectedNodeIDs: selectedNodeIDs,
+                        pendingRequest: $pendingRequest,
+                        availableModels: toolCapableModels,
+                        isRunning: $isRunning
+                    )
+                    .id(activeConversationID)
+                } else {
+                    ContentUnavailableView(
+                        setupError == nil ? "正在准备画布助手…" : "无法准备画布助手",
+                        systemImage: setupError == nil ? "sparkles" : "exclamationmark.triangle",
+                        description: setupError.map(Text.init)
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -5656,10 +5657,6 @@ private struct CanvasAgentFloatingPanel: View {
         .padding(12)
         .task {
             await prepare()
-            await consumePendingRequest()
-        }
-        .onChange(of: pendingRequest?.id) { _, _ in
-            Task { await consumePendingRequest() }
         }
     }
 
@@ -5674,7 +5671,7 @@ private struct CanvasAgentFloatingPanel: View {
                     ForEach(store.project.assistantSessions) { session in
                         Button {
                             store.selectAssistantSession(session.id)
-                            Task { await reloadMessages() }
+                            activeConversationID = session.conversationID
                         } label: {
                             if session.id == store.project.selectedAssistantSessionID {
                                 Label(session.title, systemImage: "checkmark")
@@ -5775,138 +5772,6 @@ private struct CanvasAgentFloatingPanel: View {
         .background(.thinMaterial)
     }
 
-    private var transcript: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
-                if messages.isEmpty, !isRunning {
-                    ContentUnavailableView(
-                        "开始创作",
-                        systemImage: "sparkles",
-                        description: Text("搜索资料、读取网址、整理画面，或生成可加入当前画布的素材。")
-                    )
-                }
-                ForEach(Array(assistantTimeline.suffix(30))) { item in
-                    canvasTimelineRow(item)
-                }
-                if isRunning {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                        Text(statusText ?? "正在处理…")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-                if let errorText {
-                    Label(errorText, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            }
-            .padding()
-        }
-    }
-
-    private var composer: some View {
-        VStack(spacing: 10) {
-            if toolCapableModels.count > 1 {
-                Picker("画布助手模型", selection: $selectedModelID) {
-                    ForEach(toolCapableModels) { model in
-                        Text(model.displayName).tag(Optional(model.id))
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            TextField("告诉画布助手要查找、整理或生成什么", text: $prompt, axis: .vertical)
-                .lineLimit(1...5)
-                .textFieldStyle(.roundedBorder)
-            HStack {
-                if let resultRunID, let resultText,
-                   !insertedRunIDs.contains(resultRunID) {
-                    Button {
-                        insertResult(resultText, runID: resultRunID)
-                    } label: {
-                        Label("加入画布", systemImage: "rectangle.stack.badge.plus")
-                    }
-                    .buttonStyle(.bordered)
-                }
-                if let lastUser = messages.last(where: { $0.role == "user" }), !isRunning {
-                    Button("重试", systemImage: "arrow.clockwise") {
-                        prompt = displayContent(lastUser)
-                        Task { await runResearch() }
-                    }
-                    .buttonStyle(.bordered)
-                }
-                Spacer()
-                Button {
-                    Task { await runResearch() }
-                } label: {
-                    Label("发送", systemImage: "arrow.up.circle.fill")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isRunning || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                          || selectedModelID == nil)
-            }
-        }
-        .padding()
-        .background(.regularMaterial)
-    }
-
-    private var assistantTimeline: [ThreadTimelineItem] {
-        ThreadTimelineBuilder.buildConversation(
-            messages: messages,
-            runs: runs,
-            eventsByRun: eventsByRun,
-            liveRunID: isRunning ? runs.first?.id : nil,
-            isRunning: isRunning,
-            liveStreamedText: "",
-            liveReasoningText: "",
-            pendingApprovals: []
-        )
-    }
-
-    @ViewBuilder
-    private func canvasTimelineRow(_ item: ThreadTimelineItem) -> some View {
-        switch item {
-        case .userMessage(let message):
-            canvasMessageBubble(title: "你", text: displayContent(message), isUser: true)
-        case .assistantMessage(let text, _):
-            canvasMessageBubble(title: "画布助手", text: text, isUser: false)
-        case .stepGroup(let events, let isLatest):
-            StepGroupView(
-                events: events, isLatest: isLatest,
-                isLive: isRunning && isLatest,
-                hasError: events.contains { $0.kind == .error }
-            )
-        case .event(let event), .terminal(let event):
-            ThreadEventView(
-                event: event, isLive: isRunning,
-                hasError: event.kind == .error
-            )
-        case .missingFinalMessage:
-            Label("模型未返回最终文本", systemImage: "exclamationmark.triangle")
-                .font(.caption).foregroundStyle(.orange)
-        case .liveReasoning, .liveAssistantTail, .liveThinking:
-            HStack { ProgressView(); Text(statusText ?? "正在处理…") }
-                .font(.caption).foregroundStyle(.secondary)
-        case .approval:
-            EmptyView()
-        }
-    }
-
-    private func canvasMessageBubble(title: String, text: String, isUser: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            Text(text).textSelection(.enabled)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(
-            isUser ? FloeTheme.primary.opacity(0.10) : Color.secondary.opacity(0.08),
-            in: RoundedRectangle(cornerRadius: 12)
-        )
-    }
-
     private func createSession() {
         Task { @MainActor in
             let conversationID = UUID()
@@ -5925,10 +5790,10 @@ private struct CanvasAgentFloatingPanel: View {
                     conversationID: conversationID, title: "会话 \(number)"
                 )
                 _ = try await ensureConversationAndPolicy()
-                await reloadMessages()
+                activeConversationID = conversationID
             } catch {
                 try? await environment.conversationStore.deleteConversation(id: conversationID)
-                errorText = error.localizedDescription
+                setupError = error.localizedDescription
             }
         }
     }
@@ -5938,9 +5803,10 @@ private struct CanvasAgentFloatingPanel: View {
             do {
                 try await environment.conversationStore.deleteConversation(id: session.conversationID)
                 store.removeAssistantSession(session.id)
-                await reloadMessages()
+                activeConversationID = store.selectedAssistantSession?.conversationID
+                    ?? store.project.agentConversationID
             } catch {
-                errorText = error.localizedDescription
+                setupError = error.localizedDescription
             }
         }
     }
@@ -5949,86 +5815,16 @@ private struct CanvasAgentFloatingPanel: View {
     private func prepare() async {
         mcpCenter.activate()
         await center.reload()
-        if selectedModelID == nil {
-            let preferred = center.modelPreferences.canvasAgentModelID
-                ?? center.modelPreferences.defaultAgentModelID
-            selectedModelID = toolCapableModels.first(where: { $0.id == preferred })?.id
-                ?? toolCapableModels.first?.id
-        }
         if toolCapableModels.isEmpty {
-            errorText = "请先启用一个支持工具调用的模型。"
-        }
-        await reloadMessages()
-    }
-
-    @MainActor
-    private func runResearch(targetNodeID: UUID? = nil) async {
-        let userPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !userPrompt.isEmpty,
-              let pair = center.providerAndModel(modelID: selectedModelID),
-              pair.1.capabilities.contains(.tools) else {
-            errorText = "所选模型不支持工具调用。"
+            setupError = "请先启用一个支持工具调用的模型。"
             return
         }
-        isRunning = true
-        statusText = "正在准备画布任务…"
-        errorText = nil
-        resultText = nil
-        resultRunID = nil
-        defer { isRunning = false }
-
         do {
-            let conversationID = try await ensureConversationAndPolicy()
-            statusText = "正在处理并核对结果…"
-            let started = try await center.startRun(
-                goal: researchGoal(userPrompt),
-                in: conversationID,
-                provider: pair.0,
-                model: pair.1,
-                workspaceID: workspace?.id,
-                executionMode: .agent,
-                runSurface: .canvas
-            )
-            switch await started.result.value {
-            case .failure(let error):
-                throw error
-            case .success:
-                break
-            }
-            await reloadMessages()
-            guard let answer = messages.last(where: {
-                $0.role == "assistant" && $0.runID == started.runID
-            })?.content.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !answer.isEmpty else {
-                throw FloeError.internalError("画布助手没有返回可用结果")
-            }
-            resultText = answer
-            resultRunID = started.runID
-            if let targetNodeID {
-                _ = store.applyAgentResult(text: answer, to: targetNodeID, runID: started.runID)
-                insertedRunIDs.insert(started.runID)
-            }
-            prompt = ""
-            statusText = "已完成"
+            activeConversationID = try await ensureConversationAndPolicy()
+            setupError = nil
         } catch {
-            errorText = error.localizedDescription
-            statusText = nil
-            await reloadMessages()
+            setupError = error.localizedDescription
         }
-    }
-
-    @MainActor
-    private func consumePendingRequest() async {
-        guard !isRunning, let request = pendingRequest else { return }
-        prompt = request.prompt
-        if !request.referenceNodeIDs.isEmpty {
-            let references = request.referenceNodeIDs.map { "@node:\($0.uuidString)" }.joined(separator: " ")
-            prompt += "\n\n引用节点：\(references)"
-        }
-        resultTargetNodeID = request.nodeID
-        pendingRequest = nil
-        await runResearch(targetNodeID: request.nodeID)
-        resultTargetNodeID = nil
     }
 
     @MainActor
@@ -6109,41 +5905,260 @@ private struct CanvasAgentFloatingPanel: View {
         return conversationID
     }
 
-    @MainActor
-    private func reloadMessages() async {
-        guard let conversationID = store.selectedAssistantSession?.conversationID
-            ?? store.project.agentConversationID else { return }
-        let page = try? await environment.conversationStore.messagePage(
-            conversationID: conversationID, before: nil, limit: 100
-        )
-        messages = page?.messages.filter { $0.role == "user" || $0.role == "assistant" } ?? []
-        runs = (try? await environment.runStore.recentRuns(
-            conversationID: conversationID, limit: 120
-        )) ?? []
-        var loaded: [UUID: [RunEventRecord]] = [:]
-        var visibleRunIDs = Set(messages.compactMap(\.runID))
-        if let latest = runs.first { visibleRunIDs.insert(latest.id) }
-        await withTaskGroup(of: (UUID, [RunEventRecord]).self) { group in
-            for runID in visibleRunIDs {
-                group.addTask { [runStore = environment.runStore] in
-                    (runID, (try? await runStore.recentEvents(runID: runID, limit: 1_000)) ?? [])
-                }
-            }
-            for await (id, events) in group { loaded[id] = events }
-        }
-        eventsByRun = loaded
+}
+
+/// Canvas presentation for the same canonical conversation controller used by
+/// ordinary tasks. Only contextual goal composition and result insertion are
+/// canvas-specific; run ownership and recovery remain in ConversationCenter.
+private struct SharedCanvasAgentConversation: View {
+    @StateObject private var viewModel: ThreadDetailViewModel
+    @ObservedObject var store: CanvasDocumentStore
+
+    let workspace: WorkspaceRecord?
+    let contextSnapshot: String
+    let selectedNodeIDs: Set<UUID>
+    @Binding var pendingRequest: CanvasAgentRequest?
+    let availableModels: [ModelProfile]
+    @Binding var isRunning: Bool
+
+    @State private var prompt = ""
+    @State private var insertedRunIDs = Set<UUID>()
+
+    init(
+        conversationID: UUID,
+        center: ConversationCenter,
+        store: CanvasDocumentStore,
+        workspace: WorkspaceRecord?,
+        contextSnapshot: String,
+        selectedNodeIDs: Set<UUID>,
+        pendingRequest: Binding<CanvasAgentRequest?>,
+        availableModels: [ModelProfile],
+        isRunning: Binding<Bool>
+    ) {
+        _viewModel = StateObject(wrappedValue: ThreadDetailViewModel(
+            conversationID: conversationID,
+            center: center
+        ))
+        self.store = store
+        self.workspace = workspace
+        self.contextSnapshot = contextSnapshot
+        self.selectedNodeIDs = selectedNodeIDs
+        _pendingRequest = pendingRequest
+        self.availableModels = availableModels
+        _isRunning = isRunning
     }
 
-    private func researchGoal(_ request: String) -> String {
-        """
-        你是 Floe 原生画布里的创作助手。理解当前选中的节点、相邻关系和用户目标；需要资料时可以搜索网页或读取公开链接，需要素材时可以使用已提供的素材与媒体生成工具。只使用本次实际提供的工具，不要假装执行未提供的能力。保留来源节点，建议生成的结果应作为旁边的新节点，并清楚说明与原节点的关系。
+    var body: some View {
+        VStack(spacing: 0) {
+            transcript
+            Divider()
+            composer
+        }
+        .task {
+            viewModel.agentMode = .agent
+            viewModel.selectedProjectID = workspace?.id
+            await viewModel.load()
+            if !availableModels.contains(where: { $0.id == viewModel.selectedModelID }) {
+                viewModel.selectedModelID = availableModels.first?.id
+            }
+            isRunning = viewModel.isRunning
+            await consumePendingRequest()
+        }
+        .onChange(of: viewModel.isRunning) { _, value in isRunning = value }
+        .onChange(of: pendingRequest?.id) { _, _ in
+            Task { await consumePendingRequest() }
+        }
+        .onDisappear { viewModel.stopLiveUpdates() }
+    }
 
-        当前画布上下文：
-        \(contextSnapshot)
+    private var transcript: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                if viewModel.messages.isEmpty, !viewModel.isRunning {
+                    ContentUnavailableView(
+                        "开始创作",
+                        systemImage: "sparkles",
+                        description: Text("搜索资料、整理画面，或生成可加入当前画布的素材。")
+                    )
+                }
+                ForEach(Array(viewModel.timeline.suffix(30))) { item in
+                    timelineRow(item)
+                }
+                if viewModel.isRunning {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        if let state = viewModel.liveStateName {
+                            Text(RunStateLocalizer.title(for: state))
+                        } else {
+                            Text("正在处理…")
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                if let error = viewModel.actionError {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            .padding()
+        }
+    }
 
-        用户要求：
-        \(request)
-        """
+    private var composer: some View {
+        VStack(spacing: 10) {
+            if availableModels.count > 1 {
+                Picker("画布助手模型", selection: $viewModel.selectedModelID) {
+                    ForEach(availableModels) { model in
+                        Text(model.displayName).tag(Optional(model.id))
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            TextField("告诉画布助手要查找、整理或生成什么", text: $prompt, axis: .vertical)
+                .lineLimit(1...5)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                if viewModel.isRunning {
+                    Picker("运行中输入", selection: $viewModel.runningInputMode) {
+                        Text("排队").tag(RunningInputMode.queue)
+                        Text("引导当前任务").tag(RunningInputMode.steer)
+                    }
+                    .pickerStyle(.menu)
+                    Button("停止", systemImage: "stop.fill") {
+                        Task { await viewModel.cancel() }
+                    }
+                    .buttonStyle(.bordered)
+                } else if viewModel.canContinue {
+                    Button("继续", systemImage: "arrow.clockwise") {
+                        Task { await viewModel.retry() }
+                    }
+                    .buttonStyle(.bordered)
+                }
+                if let runID = viewModel.selectedRunID,
+                   !insertedRunIDs.contains(runID),
+                   let answer = latestAnswer(runID: runID) {
+                    Button("加入画布", systemImage: "rectangle.stack.badge.plus") {
+                        store.addResearchNote(
+                            text: answer,
+                            sourceURLs: extractURLs(from: answer),
+                            runID: runID
+                        )
+                        insertedRunIDs.insert(runID)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Spacer()
+                Button {
+                    Task { await submit() }
+                } label: {
+                    Label(viewModel.isRunning ? "提交" : "发送", systemImage: "arrow.up.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          || viewModel.selectedModelID == nil)
+            }
+        }
+        .padding()
+        .background(.regularMaterial)
+    }
+
+    @ViewBuilder
+    private func timelineRow(_ item: ThreadTimelineItem) -> some View {
+        switch item {
+        case .userMessage(let message):
+            messageBubble(title: "你", text: displayContent(message), isUser: true)
+        case .assistantMessage(let text, _):
+            messageBubble(title: "画布助手", text: text, isUser: false)
+        case .stepGroup(let events, let isLatest):
+            StepGroupView(
+                events: events,
+                isLatest: isLatest,
+                isLive: viewModel.isRunning && isLatest,
+                hasError: events.contains { $0.kind == .error }
+            )
+        case .event(let event), .terminal(let event):
+            ThreadEventView(
+                event: event,
+                isLive: viewModel.isRunning,
+                hasError: event.kind == .error
+            )
+        case .missingFinalMessage:
+            Label("模型未返回最终文本", systemImage: "exclamationmark.triangle")
+                .font(.caption).foregroundStyle(.orange)
+        case .liveReasoning, .liveAssistantTail, .liveThinking:
+            HStack { ProgressView(); Text("正在处理…") }
+                .font(.caption).foregroundStyle(.secondary)
+        case .approval:
+            EmptyView()
+        }
+    }
+
+    private func messageBubble(title: String, text: String, isUser: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(text).textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            isUser ? FloeTheme.primary.opacity(0.10) : Color.secondary.opacity(0.08),
+            in: RoundedRectangle(cornerRadius: 12)
+        )
+    }
+
+    @MainActor
+    private func submit(targetNodeID: UUID? = nil) async {
+        let request = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !request.isEmpty else { return }
+        let goal = researchGoal(request)
+        let wasRunning = viewModel.isRunning
+        prompt = ""
+        await viewModel.send(
+            goalOverride: goal,
+            runSurface: .canvas,
+            canvasContext: CanvasRunContextSeed(
+                canvasID: store.project.id,
+                documentID: store.selectedDocument?.id,
+                selectedNodeIDs: selectedNodeIDs.sorted { $0.uuidString < $1.uuidString },
+                projectRevision: store.project.revision
+            )
+        )
+        if viewModel.actionError != nil, !viewModel.isRunning {
+            prompt = request
+        }
+        // A queue/steer submission joins an existing run and returns before
+        // that input has a distinct answer. Never attach the previous answer
+        // to the requested node; the finished result remains available via
+        // the explicit Add to Canvas action.
+        guard !wasRunning else { return }
+        guard let runID = viewModel.selectedRunID,
+              let answer = latestAnswer(runID: runID) else { return }
+        if let targetNodeID {
+            _ = store.applyAgentResult(text: answer, to: targetNodeID, runID: runID)
+            insertedRunIDs.insert(runID)
+        }
+    }
+
+    @MainActor
+    private func consumePendingRequest() async {
+        guard let request = pendingRequest else { return }
+        prompt = request.prompt
+        if !request.referenceNodeIDs.isEmpty {
+            prompt += "\n\n引用节点：" + request.referenceNodeIDs
+                .map { "@node:\($0.uuidString)" }
+                .joined(separator: " ")
+        }
+        pendingRequest = nil
+        await submit(targetNodeID: request.nodeID)
+    }
+
+    private func latestAnswer(runID: UUID) -> String? {
+        viewModel.messages.last(where: {
+            $0.role == "assistant" && $0.runID == runID
+        })?.content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func displayContent(_ message: PersistedMessage) -> String {
@@ -6154,17 +6169,7 @@ private struct CanvasAgentFloatingPanel: View {
         return String(message.content[range.upperBound...])
     }
 
-    @MainActor
-    private func insertResult(_ text: String, runID: UUID) {
-        store.addResearchNote(
-            text: text,
-            sourceURLs: Self.extractURLs(from: text),
-            runID: runID
-        )
-        insertedRunIDs.insert(runID)
-    }
-
-    private static func extractURLs(from text: String) -> [String] {
+    private func extractURLs(from text: String) -> [String] {
         guard let detector = try? NSDataDetector(
             types: NSTextCheckingResult.CheckingType.link.rawValue
         ) else { return [] }
@@ -6177,6 +6182,18 @@ private struct CanvasAgentFloatingPanel: View {
                   seen.insert(value).inserted else { return nil }
             return value
         }
+    }
+
+    private func researchGoal(_ request: String) -> String {
+        """
+        你是 Floe 原生画布里的创作助手。理解当前选中的节点、相邻关系和用户目标；需要资料时可以搜索网页或读取公开链接，需要素材时使用画布素材与媒体生成工具。只使用本次实际提供的工具，保留来源，并把结果作为可编辑画布节点。
+
+        当前画布上下文：
+        \(contextSnapshot)
+
+        User request:
+        \(request)
+        """
     }
 }
 
