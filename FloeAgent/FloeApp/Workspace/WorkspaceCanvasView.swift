@@ -322,14 +322,18 @@ struct CreativeModeHubView: View {
                 }
             }
             Button("删除", systemImage: "trash", role: .destructive) {
-                let operation = CanvasSyncOperation(
-                    canvasID: summary.id, entityKind: .tombstone,
-                    entityID: summary.id, mutation: .delete,
-                    revision: Int64(Date().timeIntervalSince1970 * 1_000)
-                )
-                Task { try? await environment.canvasSyncOperationStore.enqueue(operation) }
-                try? WorkspaceCanvasRegistry.delete(canvasID: summary.id)
-                listRevision += 1
+                Task { @MainActor in
+                    do {
+                        let project = try WorkspaceCanvasRegistry.project(canvasID: summary.id)
+                        try await CanvasLifecycleService.deleteProject(
+                            project: project,
+                            environment: environment
+                        )
+                        listRevision += 1
+                    } catch {
+                        environment.workspaceCenter.actionError = error.localizedDescription
+                    }
+                }
             }
         }
     }
@@ -673,6 +677,10 @@ enum WorkspaceCanvasRegistry {
         project.id = copyID
         project.workspaceID = nil
         project.name += " 副本"
+        project.agentConversationID = nil
+        project.assistantSessions = []
+        project.selectedAssistantSessionID = nil
+        project.agentConversationIDsByDocument = [:]
         project.createdAt = Date()
         project.updatedAt = Date()
         try encodeProject(project, to: projectURL(canvasID: copyID, createDirectory: true))
@@ -700,6 +708,10 @@ enum WorkspaceCanvasRegistry {
         try FileManager.default.removeItem(at: url)
     }
 
+    static func project(canvasID: UUID) throws -> CanvasProject {
+        try decodeProject(at: projectURL(canvasID: canvasID, createDirectory: false))
+    }
+
     static func packageData(canvasID: UUID) throws -> Data {
         try Data(contentsOf: projectURL(canvasID: canvasID, createDirectory: false))
     }
@@ -714,6 +726,10 @@ enum WorkspaceCanvasRegistry {
         let id = UUID()
         project.id = id
         project.workspaceID = nil
+        project.agentConversationID = nil
+        project.assistantSessions = []
+        project.selectedAssistantSessionID = nil
+        project.agentConversationIDsByDocument = [:]
         project.name = project.name.trimmingCharacters(in: .whitespacesAndNewlines)
         if project.name.isEmpty { project.name = "导入画布" }
         project.updatedAt = Date()
@@ -781,6 +797,81 @@ enum WorkspaceCanvasRegistry {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         try CanvasProjectCodec.encode(project, encoder: encoder).write(to: url, options: .atomic)
+    }
+}
+
+@MainActor
+private enum CanvasLifecycleService {
+    static func prepareDocumentDeletion(
+        project: FloeCanvasProject,
+        documentID: UUID,
+        environment: AppEnvironment
+    ) async throws {
+        if let conversationID = project.agentConversationIDsByDocument[documentID] {
+            try await environment.conversationCenter.deleteConversation(id: conversationID)
+        }
+        try await cancelAndDeleteMediaJobs(
+            canvasID: project.id,
+            documentID: documentID,
+            environment: environment
+        )
+    }
+
+    static func deleteProject(
+        project: FloeCanvasProject,
+        environment: AppEnvironment
+    ) async throws {
+        var conversationIDs = Set(project.agentConversationIDsByDocument.values)
+        conversationIDs.formUnion(project.assistantSessions.map(\.conversationID))
+        if let legacyConversationID = project.agentConversationID {
+            conversationIDs.insert(legacyConversationID)
+        }
+        for conversationID in conversationIDs {
+            if try await environment.conversationStore.conversation(id: conversationID) != nil {
+                try await environment.conversationCenter.deleteConversation(id: conversationID)
+            }
+        }
+        try await cancelAndDeleteMediaJobs(
+            canvasID: project.id,
+            documentID: nil,
+            environment: environment
+        )
+        let operation = CanvasSyncOperation(
+            canvasID: project.id,
+            entityKind: .tombstone,
+            entityID: project.id,
+            mutation: .delete,
+            revision: Int64(Date().timeIntervalSince1970 * 1_000)
+        )
+        try await environment.canvasSyncOperationStore.enqueue(operation)
+        try WorkspaceCanvasRegistry.delete(canvasID: project.id)
+        for assetID in project.documents.flatMap(\.nodes).compactMap(\.asset?.id) {
+            try? await environment.creativeAssetStore.adjustReference(assetID: assetID, by: -1)
+        }
+    }
+
+    private static func cancelAndDeleteMediaJobs(
+        canvasID: UUID,
+        documentID: UUID?,
+        environment: AppEnvironment
+    ) async throws {
+        let store = MediaGenerationJobStore(database: environment.database)
+        let jobs = try await store.jobs(canvasID: canvasID).filter {
+            documentID == nil || $0.documentID == documentID
+        }
+        for job in jobs where !job.state.isTerminal {
+            if job.mediaKind == .video, job.providerTaskID != nil {
+                // Project deletion must stay available offline. Ask the remote
+                // provider to cancel, then always close the durable local job.
+                try? await environment.mediaGenerationService.cancelVideo(jobID: job.id)
+            }
+            if let current = try await store.job(id: job.id), !current.state.isTerminal {
+                _ = try await store.transition(id: job.id, to: .cancelled) {
+                    $0.nextPollAt = nil
+                }
+            }
+        }
+        try await store.deleteJobs(canvasID: canvasID, documentID: documentID)
     }
 }
 
@@ -966,6 +1057,7 @@ private final class CanvasDocumentStore: ObservableObject {
     func select(_ id: UUID) {
         guard project.documents.contains(where: { $0.id == id }) else { return }
         project.selectedDocumentID = id
+        project.agentConversationID = project.agentConversationIDsByDocument[id]
         project.updatedAt = Date()
         persist()
     }
@@ -974,6 +1066,7 @@ private final class CanvasDocumentStore: ObservableObject {
         let document = FloeCanvasDocument(name: "画布 \(project.documents.count + 1)")
         project.documents.append(document)
         project.selectedDocumentID = document.id
+        project.agentConversationID = nil
         project.updatedAt = Date()
         persist()
     }
@@ -982,9 +1075,12 @@ private final class CanvasDocumentStore: ObservableObject {
         guard project.documents.count > 1 else { return }
         let assetIDs = project.documents.first(where: { $0.id == id })?.nodes.compactMap(\.asset?.id) ?? []
         project.documents.removeAll { $0.id == id }
+        project.viewports[id] = nil
+        project.agentConversationIDsByDocument[id] = nil
         if project.selectedDocumentID == id {
             project.selectedDocumentID = project.documents[0].id
         }
+        project.agentConversationID = project.agentConversationIDsByDocument[project.selectedDocumentID]
         project.updatedAt = Date()
         persist()
         for assetID in assetIDs {
@@ -1472,47 +1568,21 @@ private final class CanvasDocumentStore: ObservableObject {
         return resultID
     }
 
-    func setAgentConversationID(_ id: UUID) {
+    func agentConversationID(for documentID: UUID) -> UUID? {
+        project.agentConversationIDsByDocument[documentID]
+    }
+
+    func setAgentConversationID(_ id: UUID, for documentID: UUID) {
+        guard project.documents.contains(where: { $0.id == documentID }) else { return }
+        project.agentConversationIDsByDocument[documentID] = id
         project.agentConversationID = id
         project.schemaVersion = CanvasProject.currentSchemaVersion
-        if project.assistantSessions.isEmpty {
-            let session = CanvasAssistantSession(conversationID: id, title: "画布助手")
-            project.assistantSessions = [session]
-            project.selectedAssistantSessionID = session.id
-        }
         project.updatedAt = Date()
         persist()
     }
 
-    var selectedAssistantSession: CanvasAssistantSession? {
-        project.assistantSessions.first { $0.id == project.selectedAssistantSessionID }
-            ?? project.assistantSessions.first
-    }
-
-    func selectAssistantSession(_ id: UUID) {
-        guard project.assistantSessions.contains(where: { $0.id == id }) else { return }
-        project.selectedAssistantSessionID = id
-        project.agentConversationID = selectedAssistantSession?.conversationID
-        persist()
-    }
-
-    func addAssistantSession(conversationID: UUID, title: String) {
-        let session = CanvasAssistantSession(conversationID: conversationID, title: title)
-        project.assistantSessions.append(session)
-        project.selectedAssistantSessionID = session.id
-        project.agentConversationID = conversationID
-        persist()
-    }
-
-    func removeAssistantSession(_ id: UUID) {
-        project.assistantSessions.removeAll { $0.id == id }
-        if project.selectedAssistantSessionID == id {
-            project.selectedAssistantSessionID = project.assistantSessions.first?.id
-            project.agentConversationID = project.assistantSessions.first?.conversationID
-        }
-        persist()
-    }
-
+    /// Compatibility wrapper for callers that have not yet adopted
+    /// document-scoped assistant ownership.
     func updateNode(
         _ id: UUID,
         text: String? = nil,
@@ -2110,6 +2180,12 @@ private struct CanvasImageEditorPresentation: Identifiable {
     let id: UUID
 }
 
+private struct CanvasDeletionRequest: Identifiable {
+    let id: UUID
+    let name: String
+    let deletesProject: Bool
+}
+
 extension FocusedValues {
     var canvasKeyboardActions: CanvasKeyboardActions? {
         get { self[CanvasKeyboardActionsKey.self] }
@@ -2173,6 +2249,8 @@ struct WorkspaceCanvasView: View {
     @State private var lastCanvasPointerPoint: CGPoint?
     @State private var pencilContextPoint: CGPoint?
     @State private var showsMiniMap = true
+    @State private var pendingCanvasDeletion: CanvasDeletionRequest?
+    @State private var isDeletingCanvas = false
 
     private static let nodePasteboardType = "org.floeagent.canvas.nodes"
 
@@ -2232,6 +2310,18 @@ struct WorkspaceCanvasView: View {
             Button("返回创意模式") { dismiss() }
         } message: {
             Text("云端删除已经确认。当前设备不会重新上传这份旧画布。")
+        }
+        .alert(item: $pendingCanvasDeletion) { request in
+            Alert(
+                title: Text(request.deletesProject ? "删除整个画布项目？" : "删除画布？"),
+                message: Text(request.deletesProject
+                    ? "“\(request.name)”是最后一张画布。继续将删除整个画布项目、关联的画布助手会话和未完成媒体任务。绑定的工作区不会被删除。"
+                    : "将删除“\(request.name)”及其画布助手会话。此操作无法撤销。"),
+                primaryButton: .destructive(Text("删除")) {
+                    Task { await performDeletion(request) }
+                },
+                secondaryButton: .cancel()
+            )
         }
         .sheet(isPresented: $showsMaterials) {
             NavigationStack {
@@ -2395,32 +2485,7 @@ struct WorkspaceCanvasView: View {
     private var documentSidebar: some View {
         List {
             ForEach(store.project.documents) { document in
-                Button {
-                    store.select(document.id)
-                } label: {
-                    HStack {
-                        Image(systemName: document.id == store.project.selectedDocumentID
-                              ? "rectangle.fill" : "rectangle")
-                            .foregroundStyle(document.id == store.project.selectedDocumentID
-                                             ? FloeTheme.primary : .secondary)
-                        Text(document.name)
-                            .foregroundStyle(.primary)
-                        Spacer()
-                        if document.id == store.project.selectedDocumentID {
-                            Image(systemName: "checkmark")
-                                .foregroundStyle(FloeTheme.primary)
-                        }
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                    .contextMenu {
-                        if store.project.documents.count > 1 {
-                            Button("删除画布", role: .destructive) {
-                                store.deleteDocument(document.id)
-                            }
-                        }
-                    }
+                documentSidebarRow(document)
             }
         }
         .navigationTitle("画布")
@@ -2429,7 +2494,88 @@ struct WorkspaceCanvasView: View {
                 Button { store.addDocument() } label: {
                     Label("新建画布", systemImage: "plus")
                 }
+                .disabled(isDeletingCanvas)
             }
+        }
+    }
+
+    private func documentSidebarRow(_ document: FloeCanvasDocument) -> some View {
+        HStack(spacing: 4) {
+            Button {
+                store.select(document.id)
+            } label: {
+                HStack {
+                    Image(systemName: document.id == store.project.selectedDocumentID
+                          ? "rectangle.fill" : "rectangle")
+                        .foregroundStyle(document.id == store.project.selectedDocumentID
+                                         ? FloeTheme.primary : .secondary)
+                    Text(document.name)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    if document.id == store.project.selectedDocumentID {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(FloeTheme.primary)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Menu {
+                Button("删除画布", systemImage: "trash", role: .destructive) {
+                    requestDeletion(document)
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(document.name)操作")
+        }
+        .disabled(isDeletingCanvas)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("删除", role: .destructive) { requestDeletion(document) }
+        }
+        .contextMenu {
+            Button("删除画布", systemImage: "trash", role: .destructive) {
+                requestDeletion(document)
+            }
+        }
+    }
+
+    private func requestDeletion(_ document: FloeCanvasDocument) {
+        guard !isDeletingCanvas else { return }
+        pendingCanvasDeletion = CanvasDeletionRequest(
+            id: document.id,
+            name: document.name,
+            deletesProject: store.project.documents.count == 1
+        )
+    }
+
+    @MainActor
+    private func performDeletion(_ request: CanvasDeletionRequest) async {
+        guard !isDeletingCanvas,
+              store.project.documents.contains(where: { $0.id == request.id }) else { return }
+        isDeletingCanvas = true
+        defer { isDeletingCanvas = false }
+        do {
+            if request.deletesProject {
+                try await CanvasLifecycleService.deleteProject(
+                    project: store.project,
+                    environment: environment
+                )
+                dismiss()
+            } else {
+                try await CanvasLifecycleService.prepareDocumentDeletion(
+                    project: store.project,
+                    documentID: request.id,
+                    environment: environment
+                )
+                store.deleteDocument(request.id)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            store.saveError = "删除失败：\(error.localizedDescription)"
         }
     }
 
@@ -2626,12 +2772,21 @@ struct WorkspaceCanvasView: View {
                 if showsMiniMap, let document = store.selectedDocument {
                     CanvasMiniMap(
                         document: document,
-                        viewportCenter: CanvasPoint(x: -pan.width / scale, y: -pan.height / scale),
-                        viewportScale: scale
-                    ) { center in
-                        pan = CGSize(width: -center.x * scale, height: -center.y * scale)
+                        viewportCenter: CanvasPoint(
+                            x: (geometry.size.width / 2 - pan.width) / scale,
+                            y: (geometry.size.height / 2 - pan.height) / scale
+                        ),
+                        viewportSize: CanvasSize(
+                            width: geometry.size.width / scale,
+                            height: geometry.size.height / scale
+                        )
+                    ) { center, finished in
+                        pan = CGSize(
+                            width: geometry.size.width / 2 - center.x * scale,
+                            height: geometry.size.height / 2 - center.y * scale
+                        )
                         panStart = pan
-                        persistViewport()
+                        if finished { persistViewport() }
                     }
                     .padding(12)
                 }
@@ -5437,80 +5592,81 @@ private struct CanvasNodeInlineAIComposer: View {
 private struct CanvasMiniMap: View {
     let document: FloeCanvasDocument
     let viewportCenter: CanvasPoint
-    let viewportScale: Double
-    let onNavigate: (CanvasPoint) -> Void
-
-    private var bounds: CGRect {
-        guard let first = document.nodes.first else {
-            return CGRect(x: -500, y: -350, width: 1_000, height: 700)
-        }
-        return document.nodes.dropFirst().reduce(CGRect(
-            x: first.x - first.width / 2, y: first.y - first.height / 2,
-            width: first.width, height: first.height
-        )) { partial, node in
-            partial.union(CGRect(
-                x: node.x - node.width / 2, y: node.y - node.height / 2,
-                width: node.width, height: node.height
-            ))
-        }.insetBy(dx: -120, dy: -90)
-    }
+    let viewportSize: CanvasSize
+    let onNavigate: (CanvasPoint, Bool) -> Void
 
     var body: some View {
         GeometryReader { geometry in
-            let mapBounds = bounds
-            let sx = geometry.size.width / max(1, mapBounds.width)
-            let sy = geometry.size.height / max(1, mapBounds.height)
-            let mapScale = min(sx, sy)
+            let mapGeometry = CanvasMiniMapGeometry(
+                document: document,
+                viewportCenter: viewportCenter,
+                viewportSize: viewportSize,
+                mapSize: CanvasSize(
+                    width: geometry.size.width,
+                    height: geometry.size.height
+                )
+            )
+            let mappedViewport = mapGeometry.mapSize(viewportSize)
             ZStack {
                 RoundedRectangle(cornerRadius: 10).fill(.regularMaterial)
+                ForEach(document.strokes) { stroke in
+                    Path { path in
+                        guard let first = stroke.points.first else { return }
+                        let start = mapGeometry.mapPoint(first)
+                        path.move(to: CGPoint(x: start.x, y: start.y))
+                        for point in stroke.points.dropFirst() {
+                            let mapped = mapGeometry.mapPoint(point)
+                            path.addLine(to: CGPoint(x: mapped.x, y: mapped.y))
+                        }
+                    }
+                    .stroke(
+                        Color.secondary.opacity(0.55),
+                        style: StrokeStyle(
+                            lineWidth: max(1, stroke.width * mapGeometry.scale),
+                            lineCap: .round,
+                            lineJoin: .round
+                        )
+                    )
+                }
                 ForEach(document.nodes) { node in
+                    let mapped = mapGeometry.mapPoint(CanvasPoint(x: node.x, y: node.y))
                     RoundedRectangle(cornerRadius: 2)
                         .fill(node.kind == .image || node.kind == .video
                               ? FloeTheme.primary.opacity(0.65)
                               : Color.secondary.opacity(0.42))
                         .frame(
-                            width: max(3, node.width * mapScale),
-                            height: max(3, node.height * mapScale)
+                            width: max(3, node.width * mapGeometry.scale),
+                            height: max(3, node.height * mapGeometry.scale)
                         )
-                        .position(mapPoint(CanvasPoint(x: node.x, y: node.y), size: geometry.size))
+                        .position(x: mapped.x, y: mapped.y)
                 }
+                let mappedCenter = mapGeometry.mapPoint(viewportCenter)
                 RoundedRectangle(cornerRadius: 4)
                     .stroke(FloeTheme.primary, lineWidth: 1.5)
                     .frame(
-                        width: min(geometry.size.width, 180 / max(0.3, viewportScale)),
-                        height: min(geometry.size.height, 110 / max(0.3, viewportScale))
+                        width: min(geometry.size.width, max(8, mappedViewport.width)),
+                        height: min(geometry.size.height, max(8, mappedViewport.height))
                     )
-                    .position(mapPoint(viewportCenter, size: geometry.size))
+                    .position(x: mappedCenter.x, y: mappedCenter.y)
             }
             .contentShape(Rectangle())
-            .onTapGesture { location in
-                onNavigate(canvasPoint(location, size: geometry.size))
-            }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let point = mapGeometry.canvasPoint(CanvasPoint(value.location))
+                        onNavigate(point, false)
+                    }
+                    .onEnded { value in
+                        let point = mapGeometry.canvasPoint(CanvasPoint(value.location))
+                        onNavigate(point, true)
+                    }
+            )
         }
         .frame(width: 180, height: 112)
         .overlay { RoundedRectangle(cornerRadius: 10).stroke(.separator.opacity(0.5), lineWidth: 0.5) }
         .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
         .accessibilityLabel("画布缩略导航")
-    }
-
-    private func mapPoint(_ point: CanvasPoint, size: CGSize) -> CGPoint {
-        let sx = size.width / max(1, bounds.width)
-        let sy = size.height / max(1, bounds.height)
-        let scale = min(sx, sy)
-        return CGPoint(
-            x: (point.x - bounds.minX) * scale,
-            y: (point.y - bounds.minY) * scale
-        )
-    }
-
-    private func canvasPoint(_ point: CGPoint, size: CGSize) -> CanvasPoint {
-        let sx = size.width / max(1, bounds.width)
-        let sy = size.height / max(1, bounds.height)
-        let scale = max(0.0001, min(sx, sy))
-        return CanvasPoint(
-            x: bounds.minX + point.x / scale,
-            y: bounds.minY + point.y / scale
-        )
+        .accessibilityHint("点按或拖动以移动当前画布视口")
     }
 }
 
@@ -5695,6 +5851,7 @@ private struct CanvasAgentFloatingPanel: View {
     @State private var dragOrigin = CGSize.zero
     @State private var isDragging = false
     @State private var activeConversationID: UUID?
+    @State private var preparedDocumentID: UUID?
 
     private var center: ConversationCenter { environment.conversationCenter }
     private var mcpCenter: MCPSettingsCenter { environment.mcpSettingsCenter }
@@ -5743,8 +5900,8 @@ private struct CanvasAgentFloatingPanel: View {
         }
         .shadow(color: .black.opacity(0.20), radius: 24, y: 12)
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .task {
-            await prepare()
+        .task(id: store.project.selectedDocumentID) {
+            await prepare(documentID: store.project.selectedDocumentID)
         }
     }
 
@@ -5761,40 +5918,6 @@ private struct CanvasAgentFloatingPanel: View {
                 Text(isRunning ? "正在处理" : "连接当前画布")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
-            }
-            if !store.project.assistantSessions.isEmpty {
-                Menu {
-                    ForEach(store.project.assistantSessions) { session in
-                        Button {
-                            store.selectAssistantSession(session.id)
-                            activeConversationID = session.conversationID
-                        } label: {
-                            if session.id == store.project.selectedAssistantSessionID {
-                                Label(session.title, systemImage: "checkmark")
-                            } else {
-                                Text(session.title)
-                            }
-                        }
-                    }
-                    Divider()
-                    Button("新建会话", systemImage: "plus", action: createSession)
-                    if store.project.assistantSessions.count > 1,
-                       let selected = store.selectedAssistantSession {
-                        Button("删除当前会话", systemImage: "trash", role: .destructive) {
-                            deleteSession(selected)
-                        }
-                    }
-                } label: {
-                    Image(systemName: "rectangle.stack")
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("画布助手会话")
-            } else {
-                Button(action: createSession) { Image(systemName: "plus") }
-                    .buttonStyle(.plain)
-                    .frame(width: 32, height: 32)
-                    .accessibilityLabel("新建画布助手会话")
             }
             if isRunning {
                 ProgressView()
@@ -5862,76 +5985,49 @@ private struct CanvasAgentFloatingPanel: View {
         )
     }
 
-    private func createSession() {
-        Task { @MainActor in
-            let conversationID = UUID()
-            let number = store.project.assistantSessions.count + 1
-            let now = Date()
-            do {
-                try await environment.conversationStore.saveConversation(ConversationRecord(
-                    id: conversationID,
-                    title: "\(CanvasAgentIdentity.conversationTitlePrefix)\(store.project.name) · \(number)",
-                    createdAt: now, updatedAt: now, titleOrigin: .manual
-                ))
-                try await environment.conversationStore.setArchived(
-                    id: conversationID, archived: true
-                )
-                store.addAssistantSession(
-                    conversationID: conversationID, title: "会话 \(number)"
-                )
-                _ = try await ensureConversationAndPolicy()
-                activeConversationID = conversationID
-            } catch {
-                try? await environment.conversationStore.deleteConversation(id: conversationID)
-                setupError = error.localizedDescription
-            }
-        }
-    }
-
-    private func deleteSession(_ session: CanvasAssistantSession) {
-        Task { @MainActor in
-            do {
-                try await environment.conversationStore.deleteConversation(id: session.conversationID)
-                store.removeAssistantSession(session.id)
-                activeConversationID = store.selectedAssistantSession?.conversationID
-                    ?? store.project.agentConversationID
-            } catch {
-                setupError = error.localizedDescription
-            }
-        }
-    }
-
     @MainActor
-    private func prepare() async {
+    private func prepare(documentID: UUID) async {
+        if let preparedDocumentID, preparedDocumentID != documentID {
+            pendingRequest = nil
+        }
+        preparedDocumentID = documentID
+        activeConversationID = nil
+        isRunning = false
+        setupError = nil
         mcpCenter.activate()
         await center.reload()
+        guard !Task.isCancelled, store.project.selectedDocumentID == documentID else { return }
         if toolCapableModels.isEmpty {
             setupError = "请先启用一个支持工具调用的模型。"
             return
         }
         do {
-            activeConversationID = try await ensureConversationAndPolicy()
+            let conversationID = try await ensureConversationAndPolicy(documentID: documentID)
+            guard !Task.isCancelled, store.project.selectedDocumentID == documentID else { return }
+            activeConversationID = conversationID
             setupError = nil
         } catch {
+            guard !Task.isCancelled else { return }
             setupError = error.localizedDescription
         }
     }
 
     @MainActor
-    private func ensureConversationAndPolicy() async throws -> UUID {
+    private func ensureConversationAndPolicy(documentID: UUID) async throws -> UUID {
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
         let conversationID: UUID
-        if let existing = store.selectedAssistantSession?.conversationID
-            ?? store.project.agentConversationID,
+        if let existing = store.agentConversationID(for: documentID),
            try await environment.conversationStore.conversation(id: existing) != nil {
             conversationID = existing
         } else {
             let id = UUID()
             let now = Date()
+            let documentName = store.project.documents.first(where: { $0.id == documentID })?.name
+                ?? "画布"
             do {
                 try await environment.conversationStore.saveConversation(ConversationRecord(
                     id: id,
-                    title: CanvasAgentIdentity.conversationTitlePrefix + store.project.name,
+                    title: "\(CanvasAgentIdentity.conversationTitlePrefix)\(store.project.name) · \(documentName)",
                     createdAt: now,
                     updatedAt: now,
                     titleOrigin: .manual
@@ -5948,10 +6044,10 @@ private struct CanvasAgentFloatingPanel: View {
                     // assistant conversation; it is not a project binding.
                     _ = try await workspaceStore.ensureWorkspace(
                         conversationID: id,
-                        title: "画布助手 · \(store.project.name)"
+                        title: "画布助手 · \(store.project.name) · \(documentName)"
                     )
                 }
-                store.setAgentConversationID(id)
+                store.setAgentConversationID(id, for: documentID)
                 conversationID = id
             } catch {
                 try? await environment.conversationStore.deleteConversation(id: id)

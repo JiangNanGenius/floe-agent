@@ -104,6 +104,22 @@ public actor MediaGenerationJobStore {
         }
     }
 
+    public func deleteJobs(canvasID: UUID, documentID: UUID? = nil) async throws {
+        try await database.writer { db in
+            if let documentID {
+                try db.execute(
+                    sql: "DELETE FROM media_generation_jobs WHERE canvas_id = ? AND document_id = ?",
+                    arguments: [canvasID.uuidString, documentID.uuidString]
+                )
+            } else {
+                try db.execute(
+                    sql: "DELETE FROM media_generation_jobs WHERE canvas_id = ?",
+                    arguments: [canvasID.uuidString]
+                )
+            }
+        }
+    }
+
     public func allJobs(limit: Int = 200) async throws -> [MediaGenerationJob] {
         try await database.reader { db in
             try Row.fetchAll(db, sql: """

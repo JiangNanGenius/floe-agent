@@ -479,6 +479,86 @@ public struct CanvasViewportState: Sendable, Codable, Hashable {
     }
 }
 
+/// A platform-neutral transform shared by the native minimap and its tests.
+/// It preserves aspect ratio, centers letterboxed content, and includes the
+/// live viewport in the world bounds so an empty canvas remains navigable.
+public struct CanvasMiniMapGeometry: Sendable, Hashable {
+    public var worldOrigin: CanvasPoint
+    public var worldSize: CanvasSize
+    public var mapSize: CanvasSize
+    public var scale: Double
+    public var mapOffset: CanvasPoint
+
+    public init(
+        document: CanvasDocument,
+        viewportCenter: CanvasPoint,
+        viewportSize: CanvasSize,
+        mapSize: CanvasSize,
+        padding: Double = 90
+    ) {
+        let halfViewportWidth = max(1, viewportSize.width) / 2
+        let halfViewportHeight = max(1, viewportSize.height) / 2
+        var minX = viewportCenter.x - halfViewportWidth
+        var maxX = viewportCenter.x + halfViewportWidth
+        var minY = viewportCenter.y - halfViewportHeight
+        var maxY = viewportCenter.y + halfViewportHeight
+
+        for node in document.nodes {
+            minX = min(minX, node.x - node.width / 2)
+            maxX = max(maxX, node.x + node.width / 2)
+            minY = min(minY, node.y - node.height / 2)
+            maxY = max(maxY, node.y + node.height / 2)
+        }
+        for stroke in document.strokes {
+            for point in stroke.points {
+                minX = min(minX, point.x - stroke.width / 2)
+                maxX = max(maxX, point.x + stroke.width / 2)
+                minY = min(minY, point.y - stroke.width / 2)
+                maxY = max(maxY, point.y + stroke.width / 2)
+            }
+        }
+
+        let safePadding = max(0, padding)
+        minX -= safePadding; maxX += safePadding
+        minY -= safePadding; maxY += safePadding
+        let worldWidth = max(1, maxX - minX)
+        let worldHeight = max(1, maxY - minY)
+        let safeMapWidth = max(1, mapSize.width)
+        let safeMapHeight = max(1, mapSize.height)
+        let fittedScale = max(0.000_001, min(
+            safeMapWidth / worldWidth,
+            safeMapHeight / worldHeight
+        ))
+
+        self.worldOrigin = CanvasPoint(x: minX, y: minY)
+        self.worldSize = CanvasSize(width: worldWidth, height: worldHeight)
+        self.mapSize = CanvasSize(width: safeMapWidth, height: safeMapHeight)
+        self.scale = fittedScale
+        self.mapOffset = CanvasPoint(
+            x: (safeMapWidth - worldWidth * fittedScale) / 2,
+            y: (safeMapHeight - worldHeight * fittedScale) / 2
+        )
+    }
+
+    public func mapPoint(_ point: CanvasPoint) -> CanvasPoint {
+        CanvasPoint(
+            x: mapOffset.x + (point.x - worldOrigin.x) * scale,
+            y: mapOffset.y + (point.y - worldOrigin.y) * scale
+        )
+    }
+
+    public func canvasPoint(_ point: CanvasPoint) -> CanvasPoint {
+        CanvasPoint(
+            x: worldOrigin.x + (point.x - mapOffset.x) / scale,
+            y: worldOrigin.y + (point.y - mapOffset.y) / scale
+        )
+    }
+
+    public func mapSize(_ size: CanvasSize) -> CanvasSize {
+        CanvasSize(width: size.width * scale, height: size.height * scale)
+    }
+}
+
 public struct CanvasAssistantSession: Sendable, Codable, Identifiable, Hashable {
     public var id: UUID
     public var conversationID: UUID
@@ -496,7 +576,7 @@ public struct CanvasAssistantSession: Sendable, Codable, Identifiable, Hashable 
 }
 
 public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
-    public static let currentSchemaVersion = 6
+    public static let currentSchemaVersion = 7
 
     public var id: UUID
     public var schemaVersion: Int
@@ -507,6 +587,10 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
     public var agentConversationID: UUID?
     public var assistantSessions: [CanvasAssistantSession]
     public var selectedAssistantSessionID: UUID?
+    /// Canonical one-to-one ownership between a canvas document and its
+    /// assistant conversation. The legacy project-wide fields above remain
+    /// decodable so schema-v6 packages can be migrated without losing history.
+    public var agentConversationIDsByDocument: [UUID: UUID]
     public var viewports: [UUID: CanvasViewportState]
     public var revision: Int64
     public var sync: CanvasSyncSettings
@@ -519,6 +603,7 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         selectedDocumentID: UUID, agentConversationID: UUID? = nil,
         assistantSessions: [CanvasAssistantSession] = [],
         selectedAssistantSessionID: UUID? = nil,
+        agentConversationIDsByDocument: [UUID: UUID] = [:],
         viewports: [UUID: CanvasViewportState] = [:], revision: Int64 = 0,
         sync: CanvasSyncSettings = .init(), createdAt: Date = Date(),
         updatedAt: Date = Date()
@@ -529,6 +614,7 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         self.agentConversationID = agentConversationID
         self.assistantSessions = assistantSessions
         self.selectedAssistantSessionID = selectedAssistantSessionID
+        self.agentConversationIDsByDocument = agentConversationIDsByDocument
         self.viewports = viewports; self.revision = revision; self.sync = sync
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
@@ -536,6 +622,7 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case id, schemaVersion, workspaceID, name, documents, selectedDocumentID
         case agentConversationID, assistantSessions, selectedAssistantSessionID
+        case agentConversationIDsByDocument
         case viewports, revision, sync, createdAt, updatedAt
     }
     public init(from decoder: any Decoder) throws {
@@ -556,6 +643,9 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         selectedAssistantSessionID = try values.decodeIfPresent(
             UUID.self, forKey: .selectedAssistantSessionID
         ) ?? assistantSessions.first?.id
+        agentConversationIDsByDocument = try values.decodeIfPresent(
+            [UUID: UUID].self, forKey: .agentConversationIDsByDocument
+        ) ?? [:]
         viewports = try values.decodeIfPresent(
             [UUID: CanvasViewportState].self, forKey: .viewports
         ) ?? [:]
@@ -563,6 +653,15 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         sync = try values.decodeIfPresent(CanvasSyncSettings.self, forKey: .sync) ?? .init()
         createdAt = try values.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+        if agentConversationIDsByDocument.isEmpty,
+           documents.contains(where: { $0.id == selectedDocumentID }) {
+            let selectedLegacyConversationID = assistantSessions.first(where: {
+                $0.id == selectedAssistantSessionID
+            })?.conversationID ?? assistantSessions.first?.conversationID ?? agentConversationID
+            if let selectedLegacyConversationID {
+                agentConversationIDsByDocument[selectedDocumentID] = selectedLegacyConversationID
+            }
+        }
     }
 }
 

@@ -54,6 +54,99 @@ struct CreativeMediaModelsTests {
         #expect(decoded.documents[0].connections[0].destinationPort == .leading)
     }
 
+    @Test func legacyProjectBindsSelectedAssistantConversationToSelectedCanvas() throws {
+        let projectID = UUID(), documentID = UUID(), conversationID = UUID(), sessionID = UUID()
+        let data = Data("""
+        {
+          "id":"\(projectID.uuidString)",
+          "schemaVersion":6,
+          "name":"Legacy",
+          "documents":[{"id":"\(documentID.uuidString)","name":"画布 1"}],
+          "selectedDocumentID":"\(documentID.uuidString)",
+          "agentConversationID":"\(conversationID.uuidString)",
+          "assistantSessions":[{
+            "id":"\(sessionID.uuidString)",
+            "conversationID":"\(conversationID.uuidString)",
+            "title":"旧会话",
+            "createdAt":0,
+            "updatedAt":0
+          }],
+          "selectedAssistantSessionID":"\(sessionID.uuidString)"
+        }
+        """.utf8)
+
+        let project = try CanvasProjectCodec.decode(data)
+        #expect(project.schemaVersion == CanvasProject.currentSchemaVersion)
+        #expect(project.agentConversationIDsByDocument[documentID] == conversationID)
+    }
+
+    @Test func projectRoundTripPreservesIndependentCanvasConversations() throws {
+        let first = CanvasDocument(name: "画布 1")
+        let second = CanvasDocument(name: "画布 2")
+        let firstConversationID = UUID()
+        let secondConversationID = UUID()
+        let project = CanvasProject(
+            id: UUID(),
+            name: "Bound",
+            documents: [first, second],
+            selectedDocumentID: second.id,
+            agentConversationID: secondConversationID,
+            agentConversationIDsByDocument: [
+                first.id: firstConversationID,
+                second.id: secondConversationID
+            ]
+        )
+
+        let decoded = try CanvasProjectCodec.decode(CanvasProjectCodec.encode(project))
+        #expect(decoded.agentConversationIDsByDocument[first.id] == firstConversationID)
+        #expect(decoded.agentConversationIDsByDocument[second.id] == secondConversationID)
+        #expect(decoded.agentConversationID == secondConversationID)
+    }
+
+    @Test func miniMapGeometryCentersLetterboxingAndRoundTripsPoints() {
+        let document = CanvasDocument(name: "Empty")
+        let geometry = CanvasMiniMapGeometry(
+            document: document,
+            viewportCenter: CanvasPoint(x: 500, y: 350),
+            viewportSize: CanvasSize(width: 1_000, height: 700),
+            mapSize: CanvasSize(width: 200, height: 100),
+            padding: 0
+        )
+        let mappedCenter = geometry.mapPoint(CanvasPoint(x: 500, y: 350))
+        #expect(abs(mappedCenter.x - 100) < 0.001)
+        #expect(abs(mappedCenter.y - 50) < 0.001)
+        #expect(geometry.mapOffset.x > 0)
+        #expect(abs(geometry.mapOffset.y) < 0.001)
+
+        let source = CanvasPoint(x: 125, y: 620)
+        let roundTrip = geometry.canvasPoint(geometry.mapPoint(source))
+        #expect(abs(roundTrip.x - source.x) < 0.001)
+        #expect(abs(roundTrip.y - source.y) < 0.001)
+    }
+
+    @Test func miniMapGeometryIncludesDistantNodesAndStrokes() {
+        let node = CanvasNode(
+            kind: .card,
+            position: CanvasPoint(x: 2_000, y: -900),
+            size: CanvasSize(width: 400, height: 200)
+        )
+        let stroke = CanvasStroke(points: [CanvasPoint(x: -1_500, y: 1_200)])
+        let document = CanvasDocument(name: "Large", nodes: [node], strokes: [stroke])
+        let geometry = CanvasMiniMapGeometry(
+            document: document,
+            viewportCenter: .init(x: 0, y: 0),
+            viewportSize: .init(width: 1_000, height: 700),
+            mapSize: .init(width: 180, height: 112)
+        )
+
+        let mappedNode = geometry.mapPoint(node.position)
+        let mappedStroke = geometry.mapPoint(stroke.points[0])
+        #expect((0...180).contains(mappedNode.x))
+        #expect((0...112).contains(mappedNode.y))
+        #expect((0...180).contains(mappedStroke.x))
+        #expect((0...112).contains(mappedStroke.y))
+    }
+
     @Test func legacyConnectionWithoutPortsRemainsReadable() throws {
         let sourceID = UUID(), destinationID = UUID()
         let data = Data("""

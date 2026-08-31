@@ -62,6 +62,47 @@ struct MediaGenerationJobStoreTests {
         }
     }
 
+    @Test func deletesOnlyJobsOwnedByRequestedCanvasDocument() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let configuration = ModelConfigurationStore(database: database)
+        let provider = ProviderProfile(
+            kind: .openAI,
+            wireProtocol: .openAIResponses,
+            baseURL: URL(string: "https://api.openai.com/v1")!
+        )
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "gpt-image-1",
+            displayName: "Image",
+            limits: .init(contextTokens: 1, maxOutputTokens: 0),
+            capabilities: [.imageGeneration]
+        )
+        try await configuration.saveProvider(provider)
+        try await configuration.saveModel(model)
+
+        let store = MediaGenerationJobStore(database: database)
+        let canvasID = UUID(), firstDocumentID = UUID(), secondDocumentID = UUID()
+        for documentID in [firstDocumentID, secondDocumentID] {
+            try await store.save(MediaGenerationJob(
+                providerID: provider.id,
+                modelID: model.id,
+                mediaKind: .image,
+                credentialReference: nil,
+                canvasID: canvasID,
+                documentID: documentID,
+                sourceNodeIDs: [],
+                resultNodeID: UUID(),
+                requestJSON: Data()
+            ))
+        }
+
+        try await store.deleteJobs(canvasID: canvasID, documentID: firstDocumentID)
+        let remaining = try await store.jobs(canvasID: canvasID)
+        #expect(remaining.count == 1)
+        #expect(remaining[0].documentID == secondDocumentID)
+    }
+
     @Test func canvasSyncOperationIsIdempotentAndCreatesDeletionTombstone() async throws {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
