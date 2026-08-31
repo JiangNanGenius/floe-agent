@@ -1101,6 +1101,25 @@ private final class CanvasDocumentStore: ObservableObject {
     }
 
     @discardableResult
+    func prepareGenerationGraph(
+        _ request: CanvasGenerationGraphRequest
+    ) -> CanvasGenerationGraphPlan? {
+        guard let document = selectedDocument else { return nil }
+        do {
+            let plan = try CanvasGenerationGraphPlanner.plan(
+                request: request, document: document
+            )
+            guard applyCommand(plan.operations, documentID: document.id) != nil else {
+                return nil
+            }
+            return plan
+        } catch {
+            saveError = error.localizedDescription
+            return nil
+        }
+    }
+
+    @discardableResult
     func addScene3D(at point: CGPoint) -> UUID {
         addPlaceholder(kind: .scene3D, at: point)
     }
@@ -2507,6 +2526,15 @@ struct WorkspaceCanvasView: View {
                         .zIndex(45)
                 }
                 if showsAgent {
+                    let compactAgentPanel = geometry.size.width < 620
+                    let agentPanelWidth = isAgentCollapsed
+                        ? min(232, geometry.size.width - 16)
+                        : (compactAgentPanel
+                            ? max(280, geometry.size.width - 16)
+                            : min(392, max(320, geometry.size.width - 24)))
+                    let agentPanelHeight = isAgentCollapsed
+                        ? 56
+                        : min(compactAgentPanel ? 520 : 640, max(300, geometry.size.height - 24))
                     CanvasAgentFloatingPanel(
                         store: store,
                         workspace: workspace,
@@ -2521,11 +2549,14 @@ struct WorkspaceCanvasView: View {
                         }
                     )
                     .environmentObject(environment)
-                    .frame(
-                        width: min(420, max(280, geometry.size.width - 24)),
-                        height: isAgentCollapsed
-                            ? 52
-                            : min(680, max(300, geometry.size.height - 96))
+                    .frame(width: agentPanelWidth, height: agentPanelHeight)
+                    .position(
+                        x: compactAgentPanel
+                            ? geometry.size.width / 2
+                            : geometry.size.width - agentPanelWidth / 2 - 12,
+                        y: compactAgentPanel
+                            ? geometry.size.height - agentPanelHeight / 2 - 12
+                            : agentPanelHeight / 2 + 12
                     )
                     .offset(agentPanelOffset)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -4973,23 +5004,46 @@ private struct CanvasNodeCard: View {
             .padding(8)
             .contentShape(Rectangle())
         case .generationTask:
-            VStack(spacing: 10) {
-                if node.generationJobID == nil {
-                    Image(systemName: "wand.and.stars")
-                        .font(.largeTitle)
-                        .foregroundStyle(FloeTheme.primary)
-                    Text(text.isEmpty ? "生成配置" : text).font(.headline)
-                    Text("选中后点“生成”配置图片或视频任务")
-                        .font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 8) {
+                    Image(systemName: generationStateIcon)
+                        .foregroundStyle(generationStateColor)
+                    Text(text.isEmpty ? "生成配置" : text)
+                        .font(.headline)
+                    Spacer()
+                    Text(generationStateTitle)
+                        .font(FloeTheme.Typography.metadata.weight(.semibold))
+                        .foregroundStyle(generationStateColor)
+                }
+                if let prompt = node.metadata["generationPrompt"], !prompt.isEmpty {
+                    Text(prompt)
+                        .font(.subheadline)
+                        .lineLimit(3)
+                }
+                HStack(spacing: 6) {
+                    if let ratio = node.metadata["generationAspectRatio"], !ratio.isEmpty {
+                        generationTag(ratio)
+                    }
+                    if let quality = node.metadata["generationQuality"], !quality.isEmpty {
+                        generationTag(quality)
+                    }
+                    if let count = node.metadata["generationCount"], count != "1" {
+                        generationTag("×\(count)")
+                    }
+                }
+                if node.metadata["generationState"] == "failed" {
+                    Text(node.metadata["generationError"] ?? "生成失败，选中后重新配置")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
                 } else {
-                    ProgressView()
-                    Text(text.isEmpty ? "生成任务" : text).font(.headline)
-                    Text("任务状态会在重新打开 App 后继续恢复")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text("选中此节点可查看配置或重新生成")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(14)
         case .scene3D:
             ZStack(alignment: .bottomLeading) {
                 Canvas3DScenePreview(scene: node.scene3D ?? .starter())
@@ -5010,6 +5064,41 @@ private struct CanvasNodeCard: View {
             }
         }
         }
+    }
+
+    private var generationStateTitle: String {
+        switch node.metadata["generationState"] {
+        case "ready": "完成"
+        case "submitted", "running", "preparing": "生成中"
+        case "failed", "submitFailed": "失败"
+        default: "待配置"
+        }
+    }
+
+    private var generationStateIcon: String {
+        switch node.metadata["generationState"] {
+        case "ready": "checkmark.circle.fill"
+        case "submitted", "running", "preparing": "wand.and.stars"
+        case "failed", "submitFailed": "exclamationmark.circle.fill"
+        default: "slider.horizontal.3"
+        }
+    }
+
+    private var generationStateColor: Color {
+        switch node.metadata["generationState"] {
+        case "ready": .green
+        case "failed", "submitFailed": .red
+        default: FloeTheme.primary
+        }
+    }
+
+    private func generationTag(_ value: String) -> some View {
+        Text(value)
+            .font(FloeTheme.Typography.metadata)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Color.secondary.opacity(0.09), in: Capsule())
     }
 
     @ViewBuilder
@@ -5623,7 +5712,6 @@ private struct CanvasAgentFloatingPanel: View {
         VStack(spacing: 0) {
             floatingHeader
             if !isCollapsed {
-                capabilityBanner
                 Divider()
                 if let activeConversationID {
                     SharedCanvasAgentConversation(
@@ -5648,13 +5736,13 @@ private struct CanvasAgentFloatingPanel: View {
                 }
             }
         }
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(.separator.opacity(0.45), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(.separator.opacity(0.35), lineWidth: 0.5)
         }
-        .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
-        .padding(12)
+        .shadow(color: .black.opacity(0.20), radius: 24, y: 12)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .task {
             await prepare()
         }
@@ -5663,9 +5751,17 @@ private struct CanvasAgentFloatingPanel: View {
     private var floatingHeader: some View {
         HStack(spacing: 10) {
             Image(systemName: "sparkles")
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(FloeTheme.primary)
-            Text("画布助手")
-                .font(.headline)
+                .frame(width: 30, height: 30)
+                .background(FloeTheme.primary.opacity(0.12), in: Circle())
+            VStack(alignment: .leading, spacing: 1) {
+                Text("画布助手")
+                    .font(.subheadline.weight(.semibold))
+                Text(isRunning ? "正在处理" : "连接当前画布")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+            }
             if !store.project.assistantSessions.isEmpty {
                 Menu {
                     ForEach(store.project.assistantSessions) { session in
@@ -5690,12 +5786,14 @@ private struct CanvasAgentFloatingPanel: View {
                     }
                 } label: {
                     Image(systemName: "rectangle.stack")
+                        .frame(width: 32, height: 32)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("画布助手会话")
             } else {
                 Button(action: createSession) { Image(systemName: "plus") }
                     .buttonStyle(.plain)
+                    .frame(width: 32, height: 32)
                     .accessibilityLabel("新建画布助手会话")
             }
             if isRunning {
@@ -5707,17 +5805,20 @@ private struct CanvasAgentFloatingPanel: View {
                 withAnimation(.snappy) { isCollapsed.toggle() }
             } label: {
                 Image(systemName: isCollapsed ? "chevron.up" : "chevron.down")
+                    .frame(width: 32, height: 32)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(isCollapsed ? "展开画布助手" : "收起画布助手")
             Button(action: onClose) {
                 Image(systemName: "xmark")
+                    .frame(width: 32, height: 32)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("关闭画布助手")
         }
-        .padding(.horizontal, 14)
-        .frame(height: 52)
+        .padding(.horizontal, 12)
+        .frame(height: 56)
+        .background(FloeTheme.chromeMaterial)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 3)
@@ -5742,34 +5843,23 @@ private struct CanvasAgentFloatingPanel: View {
     }
 
     private func clampedOffset(_ proposed: CGSize) -> CGSize {
-        let panelWidth = min(420, max(280, availableSize.width - 24))
-        let panelHeight = isCollapsed ? 52 : min(680, max(300, availableSize.height - 96))
-        let horizontalLimit = max(0, (availableSize.width - panelWidth) / 2)
-        let verticalLimit = max(0, (availableSize.height - panelHeight) / 2)
+        let compact = availableSize.width < 620
+        let panelWidth = isCollapsed
+            ? min(232, availableSize.width - 16)
+            : (compact ? max(280, availableSize.width - 16) : min(392, max(320, availableSize.width - 24)))
+        let panelHeight = isCollapsed
+            ? 56
+            : min(compact ? 520 : 640, max(300, availableSize.height - 24))
+        let anchorX = compact ? availableSize.width / 2 : availableSize.width - panelWidth / 2 - 12
+        let anchorY = compact ? availableSize.height - panelHeight / 2 - 12 : panelHeight / 2 + 12
+        let minimumX = 12 + panelWidth / 2 - anchorX
+        let maximumX = availableSize.width - 12 - panelWidth / 2 - anchorX
+        let minimumY = 12 + panelHeight / 2 - anchorY
+        let maximumY = availableSize.height - 12 - panelHeight / 2 - anchorY
         return CGSize(
-            width: min(horizontalLimit, max(-horizontalLimit, proposed.width)),
-            height: min(verticalLimit, max(-verticalLimit, proposed.height))
+            width: min(maximumX, max(minimumX, proposed.width)),
+            height: min(maximumY, max(minimumY, proposed.height))
         )
-    }
-
-    private var capabilityBanner: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Label("查找资料与生成素材", systemImage: "sparkles")
-                .font(.headline)
-            Text("可搜索网页、读取链接，并使用素材库和已配置的图片或视频模型。结果会保留来源，确认后加入当前画布。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            HStack(spacing: 8) {
-                Label("web.search", systemImage: "magnifyingglass")
-                Label("web.fetch", systemImage: "doc.text.magnifyingglass")
-                Label("素材与媒体", systemImage: "photo.stack")
-            }
-            .font(.caption2.monospaced())
-            .foregroundStyle(FloeTheme.primary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(.thinMaterial)
     }
 
     private func createSession() {
@@ -5975,11 +6065,22 @@ private struct SharedCanvasAgentConversation: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
                 if viewModel.messages.isEmpty, !viewModel.isRunning {
-                    ContentUnavailableView(
-                        "开始创作",
-                        systemImage: "sparkles",
-                        description: Text("搜索资料、整理画面，或生成可加入当前画布的素材。")
-                    )
+                    VStack(alignment: .leading, spacing: 10) {
+                        Image(systemName: "sparkles")
+                            .font(.title2)
+                            .foregroundStyle(FloeTheme.primary)
+                        Text("从一个想法开始")
+                            .font(.headline)
+                        Text("搜索资料、整理选中内容，或直接生成图片和视频。提示词、配置与结果会留在画布上。")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            suggestion("整理选中内容")
+                            suggestion("生成一张配图")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 18)
                 }
                 ForEach(Array(viewModel.timeline.suffix(30))) { item in
                     timelineRow(item)
@@ -6002,12 +6103,12 @@ private struct SharedCanvasAgentConversation: View {
                         .foregroundStyle(.red)
                 }
             }
-            .padding()
+            .padding(14)
         }
     }
 
     private var composer: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             if availableModels.count > 1 {
                 Picker("画布助手模型", selection: $viewModel.selectedModelID) {
                     ForEach(availableModels) { model in
@@ -6015,11 +6116,32 @@ private struct SharedCanvasAgentConversation: View {
                     }
                 }
                 .pickerStyle(.menu)
+                .font(FloeTheme.Typography.metadata)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            TextField("告诉画布助手要查找、整理或生成什么", text: $prompt, axis: .vertical)
-                .lineLimit(1...5)
-                .textFieldStyle(.roundedBorder)
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField("描述要查找、整理或生成的内容", text: $prompt, axis: .vertical)
+                    .lineLimit(1...5)
+                    .textFieldStyle(.plain)
+                    .submitLabel(.send)
+                    .onSubmit { Task { await submit() } }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                Button {
+                    Task { await submit() }
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 34, height: 34)
+                        .background(FloeTheme.primary, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(4)
+                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          || viewModel.selectedModelID == nil)
+            }
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             HStack {
                 if viewModel.isRunning {
                     Picker("运行中输入", selection: $viewModel.runningInputMode) {
@@ -6051,18 +6173,15 @@ private struct SharedCanvasAgentConversation: View {
                     .buttonStyle(.bordered)
                 }
                 Spacer()
-                Button {
-                    Task { await submit() }
-                } label: {
-                    Label(viewModel.isRunning ? "提交" : "发送", systemImage: "arrow.up.circle.fill")
+                if !viewModel.isRunning {
+                    Text("Return 发送")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.tertiary)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                          || viewModel.selectedModelID == nil)
             }
         }
-        .padding()
-        .background(.regularMaterial)
+        .padding(12)
+        .background(FloeTheme.chromeMaterial)
     }
 
     @ViewBuilder
@@ -6077,8 +6196,11 @@ private struct SharedCanvasAgentConversation: View {
                 events: events,
                 isLatest: isLatest,
                 isLive: viewModel.isRunning && isLatest,
-                hasError: events.contains { $0.kind == .error }
-            )
+                hasError: events.contains { $0.kind == .error },
+                pendingApprovals: viewModel.pendingApprovals
+            ) { approval, decision in
+                Task { await viewModel.resolve(approval, decision: decision) }
+            }
         case .event(let event), .terminal(let event):
             ThreadEventView(
                 event: event,
@@ -6091,8 +6213,10 @@ private struct SharedCanvasAgentConversation: View {
         case .liveReasoning, .liveAssistantTail, .liveThinking:
             HStack { ProgressView(); Text("正在处理…") }
                 .font(.caption).foregroundStyle(.secondary)
-        case .approval:
-            EmptyView()
+        case .approval(let approval):
+            ApprovalCardView(approval: approval) { decision in
+                Task { await viewModel.resolve(approval, decision: decision) }
+            }
         }
     }
 
@@ -6102,11 +6226,18 @@ private struct SharedCanvasAgentConversation: View {
             Text(text).textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
+        .padding(isUser ? 11 : 0)
         .background(
-            isUser ? FloeTheme.primary.opacity(0.10) : Color.secondary.opacity(0.08),
+            isUser ? FloeTheme.primary.opacity(0.10) : Color.clear,
             in: RoundedRectangle(cornerRadius: 12)
         )
+    }
+
+    private func suggestion(_ text: String) -> some View {
+        Button(text) { prompt = text }
+            .font(FloeTheme.Typography.metadata)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
     }
 
     @MainActor
@@ -6187,6 +6318,8 @@ private struct SharedCanvasAgentConversation: View {
     private func researchGoal(_ request: String) -> String {
         """
         你是 Floe 原生画布里的创作助手。理解当前选中的节点、相邻关系和用户目标；需要资料时可以搜索网页或读取公开链接，需要素材时使用画布素材与媒体生成工具。只使用本次实际提供的工具，保留来源，并把结果作为可编辑画布节点。
+
+        图片或视频生成必须使用唯一的 canvas.generate：一次调用会创建或复用“提示词 → 生成配置 → 结果”节点链。工具返回 ready、submitted 或 reused 都表示本次提交已经完成，禁止在同一轮以相同参数再次调用；返回 failed 时也不要原样重试，应说明失败并让用户从配置节点发起新的重试。
 
         当前画布上下文：
         \(contextSnapshot)
@@ -6653,27 +6786,47 @@ private struct CanvasMediaGenerationView: View {
         let providerPrompt = contextLines.isEmpty
             ? trimmedPrompt
             : "\(trimmedPrompt)\n\n画布文字引用：\n\(contextLines.joined(separator: "\n"))"
-        let anchor = existingConfiguration ?? reusableEmptyMedia ?? sources.last
-        let anchorPoint = CGPoint(x: anchor?.x ?? 360, y: anchor?.y ?? 300)
-        var configurationID = existingConfiguration?.id
-        var resultNodeID = reusableEmptyMedia?.id
+        let resultPoint: CGPoint = if let reusableEmptyMedia {
+            CGPoint(x: reusableEmptyMedia.x, y: reusableEmptyMedia.y)
+        } else if let existingConfiguration {
+            CGPoint(x: existingConfiguration.x + 420, y: existingConfiguration.y)
+        } else if let source = sources.last {
+            CGPoint(x: source.x + 840, y: source.y)
+        } else {
+            CGPoint(x: 780, y: 300)
+        }
+        let graphKind: CanvasGenerationGraphKind = kind == .image ? .image : .video
+        let modelID = kind == .image ? selectedImageModelID : selectedVideoModelID
+        let graphMetadata = [
+            "generationModelID": modelID?.uuidString ?? "",
+            "generationAspectRatio": aspectRatio,
+            "generationQuality": quality,
+            "generationCount": String(kind == .image ? count : 1),
+            "generationDurationSeconds": kind == .video ? String(duration) : "",
+            "generationState": "preparing"
+        ]
+        var configurationID: UUID?
+        var resultNodeID: UUID?
         do {
+            guard let graph = store.prepareGenerationGraph(CanvasGenerationGraphRequest(
+                kind: graphKind, prompt: trimmedPrompt,
+                sourceNodeIDs: sourceIDs,
+                resultPosition: CanvasPoint(resultPoint),
+                existingConfigurationNodeID: existingConfiguration?.id,
+                reusableResultNodeID: reusableEmptyMedia?.id,
+                metadata: graphMetadata
+            )) else {
+                throw FloeError.storageCorrupted("无法准备生成节点")
+            }
+            configurationID = graph.configurationNodeID
+            resultNodeID = graph.resultNodeID
             if kind == .image {
-                if configurationID == nil && reusableEmptyMedia == nil {
-                    configurationID = store.addGenerationTask(
-                        kind: .image, prompt: trimmedPrompt,
-                        at: CGPoint(x: anchorPoint.x + 420, y: anchorPoint.y)
-                    )
-                    for sourceID in sourceIDs {
-                        store.connect(sourceID, to: configurationID!, kind: .source)
-                    }
-                }
-                let ownerID = configurationID ?? resultNodeID!
+                let ownerID = graph.configurationNodeID
                 store.markGeneration(
                     nodeID: ownerID, kind: .image, prompt: trimmedPrompt,
                     modelID: selectedImageModelID, aspectRatio: aspectRatio,
                     quality: quality.isEmpty ? nil : quality, count: count,
-                    sourceNodeIDs: sourceIDs, state: "running"
+                    sourceNodeIDs: graph.sourceNodeIDs, state: "running"
                 )
                 let referenceData = try sources.compactMap { try imageData(for: $0) }
                 let assets = try await environment.mediaGenerationService.generateImages(
@@ -6692,36 +6845,26 @@ private struct CanvasMediaGenerationView: View {
                 var resultIDs: [UUID] = []
                 for (index, asset) in assets.enumerated() {
                     let id: UUID
-                    if index == 0, let reusable = resultNodeID {
-                        store.attachAsset(asset, kind: .image, to: reusable)
-                        id = reusable
+                    if index == 0 {
+                        store.attachAsset(asset, kind: .image, to: graph.resultNodeID)
+                        id = graph.resultNodeID
                     } else {
-                        let baseX = (configurationID.flatMap { id in
-                            store.selectedDocument?.nodes.first(where: { $0.id == id })?.x
-                        } ?? anchorPoint.x)
-                        let baseY = (configurationID.flatMap { id in
-                            store.selectedDocument?.nodes.first(where: { $0.id == id })?.y
-                        } ?? anchorPoint.y)
                         id = store.addAsset(
                             asset, kind: .image,
-                            at: CGPoint(x: baseX + 420 + Double(index) * 54,
-                                        y: baseY + Double(index) * 42)
+                            at: CGPoint(x: resultPoint.x + Double(index) * 54,
+                                        y: resultPoint.y + Double(index) * 42)
                         )
+                        store.connect(graph.configurationNodeID, to: id, kind: .generatedFrom)
                     }
                     store.markGeneration(
                         nodeID: id, kind: .image, prompt: trimmedPrompt,
                         modelID: selectedImageModelID, aspectRatio: aspectRatio,
                         quality: quality.isEmpty ? nil : quality, count: assets.count,
-                        sourceNodeIDs: sourceIDs, state: "ready"
+                        sourceNodeIDs: graph.sourceNodeIDs, state: "ready"
                     )
                     store.updateNodeMetadata(id, values: [
                         "imageGroupPrimary": index == 0 ? "true" : "false"
                     ])
-                    if let configurationID, configurationID != id {
-                        store.connect(configurationID, to: id, kind: .generatedFrom)
-                    } else if let source = sources.last?.id, source != id {
-                        store.connect(source, to: id, kind: .generatedFrom)
-                    }
                     resultIDs.append(id)
                 }
                 if resultIDs.count > 1 {
@@ -6738,44 +6881,16 @@ private struct CanvasMediaGenerationView: View {
                       let model = selectedVideoModel else {
                     throw FloeError.invalidConfiguration("请选择视频模型。")
                 }
-                if configurationID == nil && reusableEmptyMedia == nil {
-                    configurationID = store.addGenerationTask(
-                        kind: .video, prompt: trimmedPrompt,
-                        at: CGPoint(x: anchorPoint.x + 420, y: anchorPoint.y)
-                    )
-                    for sourceID in sourceIDs {
-                        store.connect(sourceID, to: configurationID!, kind: .source)
-                    }
-                }
-                if resultNodeID == nil {
-                    let baseX = configurationID.flatMap { id in
-                        store.selectedDocument?.nodes.first(where: { $0.id == id })?.x
-                    } ?? anchorPoint.x
-                    let baseY = configurationID.flatMap { id in
-                        store.selectedDocument?.nodes.first(where: { $0.id == id })?.y
-                    } ?? anchorPoint.y
-                    resultNodeID = store.addPlaceholder(
-                        kind: .video, at: CGPoint(x: baseX + 420, y: baseY)
-                    )
-                }
-                guard let resultNodeID else {
-                    throw FloeError.internalError("无法创建视频结果节点")
-                }
-                if let configurationID, configurationID != resultNodeID {
-                    store.connect(configurationID, to: resultNodeID, kind: .generatedFrom)
-                } else if let source = sources.last?.id, source != resultNodeID {
-                    store.connect(source, to: resultNodeID, kind: .generatedFrom)
-                }
                 store.markGeneration(
-                    nodeID: resultNodeID, kind: .video, prompt: trimmedPrompt,
+                    nodeID: graph.resultNodeID, kind: .video, prompt: trimmedPrompt,
                     modelID: model.id, aspectRatio: aspectRatio,
                     quality: quality.isEmpty ? nil : quality, count: 1,
-                    sourceNodeIDs: sourceIDs, state: "preparing"
+                    sourceNodeIDs: graph.sourceNodeIDs, state: "preparing"
                 )
                 let job = try await environment.mediaGenerationService.submitVideo(
                     modelID: model.id, canvasID: canvasID, documentID: documentID,
-                    sourceNodeIDs: sourceIDs,
-                    resultNodeID: resultNodeID,
+                    sourceNodeIDs: graph.sourceNodeIDs,
+                    resultNodeID: graph.resultNodeID,
                     request: RemoteVideoRequest(
                         prompt: providerPrompt, modelRemoteID: model.remoteModelID,
                         options: VideoGenerationOptions(
@@ -6785,12 +6900,11 @@ private struct CanvasMediaGenerationView: View {
                         )
                     )
                 )
-                store.setGenerationJob(job.id, for: resultNodeID)
+                store.setGenerationJob(job.id, for: graph.resultNodeID)
             }
             dismiss()
         } catch {
-            let failedNodeID = configurationID ?? resultNodeID
-            if let failedNodeID {
+            for failedNodeID in [configurationID, resultNodeID].compactMap({ $0 }) {
                 store.updateNodeMetadata(failedNodeID, values: [
                     "generationState": "failed",
                     "generationError": error.localizedDescription

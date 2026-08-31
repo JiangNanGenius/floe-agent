@@ -40,6 +40,9 @@ public struct CanvasPatchOperation: Sendable, Codable, Hashable, Identifiable {
     public var isLocked: Bool?
     public var shape: CanvasShapeKind?
     public var asset: CanvasAssetReference?
+    public var generationJobID: UUID?
+    public var createdByRunID: UUID?
+    public var metadata: [String: String]?
     public var sourceNodeID: UUID?
     public var destinationNodeID: UUID?
     public var connectionID: UUID?
@@ -56,6 +59,8 @@ public struct CanvasPatchOperation: Sendable, Codable, Hashable, Identifiable {
         position: CanvasPoint? = nil, size: CanvasSize? = nil,
         rotation: Double? = nil, isLocked: Bool? = nil,
         shape: CanvasShapeKind? = nil, asset: CanvasAssetReference? = nil,
+        generationJobID: UUID? = nil, createdByRunID: UUID? = nil,
+        metadata: [String: String]? = nil,
         sourceNodeID: UUID? = nil,
         destinationNodeID: UUID? = nil, connectionID: UUID? = nil,
         connectionKind: CanvasConnectionKind? = nil,
@@ -67,6 +72,8 @@ public struct CanvasPatchOperation: Sendable, Codable, Hashable, Identifiable {
         self.nodeKind = nodeKind; self.text = text; self.position = position
         self.size = size; self.rotation = rotation; self.isLocked = isLocked
         self.shape = shape; self.asset = asset; self.sourceNodeID = sourceNodeID
+        self.generationJobID = generationJobID
+        self.createdByRunID = createdByRunID; self.metadata = metadata
         self.destinationNodeID = destinationNodeID; self.connectionID = connectionID
         self.connectionKind = connectionKind
         self.sourcePort = sourcePort; self.destinationPort = destinationPort
@@ -242,6 +249,9 @@ public enum CanvasCommandService {
             if let size = operation.size { node.size = size }
             if let shape = operation.shape { node.shape = shape }
             if let asset = operation.asset { node.asset = asset }
+            if let generationJobID = operation.generationJobID { node.generationJobID = generationJobID }
+            if let createdByRunID = operation.createdByRunID { node.createdByRunID = createdByRunID }
+            if let metadata = operation.metadata { node.metadata.merge(metadata) { _, new in new } }
             document.nodes.append(node); changedNodes.insert(id)
         case .update:
             let id = operation.nodeID!
@@ -272,6 +282,15 @@ public enum CanvasCommandService {
             if let asset = operation.asset {
                 document.nodes[index].asset = asset
                 document.nodes[index].metadata["placeholder"] = nil
+            }
+            if let generationJobID = operation.generationJobID {
+                document.nodes[index].generationJobID = generationJobID
+            }
+            if let createdByRunID = operation.createdByRunID {
+                document.nodes[index].createdByRunID = createdByRunID
+            }
+            if let metadata = operation.metadata {
+                document.nodes[index].metadata.merge(metadata) { _, new in new }
             }
             changedNodes.insert(id)
         case .delete:
@@ -362,6 +381,180 @@ public enum CanvasCommandService {
                 changedNodes.insert(node.id)
             }
         }
+    }
+}
+
+public enum CanvasGenerationGraphKind: String, Sendable, Codable, Hashable {
+    case image, video
+}
+
+/// Canonical topology prepared before a provider request crosses the network.
+/// Both direct canvas UI and the canvas agent use this planner so prompts,
+/// configuration, references, results and retries share one graph contract.
+public struct CanvasGenerationGraphRequest: Sendable, Hashable {
+    public var kind: CanvasGenerationGraphKind
+    public var prompt: String
+    public var sourceNodeIDs: [UUID]
+    public var resultPosition: CanvasPoint
+    public var existingConfigurationNodeID: UUID?
+    public var reusableResultNodeID: UUID?
+    public var createdByRunID: UUID?
+    public var metadata: [String: String]
+
+    public init(
+        kind: CanvasGenerationGraphKind,
+        prompt: String,
+        sourceNodeIDs: [UUID] = [],
+        resultPosition: CanvasPoint,
+        existingConfigurationNodeID: UUID? = nil,
+        reusableResultNodeID: UUID? = nil,
+        createdByRunID: UUID? = nil,
+        metadata: [String: String] = [:]
+    ) {
+        self.kind = kind; self.prompt = prompt
+        self.sourceNodeIDs = sourceNodeIDs; self.resultPosition = resultPosition
+        self.existingConfigurationNodeID = existingConfigurationNodeID
+        self.reusableResultNodeID = reusableResultNodeID
+        self.createdByRunID = createdByRunID; self.metadata = metadata
+    }
+}
+
+public struct CanvasGenerationGraphPlan: Sendable, Hashable {
+    public var promptNodeID: UUID
+    public var configurationNodeID: UUID
+    public var resultNodeID: UUID
+    public var sourceNodeIDs: [UUID]
+    public var operations: [CanvasPatchOperation]
+
+    public init(
+        promptNodeID: UUID, configurationNodeID: UUID,
+        resultNodeID: UUID, sourceNodeIDs: [UUID],
+        operations: [CanvasPatchOperation]
+    ) {
+        self.promptNodeID = promptNodeID
+        self.configurationNodeID = configurationNodeID
+        self.resultNodeID = resultNodeID
+        self.sourceNodeIDs = sourceNodeIDs; self.operations = operations
+    }
+}
+
+public enum CanvasGenerationGraphPlanner {
+    public static func plan(
+        request: CanvasGenerationGraphRequest,
+        document: CanvasDocument
+    ) throws -> CanvasGenerationGraphPlan {
+        let prompt = request.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else {
+            throw FloeError.validationFailed("Generation prompt is required")
+        }
+        let nodesByID = Dictionary(uniqueKeysWithValues: document.nodes.map { ($0.id, $0) })
+        let requestedSources = request.sourceNodeIDs.compactMap { nodesByID[$0] }
+        let promptNode = requestedSources.first {
+            [.text, .stickyNote, .card].contains($0.kind)
+                && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == prompt
+        }
+        let promptNodeID = promptNode?.id ?? UUID()
+        let configurationNodeID: UUID
+        if let id = request.existingConfigurationNodeID,
+           nodesByID[id]?.kind == .generationTask {
+            configurationNodeID = id
+        } else {
+            configurationNodeID = UUID()
+        }
+        let resultKind: CanvasNodeKind = request.kind == .image ? .image : .video
+        let resultNodeID: UUID
+        if let id = request.reusableResultNodeID,
+           let node = nodesByID[id], node.kind == resultKind, node.asset == nil {
+            resultNodeID = id
+        } else {
+            resultNodeID = UUID()
+        }
+
+        var metadata = request.metadata
+        metadata["generationKind"] = request.kind.rawValue
+        metadata["generationPrompt"] = prompt
+        metadata["generationState"] = metadata["generationState"] ?? "preparing"
+        let sourceIDs = Array(Set(requestedSources.map(\.id) + [promptNodeID]))
+            .sorted { $0.uuidString < $1.uuidString }
+        metadata["generationSourceNodeIDs"] = sourceIDs.map(\.uuidString).joined(separator: ",")
+
+        var operations: [CanvasPatchOperation] = []
+        if promptNode == nil {
+            operations.append(CanvasPatchOperation(
+                kind: .create, nodeID: promptNodeID, nodeKind: .text,
+                text: prompt,
+                position: .init(x: request.resultPosition.x - 840, y: request.resultPosition.y),
+                size: .init(width: 320, height: 180),
+                createdByRunID: request.createdByRunID,
+                metadata: ["generationRole": "prompt"]
+            ))
+        }
+
+        let configurationText = request.kind == .image ? "图片生成" : "视频生成"
+        if nodesByID[configurationNodeID] == nil {
+            operations.append(CanvasPatchOperation(
+                kind: .create, nodeID: configurationNodeID, nodeKind: .generationTask,
+                text: configurationText,
+                position: .init(x: request.resultPosition.x - 420, y: request.resultPosition.y),
+                size: .init(width: 340, height: 210),
+                createdByRunID: request.createdByRunID, metadata: metadata
+            ))
+        } else {
+            operations.append(CanvasPatchOperation(
+                kind: .update, nodeID: configurationNodeID,
+                text: configurationText,
+                createdByRunID: request.createdByRunID, metadata: metadata
+            ))
+        }
+
+        if nodesByID[resultNodeID] == nil {
+            operations.append(CanvasPatchOperation(
+                kind: .create, nodeID: resultNodeID, nodeKind: resultKind,
+                text: request.kind == .image ? "图片生成中" : "视频生成中",
+                position: request.resultPosition,
+                size: .init(width: 320, height: request.kind == .image ? 260 : 220),
+                createdByRunID: request.createdByRunID,
+                metadata: metadata.merging(["generationRole": "result"]) { _, new in new }
+            ))
+        } else {
+            operations.append(CanvasPatchOperation(
+                kind: .update, nodeID: resultNodeID,
+                text: request.kind == .image ? "图片生成中" : "视频生成中",
+                createdByRunID: request.createdByRunID,
+                metadata: metadata.merging(["generationRole": "result"]) { _, new in new }
+            ))
+        }
+
+        let existingEdges = Set(document.connections.map {
+            "\($0.sourceNodeID.uuidString)>\($0.destinationNodeID.uuidString)"
+        })
+        for sourceID in sourceIDs where sourceID != configurationNodeID {
+            let key = "\(sourceID.uuidString)>\(configurationNodeID.uuidString)"
+            if !existingEdges.contains(key) {
+                operations.append(CanvasPatchOperation(
+                    kind: .connect, sourceNodeID: sourceID,
+                    destinationNodeID: configurationNodeID,
+                    connectionKind: .source, sourcePort: .trailing,
+                    destinationPort: .leading, label: "生成输入"
+                ))
+            }
+        }
+        let resultEdge = "\(configurationNodeID.uuidString)>\(resultNodeID.uuidString)"
+        if !existingEdges.contains(resultEdge) {
+            operations.append(CanvasPatchOperation(
+                kind: .connect, sourceNodeID: configurationNodeID,
+                destinationNodeID: resultNodeID,
+                connectionKind: .generatedFrom, sourcePort: .trailing,
+                destinationPort: .leading, label: "生成结果"
+            ))
+        }
+        return CanvasGenerationGraphPlan(
+            promptNodeID: promptNodeID,
+            configurationNodeID: configurationNodeID,
+            resultNodeID: resultNodeID,
+            sourceNodeIDs: sourceIDs,
+            operations: operations
+        )
     }
 }
 

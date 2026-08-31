@@ -280,6 +280,85 @@ struct CreativeMediaModelsTests {
         #expect(encodedNode["width"] == nil)
     }
 
+    @Test func generationPlannerBuildsPromptConfigurationResultGraph() throws {
+        let source = CanvasNode(
+            kind: .image, position: .init(x: 80, y: 120),
+            size: .init(width: 240, height: 180)
+        )
+        let document = CanvasDocument(name: "Canvas", nodes: [source])
+        let runID = UUID()
+        let plan = try CanvasGenerationGraphPlanner.plan(
+            request: CanvasGenerationGraphRequest(
+                kind: .image,
+                prompt: "  雾中雪山  ",
+                sourceNodeIDs: [source.id],
+                resultPosition: .init(x: 920, y: 240),
+                createdByRunID: runID,
+                metadata: ["generationFingerprint": "fingerprint"]
+            ),
+            document: document
+        )
+        let project = CanvasProject(
+            id: UUID(), name: "Generation", documents: [document],
+            selectedDocumentID: document.id
+        )
+        let patch = CanvasPatch(
+            canvasID: project.id, documentID: document.id,
+            expectedRevision: project.revision, operations: plan.operations
+        )
+        let (updated, _) = try CanvasCommandService.applying(patch, to: project)
+        let nodes = updated.documents[0].nodes
+        let prompt = try #require(nodes.first { $0.id == plan.promptNodeID })
+        let configuration = try #require(nodes.first { $0.id == plan.configurationNodeID })
+        let result = try #require(nodes.first { $0.id == plan.resultNodeID })
+
+        #expect(prompt.kind == .text)
+        #expect(prompt.text == "雾中雪山")
+        #expect(configuration.kind == .generationTask)
+        #expect(configuration.metadata["generationFingerprint"] == "fingerprint")
+        #expect(result.kind == .image)
+        #expect(result.createdByRunID == runID)
+        #expect(Set(plan.sourceNodeIDs) == [source.id, prompt.id])
+        #expect(updated.documents[0].connections.contains {
+            $0.sourceNodeID == prompt.id && $0.destinationNodeID == configuration.id
+                && $0.kind == .source
+        })
+        #expect(updated.documents[0].connections.contains {
+            $0.sourceNodeID == configuration.id && $0.destinationNodeID == result.id
+                && $0.kind == .generatedFrom
+        })
+    }
+
+    @Test func generationPlannerReusesVisibleGenerationNodes() throws {
+        let prompt = CanvasNode(
+            kind: .text, text: "产品在清晨海边",
+            position: .init(x: 100, y: 100), size: .init(width: 280, height: 160)
+        )
+        let configuration = CanvasNode(
+            kind: .generationTask, text: "图片生成",
+            position: .init(x: 500, y: 100), size: .init(width: 320, height: 200)
+        )
+        let result = CanvasNode(
+            kind: .image, text: "图片生成中",
+            position: .init(x: 900, y: 100), size: .init(width: 320, height: 260)
+        )
+        let document = CanvasDocument(name: "Canvas", nodes: [prompt, configuration, result])
+        let plan = try CanvasGenerationGraphPlanner.plan(
+            request: CanvasGenerationGraphRequest(
+                kind: .image, prompt: prompt.text,
+                sourceNodeIDs: [prompt.id], resultPosition: result.position,
+                existingConfigurationNodeID: configuration.id,
+                reusableResultNodeID: result.id
+            ),
+            document: document
+        )
+
+        #expect(plan.promptNodeID == prompt.id)
+        #expect(plan.configurationNodeID == configuration.id)
+        #expect(plan.resultNodeID == result.id)
+        #expect(!plan.operations.contains { $0.kind == .create })
+    }
+
     @Test func canvasSyncReducerConvergesForOutOfOrderEqualRevision() {
         let canvasID = UUID(), entityID = UUID()
         let a = CanvasSyncOperation(

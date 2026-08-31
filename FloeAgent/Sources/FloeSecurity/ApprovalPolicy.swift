@@ -209,6 +209,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
         if action.isPreapprovedSkillPythonRequest { return true }
         let alwaysExempt: Set<String> = [
             "image.inspect", "image.ocr", "image.scanBarcode", "image.generate",
+            "canvas.generate",
             "document.pdf.inspect", "document.pdf.render",
             "document.office.inspect", "document.office.updateText",
             "document.createWord", "document.createWorkbook", "presentation.createDeck",

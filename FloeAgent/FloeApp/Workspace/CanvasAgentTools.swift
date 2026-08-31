@@ -35,13 +35,27 @@ actor FileCanvasDocumentRepository: CanvasDocumentRepository {
     }
 }
 
+struct CanvasGenerationOutcome: Encodable {
+    var canvasID: UUID
+    var documentID: UUID
+    var revision: Int64
+    var promptNodeID: UUID
+    var configurationNodeID: UUID
+    var resultNodeIDs: [UUID]
+    var jobID: UUID?
+    var state: String
+    var reused: Bool
+}
+
 actor CanvasToolCoordinator {
     private let repository: any CanvasDocumentRepository
     private let assetStore: CreativeAssetStore
     private let jobs: MediaGenerationJobStore
     private let runContexts: CanvasRunContextStore
     private let conversationIDForRun: @Sendable (UUID) async throws -> UUID?
-    private let generateImage: @Sendable (String, ImageGenerationOptions) async throws -> CanvasAssetReference
+    private let generateImages: @Sendable (
+        String, ImageGenerationOptions, [Data], UUID?
+    ) async throws -> [CanvasAssetReference]
     private let submitVideo: @Sendable (
         UUID, UUID, UUID, [UUID], UUID, RemoteVideoRequest
     ) async throws -> MediaGenerationJob
@@ -52,7 +66,9 @@ actor CanvasToolCoordinator {
         jobs: MediaGenerationJobStore,
         runContexts: CanvasRunContextStore,
         conversationIDForRun: @escaping @Sendable (UUID) async throws -> UUID?,
-        generateImage: @escaping @Sendable (String, ImageGenerationOptions) async throws -> CanvasAssetReference,
+        generateImages: @escaping @Sendable (
+            String, ImageGenerationOptions, [Data], UUID?
+        ) async throws -> [CanvasAssetReference],
         submitVideo: @escaping @Sendable (
             UUID, UUID, UUID, [UUID], UUID, RemoteVideoRequest
         ) async throws -> MediaGenerationJob
@@ -60,7 +76,7 @@ actor CanvasToolCoordinator {
         self.repository = repository; self.assetStore = assetStore; self.jobs = jobs
         self.runContexts = runContexts
         self.conversationIDForRun = conversationIDForRun
-        self.generateImage = generateImage; self.submitVideo = submitVideo
+        self.generateImages = generateImages; self.submitVideo = submitVideo
     }
 
     func project(for runID: UUID) async throws -> CanvasProject {
@@ -153,76 +169,291 @@ actor CanvasToolCoordinator {
         return result
     }
 
-    func generateImageAsset(
-        runID: UUID, prompt: String, documentID: UUID?,
-        position: CanvasPoint, expectedRevision: Int64,
-        aspectRatio: String?
-    ) async throws -> CanvasOperationResult {
-        let asset = try await generateImage(prompt, ImageGenerationOptions(aspectRatio: aspectRatio))
-        return try await insertAsset(
-            runID: runID, assetID: asset.id, documentID: documentID,
-            position: position, expectedRevision: expectedRevision
-        )
-    }
-
-    func submitVideoJob(
-        runID: UUID, modelID: UUID, prompt: String,
-        documentID: UUID?, position: CanvasPoint,
-        expectedRevision: Int64, aspectRatio: String?,
-        durationSeconds: Int?
-    ) async throws -> (CanvasOperationResult, MediaGenerationJob) {
-        var project = try await project(for: runID)
-        let targetDocumentID = documentID ?? project.selectedDocumentID
-        guard let document = project.documents.first(where: { $0.id == targetDocumentID }) else {
+    func generateMedia(
+        runID: UUID, kind: CanvasGenerationGraphKind, modelID: UUID?,
+        prompt: String, documentID: UUID?, sourceNodeIDs: [UUID]?,
+        configurationNodeID: UUID?, position: CanvasPoint,
+        expectedRevision: Int64, aspectRatio: String?, quality: String?,
+        count: Int, durationSeconds: Int?
+    ) async throws -> CanvasGenerationOutcome {
+        let activeProject = try await project(for: runID)
+        let persisted = try await runContexts.context(runID: runID)
+        let targetDocumentID = documentID ?? persisted?.documentID ?? activeProject.selectedDocumentID
+        guard let document = activeProject.documents.first(where: { $0.id == targetDocumentID }) else {
             throw FloeError.validationFailed("Canvas document does not exist")
         }
-        let resultNodeID = UUID()
-        let patch = CanvasPatch(
-            canvasID: project.id, documentID: targetDocumentID,
-            expectedRevision: expectedRevision,
-            operations: [CanvasPatchOperation(
-                kind: .create, nodeID: resultNodeID, nodeKind: .generationTask,
-                text: "视频生成中：\(prompt)", position: position
-            )]
+        let sources = sourceNodeIDs ?? persisted?.selectedNodeIDs ?? []
+        let fingerprint = generationFingerprint(
+            kind: kind, prompt: prompt, modelID: modelID,
+            sourceNodeIDs: sources, aspectRatio: aspectRatio,
+            quality: quality, count: count, durationSeconds: durationSeconds
         )
-        let result = try await apply(runID: runID, patch: patch)
-        project = try await repository.project(canvasID: project.id)
-        let job: MediaGenerationJob
+        if let existing = document.nodes.first(where: {
+            $0.kind == .generationTask
+                && $0.createdByRunID == runID
+                && $0.metadata["generationRequestKey"] == fingerprint
+        }) {
+            let state = existing.metadata["generationState"] ?? "unknown"
+            if ["failed", "submitFailed"].contains(state) {
+                throw FloeError.validationFailed(
+                    "This generation already failed in the current run. Change the request or retry its configuration node in a new user turn."
+                )
+            }
+            let resultIDs = existing.metadata["generationResultNodeIDs"]?
+                .split(separator: ",").compactMap { UUID(uuidString: String($0)) } ?? []
+            return CanvasGenerationOutcome(
+                canvasID: activeProject.id, documentID: targetDocumentID,
+                revision: activeProject.revision,
+                promptNodeID: UUID(uuidString: existing.metadata["generationPromptNodeID"] ?? "") ?? existing.id,
+                configurationNodeID: existing.id, resultNodeIDs: resultIDs,
+                jobID: resultIDs.compactMap { id in
+                    document.nodes.first(where: { $0.id == id })?.generationJobID
+                }.first,
+                state: state, reused: true
+            )
+        }
+        guard activeProject.revision == expectedRevision else {
+            throw FloeError.validationFailed(
+                "Canvas revision conflict: expected \(expectedRevision), current \(activeProject.revision)"
+            )
+        }
+        let graphMetadata = generationMetadata(
+            kind: kind, prompt: prompt, modelID: modelID,
+            aspectRatio: aspectRatio, quality: quality,
+            count: count, durationSeconds: durationSeconds,
+            fingerprint: fingerprint, state: "running"
+        )
+        let graph = try CanvasGenerationGraphPlanner.plan(
+            request: CanvasGenerationGraphRequest(
+                kind: kind, prompt: prompt, sourceNodeIDs: sources,
+                resultPosition: position,
+                existingConfigurationNodeID: configurationNodeID,
+                createdByRunID: runID, metadata: graphMetadata
+            ),
+            document: document
+        )
+        var preparedMetadata = graphMetadata
+        preparedMetadata["generationPromptNodeID"] = graph.promptNodeID.uuidString
+        preparedMetadata["generationResultNodeIDs"] = graph.resultNodeID.uuidString
+        var operations = graph.operations
+        operations.append(CanvasPatchOperation(
+            kind: .update, nodeID: graph.configurationNodeID,
+            metadata: preparedMetadata
+        ))
+        let prepared = try await apply(runID: runID, patch: CanvasPatch(
+            canvasID: activeProject.id, documentID: targetDocumentID,
+            expectedRevision: expectedRevision, operations: operations
+        ))
+
         do {
-            job = try await submitVideo(
-                modelID, project.id, targetDocumentID, [], resultNodeID,
+            if kind == .image {
+                let referenceData = try sourceImageData(
+                    sourceNodeIDs: sources, document: document
+                )
+                let assets = try await generateImages(
+                    providerPrompt(prompt: prompt, sourceNodeIDs: sources, document: document),
+                    ImageGenerationOptions(
+                        aspectRatio: aspectRatio, quality: quality,
+                        count: max(1, min(count, 4))
+                    ),
+                    referenceData, modelID
+                )
+                guard !assets.isEmpty else {
+                    throw FloeError.internalError("Image provider returned no assets")
+                }
+                var resultIDs = [graph.resultNodeID]
+                var resultOperations: [CanvasPatchOperation] = []
+                for (index, asset) in assets.enumerated() {
+                    let resultID: UUID
+                    if index == 0 {
+                        resultID = graph.resultNodeID
+                        resultOperations.append(CanvasPatchOperation(
+                            kind: .update, nodeID: resultID, nodeKind: .image,
+                            text: "生成图片", asset: asset,
+                            metadata: graphMetadata.merging([
+                                "generationState": "ready",
+                                "imageGroupPrimary": "true"
+                            ]) { _, new in new }
+                        ))
+                    } else {
+                        resultID = UUID(); resultIDs.append(resultID)
+                        resultOperations.append(CanvasPatchOperation(
+                            kind: .create, nodeID: resultID, nodeKind: .image,
+                            text: "生成图片",
+                            position: .init(
+                                x: position.x + Double(index) * 54,
+                                y: position.y + Double(index) * 42
+                            ),
+                            size: .init(width: 320, height: 260), asset: asset,
+                            createdByRunID: runID,
+                            metadata: graphMetadata.merging([
+                                "generationState": "ready",
+                                "imageGroupPrimary": "false"
+                            ]) { _, new in new }
+                        ))
+                        resultOperations.append(CanvasPatchOperation(
+                            kind: .connect,
+                            sourceNodeID: graph.configurationNodeID,
+                            destinationNodeID: resultID,
+                            connectionKind: .generatedFrom,
+                            sourcePort: .trailing, destinationPort: .leading,
+                            label: "生成结果"
+                        ))
+                    }
+                }
+                resultOperations.append(CanvasPatchOperation(
+                    kind: .update, nodeID: graph.configurationNodeID,
+                    metadata: [
+                        "generationState": "ready",
+                        "generationResultNodeIDs": resultIDs.map(\.uuidString).joined(separator: ",")
+                    ]
+                ))
+                let completed = try await apply(runID: runID, patch: CanvasPatch(
+                    canvasID: activeProject.id, documentID: targetDocumentID,
+                    expectedRevision: prepared.revision, operations: resultOperations
+                ))
+                for asset in assets {
+                    try await assetStore.adjustReference(assetID: asset.id, by: 1)
+                }
+                return CanvasGenerationOutcome(
+                    canvasID: activeProject.id, documentID: targetDocumentID,
+                    revision: completed.revision, promptNodeID: graph.promptNodeID,
+                    configurationNodeID: graph.configurationNodeID,
+                    resultNodeIDs: resultIDs, jobID: nil, state: "ready", reused: false
+                )
+            }
+
+            guard let modelID else {
+                throw FloeError.validationFailed("video generation requires modelID")
+            }
+            let job = try await submitVideo(
+                modelID, activeProject.id, targetDocumentID,
+                graph.sourceNodeIDs, graph.resultNodeID,
                 RemoteVideoRequest(
-                    prompt: prompt, modelRemoteID: "",
+                    prompt: providerPrompt(prompt: prompt, sourceNodeIDs: sources, document: document),
+                    modelRemoteID: "",
                     options: VideoGenerationOptions(
-                        aspectRatio: aspectRatio, durationSeconds: durationSeconds
+                        aspectRatio: aspectRatio, resolution: quality,
+                        durationSeconds: durationSeconds
                     )
                 )
             )
+            let submitted = try await apply(runID: runID, patch: CanvasPatch(
+                canvasID: activeProject.id, documentID: targetDocumentID,
+                expectedRevision: prepared.revision,
+                operations: [
+                    CanvasPatchOperation(
+                        kind: .update, nodeID: graph.resultNodeID,
+                        generationJobID: job.id,
+                        metadata: ["generationState": "submitted"]
+                    ),
+                    CanvasPatchOperation(
+                        kind: .update, nodeID: graph.configurationNodeID,
+                        metadata: ["generationState": "submitted"]
+                    )
+                ]
+            ))
+            return CanvasGenerationOutcome(
+                canvasID: activeProject.id, documentID: targetDocumentID,
+                revision: submitted.revision, promptNodeID: graph.promptNodeID,
+                configurationNodeID: graph.configurationNodeID,
+                resultNodeIDs: [graph.resultNodeID], jobID: job.id,
+                state: "submitted", reused: false
+            )
         } catch {
-            // Keep the user's prompt and result slot recoverable, but never leave a
-            // failed provider submission presented as an active remote job.
-            var failed = project
-            if let documentIndex = failed.documents.firstIndex(where: { $0.id == document.id }),
-               let nodeIndex = failed.documents[documentIndex].nodes.firstIndex(where: { $0.id == resultNodeID }) {
-                failed.documents[documentIndex].nodes[nodeIndex].text = "视频提交失败，可重试：\(prompt)"
-                failed.documents[documentIndex].nodes[nodeIndex].metadata["generationState"] = "submitFailed"
-                failed.revision += 1
-                failed.updatedAt = Date()
-                try await repository.save(failed, expectedRevision: project.revision)
-                await notify(canvasID: project.id)
-            }
+            try? await markGenerationFailed(
+                runID: runID, canvasID: activeProject.id,
+                documentID: targetDocumentID,
+                configurationNodeID: graph.configurationNodeID,
+                resultNodeID: graph.resultNodeID,
+                message: error.localizedDescription
+            )
             throw error
         }
-        var update = project
-        guard let documentIndex = update.documents.firstIndex(where: { $0.id == document.id }),
-              let nodeIndex = update.documents[documentIndex].nodes.firstIndex(where: { $0.id == resultNodeID }) else {
-            throw FloeError.storageCorrupted("Generated video node is missing")
+    }
+
+    private func markGenerationFailed(
+        runID: UUID, canvasID: UUID, documentID: UUID,
+        configurationNodeID: UUID, resultNodeID: UUID, message: String
+    ) async throws {
+        let current = try await repository.project(canvasID: canvasID)
+        _ = try await apply(runID: runID, patch: CanvasPatch(
+            canvasID: canvasID, documentID: documentID,
+            expectedRevision: current.revision,
+            operations: [
+                CanvasPatchOperation(
+                    kind: .update, nodeID: configurationNodeID,
+                    metadata: ["generationState": "failed", "generationError": message]
+                ),
+                CanvasPatchOperation(
+                    kind: .update, nodeID: resultNodeID,
+                    text: "生成失败，可从配置节点重试",
+                    metadata: ["generationState": "failed", "generationError": message]
+                )
+            ]
+        ))
+    }
+
+    private func generationFingerprint(
+        kind: CanvasGenerationGraphKind, prompt: String, modelID: UUID?,
+        sourceNodeIDs: [UUID], aspectRatio: String?, quality: String?,
+        count: Int, durationSeconds: Int?
+    ) -> String {
+        let canonical = [
+            kind.rawValue, prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+            modelID?.uuidString ?? "", sourceNodeIDs.map(\.uuidString).sorted().joined(separator: ","),
+            aspectRatio ?? "", quality ?? "", String(count), durationSeconds.map(String.init) ?? ""
+        ].joined(separator: "|")
+        return SHA256.hash(data: Data(canonical.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func generationMetadata(
+        kind: CanvasGenerationGraphKind, prompt: String, modelID: UUID?,
+        aspectRatio: String?, quality: String?, count: Int,
+        durationSeconds: Int?, fingerprint: String, state: String
+    ) -> [String: String] {
+        [
+            "generationKind": kind.rawValue,
+            "generationPrompt": prompt,
+            "generationModelID": modelID?.uuidString ?? "",
+            "generationAspectRatio": aspectRatio ?? "",
+            "generationQuality": quality ?? "",
+            "generationCount": String(count),
+            "generationDurationSeconds": durationSeconds.map(String.init) ?? "",
+            "generationRequestKey": fingerprint,
+            "generationState": state
+        ]
+    }
+
+    private func providerPrompt(
+        prompt: String, sourceNodeIDs: [UUID], document: CanvasDocument
+    ) -> String {
+        let sourceSet = Set(sourceNodeIDs)
+        let context = document.nodes.compactMap { node -> String? in
+            guard sourceSet.contains(node.id), [.text, .stickyNote, .card].contains(node.kind) else {
+                return nil
+            }
+            let text = node.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty || text == prompt ? nil : text
         }
-        update.documents[documentIndex].nodes[nodeIndex].generationJobID = job.id
-        update.revision += 1; update.updatedAt = Date()
-        try await repository.save(update, expectedRevision: project.revision)
-        await notify(canvasID: project.id)
-        return (result, job)
+        return context.isEmpty ? prompt : "\(prompt)\n\n画布文字引用：\n\(context.joined(separator: "\n"))"
+    }
+
+    private func sourceImageData(
+        sourceNodeIDs: [UUID], document: CanvasDocument
+    ) throws -> [Data] {
+        let sourceSet = Set(sourceNodeIDs)
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: false
+        ).appendingPathComponent("FloeAgent", isDirectory: true)
+        return try document.nodes.compactMap { node in
+            guard sourceSet.contains(node.id), node.kind == .image,
+                  let relative = node.asset?.localRelativePath,
+                  !relative.contains("..") else { return nil }
+            return try Data(contentsOf: support.appendingPathComponent(relative))
+        }
     }
 
     func mediaJobs(runID: UUID) async throws -> [MediaGenerationJob] {
@@ -406,13 +637,14 @@ private struct CanvasAssetInsertTool: AgentTool {
 private struct CanvasGenerateMediaTool: AgentTool {
     struct Arguments: Decodable, Sendable {
         var kind: String; var prompt: String; var modelID: UUID?
-        var documentID: UUID?; var position: CanvasPoint
+        var documentID: UUID?; var sourceNodeIDs: [UUID]?
+        var configurationNodeID: UUID?; var position: CanvasPoint
         var expectedRevision: Int64; var aspectRatio: String?
-        var durationSeconds: Int?
+        var quality: String?; var count: Int?; var durationSeconds: Int?
     }
     static let name = "canvas.generate"
-    static let toolDescription = "Generate an image or submit a durable video job and insert its result/task node. This may incur provider charges and requires approval."
-    static let parametersJSON = #"{"type":"object","properties":{"kind":{"type":"string","enum":["image","video"]},"prompt":{"type":"string"},"modelID":{"type":"string","format":"uuid"},"documentID":{"type":"string","format":"uuid"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false},"expectedRevision":{"type":"integer"},"aspectRatio":{"type":"string"},"durationSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["kind","prompt","position","expectedRevision"],"additionalProperties":false}"#
+    static let toolDescription = "Generate media through the canonical canvas workflow. It creates or reuses a visible prompt node, a generation-configuration node, and connected image/video results. Inspect first and pass the exact revision."
+    static let parametersJSON = #"{"type":"object","properties":{"kind":{"type":"string","enum":["image","video"]},"prompt":{"type":"string"},"modelID":{"type":"string","format":"uuid"},"documentID":{"type":"string","format":"uuid"},"sourceNodeIDs":{"type":"array","items":{"type":"string","format":"uuid"}},"configurationNodeID":{"type":"string","format":"uuid"},"position":{"type":"object","description":"Preferred position of the first result node; prompt and configuration nodes are placed to its left.","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false},"expectedRevision":{"type":"integer"},"aspectRatio":{"type":"string"},"quality":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":4},"durationSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["kind","prompt","position","expectedRevision"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.networkAccess, .sendsDataToProvider, .persistsPersonalData]
     static let isSideEffecting = true
     let coordinator: CanvasToolCoordinator
@@ -423,22 +655,21 @@ private struct CanvasGenerateMediaTool: AgentTool {
         if args.kind == "video", args.modelID == nil {
             throw FloeError.validationFailed("video generation requires modelID")
         }
+        if let count = args.count, !(1...4).contains(count) {
+            throw FloeError.validationFailed("count must be 1...4")
+        }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        if args.kind == "image" {
-            return try await CanvasToolOutput.make(coordinator.generateImageAsset(
-                runID: context.runID, prompt: args.prompt,
-                documentID: args.documentID, position: args.position,
-                expectedRevision: args.expectedRevision, aspectRatio: args.aspectRatio
-            ))
-        }
-        let (result, job) = try await coordinator.submitVideoJob(
-            runID: context.runID, modelID: args.modelID!, prompt: args.prompt,
-            documentID: args.documentID, position: args.position,
-            expectedRevision: args.expectedRevision, aspectRatio: args.aspectRatio,
-            durationSeconds: args.durationSeconds
-        )
-        return try CanvasToolOutput.make(["revision": String(result.revision), "jobID": job.id.uuidString, "state": job.state.rawValue])
+        try await CanvasToolOutput.make(coordinator.generateMedia(
+            runID: context.runID,
+            kind: args.kind == "image" ? .image : .video,
+            modelID: args.modelID, prompt: args.prompt,
+            documentID: args.documentID, sourceNodeIDs: args.sourceNodeIDs,
+            configurationNodeID: args.configurationNodeID,
+            position: args.position, expectedRevision: args.expectedRevision,
+            aspectRatio: args.aspectRatio, quality: args.quality,
+            count: args.count ?? 1, durationSeconds: args.durationSeconds
+        ))
     }
 }
 
@@ -546,9 +777,14 @@ func registerCanvasAgentTools(environment: AppEnvironment, registry: ToolRunnerR
         conversationIDForRun: { [runStore = environment.runStore] runID in
             try await runStore.run(id: runID)?.conversationID
         },
-        generateImage: { [weak environment] prompt, options in
+        generateImages: { [weak environment] prompt, options, sourceImages, modelID in
             guard let environment else { throw FloeError.internalError("Canvas environment unavailable") }
-            return try await environment.mediaGenerationService.generateImage(prompt: prompt, options: options)
+            return try await environment.mediaGenerationService.generateImages(
+                prompt: prompt,
+                options: options,
+                sourceImages: sourceImages,
+                modelID: modelID
+            )
         },
         submitVideo: { [weak environment] modelID, canvasID, documentID, sources, resultID, request in
             guard let environment else { throw FloeError.internalError("Canvas environment unavailable") }

@@ -148,12 +148,13 @@ struct ApprovalPolicyTests {
 
     private func action(
         hostID: UUID? = nil,
-        riskLabels: Set<String> = ["executesRemoteCommand"]
+        riskLabels: Set<String> = ["executesRemoteCommand"],
+        toolName: String = "ssh.execute"
     ) throws -> ProposedAction {
         let scope: ToolScope = hostID.map { .host($0) } ?? .local
         let call = try ToolCall(
             id: "c1",
-            toolName: "ssh.execute",
+            toolName: toolName,
             argumentsJSON: Data(#"{"command":"ls"}"#.utf8),
             scope: scope
         )
@@ -173,6 +174,22 @@ struct ApprovalPolicyTests {
             action(riskLabels: ["accessesCredentials"])
         ) else {
             Issue.record("Credential access must remain a human decision")
+            return
+        }
+    }
+
+    @Test("Automatic canvas generation does not enter an approval loop")
+    func automaticCanvasGenerationIsPreapproved() async throws {
+        let generation = try action(
+            riskLabels: ["networkAccess", "sendsDataToProvider", "persistsPersonalData"],
+            toolName: "canvas.generate"
+        )
+        let policy = AutomaticApprovalPolicy()
+        #expect(!policy.requiresModelReview(generation))
+        #expect(try await policy.decide(generation).permitsExecution)
+
+        guard case .escalateToHuman = try await HumanApprovalPolicy().decide(generation) else {
+            Issue.record("Ask mode must keep the normal human approval card")
             return
         }
     }
