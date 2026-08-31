@@ -156,8 +156,8 @@ jobs:
             done < <(jq -r '[.included[]? | select(.type == "scmRepositories") | .id] | unique[]' "$RUNNER_TEMP/workflows-$product_id.json")
           done < <(jq -r '.data[].id' "$RUNNER_TEMP/products.json")
 
-          bundle_id="$(awk '$1 == "PRODUCT_BUNDLE_IDENTIFIER:" { gsub(/\"/, "", $2); print $2; exit }' FloeAgent/project.yml)"
-          build_number="$(awk '$1 == "CURRENT_PROJECT_VERSION:" { gsub(/\"/, "", $2); print $2; exit }' FloeAgent/project.yml)"
+          bundle_id="$(awk '$1 == "PRODUCT_BUNDLE_IDENTIFIER:" { print $2; exit }' FloeAgent/project.yml | tr -d '"')"
+          build_number="$(awk '$1 == "CURRENT_PROJECT_VERSION:" { print $2; exit }' FloeAgent/project.yml | tr -d '"')"
           test -n "$bundle_id"
           test -n "$build_number"
           api_get /v1/apps \
@@ -175,7 +175,7 @@ jobs:
             --data-urlencode 'fields[preReleaseVersions]=version,platform' \
             --data-urlencode 'include=preReleaseVersion' \
             > "$RUNNER_TEMP/builds.json"
-          jq -r '.data[] as $build | "testflight-build id=\($build.id) build=\($build.attributes.version) processing=\($build.attributes.processingState) audience=\($build.attributes.buildAudienceType) uploaded=\($build.attributes.uploadedDate) prerelease_id=\($build.relationships.preReleaseVersion.data.id // \"none\")"' \
+          jq -r '.data[] as $build | ($build.relationships.preReleaseVersion.data.id // "none") as $prerelease | "testflight-build id=\($build.id) build=\($build.attributes.version) processing=\($build.attributes.processingState) audience=\($build.attributes.buildAudienceType) uploaded=\($build.attributes.uploadedDate) prerelease_id=\($prerelease)"' \
             "$RUNNER_TEMP/builds.json"
 
       - name: Update the explicitly selected Xcode Cloud build environment
