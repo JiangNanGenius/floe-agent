@@ -57,6 +57,19 @@ struct V3AgentDailyTests {
         }
     }
 
+    @Test("Timeline migrations install keyset indexes")
+    func timelineIndexesExist() async throws {
+        let database = try await makeDatabase()
+        let indexes = try await database.reader { db in
+            try String.fetchAll(
+                db,
+                sql: "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+        #expect(indexes.contains("idx_messages_conversation_cursor_v31"))
+        #expect(indexes.contains("idx_runs_conversation_cursor_v31"))
+    }
+
     // MARK: ConversationStore
 
     private func makeConversationStore(_ db: DatabaseManager) -> SQLiteConversationStore {
@@ -154,6 +167,69 @@ struct V3AgentDailyTests {
         #expect(Set(all.map(\.id)).count == 7)
     }
 
+    @Test("Ten-thousand-message page stays bounded and batch-hydrates parts")
+    func hugeConversationWindow() async throws {
+        let db = try await makeDatabase()
+        let store = makeConversationStore(db)
+        let conversationID = UUID()
+        let origin = Date(timeIntervalSince1970: 1_700_010_000)
+        try await store.saveConversation(ConversationRecord(
+            id: conversationID, title: "Huge", createdAt: origin, updatedAt: origin
+        ))
+        let ids = (0..<10_000).map { _ in UUID() }
+        try await db.writer { database in
+            for (index, id) in ids.enumerated() {
+                try database.execute(
+                    sql: """
+                        INSERT INTO messages (id, conversation_id, role, content, created_at)
+                        VALUES (?, ?, 'assistant', ?, ?)
+                        """,
+                    arguments: [
+                        id.uuidString, conversationID.uuidString, "message-\(index)",
+                        PersistenceCodec.encode(origin.addingTimeInterval(Double(index)))
+                    ]
+                )
+                if index >= 9_950 {
+                    try database.execute(
+                        sql: """
+                            INSERT INTO message_parts (
+                                id, message_id, part_index, kind, text,
+                                metadata_json, created_at
+                            ) VALUES (?, ?, 0, 'text', ?, '{}', ?)
+                            """,
+                        arguments: [
+                            UUID().uuidString, id.uuidString, "part-\(index)",
+                            PersistenceCodec.encode(origin.addingTimeInterval(Double(index)))
+                        ]
+                    )
+                }
+            }
+        }
+
+        let page = try await store.messagePage(
+            conversationID: conversationID, before: nil, limit: 100
+        )
+        #expect(page.messages.count == 100)
+        #expect(page.hasEarlier)
+        #expect(page.messages.first?.content == "message-9900")
+        #expect(page.messages.last?.content == "message-9999")
+        #expect(page.messages.suffix(50).allSatisfy { $0.parts.count == 1 })
+        let plan: [String] = try await db.reader { database in
+            try Row.fetchAll(
+                database,
+                sql: """
+                    EXPLAIN QUERY PLAN
+                    SELECT * FROM messages
+                    WHERE conversation_id = ?
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 101
+                """,
+                arguments: [conversationID.uuidString]
+            ).map { $0["detail"] }
+        }
+        #expect(plan.joined(separator: " ").contains("idx_messages_conversation_cursor_v31"))
+    }
+
     @Test("Attachment round-trip preserves security-scoped bookmark bytes")
     func attachmentRoundTrip() async throws {
         let db = try await makeDatabase()
@@ -238,6 +314,47 @@ struct V3AgentDailyTests {
         let events = try await runStore.events(runID: runID)
         #expect(events.map(\.sequence) == [1, 2, 3])
         #expect(events.map(\.kind) == [.assistantText, .toolRequest, .status])
+    }
+
+    @Test("Recent run and event windows are newest-first bounded queries")
+    func boundedRunWindows() async throws {
+        let db = try await makeDatabase()
+        let runStore = makeRunStore(db)
+        let (conversationID, runID) = try await seedConversationAndRun(db)
+        let origin = Date().addingTimeInterval(1_000)
+        for index in 0..<8 {
+            try await runStore.saveRun(RunRecord(
+                id: UUID(),
+                conversationID: conversationID,
+                state: index == 6 ? "runningTool" : "completed",
+                goal: "run-\(index)",
+                startedAt: origin.addingTimeInterval(Double(index))
+            ))
+        }
+        try await db.writer { database in
+            for sequence in 1...1_500 {
+                try database.execute(
+                    sql: """
+                        INSERT INTO run_events (id, run_id, sequence, kind, payload_json, created_at)
+                        VALUES (?, ?, ?, 'status', '{}', ?)
+                        """,
+                    arguments: [
+                        UUID().uuidString, runID.uuidString, sequence,
+                        PersistenceCodec.encode(origin.addingTimeInterval(Double(sequence)))
+                    ]
+                )
+            }
+        }
+
+        let runs = try await runStore.recentRuns(conversationID: conversationID, limit: 3)
+        #expect(runs.map(\.goal) == ["run-7", "run-6", "run-5"])
+        let active = try await runStore.nonTerminalRuns()
+        #expect(active.contains { $0.goal == "run-6" })
+        #expect(active.contains { $0.id == runID })
+        let events = try await runStore.recentEvents(runID: runID, limit: 1_000)
+        #expect(events.count == 1_000)
+        #expect(events.first?.sequence == 501)
+        #expect(events.last?.sequence == 1_500)
     }
 
     @Test("Usage and structured errors round-trip")

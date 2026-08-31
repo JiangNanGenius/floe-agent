@@ -43,6 +43,7 @@ public struct CanvasPatchOperation: Sendable, Codable, Hashable, Identifiable {
     public var sourceNodeID: UUID?
     public var destinationNodeID: UUID?
     public var connectionID: UUID?
+    public var connectionKind: CanvasConnectionKind?
     public var sourcePort: CanvasConnectionPort?
     public var destinationPort: CanvasConnectionPort?
     public var label: String?
@@ -57,6 +58,7 @@ public struct CanvasPatchOperation: Sendable, Codable, Hashable, Identifiable {
         shape: CanvasShapeKind? = nil, asset: CanvasAssetReference? = nil,
         sourceNodeID: UUID? = nil,
         destinationNodeID: UUID? = nil, connectionID: UUID? = nil,
+        connectionKind: CanvasConnectionKind? = nil,
         sourcePort: CanvasConnectionPort? = nil,
         destinationPort: CanvasConnectionPort? = nil,
         label: String? = nil, arrangement: String? = nil
@@ -66,6 +68,7 @@ public struct CanvasPatchOperation: Sendable, Codable, Hashable, Identifiable {
         self.size = size; self.rotation = rotation; self.isLocked = isLocked
         self.shape = shape; self.asset = asset; self.sourceNodeID = sourceNodeID
         self.destinationNodeID = destinationNodeID; self.connectionID = connectionID
+        self.connectionKind = connectionKind
         self.sourcePort = sourcePort; self.destinationPort = destinationPort
         self.label = label; self.arrangement = arrangement
     }
@@ -294,6 +297,7 @@ public enum CanvasCommandService {
             document.connections.append(CanvasConnection(
                 id: id, sourceNodeID: operation.sourceNodeID!,
                 destinationNodeID: operation.destinationNodeID!,
+                kind: operation.connectionKind ?? .arrow,
                 label: operation.label, sourcePort: operation.sourcePort,
                 destinationPort: operation.destinationPort
             ))

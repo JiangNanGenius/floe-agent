@@ -296,16 +296,17 @@ public actor SQLiteConversationStore: ConversationStore {
                 sql: "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at, rowid",
                 arguments: [conversationID.uuidString]
             )
+            let messageIDs = try rows.map(Self.messageID(from:))
+            let partsByMessage = try Self.fetchParts(messageIDs: messageIDs, db: db)
             return try rows.map { row in
                 let id = try Self.messageID(from: row)
-                let parts = try Self.fetchParts(messageID: id, db: db)
                 return PersistedMessage(
                     id: id,
                     conversationID: conversationID,
                     role: row["role"],
                     content: row["content"],
                     createdAt: try PersistenceCodec.decodeDate(row["created_at"]),
-                    parts: parts,
+                    parts: partsByMessage[id, default: []],
                     runID: (row["run_id"] as String?).flatMap(UUID.init(uuidString:))
                 )
             }
@@ -332,6 +333,8 @@ public actor SQLiteConversationStore: ConversationStore {
                     """,
                 arguments: [conversationID.uuidString, bounded]
             )
+            let messageIDs = try rows.map(Self.messageID(from:))
+            let partsByMessage = try Self.fetchParts(messageIDs: messageIDs, db: db)
             return try rows.map { row in
                 let id = try Self.messageID(from: row)
                 return PersistedMessage(
@@ -340,7 +343,7 @@ public actor SQLiteConversationStore: ConversationStore {
                     role: row["role"],
                     content: row["content"],
                     createdAt: try PersistenceCodec.decodeDate(row["created_at"]),
-                    parts: try Self.fetchParts(messageID: id, db: db),
+                    parts: partsByMessage[id, default: []],
                     runID: (row["run_id"] as String?).flatMap(UUID.init(uuidString:))
                 )
             }
@@ -378,6 +381,8 @@ public actor SQLiteConversationStore: ConversationStore {
             )
             let hasEarlier = rows.count > bounded
             let pageRows = Array(rows.prefix(bounded).reversed())
+            let messageIDs = try pageRows.map(Self.messageID(from:))
+            let partsByMessage = try Self.fetchParts(messageIDs: messageIDs, db: db)
             let messages = try pageRows.map { row in
                 let id = try Self.messageID(from: row)
                 return PersistedMessage(
@@ -386,7 +391,7 @@ public actor SQLiteConversationStore: ConversationStore {
                     role: row["role"],
                     content: row["content"],
                     createdAt: try PersistenceCodec.decodeDate(row["created_at"]),
-                    parts: try Self.fetchParts(messageID: id, db: db),
+                    parts: partsByMessage[id, default: []],
                     runID: (row["run_id"] as String?).flatMap(UUID.init(uuidString:))
                 )
             }
@@ -519,6 +524,42 @@ public actor SQLiteConversationStore: ConversationStore {
             arguments: [messageID.uuidString]
         )
         return try rows.map { row in
+            try part(from: row, messageID: messageID)
+        }
+    }
+
+    /// Hydrates a message window with a bounded number of SQL statements.
+    /// SQLite's bind limit varies by build, so large histories are chunked
+    /// instead of falling back to one query per message.
+    private static func fetchParts(
+        messageIDs: [UUID],
+        db: Database
+    ) throws -> [UUID: [MessagePart]] {
+        guard !messageIDs.isEmpty else { return [:] }
+        var result: [UUID: [MessagePart]] = [:]
+        for chunkStart in stride(from: 0, to: messageIDs.count, by: 400) {
+            let chunk = Array(messageIDs[chunkStart..<min(chunkStart + 400, messageIDs.count)])
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM message_parts
+                    WHERE message_id IN (\(placeholders))
+                    ORDER BY message_id, part_index
+                    """,
+                arguments: StatementArguments(chunk.map(\.uuidString))
+            )
+            for row in rows {
+                guard let messageID = UUID(uuidString: row["message_id"]) else {
+                    throw FloeError.storageCorrupted("Invalid message part owner")
+                }
+                result[messageID, default: []].append(try part(from: row, messageID: messageID))
+            }
+        }
+        return result
+    }
+
+    private static func part(from row: Row, messageID: UUID) throws -> MessagePart {
             guard
                 let id = UUID(uuidString: row["id"]),
                 let kind = MessagePart.Kind(rawValue: row["kind"])
@@ -536,7 +577,6 @@ public actor SQLiteConversationStore: ConversationStore {
                 metadata: try PersistenceCodec.jsonDictionary(row["metadata_json"]),
                 createdAt: try PersistenceCodec.decodeDate(row["created_at"])
             )
-        }
     }
 
     private static func attachment(from row: Row) throws -> AttachmentRef {

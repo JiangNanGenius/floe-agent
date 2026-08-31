@@ -8,9 +8,12 @@ import SwiftUI
 import UIKit
 import AVKit
 import PencilKit
+import SceneKit
 import UniformTypeIdentifiers
+import WebKit
 import CryptoKit
 import FloeCore
+import FloeImages
 import FloeLocalModels
 import FloeModels
 import FloePersistence
@@ -485,14 +488,14 @@ private enum CanvasNodeCreationSection: String, CaseIterable, Identifiable {
 /// double click, pointer context menu, Pencil palette and keyboard commands.
 private enum CanvasNodeCreationKind: String, CaseIterable, Identifiable {
     case text, stickyNote, card, shape, group, image, video, audio, file
-    case imageGeneration, videoGeneration, scene3D
+    case imageGeneration, videoGeneration, markdown, svg, html, panorama3D, scene3D
 
     var id: String { rawValue }
     var section: CanvasNodeCreationSection {
         switch self {
         case .text, .stickyNote, .card, .shape, .group: .basic
         case .image, .video, .audio, .file: .media
-        case .imageGeneration, .videoGeneration, .scene3D: .creation
+        case .imageGeneration, .videoGeneration, .markdown, .svg, .html, .panorama3D, .scene3D: .creation
         }
     }
     var title: String {
@@ -508,6 +511,10 @@ private enum CanvasNodeCreationKind: String, CaseIterable, Identifiable {
         case .file: "文件卡片"
         case .imageGeneration: "图片生成"
         case .videoGeneration: "视频生成"
+        case .markdown: "Markdown"
+        case .svg: "SVG"
+        case .html: "HTML"
+        case .panorama3D: "3D 全景"
         case .scene3D: "3D 场景"
         }
     }
@@ -524,6 +531,10 @@ private enum CanvasNodeCreationKind: String, CaseIterable, Identifiable {
         case .file: "doc"
         case .imageGeneration: "photo.badge.plus"
         case .videoGeneration: "video.badge.plus"
+        case .markdown: "text.document"
+        case .svg: "scribble.variable"
+        case .html: "chevron.left.forwardslash.chevron.right"
+        case .panorama3D: "pano"
         case .scene3D: "cube.transparent"
         }
     }
@@ -1094,6 +1105,21 @@ private final class CanvasDocumentStore: ObservableObject {
         addPlaceholder(kind: .scene3D, at: point)
     }
 
+    @discardableResult
+    func addBuiltinNode(pluginID: String, at point: CGPoint) -> UUID {
+        let kind: CanvasNodeKind = pluginID == "panorama3D" ? .image : .card
+        let id = addPlaceholder(kind: kind, at: point)
+        let defaults: [String: String] = [
+            "markdown": "# Markdown\n\n双击编辑内容。",
+            "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 180\"><rect width=\"320\" height=\"180\" rx=\"24\" fill=\"#5B8DEF\"/><text x=\"160\" y=\"100\" text-anchor=\"middle\" fill=\"white\" font-size=\"28\">SVG</text></svg>",
+            "html": "<h2>HTML 节点</h2><p>双击编辑安全的静态 HTML。</p>",
+            "panorama3D": "3D 全景"
+        ]
+        updateNode(id, text: defaults[pluginID] ?? pluginID)
+        updateNodeMetadata(id, values: ["builtinPlugin": pluginID])
+        return id
+    }
+
     func updateScene3D(_ scene: CanvasScene3D, for nodeID: UUID) {
         mutateSelectedDocument { document in
             guard let index = document.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
@@ -1106,7 +1132,69 @@ private final class CanvasDocumentStore: ObservableObject {
         mutateSelectedDocument { document in
             guard let index = document.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
             document.nodes[index].generationJobID = jobID
+            document.nodes[index].metadata["generationState"] = "submitted"
         }
+    }
+
+    func setBackgroundStyle(_ style: CanvasBackgroundStyle) {
+        mutateSelectedDocument { document in
+            document.backgroundStyle = style
+        }
+    }
+
+    func updateNodeMetadata(_ nodeID: UUID, values: [String: String?]) {
+        mutateSelectedDocument { document in
+            guard let index = document.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
+            for (key, value) in values {
+                if let value { document.nodes[index].metadata[key] = value }
+                else { document.nodes[index].metadata.removeValue(forKey: key) }
+            }
+        }
+    }
+
+    /// Returns the explicit selection plus every recursively connected
+    /// upstream node. Generation and assistant flows share this resolver so
+    /// visible connections have one consistent semantic meaning.
+    func generationSourceNodes(for selectedIDs: Set<UUID>) -> [FloeCanvasNode] {
+        guard let document = selectedDocument else { return [] }
+        var included = selectedIDs
+        var frontier = selectedIDs
+        while !frontier.isEmpty {
+            let parents = Set(document.connections.compactMap { connection in
+                frontier.contains(connection.destinationNodeID) ? connection.sourceNodeID : nil
+            }).subtracting(included)
+            included.formUnion(parents)
+            frontier = parents
+        }
+        return document.nodes.filter { included.contains($0.id) }.sorted {
+            if $0.x == $1.x { return $0.y < $1.y }
+            return $0.x < $1.x
+        }
+    }
+
+    func markGeneration(
+        nodeID: UUID,
+        kind: MediaKind,
+        prompt: String,
+        modelID: UUID?,
+        aspectRatio: String,
+        quality: String?,
+        count: Int,
+        sourceNodeIDs: [UUID],
+        state: String,
+        error: String? = nil
+    ) {
+        updateNodeMetadata(nodeID, values: [
+            "generationKind": kind.rawValue,
+            "generationPrompt": prompt,
+            "generationModelID": modelID?.uuidString,
+            "generationAspectRatio": aspectRatio,
+            "generationQuality": quality,
+            "generationCount": String(count),
+            "generationSourceNodeIDs": sourceNodeIDs.map(\.uuidString).joined(separator: ","),
+            "generationState": state,
+            "generationError": error
+        ])
     }
 
     func applyMediaJobs(_ jobs: [MediaGenerationJob]) {
@@ -1170,6 +1258,7 @@ private final class CanvasDocumentStore: ObservableObject {
         _ = applyCommand([
             CanvasPatchOperation(
                 kind: .connect, sourceNodeID: source, destinationNodeID: destination,
+                connectionKind: kind,
                 sourcePort: sourcePort, destinationPort: destinationPort
             )
         ])
@@ -1998,6 +2087,10 @@ private struct CanvasKeyboardActionsKey: FocusedValueKey {
     typealias Value = CanvasKeyboardActions
 }
 
+private struct CanvasImageEditorPresentation: Identifiable {
+    let id: UUID
+}
+
 extension FocusedValues {
     var canvasKeyboardActions: CanvasKeyboardActions? {
         get { self[CanvasKeyboardActionsKey.self] }
@@ -2009,6 +2102,7 @@ struct WorkspaceCanvasView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @AppStorage("creative.canvas.sync.enabled") private var globalCanvasSyncEnabled = true
+    @AppStorage("creative.canvas.appearance") private var canvasAppearance = "system"
     @StateObject private var store: CanvasDocumentStore
     private let workspace: WorkspaceRecord?
     @State private var selectedNodeIDs = Set<UUID>()
@@ -2037,6 +2131,7 @@ struct WorkspaceCanvasView: View {
     @State private var isAgentCollapsed = false
     @State private var agentPanelOffset = CGSize.zero
     @State private var showsMaterials = false
+    @State private var showsPromptLibrary = false
     @State private var materialKindFilter: Set<CanvasNodeKind>?
     @State private var materialTargetNodeID: UUID?
     @State private var connectionStartID: UUID?
@@ -2046,6 +2141,7 @@ struct WorkspaceCanvasView: View {
     @State private var enteredGroupID: UUID?
     @State private var showsGeneration = false
     @State private var showsInspector = false
+    @State private var imageEditorPresentation: CanvasImageEditorPresentation?
     @State private var showsMediaJobs = false
     @State private var directorPresentation: Canvas3DDirectorPresentation?
     @State private var canvasJobs: [MediaGenerationJob] = []
@@ -2107,6 +2203,10 @@ struct WorkspaceCanvasView: View {
             canvasDetail
         }
         .navigationSplitViewStyle(.balanced)
+        .preferredColorScheme(
+            canvasAppearance == "light" ? .light
+                : canvasAppearance == "dark" ? .dark : nil
+        )
         // The app already owns the system sidebar toggle. Suppress the nested
         // automatic copy and expose the canvas-document list with a distinct,
         // labelled control inside the canvas toolbar.
@@ -2142,6 +2242,17 @@ struct WorkspaceCanvasView: View {
                 }
             }
         }
+        .sheet(isPresented: $showsPromptLibrary) {
+            NavigationStack {
+                CanvasPromptLibraryView { record in
+                    selectedNodeIDs = [store.addNote(
+                        at: canvasPoint(CGPoint(x: 520, y: 380)),
+                        text: record.prompt
+                    )]
+                    showsPromptLibrary = false
+                }
+            }
+        }
         .sheet(isPresented: $showsGeneration) {
             CanvasMediaGenerationView(store: store, sourceNodeIDs: selectedNodeIDs)
                 .environmentObject(environment)
@@ -2150,6 +2261,17 @@ struct WorkspaceCanvasView: View {
             if let nodeID = selectedNodeIDs.first,
                let node = store.selectedDocument?.nodes.first(where: { $0.id == nodeID }) {
                 CanvasNodeInspector(store: store, node: node, selectedIDs: selectedNodeIDs)
+            }
+        }
+        .sheet(item: $imageEditorPresentation) { presentation in
+            if let node = store.selectedDocument?.nodes.first(where: {
+                $0.id == presentation.id && $0.kind == .image
+            }) {
+                CanvasLocalImageEditor(store: store, node: node) { resultID in
+                    selectedNodeIDs = [resultID]
+                    imageEditorPresentation = nil
+                }
+                .environmentObject(environment)
             }
         }
         .sheet(isPresented: $showsMediaJobs) {
@@ -2306,8 +2428,13 @@ struct WorkspaceCanvasView: View {
         GeometryReader { geometry in
             ZStack {
                 Color(uiColor: .systemGroupedBackground).ignoresSafeArea()
-                if canvasPreferences.showGrid { grid(size: geometry.size) }
                 if let document = store.selectedDocument {
+                    if canvasPreferences.showGrid {
+                        canvasBackground(
+                            style: document.backgroundStyle ?? .grid,
+                            size: geometry.size
+                        )
+                    }
                     CanvasPencilKitSurface(
                         drawingData: document.pencilDrawingData,
                         tool: mode == .eraser ? .eraser : .ink,
@@ -2544,6 +2671,11 @@ struct WorkspaceCanvasView: View {
                             Label("素材库", systemImage: "photo.on.rectangle.angled")
                         }
                         Button {
+                            showsPromptLibrary = true
+                        } label: {
+                            Label("提示词库", systemImage: "books.vertical")
+                        }
+                        Button {
                             showsGeneration = true
                         } label: {
                             Label("生成", systemImage: "wand.and.stars")
@@ -2571,9 +2703,48 @@ struct WorkspaceCanvasView: View {
                                 get: { store.project.sync.isEnabled },
                                 set: { store.setSyncEnabled($0) }
                             ))
+                            Menu("画布背景") {
+                                ForEach(CanvasBackgroundStyle.allCases, id: \.self) { style in
+                                    Button {
+                                        store.setBackgroundStyle(style)
+                                    } label: {
+                                        if store.selectedDocument?.backgroundStyle == style {
+                                            Label(backgroundTitle(style), systemImage: "checkmark")
+                                        } else {
+                                            Text(backgroundTitle(style))
+                                        }
+                                    }
+                                }
+                            }
+                            Menu("外观") {
+                                ForEach(["system", "light", "dark"], id: \.self) { value in
+                                    Button {
+                                        canvasAppearance = value
+                                    } label: {
+                                        let title = value == "system" ? "跟随系统"
+                                            : value == "light" ? "浅色" : "深色"
+                                        if canvasAppearance == value {
+                                            Label(title, systemImage: "checkmark")
+                                        } else {
+                                            Text(title)
+                                        }
+                                    }
+                                }
+                            }
                             Toggle("显示缩略导航", isOn: $showsMiniMap)
                             if !selectedNodeIDs.isEmpty {
                                 Button("属性") { showsInspector = true }
+                                if selectedNodeIDs.count == 1,
+                                   let selected = store.selectedDocument?.nodes.first(where: {
+                                       selectedNodeIDs.contains($0.id)
+                                           && $0.kind == .image && $0.asset != nil
+                                   }) {
+                                    Button("裁剪与变换", systemImage: "crop.rotate") {
+                                        imageEditorPresentation = CanvasImageEditorPresentation(
+                                            id: selected.id
+                                        )
+                                    }
+                                }
                                 Button("复制到剪贴板", action: copySelection)
                                 Button("复制副本") { selectedNodeIDs = store.duplicateNodes(selectedNodeIDs) }
                                 Button("分组") { store.group(selectedNodeIDs) }
@@ -2643,13 +2814,22 @@ struct WorkspaceCanvasView: View {
             nodeID = store.addGenerationTask(kind: .image, prompt: "", at: point)
         case .videoGeneration:
             nodeID = store.addGenerationTask(kind: .video, prompt: "", at: point)
+        case .markdown:
+            nodeID = store.addBuiltinNode(pluginID: "markdown", at: point)
+        case .svg:
+            nodeID = store.addBuiltinNode(pluginID: "svg", at: point)
+        case .html:
+            nodeID = store.addBuiltinNode(pluginID: "html", at: point)
+        case .panorama3D:
+            nodeID = store.addBuiltinNode(pluginID: "panorama3D", at: point)
         case .scene3D:
             nodeID = store.addScene3D(at: point)
         }
         selectedNodeIDs = [nodeID]
         selectedStrokeIDs.removeAll()
         selectedConnectionID = nil
-        editingNodeID = kind == .text || kind == .stickyNote || kind == .card ? nodeID : nil
+        editingNodeID = [.text, .stickyNote, .card, .markdown, .svg, .html].contains(kind)
+            ? nodeID : nil
         mode = .select
         if kind == .imageGeneration || kind == .videoGeneration { showsGeneration = true }
         if kind == .scene3D { directorPresentation = Canvas3DDirectorPresentation(nodeID: nodeID) }
@@ -2665,25 +2845,58 @@ struct WorkspaceCanvasView: View {
         }
     }
 
-    private func grid(size: CGSize) -> some View {
+    @ViewBuilder
+    private func canvasBackground(style: CanvasBackgroundStyle, size: CGSize) -> some View {
+        switch style {
+        case .blank:
+            EmptyView()
+        case .grid:
+            grid(size: size, dots: false)
+        case .dots:
+            grid(size: size, dots: true)
+        }
+    }
+
+    private func backgroundTitle(_ style: CanvasBackgroundStyle) -> String {
+        switch style {
+        case .blank: "空白"
+        case .grid: "网格"
+        case .dots: "点阵"
+        }
+    }
+
+    private func grid(size: CGSize, dots: Bool) -> some View {
         Canvas { context, _ in
             let spacing = max(18, 42 * scale)
             let xStart = pan.width.truncatingRemainder(dividingBy: spacing)
             let yStart = pan.height.truncatingRemainder(dividingBy: spacing)
             var path = Path()
-            var x = xStart
-            while x < size.width {
-                path.move(to: CGPoint(x: x, y: 0))
-                path.addLine(to: CGPoint(x: x, y: size.height))
-                x += spacing
+            if dots {
+                var x = xStart
+                while x < size.width {
+                    var y = yStart
+                    while y < size.height {
+                        path.addEllipse(in: CGRect(x: x - 1.1, y: y - 1.1, width: 2.2, height: 2.2))
+                        y += spacing
+                    }
+                    x += spacing
+                }
+                context.fill(path, with: .color(.secondary.opacity(0.20)))
+            } else {
+                var x = xStart
+                while x < size.width {
+                    path.move(to: CGPoint(x: x, y: 0))
+                    path.addLine(to: CGPoint(x: x, y: size.height))
+                    x += spacing
+                }
+                var y = yStart
+                while y < size.height {
+                    path.move(to: CGPoint(x: 0, y: y))
+                    path.addLine(to: CGPoint(x: size.width, y: y))
+                    y += spacing
+                }
+                context.stroke(path, with: .color(.secondary.opacity(0.12)), lineWidth: 0.7)
             }
-            var y = yStart
-            while y < size.height {
-                path.move(to: CGPoint(x: 0, y: y))
-                path.addLine(to: CGPoint(x: size.width, y: y))
-                y += spacing
-            }
-            context.stroke(path, with: .color(.secondary.opacity(0.12)), lineWidth: 0.7)
         }
         .allowsHitTesting(false)
     }
@@ -4383,6 +4596,174 @@ private struct CanvasMediaJobCenter: View {
     }
 }
 
+private struct CanvasLocalImageEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var environment: AppEnvironment
+    @ObservedObject var store: CanvasDocumentStore
+    let node: FloeCanvasNode
+    let onSave: (UUID) -> Void
+
+    @State private var cropInset = 0.0
+    @State private var rotation = 0.0
+    @State private var preview: UIImage?
+    @State private var sourceImage: CGImage?
+    @State private var isSaving = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Group {
+                    if let preview {
+                        Image(uiImage: preview)
+                            .resizable()
+                            .scaledToFit()
+                    } else {
+                        ContentUnavailableView(
+                            "图片不可用", systemImage: "photo",
+                            description: Text("请先确认这份素材已下载到本机。")
+                        )
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(FloeTheme.readingSurface)
+
+                Form {
+                    Section("裁剪") {
+                        Slider(value: $cropInset, in: 0...0.3, step: 0.025)
+                        LabeledContent("四边内缩", value: "\(Int(cropInset * 100))%")
+                        HStack {
+                            Button("原图") { cropInset = 0 }
+                            Button("轻裁 10%") { cropInset = 0.1 }
+                            Button("聚焦 20%") { cropInset = 0.2 }
+                        }
+                    }
+                    Section("旋转") {
+                        Slider(value: $rotation, in: -180...180, step: 1)
+                        LabeledContent("角度", value: "\(Int(rotation))°")
+                        HStack {
+                            Button("左转 90°") { rotation = -90 }
+                            Button("复位") { rotation = 0 }
+                            Button("右转 90°") { rotation = 90 }
+                        }
+                    }
+                    Text("保存会创建一份新的素材和结果节点，原图与连接关系保持不变。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxHeight: 330)
+            }
+            .navigationTitle("裁剪与变换")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        Task { await saveDerivedImage() }
+                    } label: {
+                        if isSaving { ProgressView() } else { Text("保存副本") }
+                    }
+                    .disabled(sourceImage == nil || isSaving)
+                }
+            }
+            .task { loadSource() }
+            .onChange(of: cropInset) { _, _ in renderPreview() }
+            .onChange(of: rotation) { _, _ in renderPreview() }
+            .alert("无法编辑图片", isPresented: Binding(
+                get: { error != nil }, set: { if !$0 { error = nil } }
+            )) { Button("完成", role: .cancel) {} } message: { Text(error ?? "") }
+        }
+    }
+
+    private func loadSource() {
+        guard let url = CanvasAssetNodeContent.localURL(for: node),
+              let image = UIImage(contentsOfFile: url.path)?.cgImage else {
+            sourceImage = nil
+            preview = nil
+            return
+        }
+        sourceImage = image
+        renderPreview()
+    }
+
+    private func renderPreview() {
+        guard let sourceImage else { return }
+        do {
+            var rendered = sourceImage
+            if cropInset > 0 {
+                rendered = try ImagePipeline().apply(
+                    .crop(rect: .init(
+                        x: cropInset, y: cropInset,
+                        width: 1 - cropInset * 2, height: 1 - cropInset * 2
+                    )),
+                    to: rendered
+                )
+            }
+            if rotation != 0 {
+                rendered = try ImagePipeline().apply(.rotate(degrees: rotation), to: rendered)
+            }
+            preview = UIImage(cgImage: rendered)
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func saveDerivedImage() async {
+        guard let preview, let data = preview.pngData() else { return }
+        isSaving = true
+        defer { isSaving = false }
+        var writtenTarget: URL?
+        do {
+            let support = try FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: true
+            )
+            let directory = support.appendingPathComponent(
+                "FloeAgent/Materials", isDirectory: true
+            )
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true
+            )
+            let assetID = UUID()
+            let filename = "\(assetID.uuidString)-canvas-edit.png"
+            let target = directory.appendingPathComponent(filename)
+            try data.write(to: target, options: .atomic)
+            writtenTarget = target
+            let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            try await environment.creativeAssetStore.save(CreativeAssetRecord(
+                id: assetID, contentHash: hash, kind: .image,
+                displayName: "\(node.text.isEmpty ? "画布图片" : node.text) 编辑",
+                mimeType: "image/png", localRelativePath: "Materials/\(filename)",
+                byteCount: Int64(data.count), tags: ["画布编辑"], referenceCount: 0
+            ))
+            let reference = CanvasAssetReference(
+                id: assetID, contentHash: hash,
+                localRelativePath: "Materials/\(filename)",
+                mimeType: "image/png", byteCount: Int64(data.count)
+            )
+            let resultID = store.addAsset(
+                reference, kind: .image,
+                at: CGPoint(x: node.x + node.width + 100, y: node.y)
+            )
+            store.updateNodeMetadata(resultID, values: [
+                "derivedFromNodeID": node.id.uuidString,
+                "cropInset": String(cropInset),
+                "rotationDegrees": String(rotation)
+            ])
+            store.connect(node.id, to: resultID, kind: .generatedFrom)
+            onSave(resultID)
+        } catch {
+            if let writtenTarget {
+                try? FileManager.default.removeItem(at: writtenTarget)
+            }
+            self.error = error.localizedDescription
+        }
+    }
+}
+
 private struct CanvasNodeInspector: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: CanvasDocumentStore
@@ -4530,7 +4911,10 @@ private struct CanvasNodeCard: View {
 
     @ViewBuilder
     private var nodeContent: some View {
-        switch node.kind {
+        if let pluginID = node.metadata["builtinPlugin"] {
+            builtinNodeContent(pluginID)
+        } else {
+            switch node.kind {
         case .text, .stickyNote:
             if isEditing {
                 TextEditor(text: $text)
@@ -4634,6 +5018,49 @@ private struct CanvasNodeCard: View {
                 .padding(10)
             }
         }
+        }
+    }
+
+    @ViewBuilder
+    private func builtinNodeContent(_ pluginID: String) -> some View {
+        switch pluginID {
+        case "markdown":
+            if isEditing {
+                TextEditor(text: $text)
+                    .font(.body.monospaced())
+                    .scrollContentBackground(.hidden)
+                    .padding(10)
+            } else {
+                ScrollView {
+                    Text((try? AttributedString(markdown: text)) ?? AttributedString(text))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(14)
+                }
+            }
+        case "svg":
+            if isEditing {
+                TextEditor(text: $text)
+                    .font(.caption.monospaced())
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+            } else {
+                CanvasSafeMarkupView(markup: text, wrapsAsSVG: true)
+            }
+        case "html":
+            if isEditing {
+                TextEditor(text: $text)
+                    .font(.caption.monospaced())
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+            } else {
+                CanvasSafeMarkupView(markup: text, wrapsAsSVG: false)
+            }
+        case "panorama3D":
+            CanvasPanoramaNode(assetURL: CanvasAssetNodeContent.localURL(for: node))
+        default:
+            Label("不支持的内置节点", systemImage: "exclamationmark.triangle")
+        }
     }
 
     private func assetPlaceholder(icon: String, title: String) -> some View {
@@ -4654,7 +5081,7 @@ private struct CanvasAssetNodeContent: View {
     let fallbackIcon: String
     let title: String
 
-    private var fileURL: URL? {
+    static func localURL(for node: FloeCanvasNode) -> URL? {
         guard let relativePath = node.asset?.localRelativePath,
               !relativePath.contains(".."),
               let support = try? FileManager.default.url(
@@ -4666,6 +5093,8 @@ private struct CanvasAssetNodeContent: View {
         return support.appendingPathComponent("FloeAgent", isDirectory: true)
             .appendingPathComponent(relativePath)
     }
+
+    private var fileURL: URL? { Self.localURL(for: node) }
 
     var body: some View {
         Group {
@@ -4703,6 +5132,83 @@ private struct CanvasAssetNodeContent: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
+    }
+}
+
+/// Static HTML/SVG renderer for bundled node types. JavaScript and external
+/// navigation stay disabled, so these nodes cannot become a remote-code
+/// plugin channel.
+private struct CanvasSafeMarkupView: UIViewRepresentable {
+    let markup: String
+    let wrapsAsSVG: Bool
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.navigationDelegate = context.coordinator
+        view.isOpaque = false
+        view.backgroundColor = .clear
+        view.scrollView.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ view: WKWebView, context: Context) {
+        let content = wrapsAsSVG ? markup : "<main>\(markup)</main>"
+        let html = """
+        <!doctype html><html><head>
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'">
+        <style>html,body{margin:0;padding:0;background:transparent;color:#222;font:-apple-system-body}main{padding:14px}svg{width:100%;height:100%}</style>
+        </head><body>\(content)</body></html>
+        """
+        if context.coordinator.lastMarkup != html {
+            context.coordinator.lastMarkup = html
+            view.loadHTMLString(html, baseURL: nil)
+        }
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        var lastMarkup = ""
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction
+        ) async -> WKNavigationActionPolicy {
+            navigationAction.navigationType == .other ? .allow : .cancel
+        }
+    }
+}
+
+private struct CanvasPanoramaNode: UIViewRepresentable {
+    let assetURL: URL?
+
+    func makeUIView(context: Context) -> SCNView {
+        let view = SCNView()
+        view.backgroundColor = .secondarySystemBackground
+        view.allowsCameraControl = true
+        view.autoenablesDefaultLighting = false
+        return view
+    }
+
+    func updateUIView(_ view: SCNView, context: Context) {
+        let scene = SCNScene()
+        let sphere = SCNSphere(radius: 8)
+        sphere.segmentCount = 96
+        sphere.firstMaterial?.isDoubleSided = true
+        sphere.firstMaterial?.cullMode = .front
+        sphere.firstMaterial?.diffuse.contents = assetURL.flatMap { UIImage(contentsOfFile: $0.path) }
+            ?? UIColor.secondarySystemBackground
+        let sphereNode = SCNNode(geometry: sphere)
+        sphereNode.scale = SCNVector3(-1, 1, 1)
+        scene.rootNode.addChildNode(sphereNode)
+        let camera = SCNNode()
+        camera.camera = SCNCamera()
+        camera.camera?.fieldOfView = 72
+        scene.rootNode.addChildNode(camera)
+        view.pointOfView = camera
+        view.scene = scene
     }
 }
 
@@ -5607,15 +6113,20 @@ private struct CanvasAgentFloatingPanel: View {
     private func reloadMessages() async {
         guard let conversationID = store.selectedAssistantSession?.conversationID
             ?? store.project.agentConversationID else { return }
-        messages = (try? await environment.conversationStore.messages(
-            conversationID: conversationID
-        ))?.filter { $0.role == "user" || $0.role == "assistant" } ?? []
-        runs = (try? await environment.runStore.runs(conversationID: conversationID)) ?? []
+        let page = try? await environment.conversationStore.messagePage(
+            conversationID: conversationID, before: nil, limit: 100
+        )
+        messages = page?.messages.filter { $0.role == "user" || $0.role == "assistant" } ?? []
+        runs = (try? await environment.runStore.recentRuns(
+            conversationID: conversationID, limit: 120
+        )) ?? []
         var loaded: [UUID: [RunEventRecord]] = [:]
+        var visibleRunIDs = Set(messages.compactMap(\.runID))
+        if let latest = runs.first { visibleRunIDs.insert(latest.id) }
         await withTaskGroup(of: (UUID, [RunEventRecord]).self) { group in
-            for run in runs {
+            for runID in visibleRunIDs {
                 group.addTask { [runStore = environment.runStore] in
-                    (run.id, (try? await runStore.events(runID: run.id)) ?? [])
+                    (runID, (try? await runStore.recentEvents(runID: runID, limit: 1_000)) ?? [])
                 }
             }
             for await (id, events) in group { loaded[id] = events }
@@ -5669,6 +6180,288 @@ private struct CanvasAgentFloatingPanel: View {
     }
 }
 
+private struct CanvasPromptRecord: Codable, Identifiable, Hashable {
+    let id: String
+    let sourceId: String
+    let title: String
+    let prompt: String
+    let description: String?
+    let coverUrl: String?
+    let referenceImageUrls: [String]?
+    let tags: [String]
+    let author: String?
+    let sourceUrl: String?
+    let imageMode: String?
+    let imageModel: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, sourceId, title, prompt, description, coverUrl
+        case referenceImageUrls, tags, author, sourceUrl, imageMode, imageModel
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        sourceId = try values.decodeIfPresent(String.self, forKey: .sourceId) ?? "unknown"
+        title = try values.decodeIfPresent(String.self, forKey: .title) ?? "未命名提示词"
+        prompt = try values.decode(String.self, forKey: .prompt)
+        description = try values.decodeIfPresent(String.self, forKey: .description)
+        coverUrl = try values.decodeIfPresent(String.self, forKey: .coverUrl)
+        referenceImageUrls = try values.decodeIfPresent([String].self, forKey: .referenceImageUrls)
+        tags = try values.decodeIfPresent([String].self, forKey: .tags) ?? []
+        author = try values.decodeIfPresent(String.self, forKey: .author)
+        sourceUrl = try values.decodeIfPresent(String.self, forKey: .sourceUrl)
+        imageMode = try values.decodeIfPresent(String.self, forKey: .imageMode)
+        imageModel = try values.decodeIfPresent(String.self, forKey: .imageModel)
+    }
+}
+
+@MainActor
+private final class CanvasPromptLibraryStore: ObservableObject {
+    @Published private(set) var records: [CanvasPromptRecord] = []
+    @Published private(set) var isLoading = false
+    @Published private(set) var lastUpdated: Date?
+    @Published var notice: String?
+
+    private static let remoteURL = URL(
+        string: "https://raw.githubusercontent.com/yukkcat/image-prompts/main/dist/prompts.json"
+    )!
+    private static let maximumPayloadBytes = 32 * 1_024 * 1_024
+
+    func load() async {
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+
+        if records.isEmpty, let cached = try? Data(contentsOf: cacheURL),
+           let decoded = try? Self.decode(cached) {
+            records = decoded
+            lastUpdated = (try? cacheURL.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate
+        }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(from: Self.remoteURL)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                throw URLError(.badServerResponse)
+            }
+            guard data.count <= Self.maximumPayloadBytes else {
+                throw FloeError.invalidConfiguration("提示词数据超过 32 MB 安全上限。")
+            }
+            let decoded = try Self.decode(data)
+            try FileManager.default.createDirectory(
+                at: cacheURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: cacheURL, options: .atomic)
+            records = decoded
+            lastUpdated = Date()
+            notice = nil
+        } catch {
+            notice = records.isEmpty
+                ? "提示词库暂时无法载入：\(error.localizedDescription)"
+                : "网络刷新失败，正在使用本机缓存。"
+        }
+    }
+
+    private static func decode(_ data: Data) throws -> [CanvasPromptRecord] {
+        let decoded = try JSONDecoder().decode([CanvasPromptRecord].self, from: data)
+        return decoded.filter {
+            !$0.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private var cacheURL: URL {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("FloeAgent/PromptLibrary/prompts.json")
+    }
+}
+
+private struct CanvasPromptLibraryView: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var store = CanvasPromptLibraryStore()
+    @State private var search = ""
+    @State private var selectedSource = ""
+    @State private var selectedTag = ""
+    @State private var detail: CanvasPromptRecord?
+
+    let onChoose: (CanvasPromptRecord) -> Void
+
+    private var sources: [String] {
+        Array(Set(store.records.map(\.sourceId))).sorted()
+    }
+
+    private var tags: [String] {
+        let candidates = selectedSource.isEmpty
+            ? store.records
+            : store.records.filter { $0.sourceId == selectedSource }
+        return Array(Set(candidates.flatMap(\.tags))).sorted()
+    }
+
+    private var filtered: [CanvasPromptRecord] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase
+        return store.records.filter { record in
+            (selectedSource.isEmpty || record.sourceId == selectedSource)
+                && (selectedTag.isEmpty || record.tags.contains(selectedTag))
+                && (query.isEmpty || [
+                    record.title, record.prompt, record.description ?? "",
+                    record.author ?? "", record.tags.joined(separator: " ")
+                ].joined(separator: " ").localizedLowercase.contains(query))
+        }
+    }
+
+    var body: some View {
+        List {
+            if let notice = store.notice {
+                Label(notice, systemImage: "exclamationmark.icloud")
+                    .font(.caption)
+                    .foregroundStyle(store.records.isEmpty ? .red : .secondary)
+            }
+            if !sources.isEmpty {
+                Section {
+                    Picker("来源", selection: $selectedSource) {
+                        Text("全部来源").tag("")
+                        ForEach(sources, id: \.self) { Text($0).tag($0) }
+                    }
+                    Picker("标签", selection: $selectedTag) {
+                        Text("全部标签").tag("")
+                        ForEach(tags, id: \.self) { Text($0).tag($0) }
+                    }
+                }
+            }
+            Section {
+                ForEach(filtered) { record in
+                    Button { detail = record } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            promptCover(record, size: CGSize(width: 82, height: 82))
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(record.title)
+                                    .font(.headline)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(2)
+                                Text(record.prompt)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                                HStack(spacing: 6) {
+                                    Text(record.sourceId)
+                                    if let tag = record.tags.first { Text(tag) }
+                                }
+                                .font(.caption2)
+                                .foregroundStyle(FloeTheme.primary)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            } header: {
+                Text("\(filtered.count) 条提示词")
+            }
+        }
+        .overlay {
+            if store.isLoading && store.records.isEmpty {
+                ProgressView("正在载入提示词库…")
+            } else if !store.isLoading && filtered.isEmpty {
+                ContentUnavailableView.search(text: search)
+            }
+        }
+        .searchable(text: $search, prompt: "搜索标题、提示词、作者或标签")
+        .navigationTitle("提示词库")
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("完成") { dismiss() }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button("刷新", systemImage: "arrow.clockwise") {
+                    Task { await store.load() }
+                }
+                .disabled(store.isLoading)
+            }
+        }
+        .sheet(item: $detail) { record in
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        promptCover(
+                            record,
+                            size: CGSize(width: 560, height: 280),
+                            flexibleWidth: true
+                        )
+                        Text(record.title).font(.title2.bold())
+                        if let description = record.description, !description.isEmpty {
+                            Text(description).foregroundStyle(.secondary)
+                        }
+                        Text(record.prompt)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
+                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                        if !record.tags.isEmpty {
+                            Text(record.tags.joined(separator: " · "))
+                                .font(.caption)
+                                .foregroundStyle(FloeTheme.primary)
+                        }
+                        if let model = record.imageModel, !model.isEmpty {
+                            LabeledContent("参考模型", value: model)
+                        }
+                        if let source = record.sourceUrl, let url = URL(string: source) {
+                            Link("查看原始来源", destination: url)
+                        }
+                    }
+                    .padding()
+                }
+                .navigationTitle("提示词详情")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("返回") { detail = nil }
+                    }
+                    ToolbarItemGroup(placement: .primaryAction) {
+                        Button("复制", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = record.prompt
+                        }
+                        Button("插入画布", systemImage: "plus.rectangle.on.rectangle") {
+                            detail = nil
+                            onChoose(record)
+                        }
+                    }
+                }
+            }
+        }
+        .task { await store.load() }
+        .onChange(of: selectedSource) { _, _ in
+            if !selectedTag.isEmpty, !tags.contains(selectedTag) { selectedTag = "" }
+        }
+    }
+
+    @ViewBuilder
+    private func promptCover(
+        _ record: CanvasPromptRecord,
+        size: CGSize,
+        flexibleWidth: Bool = false
+    ) -> some View {
+        let candidate = record.coverUrl ?? record.referenceImageUrls?.first
+        AsyncImage(url: candidate.flatMap(URL.init(string:))) { phase in
+            switch phase {
+            case .success(let image):
+                image.resizable().scaledToFill()
+            case .failure:
+                Image(systemName: "photo").foregroundStyle(.secondary)
+            case .empty:
+                ProgressView()
+            @unknown default:
+                EmptyView()
+            }
+        }
+        .frame(width: flexibleWidth ? nil : size.width, height: size.height)
+        .frame(maxWidth: flexibleWidth ? .infinity : nil)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
 private struct CanvasMediaGenerationView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
@@ -5677,14 +6470,22 @@ private struct CanvasMediaGenerationView: View {
 
     @State private var kind: MediaKind = .image
     @State private var prompt = ""
+    @State private var selectedImageModelID: UUID?
     @State private var selectedVideoModelID: UUID?
     @State private var aspectRatio = "1:1"
+    @State private var count = 1
     @State private var duration = 5
     @State private var quality = ""
     @State private var isSubmitting = false
     @State private var error: String?
+    @State private var showsPromptLibrary = false
 
     private var videoModels: [ModelProfile] { environment.conversationCenter.videoModels }
+    private var imageModels: [ModelProfile] {
+        environment.conversationCenter.imageModels.filter {
+            $0.capabilities.contains(.imageGeneration) || $0.capabilities.contains(.imageEditing)
+        }
+    }
     private var selectedVideoModel: ModelProfile? {
         videoModels.first(where: { $0.id == selectedVideoModelID })
     }
@@ -5703,10 +6504,21 @@ private struct CanvasMediaGenerationView: View {
                 .pickerStyle(.segmented)
 
                 Section("创作内容") {
+                    Button("从提示词库选择", systemImage: "books.vertical") {
+                        showsPromptLibrary = true
+                    }
                     TextField("描述希望生成的内容", text: $prompt, axis: .vertical)
                         .lineLimit(4...10)
                     Picker("画面比例", selection: $aspectRatio) {
                         ForEach(availableRatios, id: \.self) { Text($0).tag($0) }
+                    }
+                    if kind == .image {
+                        Picker("图片模型", selection: $selectedImageModelID) {
+                            ForEach(imageModels) { model in
+                                Text(model.displayName).tag(Optional(model.id))
+                            }
+                        }
+                        Stepper("生成数量：\(count)", value: $count, in: 1...4)
                     }
                     if kind == .video {
                         Picker("视频模型", selection: $selectedVideoModelID) {
@@ -5728,6 +6540,22 @@ private struct CanvasMediaGenerationView: View {
                     }
                 }
 
+                let sources = store.generationSourceNodes(for: sourceNodeIDs)
+                    .filter { $0.kind != .generationTask }
+                if !sources.isEmpty {
+                    Section("引用输入") {
+                        ForEach(sources) { node in
+                            Label(
+                                node.text.isEmpty ? node.kind.rawValue : String(node.text.prefix(52)),
+                                systemImage: sourceIcon(node.kind)
+                            )
+                        }
+                        Text("会按画布连接顺序读取所选节点及其上游节点；原节点始终保留。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section {
                     Button {
                         Task { await submit() }
@@ -5735,7 +6563,10 @@ private struct CanvasMediaGenerationView: View {
                         if isSubmitting { ProgressView().frame(maxWidth: .infinity) }
                         else { Text(kind == .image ? "生成图片" : "开始生成视频").frame(maxWidth: .infinity) }
                     }
-                    .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmitting || (kind == .video && selectedVideoModelID == nil))
+                    .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              || isSubmitting
+                              || (kind == .image && selectedImageModelID == nil)
+                              || (kind == .video && selectedVideoModelID == nil))
                 } footer: {
                     Text(kind == .video
                          ? "视频任务会先保存供应商任务编号，再在后台尽力查询和取回；系统不保证准时唤醒。"
@@ -5748,7 +6579,11 @@ private struct CanvasMediaGenerationView: View {
             }
             .task {
                 let preferences = environment.conversationCenter.modelPreferences
+                selectedImageModelID = preferences.auxiliaryImageMode == .shared
+                    ? preferences.sharedImageModelID
+                    : preferences.imageGenerationModelID
                 selectedVideoModelID = preferences.defaultVideoModelID ?? videoModels.first?.id
+                restoreSelectionDefaults()
                 normalizeOptions()
             }
             .onChange(of: selectedVideoModelID) { _, _ in normalizeOptions() }
@@ -5756,6 +6591,14 @@ private struct CanvasMediaGenerationView: View {
             .alert("无法生成", isPresented: Binding(
                 get: { error != nil }, set: { if !$0 { error = nil } }
             )) { Button("完成", role: .cancel) {} } message: { Text(error ?? "") }
+            .sheet(isPresented: $showsPromptLibrary) {
+                NavigationStack {
+                    CanvasPromptLibraryView { record in
+                        prompt = record.prompt
+                        showsPromptLibrary = false
+                    }
+                }
+            }
         }
     }
 
@@ -5776,33 +6619,148 @@ private struct CanvasMediaGenerationView: View {
     private func submit() async {
         isSubmitting = true
         defer { isSubmitting = false }
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selectedNodes = store.selectedDocument?.nodes.filter { sourceNodeIDs.contains($0.id) } ?? []
+        let existingConfiguration = selectedNodes.first { $0.kind == .generationTask }
+        let reusableEmptyMedia = selectedNodes.first {
+            $0.asset == nil && (($0.kind == .image && kind == .image) || ($0.kind == .video && kind == .video))
+        }
+        let sources = store.generationSourceNodes(for: sourceNodeIDs)
+            .filter { $0.kind != .generationTask && $0.id != reusableEmptyMedia?.id }
+        let sourceIDs = sources.map(\.id)
+        let contextLines = sources.compactMap { node -> String? in
+            guard [.text, .stickyNote, .card].contains(node.kind) else { return nil }
+            let value = node.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty || value == trimmedPrompt ? nil : value
+        }
+        let providerPrompt = contextLines.isEmpty
+            ? trimmedPrompt
+            : "\(trimmedPrompt)\n\n画布文字引用：\n\(contextLines.joined(separator: "\n"))"
+        let anchor = existingConfiguration ?? reusableEmptyMedia ?? sources.last
+        let anchorPoint = CGPoint(x: anchor?.x ?? 360, y: anchor?.y ?? 300)
+        var configurationID = existingConfiguration?.id
+        var resultNodeID = reusableEmptyMedia?.id
         do {
-            let sourcePoint = CGPoint(x: 360, y: 300)
-            let resultPoint = CGPoint(x: 760, y: 300)
-            let promptNodeID = store.addNote(at: sourcePoint, text: prompt)
             if kind == .image {
-                let asset = try await environment.mediaGenerationService.generateImage(
-                    prompt: prompt,
-                    options: ImageGenerationOptions(aspectRatio: aspectRatio)
+                if configurationID == nil && reusableEmptyMedia == nil {
+                    configurationID = store.addGenerationTask(
+                        kind: .image, prompt: trimmedPrompt,
+                        at: CGPoint(x: anchorPoint.x + 420, y: anchorPoint.y)
+                    )
+                    for sourceID in sourceIDs {
+                        store.connect(sourceID, to: configurationID!, kind: .source)
+                    }
+                }
+                let ownerID = configurationID ?? resultNodeID!
+                store.markGeneration(
+                    nodeID: ownerID, kind: .image, prompt: trimmedPrompt,
+                    modelID: selectedImageModelID, aspectRatio: aspectRatio,
+                    quality: quality.isEmpty ? nil : quality, count: count,
+                    sourceNodeIDs: sourceIDs, state: "running"
                 )
-                let resultID = store.addAsset(asset, kind: .image, at: resultPoint)
-                store.connect(promptNodeID, to: resultID, kind: .generatedFrom)
+                let referenceData = try sources.compactMap { try imageData(for: $0) }
+                let assets = try await environment.mediaGenerationService.generateImages(
+                    prompt: providerPrompt,
+                    options: ImageGenerationOptions(
+                        aspectRatio: aspectRatio,
+                        quality: quality.isEmpty ? nil : quality,
+                        count: count
+                    ),
+                    sourceImages: referenceData,
+                    modelID: selectedImageModelID
+                )
+                guard !assets.isEmpty else {
+                    throw RemoteImageError.invalidResponse("供应商没有返回图片。")
+                }
+                var resultIDs: [UUID] = []
+                for (index, asset) in assets.enumerated() {
+                    let id: UUID
+                    if index == 0, let reusable = resultNodeID {
+                        store.attachAsset(asset, kind: .image, to: reusable)
+                        id = reusable
+                    } else {
+                        let baseX = (configurationID.flatMap { id in
+                            store.selectedDocument?.nodes.first(where: { $0.id == id })?.x
+                        } ?? anchorPoint.x)
+                        let baseY = (configurationID.flatMap { id in
+                            store.selectedDocument?.nodes.first(where: { $0.id == id })?.y
+                        } ?? anchorPoint.y)
+                        id = store.addAsset(
+                            asset, kind: .image,
+                            at: CGPoint(x: baseX + 420 + Double(index) * 54,
+                                        y: baseY + Double(index) * 42)
+                        )
+                    }
+                    store.markGeneration(
+                        nodeID: id, kind: .image, prompt: trimmedPrompt,
+                        modelID: selectedImageModelID, aspectRatio: aspectRatio,
+                        quality: quality.isEmpty ? nil : quality, count: assets.count,
+                        sourceNodeIDs: sourceIDs, state: "ready"
+                    )
+                    store.updateNodeMetadata(id, values: [
+                        "imageGroupPrimary": index == 0 ? "true" : "false"
+                    ])
+                    if let configurationID, configurationID != id {
+                        store.connect(configurationID, to: id, kind: .generatedFrom)
+                    } else if let source = sources.last?.id, source != id {
+                        store.connect(source, to: id, kind: .generatedFrom)
+                    }
+                    resultIDs.append(id)
+                }
+                if resultIDs.count > 1 {
+                    store.group(Set(resultIDs))
+                }
+                store.updateNodeMetadata(ownerID, values: [
+                    "generationState": "ready",
+                    "generationResultNodeIDs": resultIDs.map(\.uuidString).joined(separator: ","),
+                    "generationError": nil
+                ])
             } else {
                 let canvasID = store.project.id
                 guard let documentID = store.selectedDocument?.id,
                       let model = selectedVideoModel else {
                     throw FloeError.invalidConfiguration("请选择视频模型。")
                 }
-                let resultNodeID = store.addGenerationTask(
-                    kind: .video, prompt: "正在准备生成任务", at: resultPoint
+                if configurationID == nil && reusableEmptyMedia == nil {
+                    configurationID = store.addGenerationTask(
+                        kind: .video, prompt: trimmedPrompt,
+                        at: CGPoint(x: anchorPoint.x + 420, y: anchorPoint.y)
+                    )
+                    for sourceID in sourceIDs {
+                        store.connect(sourceID, to: configurationID!, kind: .source)
+                    }
+                }
+                if resultNodeID == nil {
+                    let baseX = configurationID.flatMap { id in
+                        store.selectedDocument?.nodes.first(where: { $0.id == id })?.x
+                    } ?? anchorPoint.x
+                    let baseY = configurationID.flatMap { id in
+                        store.selectedDocument?.nodes.first(where: { $0.id == id })?.y
+                    } ?? anchorPoint.y
+                    resultNodeID = store.addPlaceholder(
+                        kind: .video, at: CGPoint(x: baseX + 420, y: baseY)
+                    )
+                }
+                guard let resultNodeID else {
+                    throw FloeError.internalError("无法创建视频结果节点")
+                }
+                if let configurationID, configurationID != resultNodeID {
+                    store.connect(configurationID, to: resultNodeID, kind: .generatedFrom)
+                } else if let source = sources.last?.id, source != resultNodeID {
+                    store.connect(source, to: resultNodeID, kind: .generatedFrom)
+                }
+                store.markGeneration(
+                    nodeID: resultNodeID, kind: .video, prompt: trimmedPrompt,
+                    modelID: model.id, aspectRatio: aspectRatio,
+                    quality: quality.isEmpty ? nil : quality, count: 1,
+                    sourceNodeIDs: sourceIDs, state: "preparing"
                 )
-                store.connect(promptNodeID, to: resultNodeID, kind: .generatedFrom)
                 let job = try await environment.mediaGenerationService.submitVideo(
                     modelID: model.id, canvasID: canvasID, documentID: documentID,
-                    sourceNodeIDs: Array(sourceNodeIDs) + [promptNodeID],
+                    sourceNodeIDs: sourceIDs,
                     resultNodeID: resultNodeID,
                     request: RemoteVideoRequest(
-                        prompt: prompt, modelRemoteID: model.remoteModelID,
+                        prompt: providerPrompt, modelRemoteID: model.remoteModelID,
                         options: VideoGenerationOptions(
                             aspectRatio: aspectRatio,
                             resolution: quality.isEmpty ? nil : quality,
@@ -5814,7 +6772,66 @@ private struct CanvasMediaGenerationView: View {
             }
             dismiss()
         } catch {
+            let failedNodeID = configurationID ?? resultNodeID
+            if let failedNodeID {
+                store.updateNodeMetadata(failedNodeID, values: [
+                    "generationState": "failed",
+                    "generationError": error.localizedDescription
+                ])
+            }
             self.error = error.localizedDescription
+        }
+    }
+
+    private func restoreSelectionDefaults() {
+        let selected = store.selectedDocument?.nodes.filter { sourceNodeIDs.contains($0.id) } ?? []
+        guard let node = selected.first(where: {
+            $0.kind == .generationTask || $0.metadata["generationPrompt"] != nil
+        }) ?? selected.first else { return }
+        if let storedKind = node.metadata["generationKind"].flatMap(MediaKind.init(rawValue:)) {
+            kind = storedKind
+        } else if node.kind == .video {
+            kind = .video
+        }
+        let storedPrompt = node.metadata["generationPrompt"] ?? (node.kind == .text ? node.text : "")
+        if !storedPrompt.isEmpty { prompt = storedPrompt }
+        if let value = node.metadata["generationAspectRatio"], !value.isEmpty { aspectRatio = value }
+        if let value = node.metadata["generationCount"].flatMap(Int.init) { count = min(4, max(1, value)) }
+        if let value = node.metadata["generationQuality"] { quality = value }
+        if let value = node.metadata["generationModelID"].flatMap(UUID.init(uuidString:)) {
+            if kind == .image { selectedImageModelID = value }
+            else { selectedVideoModelID = value }
+        }
+        if prompt.isEmpty {
+            let upstreamText = store.generationSourceNodes(for: sourceNodeIDs)
+                .filter { [.text, .stickyNote, .card].contains($0.kind) }
+                .map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
+            prompt = upstreamText
+        }
+    }
+
+    private func imageData(for node: FloeCanvasNode) throws -> Data? {
+        guard node.kind == .image,
+              let relativePath = node.asset?.localRelativePath,
+              !relativePath.contains("..") else { return nil }
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: false
+        )
+        let url = support.appendingPathComponent("FloeAgent", isDirectory: true)
+            .appendingPathComponent(relativePath)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try Data(contentsOf: url, options: .mappedIfSafe)
+    }
+
+    private func sourceIcon(_ kind: CanvasNodeKind) -> String {
+        switch kind {
+        case .image: "photo"
+        case .video: "play.rectangle"
+        case .audio: "waveform"
+        case .file: "doc"
+        case .generationTask: "wand.and.stars"
+        default: "text.alignleft"
         }
     }
 }
@@ -6042,6 +7059,9 @@ private struct CanvasMaterialLibraryView: View {
                 }
                 .buttonStyle(.plain)
                 .contextMenu {
+                    ShareLink(item: item.url) {
+                        Label("共享或保存文件", systemImage: "square.and.arrow.up")
+                    }
                     Button("编辑信息", systemImage: "info.circle") { editingItem = item }
                     if item.cloudRecordName != nil {
                         Button("删除云端副本，保留本机", systemImage: "icloud.slash", role: .destructive) {

@@ -54,6 +54,8 @@ public protocol RunStore: Sendable {
     func saveRun(_ run: RunRecord) async throws
     func run(id: UUID) async throws -> RunRecord?
     func runs(conversationID: UUID) async throws -> [RunRecord]
+    func recentRuns(conversationID: UUID, limit: Int) async throws -> [RunRecord]
+    func nonTerminalRuns() async throws -> [RunRecord]
     func updateRunState(id: UUID, state: String, endedAt: Date?) async throws
     func assignGoal(runID: UUID, goalID: UUID) async throws
 
@@ -61,6 +63,7 @@ public protocol RunStore: Sendable {
     @discardableResult
     func appendEvent(runID: UUID, kind: RunEventRecord.Kind, payloadJSON: String) async throws -> RunEventRecord
     func events(runID: UUID) async throws -> [RunEventRecord]
+    func recentEvents(runID: UUID, limit: Int) async throws -> [RunEventRecord]
 
     func recordUsage(_ usage: RunUsageRecord) async throws
     func usage(runID: UUID) async throws -> [RunUsageRecord]
@@ -74,6 +77,16 @@ public protocol RunStore: Sendable {
 
     /// Aggregated usage statistics across all runs.
     func usageStatistics() async throws -> UsageStatistics
+}
+
+public extension RunStore {
+    func recentRuns(conversationID: UUID, limit: Int) async throws -> [RunRecord] {
+        Array(try await runs(conversationID: conversationID).prefix(max(1, limit)))
+    }
+
+    func recentEvents(runID: UUID, limit: Int) async throws -> [RunEventRecord] {
+        Array(try await events(runID: runID).suffix(max(1, limit)))
+    }
 }
 
 /// Aggregated token/cost usage across all runs.
@@ -270,6 +283,34 @@ public actor SQLiteRunStore: RunStore {
         }
     }
 
+    public func recentRuns(conversationID: UUID, limit: Int) async throws -> [RunRecord] {
+        try await database.reader { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM runs
+                    WHERE conversation_id = ?
+                    ORDER BY started_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                arguments: [conversationID.uuidString, max(1, limit)]
+            ).map(Self.run(from:))
+        }
+    }
+
+    public func nonTerminalRuns() async throws -> [RunRecord] {
+        try await database.reader { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM runs
+                    WHERE state NOT IN ('completed', 'failed', 'checkpointed', 'interrupted')
+                    ORDER BY started_at DESC, id DESC
+                    """
+            ).map(Self.run(from:))
+        }
+    }
+
     public func updateRunState(id: UUID, state: String, endedAt: Date?) async throws {
         try await database.writer { db in
             try db.execute(
@@ -327,6 +368,22 @@ public actor SQLiteRunStore: RunStore {
                 sql: "SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence",
                 arguments: [runID.uuidString]
             ).map(Self.event(from:))
+        }
+    }
+
+    public func recentEvents(runID: UUID, limit: Int) async throws -> [RunEventRecord] {
+        try await database.reader { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM run_events
+                    WHERE run_id = ?
+                    ORDER BY sequence DESC
+                    LIMIT ?
+                    """,
+                arguments: [runID.uuidString, max(1, limit)]
+            )
+            return try rows.reversed().map(Self.event(from:))
         }
     }
 

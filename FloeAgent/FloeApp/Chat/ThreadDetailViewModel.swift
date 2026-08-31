@@ -807,9 +807,19 @@ final class ThreadDetailViewModel: ObservableObject {
                 self.sessionRevision = snapshot.revision
                 let previousRunID = self.selectedRunID
                 self.taskTitle = snapshot.conversation.title
-                self.messages = snapshot.messages
+                let known = Dictionary(uniqueKeysWithValues: self.messages.map { ($0.id, $0) })
+                let merged = known.merging(
+                    Dictionary(uniqueKeysWithValues: snapshot.messages.map { ($0.id, $0) })
+                ) { _, newest in newest }
+                self.messages = merged.values.sorted {
+                    ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString)
+                }
+                if self.messages.count <= snapshot.messages.count {
+                    self.earlierMessageCursor = snapshot.earlierMessageCursor
+                    self.hasEarlierMessages = snapshot.hasEarlierMessages
+                }
                 self.runs = snapshot.runs
-                self.eventsByRun = snapshot.eventsByRun
+                self.eventsByRun.merge(snapshot.eventsByRun) { _, newest in newest }
                 if self.selectedRunID.flatMap({ id in
                     snapshot.runs.first(where: { $0.id == id })
                 }) == nil {
@@ -979,10 +989,23 @@ final class ThreadDetailViewModel: ObservableObject {
         // drain. A finished run must never strand the UI in a non-terminal
         // "thinking" state merely because historical runs were not prefetched.
         guard !Task.isCancelled else { return }
-        messages = (try? await center.environment.conversationStore
-            .messages(conversationID: conversationID)) ?? messages
+        if let page = try? await center.environment.conversationStore.messagePage(
+            conversationID: conversationID, before: nil, limit: 100
+        ) {
+            let known = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
+            let merged = known.merging(
+                Dictionary(uniqueKeysWithValues: page.messages.map { ($0.id, $0) })
+            ) { _, newest in newest }
+            messages = merged.values.sorted {
+                ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString)
+            }
+            if messages.count <= page.messages.count {
+                earlierMessageCursor = page.earlierCursor
+                hasEarlierMessages = page.hasEarlier
+            }
+        }
         runs = (try? await center.environment.runStore
-            .runs(conversationID: conversationID)) ?? runs
+            .recentRuns(conversationID: conversationID, limit: 160)) ?? runs
         // Refresh only the selected run. Other run details remain lazy and are
         // loaded by `selectRun`, so completion remains bounded on long tasks.
         try? await loadSelectedRunDetails()

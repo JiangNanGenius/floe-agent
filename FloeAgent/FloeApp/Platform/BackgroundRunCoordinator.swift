@@ -775,15 +775,38 @@ final class MediaGenerationService {
         prompt: String,
         options: ImageGenerationOptions = .init()
     ) async throws -> CanvasAssetReference {
+        guard let first = try await generateImages(prompt: prompt, options: options).first else {
+            throw RemoteImageError.invalidResponse("供应商没有返回图片。")
+        }
+        return first
+    }
+
+    /// Generates or edits one image batch and persists every returned image.
+    /// The old singular API remains as a compatibility wrapper, while canvas
+    /// generation uses this method so count/reference semantics are honest.
+    func generateImages(
+        prompt: String,
+        options: ImageGenerationOptions = .init(),
+        sourceImages: [Data] = [],
+        modelID: UUID? = nil
+    ) async throws -> [CanvasAssetReference] {
         let center = environment.conversationCenter
-        guard let (provider, model) = center.auxiliaryProviderAndModel(for: .generate),
+        let operation: RemoteImageOperation = sourceImages.isEmpty ? .generate : .edit
+        let selected = modelID.flatMap { center.providerAndModel(modelID: $0) }
+            ?? center.auxiliaryProviderAndModel(for: operation == .generate ? .generate : .edit)
+        guard let (provider, model) = selected,
               let adapter = ImageProviderAdapterFactory().adapter(for: provider),
-              adapter.supports(.generate, for: provider) else {
-            throw FloeError.invalidConfiguration("请先在辅助模型中选择可用的生图模型。")
+              adapter.supports(operation, for: provider) else {
+            throw FloeError.invalidConfiguration(
+                operation == .generate
+                    ? "请先在辅助模型中选择可用的生图模型。"
+                    : "所选模型或服务商不支持参考图编辑。"
+            )
         }
         let result = try await adapter.perform(
             RemoteImageRequest(
-                operation: .generate, prompt: prompt,
+                operation: operation, prompt: prompt,
+                sourceImages: Array(sourceImages.prefix(8)),
                 sizeHint: options.size ?? options.aspectRatio,
                 count: max(1, min(options.count, 4)),
                 modelRemoteID: model.remoteModelID
@@ -791,41 +814,47 @@ final class MediaGenerationService {
             provider: provider,
             credentials: center.resolveCredentials(for: provider)
         )
-        guard let data = result.images.first else {
+        guard !result.images.isEmpty else {
             throw RemoteImageError.invalidResponse("供应商没有返回图片。")
         }
-        guard data.count <= 24 * 1_024 * 1_024 else {
+        let returnedImages = Array(result.images.prefix(max(1, min(options.count, 4))))
+        guard returnedImages.allSatisfy({ $0.count <= 24 * 1_024 * 1_024 }) else {
             throw FloeError.validationFailed("生成图片超过 24 MiB。")
         }
-        let assetID = UUID()
-        let isPNG = data.starts(with: [0x89, 0x50, 0x4E, 0x47])
-        let fileExtension = isPNG ? "png" : "jpg"
-        let relativePath = "Materials/\(assetID.uuidString)-generated.\(fileExtension)"
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true
         )
-        let destination = support.appendingPathComponent("FloeAgent/\(relativePath)")
-        try FileManager.default.createDirectory(
-            at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
-        )
-        try data.write(to: destination, options: .atomic)
-        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        try await environment.creativeAssetStore.save(CreativeAssetRecord(
-            id: assetID, contentHash: hash, kind: .image,
-            displayName: "生成图片", mimeType: isPNG ? "image/png" : "image/jpeg",
-            localRelativePath: relativePath, cloudRecordName: nil,
-            byteCount: Int64(data.count), sourceURL: nil,
-            license: nil, tags: ["生成内容"], referenceCount: 0,
-            createdAt: Date(), updatedAt: Date()
-        ))
-        return CanvasAssetReference(
-            id: assetID, contentHash: hash,
-            localRelativePath: relativePath,
-            mimeType: isPNG ? "image/png" : "image/jpeg",
-            byteCount: Int64(data.count), sourceURL: nil,
-            license: nil
-        )
+        var assets: [CanvasAssetReference] = []
+        for (index, data) in returnedImages.enumerated() {
+            let assetID = UUID()
+            let isPNG = data.starts(with: [0x89, 0x50, 0x4E, 0x47])
+            let fileExtension = isPNG ? "png" : "jpg"
+            let relativePath = "Materials/\(assetID.uuidString)-generated.\(fileExtension)"
+            let destination = support.appendingPathComponent("FloeAgent/\(relativePath)")
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try data.write(to: destination, options: .atomic)
+            let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            try await environment.creativeAssetStore.save(CreativeAssetRecord(
+                id: assetID, contentHash: hash, kind: .image,
+                displayName: result.images.count > 1 ? "生成图片 \(index + 1)" : "生成图片",
+                mimeType: isPNG ? "image/png" : "image/jpeg",
+                localRelativePath: relativePath, cloudRecordName: nil,
+                byteCount: Int64(data.count), sourceURL: nil,
+                license: nil, tags: ["生成内容"], referenceCount: 0,
+                createdAt: Date(), updatedAt: Date()
+            ))
+            assets.append(CanvasAssetReference(
+                id: assetID, contentHash: hash,
+                localRelativePath: relativePath,
+                mimeType: isPNG ? "image/png" : "image/jpeg",
+                byteCount: Int64(data.count), sourceURL: nil,
+                license: nil
+            ))
+        }
+        return assets
     }
 
     /// Submits a video job using a write-before-publish protocol. The returned

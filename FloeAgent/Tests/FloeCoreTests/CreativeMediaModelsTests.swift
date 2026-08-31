@@ -126,6 +126,7 @@ struct CreativeMediaModelsTests {
                 CanvasPatchOperation(
                     kind: .connect, sourceNodeID: sourceID,
                     destinationNodeID: resultID, connectionID: connectionID,
+                    connectionKind: .generatedFrom,
                     sourcePort: .trailing, destinationPort: .leading,
                     label: "AI result"
                 )
@@ -136,6 +137,7 @@ struct CreativeMediaModelsTests {
         #expect(Set(result.changedNodeIDs) == [sourceID, resultID])
         #expect(result.changedConnectionIDs == [connectionID])
         #expect(updated.documents[0].connections[0].sourcePort == .trailing)
+        #expect(updated.documents[0].connections[0].kind == .generatedFrom)
 
         var stale = patch
         stale.expectedRevision = 6

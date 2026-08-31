@@ -112,6 +112,8 @@ struct ConversationSessionSnapshot: Sendable {
     let revision: Int
     let conversation: ConversationRecord
     let messages: [PersistedMessage]
+    let earlierMessageCursor: ConversationMessageCursor?
+    let hasEarlierMessages: Bool
     let runs: [RunRecord]
     let eventsByRun: [UUID: [RunEventRecord]]
     let pendingApprovals: [PendingApproval]
@@ -190,6 +192,7 @@ final class ConversationCenter: ObservableObject {
     private var snapshotTasks: [UUID: Task<Void, Never>] = [:]
     private var sessionRevisions: [UUID: Int] = [:]
     private var sessionContinuations: [UUID: [UUID: AsyncStream<ConversationSessionSnapshot>.Continuation]] = [:]
+    private var pendingSessionPublishes: [UUID: Task<Void, Never>] = [:]
     /// Launch/delete coordination. A delete first closes the conversation to
     /// new launches, then waits for any transaction already in progress.
     private var launchCount = 0
@@ -281,16 +284,35 @@ final class ConversationCenter: ObservableObject {
         guard let conversation = try await environment.conversationStore.conversation(id: conversationID) else {
             throw FloeError.notFound("conversation \(conversationID.uuidString)")
         }
-        let messages = try await environment.conversationStore.messages(conversationID: conversationID)
-        let runs = try await environment.runStore.runs(conversationID: conversationID)
+        let messagePage = try await environment.conversationStore.messagePage(
+            conversationID: conversationID, before: nil, limit: 100
+        )
+        let messages = messagePage.messages
+        let runs = try await environment.runStore.recentRuns(
+            conversationID: conversationID, limit: 160
+        )
         let taskPolicy = try await SQLiteWorkspaceStore(database: environment.database)
             .taskPolicy(conversationID: conversationID)
+        var visibleRunIDs = Set(messages.compactMap(\.runID))
+        if let latest = runs.first { visibleRunIDs.insert(latest.id) }
+        visibleRunIDs.formUnion(
+            pendingApprovals.lazy.filter { $0.conversationID == conversationID }.map(\.runID)
+        )
         var events: [UUID: [RunEventRecord]] = [:]
-        for run in runs { events[run.id] = try await environment.runStore.events(runID: run.id) }
+        try await withThrowingTaskGroup(of: (UUID, [RunEventRecord]).self) { group in
+            for runID in visibleRunIDs {
+                group.addTask { [runStore = environment.runStore] in
+                    (runID, try await runStore.recentEvents(runID: runID, limit: 1_000))
+                }
+            }
+            for try await (runID, loaded) in group { events[runID] = loaded }
+        }
         return ConversationSessionSnapshot(
             revision: sessionRevisions[conversationID, default: 0],
             conversation: conversation,
             messages: messages,
+            earlierMessageCursor: messagePage.earlierCursor,
+            hasEarlierMessages: messagePage.hasEarlier,
             runs: runs,
             eventsByRun: events,
             pendingApprovals: pendingApprovals.filter { $0.conversationID == conversationID },
@@ -319,10 +341,20 @@ final class ConversationCenter: ObservableObject {
 
     private func publishSession(_ conversationID: UUID) {
         sessionRevisions[conversationID, default: 0] += 1
-        let subscribers = Array(sessionContinuations[conversationID, default: [:]].values)
-        guard !subscribers.isEmpty else { return }
-        Task { @MainActor [weak self] in
-            guard let self, let snapshot = try? await self.sessionSnapshot(conversationID: conversationID) else { return }
+        guard !sessionContinuations[conversationID, default: [:]].isEmpty,
+              pendingSessionPublishes[conversationID] == nil else { return }
+        pendingSessionPublishes[conversationID] = Task { @MainActor [weak self] in
+            // Coalesce token/tool bursts into one latest-state projection.
+            // This avoids repeatedly decoding the same visible history while
+            // keeping UI latency below a frame pair.
+            try? await Task.sleep(for: .milliseconds(40))
+            guard let self, !Task.isCancelled else { return }
+            let snapshot = try? await self.sessionSnapshot(conversationID: conversationID)
+            self.pendingSessionPublishes[conversationID] = nil
+            guard let snapshot else { return }
+            let subscribers = Array(
+                self.sessionContinuations[conversationID, default: [:]].values
+            )
             subscribers.forEach { $0.yield(snapshot) }
         }
     }
@@ -335,10 +367,8 @@ final class ConversationCenter: ObservableObject {
         guard !didReconcileInterruptedRuns else { return }
         didReconcileInterruptedRuns = true
         let logger = FloeLogger(category: .persistence)
-        let records = (try? await environment.conversationStore.conversations()) ?? []
-        for conversation in records {
-            let runs = (try? await environment.runStore.runs(conversationID: conversation.id)) ?? []
-            for run in runs where !Self.isPersistedTerminal(run.state) {
+        let runs = (try? await environment.runStore.nonTerminalRuns()) ?? []
+        for run in runs {
                 let hasLiveOwner = runServices[run.id] != nil
                     || runTasks[run.id] != nil
                     || activeRuns[run.id] != nil
@@ -364,9 +394,8 @@ final class ConversationCenter: ObservableObject {
                     payloadJSON: #"{"state":"interrupted","reason":"应用重新启动，先前运行已安全中断"}"#
                 )
                 logger.info(
-                    "launchRecoveryInterrupted run=\(run.id.uuidString) conversation=\(conversation.id.uuidString) previousState=\(run.state)"
+                    "launchRecoveryInterrupted run=\(run.id.uuidString) conversation=\(run.conversationID.uuidString) previousState=\(run.state)"
                 )
-            }
         }
     }
 
@@ -376,7 +405,9 @@ final class ConversationCenter: ObservableObject {
     func resumeSafeRunsAfterForeground() async {
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
         for conversation in conversations {
-            guard let loadedRuns = try? await environment.runStore.runs(conversationID: conversation.id),
+            guard let loadedRuns = try? await environment.runStore.recentRuns(
+                    conversationID: conversation.id, limit: 1
+                  ),
                   let run = loadedRuns.first,
                   ["failed", "interrupted", "checkpointed"].contains(run.state),
                   attemptedForegroundRecovery.insert(run.id).inserted else { continue }
@@ -2803,7 +2834,9 @@ final class ConversationCenter: ObservableObject {
 
     /// The most recent run record for a conversation, if any.
     func latestRun(conversationID: UUID) async -> RunRecord? {
-        let runs = (try? await environment.runStore.runs(conversationID: conversationID)) ?? []
+        let runs = (try? await environment.runStore.recentRuns(
+            conversationID: conversationID, limit: 1
+        )) ?? []
         return runs.first // store ordering is started_at DESC
     }
 

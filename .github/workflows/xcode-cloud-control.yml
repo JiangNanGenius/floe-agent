@@ -403,12 +403,18 @@ jobs:
             echo "testflight-build id=$BUILD_ID version=$(jq -r '.data.attributes.version' "$RUNNER_TEMP/testflight-build.json") processing=$processing audience=$(jq -r '.data.attributes.buildAudienceType' "$RUNNER_TEMP/testflight-build.json") uploaded=$(jq -r '.data.attributes.uploadedDate' "$RUNNER_TEMP/testflight-build.json")"
             if test "$processing" = VALID; then
               group_count="$(jq '[.included[]? | select(.type == "betaGroups")] | length' "$RUNNER_TEMP/testflight-build.json")"
+              floe_qa_count="$(jq '[.included[]? | select(.type == "betaGroups" and .attributes.name == "Floe QA" and .attributes.isInternalGroup == true and .attributes.publicLinkEnabled != true)] | length' "$RUNNER_TEMP/testflight-build.json")"
+              unexpected_group_count="$(jq '[.included[]? | select(.type == "betaGroups" and (.attributes.name != "Floe QA" or .attributes.isInternalGroup != true or .attributes.publicLinkEnabled == true))] | length' "$RUNNER_TEMP/testflight-build.json")"
               echo "beta-group-count=$group_count"
+              echo "floe-qa-internal-group-count=$floe_qa_count"
+              echo "unexpected-beta-group-count=$unexpected_group_count"
               jq -r '.included[]? | select(.type == "betaGroups") | "beta-group id=\(.id) name=\(.attributes.name) internal=\(.attributes.isInternalGroup) public_link=\(.attributes.publicLinkEnabled) feedback=\(.attributes.feedbackEnabled)"' \
                 "$RUNNER_TEMP/testflight-build.json"
               jq -r '.included[]? | select(.type == "preReleaseVersions") | "prerelease-version id=\(.id) version=\(.attributes.version) platform=\(.attributes.platform)"' \
                 "$RUNNER_TEMP/testflight-build.json"
-              test "$group_count" -gt 0
+              test "$group_count" -eq 1
+              test "$floe_qa_count" -eq 1
+              test "$unexpected_group_count" -eq 0
               exit 0
             fi
             test "$processing" != FAILED
