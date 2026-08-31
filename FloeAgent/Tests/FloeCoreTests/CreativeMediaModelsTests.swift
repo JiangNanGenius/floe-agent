@@ -452,6 +452,42 @@ struct CreativeMediaModelsTests {
         #expect(!plan.operations.contains { $0.kind == .create })
     }
 
+    @Test func generationRetryKeepsConfigurationAndCreatesNewResult() throws {
+        let prompt = CanvasNode(
+            kind: .text, text: "海边产品照",
+            position: .init(x: 100, y: 100), size: .init(width: 280, height: 160)
+        )
+        let configuration = CanvasNode(
+            kind: .generationTask, text: "图片生成",
+            position: .init(x: 500, y: 100), size: .init(width: 320, height: 200),
+            metadata: ["generationState": "failed", "generationAttemptIndex": "1"]
+        )
+        let failed = CanvasNode(
+            kind: .image, text: "生成失败",
+            position: .init(x: 900, y: 100), size: .init(width: 320, height: 260),
+            metadata: ["generationState": "failed"]
+        )
+        let document = CanvasDocument(name: "Canvas", nodes: [prompt, configuration, failed])
+        let plan = try CanvasGenerationGraphPlanner.plan(
+            request: CanvasGenerationGraphRequest(
+                kind: .image,
+                prompt: prompt.text,
+                sourceNodeIDs: [prompt.id],
+                resultPosition: .init(x: 1_300, y: 100),
+                existingConfigurationNodeID: configuration.id,
+                metadata: ["generationAttemptIndex": "2"]
+            ),
+            document: document
+        )
+
+        #expect(plan.configurationNodeID == configuration.id)
+        #expect(plan.resultNodeID != failed.id)
+        #expect(plan.operations.contains {
+            $0.kind == .create && $0.nodeID == plan.resultNodeID && $0.nodeKind == .image
+        })
+        #expect(!plan.operations.contains { $0.kind == .delete && $0.nodeID == failed.id })
+    }
+
     @Test func canvasSyncReducerConvergesForOutOfOrderEqualRevision() {
         let canvasID = UUID(), entityID = UUID()
         let a = CanvasSyncOperation(

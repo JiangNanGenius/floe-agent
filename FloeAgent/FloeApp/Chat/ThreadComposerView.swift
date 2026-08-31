@@ -1282,7 +1282,7 @@ struct ThreadComposerView: View {
 /// metering, so this intentionally communicates an active capture session
 /// without fabricating an amplitude measurement. Reduced Motion renders a
 /// stable equalizer instead of continuously animating.
-private struct VoiceWaveformView: View {
+struct VoiceWaveformView: View {
     let isActive: Bool
     let reduceMotion: Bool
 

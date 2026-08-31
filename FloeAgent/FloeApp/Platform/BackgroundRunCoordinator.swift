@@ -803,16 +803,36 @@ final class MediaGenerationService {
                     : "所选模型或服务商不支持参考图编辑。"
             )
         }
-        let result = try await adapter.perform(
-            RemoteImageRequest(
-                operation: operation, prompt: prompt,
-                sourceImages: Array(sourceImages.prefix(8)),
-                sizeHint: options.size ?? options.aspectRatio,
-                count: max(1, min(options.count, 4)),
-                modelRemoteID: model.remoteModelID
-            ),
-            provider: provider,
-            credentials: center.resolveCredentials(for: provider)
+        let traceID = UUID()
+        let startedAt = Date()
+        let boundedSources = Array(sourceImages.prefix(8))
+        let referenceBytes = boundedSources.reduce(0) { $0 + $1.count }
+        FloeLogger(category: .providers).info(
+            "imageGenerationStarted trace=\(traceID.uuidString) operation=\(operation.rawValue) provider=\(String(describing: provider.kind)) references=\(boundedSources.count) referenceBytes=\(referenceBytes) count=\(max(1, min(options.count, 4)))"
+        )
+        let result: RemoteImageResult
+        do {
+            result = try await adapter.perform(
+                RemoteImageRequest(
+                    operation: operation, prompt: prompt,
+                    sourceImages: boundedSources,
+                    sizeHint: options.size ?? options.aspectRatio,
+                    count: max(1, min(options.count, 4)),
+                    modelRemoteID: model.remoteModelID
+                ),
+                provider: provider,
+                credentials: center.resolveCredentials(for: provider)
+            )
+        } catch {
+            let nsError = error as NSError
+            let elapsed = Int(Date().timeIntervalSince(startedAt) * 1_000)
+            FloeLogger(category: .providers).warning(
+                "imageGenerationFailed trace=\(traceID.uuidString) operation=\(operation.rawValue) provider=\(String(describing: provider.kind)) references=\(boundedSources.count) durationMs=\(elapsed) domain=\(nsError.domain) code=\(nsError.code)"
+            )
+            throw error
+        }
+        FloeLogger(category: .providers).info(
+            "imageGenerationCompleted trace=\(traceID.uuidString) operation=\(operation.rawValue) provider=\(String(describing: provider.kind)) images=\(result.images.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
         )
         guard !result.images.isEmpty else {
             throw RemoteImageError.invalidResponse("供应商没有返回图片。")

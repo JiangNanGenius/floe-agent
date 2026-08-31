@@ -3240,6 +3240,9 @@ struct WorkspaceCanvasView: View {
                 onOpen3D: node.kind == .scene3D ? {
                     directorPresentation = Canvas3DDirectorPresentation(nodeID: node.id)
                 } : nil,
+                onConfigureGeneration: node.kind == .generationTask ? {
+                    openGenerationConfiguration(for: node)
+                } : nil,
                 onBeginEditing: {
                     selectedNodeIDs = [node.id]
                     selectedConnectionID = nil
@@ -3291,6 +3294,11 @@ struct WorkspaceCanvasView: View {
                         CanvasNodeSelectionChrome(
                             node: node,
                             onOpenMenu: {
+                                if node.kind == .generationTask
+                                    || node.metadata["generationState"] == "failed" {
+                                    openGenerationConfiguration(for: node)
+                                    return
+                                }
                                 selectedNodeIDs = contextSelection(for: node)
                                 selectedConnectionID = nil
                                 editingNodeID = nil
@@ -3348,7 +3356,10 @@ struct WorkspaceCanvasView: View {
             .onTapGesture(count: 2) {
                 guard mode == .select else { return }
                 selectedConnectionID = nil
-                if node.kind == .group {
+                if node.kind == .generationTask
+                    || node.metadata["generationState"] == "failed" {
+                    openGenerationConfiguration(for: node)
+                } else if node.kind == .group {
                     enteredGroupID = node.id
                     selectedNodeIDs = [node.id]
                     editingNodeID = nil
@@ -3391,6 +3402,24 @@ struct WorkspaceCanvasView: View {
                     }
             )
         }
+    }
+
+    private func openGenerationConfiguration(for node: FloeCanvasNode) {
+        let configurationID: UUID? = if node.kind == .generationTask {
+            node.id
+        } else {
+            store.selectedDocument?.connections.first(where: { connection in
+                connection.destinationNodeID == node.id
+                    && connection.kind == .generatedFrom
+                    && store.selectedDocument?.nodes.first(where: {
+                        $0.id == connection.sourceNodeID
+                    })?.kind == .generationTask
+            })?.sourceNodeID
+        }
+        selectedNodeIDs = [configurationID ?? node.id]
+        selectedConnectionID = nil
+        editingNodeID = nil
+        showsGeneration = true
     }
 
     private func handleConnectionPort(nodeID: UUID, port: CanvasConnectionPort) {
@@ -3932,7 +3961,19 @@ struct WorkspaceCanvasView: View {
         } else if !selectedNodeIDs.isEmpty, mode == .select {
             HStack(spacing: 4) {
                 if selectedNodeIDs.count == 1, let nodeID = selectedNodeIDs.first {
-                    Button("编辑", systemImage: "pencil") { editingNodeID = nodeID }
+                    if let node = store.selectedDocument?.nodes.first(where: { $0.id == nodeID }),
+                       node.kind == .generationTask || node.metadata["generationState"] == "failed" {
+                        Button(
+                            node.metadata["generationState"] == "failed" ? "重试" : "配置",
+                            systemImage: node.metadata["generationState"] == "failed"
+                                ? "arrow.clockwise" : "slider.horizontal.3"
+                        ) {
+                            openGenerationConfiguration(for: node)
+                        }
+                        .accessibilityIdentifier("canvas.generation.configure")
+                    } else {
+                        Button("编辑", systemImage: "pencil") { editingNodeID = nodeID }
+                    }
                 }
                 Button("复制", systemImage: "plus.square.on.square") {
                     selectedNodeIDs = store.duplicateNodes(selectedNodeIDs)
@@ -3971,7 +4012,17 @@ struct WorkspaceCanvasView: View {
                     }
                 }
                 Button("属性", systemImage: "slider.horizontal.3") { showsInspector = true }
-                Button("生成", systemImage: "wand.and.stars") { showsGeneration = true }
+                Button(
+                    selectedGenerationNode?.metadata["generationState"] == "failed" ? "重试" : "生成",
+                    systemImage: selectedGenerationNode?.metadata["generationState"] == "failed"
+                        ? "arrow.clockwise" : "wand.and.stars"
+                ) {
+                    if let selectedGenerationNode {
+                        openGenerationConfiguration(for: selectedGenerationNode)
+                    } else {
+                        showsGeneration = true
+                    }
+                }
                 Button("删除", systemImage: "trash", role: .destructive) { deleteSelection() }
             }
             .labelStyle(.iconOnly)
@@ -3993,6 +4044,13 @@ struct WorkspaceCanvasView: View {
         let groups = Set(selectedNodes.compactMap(\.groupID))
         guard groups.count == 1, selectedNodes.allSatisfy({ $0.groupID == groups.first }) else { return nil }
         return groups.first
+    }
+
+    private var selectedGenerationNode: FloeCanvasNode? {
+        store.selectedDocument?.nodes.first(where: {
+            selectedNodeIDs.contains($0.id)
+                && ($0.kind == .generationTask || $0.metadata["generationState"] == "failed")
+        })
     }
 
     private var selectedAttachableNode: FloeCanvasNode? {
@@ -5021,6 +5079,7 @@ private struct CanvasNodeCard: View {
     let sourceURLs: [String]
     let licenseStatus: String?
     let onOpen3D: (() -> Void)?
+    let onConfigureGeneration: (() -> Void)?
     let onBeginEditing: () -> Void
     let onAskAI: () -> Void
     let onDuplicate: () -> Void
@@ -5057,7 +5116,16 @@ private struct CanvasNodeCard: View {
         }
         .shadow(color: node.kind == .group ? .clear : .black.opacity(0.08), radius: 8, y: 3)
         .contextMenu {
-            Button("编辑", systemImage: "pencil", action: onBeginEditing)
+            if let onConfigureGeneration {
+                Button(
+                    node.metadata["generationState"] == "failed" ? "重试生成" : "配置生成",
+                    systemImage: node.metadata["generationState"] == "failed"
+                        ? "arrow.clockwise" : "slider.horizontal.3",
+                    action: onConfigureGeneration
+                )
+            } else {
+                Button("编辑", systemImage: "pencil", action: onBeginEditing)
+            }
             Button("节点内提问", systemImage: "sparkles", action: onAskAI)
             Button("复制", systemImage: "plus.square.on.square", action: onDuplicate)
             Button("连接", systemImage: "point.topleft.down.to.point.bottomright.curvepath", action: onConnect)
@@ -5191,10 +5259,32 @@ private struct CanvasNodeCard: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                         .lineLimit(2)
+                    if let diagnosticID = node.metadata["generationAttemptID"] {
+                        Button {
+                            UIPasteboard.general.string = diagnosticID
+                        } label: {
+                            Label("复制诊断编号 \(diagnosticID.prefix(8))", systemImage: "doc.on.doc")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("canvas.generation.copyDiagnostic")
+                    }
                 } else {
                     Text("选中此节点可查看配置或重新生成")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                if let onConfigureGeneration {
+                    Button(
+                        node.metadata["generationState"] == "failed" ? "重试" : "打开配置",
+                        systemImage: node.metadata["generationState"] == "failed"
+                            ? "arrow.clockwise" : "slider.horizontal.3",
+                        action: onConfigureGeneration
+                    )
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("canvas.generation.nodeAction")
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -5903,6 +5993,12 @@ private struct CanvasAgentFloatingPanel: View {
         .task(id: store.project.selectedDocumentID) {
             await prepare(documentID: store.project.selectedDocumentID)
         }
+        .onChange(of: availableSize) { _, _ in
+            offset = clampedOffset(offset)
+        }
+        .onChange(of: isCollapsed) { _, _ in
+            offset = clampedOffset(offset)
+        }
     }
 
     private var floatingHeader: some View {
@@ -6097,6 +6193,8 @@ private struct CanvasAgentFloatingPanel: View {
 /// ordinary tasks. Only contextual goal composition and result insertion are
 /// canvas-specific; run ownership and recovery remain in ConversationCenter.
 private struct SharedCanvasAgentConversation: View {
+    @EnvironmentObject private var voiceInput: VoiceInputController
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var viewModel: ThreadDetailViewModel
     @ObservedObject var store: CanvasDocumentStore
 
@@ -6108,6 +6206,7 @@ private struct SharedCanvasAgentConversation: View {
     @Binding var isRunning: Bool
 
     @State private var prompt = ""
+    @State private var dictationPrefix = ""
     @State private var insertedRunIDs = Set<UUID>()
 
     init(
@@ -6154,7 +6253,15 @@ private struct SharedCanvasAgentConversation: View {
         .onChange(of: pendingRequest?.id) { _, _ in
             Task { await consumePendingRequest() }
         }
-        .onDisappear { viewModel.stopLiveUpdates() }
+        .onChange(of: voiceInput.transcript) { _, transcript in
+            guard voiceInput.isListening || !transcript.isEmpty else { return }
+            let separator = dictationPrefix.isEmpty || dictationPrefix.last?.isWhitespace == true ? "" : " "
+            prompt = dictationPrefix + separator + transcript
+        }
+        .onDisappear {
+            voiceInput.stop()
+            viewModel.stopLiveUpdates()
+        }
     }
 
     private var transcript: some View {
@@ -6205,6 +6312,22 @@ private struct SharedCanvasAgentConversation: View {
 
     private var composer: some View {
         VStack(spacing: 8) {
+            if let voiceError = canvasVoiceError {
+                HStack(spacing: 8) {
+                    Image(systemName: "microphone.slash")
+                        .foregroundStyle(FloeTheme.pending)
+                    Text(voiceError)
+                        .font(FloeTheme.Typography.metadata)
+                    Spacer()
+                    if case .failed(let reason) = voiceInput.state,
+                       [.microphonePermissionDenied, .speechPermissionDenied].contains(reason),
+                       let settingsURL = URL(string: UIApplication.openSettingsURLString) {
+                        Button("设置") { UIApplication.shared.open(settingsURL) }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                    }
+                }
+            }
             if availableModels.count > 1 {
                 Picker("画布助手模型", selection: $viewModel.selectedModelID) {
                     ForEach(availableModels) { model in
@@ -6215,6 +6338,9 @@ private struct SharedCanvasAgentConversation: View {
                 .font(FloeTheme.Typography.metadata)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            if voiceInput.state.hasSession || voiceInput.state == .requestingPermission {
+                canvasVoiceCaptureRow
+            } else {
             HStack(alignment: .bottom, spacing: 8) {
                 TextField("描述要查找、整理或生成的内容", text: $prompt, axis: .vertical)
                     .lineLimit(1...5)
@@ -6223,6 +6349,21 @@ private struct SharedCanvasAgentConversation: View {
                     .onSubmit { Task { await submit() } }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
+                Button {
+                    dictationPrefix = prompt
+                    voiceInput.requestStart()
+                } label: {
+                    Image(systemName: "microphone.circle")
+                        .font(.title2)
+                        .foregroundStyle(FloeTheme.primary)
+                        .frame(width: 34, height: 34)
+                }
+                .buttonStyle(.plain)
+                .disabled(voiceInput.state == .requestingPermission
+                          || voiceInput.state == .preparing
+                          || voiceInput.state == .stopping)
+                .accessibilityLabel("语音输入")
+                .accessibilityIdentifier("canvas.agent.voice")
                 Button {
                     Task { await submit() }
                 } label: {
@@ -6238,6 +6379,7 @@ private struct SharedCanvasAgentConversation: View {
                           || viewModel.selectedModelID == nil)
             }
             .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
             HStack {
                 if viewModel.isRunning {
                     Picker("运行中输入", selection: $viewModel.runningInputMode) {
@@ -6278,6 +6420,54 @@ private struct SharedCanvasAgentConversation: View {
         }
         .padding(12)
         .background(FloeTheme.chromeMaterial)
+    }
+
+    private var canvasVoiceCaptureRow: some View {
+        HStack(spacing: 10) {
+            VoiceWaveformView(isActive: voiceInput.isListening, reduceMotion: reduceMotion)
+                .frame(width: 72, height: 32)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(voiceInput.isListening ? "正在听你说话" : "正在准备语音输入…")
+                    .font(.subheadline.weight(.semibold))
+                Text(voiceInput.transcript.isEmpty ? "说完后点停止" : voiceInput.transcript)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                voiceInput.stop()
+            } label: {
+                Image(systemName: "stop.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(FloeTheme.destructive)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("停止语音输入")
+            .accessibilityIdentifier("canvas.agent.voice.stop")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var canvasVoiceError: String? {
+        switch voiceInput.state {
+        case .unavailable:
+            "当前设备无法使用语音输入。"
+        case .failed(let reason):
+            switch reason {
+            case .microphonePermissionDenied, .speechPermissionDenied:
+                "需要麦克风和语音识别权限。"
+            case .noAudioInput:
+                "没有检测到可用的音频输入。"
+            default:
+                "语音输入失败，请稍后重试。"
+            }
+        default:
+            nil
+        }
     }
 
     @ViewBuilder
@@ -6415,7 +6605,7 @@ private struct SharedCanvasAgentConversation: View {
         """
         你是 Floe 原生画布里的创作助手。理解当前选中的节点、相邻关系和用户目标；需要资料时可以搜索网页或读取公开链接，需要素材时使用画布素材与媒体生成工具。只使用本次实际提供的工具，保留来源，并把结果作为可编辑画布节点。
 
-        图片或视频生成必须使用唯一的 canvas.generate：一次调用会创建或复用“提示词 → 生成配置 → 结果”节点链。工具返回 ready、submitted 或 reused 都表示本次提交已经完成，禁止在同一轮以相同参数再次调用；返回 failed 时也不要原样重试，应说明失败并让用户从配置节点发起新的重试。
+        图片或视频生成必须使用唯一的 canvas.generate：一次调用会创建或复用“提示词 → 生成配置 → 结果”节点链。同一用户轮次最多调用一次生成工具，不论参数是否变化都禁止自动再次生成；失败时说明原因并让用户从配置节点显式重试。网页搜索得到的参考图必须先用 canvas.assetImport 下载入素材库并插入画布，再把返回的 nodeID 交给 canvas.generate；不得把网页 URL 当作参考图，也不得静默忽略不可读取的参考节点。
 
         当前画布上下文：
         \(contextSnapshot)
@@ -6893,13 +7083,17 @@ private struct CanvasMediaGenerationView: View {
         }
         let graphKind: CanvasGenerationGraphKind = kind == .image ? .image : .video
         let modelID = kind == .image ? selectedImageModelID : selectedVideoModelID
+        let attemptID = UUID()
+        let previousAttempt = existingConfiguration?.metadata["generationAttemptIndex"].flatMap(Int.init) ?? 0
         let graphMetadata = [
             "generationModelID": modelID?.uuidString ?? "",
             "generationAspectRatio": aspectRatio,
             "generationQuality": quality,
             "generationCount": String(kind == .image ? count : 1),
             "generationDurationSeconds": kind == .video ? String(duration) : "",
-            "generationState": "preparing"
+            "generationState": "preparing",
+            "generationAttemptID": attemptID.uuidString,
+            "generationAttemptIndex": String(previousAttempt + 1)
         ]
         var configurationID: UUID?
         var resultNodeID: UUID?
@@ -6924,7 +7118,8 @@ private struct CanvasMediaGenerationView: View {
                     quality: quality.isEmpty ? nil : quality, count: count,
                     sourceNodeIDs: graph.sourceNodeIDs, state: "running"
                 )
-                let referenceData = try sources.compactMap { try imageData(for: $0) }
+                let referenceImages = sources.filter { $0.kind == .image }
+                let referenceData = try referenceImages.map { try imageData(for: $0) }
                 let assets = try await environment.mediaGenerationService.generateImages(
                     prompt: providerPrompt,
                     options: ImageGenerationOptions(
@@ -7037,17 +7232,23 @@ private struct CanvasMediaGenerationView: View {
         }
     }
 
-    private func imageData(for node: FloeCanvasNode) throws -> Data? {
+    private func imageData(for node: FloeCanvasNode) throws -> Data {
         guard node.kind == .image,
               let relativePath = node.asset?.localRelativePath,
-              !relativePath.contains("..") else { return nil }
+              !relativePath.contains("..") else {
+            throw CreativeAssetIngestionError.missingLocalFile
+        }
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: false
         )
         let url = support.appendingPathComponent("FloeAgent", isDirectory: true)
             .appendingPathComponent(relativePath)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard url.standardizedFileURL.path.hasPrefix(
+            support.appendingPathComponent("FloeAgent", isDirectory: true).standardizedFileURL.path + "/"
+        ), FileManager.default.fileExists(atPath: url.path) else {
+            throw CreativeAssetIngestionError.missingLocalFile
+        }
         return try Data(contentsOf: url, options: .mappedIfSafe)
     }
 
@@ -7093,9 +7294,11 @@ private final class CanvasMaterialLibraryStore: ObservableObject {
     @Published private(set) var items: [Item] = []
     @Published var error: String?
     private var assetStore: CreativeAssetStore?
+    private var ingestion: CreativeAssetIngestionService?
 
     func configure(assetStore: CreativeAssetStore) {
         self.assetStore = assetStore
+        self.ingestion = CreativeAssetIngestionService(assetStore: assetStore)
     }
 
     private var directory: URL {
@@ -7142,34 +7345,11 @@ private final class CanvasMaterialLibraryStore: ObservableObject {
 
     func importFiles(_ urls: [URL]) async {
         do {
-            let destination = try directory
+            guard let ingestion else {
+                throw FloeError.invalidConfiguration("素材数据库尚未就绪。")
+            }
             for source in urls {
-                let accessed = source.startAccessingSecurityScopedResource()
-                let id = UUID()
-                let target = destination.appendingPathComponent("\(id.uuidString)-\(source.lastPathComponent)")
-                try FileManager.default.copyItem(at: source, to: target)
-                if accessed { source.stopAccessingSecurityScopedResource() }
-                let data = try Data(contentsOf: target, options: .mappedIfSafe)
-                let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-                if let existing = try await assetStore?.asset(contentHash: hash),
-                   existing.localRelativePath != nil {
-                    try FileManager.default.removeItem(at: target)
-                    continue
-                }
-                let mediaKind: MediaKind
-                switch Self.kind(for: target) {
-                case .video: mediaKind = .video
-                case .audio: mediaKind = .audio
-                case .file: mediaKind = .document
-                default: mediaKind = .image
-                }
-                try await assetStore?.save(CreativeAssetRecord(
-                    id: id, contentHash: hash, kind: mediaKind,
-                    displayName: source.deletingPathExtension().lastPathComponent,
-                    mimeType: UTType(filenameExtension: source.pathExtension)?.preferredMIMEType,
-                    localRelativePath: "Materials/\(target.lastPathComponent)",
-                    byteCount: Int64(data.count), tags: ["导入"], referenceCount: 0
-                ))
+                _ = try await ingestion.importLocalFile(source)
             }
             await reload()
         } catch { self.error = error.localizedDescription }

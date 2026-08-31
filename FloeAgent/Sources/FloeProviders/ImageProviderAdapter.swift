@@ -72,10 +72,21 @@ public struct RemoteImageResult: Sendable, Hashable {
 }
 
 /// Error surfaced when a provider does not support a requested operation.
-public enum RemoteImageError: Error, Sendable, Hashable {
+public enum RemoteImageError: Error, Sendable, Hashable, LocalizedError {
     case unsupportedOperation(RemoteImageOperation, provider: String)
     case requestFailed(String)
     case invalidResponse(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unsupportedOperation(let operation, let provider):
+            "\(provider) 不支持图片操作 \(operation.rawValue)。"
+        case .requestFailed(let message):
+            message.isEmpty ? "图片服务请求失败。" : message
+        case .invalidResponse(let message):
+            message.isEmpty ? "图片服务返回了无效结果。" : message
+        }
+    }
 }
 
 /// A provider-specific remote image adapter. Implementations declare the

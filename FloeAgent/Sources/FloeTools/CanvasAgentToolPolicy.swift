@@ -14,7 +14,7 @@ public enum CanvasAgentToolPolicy {
     public static let nativeToolNames: Set<String> = [
         "web.search", "web.fetch",
         "canvas.getState", "canvas.applyOperations", "canvas.delete",
-        "canvas.assetSearch", "canvas.assetInsert",
+        "canvas.assetSearch", "canvas.assetInsert", "canvas.assetImport",
         "canvas.generate", "canvas.generationStatus"
     ]
 

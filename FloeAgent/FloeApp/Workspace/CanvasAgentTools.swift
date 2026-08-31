@@ -47,9 +47,19 @@ struct CanvasGenerationOutcome: Encodable {
     var reused: Bool
 }
 
+struct CanvasAssetImportOutcome: Encodable {
+    var assetID: UUID
+    var nodeID: UUID
+    var canvasID: UUID
+    var documentID: UUID
+    var revision: Int64
+    var contentHash: String
+}
+
 actor CanvasToolCoordinator {
     private let repository: any CanvasDocumentRepository
     private let assetStore: CreativeAssetStore
+    private let assetIngestion: CreativeAssetIngestionService
     private let jobs: MediaGenerationJobStore
     private let runContexts: CanvasRunContextStore
     private let conversationIDForRun: @Sendable (UUID) async throws -> UUID?
@@ -63,6 +73,7 @@ actor CanvasToolCoordinator {
     init(
         repository: any CanvasDocumentRepository,
         assetStore: CreativeAssetStore,
+        assetIngestion: CreativeAssetIngestionService,
         jobs: MediaGenerationJobStore,
         runContexts: CanvasRunContextStore,
         conversationIDForRun: @escaping @Sendable (UUID) async throws -> UUID?,
@@ -73,7 +84,8 @@ actor CanvasToolCoordinator {
             UUID, UUID, UUID, [UUID], UUID, RemoteVideoRequest
         ) async throws -> MediaGenerationJob
     ) {
-        self.repository = repository; self.assetStore = assetStore; self.jobs = jobs
+        self.repository = repository; self.assetStore = assetStore
+        self.assetIngestion = assetIngestion; self.jobs = jobs
         self.runContexts = runContexts
         self.conversationIDForRun = conversationIDForRun
         self.generateImages = generateImages; self.submitVideo = submitVideo
@@ -169,6 +181,27 @@ actor CanvasToolCoordinator {
         return result
     }
 
+    func importAsset(
+        runID: UUID, url: URL, displayName: String?, license: String?,
+        documentID: UUID?, position: CanvasPoint, expectedRevision: Int64
+    ) async throws -> CanvasAssetImportOutcome {
+        let asset = try await assetIngestion.importRemoteImage(
+            from: url, displayName: displayName, license: license
+        )
+        let result = try await insertAsset(
+            runID: runID, assetID: asset.id, documentID: documentID,
+            position: position, expectedRevision: expectedRevision
+        )
+        return CanvasAssetImportOutcome(
+            assetID: asset.id,
+            nodeID: result.changedNodeIDs.first ?? asset.id,
+            canvasID: result.canvasID,
+            documentID: result.documentID,
+            revision: result.revision,
+            contentHash: asset.contentHash
+        )
+    }
+
     func generateMedia(
         runID: UUID, kind: CanvasGenerationGraphKind, modelID: UUID?,
         prompt: String, documentID: UUID?, sourceNodeIDs: [UUID]?,
@@ -183,6 +216,13 @@ actor CanvasToolCoordinator {
             throw FloeError.validationFailed("Canvas document does not exist")
         }
         let sources = sourceNodeIDs ?? persisted?.selectedNodeIDs ?? []
+        let availableNodeIDs = Set(document.nodes.map(\.id))
+        let missingSourceIDs = Set(sources).subtracting(availableNodeIDs)
+        guard missingSourceIDs.isEmpty else {
+            throw FloeError.validationFailed(
+                "Generation references missing canvas nodes: \(missingSourceIDs.map(\.uuidString).sorted().joined(separator: ", "))"
+            )
+        }
         let fingerprint = generationFingerprint(
             kind: kind, prompt: prompt, modelID: modelID,
             sourceNodeIDs: sources, aspectRatio: aspectRatio,
@@ -212,17 +252,27 @@ actor CanvasToolCoordinator {
                 state: state, reused: true
             )
         }
+        if let previousAttempt = document.nodes.first(where: {
+            $0.kind == .generationTask && $0.createdByRunID == runID
+        }) {
+            let state = previousAttempt.metadata["generationState"] ?? "unknown"
+            throw FloeError.validationFailed(
+                "This user turn already submitted a canvas generation (\(state)). Do not generate again automatically; ask the user to retry from configuration node \(previousAttempt.id.uuidString)."
+            )
+        }
         guard activeProject.revision == expectedRevision else {
             throw FloeError.validationFailed(
                 "Canvas revision conflict: expected \(expectedRevision), current \(activeProject.revision)"
             )
         }
-        let graphMetadata = generationMetadata(
+        var graphMetadata = generationMetadata(
             kind: kind, prompt: prompt, modelID: modelID,
             aspectRatio: aspectRatio, quality: quality,
             count: count, durationSeconds: durationSeconds,
             fingerprint: fingerprint, state: "running"
         )
+        graphMetadata["generationAttemptID"] = UUID().uuidString
+        graphMetadata["generationAttemptIndex"] = "1"
         let graph = try CanvasGenerationGraphPlanner.plan(
             request: CanvasGenerationGraphRequest(
                 kind: kind, prompt: prompt, sourceNodeIDs: sources,
@@ -448,11 +498,24 @@ actor CanvasToolCoordinator {
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: false
         ).appendingPathComponent("FloeAgent", isDirectory: true)
-        return try document.nodes.compactMap { node in
-            guard sourceSet.contains(node.id), node.kind == .image,
-                  let relative = node.asset?.localRelativePath,
-                  !relative.contains("..") else { return nil }
-            return try Data(contentsOf: support.appendingPathComponent(relative))
+        let requestedImages = document.nodes.filter {
+            sourceSet.contains($0.id) && $0.kind == .image
+        }
+        return try requestedImages.map { node in
+            guard let relative = node.asset?.localRelativePath,
+                  !relative.contains("..") else {
+                throw FloeError.validationFailed(
+                    "Reference image \(node.id.uuidString) is not stored locally. Import it before generation."
+                )
+            }
+            let url = support.appendingPathComponent(relative).standardizedFileURL
+            guard url.path.hasPrefix(support.standardizedFileURL.path + "/"),
+                  FileManager.default.fileExists(atPath: url.path) else {
+                throw FloeError.validationFailed(
+                    "Reference image \(node.id.uuidString) is missing locally. Re-import it before generation."
+                )
+            }
+            return try Data(contentsOf: url, options: .mappedIfSafe)
         }
     }
 
@@ -634,6 +697,44 @@ private struct CanvasAssetInsertTool: AgentTool {
     }
 }
 
+private struct CanvasAssetImportTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        var url: String
+        var displayName: String?
+        var license: String?
+        var documentID: UUID?
+        var position: CanvasPoint
+        var expectedRevision: Int64
+    }
+    static let name = "canvas.assetImport"
+    static let toolDescription = "Download one public HTTPS image into the material library, persist it locally, and insert it as a visible image node before using it as a generation reference."
+    static let parametersJSON = #"{"type":"object","properties":{"url":{"type":"string","format":"uri"},"displayName":{"type":"string"},"license":{"type":"string"},"documentID":{"type":"string","format":"uuid"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false},"expectedRevision":{"type":"integer"}},"required":["url","position","expectedRevision"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.networkAccess, .persistsPersonalData]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .internalState
+    let coordinator: CanvasToolCoordinator
+    func validate(_ args: Arguments) throws {
+        guard let url = URL(string: args.url),
+              CreativeAssetIngestionService.isSafePublicHTTPSURL(url) else {
+            throw FloeError.validationFailed("url must be a public HTTPS image URL")
+        }
+    }
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        guard let url = URL(string: args.url) else {
+            throw FloeError.validationFailed("Invalid image URL")
+        }
+        return try await CanvasToolOutput.make(coordinator.importAsset(
+            runID: context.runID,
+            url: url,
+            displayName: args.displayName,
+            license: args.license,
+            documentID: args.documentID,
+            position: args.position,
+            expectedRevision: args.expectedRevision
+        ))
+    }
+}
+
 private struct CanvasGenerateMediaTool: AgentTool {
     struct Arguments: Decodable, Sendable {
         var kind: String; var prompt: String; var modelID: UUID?
@@ -769,9 +870,11 @@ private struct LegacyCanvasMediaStatusTool: AgentTool {
 
 @MainActor
 func registerCanvasAgentTools(environment: AppEnvironment, registry: ToolRunnerRegistry = .shared) {
+    let assetIngestion = CreativeAssetIngestionService(assetStore: environment.creativeAssetStore)
     let coordinator = CanvasToolCoordinator(
         repository: FileCanvasDocumentRepository(),
         assetStore: environment.creativeAssetStore,
+        assetIngestion: assetIngestion,
         jobs: MediaGenerationJobStore(database: environment.database),
         runContexts: CanvasRunContextStore(database: environment.database),
         conversationIDForRun: { [runStore = environment.runStore] runID in
@@ -804,6 +907,7 @@ func registerCanvasAgentTools(environment: AppEnvironment, registry: ToolRunnerR
     ToolCatalog.register(CanvasDeleteTool.self); registry.register(CanvasDeleteTool(coordinator: coordinator))
     ToolCatalog.register(CanvasAssetSearchTool.self); registry.register(CanvasAssetSearchTool(coordinator: coordinator))
     ToolCatalog.register(CanvasAssetInsertTool.self); registry.register(CanvasAssetInsertTool(coordinator: coordinator))
+    ToolCatalog.register(CanvasAssetImportTool.self); registry.register(CanvasAssetImportTool(coordinator: coordinator))
     ToolCatalog.register(CanvasGenerateMediaTool.self); registry.register(CanvasGenerateMediaTool(coordinator: coordinator))
     ToolCatalog.register(CanvasMediaStatusTool.self); registry.register(CanvasMediaStatusTool(coordinator: coordinator))
     ToolCatalog.register(LegacyCanvasInspectTool.self); registry.register(LegacyCanvasInspectTool(coordinator: coordinator))

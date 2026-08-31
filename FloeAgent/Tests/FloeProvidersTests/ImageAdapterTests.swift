@@ -130,6 +130,16 @@ struct ImageAdapterTests {
         #expect(!adapter.supports(.removeBackground, for: alibabaProvider))
     }
 
+    @Test("Remote image failures preserve their actionable message")
+    func localizedErrors() {
+        let request = RemoteImageError.requestFailed("Provider HTTP 429: quota exceeded")
+        let invalid = RemoteImageError.invalidResponse("No image payload")
+        #expect(request.localizedDescription == "Provider HTTP 429: quota exceeded")
+        #expect(invalid.localizedDescription == "No image payload")
+        #expect(RemoteImageError.unsupportedOperation(.edit, provider: "Example")
+            .localizedDescription.contains("Example"))
+    }
+
     @Test("OpenAI GPT Image 2 preserves a configurable proxy base URL")
     func openAIProxyWireContract() async throws {
         let configuration = URLSessionConfiguration.ephemeral
