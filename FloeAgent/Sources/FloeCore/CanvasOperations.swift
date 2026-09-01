@@ -118,6 +118,118 @@ public struct CanvasOperationResult: Sendable, Codable, Hashable {
     }
 }
 
+/// Deterministic, size-aware layout shared by the canvas UI and canvas agent.
+/// Connected nodes are placed by graph depth; nodes in the same layer are
+/// stacked without overlap. The result stays anchored to the original bounds
+/// so arranging never makes the graph appear to disappear off screen.
+public enum CanvasAutoLayout {
+    public enum Direction: Sendable {
+        case horizontal
+        case vertical
+    }
+
+    public static func positions(
+        nodes: [CanvasNode],
+        connections: [CanvasConnection],
+        nodeIDs: Set<UUID>,
+        direction: Direction = .horizontal,
+        layerSpacing: Double = 96,
+        itemSpacing: Double = 48
+    ) -> [UUID: CanvasPoint] {
+        let selected = nodes.filter { nodeIDs.contains($0.id) && !$0.isLocked }
+        guard selected.count > 1 else { return [:] }
+
+        let selectedIDs = Set(selected.map(\.id))
+        var outgoing: [UUID: [UUID]] = [:]
+        var indegree = Dictionary(uniqueKeysWithValues: selected.map { ($0.id, 0) })
+        for connection in connections
+        where selectedIDs.contains(connection.sourceNodeID)
+            && selectedIDs.contains(connection.destinationNodeID) {
+            outgoing[connection.sourceNodeID, default: []].append(connection.destinationNodeID)
+            indegree[connection.destinationNodeID, default: 0] += 1
+        }
+
+        let nodeByID = Dictionary(uniqueKeysWithValues: selected.map { ($0.id, $0) })
+        let stableOrder: (UUID, UUID) -> Bool = { lhs, rhs in
+            guard let left = nodeByID[lhs], let right = nodeByID[rhs] else {
+                return lhs.uuidString < rhs.uuidString
+            }
+            let leftCross = direction == .horizontal ? left.position.y : left.position.x
+            let rightCross = direction == .horizontal ? right.position.y : right.position.x
+            if leftCross != rightCross { return leftCross < rightCross }
+            return lhs.uuidString < rhs.uuidString
+        }
+
+        var layerByID: [UUID: Int] = [:]
+        var queue = indegree.filter { $0.value == 0 }.map(\.key).sorted(by: stableOrder)
+        for id in queue { layerByID[id] = 0 }
+        var cursor = 0
+        while cursor < queue.count {
+            let source = queue[cursor]
+            cursor += 1
+            for destination in (outgoing[source] ?? []).sorted(by: stableOrder) {
+                layerByID[destination] = max(
+                    layerByID[destination] ?? 0,
+                    (layerByID[source] ?? 0) + 1
+                )
+                indegree[destination, default: 0] -= 1
+                if indegree[destination] == 0 { queue.append(destination) }
+            }
+        }
+
+        // Cycles have no Kahn root. Keep each cycle together in one extra
+        // layer, ordered by its current cross-axis position.
+        let unvisited = selectedIDs.subtracting(layerByID.keys)
+        let cycleLayer = (layerByID.values.max() ?? -1) + 1
+        for id in unvisited { layerByID[id] = cycleLayer }
+
+        let layers = Dictionary(grouping: selected) { layerByID[$0.id] ?? 0 }
+        let minimumPrimary = selected.map {
+            direction == .horizontal
+                ? $0.position.x - $0.size.width / 2
+                : $0.position.y - $0.size.height / 2
+        }.min() ?? 0
+        let minimumCross = selected.map {
+            direction == .horizontal
+                ? $0.position.y - $0.size.height / 2
+                : $0.position.x - $0.size.width / 2
+        }.min() ?? 0
+        let maximumCross = selected.map {
+            direction == .horizontal
+                ? $0.position.y + $0.size.height / 2
+                : $0.position.x + $0.size.width / 2
+        }.max() ?? minimumCross
+        let originalCrossCenter = (minimumCross + maximumCross) / 2
+
+        var result: [UUID: CanvasPoint] = [:]
+        var primaryCursor = minimumPrimary
+        for layer in layers.keys.sorted() {
+            let items = (layers[layer] ?? []).sorted {
+                stableOrder($0.id, $1.id)
+            }
+            let primaryExtent = items.map {
+                direction == .horizontal ? $0.size.width : $0.size.height
+            }.max() ?? 0
+            let totalCrossExtent = items.reduce(0) {
+                $0 + (direction == .horizontal ? $1.size.height : $1.size.width)
+            } + itemSpacing * Double(max(0, items.count - 1))
+            var crossCursor = originalCrossCenter - totalCrossExtent / 2
+
+            for node in items {
+                let crossExtent = direction == .horizontal ? node.size.height : node.size.width
+                let primary = primaryCursor + primaryExtent / 2
+                let cross = crossCursor + crossExtent / 2
+                result[node.id] = direction == .horizontal
+                    ? CanvasPoint(x: primary, y: cross)
+                    : CanvasPoint(x: cross, y: primary)
+                crossCursor += crossExtent + itemSpacing
+            }
+            primaryCursor += primaryExtent + layerSpacing
+        }
+        return result
+    }
+}
+
 public enum CanvasCommandService {
     public static func snapshot(
         project: CanvasProject, documentID: UUID? = nil,
@@ -371,14 +483,17 @@ public enum CanvasCommandService {
             changedConnections.formUnion(removedConnections)
         case .arrange:
             let ids = Set(operation.nodeIDs ?? [])
-            let selected = document.nodes.filter { ids.contains($0.id) }
-            guard !selected.isEmpty else { return }
             let arrangement = operation.arrangement ?? "horizontal"
-            for (offset, node) in selected.sorted(by: { $0.id.uuidString < $1.id.uuidString }).enumerated() {
-                guard let index = document.nodes.firstIndex(where: { $0.id == node.id }) else { continue }
-                if arrangement == "vertical" { document.nodes[index].position.y += Double(offset) * 48 }
-                else { document.nodes[index].position.x += Double(offset) * 48 }
-                changedNodes.insert(node.id)
+            let positions = CanvasAutoLayout.positions(
+                nodes: document.nodes,
+                connections: document.connections,
+                nodeIDs: ids,
+                direction: arrangement == "vertical" ? .vertical : .horizontal
+            )
+            for index in document.nodes.indices {
+                guard let position = positions[document.nodes[index].id] else { continue }
+                document.nodes[index].position = position
+                changedNodes.insert(document.nodes[index].id)
             }
         }
     }

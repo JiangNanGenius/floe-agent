@@ -183,10 +183,6 @@ struct RootView: View {
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
     @State private var isPhoneSidebarOpen = false
     @GestureState private var phoneDrawerTranslation: CGFloat = 0
-    /// Global frame of the sidebar's scrollable `List`, used to distinguish a
-    /// left-swipe on a row (swipe actions) from a left-swipe outside the list
-    /// (dismiss the drawer).
-    @State private var sidebarListFrame: CGRect = .zero
 
     /// UITest runs pin a deterministic layout: `-ui-testing` forces the
     /// compact (iPhone-style) tab layout; `-ui-testing-ipad` additionally
@@ -487,9 +483,6 @@ struct RootView: View {
             .contentShape(Rectangle())
             .simultaneousGesture(phoneDrawerGesture(drawerWidth: drawerWidth))
         }
-        .onPreferenceChange(SidebarListFramePreferenceKey.self) { frame in
-            sidebarListFrame = frame
-        }
         .onChange(of: router.workbenchSelection) { _, _ in
             withAnimation(.snappy) { isPhoneSidebarOpen = false }
         }
@@ -499,7 +492,7 @@ struct RootView: View {
         DragGesture(minimumDistance: 12, coordinateSpace: .global)
             .updating($phoneDrawerTranslation) { value, state, _ in
                 guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                if isPhoneSidebarOpen, !sidebarListFrame.contains(value.startLocation) {
+                if isPhoneSidebarOpen {
                     state = min(0, value.translation.width)
                 } else if value.startLocation.x < 28, router.inspectorRoute == nil {
                     state = max(0, value.translation.width)
@@ -514,10 +507,16 @@ struct RootView: View {
                    router.inspectorRoute == nil,
                    max(horizontal, predicted) > drawerWidth * 0.22 {
                     withAnimation(.snappy) { isPhoneSidebarOpen = true }
-                } else if isPhoneSidebarOpen,
-                          !sidebarListFrame.contains(value.startLocation),
-                          min(horizontal, predicted) < -drawerWidth * 0.22 {
-                    withAnimation(.snappy) { isPhoneSidebarOpen = false }
+                } else if isPhoneSidebarOpen {
+                    // A deliberate horizontal swipe anywhere in the drawer
+                    // closes it. Supporting the user's right-swipe habit as
+                    // well as the conventional left swipe avoids requiring a
+                    // separate hand/pan mode just to dismiss navigation.
+                    let closesLeft = min(horizontal, predicted) < -drawerWidth * 0.22
+                    let closesRight = max(horizontal, predicted) > drawerWidth * 0.22
+                    if closesLeft || closesRight {
+                        withAnimation(.snappy) { isPhoneSidebarOpen = false }
+                    }
                 } else if horizontal > 0, router.inspectorRoute != nil {
                     router.hideInspector()
                 }
@@ -535,6 +534,11 @@ struct RootView: View {
         // trailing pane inside the stable detail column instead.
         NavigationSplitView(columnVisibility: $router.columnVisibility) {
             sidebarColumn
+                .collapseSidebarOnRightSwipe {
+                    withAnimation(.snappy) {
+                        router.columnVisibility = .detailOnly
+                    }
+                }
         } detail: {
             HStack(spacing: 0) {
                 contentColumn
@@ -630,12 +634,6 @@ struct RootView: View {
                     }
                 }
             }
-            .background(GeometryReader { geo in
-                Color.clear.preference(
-                    key: SidebarListFramePreferenceKey.self,
-                    value: geo.frame(in: .global)
-                )
-            })
             Divider()
             HStack(spacing: 8) {
                 Label("账户", systemImage: "person.crop.circle")
@@ -1095,17 +1093,6 @@ private struct TaskRenameSheet: View {
             }
         }
         .presentationDetents([.medium])
-    }
-}
-
-/// Reports the global frame of the sidebar `List`. The iPhone drawer's
-/// left-swipe dismiss gesture consults this frame so a swipe that starts on a
-/// list row keeps its native swipe actions (delete/archive) instead of also
-/// dragging the drawer closed.
-private struct SidebarListFramePreferenceKey: PreferenceKey {
-    static let defaultValue: CGRect = .zero
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
-        value = nextValue()
     }
 }
 

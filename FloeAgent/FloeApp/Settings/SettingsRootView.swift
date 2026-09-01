@@ -72,13 +72,14 @@ struct SettingsRootView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @State private var selection: SettingsSection? = .general
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
         Group {
         if horizontalSizeClass == .regular {
             // iPad: master-detail with a preselected first category so the
             // detail column is never blank.
-            NavigationSplitView {
+            NavigationSplitView(columnVisibility: $columnVisibility) {
                 List(SettingsSection.allCases, selection: $selection) { section in
                     Label(section.title, systemImage: section.systemImage)
                         .tag(section)
@@ -89,6 +90,9 @@ struct SettingsRootView: View {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("action.done") { dismiss() }
                     }
+                }
+                .collapseSidebarOnRightSwipe {
+                    withAnimation(.snappy) { columnVisibility = .detailOnly }
                 }
             } detail: {
                 // Wrap the detail column in a NavigationStack so NavigationLink

@@ -1906,6 +1906,41 @@ private final class CanvasDocumentStore: ObservableObject {
         }
     }
 
+    /// Uses the same graph-aware layout as canvas agent patches. With an
+    /// explicit multi-selection only those nodes move. Otherwise connected
+    /// top-level nodes form the graph and unconnected text notes stay where
+    /// the user left them; on a connection-free canvas all top-level nodes
+    /// are arranged so the command still has a useful result.
+    func autoArrange(_ selectedIDs: Set<UUID>) {
+        guard let document = selectedDocument else { return }
+        let topLevelIDs = Set(document.nodes.compactMap { node -> UUID? in
+            guard node.kind != .group, node.groupID == nil else { return nil }
+            return node.id
+        })
+        let requestedIDs: Set<UUID>
+        if selectedIDs.count > 1 {
+            requestedIDs = selectedIDs.intersection(topLevelIDs)
+        } else {
+            let connectedIDs = Set(document.connections.flatMap {
+                [$0.sourceNodeID, $0.destinationNodeID]
+            }).intersection(topLevelIDs)
+            requestedIDs = connectedIDs.count > 1 ? connectedIDs : topLevelIDs
+        }
+        guard requestedIDs.count > 1 else { return }
+
+        mutateSelectedDocument { document in
+            let positions = CanvasAutoLayout.positions(
+                nodes: document.nodes,
+                connections: document.connections,
+                nodeIDs: requestedIDs
+            )
+            for index in document.nodes.indices {
+                guard let position = positions[document.nodes[index].id] else { continue }
+                document.nodes[index].position = position
+            }
+        }
+    }
+
     func changeLayer(_ ids: Set<UUID>, bringToFront: Bool) {
         mutateSelectedDocument { document in
             let edge = bringToFront
@@ -3070,6 +3105,13 @@ struct WorkspaceCanvasView: View {
                                 }
                             }
                             Toggle("显示缩略导航", isOn: $showsMiniMap)
+                            Button(
+                                selectedNodeIDs.count > 1 ? "自动整理所选节点" : "自动整理关系图",
+                                systemImage: "rectangle.3.group"
+                            ) {
+                                store.autoArrange(selectedNodeIDs)
+                            }
+                            .disabled((store.selectedDocument?.nodes.count ?? 0) < 2)
                             if !selectedNodeIDs.isEmpty {
                                 Button("属性") { showsInspector = true }
                                 if selectedNodeIDs.count == 1,

@@ -38,7 +38,7 @@ struct HostListView: View {
                 hostList
             }
         }
-        .background(FloeTheme.readingSurface)
+        .background(FloeTheme.groupedSurface)
         .navigationTitle("tab.hosts")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -132,6 +132,9 @@ struct HostListView: View {
                     onUpdateAgent: { agentUpdateCandidate = host },
                     onPairAdvancedLink: { advancedLinkCandidate = host }
                 )
+                .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
             .onDelete { offsets in
                 let targets = offsets.map { viewModel.hosts[$0] }
@@ -140,7 +143,9 @@ struct HostListView: View {
                 }
             }
         }
-        .listStyle(.insetGrouped)
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(FloeTheme.groupedSurface)
     }
 
     private func connectTerminal(_ host: RemoteHostProfile) {
@@ -160,7 +165,9 @@ struct HostListView: View {
     }
 }
 
-/// One host row: name/address, session status, connect buttons.
+/// One adaptive host card shared by Settings and the chat terminal inspector.
+/// Secondary maintenance actions live in one overflow menu so narrow columns
+/// never compress labels into the vertical stacks seen in the old UI.
 private struct HostRow: View {
     let host: RemoteHostProfile
     let center: RemoteSessionCenter
@@ -174,11 +181,12 @@ private struct HostRow: View {
     let onPairAdvancedLink: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(host.displayName.isEmpty ? host.address : host.displayName)
-                        .font(FloeTheme.Typography.body)
+                        .font(.headline)
+                        .lineLimit(1)
                     Text(host.hasSSHConnection
                         ? "SSH · \(host.user)@\(host.address):\(host.port)"
                         : "未配置 SSH")
@@ -186,9 +194,6 @@ private struct HostRow: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-                Text(deviceSummary)
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
                 Spacer()
                 if isConnecting || isUpdatingAgent || isPairingAgent {
                     ProgressView()
@@ -196,25 +201,29 @@ private struct HostRow: View {
                     SessionDot(state: session.record.state)
                 }
             }
-            HStack(spacing: 12) {
+
+            if !deviceSummary.isEmpty {
+                Label(deviceSummary, systemImage: deviceIcon)
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            HStack(spacing: 8) {
                 NavigationLink {
                     HostEditorView(center: center, existing: host)
                 } label: {
-                    Label("编辑", systemImage: "pencil")
-                        .font(FloeTheme.Typography.metadata)
+                    actionLabel("编辑", systemImage: "pencil")
                 }
                 .buttonStyle(.bordered)
-                .frame(minHeight: FloeTheme.minimumTarget)
 
                 if host.hasSSHConnection {
                     Button {
                         onConnectTerminal()
                     } label: {
-                        Label("hosts.terminal", systemImage: "terminal")
-                            .font(FloeTheme.Typography.metadata)
+                        actionLabel("hosts.terminal", systemImage: "terminal")
                     }
                     .buttonStyle(.bordered)
-                    .frame(minHeight: FloeTheme.minimumTarget)
                 }
 
                 if !host.vncEndpoints.isEmpty {
@@ -230,37 +239,59 @@ private struct HostRow: View {
                             }
                         }
                     } label: {
-                        Label("hosts.vnc", systemImage: "display")
-                            .font(FloeTheme.Typography.metadata)
+                        actionLabel("hosts.vnc", systemImage: "display")
                     }
                     .buttonStyle(.bordered)
-                    .frame(minHeight: FloeTheme.minimumTarget)
-                }
-
-                if host.isRemoteExecutionEnvironment && host.hasSSHConnection {
-                    Button {
-                        onUpdateAgent()
-                    } label: {
-                        Label("更新守护程序", systemImage: "arrow.triangle.2.circlepath")
-                            .font(FloeTheme.Typography.metadata)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isConnecting || isUpdatingAgent || isPairingAgent)
-                    .frame(minHeight: FloeTheme.minimumTarget)
                 }
 
                 if host.hasSSHConnection {
-                    Button(action: onPairAdvancedLink) {
-                        Label("配对高级链路", systemImage: "lock.shield")
-                            .font(FloeTheme.Typography.metadata)
+                    Spacer(minLength: 0)
+                    Menu {
+                        if host.isRemoteExecutionEnvironment {
+                            Button(action: onUpdateAgent) {
+                                Label("更新 Floe 守护程序", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                        }
+                        Button(action: onPairAdvancedLink) {
+                            Label("配对高级链路", systemImage: "lock.shield")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.body.weight(.semibold))
+                            .frame(width: 28, height: 28)
                     }
                     .buttonStyle(.bordered)
                     .disabled(isConnecting || isUpdatingAgent || isPairingAgent)
-                    .frame(minHeight: FloeTheme.minimumTarget)
+                    .accessibilityLabel("更多主机操作")
                 }
             }
         }
-        .padding(.vertical, 4)
+        .padding(14)
+        .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(.primary.opacity(0.08), lineWidth: 1)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func actionLabel(_ title: LocalizedStringKey, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(FloeTheme.Typography.metadata.weight(.medium))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .frame(minHeight: 28)
+    }
+
+    private var deviceIcon: String {
+        switch host.deviceKind {
+        case .linux, .windows: "desktopcomputer"
+        case .mac: "macmini"
+        case .nas: "externaldrive.connected.to.line.below"
+        case .router, .switchDevice: "network"
+        case .appliance: "cpu"
+        case .unspecified, .other: "server.rack"
+        }
     }
 
     private var deviceSummary: String {

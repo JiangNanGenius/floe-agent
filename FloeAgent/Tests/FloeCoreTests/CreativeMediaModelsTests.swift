@@ -281,6 +281,54 @@ struct CreativeMediaModelsTests {
         #expect(project.revision == 0)
     }
 
+    @Test func canvasArrangeUsesGraphDepthAvoidsOverlapAndPreservesLockedNodes() throws {
+        var prompt = CanvasNode.placeholder(kind: .text, position: .init(x: 500, y: 400))
+        prompt.size = .init(width: 260, height: 150)
+        var configuration = CanvasNode.placeholder(
+            kind: .generationTask, position: .init(x: 120, y: 80)
+        )
+        configuration.size = .init(width: 340, height: 210)
+        var result = CanvasNode.placeholder(kind: .image, position: .init(x: 240, y: 900))
+        result.size = .init(width: 320, height: 260)
+        var lockedNote = CanvasNode.placeholder(kind: .stickyNote, position: .init(x: 900, y: 75))
+        lockedNote.isLocked = true
+        let originalLockedPosition = lockedNote.position
+        let document = CanvasDocument(
+            name: "Canvas",
+            nodes: [result, lockedNote, configuration, prompt],
+            connections: [
+                CanvasConnection(sourceNodeID: prompt.id, destinationNodeID: configuration.id),
+                CanvasConnection(sourceNodeID: configuration.id, destinationNodeID: result.id)
+            ]
+        )
+        let project = CanvasProject(
+            id: UUID(), name: "Arrange", documents: [document],
+            selectedDocumentID: document.id
+        )
+        let patch = CanvasPatch(
+            canvasID: project.id, documentID: document.id, expectedRevision: 0,
+            operations: [CanvasPatchOperation(
+                kind: .arrange,
+                nodeIDs: [prompt.id, configuration.id, result.id, lockedNote.id],
+                arrangement: "horizontal"
+            )]
+        )
+
+        let (updated, operation) = try CanvasCommandService.applying(patch, to: project)
+        let nodes = updated.documents[0].nodes
+        let arrangedPrompt = try #require(nodes.first { $0.id == prompt.id })
+        let arrangedConfiguration = try #require(nodes.first { $0.id == configuration.id })
+        let arrangedResult = try #require(nodes.first { $0.id == result.id })
+        let preservedNote = try #require(nodes.first { $0.id == lockedNote.id })
+
+        #expect(arrangedConfiguration.position.x - configuration.size.width / 2
+            >= arrangedPrompt.position.x + prompt.size.width / 2 + 96)
+        #expect(arrangedResult.position.x - result.size.width / 2
+            >= arrangedConfiguration.position.x + configuration.size.width / 2 + 96)
+        #expect(preservedNote.position == originalLockedPosition)
+        #expect(Set(operation.changedNodeIDs) == [prompt.id, configuration.id, result.id])
+    }
+
     @Test func canvasGroupCreatesMovableContainerAndUngroupRemovesIt() throws {
         let first = CanvasNode.placeholder(kind: .card, position: .init(x: 100, y: 120))
         let second = CanvasNode.placeholder(kind: .stickyNote, position: .init(x: 420, y: 180))

@@ -7099,8 +7099,8 @@
     "settings.sync.status.waiting_secret": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Waiting for API key" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "等待 API Key" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Waiting for iCloud Keychain" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "等待 iCloud 钥匙串" } }
       }
     },
     "settings.title": {
