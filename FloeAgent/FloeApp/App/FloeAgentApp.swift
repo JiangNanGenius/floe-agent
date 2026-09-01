@@ -98,22 +98,20 @@ private struct FloeAgentCommands: Commands {
                 .keyboardShortcut("z", modifiers: [.command, .option, .shift])
                 .disabled(canvas?.canRedo != true)
             Divider()
-            Button("选择工具") { canvas?.chooseTool(0) }
+            Button("选择与移动") { canvas?.chooseTool(0) }
                 .keyboardShortcut("1", modifiers: .option)
-            Button("移动画布") { canvas?.chooseTool(1) }
+            Button("Apple Pencil") { canvas?.chooseTool(1) }
                 .keyboardShortcut("2", modifiers: .option)
-            Button("Apple Pencil") { canvas?.chooseTool(2) }
+            Button("橡皮") { canvas?.chooseTool(2) }
                 .keyboardShortcut("3", modifiers: .option)
-            Button("橡皮") { canvas?.chooseTool(3) }
+            Button("连接线") { canvas?.chooseTool(3) }
                 .keyboardShortcut("4", modifiers: .option)
-            Button("卡片") { canvas?.chooseTool(4) }
+            Button("卡片") { canvas?.createCard() }
                 .keyboardShortcut("5", modifiers: .option)
-            Button("文本") { canvas?.chooseTool(5) }
+            Button("文本") { canvas?.createText() }
                 .keyboardShortcut("6", modifiers: .option)
-            Button("形状") { canvas?.chooseTool(6) }
+            Button("形状") { canvas?.createShape() }
                 .keyboardShortcut("7", modifiers: .option)
-            Button("连接线") { canvas?.chooseTool(7) }
-                .keyboardShortcut("8", modifiers: .option)
             Divider()
             Button("复制所选节点") { canvas?.copy() }
                 .keyboardShortcut("c", modifiers: [.command, .option])
@@ -132,10 +130,10 @@ private struct FloeAgentCommands: Commands {
                 .disabled(canvas?.hasNodeSelection != true && canvas?.hasInkSelection != true)
             Button("编组") { canvas?.group() }
                 .keyboardShortcut("g", modifiers: [.command, .option])
-                .disabled(canvas?.hasNodeSelection != true)
+                .disabled(canvas?.canGroup != true)
             Button("取消编组") { canvas?.ungroup() }
                 .keyboardShortcut("g", modifiers: [.command, .option, .shift])
-                .disabled(canvas?.hasNodeSelection != true)
+                .disabled(canvas?.canUngroup != true)
             Button("理解并整理笔迹") { canvas?.interpretInk() }
                 .keyboardShortcut(.return, modifiers: [.command, .option])
                 .disabled(canvas?.hasInkSelection != true)
