@@ -805,10 +805,32 @@ final class MediaGenerationService {
         }
         let traceID = UUID()
         let startedAt = Date()
-        let boundedSources = Array(sourceImages.prefix(8))
+        let descriptor = OfficialMediaModelCatalog.models.first {
+            $0.remoteModelID == model.remoteModelID && $0.kind == .image
+        }
+        let maximumReferences = max(1, descriptor?.maximumReferenceAssets ?? 8)
+        guard sourceImages.count <= maximumReferences else {
+            throw FloeError.validationFailed(
+                "所选图片模型最多支持 \(maximumReferences) 张参考图。"
+            )
+        }
+        let boundedSources = Array(sourceImages.prefix(maximumReferences))
+        let qualityLooksLikeResolution = options.quality.map {
+            ["1K", "2K", "4K"].contains($0.uppercased())
+        } ?? false
+        let selection = ImageGenerationSelection(
+            aspectRatio: options.aspectRatio,
+            resolution: options.resolution ?? (qualityLooksLikeResolution ? options.quality : nil),
+            quality: qualityLooksLikeResolution ? nil : options.quality,
+            nativeSizeOverride: options.size
+        )
+        let resolvedSize = try ImageGenerationPresetResolver.nativeSize(
+            provider: provider.kind, modelRemoteID: model.remoteModelID,
+            operation: operation, selection: selection
+        )
         let referenceBytes = boundedSources.reduce(0) { $0 + $1.count }
         FloeLogger(category: .providers).info(
-            "imageGenerationStarted trace=\(traceID.uuidString) operation=\(operation.rawValue) provider=\(String(describing: provider.kind)) references=\(boundedSources.count) referenceBytes=\(referenceBytes) count=\(max(1, min(options.count, 4)))"
+            "imageGenerationStarted trace=\(traceID.uuidString) operation=\(operation.rawValue) provider=\(String(describing: provider.kind)) model=\(model.remoteModelID) aspect=\(selection.aspectRatio ?? "auto") size=\(resolvedSize ?? selection.resolution ?? "auto") references=\(boundedSources.count) referenceBytes=\(referenceBytes) count=\(max(1, min(options.count, 4)))"
         )
         let result: RemoteImageResult
         do {
@@ -816,7 +838,7 @@ final class MediaGenerationService {
                 RemoteImageRequest(
                     operation: operation, prompt: prompt,
                     sourceImages: boundedSources,
-                    sizeHint: options.size ?? options.aspectRatio,
+                    selection: selection,
                     count: max(1, min(options.count, 4)),
                     modelRemoteID: model.remoteModelID
                 ),

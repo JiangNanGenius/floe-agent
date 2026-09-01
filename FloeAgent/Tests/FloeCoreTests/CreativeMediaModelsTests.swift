@@ -25,6 +25,22 @@ struct CreativeMediaModelsTests {
         #expect(Set(models.map(\.id)).count == models.count)
     }
 
+    @Test func imageCatalogSeparatesResolutionFromQuality() throws {
+        let openAI = try #require(OfficialMediaModelCatalog.models.first {
+            $0.remoteModelID == "gpt-image-2"
+        })
+        #expect(openAI.supportedResolutions == ["1K"])
+        #expect(openAI.supportedQualities == ["low", "medium", "high"])
+        #expect(openAI.defaultQuality == "medium")
+
+        let ark = try #require(OfficialMediaModelCatalog.models.first {
+            $0.remoteModelID == "doubao-seedream-4-0-250828"
+        })
+        #expect(ark.supportedResolutions == ["1K", "2K", "4K"])
+        #expect(ark.supportedQualities.isEmpty)
+        #expect(ark.defaultResolution == "2K")
+    }
+
     @Test func canvasSchemaRoundTripsTypedNodesAndConnections() throws {
         let source = CanvasNode(
             kind: .text, text: "prompt",

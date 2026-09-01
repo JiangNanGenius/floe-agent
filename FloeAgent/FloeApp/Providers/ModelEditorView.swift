@@ -171,11 +171,14 @@ struct ModelEditorView: View {
                 if !descriptor.supportedAspectRatios.isEmpty {
                     LabeledContent("支持比例", value: descriptor.supportedAspectRatios.joined(separator: "、"))
                 }
+                if !descriptor.supportedResolutions.isEmpty {
+                    LabeledContent("分辨率", value: descriptor.supportedResolutions.joined(separator: "、"))
+                }
                 if !descriptor.supportedDurations.isEmpty {
                     LabeledContent("支持时长", value: descriptor.supportedDurations.map { "\($0) 秒" }.joined(separator: "、"))
                 }
                 if !descriptor.supportedQualities.isEmpty {
-                    LabeledContent("质量", value: descriptor.supportedQualities.joined(separator: "、"))
+                    LabeledContent("生成质量", value: descriptor.supportedQualities.joined(separator: "、"))
                 }
                 if descriptor.maximumReferenceAssets > 0 {
                     LabeledContent("参考素材", value: "最多 \(descriptor.maximumReferenceAssets) 个")

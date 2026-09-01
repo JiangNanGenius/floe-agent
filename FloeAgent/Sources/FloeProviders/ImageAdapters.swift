@@ -175,6 +175,7 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
         var prompt: String
         var n: Int
         var size: String
+        var quality: String?
     }
 
     private func generate(
@@ -183,11 +184,20 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
         credentials: ProviderCredentials
     ) async throws -> RemoteImageResult {
         let url = provider.baseURL.appendingPathComponent("images/generations")
+        let model = request.modelRemoteID ?? "gpt-image-2"
+        let size = try ImageGenerationPresetResolver.nativeSize(
+            provider: provider.kind, modelRemoteID: model,
+            operation: request.operation, selection: request.selection
+        ) ?? "1024x1024"
+        let quality = try ImageGenerationPresetResolver.normalizedQuality(
+            request.selection.quality, provider: provider.kind
+        )
         let body = GenerationBody(
-            model: request.modelRemoteID ?? "gpt-image-2",
+            model: model,
             prompt: request.prompt,
             n: max(1, min(request.count, 4)),
-            size: request.sizeHint ?? "1024x1024"
+            size: size,
+            quality: quality
         )
         let urlRequest = try RemoteImageHTTP.post(
             url: url, apiKey: credentials.apiKey, authHeader: "Authorization",
@@ -226,10 +236,19 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
             body.append(data)
             body.append(Data("\r\n".utf8))
         }
-        field("model", request.modelRemoteID ?? "gpt-image-2")
+        let model = request.modelRemoteID ?? "gpt-image-2"
+        let size = try ImageGenerationPresetResolver.nativeSize(
+            provider: provider.kind, modelRemoteID: model,
+            operation: request.operation, selection: request.selection
+        ) ?? "1024x1024"
+        let quality = try ImageGenerationPresetResolver.normalizedQuality(
+            request.selection.quality, provider: provider.kind
+        )
+        field("model", model)
         field("prompt", request.prompt)
         field("n", String(max(1, min(request.count, 4))))
-        field("size", request.sizeHint ?? "1024x1024")
+        field("size", size)
+        if let quality { field("quality", quality) }
         file("image", "source.png", source)
         if let mask = request.mask { file("mask", "mask.png", mask) }
         body.append(Data("--\(boundary)--\r\n".utf8))
@@ -309,7 +328,16 @@ public struct GoogleGeminiImageAdapter: ImageProviderAdapter {
                 )
             )
         })
-        let format = Self.imageFormat(from: request.sizeHint, model: resolvedModel)
+        let format: GeminiImageFormat?
+        if request.selection.aspectRatio != nil || request.selection.resolution != nil {
+            let resolution = request.selection.resolution?.uppercased()
+            format = GeminiImageFormat(
+                aspectRatio: request.selection.aspectRatio,
+                imageSize: resolvedModel == "gemini-2.5-flash-image" ? nil : resolution
+            )
+        } else {
+            format = Self.imageFormat(from: request.sizeHint, model: resolvedModel)
+        }
         let body = GeminiGenerateBody(
             contents: [GeminiContent(parts: parts)],
             generationConfig: GeminiGenerationConfig(
@@ -475,11 +503,15 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
             "data:\(Self.mimeType(for: $0));base64,\($0.base64EncodedString())"
         }
         let count = max(1, min(request.count, 4))
+        let nativeSize = try ImageGenerationPresetResolver.nativeSize(
+            provider: provider.kind, modelRemoteID: model,
+            operation: request.operation, selection: request.selection
+        ) ?? "2K"
         let body = Body(
             model: model,
             prompt: request.prompt,
             image: images,
-            size: request.sizeHint ?? "2K",
+            size: nativeSize,
             sequential_image_generation: count > 1 ? "auto" : "disabled",
             sequential_image_generation_options: count > 1 ? ["max_images": count] : nil,
             response_format: "b64_json",
@@ -626,6 +658,10 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
         content.append(contentsOf: request.sourceImages.prefix(4).map {
             .init(text: nil, image: Self.imageDataURL($0))
         })
+        let nativeSize = try ImageGenerationPresetResolver.nativeSize(
+            provider: provider.kind, modelRemoteID: model,
+            operation: request.operation, selection: request.selection
+        ) ?? "2K"
         let body = MultimodalBody(
             model: model,
             input: .init(messages: [.init(role: "user", content: content)]),
@@ -634,7 +670,7 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
                 watermark: false,
                 n: max(1, min(request.count, 4)),
                 enable_interleave: false,
-                size: Self.normalizedSize(request.sizeHint, defaultValue: "2K")
+                size: nativeSize
             )
         )
         let apiURL = root
@@ -708,13 +744,23 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             .appendingPathComponent("services").appendingPathComponent("aigc")
         let count = max(1, min(request.count, 4))
         if Self.usesWan26Protocol(model) {
+            let nativeSize = if request.sizeHint == nil,
+                                request.selection.aspectRatio == nil,
+                                request.selection.resolution == nil {
+                "1280*1280"
+            } else {
+                try ImageGenerationPresetResolver.nativeSize(
+                    provider: provider.kind, modelRemoteID: model,
+                    operation: request.operation, selection: request.selection
+                ) ?? "1280*1280"
+            }
             let body = Wan26SubmitBody(
                 model: model,
                 input: .init(messages: [
                     .init(role: "user", content: [.init(text: request.prompt)])
                 ]),
                 parameters: .init(
-                    size: Self.normalizedSize(request.sizeHint, defaultValue: "1280*1280"),
+                    size: nativeSize,
                     n: count,
                     prompt_extend: true,
                     watermark: false
@@ -728,11 +774,21 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             )
         }
 
+        let nativeSize = if request.sizeHint == nil,
+                            request.selection.aspectRatio == nil,
+                            request.selection.resolution == nil {
+            "1024*1024"
+        } else {
+            try ImageGenerationPresetResolver.nativeSize(
+                provider: provider.kind, modelRemoteID: model,
+                operation: request.operation, selection: request.selection
+            ) ?? "1024*1024"
+        }
         let body = LegacySubmitBody(
             model: model,
             input: .init(prompt: request.prompt),
             parameters: .init(
-                size: Self.normalizedSize(request.sizeHint, defaultValue: "1024*1024"),
+                size: nativeSize,
                 n: count
             )
         )

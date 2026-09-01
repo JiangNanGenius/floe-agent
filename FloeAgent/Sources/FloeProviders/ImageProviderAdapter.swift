@@ -31,6 +31,8 @@ public struct RemoteImageRequest: Sendable {
     public var mask: Data?
     /// Requested output size hint (provider-specific; may be ignored).
     public var sizeHint: String?
+    /// Provider-neutral controls translated by the concrete adapter.
+    public var selection: ImageGenerationSelection
     /// Maximum number of images to return.
     public var count: Int
     /// The exact configured provider model/endpoint ID. Adapters must not
@@ -43,6 +45,7 @@ public struct RemoteImageRequest: Sendable {
         sourceImages: [Data] = [],
         mask: Data? = nil,
         sizeHint: String? = nil,
+        selection: ImageGenerationSelection? = nil,
         count: Int = 1,
         modelRemoteID: String? = nil
     ) {
@@ -51,6 +54,7 @@ public struct RemoteImageRequest: Sendable {
         self.sourceImages = sourceImages
         self.mask = mask
         self.sizeHint = sizeHint
+        self.selection = selection ?? ImageGenerationSelection(nativeSizeOverride: sizeHint)
         self.count = count
         self.modelRemoteID = modelRemoteID
     }

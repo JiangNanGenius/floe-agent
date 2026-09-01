@@ -611,6 +611,78 @@ private struct CanvasNodeCreationPalette: View {
     }
 }
 
+private enum CanvasConnectedNodeKind: String, CaseIterable, Identifiable {
+    case text, card, image, video, audio, imageGeneration, videoGeneration
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .text: "文本"
+        case .card: "卡片"
+        case .image: "图片"
+        case .video: "视频"
+        case .audio: "音频"
+        case .imageGeneration: "生图配置"
+        case .videoGeneration: "生视频配置"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .text: "textformat"
+        case .card: "rectangle.and.text.magnifyingglass"
+        case .image: "photo"
+        case .video: "film"
+        case .audio: "waveform"
+        case .imageGeneration: "photo.badge.plus"
+        case .videoGeneration: "video.badge.plus"
+        }
+    }
+}
+
+private struct CanvasConnectionCreatePalette: View {
+    let onCreate: (CanvasConnectedNodeKind) -> Void
+    let onAssociate: () -> Void
+    let onDismiss: () -> Void
+    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 8)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("从此节点继续").font(.headline)
+                    Text("新节点会自动连接").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("关闭", systemImage: "xmark", action: onDismiss)
+                    .labelStyle(.iconOnly)
+            }
+            Button {
+                onAssociate()
+            } label: {
+                Label("AI 继续联想", systemImage: "sparkles")
+                    .frame(maxWidth: .infinity, minHeight: 38)
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("canvas.connection.create.associate")
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(CanvasConnectedNodeKind.allCases) { kind in
+                    Button {
+                        onCreate(kind)
+                    } label: {
+                        Label(kind.title, systemImage: kind.icon)
+                            .font(.caption.weight(.medium))
+                            .frame(maxWidth: .infinity, minHeight: 38)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("canvas.connection.create.\(kind.rawValue)")
+                }
+            }
+        }
+        .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
+    }
+}
+
 /// Product-level presence contract for the one optional CanvasProject owned
 /// by a Workspace. Merely opening the file inspector must never manufacture a
 /// canvas; creation happens only from an explicit Workspace action.
@@ -1143,6 +1215,79 @@ private final class CanvasDocumentStore: ObservableObject {
         return id
     }
 
+    /// Creates a node and its incoming edge as one validated patch. This is
+    /// used by connector quick-create so undo/sync never observe a half graph.
+    @discardableResult
+    func addConnectedPlaceholder(
+        kind: CanvasNodeKind,
+        text: String,
+        at point: CGPoint,
+        from sourceNodeID: UUID,
+        sourcePort: CanvasConnectionPort?,
+        metadata: [String: String] = [:]
+    ) -> UUID? {
+        let id = UUID()
+        guard applyCommand([
+            CanvasPatchOperation(
+                kind: .create, nodeID: id, nodeKind: kind, text: text,
+                position: CanvasPoint(point), metadata: metadata
+            ),
+            CanvasPatchOperation(
+                kind: .connect, sourceNodeID: sourceNodeID,
+                destinationNodeID: id, connectionKind: .arrow,
+                sourcePort: sourcePort
+            )
+        ]) != nil else { return nil }
+        return id
+    }
+
+    /// Inserts an explicit, bounded AI continuation as one graph mutation so
+    /// collaborators never observe suggestion nodes without their source edge.
+    @discardableResult
+    func addAssociationSuggestions(
+        _ suggestions: [String],
+        from sourceNodeID: UUID,
+        sourcePort: CanvasConnectionPort?,
+        near point: CGPoint,
+        runID: UUID,
+        documentID: UUID
+    ) -> [UUID] {
+        let values = suggestions.prefix(3).map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty }
+        guard !values.isEmpty else { return [] }
+        let centerOffset = Double(values.count - 1) / 2
+        var nodeIDs: [UUID] = []
+        var operations: [CanvasPatchOperation] = []
+        for (index, text) in values.enumerated() {
+            let nodeID = UUID()
+            nodeIDs.append(nodeID)
+            let y = point.y + (Double(index) - centerOffset) * 190
+            operations.append(CanvasPatchOperation(
+                kind: .create,
+                nodeID: nodeID,
+                nodeKind: .text,
+                text: text,
+                position: CanvasPoint(x: point.x, y: y),
+                createdByRunID: runID,
+                metadata: [
+                    "associationKind": "continue",
+                    "associationSourceNodeID": sourceNodeID.uuidString,
+                    "associationRunID": runID.uuidString
+                ]
+            ))
+            operations.append(CanvasPatchOperation(
+                kind: .connect,
+                sourceNodeID: sourceNodeID,
+                destinationNodeID: nodeID,
+                connectionKind: .arrow,
+                sourcePort: sourcePort
+            ))
+        }
+        guard applyCommand(operations, documentID: documentID) != nil else { return [] }
+        return nodeIDs
+    }
+
     func attachAsset(
         _ asset: CanvasAssetReference,
         kind: CanvasNodeKind,
@@ -1294,6 +1439,7 @@ private final class CanvasDocumentStore: ObservableObject {
         modelID: UUID?,
         aspectRatio: String,
         quality: String?,
+        resolution: String? = nil,
         count: Int,
         sourceNodeIDs: [UUID],
         state: String,
@@ -1305,6 +1451,7 @@ private final class CanvasDocumentStore: ObservableObject {
             "generationModelID": modelID?.uuidString,
             "generationAspectRatio": aspectRatio,
             "generationQuality": quality,
+            "generationResolution": resolution,
             "generationCount": String(count),
             "generationSourceNodeIDs": sourceNodeIDs.map(\.uuidString).joined(separator: ","),
             "generationState": state,
@@ -2193,6 +2340,13 @@ extension FocusedValues {
     }
 }
 
+private struct CanvasConnectionCreationDraft: Equatable {
+    let sourceNodeID: UUID
+    let sourcePort: CanvasConnectionPort
+    let screenPoint: CGPoint
+    let documentID: UUID
+}
+
 struct WorkspaceCanvasView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
@@ -2231,6 +2385,7 @@ struct WorkspaceCanvasView: View {
     @State private var materialTargetNodeID: UUID?
     @State private var connectionStartID: UUID?
     @State private var connectionStartPort: CanvasConnectionPort?
+    @State private var pendingConnectionCreation: CanvasConnectionCreationDraft?
     @State private var selectedConnectionID: UUID?
     @State private var pendingAgentRequest: CanvasAgentRequest?
     @State private var enteredGroupID: UUID?
@@ -2443,6 +2598,7 @@ struct WorkspaceCanvasView: View {
             selectedNodeIDs.removeAll()
             selectedConnectionID = nil
             editingNodeID = nil
+            cancelConnectionCreation()
         }
         .onChange(of: showsMaterials) { _, presented in
             if !presented {
@@ -2646,6 +2802,23 @@ struct WorkspaceCanvasView: View {
                         y: min(max(30, bounds.maxY + 30), geometry.size.height - 30)
                     )
                     .zIndex(15)
+                }
+                if let draft = pendingConnectionCreation,
+                   draft.documentID == store.project.selectedDocumentID {
+                    CanvasConnectionCreatePalette { kind in
+                        createConnectedNode(kind, from: draft)
+                    } onAssociate: {
+                        beginAssociation(from: draft)
+                    } onDismiss: {
+                        cancelConnectionCreation()
+                    }
+                    .frame(width: min(340, geometry.size.width - 28))
+                    .position(
+                        x: min(max(180, draft.screenPoint.x), geometry.size.width - 180),
+                        y: min(max(190, draft.screenPoint.y), geometry.size.height - 190)
+                    )
+                    .transition(.scale(scale: 0.92).combined(with: .opacity))
+                    .zIndex(48)
                 }
                 if let nodeCreationPoint {
                     CanvasNodeCreationPalette { kind in
@@ -3000,6 +3173,112 @@ struct WorkspaceCanvasView: View {
         if kind == .scene3D { directorPresentation = Canvas3DDirectorPresentation(nodeID: nodeID) }
     }
 
+    private func createConnectedNode(
+        _ kind: CanvasConnectedNodeKind,
+        from draft: CanvasConnectionCreationDraft
+    ) {
+        guard draft.documentID == store.project.selectedDocumentID else {
+            cancelConnectionCreation()
+            return
+        }
+        let proposedPoint = canvasPoint(draft.screenPoint)
+        let point = nextAvailableConnectedPoint(proposedPoint, kind: kind)
+        let nodeKind: CanvasNodeKind
+        let text: String
+        var metadata: [String: String] = [:]
+        switch kind {
+        case .text:
+            nodeKind = .text; text = "新建文本"
+        case .card:
+            nodeKind = .card; text = "新建卡片"
+        case .image:
+            nodeKind = .image; text = ""
+        case .video:
+            nodeKind = .video; text = ""
+        case .audio:
+            nodeKind = .audio; text = ""
+        case .imageGeneration:
+            nodeKind = .generationTask; text = ""
+            metadata["generationKind"] = MediaKind.image.rawValue
+            metadata["generationState"] = "draft"
+        case .videoGeneration:
+            nodeKind = .generationTask; text = ""
+            metadata["generationKind"] = MediaKind.video.rawValue
+            metadata["generationState"] = "draft"
+        }
+        guard let nodeID = store.addConnectedPlaceholder(
+            kind: nodeKind,
+            text: text,
+            at: point,
+            from: draft.sourceNodeID,
+            sourcePort: draft.sourcePort,
+            metadata: metadata
+        ) else { return }
+        cancelConnectionCreation()
+        selectedNodeIDs = [nodeID]
+        selectedStrokeIDs.removeAll()
+        selectedConnectionID = nil
+        editingNodeID = (kind == .text || kind == .card) ? nodeID : nil
+        if kind == .imageGeneration || kind == .videoGeneration {
+            showsGeneration = true
+        }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    private func beginAssociation(from draft: CanvasConnectionCreationDraft) {
+        guard draft.documentID == store.project.selectedDocumentID else {
+            cancelConnectionCreation()
+            return
+        }
+        selectedNodeIDs = [draft.sourceNodeID]
+        pendingAgentRequest = CanvasAgentRequest(
+            nodeID: draft.sourceNodeID,
+            prompt: "基于当前节点以及它的上游画布上下文，提出最多 3 个可以继续展开的不同方向。每个方向只输出一行简洁文本，不要调用工具，不要修改画布，也不要输出序号或额外说明。",
+            mode: .association,
+            documentID: draft.documentID,
+            sourcePort: draft.sourcePort,
+            resultPoint: CanvasPoint(canvasPoint(draft.screenPoint))
+        )
+        cancelConnectionCreation()
+        withAnimation(.snappy) {
+            showsAgent = true
+            isAgentCollapsed = false
+        }
+    }
+
+    private func nextAvailableConnectedPoint(
+        _ proposed: CGPoint,
+        kind: CanvasConnectedNodeKind
+    ) -> CGPoint {
+        let size: CGSize = switch kind {
+        case .text, .card: CGSize(width: 300, height: 180)
+        case .image, .video, .audio: CGSize(width: 320, height: 240)
+        case .imageGeneration, .videoGeneration: CGSize(width: 340, height: 210)
+        }
+        let occupied = store.selectedDocument?.nodes ?? []
+        for attempt in 0..<12 {
+            let row = Double((attempt + 1) / 2)
+            let direction = attempt == 0 ? 0.0 : (attempt.isMultiple(of: 2) ? 1.0 : -1.0)
+            let candidate = CGPoint(x: proposed.x, y: proposed.y + direction * row * 210)
+            let candidateRect = CGRect(
+                x: candidate.x - size.width / 2,
+                y: candidate.y - size.height / 2,
+                width: size.width,
+                height: size.height
+            ).insetBy(dx: -24, dy: -24)
+            let overlaps = occupied.contains { node in
+                CGRect(
+                    x: node.x - node.width / 2,
+                    y: node.y - node.height / 2,
+                    width: node.width,
+                    height: node.height
+                ).intersects(candidateRect)
+            }
+            if !overlaps { return candidate }
+        }
+        return CGPoint(x: proposed.x + 380, y: proposed.y)
+    }
+
     private func placeholderCreationButton(
         _ title: String,
         icon: String,
@@ -3324,7 +3603,14 @@ struct WorkspaceCanvasView: View {
                     if selectedNodeIDs.contains(node.id) || mode == .connector {
                         CanvasConnectionPortsOverlay(
                             activePort: connectionStartID == node.id ? connectionStartPort : nil,
-                            onTap: { handleConnectionPort(nodeID: node.id, port: $0) }
+                            onTap: { handleConnectionPort(nodeID: node.id, port: $0) },
+                            onDragEnded: { port, translation in
+                                handleConnectionPortDrag(
+                                    node: node,
+                                    port: port,
+                                    translation: translation
+                                )
+                            }
                         )
                     }
                     if selectedNodeIDs.count == 1,
@@ -3376,8 +3662,7 @@ struct WorkspaceCanvasView: View {
                 if mode == .connector {
                     if let source = connectionStartID {
                         store.connect(source, to: node.id, sourcePort: connectionStartPort)
-                        connectionStartID = nil
-                        connectionStartPort = nil
+                        cancelConnectionCreation()
                     } else {
                         connectionStartID = node.id
                         connectionStartPort = nil
@@ -3432,17 +3717,114 @@ struct WorkspaceCanvasView: View {
                 sourcePort: connectionStartPort,
                 destinationPort: port
             )
-            connectionStartID = nil
-            connectionStartPort = nil
+            cancelConnectionCreation()
             selectedNodeIDs = [nodeID]
-            mode = .select
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         } else {
-            connectionStartID = nodeID
-            connectionStartPort = port
             selectedNodeIDs = [nodeID]
-            mode = .connector
+            guard let node = store.selectedDocument?.nodes.first(where: { $0.id == nodeID }) else {
+                return
+            }
+            beginConnectionCreation(
+                node: node,
+                port: port,
+                screenPoint: suggestedConnectionScreenPoint(node: node, port: port)
+            )
             UISelectionFeedbackGenerator().selectionChanged()
+        }
+    }
+
+    private func handleConnectionPortDrag(
+        node: FloeCanvasNode,
+        port: CanvasConnectionPort,
+        translation: CGSize
+    ) {
+        let origin = connectionPortScreenPoint(node: node, port: port)
+        let release = CGPoint(
+            x: origin.x + translation.width,
+            y: origin.y + translation.height
+        )
+        if let target = connectionDropTarget(at: release, excluding: node.id) {
+            store.connect(node.id, to: target.id, sourcePort: port)
+            selectedNodeIDs = [target.id]
+            selectedConnectionID = nil
+            cancelConnectionCreation()
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        } else {
+            selectedNodeIDs = [node.id]
+            beginConnectionCreation(node: node, port: port, screenPoint: release)
+            UISelectionFeedbackGenerator().selectionChanged()
+        }
+    }
+
+    private func beginConnectionCreation(
+        node: FloeCanvasNode,
+        port: CanvasConnectionPort,
+        screenPoint: CGPoint
+    ) {
+        connectionStartID = node.id
+        connectionStartPort = port
+        mode = .connector
+        withAnimation(.snappy) {
+            pendingConnectionCreation = CanvasConnectionCreationDraft(
+                sourceNodeID: node.id,
+                sourcePort: port,
+                screenPoint: screenPoint,
+                documentID: store.project.selectedDocumentID
+            )
+        }
+    }
+
+    private func cancelConnectionCreation() {
+        withAnimation(.snappy) { pendingConnectionCreation = nil }
+        connectionStartID = nil
+        connectionStartPort = nil
+        if mode == .connector { mode = .select }
+    }
+
+    private func connectionPortScreenPoint(
+        node: FloeCanvasNode,
+        port: CanvasConnectionPort
+    ) -> CGPoint {
+        let center = screenPoint(CGPoint(x: node.x, y: node.y))
+        let halfWidth = node.width * scale / 2
+        let halfHeight = node.height * scale / 2
+        return switch port {
+        case .top: CGPoint(x: center.x, y: center.y - halfHeight)
+        case .trailing: CGPoint(x: center.x + halfWidth, y: center.y)
+        case .bottom: CGPoint(x: center.x, y: center.y + halfHeight)
+        case .leading: CGPoint(x: center.x - halfWidth, y: center.y)
+        }
+    }
+
+    private func suggestedConnectionScreenPoint(
+        node: FloeCanvasNode,
+        port: CanvasConnectionPort
+    ) -> CGPoint {
+        let anchor = connectionPortScreenPoint(node: node, port: port)
+        let distance = max(170, 230 * scale)
+        return switch port {
+        case .top: CGPoint(x: anchor.x, y: anchor.y - distance)
+        case .trailing: CGPoint(x: anchor.x + distance, y: anchor.y)
+        case .bottom: CGPoint(x: anchor.x, y: anchor.y + distance)
+        case .leading: CGPoint(x: anchor.x - distance, y: anchor.y)
+        }
+    }
+
+    private func connectionDropTarget(
+        at point: CGPoint,
+        excluding sourceNodeID: UUID
+    ) -> FloeCanvasNode? {
+        store.selectedDocument?.nodes.reversed().first { node in
+            guard node.id != sourceNodeID else { return false }
+            let center = screenPoint(CGPoint(x: node.x, y: node.y))
+            let rect = CGRect(
+                x: center.x - node.width * scale / 2,
+                y: center.y - node.height * scale / 2,
+                width: node.width * scale,
+                height: node.height * scale
+            ).insetBy(dx: -18, dy: -18)
+            return rect.contains(point)
         }
     }
 
@@ -5551,15 +5933,21 @@ private struct CanvasVideoNode: View {
 }
 
 private struct CanvasAgentRequest: Identifiable, Equatable {
+    enum Mode: Equatable { case standard, association }
     let id = UUID()
     let nodeID: UUID
     let prompt: String
     var referenceNodeIDs: [UUID] = []
+    var mode: Mode = .standard
+    var documentID: UUID?
+    var sourcePort: CanvasConnectionPort?
+    var resultPoint: CanvasPoint?
 }
 
 private struct CanvasConnectionPortsOverlay: View {
     let activePort: CanvasConnectionPort?
     let onTap: (CanvasConnectionPort) -> Void
+    let onDragEnded: (CanvasConnectionPort, CGSize) -> Void
 
     var body: some View {
         ZStack {
@@ -5575,6 +5963,10 @@ private struct CanvasConnectionPortsOverlay: View {
                         .overlay { Circle().stroke(FloeTheme.primary, lineWidth: 1.5) }
                 }
                 .buttonStyle(.plain)
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 8)
+                        .onEnded { onDragEnded(port, $0.translation) }
+                )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: port.alignment)
                 .offset(port.outwardOffset)
                 .accessibilityLabel("从节点\(port.accessibilityName)连接")
@@ -6527,9 +6919,10 @@ private struct SharedCanvasAgentConversation: View {
     }
 
     @MainActor
-    private func submit(targetNodeID: UUID? = nil) async {
+    @discardableResult
+    private func submit(targetNodeID: UUID? = nil) async -> (answer: String, runID: UUID)? {
         let request = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !request.isEmpty else { return }
+        guard !request.isEmpty else { return nil }
         let goal = researchGoal(request)
         let wasRunning = viewModel.isRunning
         prompt = ""
@@ -6545,18 +6938,20 @@ private struct SharedCanvasAgentConversation: View {
         )
         if viewModel.actionError != nil, !viewModel.isRunning {
             prompt = request
+            return nil
         }
         // A queue/steer submission joins an existing run and returns before
         // that input has a distinct answer. Never attach the previous answer
         // to the requested node; the finished result remains available via
         // the explicit Add to Canvas action.
-        guard !wasRunning else { return }
+        guard !wasRunning else { return nil }
         guard let runID = viewModel.selectedRunID,
-              let answer = latestAnswer(runID: runID) else { return }
+              let answer = latestAnswer(runID: runID) else { return nil }
         if let targetNodeID {
             _ = store.applyAgentResult(text: answer, to: targetNodeID, runID: runID)
             insertedRunIDs.insert(runID)
         }
+        return (answer, runID)
     }
 
     @MainActor
@@ -6569,7 +6964,59 @@ private struct SharedCanvasAgentConversation: View {
                 .joined(separator: " ")
         }
         pendingRequest = nil
-        await submit(targetNodeID: request.nodeID)
+        if request.mode == .association {
+            let previousMode = viewModel.agentMode
+            viewModel.agentMode = .chat
+            let result = await submit()
+            viewModel.agentMode = previousMode
+            guard let result,
+                  let documentID = request.documentID,
+                  documentID == store.project.selectedDocumentID,
+                  let resultPoint = request.resultPoint else { return }
+            let suggestions = associationSuggestions(from: result.answer)
+            let nodeIDs = store.addAssociationSuggestions(
+                suggestions,
+                from: request.nodeID,
+                sourcePort: request.sourcePort,
+                near: CGPoint(x: resultPoint.x, y: resultPoint.y),
+                runID: result.runID,
+                documentID: documentID
+            )
+            if !nodeIDs.isEmpty {
+                insertedRunIDs.insert(result.runID)
+            }
+        } else {
+            await submit(targetNodeID: request.nodeID)
+        }
+    }
+
+    private func associationSuggestions(from answer: String) -> [String] {
+        let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let data = trimmed.data(using: .utf8),
+           let values = try? JSONDecoder().decode([String].self, from: data) {
+            return uniqueSuggestions(values)
+        }
+        let lines = trimmed
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .components(separatedBy: .newlines)
+            .map {
+                $0.replacingOccurrences(
+                    of: #"^\s*(?:[-*•]|\d+[.)、])\s*"#,
+                    with: "",
+                    options: .regularExpression
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        return uniqueSuggestions(lines)
+    }
+
+    private func uniqueSuggestions(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap { value -> String? in
+            let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty, seen.insert(clean).inserted else { return nil }
+            return String(clean.prefix(240))
+        }.prefix(3).map { $0 }
     }
 
     private func latestAnswer(runID: UUID) -> String? {
@@ -6909,6 +7356,7 @@ private struct CanvasMediaGenerationView: View {
     @State private var selectedImageModelID: UUID?
     @State private var selectedVideoModelID: UUID?
     @State private var aspectRatio = "1:1"
+    @State private var resolution = ""
     @State private var count = 1
     @State private var duration = 5
     @State private var quality = ""
@@ -6925,9 +7373,15 @@ private struct CanvasMediaGenerationView: View {
     private var selectedVideoModel: ModelProfile? {
         videoModels.first(where: { $0.id == selectedVideoModelID })
     }
+    private var selectedImageModel: ModelProfile? {
+        imageModels.first(where: { $0.id == selectedImageModelID })
+    }
     private var descriptor: MediaModelDescriptor? {
-        guard let selectedVideoModel else { return nil }
-        return OfficialMediaModelCatalog.models.first { $0.remoteModelID == selectedVideoModel.remoteModelID }
+        let remoteID = kind == .image ? selectedImageModel?.remoteModelID : selectedVideoModel?.remoteModelID
+        guard let remoteID else { return nil }
+        return OfficialMediaModelCatalog.models.first {
+            $0.remoteModelID == remoteID && $0.kind == kind
+        }
     }
 
     var body: some View {
@@ -6952,6 +7406,16 @@ private struct CanvasMediaGenerationView: View {
                         Picker("图片模型", selection: $selectedImageModelID) {
                             ForEach(imageModels) { model in
                                 Text(model.displayName).tag(Optional(model.id))
+                            }
+                        }
+                        if !availableResolutions.isEmpty {
+                            Picker("分辨率", selection: $resolution) {
+                                ForEach(availableResolutions, id: \.self) { Text($0).tag($0) }
+                            }
+                        }
+                        if !availableQualities.isEmpty {
+                            Picker("质量", selection: $quality) {
+                                ForEach(availableQualities, id: \.self) { Text($0).tag($0) }
                             }
                         }
                         Stepper("生成数量：\(count)", value: $count, in: 1...4)
@@ -7023,6 +7487,7 @@ private struct CanvasMediaGenerationView: View {
                 normalizeOptions()
             }
             .onChange(of: selectedVideoModelID) { _, _ in normalizeOptions() }
+            .onChange(of: selectedImageModelID) { _, _ in normalizeOptions() }
             .onChange(of: kind) { _, _ in normalizeOptions() }
             .alert("无法生成", isPresented: Binding(
                 get: { error != nil }, set: { if !$0 { error = nil } }
@@ -7039,16 +7504,26 @@ private struct CanvasMediaGenerationView: View {
     }
 
     private var availableRatios: [String] {
-        if kind == .video, let values = descriptor?.supportedAspectRatios, !values.isEmpty { return values }
+        if let values = descriptor?.supportedAspectRatios, !values.isEmpty { return values }
         return ["1:1", "4:3", "3:4", "16:9", "9:16"]
+    }
+    private var availableResolutions: [String] {
+        kind == .image ? (descriptor?.supportedResolutions ?? []) : []
     }
     private var availableDurations: [Int] { descriptor?.supportedDurations ?? [5] }
     private var availableQualities: [String] { descriptor?.supportedQualities ?? [] }
 
     private func normalizeOptions() {
         if !availableRatios.contains(aspectRatio) { aspectRatio = availableRatios.first ?? "1:1" }
+        if !availableResolutions.isEmpty, !availableResolutions.contains(resolution) {
+            resolution = descriptor?.defaultResolution ?? availableResolutions[0]
+        }
+        if availableResolutions.isEmpty { resolution = "" }
         if !availableDurations.isEmpty, !availableDurations.contains(duration) { duration = availableDurations[0] }
-        if !availableQualities.isEmpty, !availableQualities.contains(quality) { quality = availableQualities[0] }
+        if !availableQualities.isEmpty, !availableQualities.contains(quality) {
+            quality = descriptor?.defaultQuality ?? availableQualities[0]
+        }
+        if availableQualities.isEmpty { quality = "" }
     }
 
     @MainActor
@@ -7088,6 +7563,7 @@ private struct CanvasMediaGenerationView: View {
         let graphMetadata = [
             "generationModelID": modelID?.uuidString ?? "",
             "generationAspectRatio": aspectRatio,
+            "generationResolution": resolution,
             "generationQuality": quality,
             "generationCount": String(kind == .image ? count : 1),
             "generationDurationSeconds": kind == .video ? String(duration) : "",
@@ -7115,7 +7591,8 @@ private struct CanvasMediaGenerationView: View {
                 store.markGeneration(
                     nodeID: ownerID, kind: .image, prompt: trimmedPrompt,
                     modelID: selectedImageModelID, aspectRatio: aspectRatio,
-                    quality: quality.isEmpty ? nil : quality, count: count,
+                    quality: quality.isEmpty ? nil : quality,
+                    resolution: resolution.isEmpty ? nil : resolution, count: count,
                     sourceNodeIDs: graph.sourceNodeIDs, state: "running"
                 )
                 let referenceImages = sources.filter { $0.kind == .image }
@@ -7124,6 +7601,7 @@ private struct CanvasMediaGenerationView: View {
                     prompt: providerPrompt,
                     options: ImageGenerationOptions(
                         aspectRatio: aspectRatio,
+                        resolution: resolution.isEmpty ? nil : resolution,
                         quality: quality.isEmpty ? nil : quality,
                         count: count
                     ),
@@ -7150,7 +7628,8 @@ private struct CanvasMediaGenerationView: View {
                     store.markGeneration(
                         nodeID: id, kind: .image, prompt: trimmedPrompt,
                         modelID: selectedImageModelID, aspectRatio: aspectRatio,
-                        quality: quality.isEmpty ? nil : quality, count: assets.count,
+                        quality: quality.isEmpty ? nil : quality,
+                        resolution: resolution.isEmpty ? nil : resolution, count: assets.count,
                         sourceNodeIDs: graph.sourceNodeIDs, state: "ready"
                     )
                     store.updateNodeMetadata(id, values: [
@@ -7218,8 +7697,16 @@ private struct CanvasMediaGenerationView: View {
         let storedPrompt = node.metadata["generationPrompt"] ?? (node.kind == .text ? node.text : "")
         if !storedPrompt.isEmpty { prompt = storedPrompt }
         if let value = node.metadata["generationAspectRatio"], !value.isEmpty { aspectRatio = value }
+        if let value = node.metadata["generationResolution"], !value.isEmpty {
+            resolution = value
+        } else if let legacy = node.metadata["generationQuality"],
+                  ["1K", "2K", "4K"].contains(legacy.uppercased()) {
+            resolution = legacy.uppercased()
+            quality = ""
+        }
         if let value = node.metadata["generationCount"].flatMap(Int.init) { count = min(4, max(1, value)) }
-        if let value = node.metadata["generationQuality"] { quality = value }
+        if let value = node.metadata["generationQuality"],
+           !["1K", "2K", "4K"].contains(value.uppercased()) { quality = value }
         if let value = node.metadata["generationModelID"].flatMap(UUID.init(uuidString:)) {
             if kind == .image { selectedImageModelID = value }
             else { selectedVideoModelID = value }

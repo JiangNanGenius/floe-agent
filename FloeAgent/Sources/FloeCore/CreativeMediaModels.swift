@@ -17,8 +17,11 @@ public struct MediaModelDescriptor: Sendable, Codable, Identifiable, Hashable {
     public var remoteModelID: String
     public var displayName: String
     public var supportedAspectRatios: [String]
+    public var supportedResolutions: [String]
     public var supportedDurations: [Int]
     public var supportedQualities: [String]
+    public var defaultResolution: String?
+    public var defaultQuality: String?
     public var maximumReferenceAssets: Int
     public var supportsAudio: Bool
     public var supportsWatermark: Bool
@@ -36,8 +39,11 @@ public struct MediaModelDescriptor: Sendable, Codable, Identifiable, Hashable {
         remoteModelID: String,
         displayName: String,
         supportedAspectRatios: [String] = [],
+        supportedResolutions: [String] = [],
         supportedDurations: [Int] = [],
         supportedQualities: [String] = [],
+        defaultResolution: String? = nil,
+        defaultQuality: String? = nil,
         maximumReferenceAssets: Int = 0,
         supportsAudio: Bool = false,
         supportsWatermark: Bool = false,
@@ -54,8 +60,11 @@ public struct MediaModelDescriptor: Sendable, Codable, Identifiable, Hashable {
         self.remoteModelID = remoteModelID
         self.displayName = displayName
         self.supportedAspectRatios = supportedAspectRatios
+        self.supportedResolutions = supportedResolutions
         self.supportedDurations = supportedDurations
         self.supportedQualities = supportedQualities
+        self.defaultResolution = defaultResolution
+        self.defaultQuality = defaultQuality
         self.maximumReferenceAssets = maximumReferenceAssets
         self.supportsAudio = supportsAudio
         self.supportsWatermark = supportsWatermark
@@ -70,6 +79,9 @@ public struct MediaModelDescriptor: Sendable, Codable, Identifiable, Hashable {
 
 public struct ImageGenerationOptions: Sendable, Codable, Hashable {
     public var aspectRatio: String?
+    /// Provider-neutral output tier such as `1K`, `2K`, or `4K`.
+    public var resolution: String?
+    /// Explicit provider-native size retained for advanced/custom callers.
     public var size: String?
     public var quality: String?
     public var count: Int
@@ -79,6 +91,7 @@ public struct ImageGenerationOptions: Sendable, Codable, Hashable {
 
     public init(
         aspectRatio: String? = nil,
+        resolution: String? = nil,
         size: String? = nil,
         quality: String? = nil,
         count: Int = 1,
@@ -87,12 +100,34 @@ public struct ImageGenerationOptions: Sendable, Codable, Hashable {
         promptOptimization: Bool? = nil
     ) {
         self.aspectRatio = aspectRatio
+        self.resolution = resolution
         self.size = size
         self.quality = quality
         self.count = count
         self.seed = seed
         self.watermark = watermark
         self.promptOptimization = promptOptimization
+    }
+}
+
+/// A provider-neutral image selection. Adapters translate this into their
+/// native request fields instead of treating an aspect ratio as a `size`.
+public struct ImageGenerationSelection: Sendable, Codable, Hashable {
+    public var aspectRatio: String?
+    public var resolution: String?
+    public var quality: String?
+    public var nativeSizeOverride: String?
+
+    public init(
+        aspectRatio: String? = nil,
+        resolution: String? = nil,
+        quality: String? = nil,
+        nativeSizeOverride: String? = nil
+    ) {
+        self.aspectRatio = aspectRatio
+        self.resolution = resolution
+        self.quality = quality
+        self.nativeSizeOverride = nativeSizeOverride
     }
 }
 

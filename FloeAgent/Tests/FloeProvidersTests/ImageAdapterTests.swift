@@ -159,7 +159,15 @@ struct ImageAdapterTests {
             baseURL: URL(string: "https://proxy.example/openai/v1")!
         )
         let result = try await adapter.perform(
-            RemoteImageRequest(operation: .generate, prompt: "draw a lake"),
+            RemoteImageRequest(
+                operation: .generate,
+                prompt: "draw a lake",
+                selection: ImageGenerationSelection(
+                    aspectRatio: "16:9",
+                    resolution: "1K",
+                    quality: "high"
+                )
+            ),
             provider: profile,
             credentials: ProviderCredentials(apiKey: "test-key")
         )
@@ -170,6 +178,35 @@ struct ImageAdapterTests {
         let body = try #require(request.httpBody)
         let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(json["model"] as? String == "gpt-image-2")
+        #expect(json["size"] as? String == "1536x864")
+        #expect(json["quality"] as? String == "high")
+    }
+
+    @Test("Provider preset resolver never sends an aspect label as native size")
+    func providerPresetResolution() throws {
+        let ark = try ImageGenerationPresetResolver.nativeSize(
+            provider: .volcengineArk,
+            modelRemoteID: "doubao-seedream-4-0-250828",
+            operation: .generate,
+            selection: ImageGenerationSelection(aspectRatio: "16:9", resolution: "2K")
+        )
+        #expect(ark == "2560x1440")
+
+        let alibaba = try ImageGenerationPresetResolver.nativeSize(
+            provider: .alibabaStudio,
+            modelRemoteID: "wan2.7-image-pro",
+            operation: .generate,
+            selection: ImageGenerationSelection(aspectRatio: "3:4", resolution: "2K")
+        )
+        #expect(alibaba == "1728*2368")
+
+        let gemini = try ImageGenerationPresetResolver.nativeSize(
+            provider: .googleGemini,
+            modelRemoteID: "gemini-3-pro-image",
+            operation: .generate,
+            selection: ImageGenerationSelection(aspectRatio: "9:16", resolution: "4K")
+        )
+        #expect(gemini == nil)
     }
 
     @Test("Nano Banana Pro uses native Gemini JSON through a configurable proxy")
