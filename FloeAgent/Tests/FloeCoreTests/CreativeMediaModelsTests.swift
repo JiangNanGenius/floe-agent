@@ -468,7 +468,7 @@ struct CreativeMediaModelsTests {
         #expect(!plan.operations.contains { $0.kind == .create })
     }
 
-    @Test func generationRetryKeepsConfigurationAndCreatesNewResult() throws {
+    @Test func generationRetryReusesFailedResultNode() throws {
         let prompt = CanvasNode(
             kind: .text, text: "海边产品照",
             position: .init(x: 100, y: 100), size: .init(width: 280, height: 160)
@@ -491,15 +491,16 @@ struct CreativeMediaModelsTests {
                 sourceNodeIDs: [prompt.id],
                 resultPosition: .init(x: 1_300, y: 100),
                 existingConfigurationNodeID: configuration.id,
+                reusableResultNodeID: failed.id,
                 metadata: ["generationAttemptIndex": "2"]
             ),
             document: document
         )
 
         #expect(plan.configurationNodeID == configuration.id)
-        #expect(plan.resultNodeID != failed.id)
+        #expect(plan.resultNodeID == failed.id)
         #expect(plan.operations.contains {
-            $0.kind == .create && $0.nodeID == plan.resultNodeID && $0.nodeKind == .image
+            $0.kind == .update && $0.nodeID == failed.id
         })
         #expect(!plan.operations.contains { $0.kind == .delete && $0.nodeID == failed.id })
     }

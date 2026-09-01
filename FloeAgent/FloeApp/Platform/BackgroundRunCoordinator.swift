@@ -30,6 +30,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private var retainedPausedRun: (id: UUID, run: ActiveRun)?
     private var isAppInBackground = false
     private var pipSuppressedForCurrentBatch = false
+    private var pipWasClosedInForeground = false
     private var notifiedApprovalRuns: Set<UUID> = []
     private var lease: BackgroundExecutionLease?
     private var refreshWork: Task<Void, Never>?
@@ -202,15 +203,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // user returns to Floe, the next departure is a fresh explicit PiP
         // attempt and must not remain permanently suppressed.
         pipSuppressedForCurrentBatch = isAppInBackground
+        pipWasClosedInForeground = !isAppInBackground
         FloeLogger(category: .app).info(
             "pictureInPictureClosedByUser activeRuns=\(activeRuns.count)"
         )
-        if !isAppInBackground {
-            // The AVKit stop callback has already released the old controller.
-            // Rebuild while a key window exists so the next app departure is
-            // not stuck with no prepared source.
-            prepareBackgroundSurfaceIfNeeded()
-        }
+        // Do not recreate PiP immediately under the user's close gesture.
+        // Foreground preparation resumes on the next genuine scene cycle.
     }
 
     /// Applies the user's background-execution choice when a run starts.
@@ -470,7 +468,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             pipCarouselTask?.cancel()
             pipCarouselTask = nil
             environment.backgroundVideoService.retractForForeground()
-            prepareBackgroundSurfaceIfNeeded()
+            if !pipWasClosedInForeground {
+                prepareBackgroundSurfaceIfNeeded()
+            }
             lease?.release()
             lease = nil
             Task { [weak self] in
@@ -487,6 +487,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // still attached to a foreground window. If video synthesis is
             // still running, the service records the deferred start instead
             // of losing this only reliable lifecycle signal.
+            if pipWasClosedInForeground {
+                pipWasClosedInForeground = false
+                // The old controller was destroyed by the user's close.
+                // Rebuild while the scene is still attachable and carry the
+                // start request through asynchronous video preparation.
+                prepareBackgroundSurfaceIfNeeded(startImmediately: true)
+                break
+            }
             if !pipSuppressedForCurrentBatch,
                !activeRuns.isEmpty,
                environment.settingsCenter.backgroundExecution != .standard {
@@ -501,7 +509,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// foreground key window exists so the next background transition can
     /// start immediately; attempting this only after entering background
     /// cannot attach the required inline player layer.
-    private func prepareBackgroundSurfaceIfNeeded() {
+    private func prepareBackgroundSurfaceIfNeeded(startImmediately: Bool = false) {
         guard environment.settingsCenter.backgroundExecution != .standard,
               !environment.backgroundVideoService.isPiPPrepared,
               !environment.backgroundVideoService.isPreparingPiP else { return }
@@ -514,7 +522,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             await self.environment.backgroundVideoService.begin(
                 title: run.title,
                 initialProgress: "\(run.stage) · \(run.progress)%",
-                startImmediately: false
+                startImmediately: startImmediately
             )
         }
     }

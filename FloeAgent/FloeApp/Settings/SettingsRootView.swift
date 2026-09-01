@@ -74,6 +74,7 @@ struct SettingsRootView: View {
     @State private var selection: SettingsSection? = .general
 
     var body: some View {
+        Group {
         if horizontalSizeClass == .regular {
             // iPad: master-detail with a preselected first category so the
             // detail column is never blank.
@@ -120,6 +121,17 @@ struct SettingsRootView: View {
                     }
                 }
             }
+        }
+        }
+        .alert("配置未保存", isPresented: Binding(
+            get: { environment.settingsCenter.settingsSaveError != nil },
+            set: { if !$0 { environment.settingsCenter.clearSettingsSaveError() } }
+        )) {
+            Button("完成", role: .cancel) {
+                environment.settingsCenter.clearSettingsSaveError()
+            }
+        } message: {
+            Text(environment.settingsCenter.settingsSaveError ?? "请稍后重试。")
         }
     }
 
@@ -178,6 +190,7 @@ private struct CanvasSettingsView: View {
     @ObservedObject var center: ConversationCenter
     @AppStorage("creative.canvas.sync.enabled") private var syncEnabled = true
     @State private var preferences = CanvasPreferences.load()
+    @State private var saveError: String?
 
     var body: some View {
         Form {
@@ -240,6 +253,9 @@ private struct CanvasSettingsView: View {
         }
         .navigationTitle("画布")
         .onChange(of: preferences) { _, value in value.save() }
+        .alert("画布配置保存或同步失败", isPresented: Binding(
+            get: { saveError != nil }, set: { if !$0 { saveError = nil } }
+        )) { Button("完成", role: .cancel) {} } message: { Text(saveError ?? "") }
     }
 
     private var agentModelBinding: Binding<UUID?> {
@@ -248,7 +264,10 @@ private struct CanvasSettingsView: View {
             set: { modelID in
                 var value = center.modelPreferences
                 value.canvasAgentModelID = modelID
-                Task { try? await center.saveModelPreferences(value) }
+                Task {
+                    do { try await center.saveModelPreferences(value) }
+                    catch { saveError = SecretRedactor.redact(error.localizedDescription) }
+                }
             }
         )
     }
@@ -259,7 +278,10 @@ private struct CanvasSettingsView: View {
             set: { modelID in
                 var value = center.modelPreferences
                 value.canvasVisionModelID = modelID
-                Task { try? await center.saveModelPreferences(value) }
+                Task {
+                    do { try await center.saveModelPreferences(value) }
+                    catch { saveError = SecretRedactor.redact(error.localizedDescription) }
+                }
             }
         )
     }

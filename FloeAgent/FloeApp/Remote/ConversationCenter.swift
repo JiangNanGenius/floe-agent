@@ -2389,13 +2389,12 @@ final class ConversationCenter: ObservableObject {
 
     /// Cancels a live run. The runtime owns the terminal transition.
     func cancel(runID: UUID) async {
+        // Cancel the owner task unconditionally. A run can move from
+        // attachment preprocessing into a live service between the UI tap
+        // and this actor hop; choosing only one side leaves that race alive.
+        runTasks[runID]?.cancel()
         if let service = runServices[runID] {
             await service.cancel()
-        } else {
-            // A newly-created task may still be preprocessing its attached
-            // images before the runtime service exists. Cancellation must
-            // stop that durable preparing run as well.
-            runTasks[runID]?.cancel()
         }
     }
 
@@ -3285,7 +3284,16 @@ final class ConversationCenter: ObservableObject {
         // reload are asynchronous and must not leave the just-selected model
         // stale during that window.
         modelPreferences = updated
-        try await environment.configurationSync.savePreferences(updated)
+        do {
+            try await environment.configurationSync.savePreferences(updated)
+        } catch {
+            // ConfigSync persists locally before it records the durable sync
+            // intent. Reload the local truth so a metadata-queue failure can
+            // never leave memory disagreeing with SQLite.
+            modelPreferences = (try? await environment.configurationStore.preferences())
+                ?? modelPreferences
+            throw error
+        }
         switch updated.onboardingStatus {
         case .skipped:
             Self.persistOnboardingSkippedMarker(true)

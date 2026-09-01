@@ -3532,6 +3532,17 @@ struct WorkspaceCanvasView: View {
                     selectedConnectionID = nil
                     editingNodeID = nil
                 },
+                onAssociate: {
+                    selectedNodeIDs = [node.id]
+                    selectedConnectionID = nil
+                    editingNodeID = nil
+                    beginAssociation(from: CanvasConnectionCreationDraft(
+                        sourceNodeID: node.id,
+                        sourcePort: .trailing,
+                        screenPoint: suggestedConnectionScreenPoint(node: node, port: .trailing),
+                        documentID: store.project.selectedDocumentID
+                    ))
+                },
                 onDuplicate: {
                     selectedNodeIDs = store.duplicateNodes(contextSelection(for: node))
                     selectedConnectionID = nil
@@ -3701,7 +3712,10 @@ struct WorkspaceCanvasView: View {
                     })?.kind == .generationTask
             })?.sourceNodeID
         }
-        selectedNodeIDs = [configurationID ?? node.id]
+        // A failed result is itself the retry target. Keep it selected with
+        // its configuration so the graph planner updates this exact node
+        // instead of appending another empty image/video beside it.
+        selectedNodeIDs = configurationID.map { [$0, node.id] } ?? [node.id]
         selectedConnectionID = nil
         editingNodeID = nil
         showsGeneration = true
@@ -3981,8 +3995,14 @@ struct WorkspaceCanvasView: View {
                                 }
                             }
                         case .select:
-                            if marqueeStart == nil { marqueeStart = value.startLocation }
-                            marqueeCurrent = value.location
+                            // Direct manipulation: dragging empty space pans
+                            // while dragging a node moves it. Selection no
+                            // longer forces touch users to switch tools merely
+                            // to navigate the canvas.
+                            pan = CGSize(
+                                width: panStart.width + value.translation.width,
+                                height: panStart.height + value.translation.height
+                            )
                         case .connector: break
                         }
                     }
@@ -3993,30 +4013,9 @@ struct WorkspaceCanvasView: View {
                         } else if mode == .pencil || mode == .eraser {
                             activeStrokeID = nil
                             store.finishStroke()
-                        } else if mode == .select, let start = marqueeStart, let end = marqueeCurrent {
-                            let a = canvasPoint(start), b = canvasPoint(end)
-                            let rect = CGRect(
-                                x: min(a.x, b.x), y: min(a.y, b.y),
-                                width: abs(b.x - a.x), height: abs(b.y - a.y)
-                            )
-                            selectedNodeIDs = Set(store.selectedDocument?.nodes.filter {
-                                rect.intersects(CGRect(
-                                    x: $0.x - $0.width / 2, y: $0.y - $0.height / 2,
-                                    width: $0.width, height: $0.height
-                                ))
-                            }.map(\.id) ?? [])
-                            selectedStrokeIDs = Set(store.selectedDocument?.strokes.filter { stroke in
-                                let points = stroke.points.map(\.cgPoint)
-                                guard let first = points.first else { return false }
-                                let bounds = points.dropFirst().reduce(
-                                    CGRect(x: first.x, y: first.y, width: 1, height: 1)
-                                ) { partial, point in
-                                    partial.union(CGRect(x: point.x, y: point.y, width: 1, height: 1))
-                                }
-                                return rect.intersects(bounds)
-                            }.map(\.id) ?? [])
-                            selectedConnectionID = nil
-                            marqueeStart = nil; marqueeCurrent = nil
+                        } else if mode == .select {
+                            panStart = pan
+                            persistViewport()
                         }
                     }
             )
@@ -5464,6 +5463,7 @@ private struct CanvasNodeCard: View {
     let onConfigureGeneration: (() -> Void)?
     let onBeginEditing: () -> Void
     let onAskAI: () -> Void
+    let onAssociate: () -> Void
     let onDuplicate: () -> Void
     let onConnect: () -> Void
     let onToggleLock: () -> Void
@@ -5509,6 +5509,7 @@ private struct CanvasNodeCard: View {
                 Button("编辑", systemImage: "pencil", action: onBeginEditing)
             }
             Button("节点内提问", systemImage: "sparkles", action: onAskAI)
+            Button("AI 继续联想", systemImage: "sparkles.rectangle.stack", action: onAssociate)
             Button("复制", systemImage: "plus.square.on.square", action: onDuplicate)
             Button("连接", systemImage: "point.topleft.down.to.point.bottomright.curvepath", action: onConnect)
             if let onOpen3D {

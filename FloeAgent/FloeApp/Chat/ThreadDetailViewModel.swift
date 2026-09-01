@@ -565,6 +565,10 @@ final class ThreadDetailViewModel: ObservableObject {
     /// Cancels the selected run.
     func cancel() async {
         guard let runID = selectedRun?.id else { return }
+        // Stop the composer immediately; persistence/live events will still
+        // deliver the authoritative cancelled terminal state afterwards.
+        isRunning = false
+        actionError = nil
         await center.cancel(runID: runID)
     }
 

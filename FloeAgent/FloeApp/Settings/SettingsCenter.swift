@@ -86,6 +86,7 @@ final class SettingsCenter: ObservableObject {
     @Published private(set) var savedCredentialsSyncEnabled = false
     @Published private(set) var syncControlBusy = false
     @Published private(set) var syncControlError: String?
+    @Published private(set) var settingsSaveError: String?
 
     // MARK: - 隐私与安全
 
@@ -449,11 +450,18 @@ final class SettingsCenter: ObservableObject {
     private func persist<T: Encodable & Sendable>(_ value: T, forKey key: String) async {
         do {
             try await settingsStore.setValue(value, forKey: key)
+            settingsSaveError = nil
         } catch {
-            // Honest degradation: keep the in-memory value; the UI reloads
-            // on next appearance and surfaces the stored truth.
+            // Restore the complete stored snapshot so optimistic controls do
+            // not pretend a failed write was saved across launches.
+            if let values = try? await settingsStore.allValues() {
+                applyStoredValues(values)
+            }
+            settingsSaveError = SecretRedactor.redact(error.localizedDescription)
         }
     }
+
+    func clearSettingsSaveError() { settingsSaveError = nil }
 
     func setDefaultAgentMode(_ mode: AgentMode) async {
         defaultAgentMode = mode
