@@ -41,6 +41,38 @@ private struct CanvasBinaryDocument: FileDocument {
     }
 }
 
+/// Pure viewport math shared by touch navigation and regression tests. Keeping
+/// the transform independent from gesture state prevents pinch updates from
+/// drifting away from the point between the user's fingers.
+struct CanvasViewportTransform: Equatable {
+    var scale: Double
+    var pan: CGSize
+
+    func panned(by delta: CGSize) -> Self {
+        Self(
+            scale: scale,
+            pan: CGSize(width: pan.width + delta.width, height: pan.height + delta.height)
+        )
+    }
+
+    func zoomed(
+        by factor: CGFloat,
+        around anchor: CGPoint,
+        limits: ClosedRange<Double> = 0.3...3
+    ) -> Self {
+        guard scale.isFinite, scale > 0, factor.isFinite, factor > 0 else { return self }
+        let nextScale = min(limits.upperBound, max(limits.lowerBound, scale * Double(factor)))
+        let appliedFactor = CGFloat(nextScale / scale)
+        return Self(
+            scale: nextScale,
+            pan: CGSize(
+                width: anchor.x - (anchor.x - pan.width) * appliedFactor,
+                height: anchor.y - (anchor.y - pan.height) * appliedFactor
+            )
+        )
+    }
+}
+
 /// Stable sidebar entry for creative work. A private canvas works without a
 /// Workspace; optional Workspace canvases remain available for project-owned
 /// material and explicit file export.
@@ -1804,6 +1836,7 @@ private final class CanvasDocumentStore: ObservableObject {
     }
 
     func finishNodeMutation() {
+        guard interactiveMutationRecorded else { return }
         interactiveMutationRecorded = false
         project.updatedAt = Date()
         persist()
@@ -2411,6 +2444,7 @@ struct WorkspaceCanvasView: View {
     @State private var scaleStart = 1.0
     @State private var pan = CGSize.zero
     @State private var panStart = CGSize.zero
+    @State private var isMultiTouchNavigating = false
     @State private var nodeDragOrigins: [UUID: CGPoint] = [:]
     @State private var activeStrokeID: UUID?
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -2466,6 +2500,18 @@ struct WorkspaceCanvasView: View {
             case .pencil: "pencil.tip"
             case .eraser: "eraser"
             case .connector: "point.topleft.down.to.point.bottomright.curvepath"
+            }
+        }
+        var interactionHint: String {
+            switch self {
+            case .select:
+                "单指点选或拖动节点，拖动空白处移动画布；双指可随时移动或缩放"
+            case .pencil:
+                "使用 Pencil 或单指绘制；双指移动或缩放画布"
+            case .eraser:
+                "擦除笔迹；双指移动或缩放画布"
+            case .connector:
+                "点按连接点创建关系；双指移动或缩放画布"
             }
         }
     }
@@ -2789,7 +2835,8 @@ struct WorkspaceCanvasView: View {
                         tool: mode == .eraser ? .eraser : .ink,
                         width: pencilWidth,
                         colorName: pencilColor,
-                        fingerDrawingEnabled: canvasPreferences.fingerDrawingEnabled,
+                        fingerDrawingEnabled: canvasPreferences.fingerDrawingEnabled
+                            && !isMultiTouchNavigating,
                         onDrawingChanged: store.updatePencilDrawing,
                         onClosedShape: { bounds in
                             withAnimation(.snappy) { closedShapeSuggestion = bounds }
@@ -2809,6 +2856,14 @@ struct WorkspaceCanvasView: View {
                 } else {
                     interactionLayer(size: geometry.size)
                 }
+                CanvasMultiTouchNavigationSurface(
+                    onActiveChanged: handleMultiTouchNavigation(active:),
+                    onPan: applyMultiTouchPan(delta:),
+                    onZoom: applyMultiTouchZoom(factor:anchor:),
+                    onFinished: finishMultiTouchNavigation
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
                 if let marqueeStart, let marqueeCurrent {
                     let rect = CGRect(
                         x: min(marqueeStart.x, marqueeCurrent.x),
@@ -3756,6 +3811,7 @@ struct WorkspaceCanvasView: View {
                 DragGesture()
                     .onChanged { value in
                         guard mode == .select,
+                              !isMultiTouchNavigating,
                               editingNodeID == nil,
                               !node.isLocked else { return }
                         updateNodeDrag(node, translation: value.translation)
@@ -4062,6 +4118,7 @@ struct WorkspaceCanvasView: View {
                             // while dragging a node moves it. Selection no
                             // longer forces touch users to switch tools merely
                             // to navigate the canvas.
+                            guard !isMultiTouchNavigating else { return }
                             pan = CGSize(
                                 width: panStart.width + value.translation.width,
                                 height: panStart.height + value.translation.height
@@ -4077,16 +4134,6 @@ struct WorkspaceCanvasView: View {
                             panStart = pan
                             persistViewport()
                         }
-                    }
-            )
-            .simultaneousGesture(
-                MagnificationGesture()
-                    .onChanged { value in
-                        scale = min(3, max(0.3, scaleStart * value))
-                    }
-                    .onEnded { _ in
-                        scaleStart = scale
-                        persistViewport()
                     }
             )
             .highPriorityGesture(
@@ -4121,6 +4168,42 @@ struct WorkspaceCanvasView: View {
                     panStart = .zero
                 }
             }
+    }
+
+    private func handleMultiTouchNavigation(active: Bool) {
+        guard isMultiTouchNavigating != active else { return }
+        isMultiTouchNavigating = active
+        guard active else { return }
+
+        // A second finger changes the intent from direct manipulation to
+        // viewport navigation. Close any in-flight node/resize transaction so
+        // subsequent movement cannot keep modifying content underneath it.
+        nodeDragOrigins.removeAll()
+        store.finishNodeMutation()
+        nodeCreationPoint = nil
+        pencilContextPoint = nil
+    }
+
+    private func applyMultiTouchPan(delta: CGSize) {
+        let viewport = CanvasViewportTransform(scale: scale, pan: pan).panned(by: delta)
+        pan = viewport.pan
+        panStart = viewport.pan
+    }
+
+    private func applyMultiTouchZoom(factor: CGFloat, anchor: CGPoint) {
+        let viewport = CanvasViewportTransform(scale: scale, pan: pan)
+            .zoomed(by: factor, around: anchor)
+        scale = viewport.scale
+        scaleStart = viewport.scale
+        pan = viewport.pan
+        panStart = viewport.pan
+    }
+
+    private func finishMultiTouchNavigation() {
+        isMultiTouchNavigating = false
+        panStart = pan
+        scaleStart = scale
+        persistViewport()
     }
 
     private func handleCanvasTap(at location: CGPoint) {
@@ -4289,8 +4372,10 @@ struct WorkspaceCanvasView: View {
                     in: RoundedRectangle(cornerRadius: 8)
                 )
                 .accessibilityLabel(value.title)
+                .accessibilityHint(value.interactionHint)
                 .accessibilityAddTraits(mode == value ? .isSelected : [])
                 .accessibilityIdentifier("canvas.tool.\(value.rawValue)")
+                .help(value.interactionHint)
             }
 
             Divider().frame(height: 24).padding(.horizontal, 2)
@@ -5181,6 +5266,237 @@ private struct CanvasPencilInteractionBridge: UIViewRepresentable {
         ) {
             guard squeeze.phase == .ended else { return }
             onSqueeze(squeeze.hoverPose?.location)
+        }
+    }
+}
+
+/// A non-interactive marker that installs coordinated recognizers on the host
+/// window. Installing on the window is important: an overlay UIView would
+/// swallow the first touch before SwiftUI nodes and text editors can receive it.
+/// The recognizers only begin with two direct/trackpad touches inside the marker.
+private struct CanvasMultiTouchNavigationSurface: UIViewRepresentable {
+    let onActiveChanged: @MainActor (Bool) -> Void
+    let onPan: @MainActor (CGSize) -> Void
+    let onZoom: @MainActor (CGFloat, CGPoint) -> Void
+    let onFinished: @MainActor () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            onActiveChanged: onActiveChanged,
+            onPan: onPan,
+            onZoom: onZoom,
+            onFinished: onFinished
+        )
+    }
+
+    func makeUIView(context: Context) -> MarkerView {
+        let marker = MarkerView(frame: .zero)
+        marker.backgroundColor = .clear
+        marker.isUserInteractionEnabled = false
+        marker.onWindowChanged = { [weak coordinator = context.coordinator] marker in
+            coordinator?.attach(to: marker)
+        }
+        return marker
+    }
+
+    func updateUIView(_ marker: MarkerView, context: Context) {
+        context.coordinator.onActiveChanged = onActiveChanged
+        context.coordinator.onPan = onPan
+        context.coordinator.onZoom = onZoom
+        context.coordinator.onFinished = onFinished
+        context.coordinator.attach(to: marker)
+    }
+
+    static func dismantleUIView(_ marker: MarkerView, coordinator: Coordinator) {
+        marker.onWindowChanged = nil
+        coordinator.detach()
+    }
+
+    @MainActor
+    final class MarkerView: UIView {
+        var onWindowChanged: ((MarkerView) -> Void)?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            onWindowChanged?(self)
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var onActiveChanged: @MainActor (Bool) -> Void
+        var onPan: @MainActor (CGSize) -> Void
+        var onZoom: @MainActor (CGFloat, CGPoint) -> Void
+        var onFinished: @MainActor () -> Void
+
+        private weak var marker: MarkerView?
+        private weak var hostWindow: UIWindow?
+        private var panRecognizer: UIPanGestureRecognizer?
+        private var pinchRecognizer: UIPinchGestureRecognizer?
+        private var panIsActive = false
+        private var pinchIsActive = false
+        private var publishedActive = false
+
+        init(
+            onActiveChanged: @escaping @MainActor (Bool) -> Void,
+            onPan: @escaping @MainActor (CGSize) -> Void,
+            onZoom: @escaping @MainActor (CGFloat, CGPoint) -> Void,
+            onFinished: @escaping @MainActor () -> Void
+        ) {
+            self.onActiveChanged = onActiveChanged
+            self.onPan = onPan
+            self.onZoom = onZoom
+            self.onFinished = onFinished
+        }
+
+        func attach(to marker: MarkerView) {
+            self.marker = marker
+            guard let window = marker.window else {
+                detachRecognizers()
+                return
+            }
+            guard hostWindow !== window else { return }
+            detachRecognizers()
+            hostWindow = window
+
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+            pan.minimumNumberOfTouches = 2
+            pan.maximumNumberOfTouches = 2
+            pan.allowedScrollTypesMask = .continuous
+            configure(pan)
+
+            let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+            configure(pinch)
+
+            window.addGestureRecognizer(pan)
+            window.addGestureRecognizer(pinch)
+            panRecognizer = pan
+            pinchRecognizer = pinch
+        }
+
+        func detach() {
+            detachRecognizers()
+            marker = nil
+        }
+
+        private func configure(_ recognizer: UIGestureRecognizer) {
+            recognizer.delegate = self
+            recognizer.cancelsTouchesInView = true
+            recognizer.delaysTouchesBegan = false
+            recognizer.delaysTouchesEnded = false
+            recognizer.allowedTouchTypes = [
+                NSNumber(value: UITouch.TouchType.direct.rawValue),
+                NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)
+            ]
+        }
+
+        private func detachRecognizers() {
+            if let panRecognizer { hostWindow?.removeGestureRecognizer(panRecognizer) }
+            if let pinchRecognizer { hostWindow?.removeGestureRecognizer(pinchRecognizer) }
+            panRecognizer = nil
+            pinchRecognizer = nil
+            hostWindow = nil
+            panIsActive = false
+            pinchIsActive = false
+            publishActivityIfNeeded()
+        }
+
+        @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
+            guard let hostWindow else { return }
+            switch recognizer.state {
+            case .began:
+                panIsActive = true
+                publishActivityIfNeeded()
+                recognizer.setTranslation(.zero, in: hostWindow)
+            case .changed:
+                panIsActive = true
+                publishActivityIfNeeded()
+                let delta = recognizer.translation(in: hostWindow)
+                recognizer.setTranslation(.zero, in: hostWindow)
+                if delta != .zero { onPan(CGSize(width: delta.x, height: delta.y)) }
+            case .ended, .cancelled, .failed:
+                let delta = recognizer.translation(in: hostWindow)
+                recognizer.setTranslation(.zero, in: hostWindow)
+                if delta != .zero { onPan(CGSize(width: delta.x, height: delta.y)) }
+                panIsActive = false
+                publishActivityIfNeeded()
+            default:
+                break
+            }
+        }
+
+        @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
+            guard let hostWindow, let marker else { return }
+            switch recognizer.state {
+            case .began:
+                pinchIsActive = true
+                publishActivityIfNeeded()
+                recognizer.scale = 1
+            case .changed:
+                pinchIsActive = true
+                publishActivityIfNeeded()
+                let factor = recognizer.scale
+                let anchor = marker.convert(recognizer.location(in: hostWindow), from: hostWindow)
+                recognizer.scale = 1
+                if factor.isFinite, factor > 0 { onZoom(factor, anchor) }
+            case .ended, .cancelled, .failed:
+                let factor = recognizer.scale
+                let anchor = marker.convert(recognizer.location(in: hostWindow), from: hostWindow)
+                recognizer.scale = 1
+                if factor.isFinite, factor > 0, factor != 1 { onZoom(factor, anchor) }
+                pinchIsActive = false
+                publishActivityIfNeeded()
+            default:
+                break
+            }
+        }
+
+        private func publishActivityIfNeeded() {
+            let active = panIsActive || pinchIsActive
+            guard active != publishedActive else { return }
+            let wasActive = publishedActive
+            publishedActive = active
+            onActiveChanged(active)
+            if wasActive, !active { onFinished() }
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let marker, let hostWindow, marker.window === hostWindow else { return false }
+            let point = marker.convert(gestureRecognizer.location(in: hostWindow), from: hostWindow)
+            return marker.bounds.insetBy(dx: -1, dy: -1).contains(point)
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldReceive touch: UITouch
+        ) -> Bool {
+            guard let marker, let hostWindow else { return false }
+            let point = marker.convert(touch.location(in: hostWindow), from: hostWindow)
+            guard marker.bounds.insetBy(dx: -1, dy: -1).contains(point) else { return false }
+            return !touchBelongsToFocusedEditorOrControl(touch)
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            // Pan and pinch cooperate, and the active-state gate stops SwiftUI's
+            // single-finger manipulation as soon as the second touch wins.
+            gestureRecognizer === panRecognizer
+                || gestureRecognizer === pinchRecognizer
+                || otherGestureRecognizer === panRecognizer
+                || otherGestureRecognizer === pinchRecognizer
+        }
+
+        private func touchBelongsToFocusedEditorOrControl(_ touch: UITouch) -> Bool {
+            var candidate = touch.view
+            while let view = candidate {
+                if view is PKCanvasView { return false }
+                if view is UITextView || view is UITextField || view is UIControl { return true }
+                if view is UIScrollView { return true }
+                candidate = view.superview
+            }
+            return false
         }
     }
 }

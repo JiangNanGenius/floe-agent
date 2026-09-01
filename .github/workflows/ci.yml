@@ -65,6 +65,18 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      - name: Canvas touch interaction regression tests
+        run: |
+          xcodebuild \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            -scheme FloeAgent \
+            -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
+            -resultBundlePath FloeAgent-CanvasTouchTests.xcresult \
+            -only-testing:FloeAppTests/CanvasTouchInteractionTests \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
       - name: SPM build (cross-platform targets)
         run: swift build
 
@@ -125,6 +137,7 @@ jobs:
             FloeAgent/.gitleaks-report.json
             FloeAgent/FloeAgent-iPhone.xcresult
             FloeAgent/FloeAgent-iPad.xcresult
+            FloeAgent/FloeAgent-CanvasTouchTests.xcresult
           if-no-files-found: ignore
 
   appstore-sdk-compatibility:
