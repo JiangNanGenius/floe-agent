@@ -119,7 +119,7 @@ jobs:
             -scheme FloeAgent \
             -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
             -derivedDataPath "$RUNNER_TEMP/FloeCanvasTouchDerivedData" \
-            -only-testing:FloeAgentUITests/CanvasTouchInteractionTests \
+            -only-testing:FloeAppTests/CanvasTouchInteractionTests \
             CODE_SIGNING_ALLOWED=NO \
             test
 
