@@ -503,6 +503,32 @@ public enum CanvasGenerationGraphKind: String, Sendable, Codable, Hashable {
     case image, video
 }
 
+/// Resolves only explicit generation-input edges. Keeping this in FloeCore
+/// gives UI, agents and tests one context contract and prevents narrative
+/// arrows from silently changing provider input.
+public enum CanvasGenerationContextResolver {
+    public static func nodeIDs(
+        selectedIDs: Set<UUID>,
+        connections: [CanvasConnection],
+        maximumDepth: Int = 12
+    ) -> Set<UUID> {
+        var included = selectedIDs
+        var frontier = selectedIDs
+        var depth = 0
+        while !frontier.isEmpty && depth < max(0, maximumDepth) {
+            let parents = Set(connections.compactMap { connection in
+                guard connection.kind == .source,
+                      frontier.contains(connection.destinationNodeID) else { return nil }
+                return connection.sourceNodeID
+            }).subtracting(included)
+            included.formUnion(parents)
+            frontier = parents
+            depth += 1
+        }
+        return included
+    }
+}
+
 /// Canonical topology prepared before a provider request crosses the network.
 /// Both direct canvas UI and the canvas agent use this planner so prompts,
 /// configuration, references, results and retries share one graph contract.
@@ -513,6 +539,10 @@ public struct CanvasGenerationGraphRequest: Sendable, Hashable {
     public var resultPosition: CanvasPoint
     public var existingConfigurationNodeID: UUID?
     public var reusableResultNodeID: UUID?
+    /// Whether a missing prompt source may be materialized as a visible text
+    /// node. Existing task execution sets this to false: its saved prompt is
+    /// configuration, not a request to mutate the graph topology.
+    public var createsPromptNodeWhenMissing: Bool
     public var createdByRunID: UUID?
     public var metadata: [String: String]
 
@@ -523,6 +553,7 @@ public struct CanvasGenerationGraphRequest: Sendable, Hashable {
         resultPosition: CanvasPoint,
         existingConfigurationNodeID: UUID? = nil,
         reusableResultNodeID: UUID? = nil,
+        createsPromptNodeWhenMissing: Bool = true,
         createdByRunID: UUID? = nil,
         metadata: [String: String] = [:]
     ) {
@@ -530,6 +561,7 @@ public struct CanvasGenerationGraphRequest: Sendable, Hashable {
         self.sourceNodeIDs = sourceNodeIDs; self.resultPosition = resultPosition
         self.existingConfigurationNodeID = existingConfigurationNodeID
         self.reusableResultNodeID = reusableResultNodeID
+        self.createsPromptNodeWhenMissing = createsPromptNodeWhenMissing
         self.createdByRunID = createdByRunID; self.metadata = metadata
     }
 }
@@ -568,7 +600,6 @@ public enum CanvasGenerationGraphPlanner {
             [.text, .stickyNote, .card].contains($0.kind)
                 && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == prompt
         }
-        let promptNodeID = promptNode?.id ?? UUID()
         let configurationNodeID: UUID
         if let id = request.existingConfigurationNodeID,
            nodesByID[id]?.kind == .generationTask {
@@ -576,6 +607,13 @@ public enum CanvasGenerationGraphPlanner {
         } else {
             configurationNodeID = UUID()
         }
+        let shouldCreatePromptNode = promptNode == nil
+            && request.createsPromptNodeWhenMissing
+        // Keep the plan contract non-optional for existing callers. When an
+        // existing task owns an inline prompt, its task ID is the prompt
+        // anchor but is deliberately not added as a generation source.
+        let promptNodeID = promptNode?.id
+            ?? (shouldCreatePromptNode ? UUID() : configurationNodeID)
         let resultKind: CanvasNodeKind = request.kind == .image ? .image : .video
         let resultNodeID: UUID
         if let id = request.reusableResultNodeID,
@@ -589,12 +627,14 @@ public enum CanvasGenerationGraphPlanner {
         metadata["generationKind"] = request.kind.rawValue
         metadata["generationPrompt"] = prompt
         metadata["generationState"] = metadata["generationState"] ?? "preparing"
-        let sourceIDs = Array(Set(requestedSources.map(\.id) + [promptNodeID]))
+        let sourceIDs = Array(Set(
+            requestedSources.map(\.id) + (shouldCreatePromptNode ? [promptNodeID] : [])
+        ))
             .sorted { $0.uuidString < $1.uuidString }
         metadata["generationSourceNodeIDs"] = sourceIDs.map(\.uuidString).joined(separator: ",")
 
         var operations: [CanvasPatchOperation] = []
-        if promptNode == nil {
+        if shouldCreatePromptNode {
             operations.append(CanvasPatchOperation(
                 kind: .create, nodeID: promptNodeID, nodeKind: .text,
                 text: prompt,
@@ -647,10 +687,10 @@ public enum CanvasGenerationGraphPlanner {
         }
 
         let existingEdges = Set(document.connections.map {
-            "\($0.sourceNodeID.uuidString)>\($0.destinationNodeID.uuidString)"
+            "\($0.kind.rawValue):\($0.sourceNodeID.uuidString)>\($0.destinationNodeID.uuidString)"
         })
         for sourceID in sourceIDs where sourceID != configurationNodeID {
-            let key = "\(sourceID.uuidString)>\(configurationNodeID.uuidString)"
+            let key = "\(CanvasConnectionKind.source.rawValue):\(sourceID.uuidString)>\(configurationNodeID.uuidString)"
             if !existingEdges.contains(key) {
                 operations.append(CanvasPatchOperation(
                     kind: .connect, sourceNodeID: sourceID,
@@ -660,7 +700,7 @@ public enum CanvasGenerationGraphPlanner {
                 ))
             }
         }
-        let resultEdge = "\(configurationNodeID.uuidString)>\(resultNodeID.uuidString)"
+        let resultEdge = "\(CanvasConnectionKind.generatedFrom.rawValue):\(configurationNodeID.uuidString)>\(resultNodeID.uuidString)"
         if !existingEdges.contains(resultEdge) {
             operations.append(CanvasPatchOperation(
                 kind: .connect, sourceNodeID: configurationNodeID,

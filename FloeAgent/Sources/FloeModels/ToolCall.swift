@@ -76,6 +76,10 @@ public struct ToolResult: Sendable, Codable, Hashable {
     /// Bounded Floe-owned artifacts produced by this tool. The provider only
     /// receives verified image bytes when the selected model supports vision.
     public var artifacts: [ToolArtifactReference]
+    /// Harness-authored provenance. Executors may return a value, but the
+    /// runtime overwrites it before persistence so model/tool output cannot
+    /// spoof resource identity or execution ownership.
+    public var provenance: ToolResultProvenance?
 
     public enum Status: String, Sendable, Codable, Hashable {
         case ok
@@ -92,7 +96,8 @@ public struct ToolResult: Sendable, Codable, Hashable {
         outputSummary: String,
         outputDigest: String,
         exitStatus: Int32? = nil,
-        artifacts: [ToolArtifactReference] = []
+        artifacts: [ToolArtifactReference] = [],
+        provenance: ToolResultProvenance? = nil
     ) {
         self.callID = callID
         self.status = status
@@ -100,10 +105,11 @@ public struct ToolResult: Sendable, Codable, Hashable {
         self.outputDigest = outputDigest
         self.exitStatus = exitStatus
         self.artifacts = artifacts
+        self.provenance = provenance
     }
 
     private enum CodingKeys: String, CodingKey {
-        case callID, status, outputSummary, outputDigest, exitStatus, artifacts
+        case callID, status, outputSummary, outputDigest, exitStatus, artifacts, provenance
     }
 
     public init(from decoder: any Decoder) throws {
@@ -114,6 +120,7 @@ public struct ToolResult: Sendable, Codable, Hashable {
         outputDigest = try values.decode(String.self, forKey: .outputDigest)
         exitStatus = try values.decodeIfPresent(Int32.self, forKey: .exitStatus)
         artifacts = try values.decodeIfPresent([ToolArtifactReference].self, forKey: .artifacts) ?? []
+        provenance = try values.decodeIfPresent(ToolResultProvenance.self, forKey: .provenance)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -124,6 +131,45 @@ public struct ToolResult: Sendable, Codable, Hashable {
         try values.encode(outputDigest, forKey: .outputDigest)
         try values.encodeIfPresent(exitStatus, forKey: .exitStatus)
         if !artifacts.isEmpty { try values.encode(artifacts, forKey: .artifacts) }
+        try values.encodeIfPresent(provenance, forKey: .provenance)
+    }
+}
+
+public struct ToolResourceBinding: Sendable, Codable, Hashable {
+    public var name: String
+    public var value: String
+
+    public init(name: String, value: String) {
+        self.name = String(name.prefix(192))
+        self.value = String(value.prefix(512))
+    }
+}
+
+public struct ToolResultProvenance: Sendable, Codable, Hashable {
+    public var sourceID: String
+    public var toolName: String
+    public var runID: UUID
+    public var taskID: UUID?
+    public var parentCallID: String?
+    public var resourceBindings: [ToolResourceBinding]
+    public var createdAt: Date
+
+    public init(
+        sourceID: String,
+        toolName: String,
+        runID: UUID,
+        taskID: UUID? = nil,
+        parentCallID: String? = nil,
+        resourceBindings: [ToolResourceBinding] = [],
+        createdAt: Date = Date()
+    ) {
+        self.sourceID = String(sourceID.prefix(128))
+        self.toolName = String(toolName.prefix(256))
+        self.runID = runID
+        self.taskID = taskID
+        self.parentCallID = parentCallID.map { String($0.prefix(256)) }
+        self.resourceBindings = Array(resourceBindings.prefix(16))
+        self.createdAt = createdAt
     }
 }
 

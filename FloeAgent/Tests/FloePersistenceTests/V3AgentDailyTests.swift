@@ -355,6 +355,10 @@ struct V3AgentDailyTests {
         #expect(events.count == 1_000)
         #expect(events.first?.sequence == 501)
         #expect(events.last?.sequence == 1_500)
+        let resumed = try await runStore.events(
+            runID: runID, afterSequence: 1_490, limit: 6
+        )
+        #expect(resumed.map(\.sequence) == [1_491, 1_492, 1_493, 1_494, 1_495, 1_496])
     }
 
     @Test("Usage and structured errors round-trip")

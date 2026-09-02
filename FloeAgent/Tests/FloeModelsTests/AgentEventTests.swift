@@ -72,7 +72,12 @@ struct ToolCallTests {
         )
         let result = ToolResult(
             callID: "shot", status: .ok, outputSummary: "viewport",
-            outputDigest: "abc", artifacts: [artifact]
+            outputDigest: "abc", artifacts: [artifact],
+            provenance: ToolResultProvenance(
+                sourceID: "trusted-source", toolName: "browser.observe",
+                runID: UUID(), taskID: UUID(),
+                resourceBindings: [.init(name: "browser.tabID", value: UUID().uuidString)]
+            )
         )
         let decoded = try JSONDecoder().decode(
             ToolResult.self, from: JSONEncoder().encode(result)
@@ -80,7 +85,9 @@ struct ToolCallTests {
         #expect(decoded == result)
 
         let legacy = #"{"callID":"old","status":"ok","outputSummary":"ok","outputDigest":""}"#
-        #expect(try JSONDecoder().decode(ToolResult.self, from: Data(legacy.utf8)).artifacts.isEmpty)
+        let legacyResult = try JSONDecoder().decode(ToolResult.self, from: Data(legacy.utf8))
+        #expect(legacyResult.artifacts.isEmpty)
+        #expect(legacyResult.provenance == nil)
     }
 }
 

@@ -409,7 +409,9 @@ final class ThreadDetailViewModel: ObservableObject {
             events = []
             return
         }
-        async let selectedEvents = center.environment.runStore.events(runID: runID)
+        async let selectedEvents = center.environment.runStore.recentEvents(
+            runID: runID, limit: 1_000
+        )
         async let selectedUsage = center.environment.runStore.usage(runID: runID)
         let (loadedEvents, loadedUsage) = try await (selectedEvents, selectedUsage)
         events = loadedEvents
@@ -435,7 +437,9 @@ final class ThreadDetailViewModel: ObservableObject {
         ) { group in
             for runID in missing {
                 group.addTask { [center] in
-                    async let events = center.environment.runStore.events(runID: runID)
+                    async let events = center.environment.runStore.recentEvents(
+                        runID: runID, limit: 1_000
+                    )
                     async let usage = center.environment.runStore.usage(runID: runID)
                     return try await (runID, events, usage)
                 }

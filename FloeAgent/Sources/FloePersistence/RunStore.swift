@@ -64,6 +64,8 @@ public protocol RunStore: Sendable {
     func appendEvent(runID: UUID, kind: RunEventRecord.Kind, payloadJSON: String) async throws -> RunEventRecord
     func events(runID: UUID) async throws -> [RunEventRecord]
     func recentEvents(runID: UUID, limit: Int) async throws -> [RunEventRecord]
+    /// Reads only events newer than the caller's durable watermark.
+    func events(runID: UUID, afterSequence: Int, limit: Int) async throws -> [RunEventRecord]
 
     func recordUsage(_ usage: RunUsageRecord) async throws
     func usage(runID: UUID) async throws -> [RunUsageRecord]
@@ -86,6 +88,11 @@ public extension RunStore {
 
     func recentEvents(runID: UUID, limit: Int) async throws -> [RunEventRecord] {
         Array(try await events(runID: runID).suffix(max(1, limit)))
+    }
+
+    func events(runID: UUID, afterSequence: Int, limit: Int) async throws -> [RunEventRecord] {
+        Array(try await events(runID: runID)
+            .lazy.filter { $0.sequence > afterSequence }.prefix(max(1, limit)))
     }
 }
 
@@ -384,6 +391,25 @@ public actor SQLiteRunStore: RunStore {
                 arguments: [runID.uuidString, max(1, limit)]
             )
             return try rows.reversed().map(Self.event(from:))
+        }
+    }
+
+    public func events(
+        runID: UUID,
+        afterSequence: Int,
+        limit: Int
+    ) async throws -> [RunEventRecord] {
+        try await database.reader { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM run_events
+                    WHERE run_id = ? AND sequence > ?
+                    ORDER BY sequence
+                    LIMIT ?
+                    """,
+                arguments: [runID.uuidString, max(0, afterSequence), max(1, limit)]
+            ).map(Self.event(from:))
         }
     }
 

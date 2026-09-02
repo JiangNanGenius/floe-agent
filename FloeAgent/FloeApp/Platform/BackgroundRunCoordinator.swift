@@ -29,7 +29,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private var surfacedRunID: UUID?
     private var retainedPausedRun: (id: UUID, run: ActiveRun)?
     private var isAppInBackground = false
-    private var visualSurfacePolicy = BackgroundVisualSurfacePolicy()
+    private var visualSurfacePolicy: BackgroundVisualSurfacePolicy
+    private static let visualSurfacePolicyDefaultsKey = "backgroundVisualSurfacePolicy.v2"
     private var notifiedApprovalRuns: Set<UUID> = []
     private var lease: BackgroundExecutionLease?
     private var refreshWork: Task<Void, Never>?
@@ -49,6 +50,15 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     init(environment: AppEnvironment) {
         self.environment = environment
+        if let data = UserDefaults.standard.data(
+            forKey: Self.visualSurfacePolicyDefaultsKey
+        ), let restored = try? JSONDecoder().decode(
+            BackgroundVisualSurfacePolicy.self, from: data
+        ) {
+            self.visualSurfacePolicy = restored
+        } else {
+            self.visualSurfacePolicy = BackgroundVisualSurfacePolicy()
+        }
         super.init()
         if #available(iOS 26.0, *) {
             BackgroundPolicyRegistry.shared.installContinuedTaskHandler { [weak self] task in
@@ -90,9 +100,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     .requestAuthorization(options: [.alert, .sound, .badge])
             }
         }
-        // A newly-created task starts a new eligibility window after a user
-        // manually dismissed PiP or stopped the previous broadcast.
-        visualSurfacePolicy.beginNewRun()
+        visualSurfacePolicy.beginRun(
+            runID, currentlyActiveRunIDs: Set(activeRuns.keys)
+        )
+        persistVisualSurfacePolicy()
         retainedPausedRun = nil
         activeRuns[runID] = ActiveRun(conversationID: conversationID, title: title)
         FloeLogger(category: .app).info(
@@ -146,6 +157,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     func didFinish(runID: UUID, succeeded: Bool, message: String?) {
         guard let finished = activeRuns.removeValue(forKey: runID) else { return }
+        visualSurfacePolicy.finishRun(runID)
+        persistVisualSurfacePolicy()
         FloeLogger(category: .app).info(
             "backgroundRunFinished run=\(runID.uuidString) succeeded=\(succeeded) remainingRuns=\(activeRuns.count)"
         )
@@ -203,6 +216,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // A genuinely new run clears it in didStart. Screen sharing may keep
         // running; only its optional progress PiP is suppressed.
         visualSurfacePolicy.userClosedPictureInPicture()
+        persistVisualSurfacePolicy()
         FloeLogger(category: .app).info(
             "pictureInPictureClosedByUser activeRuns=\(activeRuns.count)"
         )
@@ -221,6 +235,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         conversationID: UUID,
         runTitle: String
     ) {
+        guard visualSurfacePolicy.allowsVisualSurface(
+            for: environment.settingsCenter.backgroundExecution
+        ) else {
+            FloeLogger(category: .app).info(
+                "backgroundSurfaceSkipped run=\(runID.uuidString) reason=preferenceOrBatchSuppression batch=\(visualSurfacePolicy.batchID.uuidString)"
+            )
+            return
+        }
         switch environment.settingsCenter.backgroundExecution {
         case .standard:
             FloeLogger(category: .app).info(
@@ -232,11 +254,15 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 "backgroundSurfaceRequested run=\(runID.uuidString) mode=pictureInPicture"
             )
             surfacedRunID = runID
-            if environment.backgroundVideoService.isPiPPrepared {
+            if environment.backgroundVideoService.isPiPPrepared
+                || environment.backgroundVideoService.isPreparingPiP {
                 environment.backgroundVideoService.update(
                     title: runTitle,
                     progress: "正在运行"
                 )
+                if isAppInBackground {
+                    environment.backgroundVideoService.startPreparedPictureInPicture()
+                }
             } else {
                 Task { [weak self] in
                     guard let self else { return }
@@ -252,12 +278,16 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 "backgroundSurfaceRequested run=\(runID.uuidString) mode=screenShare sharing=\(environment.screenShareCenter.isSharing)"
             )
             surfacedRunID = runID
-            if environment.backgroundVideoService.isPiPPrepared {
+            if environment.backgroundVideoService.isPiPPrepared
+                || environment.backgroundVideoService.isPreparingPiP {
                 environment.backgroundVideoService.update(
                     title: runTitle,
                     progress: environment.screenShareCenter.isSharing
                         ? "正在共享屏幕" : "任务正在运行"
                 )
+                if isAppInBackground {
+                    environment.backgroundVideoService.startPreparedPictureInPicture()
+                }
             } else {
                 Task { [weak self] in
                     guard let self else { return }
@@ -439,6 +469,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         guard effective != effectiveScenePhase else { return }
         effectiveScenePhase = effective
+        visualSurfacePolicy.recordSceneTransition()
+        persistVisualSurfacePolicy()
         FloeLogger(category: .app).info(
             "scenePhaseReconciled scene=\(sceneID) reported=\(String(describing: phase)) effective=\(String(describing: effective)) scenes=\(scenePhases.count)"
         )
@@ -496,6 +528,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         @unknown default:
             break
         }
+    }
+
+    private func persistVisualSurfacePolicy() {
+        guard let data = try? JSONEncoder().encode(visualSurfacePolicy) else { return }
+        UserDefaults.standard.set(data, forKey: Self.visualSurfacePolicyDefaultsKey)
     }
 
     /// A user/system close destroys AVKit's controller. Rebuild it while a

@@ -1470,20 +1470,14 @@ private final class CanvasDocumentStore: ObservableObject {
         }
     }
 
-    /// Returns the explicit selection plus every recursively connected
-    /// upstream node. Generation and assistant flows share this resolver so
-    /// visible connections have one consistent semantic meaning.
+    /// Returns explicit inputs plus their bounded, explicitly-declared source
+    /// ancestry. Ordinary arrows/lines are layout and narrative affordances;
+    /// they must never silently become generation context.
     func generationSourceNodes(for selectedIDs: Set<UUID>) -> [FloeCanvasNode] {
         guard let document = selectedDocument else { return [] }
-        var included = selectedIDs
-        var frontier = selectedIDs
-        while !frontier.isEmpty {
-            let parents = Set(document.connections.compactMap { connection in
-                frontier.contains(connection.destinationNodeID) ? connection.sourceNodeID : nil
-            }).subtracting(included)
-            included.formUnion(parents)
-            frontier = parents
-        }
+        let included = CanvasGenerationContextResolver.nodeIDs(
+            selectedIDs: selectedIDs, connections: document.connections
+        )
         return document.nodes.filter { included.contains($0.id) }.sorted {
             if $0.x == $1.x { return $0.y < $1.y }
             return $0.x < $1.x
@@ -2454,11 +2448,6 @@ private struct CanvasDeletionRequest: Identifiable {
     let deletesProject: Bool
 }
 
-private enum CanvasGenerationPresentationMode {
-    case configure
-    case execute
-}
-
 extension FocusedValues {
     var canvasKeyboardActions: CanvasKeyboardActions? {
         get { self[CanvasKeyboardActionsKey.self] }
@@ -2526,7 +2515,8 @@ struct WorkspaceCanvasView: View {
     @State private var pendingAgentRequest: CanvasAgentRequest?
     @State private var enteredGroupID: UUID?
     @State private var showsGeneration = false
-    @State private var generationPresentationMode: CanvasGenerationPresentationMode = .configure
+    @State private var activeGenerationTasks: [UUID: Task<Void, Never>] = [:]
+    @State private var activeGenerationTokens: [UUID: UUID] = [:]
     @State private var generationSourceNodeIDs = Set<UUID>()
     @State private var generationResultPoint: CGPoint?
     @State private var showsFileImporter = false
@@ -2667,8 +2657,7 @@ struct WorkspaceCanvasView: View {
             CanvasMediaGenerationView(
                 store: store,
                 sourceNodeIDs: generationSourceNodeIDs,
-                preferredResultPoint: generationResultPoint,
-                presentationMode: generationPresentationMode
+                preferredResultPoint: generationResultPoint
             )
                 .environmentObject(environment)
         }
@@ -3509,7 +3498,6 @@ struct WorkspaceCanvasView: View {
         case .generationTask:
             generationSourceNodeIDs = selectedNodeIDs
             generationResultPoint = point
-            generationPresentationMode = .configure
             showsGeneration = true
             return
         case .markdown:
@@ -3553,7 +3541,6 @@ struct WorkspaceCanvasView: View {
             cancelConnectionCreation()
             generationSourceNodeIDs = [draft.sourceNodeID]
             generationResultPoint = point
-            generationPresentationMode = .configure
             showsGeneration = true
             return
         }
@@ -4225,16 +4212,33 @@ struct WorkspaceCanvasView: View {
         editingNodeID = nil
         generationSourceNodeIDs = selectedNodeIDs
         generationResultPoint = CGPoint(x: node.x, y: node.y)
-        generationPresentationMode = .configure
         showsGeneration = true
     }
 
     private func startGeneration(for node: FloeCanvasNode) {
         selectedNodeIDs = [node.id]
-        generationSourceNodeIDs = [node.id]
-        generationResultPoint = CGPoint(x: node.x + 420, y: node.y)
-        generationPresentationMode = .execute
-        showsGeneration = true
+        let task = node.kind == .generationTask ? node : generationTaskNode(for: node)
+        guard let task else { return }
+        guard activeGenerationTasks[task.id] == nil else { return }
+        let executionToken = UUID()
+        activeGenerationTokens[task.id] = executionToken
+        activeGenerationTasks[task.id] = Task { @MainActor in
+            defer {
+                if activeGenerationTokens[task.id] == executionToken {
+                    activeGenerationTasks[task.id] = nil
+                    activeGenerationTokens[task.id] = nil
+                }
+            }
+            do {
+                try await CanvasGenerationExecutor.execute(
+                    taskNodeID: task.id, store: store, environment: environment
+                )
+            } catch is CancellationError {
+                // Cancellation state is applied by the executor/cancel action.
+            } catch {
+                store.saveError = CanvasGenerationErrorPresentation.message(for: error)
+            }
+        }
     }
 
     private func handleGenerationAction(for node: FloeCanvasNode) {
@@ -4253,6 +4257,9 @@ struct WorkspaceCanvasView: View {
             ? node.id
             : generationTaskNode(for: node)?.id
         guard let taskID else { return }
+        activeGenerationTasks[taskID]?.cancel()
+        activeGenerationTasks[taskID] = nil
+        activeGenerationTokens[taskID] = nil
         let resultIDs = store.selectedDocument?.connections.filter {
             $0.sourceNodeID == taskID && $0.kind == .generatedFrom
         }.map(\.destinationNodeID) ?? []
@@ -5009,7 +5016,6 @@ struct WorkspaceCanvasView: View {
                         generationResultPoint = store.selectedDocument?.nodes
                             .first(where: { selectedNodeIDs.contains($0.id) })
                             .map { CGPoint(x: $0.x + 420, y: $0.y) }
-                        generationPresentationMode = .configure
                         showsGeneration = true
                     }
                 }
@@ -8721,13 +8727,305 @@ private struct CanvasOnboardingView: View {
     }
 }
 
+private enum CanvasGenerationErrorPresentation {
+    static func message(for error: Error) -> String {
+        if let videoError = error as? RemoteVideoError {
+            let base: String
+            let detail: String?
+            switch videoError {
+            case .unsupportedProvider:
+                base = String(localized: "canvas.generation.error.video_provider_unsupported")
+                detail = nil
+            case .invalidRequest(let value):
+                base = String(localized: "canvas.generation.error.invalid_request")
+                detail = value
+            case .invalidResponse(let value):
+                base = String(localized: "canvas.generation.error.invalid_response")
+                detail = value
+            case .requestFailed(let value):
+                base = String(localized: "canvas.generation.error.request_failed")
+                detail = value
+            }
+            return detail.map { "\(base)\n\($0)" } ?? base
+        }
+        if let error = error as? LocalizedError,
+           let description = error.errorDescription, !description.isEmpty {
+            return description
+        }
+        return String(localized: "canvas.generation.error.generic")
+    }
+}
+
+/// Executes a saved task directly against its existing task/result graph.
+/// Configuration UI and task execution both reuse the same metadata contract,
+/// while execution never needs to present or own a sheet.
+@MainActor
+private enum CanvasGenerationExecutor {
+    static func execute(
+        taskNodeID: UUID,
+        store: CanvasDocumentStore,
+        environment: AppEnvironment
+    ) async throws {
+        guard let document = store.selectedDocument,
+              let task = document.nodes.first(where: {
+                  $0.id == taskNodeID && $0.kind == .generationTask
+              }),
+              let configuration = task.generationConfiguration else {
+            throw FloeError.invalidConfiguration(
+                String(localized: "canvas.generation.error.configuration_missing")
+            )
+        }
+        let expectedKind: CanvasNodeKind = configuration.kind == .image ? .image : .video
+        let connectedResult = document.connections.lazy
+            .filter { $0.sourceNodeID == task.id && $0.kind == .generatedFrom }
+            .compactMap { connection in
+                document.nodes.first(where: {
+                    $0.id == connection.destinationNodeID && $0.kind == expectedKind
+                })
+            }
+            .first(where: { $0.asset == nil })
+        let resultPoint = connectedResult.map { CGPoint(x: $0.x, y: $0.y) }
+            ?? CGPoint(x: task.x + 420, y: task.y)
+        let sources = store.generationSourceNodes(for: Set(configuration.sourceNodeIDs))
+            .filter { $0.kind != .generationTask && $0.id != connectedResult?.id }
+        let contextLines = sources.compactMap { node -> String? in
+            guard [.text, .stickyNote, .card].contains(node.kind) else { return nil }
+            let value = node.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty || value == configuration.prompt ? nil : value
+        }
+        let providerPrompt = contextLines.isEmpty
+            ? configuration.prompt
+            : "\(configuration.prompt)\n\n\(String(localized: "canvas.generation.context_prefix"))\n\(contextLines.joined(separator: "\n"))"
+        let attemptID = UUID()
+        let previousAttempt = task.metadata["generationAttemptIndex"].flatMap(Int.init) ?? 0
+        var metadata = configuration.metadata
+        metadata["generationState"] = CanvasGenerationTaskState.preparing.rawValue
+        metadata["generationAttemptID"] = attemptID.uuidString
+        metadata["generationAttemptIndex"] = String(previousAttempt + 1)
+        guard let graph = store.prepareGenerationGraph(CanvasGenerationGraphRequest(
+            kind: configuration.kind == .image ? .image : .video,
+            prompt: configuration.prompt,
+            sourceNodeIDs: sources.map(\.id),
+            resultPosition: CanvasPoint(resultPoint),
+            existingConfigurationNodeID: task.id,
+            reusableResultNodeID: connectedResult?.id,
+            createsPromptNodeWhenMissing: false,
+            metadata: metadata
+        )) else {
+            throw FloeError.storageCorrupted(
+                String(localized: "canvas.generation.prepare_failed")
+            )
+        }
+
+        do {
+            if configuration.kind == .image {
+                try await executeImage(
+                    configuration: configuration, graph: graph, sources: sources,
+                    providerPrompt: providerPrompt, resultPoint: resultPoint,
+                    store: store, environment: environment
+                )
+            } else {
+                try await executeVideo(
+                    configuration: configuration, graph: graph,
+                    providerPrompt: providerPrompt, store: store,
+                    environment: environment
+                )
+            }
+        } catch is CancellationError {
+            for nodeID in [graph.configurationNodeID, graph.resultNodeID] {
+                store.updateNodeMetadata(nodeID, values: [
+                    "generationState": CanvasGenerationTaskState.cancelled.rawValue,
+                    "generationError": nil,
+                    "generationErrorDetail": nil
+                ])
+            }
+            throw CancellationError()
+        } catch {
+            let message = CanvasGenerationErrorPresentation.message(for: error)
+            for nodeID in [graph.configurationNodeID, graph.resultNodeID] {
+                store.updateNodeMetadata(nodeID, values: [
+                    "generationState": CanvasGenerationTaskState.failed.rawValue,
+                    "generationError": message,
+                    "generationErrorDetail": message
+                ])
+            }
+            throw error
+        }
+    }
+
+    private static func executeImage(
+        configuration: CanvasGenerationConfiguration,
+        graph: CanvasGenerationGraphPlan,
+        sources: [FloeCanvasNode],
+        providerPrompt: String,
+        resultPoint: CGPoint,
+        store: CanvasDocumentStore,
+        environment: AppEnvironment
+    ) async throws {
+        let ownerID = graph.configurationNodeID
+        let existingResultIDs = store.selectedDocument?.connections
+            .filter { $0.sourceNodeID == ownerID && $0.kind == .generatedFrom }
+            .compactMap { connection in
+                store.selectedDocument?.nodes.first(where: {
+                    $0.id == connection.destinationNodeID && $0.kind == .image && $0.asset == nil
+                })?.id
+            } ?? []
+        let reusableResultIDs = [graph.resultNodeID] + existingResultIDs.filter {
+            $0 != graph.resultNodeID
+        }
+        store.markGeneration(
+            nodeID: ownerID, kind: .image, prompt: configuration.prompt,
+            modelID: configuration.modelID, aspectRatio: configuration.aspectRatio,
+            quality: configuration.quality, resolution: configuration.resolution,
+            count: configuration.count, sourceNodeIDs: graph.sourceNodeIDs,
+            state: CanvasGenerationTaskState.preparing.rawValue
+        )
+        let referenceImages = sources.filter { $0.kind == .image }
+        if !referenceImages.isEmpty {
+            setState(.uploading, nodeIDs: [ownerID, graph.resultNodeID], store: store)
+        }
+        let referenceData = try referenceImages.map { try imageData(for: $0) }
+        setState(.running, nodeIDs: [ownerID, graph.resultNodeID], store: store)
+        let assets = try await environment.mediaGenerationService.generateImages(
+            prompt: providerPrompt,
+            options: ImageGenerationOptions(
+                aspectRatio: configuration.aspectRatio,
+                resolution: configuration.resolution,
+                quality: configuration.quality,
+                count: configuration.count
+            ),
+            sourceImages: referenceData,
+            modelID: configuration.modelID
+        )
+        guard !assets.isEmpty else {
+            throw RemoteImageError.invalidResponse(
+                String(localized: "canvas.generation.error.empty_image_result")
+            )
+        }
+        var resultIDs: [UUID] = []
+        for (index, asset) in assets.enumerated() {
+            let id: UUID
+            if reusableResultIDs.indices.contains(index) {
+                id = reusableResultIDs[index]
+                store.attachAsset(asset, kind: .image, to: id)
+            } else {
+                id = store.addAsset(
+                    asset, kind: .image,
+                    at: CGPoint(
+                        x: resultPoint.x + Double(index) * 54,
+                        y: resultPoint.y + Double(index) * 42
+                    )
+                )
+                store.connect(ownerID, to: id, kind: .generatedFrom)
+            }
+            store.markGeneration(
+                nodeID: id, kind: .image, prompt: configuration.prompt,
+                modelID: configuration.modelID, aspectRatio: configuration.aspectRatio,
+                quality: configuration.quality, resolution: configuration.resolution,
+                count: assets.count, sourceNodeIDs: graph.sourceNodeIDs,
+                state: CanvasGenerationTaskState.ready.rawValue
+            )
+            store.updateNodeMetadata(id, values: [
+                "imageGroupPrimary": index == 0 ? "true" : "false",
+                "artifactOrigin": "generated",
+                "generationError": nil,
+                "generationErrorDetail": nil
+            ])
+            resultIDs.append(id)
+        }
+        if resultIDs.count > 1 { store.group(Set(resultIDs)) }
+        store.updateNodeMetadata(ownerID, values: [
+            "generationState": CanvasGenerationTaskState.ready.rawValue,
+            "generationResultNodeIDs": resultIDs.map(\.uuidString).joined(separator: ","),
+            "generationError": nil,
+            "generationErrorDetail": nil
+        ])
+    }
+
+    private static func executeVideo(
+        configuration: CanvasGenerationConfiguration,
+        graph: CanvasGenerationGraphPlan,
+        providerPrompt: String,
+        store: CanvasDocumentStore,
+        environment: AppEnvironment
+    ) async throws {
+        guard let modelID = configuration.modelID,
+              let model = environment.conversationCenter.videoModels.first(where: {
+                  $0.id == modelID
+              }),
+              let documentID = store.selectedDocument?.id else {
+            throw FloeError.invalidConfiguration(
+                String(localized: "canvas.generation.error.video_model_missing")
+            )
+        }
+        setState(
+            .preparing, nodeIDs: [graph.configurationNodeID, graph.resultNodeID],
+            store: store
+        )
+        let job = try await environment.mediaGenerationService.submitVideo(
+            modelID: model.id,
+            canvasID: store.project.id,
+            documentID: documentID,
+            sourceNodeIDs: graph.sourceNodeIDs,
+            resultNodeID: graph.resultNodeID,
+            request: RemoteVideoRequest(
+                prompt: providerPrompt,
+                modelRemoteID: model.remoteModelID,
+                options: VideoGenerationOptions(
+                    aspectRatio: configuration.aspectRatio,
+                    resolution: configuration.quality,
+                    durationSeconds: configuration.durationSeconds
+                )
+            )
+        )
+        store.setGenerationJob(job.id, for: graph.resultNodeID)
+        setState(
+            .submitted, nodeIDs: [graph.configurationNodeID, graph.resultNodeID],
+            store: store
+        )
+    }
+
+    private static func setState(
+        _ state: CanvasGenerationTaskState,
+        nodeIDs: [UUID],
+        store: CanvasDocumentStore
+    ) {
+        for nodeID in nodeIDs {
+            store.updateNodeMetadata(nodeID, values: [
+                "generationState": state.rawValue,
+                "generationError": nil,
+                "generationErrorDetail": nil
+            ])
+        }
+    }
+
+    private static func imageData(for node: FloeCanvasNode) throws -> Data {
+        guard node.kind == .image,
+              let relativePath = node.asset?.localRelativePath,
+              !relativePath.contains("..") else {
+            throw CreativeAssetIngestionError.missingLocalFile
+        }
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: false
+        )
+        let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
+            .standardizedFileURL
+        let url = root.appendingPathComponent(relativePath).standardizedFileURL
+        guard url.path.hasPrefix(root.path + "/"),
+              FileManager.default.fileExists(atPath: url.path) else {
+            throw CreativeAssetIngestionError.missingLocalFile
+        }
+        return try Data(contentsOf: url, options: .mappedIfSafe)
+    }
+}
+
 private struct CanvasMediaGenerationView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @ObservedObject var store: CanvasDocumentStore
     let sourceNodeIDs: Set<UUID>
     let preferredResultPoint: CGPoint?
-    let presentationMode: CanvasGenerationPresentationMode
 
     @State private var kind: MediaKind = .image
     @State private var prompt = ""
@@ -8738,7 +9036,6 @@ private struct CanvasMediaGenerationView: View {
     @State private var count = 1
     @State private var duration = 5
     @State private var quality = ""
-    @State private var isSubmitting = false
     @State private var error: String?
     @State private var showsPromptLibrary = false
     @State private var didBootstrap = false
@@ -8765,26 +9062,7 @@ private struct CanvasMediaGenerationView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if presentationMode == .execute {
-                    VStack(spacing: 18) {
-                        ProgressView()
-                            .controlSize(.large)
-                        Text("canvas.generation.running.title")
-                            .font(.headline)
-                        Text("canvas.generation.running.detail")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                        Button("canvas.generation.action.cancel", systemImage: "stop.fill") {
-                            dismiss()
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                    .padding(32)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    Form {
+            Form {
                 Picker("类型", selection: $kind) {
                     Text("图片").tag(MediaKind.image)
                     Text("视频").tag(MediaKind.video)
@@ -8866,10 +9144,8 @@ private struct CanvasMediaGenerationView: View {
                 } footer: {
                     Text("canvas.generation.save_footer")
                 }
-                    }
-                }
             }
-            .navigationTitle("生成素材")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
             }
@@ -8883,9 +9159,6 @@ private struct CanvasMediaGenerationView: View {
                 selectedVideoModelID = preferences.defaultVideoModelID ?? videoModels.first?.id
                 restoreSelectionDefaults()
                 normalizeOptions()
-                if presentationMode == .execute {
-                    await submit()
-                }
             }
             .onChange(of: selectedVideoModelID) { _, _ in normalizeOptions() }
             .onChange(of: selectedImageModelID) { _, _ in normalizeOptions() }
@@ -8979,6 +9252,7 @@ private struct CanvasMediaGenerationView: View {
             resultPosition: CanvasPoint(resultPoint),
             existingConfigurationNodeID: existingConfiguration?.id,
             reusableResultNodeID: reusableEmptyMedia?.id,
+            createsPromptNodeWhenMissing: existingConfiguration == nil,
             metadata: metadata
         )) else {
             error = String(localized: "canvas.generation.prepare_failed")
@@ -8996,206 +9270,6 @@ private struct CanvasMediaGenerationView: View {
         dismiss()
     }
 
-    @MainActor
-    private func submit() async {
-        isSubmitting = true
-        defer { isSubmitting = false }
-        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        let selectedNodes = store.selectedDocument?.nodes.filter { sourceNodeIDs.contains($0.id) } ?? []
-        let existingConfiguration = selectedNodes.first { $0.kind == .generationTask }
-        let selectedReusableMedia = selectedNodes.first {
-            $0.asset == nil && (($0.kind == .image && kind == .image) || ($0.kind == .video && kind == .video))
-        }
-        let connectedReusableMedia = existingConfiguration.flatMap { configuration in
-            let resultID = store.selectedDocument?.connections.first(where: {
-                $0.sourceNodeID == configuration.id && $0.kind == .generatedFrom
-            })?.destinationNodeID
-            return store.selectedDocument?.nodes.first(where: {
-                $0.id == resultID && $0.asset == nil
-                    && (($0.kind == .image && kind == .image) || ($0.kind == .video && kind == .video))
-            })
-        }
-        let reusableEmptyMedia = selectedReusableMedia ?? connectedReusableMedia
-        let sources = store.generationSourceNodes(for: sourceNodeIDs)
-            .filter { $0.kind != .generationTask && $0.id != reusableEmptyMedia?.id }
-        let sourceIDs = sources.map(\.id)
-        let contextLines = sources.compactMap { node -> String? in
-            guard [.text, .stickyNote, .card].contains(node.kind) else { return nil }
-            let value = node.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return value.isEmpty || value == trimmedPrompt ? nil : value
-        }
-        let providerPrompt = contextLines.isEmpty
-            ? trimmedPrompt
-            : "\(trimmedPrompt)\n\n画布文字引用：\n\(contextLines.joined(separator: "\n"))"
-        let resultPoint: CGPoint = if let reusableEmptyMedia {
-            CGPoint(x: reusableEmptyMedia.x, y: reusableEmptyMedia.y)
-        } else if let existingConfiguration {
-            CGPoint(x: existingConfiguration.x + 420, y: existingConfiguration.y)
-        } else if let preferredResultPoint {
-            preferredResultPoint
-        } else if let source = sources.last {
-            CGPoint(x: source.x + 840, y: source.y)
-        } else {
-            CGPoint(x: 780, y: 300)
-        }
-        let graphKind: CanvasGenerationGraphKind = kind == .image ? .image : .video
-        let modelID = kind == .image ? selectedImageModelID : selectedVideoModelID
-        let attemptID = UUID()
-        let previousAttempt = existingConfiguration?.metadata["generationAttemptIndex"].flatMap(Int.init) ?? 0
-        let graphMetadata = [
-            "generationModelID": modelID?.uuidString ?? "",
-            "generationAspectRatio": aspectRatio,
-            "generationResolution": resolution,
-            "generationQuality": quality,
-            "generationCount": String(kind == .image ? count : 1),
-            "generationDurationSeconds": kind == .video ? String(duration) : "",
-            "generationState": "preparing",
-            "generationAttemptID": attemptID.uuidString,
-            "generationAttemptIndex": String(previousAttempt + 1)
-        ]
-        var configurationID: UUID?
-        var resultNodeID: UUID?
-        do {
-            guard let graph = store.prepareGenerationGraph(CanvasGenerationGraphRequest(
-                kind: graphKind, prompt: trimmedPrompt,
-                sourceNodeIDs: sourceIDs,
-                resultPosition: CanvasPoint(resultPoint),
-                existingConfigurationNodeID: existingConfiguration?.id,
-                reusableResultNodeID: reusableEmptyMedia?.id,
-                metadata: graphMetadata
-            )) else {
-                throw FloeError.storageCorrupted("无法准备生成节点")
-            }
-            configurationID = graph.configurationNodeID
-            resultNodeID = graph.resultNodeID
-            if kind == .image {
-                let ownerID = graph.configurationNodeID
-                let existingResultIDs = store.selectedDocument?.connections
-                    .filter { $0.sourceNodeID == ownerID && $0.kind == .generatedFrom }
-                    .compactMap { connection in
-                        store.selectedDocument?.nodes.first(where: {
-                            $0.id == connection.destinationNodeID && $0.kind == .image
-                        })?.id
-                    } ?? []
-                let reusableResultIDs = [graph.resultNodeID] + existingResultIDs.filter {
-                    $0 != graph.resultNodeID
-                }
-                store.markGeneration(
-                    nodeID: ownerID, kind: .image, prompt: trimmedPrompt,
-                    modelID: selectedImageModelID, aspectRatio: aspectRatio,
-                    quality: quality.isEmpty ? nil : quality,
-                    resolution: resolution.isEmpty ? nil : resolution, count: count,
-                    sourceNodeIDs: graph.sourceNodeIDs, state: "running"
-                )
-                let referenceImages = sources.filter { $0.kind == .image }
-                if !referenceImages.isEmpty {
-                    for nodeID in [ownerID, graph.resultNodeID] {
-                        store.updateNodeMetadata(nodeID, values: [
-                            "generationState": CanvasGenerationTaskState.uploading.rawValue
-                        ])
-                    }
-                }
-                let referenceData = try referenceImages.map { try imageData(for: $0) }
-                for nodeID in [ownerID, graph.resultNodeID] {
-                    store.updateNodeMetadata(nodeID, values: [
-                        "generationState": CanvasGenerationTaskState.running.rawValue
-                    ])
-                }
-                let assets = try await environment.mediaGenerationService.generateImages(
-                    prompt: providerPrompt,
-                    options: ImageGenerationOptions(
-                        aspectRatio: aspectRatio,
-                        resolution: resolution.isEmpty ? nil : resolution,
-                        quality: quality.isEmpty ? nil : quality,
-                        count: count
-                    ),
-                    sourceImages: referenceData,
-                    modelID: selectedImageModelID
-                )
-                guard !assets.isEmpty else {
-                    throw RemoteImageError.invalidResponse("供应商没有返回图片。")
-                }
-                var resultIDs: [UUID] = []
-                for (index, asset) in assets.enumerated() {
-                    let id: UUID
-                    if reusableResultIDs.indices.contains(index) {
-                        id = reusableResultIDs[index]
-                        store.attachAsset(asset, kind: .image, to: id)
-                    } else {
-                        id = store.addAsset(
-                            asset, kind: .image,
-                            at: CGPoint(x: resultPoint.x + Double(index) * 54,
-                                        y: resultPoint.y + Double(index) * 42)
-                        )
-                        store.connect(graph.configurationNodeID, to: id, kind: .generatedFrom)
-                    }
-                    store.markGeneration(
-                        nodeID: id, kind: .image, prompt: trimmedPrompt,
-                        modelID: selectedImageModelID, aspectRatio: aspectRatio,
-                        quality: quality.isEmpty ? nil : quality,
-                        resolution: resolution.isEmpty ? nil : resolution, count: assets.count,
-                        sourceNodeIDs: graph.sourceNodeIDs, state: "ready"
-                    )
-                    store.updateNodeMetadata(id, values: [
-                        "imageGroupPrimary": index == 0 ? "true" : "false",
-                        "artifactOrigin": "generated"
-                    ])
-                    resultIDs.append(id)
-                }
-                if resultIDs.count > 1 {
-                    store.group(Set(resultIDs))
-                }
-                store.updateNodeMetadata(ownerID, values: [
-                    "generationState": "ready",
-                    "generationResultNodeIDs": resultIDs.map(\.uuidString).joined(separator: ","),
-                    "generationError": nil
-                ])
-            } else {
-                let canvasID = store.project.id
-                guard let documentID = store.selectedDocument?.id,
-                      let model = selectedVideoModel else {
-                    throw FloeError.invalidConfiguration("请选择视频模型。")
-                }
-                store.markGeneration(
-                    nodeID: graph.resultNodeID, kind: .video, prompt: trimmedPrompt,
-                    modelID: model.id, aspectRatio: aspectRatio,
-                    quality: quality.isEmpty ? nil : quality, count: 1,
-                    sourceNodeIDs: graph.sourceNodeIDs, state: "preparing"
-                )
-                let job = try await environment.mediaGenerationService.submitVideo(
-                    modelID: model.id, canvasID: canvasID, documentID: documentID,
-                    sourceNodeIDs: graph.sourceNodeIDs,
-                    resultNodeID: graph.resultNodeID,
-                    request: RemoteVideoRequest(
-                        prompt: providerPrompt, modelRemoteID: model.remoteModelID,
-                        options: VideoGenerationOptions(
-                            aspectRatio: aspectRatio,
-                            resolution: quality.isEmpty ? nil : quality,
-                            durationSeconds: duration
-                        )
-                    )
-                )
-                store.setGenerationJob(job.id, for: graph.resultNodeID)
-            }
-            dismiss()
-        } catch is CancellationError {
-            for cancelledNodeID in [configurationID, resultNodeID].compactMap({ $0 }) {
-                store.updateNodeMetadata(cancelledNodeID, values: [
-                    "generationState": CanvasGenerationTaskState.cancelled.rawValue,
-                    "generationError": nil
-                ])
-            }
-            dismiss()
-        } catch {
-            for failedNodeID in [configurationID, resultNodeID].compactMap({ $0 }) {
-                store.updateNodeMetadata(failedNodeID, values: [
-                    "generationState": "failed",
-                    "generationError": error.localizedDescription
-                ])
-            }
-            self.error = error.localizedDescription
-        }
-    }
 
     private func restoreSelectionDefaults() {
         let selected = store.selectedDocument?.nodes.filter { sourceNodeIDs.contains($0.id) } ?? []
@@ -9230,26 +9304,6 @@ private struct CanvasMediaGenerationView: View {
                 .map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
             prompt = upstreamText
         }
-    }
-
-    private func imageData(for node: FloeCanvasNode) throws -> Data {
-        guard node.kind == .image,
-              let relativePath = node.asset?.localRelativePath,
-              !relativePath.contains("..") else {
-            throw CreativeAssetIngestionError.missingLocalFile
-        }
-        let support = try FileManager.default.url(
-            for: .applicationSupportDirectory, in: .userDomainMask,
-            appropriateFor: nil, create: false
-        )
-        let url = support.appendingPathComponent("FloeAgent", isDirectory: true)
-            .appendingPathComponent(relativePath)
-        guard url.standardizedFileURL.path.hasPrefix(
-            support.appendingPathComponent("FloeAgent", isDirectory: true).standardizedFileURL.path + "/"
-        ), FileManager.default.fileExists(atPath: url.path) else {
-            throw CreativeAssetIngestionError.missingLocalFile
-        }
-        return try Data(contentsOf: url, options: .mappedIfSafe)
     }
 
     private func sourceIcon(_ kind: CanvasNodeKind) -> String {

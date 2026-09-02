@@ -53,6 +53,7 @@ public struct AgentToolLifecycleEntry: Sendable, Codable, Hashable {
     public var callID: String
     public var toolName: String
     public var authorizationIdentity: String?
+    public var executorContextFingerprint: String?
     public var phase: AgentToolLifecyclePhase
     public var updatedAt: Date
 
@@ -60,12 +61,14 @@ public struct AgentToolLifecycleEntry: Sendable, Codable, Hashable {
         callID: String,
         toolName: String,
         authorizationIdentity: String? = nil,
+        executorContextFingerprint: String? = nil,
         phase: AgentToolLifecyclePhase,
         updatedAt: Date = Date()
     ) {
         self.callID = callID
         self.toolName = toolName
         self.authorizationIdentity = authorizationIdentity
+        self.executorContextFingerprint = executorContextFingerprint
         self.phase = phase
         self.updatedAt = updatedAt
     }

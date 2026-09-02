@@ -64,6 +64,8 @@ Every provider tool batch has three visible boundaries: request recording, execu
 
 `HarnessInvariant` verifies ordered call/result pairing, unique lifecycle IDs, legal lifecycle monotonicity, immutable tool identity and authorization identity, and the absence of orphan lifecycle records. A model-dispatch checkpoint stores a stable prompt digest before provider I/O. Critical timeline records retry and fail closed rather than being discarded with `try?`; final assistant content and terminal state remain ordered. Loop protection uses an exact fingerprint inside the current progress epoch, so changed arguments, changed evidence, a successful mutation, an explicit wait, or new user direction resets the detector instead of consuming a global tool-round allowance.
 
+Tool execution passes through one runtime-owned settlement boundary: normalization, authorization bound to the original executor/workspace/host context, monotonicity and idempotency checks, execution, result finalization, durable persistence, and model-visible delivery. The Harness overwrites executor-supplied provenance and publishes bounded `resourceBindings` for IDs and cursors discovered by list/search calls. A malformed call receives one correction opportunity without creating a synthetic call/result pair. Run-event watermarks and keyset timeline cursors prevent restored or very large tasks from replaying old events as current work.
+
 ## Browser boundary
 
 Floe's browser protocol is CDP-like, not Chrome DevTools Protocol. Public WebKit APIs provide navigation, isolated-world JavaScript, semantic DOM observation, snapshots, tabs, and user-visible interaction. WebKit does not expose a local CDP endpoint or a public way to forge trusted iOS touch events.

@@ -56,6 +56,21 @@ public enum RemoteVideoError: Error, Sendable, Hashable {
     case requestFailed(String)
 }
 
+extension RemoteVideoError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .unsupportedProvider:
+            "The selected provider does not support video generation."
+        case .invalidRequest(let detail):
+            "The video request is not valid. \(detail)"
+        case .invalidResponse(let detail):
+            "The video provider returned an invalid response. \(detail)"
+        case .requestFailed(let detail):
+            "The video provider could not complete the request. \(detail)"
+        }
+    }
+}
+
 public protocol VideoProviderAdapter: Sendable {
     func submit(
         _ request: RemoteVideoRequest,

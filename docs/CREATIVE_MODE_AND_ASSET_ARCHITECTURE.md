@@ -12,6 +12,8 @@ Floe uses one persisted canvas graph and three product roles:
 
 The generation state machine is `needsConfiguration → configured → preparing/uploading → submitted/running → completed/downloading → ready`, with `failed`, `cancelled`, and `expired` recovery states. A task card exposes one contextual primary action: Configure, Start, Cancel, Retry, or Generate Again. Retry reuses the original task and artifact nodes.
 
+Generation input is a saved task snapshot, not an inference from every visible connection. Only explicit `source` edges are followed, with duplicate removal, cycle detection, and bounded depth. Ordinary links, directional layout arrows, generated-artifact edges, and unconnected notes never enter the prompt. Saving, starting, and retrying use the same snapshot builder. An existing task cannot synthesize a new prompt node, and execution reports progress directly on the task and artifact cards rather than opening a progress sheet.
+
 ## Node AI and Canvas Assistant
 
 The compact AI field below a selected node is a node-scoped editor. It receives only the node's latest value, saved compatible configuration, explicit reference nodes, and the current instruction. It returns a structured patch, applies that patch through the existing undo/save/sync mutation path, and never creates a Conversation or Run, opens Canvas Assistant, invokes tools, or starts generation. A bounded edit summary is retained for recovery and audit; hidden model reasoning is never displayed.

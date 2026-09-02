@@ -129,6 +129,11 @@ public extension DurableMemoryStore {
 /// cross-conversation history access. The runtime owns semantic types while
 /// the shared DatabaseManager preserves serialized writes and foreign keys.
 public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, DurableMemoryStore, ConversationHistoryReader {
+    private struct ConversationTimelineCursor: Codable {
+        var createdAt: String
+        var sequence: Int
+        var itemID: String
+    }
     private let database: DatabaseManager
 
     public init(database: DatabaseManager) {
@@ -966,8 +971,15 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     }
 
     public func read(_ request: ConversationPageRequest) async throws -> ConversationHistoryPage {
-        guard let offset = Int(request.cursor ?? "0"), offset >= 0 else {
-            throw FloeError.validationFailed("conversation.read cursor is invalid")
+        let keysetCursor = try request.cursor.flatMap(Self.decodeTimelineCursor)
+        let legacyOffset: Int?
+        if let raw = request.cursor, !raw.hasPrefix("k1.") {
+            guard let value = Int(raw), value >= 0 else {
+                throw FloeError.validationFailed("conversation.read cursor is invalid")
+            }
+            legacyOffset = value
+        } else {
+            legacyOffset = nil
         }
         return try await database.reader { db in
             guard try Bool.fetchOne(
@@ -977,38 +989,98 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             ) == true else {
                 throw FloeError.validationFailed("The requested task no longer exists")
             }
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT item_id, run_id, item_kind, role, content, created_at, sequence
-                FROM (
+            let timeline = """
+                WITH timeline AS (
                     SELECT m.id AS item_id, m.run_id AS run_id, 'message' AS item_kind,
                            m.role AS role, m.content AS content, m.created_at AS created_at,
-                           NULL AS sequence, m.rowid AS stable_order
+                           NULL AS sequence, -1 AS sort_sequence
                     FROM messages m
                     WHERE m.conversation_id = ?
                     UNION ALL
                     SELECT e.id AS item_id, e.run_id AS run_id, e.kind AS item_kind,
                            NULL AS role, e.payload_json AS content, e.created_at AS created_at,
-                           e.sequence AS sequence, e.rowid AS stable_order
+                           e.sequence AS sequence, e.sequence AS sort_sequence
                     FROM run_events e
                     JOIN runs r ON r.id = e.run_id
                     WHERE r.conversation_id = ?
                 )
-                ORDER BY created_at, COALESCE(sequence, -1), stable_order
-                LIMIT ? OFFSET ?
-                """, arguments: [
-                    request.conversationID.uuidString,
-                    request.conversationID.uuidString,
-                    request.limit + 1,
-                    offset
-                ])
+                """
+            let rows: [Row]
+            if let cursor = keysetCursor {
+                rows = try Row.fetchAll(db, sql: timeline + """
+                    SELECT item_id, run_id, item_kind, role, content, created_at,
+                           sequence, sort_sequence
+                    FROM timeline
+                    WHERE created_at > ?
+                       OR (created_at = ? AND sort_sequence > ?)
+                       OR (created_at = ? AND sort_sequence = ? AND item_id > ?)
+                    ORDER BY created_at, sort_sequence, item_id
+                    LIMIT ?
+                    """, arguments: [
+                        request.conversationID.uuidString,
+                        request.conversationID.uuidString,
+                        cursor.createdAt,
+                        cursor.createdAt, cursor.sequence,
+                        cursor.createdAt, cursor.sequence, cursor.itemID,
+                        request.limit + 1
+                    ])
+            } else {
+                rows = try Row.fetchAll(db, sql: timeline + """
+                    SELECT item_id, run_id, item_kind, role, content, created_at,
+                           sequence, sort_sequence
+                    FROM timeline
+                    ORDER BY created_at, sort_sequence, item_id
+                    LIMIT ? OFFSET ?
+                    """, arguments: [
+                        request.conversationID.uuidString,
+                        request.conversationID.uuidString,
+                        request.limit + 1,
+                        legacyOffset ?? 0
+                    ])
+            }
             let hasMore = rows.count > request.limit
-            let items = try rows.prefix(request.limit).map(Self.historyItem)
+            let selectedRows = Array(rows.prefix(request.limit))
+            let items = try selectedRows.map(Self.historyItem)
+            let nextCursor: String? = if hasMore, let last = selectedRows.last {
+                try Self.encodeTimelineCursor(ConversationTimelineCursor(
+                    createdAt: last["created_at"],
+                    sequence: last["sort_sequence"],
+                    itemID: last["item_id"]
+                ))
+            } else { nil }
             return ConversationHistoryPage(
                 conversationID: request.conversationID,
                 items: items,
-                nextCursor: hasMore ? String(offset + request.limit) : nil
+                nextCursor: nextCursor
             )
         }
+    }
+
+    private static func encodeTimelineCursor(
+        _ cursor: ConversationTimelineCursor
+    ) throws -> String {
+        let data = try JSONEncoder().encode(cursor)
+        return "k1." + data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func decodeTimelineCursor(
+        _ raw: String
+    ) throws -> ConversationTimelineCursor? {
+        guard raw.hasPrefix("k1.") else { return nil }
+        var encoded = String(raw.dropFirst(3))
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        encoded += String(repeating: "=", count: (4 - encoded.count % 4) % 4)
+        guard let data = Data(base64Encoded: encoded),
+              let cursor = try? JSONDecoder().decode(
+                  ConversationTimelineCursor.self, from: data
+              ), !cursor.createdAt.isEmpty, !cursor.itemID.isEmpty else {
+            throw FloeError.validationFailed("conversation.read cursor is invalid")
+        }
+        return cursor
     }
 
     public func readMessages(ids: [UUID]) async throws -> [ConversationHistoryMessage] {

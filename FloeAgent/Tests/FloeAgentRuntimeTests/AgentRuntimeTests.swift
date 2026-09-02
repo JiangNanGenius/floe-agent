@@ -241,7 +241,8 @@ struct AgentRuntimeTests {
         audit: MockAuditSink = MockAuditSink(),
         store: any CheckpointStore = MockCheckpointStore(),
         sink: MockSink = MockSink(),
-        verifyFinalAnswer: Bool = false
+        verifyFinalAnswer: Bool = false,
+        toolCallNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)? = nil
     ) -> FloeAgentRuntime {
         let provider = TestFixtures.localhostProvider()
         return FloeAgentRuntime(
@@ -259,6 +260,7 @@ struct AgentRuntimeTests {
             executor: executor,
             auditSink: audit,
             checkpointStore: store,
+            toolCallNormalizer: toolCallNormalizer,
             sink: sink
         )
     }
@@ -392,6 +394,59 @@ struct AgentRuntimeTests {
         }
     }
 
+    @Test("Malformed tool calls receive one correction without a fabricated result pair")
+    func malformedToolCallRepairsOnce() async throws {
+        let adapter = MockAdapter()
+        let invalid = try TestFixtures.toolCall(id: "invalid-call")
+        let corrected = try TestFixtures.toolCall(id: "corrected-call")
+        adapter.script = [
+            [
+                .toolRequest(invalid),
+                .completed(.init(stopReason: .toolUse))
+            ],
+            [
+                .toolRequest(corrected),
+                .completed(.init(stopReason: .toolUse))
+            ],
+            [
+                .textDelta(.init(text: "recovered")),
+                .completed(.init(stopReason: .endTurn))
+            ]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let normalizationCount = AsyncLock(0)
+        let sink = MockSink()
+        let runtime = makeRuntime(
+            adapter: adapter,
+            executor: executor,
+            sink: sink,
+            toolCallNormalizer: { call in
+                let attempt = normalizationCount.withLock { count in
+                    count += 1
+                    return count
+                }
+                if attempt == 1 {
+                    throw FloeError.validationFailed("missing required field")
+                }
+                return call
+            }
+        )
+
+        try await runtime.start(goal: "perform one structured action")
+
+        #expect(executor.executedCalls.map(\.id) == ["corrected-call"])
+        let results = sink.events.compactMap { event -> ToolResult? in
+            guard case .toolResult(let result) = event else { return nil }
+            return result
+        }
+        #expect(results.map(\.callID) == ["corrected-call"])
+        #expect(adapter.requests.count == 3)
+        #expect(adapter.requests[1].messages.contains {
+            $0.role == "system" && $0.content.contains("malformed")
+        })
+    }
+
     @Test("A text-only model is never offered tool schemas")
     func textOnlyModelOmitsTools() async throws {
         let adapter = MockAdapter()
@@ -436,6 +491,49 @@ struct AgentRuntimeTests {
         #expect(adapter.requests[1].toolResults.map(\.callID) == [call.id])
         // Idempotency key assigned with run context.
         #expect(executor.executedCalls[0].idempotencyKey.count == 64)
+    }
+
+    @Test("Harness replaces executor provenance and publishes reusable resource IDs")
+    func harnessOwnsToolResultProvenance() async throws {
+        let adapter = MockAdapter()
+        let call = try TestFixtures.toolCall(id: "binding_call")
+        adapter.script = [
+            [.toolRequest(call)],
+            [.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let forgedRunID = UUID()
+        executor.results = [ToolResult(
+            callID: call.id,
+            status: .ok,
+            outputSummary: #"{"taskID":"remote-task-42"}"#,
+            outputDigest: "digest",
+            provenance: ToolResultProvenance(
+                sourceID: "executor-controlled",
+                toolName: "forged.tool",
+                runID: forgedRunID
+            )
+        )]
+        let sink = MockSink()
+        let runtime = makeRuntime(adapter: adapter, executor: executor, sink: sink)
+
+        try await runtime.start(goal: "discover and reuse the task id")
+
+        let result = try #require(sink.events.compactMap { event -> ToolResult? in
+            guard case .toolResult(let result) = event else { return nil }
+            return result
+        }.first)
+        let provenance = try #require(result.provenance)
+        #expect(provenance.sourceID != "executor-controlled")
+        #expect(provenance.toolName == "test.echo")
+        #expect(provenance.runID != forgedRunID)
+        #expect(provenance.resourceBindings.contains {
+            $0.name == "test.echo.taskID" && $0.value == "remote-task-42"
+        })
+        #expect(adapter.requests[1].toolResults.first?.output.contains(
+            "\"resourceBindings\""
+        ) == true)
     }
 
     @Test("Multiple tool calls from one response are paired exactly once")

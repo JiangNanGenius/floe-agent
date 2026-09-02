@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import FloeCore
 @testable import FloeAgentRuntime
 @testable import FloeModels
 @testable import FloeTools
@@ -144,6 +145,22 @@ struct HarnessPlanningTests {
         let prompt = try #require(ledger.promptBlock())
         #expect(prompt.contains(hostID))
         #expect(prompt.contains("resource bindings"))
+    }
+
+    @Test("resource discovery produces bounded structured bindings")
+    func structuredResourceBindings() {
+        let hostID = UUID().uuidString
+        let bindings = ToolWorkflowGuidance.structuredResourceBindings(
+            in: #"{"hosts":[{"hostID":"\#(hostID)","name":"studio"}],"nextCursor":"page-2"}"#,
+            toolName: "ssh.listHosts"
+        )
+        #expect(bindings.contains {
+            $0.name == "ssh.listHosts.hosts[0].hostID" && $0.value == hostID
+        })
+        #expect(bindings.contains {
+            $0.name == "ssh.listHosts.nextCursor" && $0.value == "page-2"
+        })
+        #expect(bindings.count <= 16)
     }
 
     @Test("run context publishes bounded stateful tool workflows")
@@ -306,6 +323,55 @@ struct HarnessPlanningTests {
         let durable = try #require(try await store.goal(id: goal.id))
         #expect(durable.revision == 2)
         #expect(durable.status == .verifying)
+    }
+
+    @Test("conversation timeline keyset cursor neither repeats nor skips equal timestamps")
+    func conversationTimelineKeysetCursor() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let conversationStore = SQLiteConversationStore(database: database)
+        let store = SQLiteIntelligenceStore(database: database)
+        let conversationID = UUID()
+        let timestamp = Date(timeIntervalSince1970: 1_700_100_000)
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID,
+            title: "Keyset timeline",
+            createdAt: timestamp,
+            updatedAt: timestamp
+        ))
+        let ids = (0..<7).map { _ in UUID() }.sorted { $0.uuidString < $1.uuidString }
+        for (index, id) in ids.enumerated() {
+            try await conversationStore.appendMessage(PersistedMessage(
+                id: id,
+                conversationID: conversationID,
+                role: "assistant",
+                content: "message-\(index)",
+                createdAt: timestamp
+            ))
+        }
+
+        var cursor: String?
+        var readIDs: [UUID] = []
+        repeat {
+            let page = try await store.read(ConversationPageRequest(
+                conversationID: conversationID,
+                cursor: cursor,
+                limit: 3
+            ))
+            readIDs.append(contentsOf: page.items.map(\.id))
+            cursor = page.nextCursor
+            if let cursor { #expect(cursor.hasPrefix("k1.")) }
+        } while cursor != nil
+
+        #expect(readIDs == ids)
+        #expect(Set(readIDs).count == ids.count)
+        await #expect(throws: FloeError.self) {
+            try await store.read(ConversationPageRequest(
+                conversationID: conversationID,
+                cursor: "not-a-cursor",
+                limit: 3
+            ))
+        }
     }
 
     @Test("Harness budget forbids grandchildren and enforces total reservations")

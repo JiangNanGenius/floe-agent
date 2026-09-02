@@ -414,6 +414,8 @@ public actor FloeAgentRuntime {
     /// action boundary once; a hard cap keeps weak models from turning the
     /// harness correction itself into a loop.
     private var deferredActionRepairCount = 0
+    private var malformedToolRepairCount = 0
+    private var malformedToolRepairRequested = false
     /// Set by tool/compaction handling to request another provider turn.
     /// The outer model loop consumes this flag; handlers never recursively
     /// enter `runModelTurn`, which keeps one owner for state transitions.
@@ -1163,7 +1165,7 @@ public actor FloeAgentRuntime {
             messages: legacyMessages,
             contentMessages: contentMessages,
             toolResults: pendingToolResults.map {
-                (callID: $0.callID, output: $0.outputSummary)
+                (callID: $0.callID, output: Self.modelVisibleToolResult($0))
             },
             pendingToolCalls: supportsTools ? pendingToolCalls : [],
             pendingAssistantReasoning: pendingToolCalls.isEmpty || responseReasoning.isEmpty
@@ -1414,6 +1416,16 @@ public actor FloeAgentRuntime {
                 // The batch's resumeStream already requested the next turn.
                 return
             }
+            if malformedToolRepairRequested {
+                malformedToolRepairRequested = false
+                clearCompletedProviderDispatch()
+                messages.append(ConversationMessage(
+                    role: "system",
+                    content: "Harness control: the previous structured tool request was rejected before recording or execution because its arguments were malformed. Emit one corrected native tool call with valid JSON, or explain the actionable failure without calling a tool. Do not repeat the invalid payload."
+                ))
+                modelTurnContinuationRequested = true
+                return
+            }
             await publishProviderAttempt(
                 status: .completed,
                 reason: "Provider completed the model turn",
@@ -1493,10 +1505,24 @@ public actor FloeAgentRuntime {
                 let normalized = try await toolCallNormalizer?(call) ?? call
                 pendingToolBatch.append(normalized.withIDContext(runID: runID))
             } catch {
-                await failRun(
-                    message: "Could not securely prepare tool credentials: \(error.localizedDescription)",
-                    recoverable: true
-                )
+                pendingToolBatch.removeAll { $0.id == call.id }
+                if malformedToolRepairRequested {
+                    // One provider response may contain several invalid calls;
+                    // reject the whole batch as one correction opportunity.
+                } else if malformedToolRepairCount == 0 {
+                    malformedToolRepairCount = 1
+                    malformedToolRepairRequested = true
+                    await publishLiveness(
+                        phase: .resolvingTool,
+                        message: "Rejected malformed tool arguments before dispatch; requesting one correction",
+                        isRecoverable: true
+                    )
+                } else {
+                    await failRun(
+                        message: "Tool arguments remained invalid after one correction: \(error.localizedDescription)",
+                        recoverable: false
+                    )
+                }
             }
 
         case .toolResult:
@@ -2138,6 +2164,7 @@ public actor FloeAgentRuntime {
                 outputSummary: "Harness failed to settle this tool call; no result was produced.",
                 outputDigest: ""
             )
+            result = finalizeToolResult(result, for: call)
             if result.status == .needsUser {
                 needsUserResult = needsUserResult ?? result
             } else if let guardrail = loopGuard.record(
@@ -2194,6 +2221,54 @@ public actor FloeAgentRuntime {
         } else {
             modelTurnContinuationRequested = true
         }
+    }
+
+    /// The runtime, not a tool implementation or provider, owns provenance.
+    /// This is the finalization boundary shared by serial and parallel tools.
+    private func finalizeToolResult(
+        _ result: ToolResult,
+        for call: ToolCall
+    ) -> ToolResult {
+        var finalized = result
+        var identity = Data(runID.uuidString.utf8)
+        identity.append(Data(call.id.utf8))
+        identity.append(Data(call.toolName.utf8))
+        let sourceID = SHA256.hash(data: identity)
+            .map { String(format: "%02x", $0) }.joined()
+        finalized.provenance = ToolResultProvenance(
+            sourceID: sourceID,
+            toolName: call.toolName,
+            runID: runID,
+            taskID: configuration.conversationID,
+            resourceBindings: ToolWorkflowGuidance.structuredResourceBindings(
+                in: finalized.outputSummary,
+                toolName: call.toolName,
+                artifacts: finalized.artifacts
+            )
+        )
+        return finalized
+    }
+
+    /// Providers still accept a string tool-result channel, so prepend one
+    /// compact JSON envelope that preserves the runtime-authored bindings.
+    /// The ordinary human summary follows unchanged for weak models.
+    private static func modelVisibleToolResult(_ result: ToolResult) -> String {
+        guard let provenance = result.provenance else { return result.outputSummary }
+        let envelope: [String: Any] = [
+            "trustedSourceID": provenance.sourceID,
+            "toolName": provenance.toolName,
+            "runID": provenance.runID.uuidString,
+            "taskID": provenance.taskID?.uuidString ?? "",
+            "parentCallID": provenance.parentCallID ?? "",
+            "resourceBindings": provenance.resourceBindings.map {
+                ["name": $0.name, "value": $0.value]
+            }
+        ]
+        guard JSONSerialization.isValidJSONObject(envelope),
+              let data = try? JSONSerialization.data(
+                  withJSONObject: envelope, options: [.sortedKeys]
+              ) else { return result.outputSummary }
+        return String(decoding: data, as: UTF8.self) + "\n" + result.outputSummary
     }
 
     /// Executes read-only calls in parallel. Context construction, audit,
@@ -2740,11 +2815,20 @@ public actor FloeAgentRuntime {
                 )
                 return
             }
+            if let priorContext = prior.executorContextFingerprint,
+               priorContext != executorContextFingerprint(for: call) {
+                logger.error(
+                    "toolLifecycleExecutorContextChanged run=\(runID.uuidString) call=\(call.id)"
+                )
+                return
+            }
         }
         toolLifecycleByCallID[call.id] = AgentToolLifecycleEntry(
             callID: call.id,
             toolName: call.toolName,
             authorizationIdentity: authorizationIdentity ?? prior?.authorizationIdentity,
+            executorContextFingerprint: prior?.executorContextFingerprint
+                ?? executorContextFingerprint(for: call),
             phase: phase,
             updatedAt: Date()
         )
@@ -2759,6 +2843,19 @@ public actor FloeAgentRuntime {
                 toolLifecycleByCallID.removeValue(forKey: entry.callID)
             }
         }
+    }
+
+    private func executorContextFingerprint(for call: ToolCall) -> String {
+        let scope: String = switch call.scope {
+        case .local: "local"
+        case .host(let id): "host:\(id.uuidString)"
+        case .hostPath(let id, let path): "hostPath:\(id.uuidString):\(path)"
+        }
+        let root = configuration.workspaceRootURL?.standardizedFileURL.path ?? "none"
+        let ceilings = configuration.allowedWorkspacePaths.sorted().joined(separator: "|")
+        let value = "\(scope)\n\(root)\n\(ceilings)"
+        return SHA256.hash(data: Data(value.utf8))
+            .map { String(format: "%02x", $0) }.joined()
     }
 
     private static func lifecycleOrder(_ phase: AgentToolLifecyclePhase) -> Int {

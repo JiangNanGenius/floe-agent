@@ -554,6 +554,90 @@ struct CreativeMediaModelsTests {
         #expect(!plan.operations.contains { $0.kind == .delete && $0.nodeID == failed.id })
     }
 
+    @Test func existingGenerationTaskNeverSynthesizesPromptNode() throws {
+        let source = CanvasNode(
+            kind: .image, position: .init(x: 80, y: 100),
+            size: .init(width: 240, height: 180)
+        )
+        let configuration = CanvasNode(
+            kind: .generationTask, text: "图片生成",
+            position: .init(x: 500, y: 100), size: .init(width: 320, height: 200)
+        )
+        let result = CanvasNode(
+            kind: .image, text: "图片生成中",
+            position: .init(x: 900, y: 100), size: .init(width: 320, height: 260)
+        )
+        let document = CanvasDocument(name: "Canvas", nodes: [source, configuration, result])
+        let plan = try CanvasGenerationGraphPlanner.plan(
+            request: CanvasGenerationGraphRequest(
+                kind: .image, prompt: "任务内保存的提示词",
+                sourceNodeIDs: [source.id], resultPosition: result.position,
+                existingConfigurationNodeID: configuration.id,
+                reusableResultNodeID: result.id,
+                createsPromptNodeWhenMissing: false
+            ),
+            document: document
+        )
+
+        #expect(plan.configurationNodeID == configuration.id)
+        #expect(plan.resultNodeID == result.id)
+        #expect(plan.sourceNodeIDs == [source.id])
+        #expect(!plan.operations.contains { $0.kind == .create })
+        #expect(!plan.operations.contains {
+            $0.kind == .connect && $0.sourceNodeID == configuration.id
+                && $0.destinationNodeID == configuration.id
+        })
+    }
+
+    @Test func generationContextUsesOnlySourceEdgesAndTerminatesCycles() {
+        let note = UUID(), reference = UUID(), task = UUID(), narrative = UUID()
+        let connections = [
+            CanvasConnection(sourceNodeID: note, destinationNodeID: reference, kind: .source),
+            CanvasConnection(sourceNodeID: reference, destinationNodeID: task, kind: .source),
+            CanvasConnection(sourceNodeID: task, destinationNodeID: note, kind: .source),
+            CanvasConnection(sourceNodeID: narrative, destinationNodeID: task, kind: .arrow)
+        ]
+
+        let resolved = CanvasGenerationContextResolver.nodeIDs(
+            selectedIDs: [task], connections: connections
+        )
+
+        #expect(resolved == [note, reference, task])
+        #expect(!resolved.contains(narrative))
+    }
+
+    @Test func ordinaryEdgeDoesNotReplaceExplicitGenerationSourceEdge() throws {
+        let source = CanvasNode(
+            kind: .text, text: "明确引用",
+            position: .init(x: 80, y: 100), size: .init(width: 240, height: 180)
+        )
+        let task = CanvasNode(
+            kind: .generationTask, text: "图片生成",
+            position: .init(x: 500, y: 100), size: .init(width: 320, height: 200)
+        )
+        let ordinary = CanvasConnection(
+            sourceNodeID: source.id, destinationNodeID: task.id, kind: .arrow
+        )
+        let document = CanvasDocument(
+            name: "Canvas", nodes: [source, task], connections: [ordinary]
+        )
+
+        let plan = try CanvasGenerationGraphPlanner.plan(
+            request: CanvasGenerationGraphRequest(
+                kind: .image, prompt: source.text, sourceNodeIDs: [source.id],
+                resultPosition: .init(x: 900, y: 100),
+                existingConfigurationNodeID: task.id,
+                createsPromptNodeWhenMissing: false
+            ),
+            document: document
+        )
+
+        #expect(plan.operations.contains {
+            $0.kind == .connect && $0.connectionKind == .source
+                && $0.sourceNodeID == source.id && $0.destinationNodeID == task.id
+        })
+    }
+
     @Test func canvasSyncReducerConvergesForOutOfOrderEqualRevision() {
         let canvasID = UUID(), entityID = UUID()
         let a = CanvasSyncOperation(

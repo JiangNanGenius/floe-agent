@@ -120,9 +120,28 @@ enum ToolWorkflowGuidance {
     /// Extracts identifier bindings from JSON results so compaction never
     /// trims away the values required by the next tool in the chain.
     static func resourceBindings(in output: String, toolName: String) -> String? {
+        let values = structuredResourceBindings(in: output, toolName: toolName)
+        guard !values.isEmpty else { return nil }
+        return "resource bindings: " + values.map { "\($0.name)=\($0.value)" }
+            .joined(separator: ", ")
+    }
+
+    static func structuredResourceBindings(
+        in output: String,
+        toolName: String,
+        artifacts: [ToolArtifactReference] = []
+    ) -> [ToolResourceBinding] {
+        var outputBindings: [ToolResourceBinding] = artifacts.prefix(8).map {
+            ToolResourceBinding(
+                name: "\(toolName).artifactID",
+                value: "\($0.id.uuidString)|\($0.relativePath)"
+            )
+        }
         guard let data = output.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) else { return nil }
-        var bindings: [String] = []
+              let object = try? JSONSerialization.jsonObject(with: data) else {
+            return outputBindings
+        }
+        var bindings: [ToolResourceBinding] = []
         var seen: Set<String> = []
 
         func visit(_ value: Any, path: String, depth: Int) {
@@ -135,10 +154,12 @@ enum ToolWorkflowGuidance {
                     let isIdentifier = normalized == "id"
                         || normalized.hasSuffix("id")
                         || normalized.hasSuffix("ids")
-                        || normalized == "cursor"
+                        || normalized.hasSuffix("cursor")
                     if isIdentifier, let scalar = scalarString(child), !scalar.isEmpty {
                         let binding = "\(childPath)=\(scalar)"
-                        if seen.insert(binding).inserted { bindings.append(binding) }
+                        if seen.insert(binding).inserted {
+                            bindings.append(ToolResourceBinding(name: childPath, value: scalar))
+                        }
                     } else {
                         visit(child, path: childPath, depth: depth + 1)
                     }
@@ -152,8 +173,8 @@ enum ToolWorkflowGuidance {
         }
 
         visit(object, path: toolName, depth: 0)
-        guard !bindings.isEmpty else { return nil }
-        return "resource bindings: " + bindings.joined(separator: ", ")
+        outputBindings.append(contentsOf: bindings)
+        return Array(outputBindings.prefix(16))
     }
 
     private static func scalarString(_ value: Any) -> String? {

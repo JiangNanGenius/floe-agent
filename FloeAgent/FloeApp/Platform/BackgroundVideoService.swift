@@ -44,7 +44,13 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     /// PiP starts. Keep a non-trivial source host attached behind the app's
     /// root content; it must never cover Floe controls in the foreground.
     private var inlinePreview: UIView?
-    private var isProgrammaticRetraction = false
+    private enum StopOrigin: String {
+        case none
+        case foregroundRetraction
+        case controllerReplacement
+        case taskBatchEnded
+    }
+    private var pendingStopOrigin: StopOrigin = .none
     /// Scene transitions can request PiP while the progress asset is still
     /// being encoded. Remember that request instead of launching a second
     /// preparation task that tears down the first controller.
@@ -69,7 +75,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         currentProgress = initialProgress
         guidanceImage = nil
         guidanceHints = []
-        stopPiPInternal()
+        stopPiPInternal(origin: .controllerReplacement)
         startAttemptCount = 0
         startWhenPrepared = startImmediately
         isPreparingPiP = true
@@ -181,7 +187,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             FloeLogger(category: .app).warning(
                 "pictureInPicturePrepareFailed stage=readinessTimeout generation=\(generation) itemStatus=\(String(describing: playbackItem?.status)) possible=\(controller.isPictureInPicturePossible) errorDomain=\(itemError?.domain ?? "none") errorCode=\(itemError?.code ?? 0)"
             )
-            stopPiPInternal()
+            stopPiPInternal(origin: .controllerReplacement)
             return
         }
         isPiPPrepared = true
@@ -218,7 +224,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     /// while the same task batch remains active.
     func retractForForeground() {
         guard let controller = pipController, controller.isPictureInPictureActive else { return }
-        isProgrammaticRetraction = true
+        pendingStopOrigin = .foregroundRetraction
         controller.stopPictureInPicture()
         FloeLogger(category: .app).info("pictureInPictureRetractedForForeground")
     }
@@ -318,14 +324,15 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         refreshTask?.cancel()
         refreshTask = nil
         startGeneration &+= 1
-        stopPiPInternal()
+        stopPiPInternal(origin: .taskBatchEnded)
     }
 
-    private func stopPiPInternal() {
+    private func stopPiPInternal(origin: StopOrigin) {
         refreshTask?.cancel()
         refreshTask = nil
         startRetryTask?.cancel()
         startRetryTask = nil
+        pendingStopOrigin = origin
         pipController?.stopPictureInPicture()
         pipController = nil
         looper = nil
@@ -342,7 +349,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         isPiPActive = false
         isPreparingPiP = false
         isPiPPrepared = false
-        isProgrammaticRetraction = false
+        pendingStopOrigin = .none
         startWhenPrepared = false
         startAttemptCount = 0
         deactivateAudioSession()
@@ -353,8 +360,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     private func handlePiPStopped(controllerID: ObjectIdentifier) {
         guard let currentController = pipController,
               ObjectIdentifier(currentController) == controllerID else { return }
-        if isProgrammaticRetraction {
-            isProgrammaticRetraction = false
+        if pendingStopOrigin == .foregroundRetraction {
+            pendingStopOrigin = .none
             isPiPActive = false
             deactivateAudioSession()
             FloeLogger(category: .app).info("pictureInPictureRetractionCompleted")
@@ -389,6 +396,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         }
         isPiPActive = false
         isPiPPrepared = false
+        pendingStopOrigin = .none
         deactivateAudioSession()
         onUserStopped?()
     }
@@ -770,7 +778,14 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
     nonisolated func pictureInPictureControllerDidStartPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
     ) {
+        let controllerID = ObjectIdentifier(pictureInPictureController)
         Task { @MainActor in
+            guard self.pipController.map(ObjectIdentifier.init) == controllerID else {
+                FloeLogger(category: .app).debug(
+                    "pictureInPictureDidStartIgnored reason=staleController"
+                )
+                return
+            }
             self.isPiPActive = true
             self.isPreparingPiP = false
             self.startRetryTask?.cancel()

@@ -316,7 +316,19 @@ final class ConversationCenter: ObservableObject {
                     events[runID] = cached
                 } else {
                     group.addTask { [runStore = environment.runStore] in
-                        (runID, try await runStore.recentEvents(runID: runID, limit: 1_000))
+                        if let cached = cachedEvents[runID],
+                           let watermark = cached.last?.sequence {
+                            let additions = try await runStore.events(
+                                runID: runID,
+                                afterSequence: watermark,
+                                limit: 1_000
+                            )
+                            return (runID, Array((cached + additions).suffix(1_000)))
+                        }
+                        return (
+                            runID,
+                            try await runStore.recentEvents(runID: runID, limit: 1_000)
+                        )
                     }
                 }
             }
