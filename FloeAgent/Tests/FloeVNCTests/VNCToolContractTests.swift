@@ -49,6 +49,20 @@ struct VNCToolContractTests {
         #expect(VNCObserveTool.toolDescription.contains("no native DOM"))
         #expect(VNCObserveTool.toolDescription.contains("recognizedText"))
         #expect(VNCObserveTool.toolEffect == .readOnly)
+        #expect(VNCObserveTool.prerequisites == [
+            ToolPrerequisite(
+                state: "vnc.connected",
+                resolverToolName: "vnc.connect",
+                mayResolveAutomatically: true
+            )
+        ])
+        #expect(VNCClickElementTool.prerequisites == VNCObserveTool.prerequisites)
+        #expect(VNCClickTool.prerequisites == VNCObserveTool.prerequisites)
+        #expect(VNCTypeTextTool.prerequisites == VNCObserveTool.prerequisites)
+        #expect(VNCTypeCredentialTool.prerequisites == VNCObserveTool.prerequisites)
+        #expect(VNCScrollTool.prerequisites == VNCObserveTool.prerequisites)
+        #expect(VNCDragTool.prerequisites == VNCObserveTool.prerequisites)
+        #expect(VNCKeyPressTool.prerequisites == VNCObserveTool.prerequisites)
     }
 
     @Test("Structured click only accepts OCR references")

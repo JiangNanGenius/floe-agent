@@ -17,6 +17,7 @@ public enum ToolCatalog {
         public var isSideEffecting: Bool
         public var effect: ToolEffect
         public var requiresHostScope: Bool
+        public var prerequisites: [ToolPrerequisite]
 
         public init(
             name: String,
@@ -25,7 +26,8 @@ public enum ToolCatalog {
             riskLabels: Set<RiskLabel>,
             isSideEffecting: Bool,
             effect: ToolEffect? = nil,
-            requiresHostScope: Bool? = nil
+            requiresHostScope: Bool? = nil,
+            prerequisites: [ToolPrerequisite] = []
         ) {
             self.name = name
             self.toolDescription = toolDescription ?? name
@@ -35,6 +37,7 @@ public enum ToolCatalog {
             self.effect = effect ?? (isSideEffecting ? .mutating : .readOnly)
             self.requiresHostScope = requiresHostScope
                 ?? !riskLabels.isDisjoint(with: [.executesRemoteCommand, .modifiesRemoteSystem])
+            self.prerequisites = prerequisites
         }
 
         /// Stable identity of the exact authority shown to policy and the
@@ -42,6 +45,9 @@ public enum ToolCatalog {
         /// dynamic runner under the same name cannot inherit old authority.
         public var authorizationIdentity: String {
             let risks = riskLabels.map(\.rawValue).sorted().joined(separator: ",")
+            let prerequisiteMaterial = prerequisites.map {
+                "\($0.state)|\($0.resolverToolName ?? "none")|\($0.mayResolveAutomatically)"
+            }.sorted().joined(separator: ",")
             let material = [
                 name,
                 toolDescription,
@@ -49,7 +55,8 @@ public enum ToolCatalog {
                 risks,
                 isSideEffecting ? "side-effecting" : "read-only",
                 effect.rawValue,
-                requiresHostScope ? "host" : "local"
+                requiresHostScope ? "host" : "local",
+                prerequisiteMaterial
             ].joined(separator: "\u{1f}")
             return SHA256.hash(data: Data(material.utf8))
                 .map { String(format: "%02x", $0) }
@@ -152,7 +159,8 @@ public enum ToolCatalog {
             riskLabels: T.riskLabels,
             isSideEffecting: T.isSideEffecting,
             effect: T.toolEffect,
-            requiresHostScope: T.requiresHostScope
+            requiresHostScope: T.requiresHostScope,
+            prerequisites: T.prerequisites
         ))
     }
 

@@ -170,6 +170,7 @@ struct HarnessPlanningTests {
                 "ssh.listHosts", "ssh.execute",
                 "ssh.taskStatus",
                 "remote.connection.open", "remote.connection.exchange", "remote.connection.close",
+                "vnc.status", "vnc.connect", "vnc.observe", "vnc.click",
                 "memory.list", "memory.update",
                 "remoteHosting.inspect", "remoteHosting.manage"
             ])
@@ -178,6 +179,9 @@ struct HarnessPlanningTests {
         #expect(prompt.contains("remote.connection.open -> reuse its sessionID"))
         #expect(prompt.contains("memory.search/list returns stable memory IDs"))
         #expect(prompt.contains("reuse its exact taskID with ssh.taskStatus"))
+        #expect(prompt.contains("call vnc.status first"))
+        #expect(prompt.contains("use vnc.connect, then vnc.observe"))
+        #expect(prompt.contains("one click/scroll/drag and observe again"))
         #expect(prompt.contains("action=list to discover shareIDs"))
     }
 
@@ -186,6 +190,8 @@ struct HarnessPlanningTests {
         #expect(ToolWorkflowGuidance.recoveryHint(for: "ssh.taskStatus")?.contains("ssh.execute") == true)
         #expect(ToolWorkflowGuidance.recoveryHint(for: "remoteHosting.manage")?.contains("action=list") == true)
         #expect(ToolWorkflowGuidance.recoveryHint(for: "cloudWorkspace.gitStatus")?.contains("cloudWorkspace.catalog") == true)
+        #expect(ToolWorkflowGuidance.recoveryHint(for: "vnc.observe")?.contains("vnc.connect") == true)
+        #expect(ToolWorkflowGuidance.recoveryHint(for: "vnc.typeCredential")?.contains("observe a fresh framebuffer") == true)
     }
 
     @Test("artifact bindings are exposed before bounded tool output")

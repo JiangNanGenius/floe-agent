@@ -42,6 +42,26 @@ public enum ToolEffect: String, Sendable, Codable, Hashable, CaseIterable {
     }
 }
 
+/// A deterministic lifecycle dependency that must be satisfied before a
+/// tool can produce a meaningful result. This metadata is compiled into the
+/// catalog so providers and the harness can explain the required predecessor
+/// without inferring it from prose or silently performing a side effect.
+public struct ToolPrerequisite: Sendable, Codable, Hashable {
+    public var state: String
+    public var resolverToolName: String?
+    public var mayResolveAutomatically: Bool
+
+    public init(
+        state: String,
+        resolverToolName: String? = nil,
+        mayResolveAutomatically: Bool = false
+    ) {
+        self.state = state
+        self.resolverToolName = resolverToolName
+        self.mayResolveAutomatically = mayResolveAutomatically
+    }
+}
+
 /// A compiled, catalog-registered operation the agent may invoke.
 public protocol AgentTool: Sendable {
     associatedtype Arguments: Decodable & Sendable
@@ -61,6 +81,8 @@ public protocol AgentTool: Sendable {
     /// Whether execution requires a concrete remote host scope. GUI control
     /// alone does not imply this: an in-app browser is a local GUI target.
     static var requiresHostScope: Bool { get }
+    /// Explicit lifecycle dependencies. The default is stateless.
+    static var prerequisites: [ToolPrerequisite] { get }
 
     /// Validates decoded arguments before they reach the policy engine.
     func validate(_ args: Arguments) throws
@@ -75,6 +97,7 @@ public extension AgentTool {
     static var requiresHostScope: Bool {
         !riskLabels.isDisjoint(with: [.executesRemoteCommand, .modifiesRemoteSystem])
     }
+    static var prerequisites: [ToolPrerequisite] { [] }
 }
 
 /// Bounded execution output; the digest covers the full pre-truncation bytes.

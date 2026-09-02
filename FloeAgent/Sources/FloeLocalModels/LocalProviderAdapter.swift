@@ -1160,17 +1160,17 @@ public struct LocalProviderAdapter: ProviderAdapter {
         return (lhs ?? 0) + (rhs ?? 0)
     }
 
-    /// Small local models are not reliable JSON emitters. Accept the common
-    /// tool-call envelopes and prose/fence wrappers, but never accept a tool
-    /// that was not offered on this turn. This keeps parsing tolerant without
-    /// weakening the app-side capability boundary.
+    /// Local text fallback is a control channel, not a prose scanner. Accept
+    /// only an entire JSON payload (or an entire JSON fence) after reasoning
+    /// has been separated. Searching arbitrary embedded objects makes braces,
+    /// code samples, and long reasoning capable of becoming phantom calls.
     static func toolCall(
         from output: String,
         offeredToolNames: Set<String>
     ) throws -> ToolCall? {
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        let candidates = ([trimmed, fencedJSON(in: trimmed)].compactMap { $0 }
-            + embeddedJSONObjects(in: trimmed))
+        let candidates = [strictJSONObject(trimmed), strictFencedJSON(trimmed)]
+            .compactMap { $0 }
             .uniqued()
         for candidate in candidates {
             guard let data = candidate.data(using: .utf8),
@@ -1272,48 +1272,21 @@ public struct LocalProviderAdapter: ProviderAdapter {
         return dictionary["name"] is String ? dictionary : nil
     }
 
-    /// Extract balanced JSON objects while respecting quoted braces. This is
-    /// intentionally not a JSON repair engine: malformed payloads still fail
-    /// closed and the harness can ask the model to change strategy once.
-    private static func embeddedJSONObjects(in text: String) -> [String] {
-        var results: [String] = []
-        var start: String.Index?
-        var depth = 0
-        var inString = false
-        var escaped = false
-        var index = text.startIndex
-        while index < text.endIndex {
-            let character = text[index]
-            if inString {
-                if escaped {
-                    escaped = false
-                } else if character == "\\" {
-                    escaped = true
-                } else if character == "\"" {
-                    inString = false
-                }
-            } else if character == "\"" {
-                inString = true
-            } else if character == "{" {
-                if depth == 0 { start = index }
-                depth += 1
-            } else if character == "}" && depth > 0 {
-                depth -= 1
-                if depth == 0, let objectStart = start {
-                    results.append(String(text[objectStart...index]))
-                    start = nil
-                }
-            }
-            index = text.index(after: index)
-        }
-        return results
+    private static func strictJSONObject(_ text: String) -> String? {
+        guard text.first == "{", text.last == "}" else { return nil }
+        return text
     }
 
-    private static func fencedJSON(in text: String) -> String? {
-        guard let start = text.range(of: "```json", options: .caseInsensitive),
-              let end = text.range(of: "```", range: start.upperBound..<text.endIndex)
+    private static func strictFencedJSON(_ text: String) -> String? {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        guard lines.count >= 3,
+              lines.first?.trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased() == "```json",
+              lines.last?.trimmingCharacters(in: .whitespacesAndNewlines) == "```"
         else { return nil }
-        return String(text[start.upperBound..<end.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = lines.dropFirst().dropLast().joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return strictJSONObject(body)
     }
 }
 

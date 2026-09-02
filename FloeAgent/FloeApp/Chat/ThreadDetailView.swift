@@ -191,7 +191,7 @@ struct ThreadDetailView: View {
                         Text(reason).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                     }
                 }
-                if plan.status == .awaitingInput || plan.status == .ready {
+                if plan.status == .ready && plan.isDecisionComplete {
                     HStack {
                         Button("按普通计划执行") {
                             Task { await viewModel.acceptLatestPlan(as: .normal) }
@@ -594,7 +594,10 @@ struct ThreadDetailView: View {
                     projectSelectionLocked: true,
                     selectedProjectID: $viewModel.selectedProjectID,
                     executionTarget: $viewModel.executionTarget,
-                    agentMode: $viewModel.agentMode,
+                    agentMode: Binding(
+                        get: { viewModel.agentMode },
+                        set: { viewModel.selectAgentMode($0) }
+                    ),
                     attachments: $viewModel.attachments,
                     onSend: {
                         // Sending owns the composer from this point. End any

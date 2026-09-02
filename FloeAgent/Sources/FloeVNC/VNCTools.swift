@@ -347,6 +347,11 @@ public struct VNCObserveTool: AgentTool {
     public static let isSideEffecting = false
     public static let toolEffect: ToolEffect = .readOnly
     public static let requiresHostScope = false
+    public static let prerequisites = [ToolPrerequisite(
+        state: "vnc.connected",
+        resolverToolName: VNCConnectTool.name,
+        mayResolveAutomatically: true
+    )]
     private let sessionProvider: VNCSessionProvider
 
     public init(sessionProvider: @escaping VNCSessionProvider) { self.sessionProvider = sessionProvider }
@@ -398,6 +403,7 @@ public struct VNCClickElementTool: AgentTool {
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
     public static let requiresHostScope = false
+    public static let prerequisites = VNCObserveTool.prerequisites
     private let sessionProvider: VNCSessionProvider
 
     public init(sessionProvider: @escaping VNCSessionProvider) { self.sessionProvider = sessionProvider }
@@ -472,6 +478,7 @@ public struct VNCClickTool: AgentTool {
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
     public static let requiresHostScope = false
+    public static let prerequisites = VNCObserveTool.prerequisites
     private let sessionProvider: VNCSessionProvider
 
     public init(sessionProvider: @escaping VNCSessionProvider) { self.sessionProvider = sessionProvider }
@@ -531,6 +538,7 @@ public struct VNCTypeTextTool: AgentTool {
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
     public static let requiresHostScope = false
+    public static let prerequisites = VNCObserveTool.prerequisites
     private let sessionProvider: VNCSessionProvider
 
     public init(sessionProvider: @escaping VNCSessionProvider) { self.sessionProvider = sessionProvider }
@@ -582,6 +590,7 @@ public struct VNCTypeCredentialTool: AgentTool {
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
     public static let requiresHostScope = false
+    public static let prerequisites = VNCObserveTool.prerequisites
 
     private let sessionProvider: VNCSessionProvider
     private let credentialResolver: VNCCredentialResolver
@@ -644,6 +653,7 @@ public struct VNCScrollTool: AgentTool {
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
     public static let requiresHostScope = false
+    public static let prerequisites = VNCObserveTool.prerequisites
     private let sessionProvider: VNCSessionProvider
 
     public init(sessionProvider: @escaping VNCSessionProvider) { self.sessionProvider = sessionProvider }
@@ -713,6 +723,7 @@ public struct VNCDragTool: AgentTool {
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
     public static let requiresHostScope = false
+    public static let prerequisites = VNCObserveTool.prerequisites
     private let sessionProvider: VNCSessionProvider
 
     public init(sessionProvider: @escaping VNCSessionProvider) { self.sessionProvider = sessionProvider }
@@ -784,6 +795,7 @@ public struct VNCKeyPressTool: AgentTool {
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
     public static let requiresHostScope = false
+    public static let prerequisites = VNCObserveTool.prerequisites
     private let sessionProvider: VNCSessionProvider
 
     public init(sessionProvider: @escaping VNCSessionProvider) { self.sessionProvider = sessionProvider }

@@ -35,8 +35,7 @@ struct BackgroundExecutionSettingsView: View {
             if center.backgroundExecution == .pictureInPicture {
                 Section("画中画状态") {
                     Label(
-                        videoService.isPiPActive ? "正在显示" :
-                            (videoService.isPreparingPiP ? "正在准备" : "等待任务启动"),
+                        videoService.preparationState.localizedDescription,
                         systemImage: videoService.isPiPActive ? "pip.fill" : "pip"
                     )
                     if let error = videoService.lastError {

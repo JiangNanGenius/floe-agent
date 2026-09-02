@@ -87,6 +87,11 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published var executionTarget: AgentExecutionTarget = .local
     /// How the next run behaves (agent vs chat-only).
     @Published var agentMode: AgentExecutionMode = .agent
+    /// The plan revision for which the user deliberately selected a different
+    /// composer mode. Session refreshes must not invent an exit from Plan or
+    /// overwrite this explicit per-turn choice.
+    private var explicitModePlanRevision: Int?
+    private var isAcceptingPlan = false
     /// Attachments staged in the composer.
     @Published var attachments: [AttachmentRef] = []
     /// Real workspace list from WorkspaceCenter.
@@ -367,10 +372,7 @@ final class ThreadDetailViewModel: ObservableObject {
             // Restore Plan mode while an unfinished plan is still awaiting
             // review, so leaving and reopening a task never silently drops
             // the mode it was running in.
-            if let plan = latestPlan,
-               plan.status == .awaitingInput || plan.status == .ready {
-                agentMode = .plan
-            }
+            reconcilePlanComposerMode()
             stage = "goalLoad"
             activeGoal = try await center.environment.intelligenceStore
                 .goals(conversationID: conversationID).first
@@ -506,6 +508,8 @@ final class ThreadDetailViewModel: ObservableObject {
         canvasContext: CanvasRunContextSeed? = nil
     ) async {
         let goal = (goalOverride ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
+        reconcilePlanComposerMode()
+        let executionMode = agentMode
         guard !isConversationMissing, !goal.isEmpty,
               let (provider, model) = center.providerAndModel(modelID: selectedModelID) else { return }
         let stagedAttachments = attachments
@@ -519,7 +523,7 @@ final class ThreadDetailViewModel: ObservableObject {
                     mode: runningInputMode,
                     selectedModelID: selectedModelID,
                     workspaceID: selectedProjectID,
-                    executionMode: agentMode,
+                    executionMode: executionMode,
                     attachments: stagedAttachments
                 )
                 draft = ""
@@ -540,7 +544,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 model: model,
                 workspaceID: selectedProjectID,
                 attachments: stagedAttachments,
-                executionMode: agentMode,
+                executionMode: executionMode,
                 runSurface: runSurface,
                 canvasContext: canvasContext
             )
@@ -564,6 +568,22 @@ final class ThreadDetailViewModel: ObservableObject {
             if attachments.isEmpty { attachments = stagedAttachments }
             actionError = presentableError(error, stage: "startOrCompleteRun")
         }
+    }
+
+    func selectAgentMode(_ mode: AgentExecutionMode) {
+        explicitModePlanRevision = latestPlan.flatMap(Self.activePlanRevision)
+        agentMode = mode
+    }
+
+    private static func activePlanRevision(_ plan: PlanDraft) -> Int? {
+        (plan.status == .awaitingInput || plan.status == .ready) ? plan.revision : nil
+    }
+
+    private func reconcilePlanComposerMode() {
+        guard let plan = latestPlan,
+              let revision = Self.activePlanRevision(plan),
+              explicitModePlanRevision != revision else { return }
+        agentMode = .plan
     }
 
     /// Cancels the selected run.
@@ -666,11 +686,17 @@ final class ThreadDetailViewModel: ObservableObject {
 
     func acceptLatestPlan(as execution: PlanExecutionRecommendation? = nil) async {
         guard let latestPlan else { return }
-        guard !isRunning,
+        guard latestPlan.status == .ready, latestPlan.isDecisionComplete else {
+            actionError = "计划仍需修订，完成后才能执行"
+            return
+        }
+        guard !isAcceptingPlan, !isRunning,
               let (provider, model) = center.providerAndModel(modelID: selectedModelID) else {
             actionError = "请先选择可用模型，并等待当前运行结束"
             return
         }
+        isAcceptingPlan = true
+        defer { isAcceptingPlan = false }
         let selectedExecution = execution ?? latestPlan.executionRecommendation ?? .normal
         let accepted = latestPlan.revised(
             status: .accepted,
@@ -846,10 +872,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 self.latestPlan = snapshot.latestPlan
                 // Keep Plan mode in sync when a plan becomes ready or still
                 // awaits input, so reopening never drops the active mode.
-                if let plan = snapshot.latestPlan,
-                   plan.status == .awaitingInput || plan.status == .ready {
-                    self.agentMode = .plan
-                }
+                self.reconcilePlanComposerMode()
                 self.activeGoal = snapshot.activeGoal
                 self.taskPolicy = snapshot.taskPolicy
                 self.pendingInputs = snapshot.pendingInputs

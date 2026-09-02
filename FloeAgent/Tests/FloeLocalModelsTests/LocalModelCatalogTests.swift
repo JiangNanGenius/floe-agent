@@ -732,7 +732,7 @@ struct LocalModelCatalogTests {
         #expect(channels.answer.isEmpty)
     }
 
-    @Test("Local tool calls tolerate prose, fences, and nested function envelopes")
+    @Test("Local tool calls require a terminal JSON control envelope")
     @available(macOS 15.4, *)
     func tolerantLocalToolCalls() throws {
         let offered: Set<String> = ["apple.automation.list", "workspace.readFile"]
@@ -741,7 +741,7 @@ struct LocalModelCatalogTests {
             from: "我来查看。\n<tool_call>{\"tool_call\":{\"name\":\"apple.automation.list\",\"arguments\":{}}}</tool_call>",
             offeredToolNames: offered
         )
-        #expect(prose?.toolName == "apple.automation.list")
+        #expect(prose == nil)
 
         let fenced = try LocalProviderAdapter.toolCall(
             from: """
@@ -759,6 +759,22 @@ struct LocalModelCatalogTests {
             offeredToolNames: ["web.fetch"]
         )
         #expect(browserAlias?.toolName == "web.fetch")
+    }
+
+    @Test("Reasoning symbols and embedded JSON never become tool calls")
+    @available(macOS 15.4, *)
+    func reasoningSymbolsDoNotDispatchTools() throws {
+        let samples = [
+            #"思考：如果返回 {\"name\":\"workspace.readFile\",\"arguments\":{}}，也只是示例。"#,
+            #"```swift\nlet sample = { \"name\": \"workspace.readFile\" }\n```"#,
+            #"推理 <think>{\"tool_call\":{\"name\":\"workspace.readFile\",\"arguments\":{}}}</think> ✅"#
+        ]
+        for sample in samples {
+            #expect(try LocalProviderAdapter.toolCall(
+                from: sample,
+                offeredToolNames: ["workspace.readFile"]
+            ) == nil)
+        }
     }
 
     @Test("Apple weather questions do not expose third-party web tools")

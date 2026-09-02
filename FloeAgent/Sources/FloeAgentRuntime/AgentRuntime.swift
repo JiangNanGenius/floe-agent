@@ -292,6 +292,11 @@ public actor FloeAgentRuntime {
         public var providerFirstEventTimeout: TimeInterval
         /// Maximum gap between decoded provider events after the first event.
         public var providerStreamIdleTimeout: TimeInterval
+        /// A longer bounded silence window after an explicit reasoning event.
+        /// Some reasoning providers compute a large internal step before the
+        /// next delta; treating that as ordinary answer silence causes false
+        /// stall recovery and duplicate turns.
+        public var providerReasoningIdleTimeout: TimeInterval
         /// Base delay for bounded exponential provider retry backoff.
         public var providerRetryBaseDelay: TimeInterval
         /// Upper bound for provider retry delay.
@@ -319,6 +324,7 @@ public actor FloeAgentRuntime {
             unchangedToolOutcomeLimit: Int = 3,
             providerFirstEventTimeout: TimeInterval = 30,
             providerStreamIdleTimeout: TimeInterval = 45,
+            providerReasoningIdleTimeout: TimeInterval = 180,
             providerRetryBaseDelay: TimeInterval = 1,
             providerRetryMaxDelay: TimeInterval = 30,
             providerRetryJitterRatio: Double = 0.2
@@ -342,6 +348,10 @@ public actor FloeAgentRuntime {
             self.unchangedToolOutcomeLimit = max(2, unchangedToolOutcomeLimit)
             self.providerFirstEventTimeout = max(0, providerFirstEventTimeout)
             self.providerStreamIdleTimeout = max(0, providerStreamIdleTimeout)
+            self.providerReasoningIdleTimeout = max(
+                self.providerStreamIdleTimeout,
+                providerReasoningIdleTimeout
+            )
             self.providerRetryBaseDelay = max(0, providerRetryBaseDelay)
             self.providerRetryMaxDelay = max(self.providerRetryBaseDelay, providerRetryMaxDelay)
             self.providerRetryJitterRatio = min(1, max(0, providerRetryJitterRatio))
@@ -457,6 +467,7 @@ public actor FloeAgentRuntime {
     private var providerRetryCount = 0
     private var providerAttemptNumber = 0
     private var providerReceivedFirstEvent = false
+    private var providerLastEventWasReasoning = false
     private var providerLastProgressAt = Date()
     private var providerAttemptStartedAt = Date()
     private var providerRetryRequested = false
@@ -1231,6 +1242,7 @@ public actor FloeAgentRuntime {
         firstModelActivityAt = nil
         providerAttemptNumber += 1
         providerReceivedFirstEvent = false
+        providerLastEventWasReasoning = false
         providerAttemptStartedAt = modelRequestStartedAt ?? Date()
         providerLastProgressAt = providerAttemptStartedAt
         await publishProviderAttempt(
@@ -1347,6 +1359,10 @@ public actor FloeAgentRuntime {
 
         let observedAt = Date()
         providerLastProgressAt = observedAt
+        providerLastEventWasReasoning = {
+            if case .reasoningSummary = rawEvent { return true }
+            return false
+        }()
         if !providerReceivedFirstEvent {
             providerReceivedFirstEvent = true
             await publishProviderAttempt(
@@ -2548,12 +2564,14 @@ public actor FloeAgentRuntime {
         providerWatchdogTask?.cancel()
         let firstTimeout = configuration.providerFirstEventTimeout
         let idleTimeout = configuration.providerStreamIdleTimeout
+        let reasoningIdleTimeout = configuration.providerReasoningIdleTimeout
         providerWatchdogTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
                 let timeout = await self.providerWatchdogTimeout(
                     firstTimeout: firstTimeout,
-                    idleTimeout: idleTimeout
+                    idleTimeout: idleTimeout,
+                    reasoningIdleTimeout: reasoningIdleTimeout
                 )
                 let poll = min(0.25, max(0.01, timeout / 4))
                 do {
@@ -2564,7 +2582,8 @@ public actor FloeAgentRuntime {
                 let keepWatching = await self.providerWatchdogFired(
                     attempt: attempt,
                     firstTimeout: firstTimeout,
-                    idleTimeout: idleTimeout
+                    idleTimeout: idleTimeout,
+                    reasoningIdleTimeout: reasoningIdleTimeout
                 )
                 if !keepWatching { return }
             }
@@ -2573,24 +2592,29 @@ public actor FloeAgentRuntime {
 
     private func providerWatchdogTimeout(
         firstTimeout: TimeInterval,
-        idleTimeout: TimeInterval
+        idleTimeout: TimeInterval,
+        reasoningIdleTimeout: TimeInterval
     ) -> TimeInterval {
-        providerReceivedFirstEvent ? idleTimeout : firstTimeout
+        guard providerReceivedFirstEvent else { return firstTimeout }
+        return providerLastEventWasReasoning ? reasoningIdleTimeout : idleTimeout
     }
 
     private func providerWatchdogFired(
         attempt: Int,
         firstTimeout: TimeInterval,
-        idleTimeout: TimeInterval
+        idleTimeout: TimeInterval,
+        reasoningIdleTimeout: TimeInterval
     ) async -> Bool {
         guard attempt == providerAttemptNumber,
               case .streamingModel = state,
               !providerRetryRequested else { return false }
-        let timeout = providerReceivedFirstEvent ? idleTimeout : firstTimeout
+        let timeout = providerReceivedFirstEvent
+            ? (providerLastEventWasReasoning ? reasoningIdleTimeout : idleTimeout)
+            : firstTimeout
         let elapsed = Date().timeIntervalSince(providerLastProgressAt)
         guard timeout > 0, elapsed >= timeout else { return true }
         let message = providerReceivedFirstEvent
-            ? "Cloud model stream stalled: no event for \(Self.durationDescription(timeout))"
+            ? "Cloud model stream stalled: no \(providerLastEventWasReasoning ? "reasoning progress" : "event") for \(Self.durationDescription(timeout))"
             : "Cloud model stream stalled: no first event within \(Self.durationDescription(timeout))"
         let error = AgentEvent.NormalizedError(kind: .network, providerMessage: message)
         await emit(.error(error))

@@ -1397,6 +1397,36 @@ private final class CanvasDocumentStore: ObservableObject {
     }
 
     @discardableResult
+    func saveGenerationConfiguration(
+        kind: CanvasGenerationGraphKind,
+        prompt: String,
+        sourceNodeIDs: [UUID],
+        position: CGPoint,
+        existingConfigurationNodeID: UUID?,
+        metadata: [String: String]
+    ) -> UUID? {
+        guard let document = selectedDocument else { return nil }
+        do {
+            let plan = try CanvasGenerationConfigurationPlanner.plan(
+                kind: kind,
+                prompt: prompt,
+                sourceNodeIDs: sourceNodeIDs,
+                position: CanvasPoint(position),
+                existingConfigurationNodeID: existingConfigurationNodeID,
+                metadata: metadata,
+                document: document
+            )
+            guard applyCommand(plan.operations, documentID: document.id) != nil else {
+                return nil
+            }
+            return plan.configurationNodeID
+        } catch {
+            saveError = error.localizedDescription
+            return nil
+        }
+    }
+
+    @discardableResult
     func addScene3D(at point: CGPoint) -> UUID {
         addPlaceholder(kind: .scene3D, at: point)
     }
@@ -9205,29 +9235,14 @@ private struct CanvasMediaGenerationView: View {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let selectedNodes = store.selectedDocument?.nodes.filter { sourceNodeIDs.contains($0.id) } ?? []
         let existingConfiguration = selectedNodes.first { $0.kind == .generationTask }
-        let selectedReusableMedia = selectedNodes.first {
-            $0.asset == nil && (($0.kind == .image && kind == .image) || ($0.kind == .video && kind == .video))
-        }
-        let connectedReusableMedia = existingConfiguration.flatMap { configuration in
-            let resultID = store.selectedDocument?.connections.first(where: {
-                $0.sourceNodeID == configuration.id && $0.kind == .generatedFrom
-            })?.destinationNodeID
-            return store.selectedDocument?.nodes.first(where: {
-                $0.id == resultID && $0.asset == nil
-                    && (($0.kind == .image && kind == .image) || ($0.kind == .video && kind == .video))
-            })
-        }
-        let reusableEmptyMedia = selectedReusableMedia ?? connectedReusableMedia
         let sources = store.generationSourceNodes(for: sourceNodeIDs)
-            .filter { $0.kind != .generationTask && $0.id != reusableEmptyMedia?.id }
-        let resultPoint: CGPoint = if let reusableEmptyMedia {
-            CGPoint(x: reusableEmptyMedia.x, y: reusableEmptyMedia.y)
-        } else if let existingConfiguration {
-            CGPoint(x: existingConfiguration.x + 420, y: existingConfiguration.y)
+            .filter { $0.kind != .generationTask }
+        let configurationPoint: CGPoint = if let existingConfiguration {
+            CGPoint(x: existingConfiguration.x, y: existingConfiguration.y)
         } else if let preferredResultPoint {
             preferredResultPoint
         } else if let source = sources.last {
-            CGPoint(x: source.x + 840, y: source.y)
+            CGPoint(x: source.x + 420, y: source.y)
         } else {
             CGPoint(x: 780, y: 300)
         }
@@ -9245,26 +9260,20 @@ private struct CanvasMediaGenerationView: View {
         var metadata = configuration.metadata
         metadata["generationState"] = CanvasGenerationTaskState.configured.rawValue
         metadata["generationError"] = ""
-        guard let graph = store.prepareGenerationGraph(CanvasGenerationGraphRequest(
+        guard let configurationNodeID = store.saveGenerationConfiguration(
             kind: kind == .image ? .image : .video,
             prompt: trimmedPrompt,
             sourceNodeIDs: sources.map(\.id),
-            resultPosition: CanvasPoint(resultPoint),
+            position: configurationPoint,
             existingConfigurationNodeID: existingConfiguration?.id,
-            reusableResultNodeID: reusableEmptyMedia?.id,
-            createsPromptNodeWhenMissing: existingConfiguration == nil,
             metadata: metadata
-        )) else {
+        ) else {
             error = String(localized: "canvas.generation.prepare_failed")
             return
         }
-        store.updateNodeMetadata(graph.configurationNodeID, values: [
+        store.updateNodeMetadata(configurationNodeID, values: [
             "generationState": CanvasGenerationTaskState.configured.rawValue,
             "generationError": nil
-        ])
-        store.updateNodeMetadata(graph.resultNodeID, values: [
-            "generationState": CanvasGenerationTaskState.configured.rawValue,
-            "generationTaskNodeID": graph.configurationNodeID.uuidString
         ])
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         dismiss()

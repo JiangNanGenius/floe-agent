@@ -437,7 +437,7 @@ struct CreativeMediaModelsTests {
         #expect(encodedNode["width"] == nil)
     }
 
-    @Test func generationPlannerBuildsPromptConfigurationResultGraph() throws {
+    @Test func generationPlannerKeepsPromptInConfigurationByDefault() throws {
         let source = CanvasNode(
             kind: .image, position: .init(x: 80, y: 120),
             size: .init(width: 240, height: 180)
@@ -465,25 +465,50 @@ struct CreativeMediaModelsTests {
         )
         let (updated, _) = try CanvasCommandService.applying(patch, to: project)
         let nodes = updated.documents[0].nodes
-        let prompt = try #require(nodes.first { $0.id == plan.promptNodeID })
         let configuration = try #require(nodes.first { $0.id == plan.configurationNodeID })
         let result = try #require(nodes.first { $0.id == plan.resultNodeID })
 
-        #expect(prompt.kind == .text)
-        #expect(prompt.text == "雾中雪山")
+        #expect(plan.promptNodeID == configuration.id)
+        #expect(!nodes.contains { $0.metadata["generationRole"] == "prompt" })
         #expect(configuration.kind == .generationTask)
+        #expect(configuration.metadata["generationPrompt"] == "雾中雪山")
         #expect(configuration.metadata["generationFingerprint"] == "fingerprint")
         #expect(result.kind == .image)
         #expect(result.metadata["artifactOrigin"] == "generated")
         #expect(result.createdByRunID == runID)
-        #expect(Set(plan.sourceNodeIDs) == [source.id, prompt.id])
-        #expect(updated.documents[0].connections.contains {
-            $0.sourceNodeID == prompt.id && $0.destinationNodeID == configuration.id
-                && $0.kind == .source
-        })
+        #expect(Set(plan.sourceNodeIDs) == [source.id])
         #expect(updated.documents[0].connections.contains {
             $0.sourceNodeID == configuration.id && $0.destinationNodeID == result.id
                 && $0.kind == .generatedFrom
+        })
+    }
+
+    @Test func generationConfigurationCreatesOnlyOneNodeAndTypedSourceEdges() throws {
+        let source = CanvasNode(
+            kind: .text, text: "清晨海边的构思",
+            position: .init(x: 100, y: 100), size: .init(width: 280, height: 160)
+        )
+        let document = CanvasDocument(name: "Canvas", nodes: [source])
+        let plan = try CanvasGenerationConfigurationPlanner.plan(
+            kind: .image,
+            prompt: "产品主视觉",
+            sourceNodeIDs: [source.id],
+            position: .init(x: 520, y: 100),
+            existingConfigurationNodeID: nil,
+            metadata: [:],
+            document: document
+        )
+        let creates = plan.operations.filter { $0.kind == .create }
+        #expect(creates.count == 1)
+        #expect(creates.first?.nodeKind == .generationTask)
+        #expect(creates.first?.metadata?["generationPrompt"] == "产品主视觉")
+        #expect(plan.operations.contains {
+            $0.kind == .connect && $0.connectionKind == .source
+                && $0.sourceNodeID == source.id
+                && $0.destinationNodeID == plan.configurationNodeID
+        })
+        #expect(!plan.operations.contains {
+            $0.nodeKind == .text || $0.nodeKind == .image || $0.nodeKind == .video
         })
     }
 

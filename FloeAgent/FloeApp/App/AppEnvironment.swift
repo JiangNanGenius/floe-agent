@@ -457,7 +457,9 @@ final class AppEnvironment: ObservableObject {
                     ?? VNCToolConnectionStatus(state: .unconfigured, configuredEndpointCount: 0)
             }
         ) { [weak remoteSessionCenter] in
-            try await remoteSessionCenter?.activeOrConnectVNCSession()
+            // Observation and input tools are honest consumers of an
+            // existing session. Only vnc.connect/reconnect may open a socket.
+            await remoteSessionCenter?.activeVNCSession()
         }
         // Standard remote MCP servers are configuration-driven tool sources.
         // Activation only discovers JSON schemas and registers namespaced

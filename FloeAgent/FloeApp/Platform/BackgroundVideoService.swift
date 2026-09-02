@@ -15,6 +15,29 @@ import FloeCore
 
 @MainActor
 final class BackgroundVideoService: NSObject, ObservableObject {
+    enum PiPPreparationState: String, Sendable {
+        case idle
+        case attachingVisibleSource
+        case synthesizingVideo
+        case waitingForMedia
+        case prepared
+        case starting
+        case active
+        case failed
+
+        var localizedDescription: String {
+            switch self {
+            case .idle: "等待任务启动"
+            case .attachingVisibleSource: "正在挂载画中画预览"
+            case .synthesizingVideo: "正在生成任务进度视频"
+            case .waitingForMedia: "正在等待 AVKit 就绪"
+            case .prepared: "画中画已准备"
+            case .starting: "正在启动画中画"
+            case .active: "正在显示"
+            case .failed: "画中画准备失败"
+            }
+        }
+    }
     struct GuidanceHint: Sendable {
         var label: String
         var instruction: String
@@ -25,6 +48,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     @Published private(set) var isPreparingPiP = false
     @Published private(set) var isPiPPrepared = false
     @Published private(set) var lastError: String?
+    @Published private(set) var preparationState: PiPPreparationState = .idle
     /// Called only when AVKit/system closes PiP while Floe still owns the
     /// controller. Programmatic run teardown clears ownership first.
     var onUserStopped: (() -> Void)?
@@ -79,6 +103,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         startAttemptCount = 0
         startWhenPrepared = startImmediately
         isPreparingPiP = true
+        preparationState = .attachingVisibleSource
         lastError = nil
         FloeLogger(category: .app).info(
             "pictureInPicturePrepareStarted generation=\(generation)"
@@ -88,6 +113,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         // The session is activated only at the actual PiP start boundary so a
         // foreground agent run never pauses Music, podcasts or another app.
         guard prepareInlinePreview() else {
+            preparationState = .failed
             lastError = "画中画需要可见的应用窗口"
             FloeLogger(category: .app).warning(
                 "pictureInPicturePrepareFailed stage=inlinePreviewContainer generation=\(generation)"
@@ -95,12 +121,14 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             deactivateAudioSession()
             return
         }
+        preparationState = .synthesizingVideo
         guard let assetURL = await synthesizeProgressVideo(
             title: title,
             progress: initialProgress,
             guidanceImage: nil,
             guidanceHints: []
         ) else {
+            preparationState = .failed
             lastError = "无法创建画中画进度视频"
             FloeLogger(category: .app).error(
                 "pictureInPicturePrepareFailed stage=videoSynthesis generation=\(generation)"
@@ -115,6 +143,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             return
         }
         guard AVPictureInPictureController.isPictureInPictureSupported() else {
+            preparationState = .failed
             lastError = "当前设备不支持画中画"
             FloeLogger(category: .app).warning(
                 "pictureInPicturePrepareFailed stage=unsupported generation=\(generation)"
@@ -133,6 +162,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         let layer = AVPlayerLayer(player: queue)
         layer.videoGravity = .resizeAspect
         guard attachInlinePreview(layer: layer) else {
+            preparationState = .failed
             lastError = "画中画需要应用处于前台并显示预览"
             FloeLogger(category: .app).warning(
                 "pictureInPicturePrepareFailed stage=inlinePreview generation=\(generation)"
@@ -142,6 +172,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             return
         }
         guard let controller = AVPictureInPictureController(playerLayer: layer) else {
+            preparationState = .failed
             lastError = "无法初始化画中画控制器"
             FloeLogger(category: .app).error(
                 "pictureInPicturePrepareFailed stage=controller generation=\(generation)"
@@ -165,6 +196,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         pipController = controller
         await queue.seek(to: .zero)
         queue.play()
+        preparationState = .waitingForMedia
         // AVKit readiness is asynchronous and varies by device. Starting at
         // a fixed delay silently fails on slower iPads, so wait for the real
         // capability signal with a bounded timeout.
@@ -182,6 +214,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         guard let playbackItem,
               playbackItem.status == .readyToPlay,
               controller.isPictureInPicturePossible else {
+            preparationState = .failed
             lastError = "画中画尚未就绪，请保持应用在前台后重试"
             let itemError = playbackItem?.error as NSError?
             FloeLogger(category: .app).warning(
@@ -191,6 +224,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             return
         }
         isPiPPrepared = true
+        preparationState = .prepared
         guard startWhenPrepared else {
             FloeLogger(category: .app).info(
                 "pictureInPicturePrepared generation=\(generation)"
@@ -212,6 +246,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
               controller.isPictureInPicturePossible,
               !controller.isPictureInPictureActive else { return }
         configureAudioSession()
+        preparationState = .starting
         FloeLogger(category: .app).info(
             "pictureInPictureStartRequested generation=\(startGeneration) attempt=\(startAttemptCount + 1) playerStatus=\(String(describing: player?.timeControlStatus)) itemStatus=\(String(describing: player?.currentItem?.status))"
         )
@@ -349,6 +384,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         isPiPActive = false
         isPreparingPiP = false
         isPiPPrepared = false
+        preparationState = .idle
         pendingStopOrigin = .none
         startWhenPrepared = false
         startAttemptCount = 0
@@ -363,6 +399,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         if pendingStopOrigin == .foregroundRetraction {
             pendingStopOrigin = .none
             isPiPActive = false
+            preparationState = .prepared
             deactivateAudioSession()
             FloeLogger(category: .app).info("pictureInPictureRetractionCompleted")
             let generation = startGeneration
@@ -396,6 +433,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         }
         isPiPActive = false
         isPiPPrepared = false
+        preparationState = .idle
         pendingStopOrigin = .none
         deactivateAudioSession()
         onUserStopped?()
@@ -435,15 +473,14 @@ final class BackgroundVideoService: NSObject, ObservableObject {
               let window = scene.windows.first(where: \.isKeyWindow)
                 ?? scene.windows.first(where: { !$0.isHidden }) else { return false }
         removeInlinePreview()
-        // AVKit needs a genuinely visible, non-trivial source rectangle. A
-        // 2-point transparent layer is treated as non-playable by some iPadOS
-        // releases and leaves isPictureInPicturePossible false forever. Keep
-        // the source in the window's rendered hierarchy but behind the root
-        // content so users never see an in-app pseudo-PiP tile.
+        // AVKit requires the inline source to be genuinely visible. Inserting
+        // it behind an opaque root view leaves isPictureInPicturePossible
+        // false on iPadOS even though the layer has a window. Present the real
+        // task-progress source as a small, non-interactive preview instead.
         let size = CGSize(width: 160, height: 90)
         let view = UIView(frame: CGRect(
             x: max(window.safeAreaInsets.left, window.bounds.width - window.safeAreaInsets.right - size.width - 12),
-            y: max(window.safeAreaInsets.top, window.bounds.height - window.safeAreaInsets.bottom - size.height - 12),
+            y: max(window.safeAreaInsets.top + 12, 12),
             width: size.width,
             height: size.height
         ))
@@ -454,9 +491,14 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         view.alpha = 1
         view.layer.masksToBounds = true
         view.layer.cornerRadius = 12
+        view.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
+        view.layer.borderWidth = 1
+        view.layer.shadowColor = UIColor.black.cgColor
+        view.layer.shadowOpacity = 0.28
+        view.layer.shadowRadius = 8
         view.isUserInteractionEnabled = false
         view.accessibilityElementsHidden = true
-        window.insertSubview(view, at: 0)
+        window.addSubview(view)
         inlinePreview = view
         return true
     }
@@ -787,6 +829,7 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
                 return
             }
             self.isPiPActive = true
+            self.preparationState = .active
             self.isPreparingPiP = false
             self.startRetryTask?.cancel()
             self.startRetryTask = nil
@@ -817,6 +860,7 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
                 "pictureInPictureStartFailed domain=\(nsError.domain) code=\(nsError.code) attempt=\(self.startAttemptCount) description=\(nsError.localizedDescription)"
             )
             self.lastError = "画中画启动失败：\(error.localizedDescription)"
+            self.preparationState = .failed
             guard self.startWhenPrepared,
                   self.startAttemptCount < 2,
                   self.pipController.map(ObjectIdentifier.init) == controllerID else {

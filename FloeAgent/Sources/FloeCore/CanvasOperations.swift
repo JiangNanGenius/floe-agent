@@ -553,7 +553,7 @@ public struct CanvasGenerationGraphRequest: Sendable, Hashable {
         resultPosition: CanvasPoint,
         existingConfigurationNodeID: UUID? = nil,
         reusableResultNodeID: UUID? = nil,
-        createsPromptNodeWhenMissing: Bool = true,
+        createsPromptNodeWhenMissing: Bool = false,
         createdByRunID: UUID? = nil,
         metadata: [String: String] = [:]
     ) {
@@ -716,6 +716,76 @@ public enum CanvasGenerationGraphPlanner {
             sourceNodeIDs: sourceIDs,
             operations: operations
         )
+    }
+}
+
+/// Saves the editable generation node without manufacturing prompt or result
+/// nodes. Generation execution uses `CanvasGenerationGraphPlanner` later to
+/// materialize exactly the provider result that was actually requested.
+public enum CanvasGenerationConfigurationPlanner {
+    public static func plan(
+        kind: CanvasGenerationGraphKind,
+        prompt: String,
+        sourceNodeIDs: [UUID],
+        position: CanvasPoint,
+        existingConfigurationNodeID: UUID?,
+        metadata: [String: String],
+        document: CanvasDocument
+    ) throws -> (configurationNodeID: UUID, operations: [CanvasPatchOperation]) {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw FloeError.validationFailed("Generation prompt is required")
+        }
+        let nodesByID = Dictionary(uniqueKeysWithValues: document.nodes.map { ($0.id, $0) })
+        let configurationNodeID = existingConfigurationNodeID.flatMap {
+            nodesByID[$0]?.kind == .generationTask ? $0 : nil
+        } ?? UUID()
+        let sources = Array(Set(sourceNodeIDs.filter {
+            $0 != configurationNodeID && nodesByID[$0] != nil
+        })).sorted { $0.uuidString < $1.uuidString }
+        var values = metadata
+        values["generationKind"] = kind.rawValue
+        values["generationPrompt"] = trimmed
+        values["generationSourceNodeIDs"] = sources.map(\.uuidString).joined(separator: ",")
+        values["generationState"] = values["generationState"] ?? "configured"
+        let title = kind == .image ? "图片生成" : "视频生成"
+        var operations: [CanvasPatchOperation] = [
+            CanvasPatchOperation(
+                kind: nodesByID[configurationNodeID] == nil ? .create : .update,
+                nodeID: configurationNodeID,
+                nodeKind: nodesByID[configurationNodeID] == nil ? .generationTask : nil,
+                text: title,
+                position: nodesByID[configurationNodeID] == nil ? position : nil,
+                size: nodesByID[configurationNodeID] == nil
+                    ? .init(width: 340, height: 210) : nil,
+                metadata: values
+            )
+        ]
+        let desired = Set(sources)
+        for connection in document.connections where
+            connection.destinationNodeID == configurationNodeID
+                && connection.kind == .source
+                && !desired.contains(connection.sourceNodeID) {
+            operations.append(CanvasPatchOperation(
+                kind: .disconnect, connectionID: connection.id
+            ))
+        }
+        let existingSources = Set(document.connections.compactMap {
+            $0.destinationNodeID == configurationNodeID && $0.kind == .source
+                ? $0.sourceNodeID : nil
+        })
+        for sourceID in sources where !existingSources.contains(sourceID) {
+            operations.append(CanvasPatchOperation(
+                kind: .connect,
+                sourceNodeID: sourceID,
+                destinationNodeID: configurationNodeID,
+                connectionKind: .source,
+                sourcePort: .trailing,
+                destinationPort: .leading,
+                label: "生成输入"
+            ))
+        }
+        return (configurationNodeID, operations)
     }
 }
 
