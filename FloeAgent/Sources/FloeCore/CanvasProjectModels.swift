@@ -16,6 +16,24 @@ public enum CanvasNodeKind: String, Sendable, Codable, CaseIterable, Hashable {
     case text, stickyNote, card, shape, image, video, audio, file, group, generationTask, scene3D
 }
 
+/// Product semantics layered over the persisted node kind. The serialized
+/// kinds remain stable for old canvases, while creation and rendering can
+/// distinguish work to perform from the artifact it produces.
+public enum CanvasNodeRole: String, Sendable, Codable, Hashable {
+    case content, task, artifact, container
+}
+
+public extension CanvasNodeKind {
+    var role: CanvasNodeRole {
+        switch self {
+        case .generationTask: .task
+        case .image, .video, .audio, .file: .artifact
+        case .group: .container
+        default: .content
+        }
+    }
+}
+
 public enum CanvasShapeKind: String, Sendable, Codable, CaseIterable, Hashable {
     case rectangle, roundedRectangle, ellipse, diamond, triangle
 }

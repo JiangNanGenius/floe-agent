@@ -64,6 +64,29 @@ actor CreativeAssetIngestionService {
         )
     }
 
+    /// Persists bytes handed to us by PhotosPicker through the same content
+    /// addressed material boundary used by Files imports. This avoids creating
+    /// a second photo-only asset store while keeping PhotosPicker's authorized
+    /// payload independent from temporary security-scoped URLs.
+    func importPhotoData(
+        _ data: Data,
+        contentType: UTType?,
+        displayName: String
+    ) async throws -> CreativeAssetRecord {
+        guard !data.isEmpty else { throw CreativeAssetIngestionError.missingLocalFile }
+        let type = contentType ?? .image
+        return try await persist(
+            data: data,
+            kind: Self.mediaKind(for: type),
+            displayName: displayName,
+            fileExtension: Self.safeExtension(type: type, fallback: "bin"),
+            mimeType: type.preferredMIMEType,
+            sourceURL: nil,
+            license: nil,
+            tags: ["photo-import"]
+        )
+    }
+
     func importRemoteImage(
         from sourceURL: URL,
         displayName: String?,

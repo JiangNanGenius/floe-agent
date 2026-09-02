@@ -8,6 +8,7 @@ import SwiftUI
 import UIKit
 import AVKit
 import PencilKit
+import PhotosUI
 import SceneKit
 import UniformTypeIdentifiers
 import WebKit
@@ -513,9 +514,9 @@ private enum CanvasNodeCreationSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .basic: "基础节点"
-        case .media: "媒体与文件"
-        case .creation: "创作节点"
+        case .basic: String(localized: "canvas.creation.section.basic")
+        case .media: String(localized: "canvas.creation.section.artifacts")
+        case .creation: String(localized: "canvas.creation.section.creation")
         }
     }
 }
@@ -523,35 +524,34 @@ private enum CanvasNodeCreationSection: String, CaseIterable, Identifiable {
 /// One source of truth for every node-creation surface: toolbar, blank-canvas
 /// double click, pointer context menu, Pencil palette and keyboard commands.
 private enum CanvasNodeCreationKind: String, CaseIterable, Identifiable {
-    case text, stickyNote, card, shape, group, image, video, audio, file
-    case imageGeneration, videoGeneration, markdown, svg, html, panorama3D, scene3D
+    case text, stickyNote, card, shape, group
+    case importFiles, importPhotos, materialLibrary
+    case generationTask, markdown, svg, html, panorama3D, scene3D
 
     var id: String { rawValue }
     var section: CanvasNodeCreationSection {
         switch self {
         case .text, .stickyNote, .card, .shape, .group: .basic
-        case .image, .video, .audio, .file: .media
-        case .imageGeneration, .videoGeneration, .markdown, .svg, .html, .panorama3D, .scene3D: .creation
+        case .importFiles, .importPhotos, .materialLibrary: .media
+        case .generationTask, .markdown, .svg, .html, .panorama3D, .scene3D: .creation
         }
     }
     var title: String {
         switch self {
-        case .text: "文本"
-        case .stickyNote: "便签"
-        case .card: "基础卡片"
-        case .shape: "形状"
-        case .group: "分组"
-        case .image: "图片卡片"
-        case .video: "视频卡片"
-        case .audio: "音频卡片"
-        case .file: "文件卡片"
-        case .imageGeneration: "图片生成"
-        case .videoGeneration: "视频生成"
+        case .text: String(localized: "canvas.node.text")
+        case .stickyNote: String(localized: "canvas.node.sticky_note")
+        case .card: String(localized: "canvas.node.basic_card")
+        case .shape: String(localized: "canvas.node.shape")
+        case .group: String(localized: "canvas.node.group")
+        case .importFiles: String(localized: "canvas.artifact.import.files")
+        case .importPhotos: String(localized: "canvas.artifact.import.photos")
+        case .materialLibrary: String(localized: "canvas.artifact.import.library")
+        case .generationTask: String(localized: "canvas.task.generation")
         case .markdown: "Markdown"
         case .svg: "SVG"
         case .html: "HTML"
-        case .panorama3D: "3D 全景"
-        case .scene3D: "3D 场景"
+        case .panorama3D: String(localized: "canvas.node.panorama_3d")
+        case .scene3D: String(localized: "canvas.node.scene_3d")
         }
     }
     var icon: String {
@@ -561,12 +561,10 @@ private enum CanvasNodeCreationKind: String, CaseIterable, Identifiable {
         case .card: "rectangle.and.text.magnifyingglass"
         case .shape: "square.on.circle"
         case .group: "square.3.layers.3d"
-        case .image: "photo"
-        case .video: "film"
-        case .audio: "waveform"
-        case .file: "doc"
-        case .imageGeneration: "photo.badge.plus"
-        case .videoGeneration: "video.badge.plus"
+        case .importFiles: "folder.badge.plus"
+        case .importPhotos: "photo.on.rectangle.angled"
+        case .materialLibrary: "square.stack.3d.up"
+        case .generationTask: "wand.and.stars"
         case .markdown: "text.document"
         case .svg: "scribble.variable"
         case .html: "chevron.left.forwardslash.chevron.right"
@@ -581,6 +579,10 @@ private enum CanvasContextTarget: Equatable {
     case nodes(Set<UUID>)
     case connection(UUID)
     case ink(Set<UUID>)
+}
+
+private enum CanvasArtifactImportSource {
+    case files, photos
 }
 
 private enum CanvasContextAction: String, CaseIterable, Identifiable {
@@ -612,9 +614,9 @@ private struct CanvasNodeCreationPalette: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("新建节点").font(.headline)
+                Text(String(localized: "canvas.node.create")).font(.headline)
                 Spacer()
-                Button("关闭", systemImage: "xmark", action: onDismiss)
+                Button(String(localized: "common.close"), systemImage: "xmark", action: onDismiss)
                     .labelStyle(.iconOnly)
             }
             ScrollView {
@@ -644,28 +646,20 @@ private struct CanvasNodeCreationPalette: View {
 }
 
 private enum CanvasConnectedNodeKind: String, CaseIterable, Identifiable {
-    case text, card, image, video, audio, imageGeneration, videoGeneration
+    case text, card, generationTask
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .text: "文本"
-        case .card: "卡片"
-        case .image: "图片"
-        case .video: "视频"
-        case .audio: "音频"
-        case .imageGeneration: "生图配置"
-        case .videoGeneration: "生视频配置"
+        case .text: String(localized: "canvas.node.text")
+        case .card: String(localized: "canvas.node.card")
+        case .generationTask: String(localized: "canvas.task.generation")
         }
     }
     var icon: String {
         switch self {
         case .text: "textformat"
         case .card: "rectangle.and.text.magnifyingglass"
-        case .image: "photo"
-        case .video: "film"
-        case .audio: "waveform"
-        case .imageGeneration: "photo.badge.plus"
-        case .videoGeneration: "video.badge.plus"
+        case .generationTask: "wand.and.stars"
         }
     }
 }
@@ -680,17 +674,17 @@ private struct CanvasConnectionCreatePalette: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("从此节点继续").font(.headline)
-                    Text("新节点会自动连接").font(.caption).foregroundStyle(.secondary)
+                    Text(String(localized: "canvas.connection.continue_from_node")).font(.headline)
+                    Text(String(localized: "canvas.connection.auto_connect_hint")).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("关闭", systemImage: "xmark", action: onDismiss)
+                Button(String(localized: "common.close"), systemImage: "xmark", action: onDismiss)
                     .labelStyle(.iconOnly)
             }
             Button {
                 onAssociate()
             } label: {
-                Label("AI 继续联想", systemImage: "sparkles")
+                Label(String(localized: "canvas.connection.ai_associate"), systemImage: "sparkles")
                     .frame(maxWidth: .infinity, minHeight: 38)
             }
             .buttonStyle(.borderedProminent)
@@ -1343,15 +1337,24 @@ private final class CanvasDocumentStore: ObservableObject {
     }
 
     @discardableResult
-    func addAsset(_ asset: CanvasAssetReference, kind: CanvasNodeKind, at point: CGPoint) -> UUID {
+    func addAsset(
+        _ asset: CanvasAssetReference,
+        kind: CanvasNodeKind,
+        at point: CGPoint,
+        displayName: String? = nil,
+        metadata: [String: String] = [:]
+    ) -> UUID {
         let id = UUID()
         guard applyCommand([
             CanvasPatchOperation(
                 kind: .create, nodeID: id, nodeKind: kind,
-                text: asset.localRelativePath?.split(separator: "/").last.map(String.init) ?? "素材",
+                text: displayName
+                    ?? asset.localRelativePath?.split(separator: "/").last.map(String.init)
+                    ?? "素材",
                 position: CanvasPoint(point),
                 size: .init(width: 320, height: kind == .video ? 220 : 260),
-                asset: asset
+                asset: asset,
+                metadata: metadata
             )
         ]) != nil else { return id }
         Task { try? await creativeAssetStore?.adjustReference(assetID: asset.id, by: 1) }
@@ -1501,15 +1504,19 @@ private final class CanvasDocumentStore: ObservableObject {
                 let oldText = project.documents[documentIndex].nodes[nodeIndex].text
                 let statusText: String
                 switch job.state {
-                case .preparing: statusText = "正在准备生成任务"
-                case .submitted: statusText = "已提交，等待供应商开始"
-                case .running: statusText = "正在生成"
-                case .completed: statusText = "生成完成，正在准备下载"
-                case .downloading: statusText = "正在下载，完成后会自动加入素材库"
-                case .ready: statusText = "已保存到素材库"
-                case .failed: statusText = "生成失败：\(job.lastError ?? "未知错误")"
-                case .cancelled: statusText = "任务已取消"
-                case .expired: statusText = "结果可能已过期，可确认计费后重新生成"
+                case .preparing: statusText = String(localized: "canvas.generation.progress.preparing")
+                case .submitted: statusText = String(localized: "canvas.generation.progress.submitted")
+                case .running: statusText = String(localized: "canvas.generation.progress.running")
+                case .completed: statusText = String(localized: "canvas.generation.progress.completed")
+                case .downloading: statusText = String(localized: "canvas.generation.progress.downloading")
+                case .ready: statusText = String(localized: "canvas.generation.progress.ready")
+                case .failed:
+                    statusText = String(
+                        format: String(localized: "canvas.generation.progress.failed.format"),
+                        job.lastError ?? String(localized: "common.unknown_error")
+                    )
+                case .cancelled: statusText = String(localized: "canvas.generation.progress.cancelled")
+                case .expired: statusText = String(localized: "canvas.generation.progress.expired")
                 }
                 if oldText != statusText {
                     project.documents[documentIndex].nodes[nodeIndex].text = statusText
@@ -2464,6 +2471,13 @@ struct WorkspaceCanvasView: View {
     @State private var pendingAgentRequest: CanvasAgentRequest?
     @State private var enteredGroupID: UUID?
     @State private var showsGeneration = false
+    @State private var generationSourceNodeIDs = Set<UUID>()
+    @State private var generationResultPoint: CGPoint?
+    @State private var showsFileImporter = false
+    @State private var showsPhotoImporter = false
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @State private var artifactImportPoint: CGPoint?
+    @State private var isImportingArtifacts = false
     @State private var showsInspector = false
     @State private var imageEditorPresentation: CanvasImageEditorPresentation?
     @State private var showsMediaJobs = false
@@ -2571,12 +2585,13 @@ struct WorkspaceCanvasView: View {
                     } else {
                         selectedNodeIDs = [store.addAsset(
                             asset, kind: kind,
-                            at: canvasPoint(CGPoint(x: 520, y: 380))
+                            at: artifactImportPoint ?? canvasPoint(CGPoint(x: 520, y: 380))
                         )]
                     }
                     showsMaterials = false
                     materialKindFilter = nil
                     materialTargetNodeID = nil
+                    artifactImportPoint = nil
                 }
             }
         }
@@ -2592,7 +2607,11 @@ struct WorkspaceCanvasView: View {
             }
         }
         .sheet(isPresented: $showsGeneration) {
-            CanvasMediaGenerationView(store: store, sourceNodeIDs: selectedNodeIDs)
+            CanvasMediaGenerationView(
+                store: store,
+                sourceNodeIDs: generationSourceNodeIDs,
+                preferredResultPoint: generationResultPoint
+            )
                 .environmentObject(environment)
         }
         .sheet(isPresented: $showsInspector) {
@@ -2645,6 +2664,39 @@ struct WorkspaceCanvasView: View {
             if case .failure(let error) = result { store.saveError = error.localizedDescription }
             exportDocument = nil
         }
+        .fileImporter(
+            isPresented: $showsFileImporter,
+            allowedContentTypes: [.image, .movie, .audio, .pdf, .data],
+            allowsMultipleSelection: true
+        ) { result in
+            guard case .success(let urls) = result else {
+                artifactImportPoint = nil
+                if case .failure(let error) = result,
+                   (error as NSError).code != NSUserCancelledError {
+                    store.saveError = String(
+                        format: String(localized: "canvas.artifact.import.failed.format"),
+                        error.localizedDescription
+                    )
+                }
+                return
+            }
+            Task { await importFilesAsArtifacts(urls) }
+        }
+        .photosPicker(
+            isPresented: $showsPhotoImporter,
+            selection: $selectedPhotoItems,
+            maxSelectionCount: 20,
+            matching: .any(of: [.images, .videos])
+        )
+        .onChange(of: selectedPhotoItems) { _, items in
+            guard !items.isEmpty else { return }
+            Task { await importPhotosAsArtifacts(items) }
+        }
+        .onChange(of: showsPhotoImporter) { _, presented in
+            if !presented, selectedPhotoItems.isEmpty, !isImportingArtifacts {
+                artifactImportPoint = nil
+            }
+        }
         .task {
             store.configureSync(
                 store: environment.canvasSyncOperationStore,
@@ -2688,6 +2740,7 @@ struct WorkspaceCanvasView: View {
             if !presented {
                 materialTargetNodeID = nil
                 materialKindFilter = nil
+                artifactImportPoint = nil
             }
         }
         .onChange(of: mode) { oldMode, newMode in
@@ -3072,14 +3125,8 @@ struct WorkspaceCanvasView: View {
                             CanvasNodeCreationMenu { kind in
                                 createNode(kind, at: canvasPoint(CGPoint(x: 520, y: 380)))
                             }
-                            Divider()
-                            Button("从素材库添加…", systemImage: "photo.on.rectangle.angled") {
-                                materialTargetNodeID = nil
-                                materialKindFilter = [.image, .video, .audio, .file]
-                                showsMaterials = true
-                            }
                         } label: {
-                            Label("新建节点", systemImage: "plus")
+                            Label(String(localized: "canvas.node.create"), systemImage: "plus")
                         }
                         .accessibilityIdentifier("canvas.node.create")
                         Button("撤销", systemImage: "arrow.uturn.backward") { store.undo() }
@@ -3107,6 +3154,8 @@ struct WorkspaceCanvasView: View {
                             Label("提示词库", systemImage: "books.vertical")
                         }
                         Button {
+                            generationSourceNodeIDs = selectedNodeIDs
+                            generationResultPoint = canvasPoint(CGPoint(x: 520, y: 380))
                             showsGeneration = true
                         } label: {
                             Label("生成", systemImage: "wand.and.stars")
@@ -3244,6 +3293,131 @@ struct WorkspaceCanvasView: View {
         mode = .select
     }
 
+    private func presentArtifactImporter(_ source: CanvasArtifactImportSource, at point: CGPoint) {
+        artifactImportPoint = point
+        switch source {
+        case .files: showsFileImporter = true
+        case .photos: showsPhotoImporter = true
+        }
+    }
+
+    @MainActor
+    private func importFilesAsArtifacts(_ urls: [URL]) async {
+        guard !urls.isEmpty, !isImportingArtifacts else { return }
+        isImportingArtifacts = true
+        defer {
+            isImportingArtifacts = false
+            artifactImportPoint = nil
+        }
+        let ingestion = CreativeAssetIngestionService(assetStore: environment.creativeAssetStore)
+        var imported: [(CreativeAssetRecord, CanvasNodeKind)] = []
+        var failures: [String] = []
+        for url in urls {
+            do {
+                let record = try await ingestion.importLocalFile(url)
+                imported.append((record, canvasNodeKind(for: record.kind)))
+            } catch {
+                failures.append("\(url.lastPathComponent)：\(error.localizedDescription)")
+            }
+        }
+        insertImportedArtifacts(imported)
+        if !failures.isEmpty {
+            store.saveError = String(localized: "canvas.artifact.import.partial_failed")
+                + "\n" + failures.prefix(4).joined(separator: "\n")
+        }
+    }
+
+    @MainActor
+    private func importPhotosAsArtifacts(_ items: [PhotosPickerItem]) async {
+        guard !items.isEmpty, !isImportingArtifacts else { return }
+        isImportingArtifacts = true
+        defer {
+            isImportingArtifacts = false
+            selectedPhotoItems = []
+            artifactImportPoint = nil
+        }
+        let ingestion = CreativeAssetIngestionService(assetStore: environment.creativeAssetStore)
+        var imported: [(CreativeAssetRecord, CanvasNodeKind)] = []
+        var failureCount = 0
+        for (index, item) in items.enumerated() {
+            do {
+                guard let data = try await item.loadTransferable(type: Data.self) else {
+                    throw CreativeAssetIngestionError.missingLocalFile
+                }
+                let type = item.supportedContentTypes.first
+                let stem = String(
+                    format: String(localized: "canvas.artifact.photo_name.format"),
+                    String(index + 1)
+                )
+                let name = "\(stem).\(type?.preferredFilenameExtension ?? "bin")"
+                let record = try await ingestion.importPhotoData(
+                    data,
+                    contentType: type,
+                    displayName: name
+                )
+                imported.append((record, canvasNodeKind(for: record.kind)))
+            } catch {
+                failureCount += 1
+            }
+        }
+        insertImportedArtifacts(imported)
+        if failureCount > 0 {
+            store.saveError = String(
+                format: String(localized: "canvas.artifact.import.photos_partial.format"),
+                String(imported.count),
+                String(failureCount)
+            )
+        }
+    }
+
+    @MainActor
+    private func insertImportedArtifacts(_ imported: [(CreativeAssetRecord, CanvasNodeKind)]) {
+        guard !imported.isEmpty else { return }
+        let origin = artifactImportPoint ?? canvasPoint(CGPoint(x: 520, y: 380))
+        var ids = Set<UUID>()
+        for (index, value) in imported.enumerated() {
+            let column = index % 3
+            let row = index / 3
+            let point = CGPoint(
+                x: origin.x + Double(column) * 360,
+                y: origin.y + Double(row) * 300
+            )
+            let record = value.0
+            let reference = CanvasAssetReference(
+                id: record.id,
+                contentHash: record.contentHash,
+                localRelativePath: record.localRelativePath,
+                cloudRecordName: record.cloudRecordName,
+                mimeType: record.mimeType,
+                byteCount: record.byteCount,
+                sourceURL: record.sourceURL,
+                license: record.license
+            )
+            let id = store.addAsset(
+                reference,
+                kind: value.1,
+                at: point,
+                displayName: record.displayName,
+                metadata: ["artifactOrigin": "imported"]
+            )
+            ids.insert(id)
+        }
+        selectedNodeIDs = ids
+        selectedStrokeIDs.removeAll()
+        selectedConnectionID = nil
+        mode = .select
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    private func canvasNodeKind(for kind: MediaKind) -> CanvasNodeKind {
+        switch kind {
+        case .image: .image
+        case .video: .video
+        case .audio: .audio
+        case .document: .file
+        }
+    }
+
     private func createNode(_ kind: CanvasNodeCreationKind, at point: CGPoint) {
         let nodeID: UUID
         switch kind {
@@ -3252,14 +3426,23 @@ struct WorkspaceCanvasView: View {
         case .card: nodeID = store.addCard(at: point)
         case .shape: nodeID = store.addShape(at: point)
         case .group: nodeID = store.addGroup(at: point)
-        case .image: nodeID = store.addPlaceholder(kind: .image, at: point)
-        case .video: nodeID = store.addPlaceholder(kind: .video, at: point)
-        case .audio: nodeID = store.addPlaceholder(kind: .audio, at: point)
-        case .file: nodeID = store.addPlaceholder(kind: .file, at: point)
-        case .imageGeneration:
-            nodeID = store.addGenerationTask(kind: .image, prompt: "", at: point)
-        case .videoGeneration:
-            nodeID = store.addGenerationTask(kind: .video, prompt: "", at: point)
+        case .importFiles:
+            presentArtifactImporter(.files, at: point)
+            return
+        case .importPhotos:
+            presentArtifactImporter(.photos, at: point)
+            return
+        case .materialLibrary:
+            artifactImportPoint = point
+            materialTargetNodeID = nil
+            materialKindFilter = [.image, .video, .audio, .file]
+            showsMaterials = true
+            return
+        case .generationTask:
+            generationSourceNodeIDs = selectedNodeIDs
+            generationResultPoint = point
+            showsGeneration = true
+            return
         case .markdown:
             nodeID = store.addBuiltinNode(pluginID: "markdown", at: point)
         case .svg:
@@ -3277,7 +3460,6 @@ struct WorkspaceCanvasView: View {
         editingNodeID = [.text, .stickyNote, .card, .markdown, .svg, .html].contains(kind)
             ? nodeID : nil
         mode = .select
-        if kind == .imageGeneration || kind == .videoGeneration { showsGeneration = true }
         if kind == .scene3D { directorPresentation = Canvas3DDirectorPresentation(nodeID: nodeID) }
     }
 
@@ -3293,43 +3475,30 @@ struct WorkspaceCanvasView: View {
         let point = nextAvailableConnectedPoint(proposedPoint, kind: kind)
         let nodeKind: CanvasNodeKind
         let text: String
-        var metadata: [String: String] = [:]
         switch kind {
         case .text:
             nodeKind = .text; text = "新建文本"
         case .card:
             nodeKind = .card; text = "新建卡片"
-        case .image:
-            nodeKind = .image; text = ""
-        case .video:
-            nodeKind = .video; text = ""
-        case .audio:
-            nodeKind = .audio; text = ""
-        case .imageGeneration:
-            nodeKind = .generationTask; text = ""
-            metadata["generationKind"] = MediaKind.image.rawValue
-            metadata["generationState"] = "draft"
-        case .videoGeneration:
-            nodeKind = .generationTask; text = ""
-            metadata["generationKind"] = MediaKind.video.rawValue
-            metadata["generationState"] = "draft"
+        case .generationTask:
+            cancelConnectionCreation()
+            generationSourceNodeIDs = [draft.sourceNodeID]
+            generationResultPoint = point
+            showsGeneration = true
+            return
         }
         guard let nodeID = store.addConnectedPlaceholder(
             kind: nodeKind,
             text: text,
             at: point,
             from: draft.sourceNodeID,
-            sourcePort: draft.sourcePort,
-            metadata: metadata
+            sourcePort: draft.sourcePort
         ) else { return }
         cancelConnectionCreation()
         selectedNodeIDs = [nodeID]
         selectedStrokeIDs.removeAll()
         selectedConnectionID = nil
         editingNodeID = (kind == .text || kind == .card) ? nodeID : nil
-        if kind == .imageGeneration || kind == .videoGeneration {
-            showsGeneration = true
-        }
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
@@ -3360,8 +3529,7 @@ struct WorkspaceCanvasView: View {
     ) -> CGPoint {
         let size: CGSize = switch kind {
         case .text, .card: CGSize(width: 300, height: 180)
-        case .image, .video, .audio: CGSize(width: 320, height: 240)
-        case .imageGeneration, .videoGeneration: CGSize(width: 340, height: 210)
+        case .generationTask: CGSize(width: 340, height: 210)
         }
         let occupied = store.selectedDocument?.nodes ?? []
         for attempt in 0..<12 {
@@ -3842,6 +4010,8 @@ struct WorkspaceCanvasView: View {
         selectedNodeIDs = configurationID.map { [$0, node.id] } ?? [node.id]
         selectedConnectionID = nil
         editingNodeID = nil
+        generationSourceNodeIDs = selectedNodeIDs
+        generationResultPoint = CGPoint(x: node.x, y: node.y)
         showsGeneration = true
     }
 
@@ -4092,7 +4262,7 @@ struct WorkspaceCanvasView: View {
                     lastCanvasPointerPoint = location
                 }
             }
-            .simultaneousGesture(
+            .gesture(
                 DragGesture(minimumDistance: mode == .pencil || mode == .eraser ? 0 : 4)
                     .onChanged { value in
                         switch mode {
@@ -4113,7 +4283,7 @@ struct WorkspaceCanvasView: View {
                                     selectedStrokeIDs.insert(newID)
                                 }
                             }
-                        case .select:
+                        case .select, .connector:
                             // Direct manipulation: dragging empty space pans
                             // while dragging a node moves it. Selection no
                             // longer forces touch users to switch tools merely
@@ -4123,23 +4293,26 @@ struct WorkspaceCanvasView: View {
                                 width: panStart.width + value.translation.width,
                                 height: panStart.height + value.translation.height
                             )
-                        case .connector: break
                         }
                     }
                     .onEnded { _ in
                         if mode == .pencil || mode == .eraser {
                             activeStrokeID = nil
                             store.finishStroke()
-                        } else if mode == .select {
+                        } else if mode == .select || mode == .connector {
                             panStart = pan
                             persistViewport()
                         }
                     }
             )
-            .highPriorityGesture(
+            // Keep taps simultaneous with the background pan. Making the tap
+            // recognizer high-priority caused it to hold the first touch long
+            // enough that both blank-canvas panning and double-tap creation
+            // became unreliable on iPad.
+            .simultaneousGesture(
                 SpatialTapGesture(count: 2)
                     .onEnded { value in
-                        guard mode == .select else { return }
+                        guard mode == .select || mode == .connector else { return }
                         lastCanvasPointerPoint = value.location
                         withAnimation(.snappy) { nodeCreationPoint = value.location }
                     }
@@ -4562,6 +4735,10 @@ struct WorkspaceCanvasView: View {
                     if let selectedGenerationNode {
                         openGenerationConfiguration(for: selectedGenerationNode)
                     } else {
+                        generationSourceNodeIDs = selectedNodeIDs
+                        generationResultPoint = store.selectedDocument?.nodes
+                            .first(where: { selectedNodeIDs.contains($0.id) })
+                            .map { CGPoint(x: $0.x + 420, y: $0.y) }
                         showsGeneration = true
                     }
                 }
@@ -5942,7 +6119,11 @@ private struct CanvasNodeCard: View {
                 Button("编辑", systemImage: "pencil", action: onBeginEditing)
             }
             Button("节点内提问", systemImage: "sparkles", action: onAskAI)
-            Button("AI 继续联想", systemImage: "sparkles.rectangle.stack", action: onAssociate)
+            Button(
+                String(localized: "canvas.connection.ai_associate"),
+                systemImage: "sparkles.rectangle.stack",
+                action: onAssociate
+            )
             Button("复制", systemImage: "plus.square.on.square", action: onDuplicate)
             Button("连接", systemImage: "point.topleft.down.to.point.bottomright.curvepath", action: onConnect)
             if let onOpen3D {
@@ -6088,7 +6269,7 @@ private struct CanvasNodeCard: View {
                 HStack(spacing: 8) {
                     Image(systemName: generationStateIcon)
                         .foregroundStyle(generationStateColor)
-                    Text(text.isEmpty ? "生成配置" : text)
+                    Text(text.isEmpty ? String(localized: "canvas.task.generation") : text)
                         .font(.headline)
                     Spacer()
                     Text(generationStateTitle)
@@ -6112,7 +6293,10 @@ private struct CanvasNodeCard: View {
                     }
                 }
                 if node.metadata["generationState"] == "failed" {
-                    Text(node.metadata["generationError"] ?? "生成失败，选中后重新配置")
+                    Text(
+                        node.metadata["generationError"]
+                            ?? String(localized: "canvas.generation.failed.reconfigure")
+                    )
                         .font(.caption)
                         .foregroundStyle(.red)
                         .lineLimit(2)
@@ -6178,10 +6362,10 @@ private struct CanvasNodeCard: View {
 
     private var generationStateTitle: String {
         switch node.metadata["generationState"] {
-        case "ready": "完成"
-        case "submitted", "running", "preparing": "生成中"
-        case "failed", "submitFailed": "失败"
-        default: "待配置"
+        case "ready": String(localized: "canvas.generation.state.ready")
+        case "submitted", "running", "preparing": String(localized: "canvas.generation.state.running")
+        case "failed", "submitFailed": String(localized: "canvas.generation.state.failed")
+        default: String(localized: "canvas.generation.state.configuration_needed")
         }
     }
 
@@ -6275,6 +6459,38 @@ private struct CanvasNodeCard: View {
                     .padding(10)
                     .background(.regularMaterial)
             }
+            VStack {
+                HStack {
+                    Label(
+                        node.asset == nil
+                            ? String(localized: "canvas.artifact.unbound")
+                            : String(
+                                format: String(localized: "canvas.artifact.badge.format"),
+                                artifactOriginTitle
+                            ),
+                        systemImage: node.asset == nil ? "exclamationmark.triangle" : "shippingbox"
+                    )
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(.regularMaterial, in: Capsule())
+                    Spacer()
+                }
+                Spacer()
+            }
+            .padding(8)
+            .allowsHitTesting(false)
+        }
+    }
+
+    private var artifactOriginTitle: String {
+        switch node.metadata["artifactOrigin"] {
+        case "generated": String(localized: "canvas.artifact.origin.generated")
+        case "imported": String(localized: "canvas.artifact.origin.imported")
+        default:
+            node.metadata["generationRole"] == "result"
+                ? String(localized: "canvas.artifact.origin.generated")
+                : String(localized: "canvas.artifact.origin.imported")
         }
     }
 
@@ -7870,6 +8086,7 @@ private struct CanvasMediaGenerationView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @ObservedObject var store: CanvasDocumentStore
     let sourceNodeIDs: Set<UUID>
+    let preferredResultPoint: CGPoint?
 
     @State private var kind: MediaKind = .image
     @State private var prompt = ""
@@ -8071,6 +8288,8 @@ private struct CanvasMediaGenerationView: View {
             CGPoint(x: reusableEmptyMedia.x, y: reusableEmptyMedia.y)
         } else if let existingConfiguration {
             CGPoint(x: existingConfiguration.x + 420, y: existingConfiguration.y)
+        } else if let preferredResultPoint {
+            preferredResultPoint
         } else if let source = sources.last {
             CGPoint(x: source.x + 840, y: source.y)
         } else {
@@ -8153,7 +8372,8 @@ private struct CanvasMediaGenerationView: View {
                         sourceNodeIDs: graph.sourceNodeIDs, state: "ready"
                     )
                     store.updateNodeMetadata(id, values: [
-                        "imageGroupPrimary": index == 0 ? "true" : "false"
+                        "imageGroupPrimary": index == 0 ? "true" : "false",
+                        "artifactOrigin": "generated"
                     ])
                     resultIDs.append(id)
                 }

@@ -474,6 +474,7 @@ struct CreativeMediaModelsTests {
         #expect(configuration.kind == .generationTask)
         #expect(configuration.metadata["generationFingerprint"] == "fingerprint")
         #expect(result.kind == .image)
+        #expect(result.metadata["artifactOrigin"] == "generated")
         #expect(result.createdByRunID == runID)
         #expect(Set(plan.sourceNodeIDs) == [source.id, prompt.id])
         #expect(updated.documents[0].connections.contains {

@@ -629,14 +629,20 @@ public enum CanvasGenerationGraphPlanner {
                 position: request.resultPosition,
                 size: .init(width: 320, height: request.kind == .image ? 260 : 220),
                 createdByRunID: request.createdByRunID,
-                metadata: metadata.merging(["generationRole": "result"]) { _, new in new }
+                metadata: metadata.merging([
+                    "generationRole": "result",
+                    "artifactOrigin": "generated"
+                ]) { _, new in new }
             ))
         } else {
             operations.append(CanvasPatchOperation(
                 kind: .update, nodeID: resultNodeID,
                 text: request.kind == .image ? "图片生成中" : "视频生成中",
                 createdByRunID: request.createdByRunID,
-                metadata: metadata.merging(["generationRole": "result"]) { _, new in new }
+                metadata: metadata.merging([
+                    "generationRole": "result",
+                    "artifactOrigin": "generated"
+                ]) { _, new in new }
             ))
         }
 

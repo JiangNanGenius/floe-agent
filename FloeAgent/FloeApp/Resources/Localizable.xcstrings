@@ -805,6 +805,307 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "浏览器" } }
       }
     },
+    "canvas.artifact.badge.format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Artifact · %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "产物 · %@" } }
+      }
+    },
+    "canvas.artifact.import.failed.format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Could not import artifact: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "导入产物失败：%@" } }
+      }
+    },
+    "canvas.artifact.import.files": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Import from Files" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "从文件导入" } }
+      }
+    },
+    "canvas.artifact.import.library": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Add Existing Material" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "从已有素材添加" } }
+      }
+    },
+    "canvas.artifact.import.partial_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Some artifacts could not be imported:" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "部分产物导入失败：" } }
+      }
+    },
+    "canvas.artifact.import.photos": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Import from Photos" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "从相册导入" } }
+      }
+    },
+    "canvas.artifact.import.photos_partial.format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Imported %@ artifacts; %@ Photos items could not be read." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已导入 %@ 个产物，另有 %@ 个相册项目读取失败。" } }
+      }
+    },
+    "canvas.artifact.origin.generated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Generated" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "生成" } }
+      }
+    },
+    "canvas.artifact.origin.imported": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Imported" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "导入" } }
+      }
+    },
+    "canvas.artifact.photo_name.format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Photo Artifact %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "相册产物-%@" } }
+      }
+    },
+    "canvas.artifact.unbound": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No artifact attached" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未绑定产物" } }
+      }
+    },
+    "canvas.connection.ai_associate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Continue with AI" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 继续联想" } }
+      }
+    },
+    "canvas.connection.auto_connect_hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The new node will connect automatically" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "新节点会自动连接" } }
+      }
+    },
+    "canvas.connection.continue_from_node": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Continue from This Node" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "从此节点继续" } }
+      }
+    },
+    "canvas.creation.section.artifacts": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Import Artifacts" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "导入产物" } }
+      }
+    },
+    "canvas.creation.section.basic": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Basic Nodes" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "基础节点" } }
+      }
+    },
+    "canvas.creation.section.creation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Creative Nodes" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "创作节点" } }
+      }
+    },
+    "canvas.generation.failed.reconfigure": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Generation failed. Select this task to configure and retry." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "生成失败，选中后重新配置" } }
+      }
+    },
+    "canvas.generation.progress.cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Task cancelled" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "任务已取消" } }
+      }
+    },
+    "canvas.generation.progress.completed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Generation complete; preparing download" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "生成完成，正在准备下载" } }
+      }
+    },
+    "canvas.generation.progress.downloading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Downloading; it will be added to Materials automatically" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在下载，完成后会自动加入素材库" } }
+      }
+    },
+    "canvas.generation.progress.expired": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The result may have expired. Confirm billing before generating again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "结果可能已过期，可确认计费后重新生成" } }
+      }
+    },
+    "canvas.generation.progress.failed.format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Generation failed: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "生成失败：%@" } }
+      }
+    },
+    "canvas.generation.progress.preparing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Preparing generation task" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在准备生成任务" } }
+      }
+    },
+    "canvas.generation.progress.ready": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Saved to Materials" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已保存到素材库" } }
+      }
+    },
+    "canvas.generation.progress.running": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Generating" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在生成" } }
+      }
+    },
+    "canvas.generation.progress.submitted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Submitted; waiting for the provider" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已提交，等待供应商开始" } }
+      }
+    },
+    "canvas.generation.state.configuration_needed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Configure" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "待配置" } }
+      }
+    },
+    "canvas.generation.state.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Failed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "失败" } }
+      }
+    },
+    "canvas.generation.state.ready": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Done" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "完成" } }
+      }
+    },
+    "canvas.generation.state.running": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Generating" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "生成中" } }
+      }
+    },
+    "canvas.node.basic_card": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Basic Card" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "基础卡片" } }
+      }
+    },
+    "canvas.node.card": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Card" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "卡片" } }
+      }
+    },
+    "canvas.node.create": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Create Node" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "新建节点" } }
+      }
+    },
+    "canvas.node.group": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Group" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "分组" } }
+      }
+    },
+    "canvas.node.panorama_3d": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "3D Panorama" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "3D 全景" } }
+      }
+    },
+    "canvas.node.scene_3d": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "3D Scene" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "3D 场景" } }
+      }
+    },
+    "canvas.node.shape": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Shape" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "形状" } }
+      }
+    },
+    "canvas.node.sticky_note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Sticky Note" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "便签" } }
+      }
+    },
+    "canvas.node.text": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Text" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "文本" } }
+      }
+    },
+    "canvas.task.generation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Generation Task" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "生成任务" } }
+      }
+    },
+    "common.close": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Close" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "关闭" } }
+      }
+    },
+    "common.unknown_error": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Unknown error" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未知错误" } }
+      }
+    },
     "composer.attach": {
       "extractionState": "manual",
       "localizations": {
