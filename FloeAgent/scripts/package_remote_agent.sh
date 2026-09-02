@@ -2,7 +2,7 @@
 set -eu
 
 OUTPUT_DIRECTORY="${1:-release-assets}"
-VERSION="${2:-1.4.1}"
+VERSION="${2:-1.4.2}"
 SOURCE_DIRECTORY="Sources/FloeExecution/Resources/RemoteAgent"
 ARCHIVE_NAME="floe-remote-agent-${VERSION}.tar.gz"
 

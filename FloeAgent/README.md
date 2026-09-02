@@ -76,6 +76,7 @@ CI regenerates the project and fails if the committed project differs.
 8. Skills are declarative packages and never dynamically expand the compiled tool catalog.
 9. Completed tool executions are checkpointed with the run ledger; recovery clears unfinished stream fields and never replays a successful identical tool/argument pair.
 10. Local-model context/tool selection is independent from cloud-provider context, compression, and capability ceilings.
+11. Stateful tool chains preserve verified identifiers and artifact bindings before bounded output; missing IDs route to a read-only discovery predecessor instead of a guessed value or repeated mutation.
 
 ## Release checks
 

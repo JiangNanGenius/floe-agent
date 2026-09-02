@@ -81,6 +81,8 @@ Only an SSH device with **Use as remote execution environment** enabled receives
 
 When the user explicitly supplies an address, port or BLE GATT identifiers in the conversation, the model can open a task-only temporary Telnet, TCP or BLE serial session without saving a device. Temporary connections are not synced and automatically close after 30 minutes. Telnet and raw TCP are unencrypted and should be used only on a trusted network or inside an existing secure tunnel. iOS does not expose arbitrary classic Bluetooth SPP to normal apps, so Floe supports BLE GATT serial characteristics; MFi accessories still depend on their published vendor protocol.
 
+Stateful tools discover identifiers before acting: saved hosts and connections come from the host list, a running SSH command returns the `taskID` consumed by status checks, remote hosting list returns the `shareID` consumed by stop, and `cloudWorkspace.catalog` returns the `workspaceID` used by remote file and Git tools. Floe keeps these structured bindings ahead of bounded or truncated output. If an identifier is missing, the Agent should call the named read-only discovery step once rather than guessing an ID or repeating a side effect.
+
 ## 5. Continue the same conversation
 
 Every later message creates a new Run inside the same task. Floe reconstructs context from prior messages, attachments, tool results, decisions, the active plan and goal, scoped memory, workspace instructions, and task permissions. Older history can be compressed into sourced summaries; evidence is referenced rather than silently re-executed.
@@ -130,7 +132,7 @@ Approval is based on the user's stated goal and the concrete tool target, not on
 
 Leaving a task screen does not cancel its Run. Floe records checkpoints at model phases, tool boundaries, approvals, user-input waits, child runs, and partial responses. When the app returns, it reconnects to a provider job when supported or creates a recovery Run in the same task.
 
-iOS scheduling and background execution are best effort. A notification or Live Activity opens its target task; ordinary cold launch still opens New Task. Do not assume an SSH, VNC, browser, or model stream stayed connected while iOS suspended the app.
+iOS scheduling and background execution are best effort. A notification or Live Activity opens its target task; ordinary cold launch still opens New Task. Do not assume an SSH, VNC, browser, or model stream stayed connected while iOS suspended the app. If you manually close Picture in Picture, Floe keeps the visual surface suppressed for that task batch across later foreground/background transitions while background execution may continue. A genuinely new Run may offer Picture in Picture again.
 
 ## 11. Apple capabilities, Shortcuts and automation
 
@@ -188,7 +190,7 @@ Only instruction-only or read-only low-risk packages can install automatically. 
 - **Remote tool unavailable:** confirm the host, SSH authorization, task permission, and network path.
 - **LAN scan finds nothing:** allow Local Network access in iOS Settings, stay on the same LAN, and retry. Discovery is limited to the Bonjour service types declared by the app and is not a general port scanner.
 - **Workspace preview says it is not open:** reopen the Files inspector and confirm the task has either its private workspace or the intended project binding before opening the file.
-- **Picture in Picture is black or does not start:** Floe prepares a visible progress source when the task starts and defers a background start request until AVKit reports it ready. Returning to Floe ends the active system PiP session; a later departure rebuilds and starts a fresh source. Include the PiP status and latest diagnostics when reporting a persistent black frame.
+- **Picture in Picture is black or does not start:** Floe prepares a visible progress source when the task starts and defers a background start request until AVKit reports it ready. Returning to Floe ends the active system PiP session. If you close PiP yourself, Floe will not recreate it for the same task batch after another foreground/background cycle; a new Run resets that choice. Include the PiP status and latest diagnostics when reporting a persistent black frame.
 - **A Python package will not activate:** confirm it is a pure-Python universal wheel. Packages containing native extensions remain download-and-inspect only; use a trusted SSH host for native dependencies.
 - **Voice fails or exits:** check microphone and speech-recognition permissions, audio route, and whether another app owns the input session.
 

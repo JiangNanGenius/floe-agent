@@ -4,7 +4,7 @@ import Foundation
 /// helper. The exact files shipped in the app are also packaged as GitHub
 /// Release assets by `scripts/package_remote_agent.sh`.
 public enum RemoteAgentPayload {
-    public static let version = "1.4.1"
+    public static let version = "1.4.2"
     public static let defaultPort = 43_187
     public static let mutualTLSPort = 43_188
 

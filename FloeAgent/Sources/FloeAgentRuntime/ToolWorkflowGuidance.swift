@@ -1,0 +1,168 @@
+import Foundation
+import FloeModels
+
+/// Central, bounded guidance for chaining stateful tools. Tool
+/// implementations remain the source of truth; this layer only explains how
+/// stable identifiers move between existing results and subsequent calls.
+enum ToolWorkflowGuidance {
+    static func contextLines(for toolNames: [String]) -> [String] {
+        let names = Set(toolNames)
+        var lines: [String] = []
+
+        if names.contains("ssh.listHosts") && names.contains(where: { $0.hasPrefix("ssh.") && $0 != "ssh.listHosts" }) {
+            lines.append("Remote-host workflow: call ssh.listHosts once when the target is not already identified, select the returned host id by name/address, and reuse that exact hostID for SSH, VNC, cloud-workspace, or saved-connection calls. Never invent or re-search an ID already returned in this run.")
+        }
+        if names.contains("ssh.execute") && names.contains("ssh.taskStatus") {
+            lines.append("Durable SSH workflow: if ssh.execute returns state=running, reuse its exact taskID with ssh.taskStatus until terminal; never dispatch the command again just to obtain status.")
+        }
+        if names.contains("remote.connection.open") {
+            lines.append("TCP/Telnet workflow: ssh.listHosts -> remote.connection.open -> reuse its sessionID for remote.connection.exchange -> remote.connection.close. Explicit user-supplied host/port may skip host lookup.")
+        }
+        if names.contains("bluetooth.serial.open") {
+            lines.append("BLE workflow: use ssh.listHosts for a saved BLE connection, or bluetooth.serial.scan for a nearby peripheral; bluetooth.serial.open returns the sessionID required by exchange and close.")
+        }
+        if names.contains("browser.navigate") && names.contains("browser.observe") {
+            lines.append("Browser workflow: browser.navigate returns tab/document identifiers; browser.observe refreshes refs for that document; reuse the returned tabID/documentID and fresh element refs for one action, then observe again.")
+        }
+        if names.contains("canvas.getState") || names.contains("canvas.inspect") {
+            lines.append("Canvas workflow: inspect/getState returns canvasID, documentID, revision, and node IDs. Reuse that exact revision and IDs for one patch or generation; refresh state only after a mutation or revision conflict. Media status IDs come from the generation result.")
+        }
+        if names.contains("memory.list") || names.contains("memory.search") {
+            lines.append("Memory workflow: memory.search/list returns stable memory IDs; reuse them for update/forget. organizePreview returns the batch and entry IDs consumed by batchApply.")
+        }
+        if names.contains("conversation.search") && names.contains("conversation.read") {
+            lines.append("Conversation workflow: conversation.search returns conversationID; pass it unchanged to conversation.read and reuse its cursor for older pages.")
+        }
+        if names.contains("apple.home.list") && names.contains("apple.home.control") {
+            lines.append("Apple Home workflow: apple.home.list returns accessoryID and characteristicID; control only a writable characteristic using both exact IDs.")
+        }
+        if names.contains("apple.calendar.list") || names.contains("apple.reminders.list") || names.contains("apple.automation.list") {
+            lines.append("Apple edit workflow: list first for update/delete and reuse the returned stable id. Create actions do not require a pre-existing id.")
+        }
+        if names.contains("font.list") && names.contains("font.remove") {
+            lines.append("Font workflow: font.list returns the digest id required by font.remove; never derive it from a filename.")
+        }
+        if names.contains(where: { $0.hasPrefix("cloudWorkspace.") }) {
+            lines.append("Cloud-workspace workflow: use the exact hostID and remote path already shown under Workspace links. If absent, cloudWorkspace.catalog lists existing workspaceIDs; cloudWorkspace.create returns a new workspaceID. Reuse that ID for file paths and cloud Git calls. Do not treat the local Cloud marker as remote file content.")
+        }
+        if names.contains("remoteHosting.inspect") && names.contains("remoteHosting.manage") {
+            lines.append("Remote-hosting workflow: resolve hostID with ssh.listHosts, inspect capabilities, then use remoteHosting.manage action=list to discover shareIDs before stop. Publish only after explicit sharing authority; reuse returned shareID values exactly.")
+        }
+        return lines
+    }
+
+    static func recoveryHint(for toolName: String) -> String? {
+        switch toolName {
+        case "ssh.execute", "ssh.inspectTarget", "ssh.updateHost",
+             "ssh.bootstrapExecutionHost", "ssh.bootstrapRemoteAgent":
+            return "Resolve hostID with ssh.listHosts and reuse the returned value; do not guess it."
+        case "ssh.taskStatus":
+            return "Use the exact taskID returned by ssh.execute when it reported state=running; do not execute the command again."
+        case "remote.connection.open":
+            return "Use hostID and connectionID from ssh.listHosts, or provide the explicit user-supplied kind, host, and port."
+        case "remote.connection.exchange", "remote.connection.close":
+            return "Use the sessionID returned by remote.connection.open in this run."
+        case "bluetooth.serial.open":
+            return "Use saved IDs from ssh.listHosts or explicit identifiers from bluetooth.serial.scan."
+        case "bluetooth.serial.exchange", "bluetooth.serial.close":
+            return "Use the sessionID returned by bluetooth.serial.open in this run."
+        case "conversation.read":
+            return "Use a conversationID returned by conversation.search."
+        case "memory.update", "memory.forget":
+            return "Use an id returned by memory.search or memory.list."
+        case "memory.batchApply":
+            return "Use the batchID and entry IDs returned by memory.organizePreview."
+        case "font.remove":
+            return "Use the digest id returned by font.list."
+        case "apple.calendar.update":
+            return "For update/delete, use the id returned by apple.calendar.list."
+        case "apple.reminders.update":
+            return "For update/delete, use the id returned by apple.reminders.list."
+        case "apple.automation.update":
+            return "For update/delete, use the id returned by apple.automation.list."
+        case "apple.home.control":
+            return "Use accessoryID and characteristicID from apple.home.list."
+        case "remoteHosting.inspect":
+            return "Resolve hostID with ssh.listHosts before inspecting the host."
+        case "remoteHosting.manage":
+            return "Resolve hostID with ssh.listHosts; for stop, call action=list and reuse the returned shareID."
+        default:
+            if toolName.hasPrefix("cloudWorkspace.git") {
+                return "Use a workspaceID from Workspace links, cloudWorkspace.catalog, or cloudWorkspace.create."
+            }
+            if toolName.hasPrefix("canvas.") {
+                return "Use canvas/document/node IDs and the current revision from canvas.getState or canvas.inspect."
+            }
+            return nil
+        }
+    }
+
+    static func outputSummary(
+        _ summary: String,
+        exposing artifacts: [ToolArtifactReference]
+    ) -> String {
+        guard !artifacts.isEmpty else { return summary }
+        let bindings = artifacts.prefix(8).map {
+            "artifactID=\($0.id.uuidString) path=\($0.relativePath) mime=\($0.mimeType) sha256=\($0.sha256)"
+        }.joined(separator: "; ")
+        // Put reusable bindings first so ToolResult's 4 KiB boundary cannot
+        // discard them when the implementation summary is already large.
+        return "resource artifacts: \(bindings)\n" + summary
+    }
+
+    static func artifactBindings(_ artifacts: [ToolArtifactReference]) -> String? {
+        guard !artifacts.isEmpty else { return nil }
+        return "artifact bindings: " + artifacts.prefix(8).map {
+            "\($0.id.uuidString)=\($0.relativePath)"
+        }.joined(separator: ", ")
+    }
+
+    /// Extracts identifier bindings from JSON results so compaction never
+    /// trims away the values required by the next tool in the chain.
+    static func resourceBindings(in output: String, toolName: String) -> String? {
+        guard let data = output.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        var bindings: [String] = []
+        var seen: Set<String> = []
+
+        func visit(_ value: Any, path: String, depth: Int) {
+            guard depth <= 6, bindings.count < 12 else { return }
+            if let dictionary = value as? [String: Any] {
+                for key in dictionary.keys.sorted() {
+                    guard let child = dictionary[key] else { continue }
+                    let childPath = path.isEmpty ? key : "\(path).\(key)"
+                    let normalized = key.lowercased().replacingOccurrences(of: "_", with: "")
+                    let isIdentifier = normalized == "id"
+                        || normalized.hasSuffix("id")
+                        || normalized.hasSuffix("ids")
+                        || normalized == "cursor"
+                    if isIdentifier, let scalar = scalarString(child), !scalar.isEmpty {
+                        let binding = "\(childPath)=\(scalar)"
+                        if seen.insert(binding).inserted { bindings.append(binding) }
+                    } else {
+                        visit(child, path: childPath, depth: depth + 1)
+                    }
+                }
+            } else if let array = value as? [Any] {
+                for (index, child) in array.prefix(12).enumerated() {
+                    visit(child, path: "\(path)[\(index)]", depth: depth + 1)
+                    if bindings.count >= 12 { break }
+                }
+            }
+        }
+
+        visit(object, path: toolName, depth: 0)
+        guard !bindings.isEmpty else { return nil }
+        return "resource bindings: " + bindings.joined(separator: ", ")
+    }
+
+    private static func scalarString(_ value: Any) -> String? {
+        if value is NSNull { return nil }
+        if let value = value as? String { return String(value.prefix(160)) }
+        if let value = value as? NSNumber { return value.stringValue }
+        if let values = value as? [String] {
+            return values.prefix(8).joined(separator: ",")
+        }
+        return nil
+    }
+}

@@ -26,7 +26,7 @@ struct HarnessExecutionLedger: Sendable {
                 callFingerprint: record.callFingerprint,
                 status: record.status,
                 resultFingerprint: record.resultFingerprint,
-                excerpt: String(record.excerpt.prefix(220)),
+                excerpt: String(record.excerpt.prefix(360)),
                 occurrenceCount: max(1, record.occurrenceCount)
             )
         }
@@ -75,7 +75,7 @@ struct HarnessExecutionLedger: Sendable {
             ? Data(result.outputSummary.utf8)
             : Data(result.outputDigest.lowercased().utf8)
         let resultFingerprint = Self.fingerprint(resultData)
-        let excerpt = Self.boundedExcerpt(result.outputSummary)
+        let excerpt = Self.boundedExcerpt(result, toolName: call.toolName)
 
         if let index = entries.firstIndex(where: {
             $0.toolName == call.toolName
@@ -121,13 +121,21 @@ struct HarnessExecutionLedger: Sendable {
         """
     }
 
-    private static func boundedExcerpt(_ value: String) -> String {
+    private static func boundedExcerpt(_ result: ToolResult, toolName: String) -> String {
+        let value = result.outputSummary
         let normalized = value
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\r", with: " ")
             .split(whereSeparator: { $0.isWhitespace })
             .joined(separator: " ")
-        return String(normalized.prefix(220))
+        let bindings = [
+            ToolWorkflowGuidance.resourceBindings(in: value, toolName: toolName),
+            ToolWorkflowGuidance.artifactBindings(result.artifacts)
+        ].compactMap { $0 }
+        let combined = bindings.isEmpty
+            ? normalized
+            : bindings.joined(separator: " | ") + " | " + normalized
+        return String(combined.prefix(360))
     }
 
     private static func fingerprint(_ data: Data) -> String {

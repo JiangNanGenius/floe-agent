@@ -29,8 +29,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private var surfacedRunID: UUID?
     private var retainedPausedRun: (id: UUID, run: ActiveRun)?
     private var isAppInBackground = false
-    private var pipSuppressedForCurrentBatch = false
-    private var pipWasClosedInForeground = false
+    private var visualSurfacePolicy = BackgroundVisualSurfacePolicy()
     private var notifiedApprovalRuns: Set<UUID> = []
     private var lease: BackgroundExecutionLease?
     private var refreshWork: Task<Void, Never>?
@@ -93,7 +92,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         // A newly-created task starts a new eligibility window after a user
         // manually dismissed PiP or stopped the previous broadcast.
-        pipSuppressedForCurrentBatch = false
+        visualSurfacePolicy.beginNewRun()
         retainedPausedRun = nil
         activeRuns[runID] = ActiveRun(conversationID: conversationID, title: title)
         FloeLogger(category: .app).info(
@@ -199,16 +198,16 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// A later newly-started task will call `didStart` and request PiP again.
     func didClosePictureInPicture() {
         surfacedRunID = nil
-        // Respect the close while the app stays in the background. Once the
-        // user returns to Floe, the next departure is a fresh explicit PiP
-        // attempt and must not remain permanently suppressed.
-        pipSuppressedForCurrentBatch = isAppInBackground
-        pipWasClosedInForeground = !isAppInBackground
+        // A scene cycle is not fresh user intent. Keep this decision for the
+        // current task batch even if the user reopens Floe and leaves again.
+        // A genuinely new run clears it in didStart. Screen sharing may keep
+        // running; only its optional progress PiP is suppressed.
+        visualSurfacePolicy.userClosedPictureInPicture()
         FloeLogger(category: .app).info(
             "pictureInPictureClosedByUser activeRuns=\(activeRuns.count)"
         )
-        // Do not recreate PiP immediately under the user's close gesture.
-        // Foreground preparation resumes on the next genuine scene cycle.
+        // Do not recreate PiP under the user's close gesture or a later scene
+        // transition in the same batch.
     }
 
     /// Applies the user's background-execution choice when a run starts.
@@ -292,8 +291,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// leaving the completed title frozen indefinitely.
     private func resumeBackgroundSurfaceIfNeeded() {
         guard isAppInBackground,
-              !pipSuppressedForCurrentBatch,
-              environment.settingsCenter.backgroundExecution != .standard else { return }
+              visualSurfacePolicy.allowsVisualSurface(
+                  for: environment.settingsCenter.backgroundExecution
+              ) else { return }
         let candidate = activeRuns.first.map { (id: $0.key, run: $0.value) }
             ?? retainedPausedRun
         guard let (runID, run) = candidate else { return }
@@ -464,11 +464,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             }
         case .active:
             isAppInBackground = false
-            pipSuppressedForCurrentBatch = false
             pipCarouselTask?.cancel()
             pipCarouselTask = nil
             environment.backgroundVideoService.retractForForeground()
-            if !pipWasClosedInForeground {
+            if visualSurfacePolicy.allowsVisualSurface(
+                for: environment.settingsCenter.backgroundExecution
+            ) {
                 prepareBackgroundSurfaceIfNeeded()
             }
             lease?.release()
@@ -487,17 +488,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // still attached to a foreground window. If video synthesis is
             // still running, the service records the deferred start instead
             // of losing this only reliable lifecycle signal.
-            if pipWasClosedInForeground {
-                pipWasClosedInForeground = false
-                // The old controller was destroyed by the user's close.
-                // Rebuild while the scene is still attachable and carry the
-                // start request through asynchronous video preparation.
-                prepareBackgroundSurfaceIfNeeded(startImmediately: true)
-                break
-            }
-            if !pipSuppressedForCurrentBatch,
-               !activeRuns.isEmpty,
-               environment.settingsCenter.backgroundExecution != .standard {
+            if visualSurfacePolicy.allowsVisualSurface(
+                for: environment.settingsCenter.backgroundExecution
+            ), !activeRuns.isEmpty {
                 environment.backgroundVideoService.startPreparedPictureInPicture()
             }
         @unknown default:
@@ -510,7 +503,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// start immediately; attempting this only after entering background
     /// cannot attach the required inline player layer.
     private func prepareBackgroundSurfaceIfNeeded(startImmediately: Bool = false) {
-        guard environment.settingsCenter.backgroundExecution != .standard,
+        guard visualSurfacePolicy.allowsVisualSurface(
+                  for: environment.settingsCenter.backgroundExecution
+              ),
               !environment.backgroundVideoService.isPiPPrepared,
               !environment.backgroundVideoService.isPreparingPiP else { return }
         let candidate = activeRuns.first.map { (id: $0.key, run: $0.value) }

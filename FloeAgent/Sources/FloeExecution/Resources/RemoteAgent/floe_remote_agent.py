@@ -11,7 +11,7 @@ import subprocess, tempfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 ROOT = pathlib.Path(os.environ.get("FLOE_CLOUD_ROOT", "~/.floe/cloud-workspaces")).expanduser().resolve()
 STATE = pathlib.Path(os.environ.get("FLOE_STATE_ROOT", "~/.local/state/floe-agent")).expanduser().resolve()
 CONFIG = pathlib.Path(os.environ.get("FLOE_CONFIG_ROOT", "~/.config/floe-agent")).expanduser().resolve()
@@ -151,6 +151,19 @@ def create_workspace(body, device_id):
     target.mkdir(mode=0o700,parents=False)
     atomic_json(target/WORKSPACE_MARKER,{"workspace_id":workspace_id,"created_at":time.time(),"device_id":device_id or "ssh-recovery"})
     return {"ok":True,"workspace_id":workspace_id,"already_existed":False}
+
+def list_workspaces():
+    rows=[]
+    for target in sorted(ROOT.iterdir(),key=lambda path:path.name.casefold()):
+        marker=target/WORKSPACE_MARKER
+        if not target.is_dir() or not marker.is_file(): continue
+        try:
+            metadata=json.loads(marker.read_text())
+            workspace_id=valid_id(metadata.get("workspace_id"),"workspace id")
+            if workspace_id!=target.name: continue
+            rows.append({"workspace_id":workspace_id,"created_at":metadata.get("created_at")})
+        except (OSError,ValueError,TypeError,json.JSONDecodeError): pass
+    return {"workspaces":rows[:500]}
 
 def delete_workspace(workspace_id):
     workspace_id=valid_id(workspace_id,"workspace id"); target=resolve(workspace_id)
@@ -325,6 +338,7 @@ class Handler(BaseHTTPRequestHandler):
                 try: certificate=json.loads((STATE/"certificate-status.json").read_text())
                 except (OSError,ValueError): pass
                 return self._send(200,{"version":VERSION,"docker":available("docker"),"nginx":available("nginx"),"certbot":available("certbot"),"ufw":available("ufw"),"network_scope":scope,"detected_address":address,"certificate_maintenance":certificate})
+            if parsed.path=="/v1/workspaces": return self._send(200,list_workspaces())
             if parsed.path=="/v1/shares":
                 rows=[]
                 for path in SHARES.glob("*/share.json"):

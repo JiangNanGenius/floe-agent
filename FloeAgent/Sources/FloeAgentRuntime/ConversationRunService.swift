@@ -1618,6 +1618,7 @@ public actor ConversationRunService {
             if toolNames.contains("vnc.observe") && toolNames.contains("vnc.click") {
                 lines.append("VNC interaction policy: call vnc.observe first and prefer its OCR-backed recognizedText references with vnc.clickElement. Use exact screenshot framebuffer-pixel coordinates only when no suitable reference exists. Perform one bounded action, then inspect the returned post-action screenshot. inputDispatched=true only confirms protocol delivery; never claim task success without visual evidence. RFB does not provide native control roles or a DOM, so do not invent them.")
             }
+            lines.append(contentsOf: ToolWorkflowGuidance.contextLines(for: toolNames))
             lines.append("Tool inventory rule: when asked what tools are available, use only the exact names above and their supplied schemas. Never invent, rename, or imply an unavailable tool; state capability limits directly.")
         } else {
             lines.append("Available tools: none (native tool calling is disabled for this model)")

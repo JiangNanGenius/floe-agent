@@ -16,6 +16,16 @@ public struct CloudWorkspaceProvisionArguments: Decodable, Sendable {
     public var port: Int?
 }
 
+public struct CloudWorkspaceCatalogArguments: Decodable, Sendable {
+    public var hostID: String?
+    public var port: Int?
+
+    public init(hostID: String? = nil, port: Int? = nil) {
+        self.hostID = hostID
+        self.port = port
+    }
+}
+
 private enum CloudWorkspaceToolSupport {
     static let schema = #"{"type":"object","properties":{"hostID":{"type":"string","description":"Paired SSH host UUID; omit to use the default host"},"path":{"type":"string","description":"Path relative to the daemon cloud-workspace root"},"contentBase64":{"type":"string","description":"Base64 file content for writes"},"port":{"type":"integer","minimum":1,"maximum":65535}},"required":["path"],"additionalProperties":false}"#
 
@@ -54,6 +64,35 @@ public struct CloudWorkspaceProvisionTool: AgentTool {
             hostID: try CloudWorkspaceToolSupport.hostID(args.hostID),
             port: args.port ?? RemoteAgentPayload.defaultPort,
             method: "POST", endpoint: "v1/workspaces/create", body: body
+        )
+        return CloudWorkspaceToolSupport.output(data)
+    }
+}
+
+/// Discovers existing Floe-owned remote workspaces without requiring the
+/// model to remember or guess a workspace identifier from an older turn.
+public struct CloudWorkspaceCatalogTool: AgentTool {
+    public static let name = "cloudWorkspace.catalog"
+    public static let toolDescription = "List Floe-owned cloud workspaces on a paired host. Returns stable workspaceID values for file and Git operations; use this when the current Workspace links do not already identify the target."
+    public static let parametersJSON = #"{"type":"object","properties":{"hostID":{"type":"string","description":"Paired SSH host UUID; omit to use the default host"},"port":{"type":"integer","minimum":1,"maximum":65535}},"additionalProperties":false}"#
+    public static let riskLabels: Set<RiskLabel> = [.readsFiles]
+    public static let isSideEffecting = false
+    public static let toolEffect: ToolEffect = .readOnly
+    private let service: CloudWorkspaceService
+
+    public init(service: CloudWorkspaceService) { self.service = service }
+    public func validate(_ args: CloudWorkspaceCatalogArguments) throws {
+        _ = try CloudWorkspaceToolSupport.hostID(args.hostID)
+    }
+    public func execute(
+        _ args: CloudWorkspaceCatalogArguments,
+        context: ToolContext
+    ) async throws -> ToolExecutionOutput {
+        let data = try await service.request(
+            hostID: try CloudWorkspaceToolSupport.hostID(args.hostID),
+            port: args.port ?? RemoteAgentPayload.defaultPort,
+            method: "GET",
+            endpoint: "v1/workspaces"
         )
         return CloudWorkspaceToolSupport.output(data)
     }

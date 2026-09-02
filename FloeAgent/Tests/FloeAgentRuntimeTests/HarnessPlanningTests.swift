@@ -122,6 +122,80 @@ struct HarnessPlanningTests {
         #expect(prompt.count < 1_000)
     }
 
+    @Test("activation ledger preserves resource IDs before truncating large results")
+    func activationLedgerPreservesResourceBindings() throws {
+        let hostID = UUID().uuidString
+        let call = try ToolCall(
+            id: "hosts-1",
+            toolName: "ssh.listHosts",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        let padding = String(repeating: "x", count: 2_000)
+        let result = ToolResult(
+            callID: call.id,
+            status: .ok,
+            outputSummary: #"{"metadata":"\#(padding)","hosts":[{"name":"server","id":"\#(hostID)"}]}"#,
+            outputDigest: "digest"
+        )
+        var ledger = HarnessExecutionLedger()
+        ledger.record(call: call, result: result)
+
+        let prompt = try #require(ledger.promptBlock())
+        #expect(prompt.contains(hostID))
+        #expect(prompt.contains("resource bindings"))
+    }
+
+    @Test("run context publishes bounded stateful tool workflows")
+    func toolWorkflowContext() {
+        let prompt = ConversationRunService.buildContextMessage(
+            .init(availableToolNames: [
+                "ssh.listHosts", "ssh.execute",
+                "ssh.taskStatus",
+                "remote.connection.open", "remote.connection.exchange", "remote.connection.close",
+                "memory.list", "memory.update",
+                "remoteHosting.inspect", "remoteHosting.manage"
+            ])
+        )
+        #expect(prompt.contains("Remote-host workflow"))
+        #expect(prompt.contains("remote.connection.open -> reuse its sessionID"))
+        #expect(prompt.contains("memory.search/list returns stable memory IDs"))
+        #expect(prompt.contains("reuse its exact taskID with ssh.taskStatus"))
+        #expect(prompt.contains("action=list to discover shareIDs"))
+    }
+
+    @Test("failed stateful tools point to their ID discovery predecessor")
+    func toolWorkflowRecoveryHints() {
+        #expect(ToolWorkflowGuidance.recoveryHint(for: "ssh.taskStatus")?.contains("ssh.execute") == true)
+        #expect(ToolWorkflowGuidance.recoveryHint(for: "remoteHosting.manage")?.contains("action=list") == true)
+        #expect(ToolWorkflowGuidance.recoveryHint(for: "cloudWorkspace.gitStatus")?.contains("cloudWorkspace.catalog") == true)
+    }
+
+    @Test("artifact bindings are exposed before bounded tool output")
+    func toolArtifactsAreChainable() {
+        let id = UUID()
+        let artifact = ToolArtifactReference(
+            id: id,
+            relativePath: "VNCArtifacts/frame.jpg",
+            mimeType: "image/jpeg",
+            byteCount: 42,
+            sha256: String(repeating: "a", count: 64)
+        )
+        let summary = ToolWorkflowGuidance.outputSummary(
+            String(repeating: "x", count: 8_000),
+            exposing: [artifact]
+        )
+        let bounded = ToolResult(
+            callID: "observe-1",
+            status: .ok,
+            outputSummary: summary,
+            outputDigest: "digest",
+            artifacts: [artifact]
+        )
+        #expect(bounded.outputSummary.contains(id.uuidString))
+        #expect(bounded.outputSummary.contains("VNCArtifacts/frame.jpg"))
+    }
+
     @Test("empty activation ledger forbids invented tool evidence")
     func emptyActivationLedgerPrompt() throws {
         let prompt = try #require(HarnessExecutionLedger().promptBlock())

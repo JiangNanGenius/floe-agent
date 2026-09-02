@@ -184,7 +184,10 @@ public struct CatalogToolExecutor: ToolExecutor {
             return ToolResult(
                 callID: call.id,
                 status: output.requiresUserAction ? .needsUser : .ok,
-                outputSummary: output.summary,
+                outputSummary: ToolWorkflowGuidance.outputSummary(
+                    output.summary,
+                    exposing: output.artifacts
+                ),
                 outputDigest: output.fullOutputSHA256,
                 exitStatus: output.exitStatus,
                 artifacts: output.artifacts
@@ -194,10 +197,12 @@ public struct CatalogToolExecutor: ToolExecutor {
         } catch is CancellationError {
             return ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
         } catch {
+            let recovery = ToolWorkflowGuidance.recoveryHint(for: call.toolName)
+                .map { " Recovery: \($0)" } ?? ""
             return ToolResult(
                 callID: call.id,
                 status: .failed,
-                outputSummary: "Execution error: \(error.localizedDescription)",
+                outputSummary: "Execution error: \(error.localizedDescription)\(recovery)",
                 outputDigest: ""
             )
         }
