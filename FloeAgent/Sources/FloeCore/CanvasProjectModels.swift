@@ -23,6 +23,92 @@ public enum CanvasNodeRole: String, Sendable, Codable, Hashable {
     case content, task, artifact, container
 }
 
+/// Durable state for a generation task.  A configured task deliberately has
+/// no provider job yet: execution begins only after the user presses Start.
+public enum CanvasGenerationTaskState: String, Sendable, Codable, CaseIterable, Hashable {
+    case needsConfiguration
+    case configured
+    case preparing
+    case uploading
+    case submitted
+    case running
+    case completed
+    case downloading
+    case ready
+    case failed
+    case cancelled
+    case expired
+
+    public var isRunning: Bool {
+        switch self {
+        case .preparing, .uploading, .submitted, .running, .completed, .downloading: true
+        default: false
+        }
+    }
+
+    public var canStart: Bool {
+        switch self {
+        case .configured, .ready, .failed, .cancelled, .expired: true
+        default: false
+        }
+    }
+}
+
+/// Provider-neutral configuration stored on a generation task node.  It is
+/// encoded into the existing node metadata so old canvas documents and sync
+/// payloads remain source-compatible.
+public struct CanvasGenerationConfiguration: Sendable, Codable, Hashable {
+    public var kind: MediaKind
+    public var prompt: String
+    public var modelID: UUID?
+    public var aspectRatio: String
+    public var resolution: String?
+    public var quality: String?
+    public var count: Int
+    public var durationSeconds: Int?
+    public var sourceNodeIDs: [UUID]
+
+    public init(
+        kind: MediaKind, prompt: String, modelID: UUID?, aspectRatio: String,
+        resolution: String? = nil, quality: String? = nil, count: Int = 1,
+        durationSeconds: Int? = nil, sourceNodeIDs: [UUID] = []
+    ) {
+        self.kind = kind; self.prompt = prompt; self.modelID = modelID
+        self.aspectRatio = aspectRatio; self.resolution = resolution
+        self.quality = quality; self.count = max(1, count)
+        self.durationSeconds = durationSeconds; self.sourceNodeIDs = sourceNodeIDs
+    }
+
+    public init?(metadata: [String: String]) {
+        guard let prompt = metadata["generationPrompt"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !prompt.isEmpty else { return nil }
+        kind = metadata["generationKind"].flatMap(MediaKind.init(rawValue:)) ?? .image
+        self.prompt = prompt
+        modelID = metadata["generationModelID"].flatMap(UUID.init(uuidString:))
+        aspectRatio = metadata["generationAspectRatio"] ?? "1:1"
+        resolution = metadata["generationResolution"].flatMap { $0.isEmpty ? nil : $0 }
+        quality = metadata["generationQuality"].flatMap { $0.isEmpty ? nil : $0 }
+        count = max(1, metadata["generationCount"].flatMap(Int.init) ?? 1)
+        durationSeconds = metadata["generationDurationSeconds"].flatMap(Int.init)
+        sourceNodeIDs = (metadata["generationSourceNodeIDs"] ?? "")
+            .split(separator: ",").compactMap { UUID(uuidString: String($0)) }
+    }
+
+    public var metadata: [String: String] {
+        [
+            "generationKind": kind.rawValue,
+            "generationPrompt": prompt,
+            "generationModelID": modelID?.uuidString ?? "",
+            "generationAspectRatio": aspectRatio,
+            "generationResolution": resolution ?? "",
+            "generationQuality": quality ?? "",
+            "generationCount": String(count),
+            "generationDurationSeconds": durationSeconds.map(String.init) ?? "",
+            "generationSourceNodeIDs": sourceNodeIDs.map(\.uuidString).joined(separator: ",")
+        ]
+    }
+}
+
 public extension CanvasNodeKind {
     var role: CanvasNodeRole {
         switch self {
@@ -336,6 +422,21 @@ public struct CanvasNode: Sendable, Codable, Identifiable, Hashable {
 }
 
 public extension CanvasNode {
+    var generationTaskState: CanvasGenerationTaskState {
+        guard kind == .generationTask || metadata["generationState"] != nil else {
+            return .needsConfiguration
+        }
+        let raw = metadata["generationState"] ?? ""
+        if raw == "submitFailed" { return .failed }
+        return CanvasGenerationTaskState(rawValue: raw)
+            ?? (CanvasGenerationConfiguration(metadata: metadata) == nil
+                ? .needsConfiguration : .configured)
+    }
+
+    var generationConfiguration: CanvasGenerationConfiguration? {
+        CanvasGenerationConfiguration(metadata: metadata)
+    }
+
     /// Creates an editable native node before external content exists. Media
     /// placeholders can later receive an asset; generation placeholders can
     /// later receive a durable provider job. Keeping this factory in FloeCore

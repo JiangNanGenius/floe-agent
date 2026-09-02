@@ -569,4 +569,47 @@ struct CreativeMediaModelsTests {
         #expect(CanvasSyncReducer.newest(a, b) == CanvasSyncReducer.newest(b, a))
         #expect(CanvasSyncReducer.newest(a, b).mutation == .delete)
     }
+
+    @Test func generationConfigurationRoundTripsThroughLegacyMetadata() throws {
+        let modelID = UUID()
+        let sourceID = UUID()
+        let configuration = CanvasGenerationConfiguration(
+            kind: .image, prompt: "misty mountain product shot",
+            modelID: modelID, aspectRatio: "16:9", resolution: "2K",
+            quality: "high", count: 3, sourceNodeIDs: [sourceID]
+        )
+
+        let decoded = try #require(CanvasGenerationConfiguration(metadata: configuration.metadata))
+        #expect(decoded == configuration)
+    }
+
+    @Test func configuredGenerationTaskRequiresExplicitStart() {
+        let node = CanvasNode(
+            kind: .generationTask, text: "Image generation",
+            position: .init(x: 0, y: 0), size: .init(width: 320, height: 200),
+            metadata: [
+                "generationPrompt": "a quiet lake",
+                "generationKind": "image",
+                "generationState": "configured"
+            ]
+        )
+
+        #expect(node.generationTaskState == .configured)
+        #expect(node.generationTaskState.canStart)
+        #expect(!node.generationTaskState.isRunning)
+    }
+
+    @Test func generationTaskStateReadsLegacyFailureAndRunningValues() {
+        var node = CanvasNode(
+            kind: .generationTask, position: .init(x: 0, y: 0),
+            size: .init(width: 320, height: 200),
+            metadata: ["generationState": "submitFailed"]
+        )
+        #expect(node.generationTaskState == .failed)
+        #expect(node.generationTaskState.canStart)
+
+        node.metadata["generationState"] = "downloading"
+        #expect(node.generationTaskState == .downloading)
+        #expect(node.generationTaskState.isRunning)
+    }
 }

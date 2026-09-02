@@ -173,6 +173,44 @@ struct ToolLoopHardeningTests {
         #expect(completion.stopReason == .noProgress)
     }
 
+    @Test("a strict surface stops on the first unchanged tool retry")
+    func strictSurfaceStopsFirstDuplicate() async throws {
+        let adapter = MockAdapter()
+        let calls = try (1...2).map {
+            try ToolCall(
+                id: "strict-echo-\($0)",
+                toolName: "test.echo",
+                argumentsJSON: Data("{}".utf8),
+                scope: .local
+            )
+        }
+        adapter.script = calls.map { [.toolRequest($0)] }
+            + [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                maxToolSteps: 12,
+                unchangedToolOutcomeLimit: 2
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "stop the unchanged canvas route")
+
+        #expect(executor.executedCalls.count == 2)
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected strict no-progress finalization")
+            return
+        }
+        #expect(completion.stopReason == .noProgress)
+    }
+
     @Test("a successful mutation opens a new no-progress epoch")
     func successfulMutationResetsNoProgressEpoch() async throws {
         let adapter = MockAdapter()

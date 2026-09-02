@@ -30,7 +30,7 @@ Floe Agent turns a model conversation into a durable task. Each message continue
 - **Run on device when it fits.** Use the iOS 27 Apple Foundation Model or downloaded MLX models. Local models have their own context and memory policy, while cloud-model context and tools remain unchanged.
 - **Keep work inspectable.** Reasoning previews, tool calls, file changes, browser state, child agents, approvals, and errors live in one continuous timeline.
 - **Work where the files are.** Use Files workspaces, local image tools, SSH terminals, jump hosts, VNC, and a visible WebKit browser without a Floe-operated relay.
-- **Sketch inside the workspace.** Each workspace can open one native infinite-canvas project with multiple canvases, movable notes, freehand drawing, pan, and zoom.
+- **Build visual workflows inside the workspace.** Each workspace can open one native infinite-canvas project with multiple canvases, direct touch navigation, editable content nodes, explicit generation-task nodes, artifact nodes, in-place node AI, and a scoped Canvas Assistant.
 - **Connect standard MCP servers.** Add optional Streamable HTTP servers for ordinary Agent runs; every remote tool remains namespaced, locally policy-checked, and disabled for canvas by default.
 - **Manage source without leaving the workspace.** Inspect changes and diffs, initialize a repository, stage, commit, branch, fetch, fast-forward pull, push, and connect GitHub from a lightweight native source-control surface.
 - **Create and revise Office files.** Build DOCX, XLSX and PPTX files locally, preview them first, then open Floe's basic native editor for manual text, cell/formula, slide and speaker-note changes without uploading the document.
@@ -61,7 +61,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.4.62 (build 93); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
+Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.4.73 (build 104); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
 
 ### Unsigned IPA
 
@@ -109,7 +109,7 @@ See the [English user guide](docs/USER_GUIDE.md), [简体中文使用指南](doc
 | Inspector | Review changes, files, browser, terminal/host, progress, and child agents. It is collapsed by default; current-task permissions live only below the chat composer. |
 | Visible browser | Automate a real `WKWebView`, then hand control to the user for login, QR codes, verification, uploads, or other trusted interaction. |
 | Source Control | Review repository status, diffs and history; stage, commit, branch and synchronize without destructive reset, clean, force-push or history rewriting. |
-| Workspace Canvas | Organize a workspace on a native infinite surface with multiple canvases, notes, Pencil-friendly drawing, pan, and zoom. |
+| Workspace Canvas | Arrange content → task → artifact flows on a native infinite surface. Refine a selected node in place with AI, save generation settings, then explicitly start and monitor the task. |
 | Standard MCP | Connect optional Streamable HTTP tool servers for ordinary Agent runs, with per-server and per-tool controls. |
 | Settings | Configure providers, auxiliary models, task defaults, execution, files, sync, remote hosts, data controls, and diagnostics. |
 

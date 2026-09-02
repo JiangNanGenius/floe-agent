@@ -280,6 +280,9 @@ public actor FloeAgentRuntime {
         /// Number of retries allowed for a cloud request after a network,
         /// server, rate-limit, or stream-liveness failure.
         public var maxProviderRetries: Int
+        /// Maximum identical observable tool outcomes in one progress epoch.
+        /// A value of two stops on the first unchanged retry.
+        public var unchangedToolOutcomeLimit: Int
         /// Maximum wait for the first decoded provider event.
         public var providerFirstEventTimeout: TimeInterval
         /// Maximum gap between decoded provider events after the first event.
@@ -308,6 +311,7 @@ public actor FloeAgentRuntime {
             verifyFinalAnswer: Bool = false,
             forceInitialCompaction: Bool = false,
             maxProviderRetries: Int = 5,
+            unchangedToolOutcomeLimit: Int = 3,
             providerFirstEventTimeout: TimeInterval = 30,
             providerStreamIdleTimeout: TimeInterval = 45,
             providerRetryBaseDelay: TimeInterval = 1,
@@ -330,6 +334,7 @@ public actor FloeAgentRuntime {
             self.verifyFinalAnswer = verifyFinalAnswer
             self.forceInitialCompaction = forceInitialCompaction
             self.maxProviderRetries = max(0, maxProviderRetries)
+            self.unchangedToolOutcomeLimit = max(2, unchangedToolOutcomeLimit)
             self.providerFirstEventTimeout = max(0, providerFirstEventTimeout)
             self.providerStreamIdleTimeout = max(0, providerStreamIdleTimeout)
             self.providerRetryBaseDelay = max(0, providerRetryBaseDelay)
@@ -2133,7 +2138,8 @@ public actor FloeAgentRuntime {
             } else if let guardrail = loopGuard.record(
                 call: call,
                 result: result,
-                isSideEffecting: executor.descriptor(named: call.toolName)?.isSideEffecting == true
+                isSideEffecting: executor.descriptor(named: call.toolName)?.isSideEffecting == true,
+                stopLimit: configuration.unchangedToolOutcomeLimit
             ) {
                 noProgressDetected = noProgressDetected || guardrail.shouldStop
                 result.outputSummary += "\n\nHarness warning: \(guardrail.message)"
@@ -3034,7 +3040,8 @@ private struct ToolLoopGuard {
     mutating func record(
         call: ToolCall,
         result: ToolResult,
-        isSideEffecting: Bool
+        isSideEffecting: Bool,
+        stopLimit: Int = 3
     ) -> ToolLoopGuardrailDecision? {
         let arguments = Self.canonicalDigest(call.argumentsJSON)
         let observableOutput = result.outputDigest.isEmpty
@@ -3060,10 +3067,10 @@ private struct ToolLoopGuard {
         lastObservationInEpoch = exact
 
         outcomeCountsInEpoch[exact, default: 0] += 1
-        if outcomeCountsInEpoch[exact, default: 0] >= 3 {
+        if outcomeCountsInEpoch[exact, default: 0] >= stopLimit {
             return ToolLoopGuardrailDecision(
                 shouldStop: true,
-                message: "The same tool, canonical arguments, status, and observable result repeated three times without intervening progress. Stop only this unchanged retry route; preserve the evidence and synthesize or choose materially different arguments."
+                message: "The same tool, canonical arguments, status, and observable result repeated without intervening progress. Stop only this unchanged retry route; preserve the evidence and synthesize or choose materially different arguments."
             )
         }
         if outcomeCountsInEpoch[exact, default: 0] == 2 {

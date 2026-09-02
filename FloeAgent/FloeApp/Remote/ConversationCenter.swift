@@ -620,8 +620,11 @@ final class ConversationCenter: ObservableObject {
             workspaceRootURL: taskRootLease?.url,
             allowedWorkspacePaths: taskPolicy.filePaths,
             toolsEnabled: executionMode.toolsEnabled,
+            maxToolSteps: runSurface == .canvas ? 12 : Int.max / 4,
             verifyFinalAnswer: environment.settingsCenter.verifyFinalAnswer,
-            forceInitialCompaction: forceInitialCompaction
+            forceInitialCompaction: forceInitialCompaction,
+            maxProviderRetries: runSurface == .canvas ? 1 : 5,
+            unchangedToolOutcomeLimit: runSurface == .canvas ? 2 : 3
         )
         await environment.subagentRunnerRegistry.register(
             SubagentRunner(
