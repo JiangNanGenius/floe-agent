@@ -159,10 +159,24 @@ enum ThreadTimelineBuilder {
         //    (multi-turn text before tool calls) render in place.
         let sortedEvents = events.sorted { $0.sequence < $1.sequence }
         let terminalEvent = sortedEvents.last(where: { $0.kind == .terminal })
+        let hasReachedTerminal = terminalEvent != nil
+            || run.map { RunStateLocalizer.isTerminal($0.state) } == true
+        let lastAssistantTextSequence = sortedEvents
+            .last(where: { $0.kind == .assistantText })?
+            .sequence
+        let lastToolSequence = sortedEvents
+            .last(where: { $0.kind == .toolRequest || $0.kind == .toolResult })?
+            .sequence
         let nonTerminalEvents = sortedEvents.filter {
             $0.kind != .terminal
                 && !isTerminalStatusEvent($0)
                 && !isStaleStatusEvent($0, currentState: run?.state)
+                && !isTrailingVerificationReasoning(
+                    $0,
+                    hasReachedTerminal: hasReachedTerminal,
+                    lastAssistantTextSequence: lastAssistantTextSequence,
+                    lastToolSequence: lastToolSequence
+                )
         }
         var finalReplyRendered = false
         var currentStepGroup: [RunEventRecord] = []
@@ -280,8 +294,11 @@ enum ThreadTimelineBuilder {
             items.append(.missingFinalMessage(idSuffix: run.id.uuidString))
         }
 
-        // 5. Live slots, after persisted rows, while the run is active.
-        if isRunning {
+        // 5. Live slots, after persisted rows, while the run is active. A
+        //    terminal event wins over a stale animator-drain flag: the final
+        //    assistantText is already durable, so replaying the live tail here
+        //    would make text or reasoning jump below the terminal row.
+        if isRunning && terminalEvent == nil {
             if !liveReasoningText.isEmpty {
                 items.append(.liveReasoning)
             }
@@ -323,6 +340,24 @@ enum ThreadTimelineBuilder {
         guard event.kind == .status else { return false }
         let state = decodePayload(event.payloadJSON)["state"] ?? ""
         return RunStateLocalizer.isTerminal(state)
+    }
+
+    /// Final-answer verification is deliberately private harness work. When
+    /// the draft answer has already been persisted and the tool-free review
+    /// returns a bare confirmation, only its reasoning remains in the event
+    /// store. Do not project that tail below the user-visible final answer.
+    /// Reasoning which still leads to a tool stays visible.
+    private static func isTrailingVerificationReasoning(
+        _ event: RunEventRecord,
+        hasReachedTerminal: Bool,
+        lastAssistantTextSequence: Int?,
+        lastToolSequence: Int?
+    ) -> Bool {
+        guard hasReachedTerminal,
+              event.kind == .reasoning,
+              let lastAssistantTextSequence,
+              event.sequence > lastAssistantTextSequence else { return false }
+        return lastToolSequence.map { $0 < event.sequence } ?? true
     }
 
     /// Launch preparation is persisted for recovery, but it is not a

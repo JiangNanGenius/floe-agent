@@ -95,6 +95,9 @@ public final class iPhoneBackgroundPolicy: PlatformBackgroundPolicy, @unchecked 
             )
             do {
                 try BGTaskScheduler.shared.submit(request)
+                FloeLogger(category: .app).info(
+                    "backgroundTaskSubmissionSucceeded kind=continued"
+                )
             } catch {
                 FloeLogger(category: .app).warning(
                     "backgroundTaskSubmissionFailed kind=continued error=\(error.localizedDescription)"

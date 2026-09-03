@@ -172,11 +172,28 @@ struct CrashAndFeedbackRegressionTests {
         #expect(!State.renderingContent.offersManualControl)
         #expect(!State.waitingForMedia.offersManualControl)
         #expect(!State.idle.offersManualControl)
-        #expect(State.idle.allowsAutomaticPreparation)
-        #expect(!State.failed.allowsAutomaticPreparation)
-        #expect(!State.prepared.allowsAutomaticPreparation)
-        #expect(State.prepared.requiresForegroundRevalidation)
-        #expect(!State.failed.requiresForegroundRevalidation)
+
+        let service = BackgroundVideoService()
+        #expect(!service.shouldOfferManualControl)
+        service.setRunContext(
+            title: "Active task",
+            progress: "Running",
+            automaticallyStartsFromInline: true
+        )
+        #expect(service.shouldOfferManualControl)
+        #expect(service.canPerformManualControl)
+        #expect(service.manualControlTitle == "启动画中画")
+        service.stop()
+        #expect(!service.shouldOfferManualControl)
+    }
+
+    @Test("Only standard mode requests a continued-processing Live Activity")
+    func backgroundExecutionLiveActivityPolicy() {
+        #expect(BackgroundRunCoordinator.shouldRequestContinuedProcessing(for: .standard))
+        #expect(!BackgroundRunCoordinator.shouldRequestContinuedProcessing(
+            for: .pictureInPicture
+        ))
+        #expect(!BackgroundRunCoordinator.shouldRequestContinuedProcessing(for: .screenShare))
     }
 }
 #endif

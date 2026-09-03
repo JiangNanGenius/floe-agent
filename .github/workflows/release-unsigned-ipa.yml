@@ -110,7 +110,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      - name: Verify Canvas and PiP app regression contracts
+      - name: Verify Canvas, PiP, and timeline app regression contracts
         run: |
           xcodebuild \
             -skipPackagePluginValidation \
@@ -121,7 +121,9 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/FloeAppRegressionDerivedData" \
             -resultBundlePath "$RUNNER_TEMP/FloeAgent-AppRegressionTests.xcresult" \
             -only-testing:FloeAppTests/CanvasTouchInteractionTests \
+            -only-testing:FloeAppTests/CanvasAgentToolContractTests \
             -only-testing:FloeAppTests/CrashAndFeedbackRegressionTests \
+            -only-testing:FloeAppTests/ThreadTimelineTests \
             CODE_SIGNING_ALLOWED=NO \
             test
           python3 - "$RUNNER_TEMP/FloeAgent-AppRegressionTests.xcresult" <<'PY'
@@ -147,9 +149,9 @@ jobs:
           total = required_count("totalTestCount")
           passed = required_count("passedTests")
           failed = required_count("failedTests")
-          print(f"canvas-pip-app-regression-summary total={total} passed={passed} failed={failed}")
-          if total < 14 or failed != 0 or passed != total:
-              raise SystemExit("Canvas and PiP app regression focused test gate failed")
+          print(f"canvas-pip-timeline-app-regression-summary total={total} passed={passed} failed={failed}")
+          if total < 34 or failed != 0 or passed != total:
+              raise SystemExit("Canvas, PiP, and timeline app regression focused test gate failed")
           PY
 
       - name: Scan source and generate compliance artifacts

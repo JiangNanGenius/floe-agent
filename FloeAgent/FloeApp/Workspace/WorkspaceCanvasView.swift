@@ -4208,6 +4208,7 @@ struct WorkspaceCanvasView: View {
                descriptor?.supportedDurations.contains(duration) == true {
                 metadata["generationDurationSeconds"] = String(duration)
             }
+            metadata["generationAttemptID"] = UUID().uuidString
             metadata["generationState"] = CanvasGenerationTaskState.configured.rawValue
             metadata["generationError"] = nil
         } else if let text = patch.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
@@ -4253,7 +4254,12 @@ struct WorkspaceCanvasView: View {
         selectedNodeIDs = [node.id]
         let task = node.kind == .generationTask ? node : generationTaskNode(for: node)
         guard let task else { return }
-        guard activeGenerationTasks[task.id] == nil else { return }
+        if let supersededTask = activeGenerationTasks[task.id] {
+            guard task.generationTaskState.canStart else { return }
+            supersededTask.cancel()
+            activeGenerationTasks[task.id] = nil
+            activeGenerationTokens[task.id] = nil
+        }
         let executionToken = UUID()
         activeGenerationTokens[task.id] = executionToken
         activeGenerationTasks[task.id] = Task { @MainActor in
@@ -4269,6 +4275,9 @@ struct WorkspaceCanvasView: View {
                 )
             } catch is CancellationError {
                 // Cancellation state is applied by the executor/cancel action.
+            } catch CanvasGenerationExecutionError.superseded {
+                // A newer saved configuration owns the task now. The provider
+                // response from this execution is intentionally discarded.
             } catch {
                 store.saveError = CanvasGenerationErrorPresentation.message(for: error)
             }
@@ -4297,6 +4306,14 @@ struct WorkspaceCanvasView: View {
         let resultIDs = store.selectedDocument?.connections.filter {
             $0.sourceNodeID == taskID && $0.kind == .generatedFrom
         }.map(\.destinationNodeID) ?? []
+        let cancelledAttemptID = UUID().uuidString
+        for nodeID in [taskID] + resultIDs {
+            store.updateNodeMetadata(nodeID, values: [
+                "generationAttemptID": cancelledAttemptID,
+                "generationState": CanvasGenerationTaskState.cancelled.rawValue,
+                "generationError": nil
+            ])
+        }
         let jobID = store.selectedDocument?.nodes.first(where: {
             resultIDs.contains($0.id) && $0.generationJobID != nil
         })?.generationJobID
@@ -4305,12 +4322,6 @@ struct WorkspaceCanvasView: View {
                 store.saveError = message
                 return
             }
-        }
-        for nodeID in [taskID] + resultIDs {
-            store.updateNodeMetadata(nodeID, values: [
-                "generationState": CanvasGenerationTaskState.cancelled.rawValue,
-                "generationError": nil
-            ])
         }
         UINotificationFeedbackGenerator().notificationOccurred(.warning)
     }
@@ -8186,12 +8197,14 @@ private struct SharedCanvasAgentConversation: View {
             ) { approval, decision in
                 Task { await viewModel.resolve(approval, decision: decision) }
             }
-        case .event(let event), .terminal(let event):
+        case .event(let event):
             ThreadEventView(
                 event: event,
                 isLive: viewModel.isRunning,
                 hasError: event.kind == .error
             )
+        case .terminal(let event):
+            TerminalEventRow(event: event)
         case .missingFinalMessage:
             Label("模型未返回最终文本", systemImage: "exclamationmark.triangle")
                 .font(.caption).foregroundStyle(.orange)
@@ -8790,6 +8803,17 @@ private enum CanvasGenerationErrorPresentation {
     }
 }
 
+private enum CanvasGenerationExecutionError: LocalizedError {
+    case superseded
+
+    var errorDescription: String? {
+        switch self {
+        case .superseded:
+            "Canvas generation attempt was superseded before its local result was committed"
+        }
+    }
+}
+
 /// Executes a saved task directly against its existing task/result graph.
 /// Configuration UI and task execution both reuse the same metadata contract,
 /// while execution never needs to present or own a sheet.
@@ -8809,32 +8833,43 @@ private enum CanvasGenerationExecutor {
                 String(localized: "canvas.generation.error.configuration_missing")
             )
         }
+        let documentID = document.id
         let expectedKind: CanvasNodeKind = configuration.kind == .image ? .image : .video
-        let connectedResult = document.connections.lazy
+        let connectedResult = document.connections
             .filter { $0.sourceNodeID == task.id && $0.kind == .generatedFrom }
             .compactMap { connection in
                 document.nodes.first(where: {
                     $0.id == connection.destinationNodeID && $0.kind == expectedKind
                 })
             }
+            .sorted {
+                if $0.x != $1.x { return $0.x < $1.x }
+                if $0.y != $1.y { return $0.y < $1.y }
+                return $0.id.uuidString < $1.id.uuidString
+            }
             .first(where: { $0.asset == nil })
         let resultPoint = connectedResult.map { CGPoint(x: $0.x, y: $0.y) }
             ?? CGPoint(x: task.x + 420, y: task.y)
-        let sources = store.generationSourceNodes(for: Set(configuration.sourceNodeIDs))
-            .filter { $0.kind != .generationTask && $0.id != connectedResult?.id }
-        let contextLines = sources.compactMap { node -> String? in
-            guard [.text, .stickyNote, .card].contains(node.kind) else { return nil }
-            let value = node.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return value.isEmpty || value == configuration.prompt ? nil : value
-        }
+        let resolvedSourceIDs = try CanvasGenerationContextResolver.resolvedNodeIDs(
+            requestedIDs: nil,
+            fallbackIDs: configuration.sourceNodeIDs,
+            configurationNodeID: task.id,
+            document: document
+        )
+        let nodesByID = Dictionary(uniqueKeysWithValues: document.nodes.map { ($0.id, $0) })
+        let sources = resolvedSourceIDs.compactMap { nodesByID[$0] }
+        let contextLines = CanvasGenerationContextResolver.contextText(
+            nodes: sources,
+            excluding: configuration.prompt
+        )
         let providerPrompt = contextLines.isEmpty
             ? configuration.prompt
             : "\(configuration.prompt)\n\n\(String(localized: "canvas.generation.context_prefix"))\n\(contextLines.joined(separator: "\n"))"
-        let attemptID = UUID()
+        let attemptID = UUID().uuidString
         let previousAttempt = task.metadata["generationAttemptIndex"].flatMap(Int.init) ?? 0
         var metadata = configuration.metadata
         metadata["generationState"] = CanvasGenerationTaskState.preparing.rawValue
-        metadata["generationAttemptID"] = attemptID.uuidString
+        metadata["generationAttemptID"] = attemptID
         metadata["generationAttemptIndex"] = String(previousAttempt + 1)
         guard let graph = store.prepareGenerationGraph(CanvasGenerationGraphRequest(
             kind: configuration.kind == .image ? .image : .video,
@@ -8843,6 +8878,7 @@ private enum CanvasGenerationExecutor {
             resultPosition: CanvasPoint(resultPoint),
             existingConfigurationNodeID: task.id,
             reusableResultNodeID: connectedResult?.id,
+            resultCount: configuration.kind == .image ? configuration.count : 1,
             createsPromptNodeWhenMissing: false,
             metadata: metadata
         )) else {
@@ -8855,18 +8891,26 @@ private enum CanvasGenerationExecutor {
             if configuration.kind == .image {
                 try await executeImage(
                     configuration: configuration, graph: graph, sources: sources,
-                    providerPrompt: providerPrompt, resultPoint: resultPoint,
+                    providerPrompt: providerPrompt, documentID: documentID,
+                    generationAttemptID: attemptID,
                     store: store, environment: environment
                 )
             } else {
                 try await executeVideo(
                     configuration: configuration, graph: graph,
-                    providerPrompt: providerPrompt, store: store,
+                    providerPrompt: providerPrompt, documentID: documentID,
+                    generationAttemptID: attemptID, store: store,
                     environment: environment
                 )
             }
         } catch is CancellationError {
-            for nodeID in [graph.configurationNodeID, graph.resultNodeID] {
+            try validateCurrentAttempt(
+                documentID: documentID,
+                graph: graph,
+                generationAttemptID: attemptID,
+                store: store
+            )
+            for nodeID in [graph.configurationNodeID] + graph.resultNodeIDs {
                 store.updateNodeMetadata(nodeID, values: [
                     "generationState": CanvasGenerationTaskState.cancelled.rawValue,
                     "generationError": nil,
@@ -8874,9 +8918,17 @@ private enum CanvasGenerationExecutor {
                 ])
             }
             throw CancellationError()
+        } catch let error as CanvasGenerationExecutionError {
+            throw error
         } catch {
+            try validateCurrentAttempt(
+                documentID: documentID,
+                graph: graph,
+                generationAttemptID: attemptID,
+                store: store
+            )
             let message = CanvasGenerationErrorPresentation.message(for: error)
-            for nodeID in [graph.configurationNodeID, graph.resultNodeID] {
+            for nodeID in [graph.configurationNodeID] + graph.resultNodeIDs {
                 store.updateNodeMetadata(nodeID, values: [
                     "generationState": CanvasGenerationTaskState.failed.rawValue,
                     "generationError": message,
@@ -8892,21 +8944,13 @@ private enum CanvasGenerationExecutor {
         graph: CanvasGenerationGraphPlan,
         sources: [FloeCanvasNode],
         providerPrompt: String,
-        resultPoint: CGPoint,
+        documentID: UUID,
+        generationAttemptID: String,
         store: CanvasDocumentStore,
         environment: AppEnvironment
     ) async throws {
         let ownerID = graph.configurationNodeID
-        let existingResultIDs = store.selectedDocument?.connections
-            .filter { $0.sourceNodeID == ownerID && $0.kind == .generatedFrom }
-            .compactMap { connection in
-                store.selectedDocument?.nodes.first(where: {
-                    $0.id == connection.destinationNodeID && $0.kind == .image && $0.asset == nil
-                })?.id
-            } ?? []
-        let reusableResultIDs = [graph.resultNodeID] + existingResultIDs.filter {
-            $0 != graph.resultNodeID
-        }
+        let reusableResultIDs = graph.resultNodeIDs
         store.markGeneration(
             nodeID: ownerID, kind: .image, prompt: configuration.prompt,
             modelID: configuration.modelID, aspectRatio: configuration.aspectRatio,
@@ -8916,10 +8960,10 @@ private enum CanvasGenerationExecutor {
         )
         let referenceImages = sources.filter { $0.kind == .image }
         if !referenceImages.isEmpty {
-            setState(.uploading, nodeIDs: [ownerID, graph.resultNodeID], store: store)
+            setState(.uploading, nodeIDs: [ownerID] + graph.resultNodeIDs, store: store)
         }
         let referenceData = try referenceImages.map { try imageData(for: $0) }
-        setState(.running, nodeIDs: [ownerID, graph.resultNodeID], store: store)
+        setState(.running, nodeIDs: [ownerID] + graph.resultNodeIDs, store: store)
         let assets = try await environment.mediaGenerationService.generateImages(
             prompt: providerPrompt,
             options: ImageGenerationOptions(
@@ -8931,27 +8975,21 @@ private enum CanvasGenerationExecutor {
             sourceImages: referenceData,
             modelID: configuration.modelID
         )
-        guard !assets.isEmpty else {
-            throw RemoteImageError.invalidResponse(
-                String(localized: "canvas.generation.error.empty_image_result")
-            )
-        }
+        try validateCurrentAttempt(
+            documentID: documentID,
+            graph: graph,
+            generationAttemptID: generationAttemptID,
+            store: store
+        )
+        let resultNodeIDs = try CanvasGenerationOutputContract.resultNodeIDs(
+            expectedCount: configuration.count,
+            actualCount: assets.count,
+            preparedResultNodeIDs: reusableResultIDs
+        )
         var resultIDs: [UUID] = []
         for (index, asset) in assets.enumerated() {
-            let id: UUID
-            if reusableResultIDs.indices.contains(index) {
-                id = reusableResultIDs[index]
-                store.attachAsset(asset, kind: .image, to: id)
-            } else {
-                id = store.addAsset(
-                    asset, kind: .image,
-                    at: CGPoint(
-                        x: resultPoint.x + Double(index) * 54,
-                        y: resultPoint.y + Double(index) * 42
-                    )
-                )
-                store.connect(ownerID, to: id, kind: .generatedFrom)
-            }
+            let id = resultNodeIDs[index]
+            store.attachAsset(asset, kind: .image, to: id)
             store.markGeneration(
                 nodeID: id, kind: .image, prompt: configuration.prompt,
                 modelID: configuration.modelID, aspectRatio: configuration.aspectRatio,
@@ -8980,6 +9018,8 @@ private enum CanvasGenerationExecutor {
         configuration: CanvasGenerationConfiguration,
         graph: CanvasGenerationGraphPlan,
         providerPrompt: String,
+        documentID: UUID,
+        generationAttemptID: String,
         store: CanvasDocumentStore,
         environment: AppEnvironment
     ) async throws {
@@ -8987,7 +9027,7 @@ private enum CanvasGenerationExecutor {
               let model = environment.conversationCenter.videoModels.first(where: {
                   $0.id == modelID
               }),
-              let documentID = store.selectedDocument?.id else {
+              store.selectedDocument?.id == documentID else {
             throw FloeError.invalidConfiguration(
                 String(localized: "canvas.generation.error.video_model_missing")
             )
@@ -9012,11 +9052,35 @@ private enum CanvasGenerationExecutor {
                 )
             )
         )
+        try validateCurrentAttempt(
+            documentID: documentID,
+            graph: graph,
+            generationAttemptID: generationAttemptID,
+            store: store
+        )
         store.setGenerationJob(job.id, for: graph.resultNodeID)
         setState(
             .submitted, nodeIDs: [graph.configurationNodeID, graph.resultNodeID],
             store: store
         )
+    }
+
+    private static func validateCurrentAttempt(
+        documentID: UUID,
+        graph: CanvasGenerationGraphPlan,
+        generationAttemptID: String,
+        store: CanvasDocumentStore
+    ) throws {
+        guard store.project.selectedDocumentID == documentID,
+              let currentDocument = store.project.documents.first(where: { $0.id == documentID }),
+              CanvasGenerationAttemptValidator.isActive(
+                  document: currentDocument,
+                  configurationNodeID: graph.configurationNodeID,
+                  resultNodeIDs: graph.resultNodeIDs,
+                  generationAttemptID: generationAttemptID
+              ) else {
+            throw CanvasGenerationExecutionError.superseded
+        }
     }
 
     private static func setState(
@@ -9237,10 +9301,25 @@ private struct CanvasMediaGenerationView: View {
     @MainActor
     private func saveConfiguration() {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        let selectedNodes = store.selectedDocument?.nodes.filter { sourceNodeIDs.contains($0.id) } ?? []
+        guard let document = store.selectedDocument else {
+            error = String(localized: "canvas.generation.prepare_failed")
+            return
+        }
+        let selectedNodes = document.nodes.filter { sourceNodeIDs.contains($0.id) }
         let existingConfiguration = selectedNodes.first { $0.kind == .generationTask }
-        let sources = store.generationSourceNodes(for: sourceNodeIDs)
-            .filter { $0.kind != .generationTask }
+        let resolvedSourceIDs: [UUID]
+        do {
+            resolvedSourceIDs = try CanvasGenerationContextResolver.resolvedNodeIDs(
+                requestedIDs: Array(sourceNodeIDs),
+                configurationNodeID: existingConfiguration?.id,
+                document: document
+            )
+        } catch {
+            self.error = error.localizedDescription
+            return
+        }
+        let nodesByID = Dictionary(uniqueKeysWithValues: document.nodes.map { ($0.id, $0) })
+        let sources = resolvedSourceIDs.compactMap { nodesByID[$0] }
         let configurationPoint: CGPoint = if let existingConfiguration {
             CGPoint(x: existingConfiguration.x, y: existingConfiguration.y)
         } else if let preferredResultPoint {

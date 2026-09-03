@@ -925,7 +925,7 @@ private struct PendingInputEditor: View {
 /// The terminal marker row: a single quiet status line, always rendered
 /// after the final assistant reply. No big card, no raw machine names —
 /// the stop reason resolves through RunStateLocalizer.
-private struct TerminalEventRow: View {
+struct TerminalEventRow: View {
     let event: RunEventRecord
 
     private var state: String {

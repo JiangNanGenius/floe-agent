@@ -483,6 +483,200 @@ struct CreativeMediaModelsTests {
         })
     }
 
+    @Test func oneReferenceAndCountFourCreatesFourAlignedIndependentResults() throws {
+        let source = CanvasNode(
+            kind: .image,
+            position: .init(x: 96, y: 96),
+            size: .init(width: 240, height: 180),
+            asset: CanvasAssetReference(localRelativePath: "Materials/reference.png")
+        )
+        let document = CanvasDocument(name: "Canvas", nodes: [source])
+        let project = CanvasProject(
+            id: UUID(), name: "Generation", documents: [document],
+            selectedDocumentID: document.id, revision: 41
+        )
+        let attemptID = "four-output-attempt"
+        let plan = try CanvasGenerationGraphPlanner.plan(
+            request: CanvasGenerationGraphRequest(
+                kind: .image,
+                prompt: "以参考图生成四个版本",
+                sourceNodeIDs: [source.id],
+                resultPosition: .init(x: 900, y: 96),
+                resultCount: 4,
+                createdByRunID: UUID(),
+                metadata: ["generationAttemptID": attemptID]
+            ),
+            document: document
+        )
+
+        #expect(plan.resultNodeIDs.count == 4)
+        #expect(Set(plan.resultNodeIDs).count == 4)
+        #expect(plan.resultPositions.count == 4)
+        #expect(Set(plan.resultPositions.map(\.x)).count == 1)
+        #expect(plan.resultPositions.allSatisfy {
+            $0.x.truncatingRemainder(dividingBy: 24) == 0
+                && $0.y.truncatingRemainder(dividingBy: 24) == 0
+        })
+        for pair in zip(plan.resultPositions, plan.resultPositions.dropFirst()) {
+            #expect(pair.1.y - pair.0.y >= 260 + 48)
+        }
+
+        let preparedPatch = CanvasPatch(
+            canvasID: project.id, documentID: document.id,
+            expectedRevision: project.revision, operations: plan.operations
+        )
+        var (prepared, _) = try CanvasCommandService.applying(preparedPatch, to: project)
+        let preparedDocument = prepared.documents[0]
+        #expect(preparedDocument.nodes.first { $0.id == source.id }?.position == source.position)
+        #expect(preparedDocument.connections.filter {
+            $0.kind == .source && $0.sourceNodeID == source.id
+                && $0.destinationNodeID == plan.configurationNodeID
+        }.count == 1)
+        #expect(preparedDocument.connections.filter {
+            $0.kind == .generatedFrom && $0.sourceNodeID == plan.configurationNodeID
+                && plan.resultNodeIDs.contains($0.destinationNodeID)
+        }.count == 4)
+        #expect(plan.resultNodeIDs.allSatisfy { id in
+            preparedDocument.nodes.contains { $0.id == id && $0.kind == .image }
+        })
+
+        let outputIDs = try CanvasGenerationOutputContract.resultNodeIDs(
+            expectedCount: 4,
+            actualCount: 4,
+            preparedResultNodeIDs: plan.resultNodeIDs
+        )
+        let assets = (0..<4).map { index in
+            CanvasAssetReference(
+                contentHash: "result-\(index)",
+                localRelativePath: "Materials/result-\(index).png"
+            )
+        }
+        prepared.viewports[document.id] = .init(center: .init(x: 10, y: 20), scale: 0.8)
+        prepared.revision += 1 // Simulate an unrelated in-flight canvas save.
+        let completionPatch = try CanvasGenerationCommitPlanner.patch(
+            project: prepared,
+            documentID: document.id,
+            configurationNodeID: plan.configurationNodeID,
+            resultNodeID: plan.resultNodeID,
+            generationAttemptID: attemptID,
+            operations: zip(outputIDs, assets).map { resultID, asset in
+                CanvasPatchOperation(
+                    kind: .update, nodeID: resultID, nodeKind: .image,
+                    text: "生成图片", asset: asset,
+                    metadata: ["generationState": "ready"]
+                )
+            }
+        )
+        let (completed, _) = try CanvasCommandService.applying(completionPatch, to: prepared)
+        let completedDocument = completed.documents[0]
+        #expect(outputIDs.allSatisfy { id in
+            completedDocument.nodes.first { $0.id == id }?.asset != nil
+        })
+        #expect(completedDocument.connections.filter {
+            $0.kind == .generatedFrom && $0.sourceNodeID == plan.configurationNodeID
+        }.count == 4)
+
+        let secondPlan = try CanvasGenerationGraphPlanner.plan(
+            request: CanvasGenerationGraphRequest(
+                kind: .image, prompt: "以参考图生成四个版本",
+                sourceNodeIDs: [source.id], resultPosition: .init(x: 900, y: 96),
+                resultCount: 4
+            ),
+            document: document
+        )
+        #expect(secondPlan.resultPositions == plan.resultPositions)
+    }
+
+    @Test func imageOutputCountMismatchFailsBeforeResultIndexing() throws {
+        let resultIDs = (0..<4).map { _ in UUID() }
+        #expect(throws: FloeError.self) {
+            _ = try CanvasGenerationOutputContract.resultNodeIDs(
+                expectedCount: 4,
+                actualCount: 0,
+                preparedResultNodeIDs: resultIDs
+            )
+        }
+        #expect(throws: FloeError.self) {
+            _ = try CanvasGenerationOutputContract.resultNodeIDs(
+                expectedCount: 4,
+                actualCount: 3,
+                preparedResultNodeIDs: resultIDs
+            )
+        }
+        #expect(throws: FloeError.self) {
+            _ = try CanvasGenerationOutputContract.resultNodeIDs(
+                expectedCount: 4,
+                actualCount: 5,
+                preparedResultNodeIDs: resultIDs
+            )
+        }
+    }
+
+    @Test func generationLayoutAvoidsSameRunImportedNodesWithoutMovingThem() throws {
+        let runID = UUID()
+        let source = CanvasNode(
+            kind: .text, text: "产品构思",
+            position: .init(x: 96, y: 96), size: .init(width: 240, height: 160)
+        )
+        let initialDocument = CanvasDocument(name: "Canvas", nodes: [source])
+        let initialProject = CanvasProject(
+            id: UUID(), name: "Layout", documents: [initialDocument],
+            selectedDocumentID: initialDocument.id
+        )
+        let imports = (0..<4).map { index in
+            CanvasPatchOperation(
+                kind: .create, nodeID: UUID(), nodeKind: .image,
+                position: .init(x: 480, y: 96 + Double(index) * 312),
+                size: .init(width: 240, height: 180),
+                createdByRunID: runID,
+                metadata: ["artifactOrigin": "imported"]
+            )
+        }
+        let importPatch = CanvasPatch(
+            canvasID: initialProject.id,
+            documentID: initialDocument.id,
+            expectedRevision: initialProject.revision,
+            operations: imports
+        )
+        let (withImports, _) = try CanvasCommandService.applying(
+            importPatch, to: initialProject
+        )
+        let document = withImports.documents[0]
+        let importedPositions = Dictionary(uniqueKeysWithValues: document.nodes
+            .filter { $0.createdByRunID == runID }
+            .map { ($0.id, $0.position) })
+
+        let plan = try CanvasGenerationGraphPlanner.plan(
+            request: CanvasGenerationGraphRequest(
+                kind: .image, prompt: "生成四张产品图",
+                sourceNodeIDs: [source.id], resultPosition: .init(x: 900, y: 96),
+                resultCount: 4, createdByRunID: runID
+            ),
+            document: document
+        )
+        let generationPatch = CanvasPatch(
+            canvasID: withImports.id,
+            documentID: document.id,
+            expectedRevision: withImports.revision,
+            operations: plan.operations
+        )
+        let (updated, _) = try CanvasCommandService.applying(
+            generationPatch, to: withImports
+        )
+
+        #expect(updated.documents[0].nodes.filter { importedPositions[$0.id] != nil }
+            .allSatisfy { importedPositions[$0.id] == $0.position })
+        #expect(Set(plan.resultPositions.map(\.x)).count == 1)
+        #expect(plan.resultPositions.allSatisfy {
+            $0.x.truncatingRemainder(dividingBy: 24) == 0
+                && $0.y.truncatingRemainder(dividingBy: 24) == 0
+        })
+        let configurationPosition = try #require(plan.operations.first {
+            $0.nodeID == plan.configurationNodeID
+        }?.position)
+        #expect((plan.resultPositions.first?.x ?? 0) > configurationPosition.x)
+    }
+
     @Test func generationCommitRebasesOntoLatestCanvasRevision() throws {
         let attemptID = "attempt-current"
         let document = CanvasDocument(name: "Canvas")
@@ -620,6 +814,193 @@ struct CreativeMediaModelsTests {
             )]
         )
         #expect(currentPatch.expectedRevision == superseded.revision)
+    }
+
+    @Test func editingConfigurationSupersedesDelayedFourImageResponse() throws {
+        let oldAttemptID = "attempt-four-images-in-flight"
+        let source = CanvasNode(
+            kind: .image,
+            position: .init(x: 100, y: 100),
+            size: .init(width: 240, height: 180),
+            asset: CanvasAssetReference(localRelativePath: "Materials/reference.png")
+        )
+        let document = CanvasDocument(name: "Canvas", nodes: [source])
+        let project = CanvasProject(
+            id: UUID(), name: "Generation", documents: [document],
+            selectedDocumentID: document.id, revision: 20
+        )
+        let graph = try CanvasGenerationGraphPlanner.plan(
+            request: CanvasGenerationGraphRequest(
+                kind: .image,
+                prompt: "基于参考图生成四张",
+                sourceNodeIDs: [source.id],
+                resultPosition: .init(x: 900, y: 100),
+                resultCount: 4,
+                metadata: [
+                    "generationAttemptID": oldAttemptID,
+                    "generationState": CanvasGenerationTaskState.running.rawValue
+                ]
+            ),
+            document: document
+        )
+        let preparedPatch = CanvasPatch(
+            canvasID: project.id,
+            documentID: document.id,
+            expectedRevision: project.revision,
+            operations: graph.operations
+        )
+        let (prepared, _) = try CanvasCommandService.applying(preparedPatch, to: project)
+        let preparedDocument = try #require(prepared.documents.first)
+
+        #expect(CanvasGenerationAttemptValidator.isActive(
+            document: preparedDocument,
+            configurationNodeID: graph.configurationNodeID,
+            resultNodeIDs: graph.resultNodeIDs,
+            generationAttemptID: oldAttemptID
+        ))
+
+        // A delayed four-image response is not current if even one prepared
+        // result node has already been claimed by another attempt.
+        var partiallySuperseded = preparedDocument
+        let lastResultID = try #require(graph.resultNodeIDs.last)
+        let lastResultIndex = try #require(
+            partiallySuperseded.nodes.firstIndex(where: { $0.id == lastResultID })
+        )
+        partiallySuperseded.nodes[lastResultIndex]
+            .metadata["generationAttemptID"] = "replacement-attempt"
+        #expect(!CanvasGenerationAttemptValidator.matches(
+            document: partiallySuperseded,
+            configurationNodeID: graph.configurationNodeID,
+            resultNodeIDs: graph.resultNodeIDs,
+            generationAttemptID: oldAttemptID
+        ))
+
+        let configuration = try #require(preparedDocument.nodes.first {
+            $0.id == graph.configurationNodeID
+        })
+        var revisedMetadata = configuration.metadata
+        revisedMetadata["generationState"] = CanvasGenerationTaskState.configured.rawValue
+        let edit = try CanvasGenerationConfigurationPlanner.plan(
+            kind: .image,
+            prompt: "基于参考图生成四张夜景版本",
+            sourceNodeIDs: [source.id],
+            position: configuration.position,
+            existingConfigurationNodeID: configuration.id,
+            metadata: revisedMetadata,
+            document: preparedDocument
+        )
+        let editPatch = CanvasPatch(
+            canvasID: prepared.id,
+            documentID: document.id,
+            expectedRevision: prepared.revision,
+            operations: edit.operations
+        )
+        let (edited, _) = try CanvasCommandService.applying(editPatch, to: prepared)
+        let editedDocument = try #require(edited.documents.first)
+        let editedConfiguration = try #require(editedDocument.nodes.first {
+            $0.id == graph.configurationNodeID
+        })
+
+        #expect(editedConfiguration.metadata["generationAttemptID"] != oldAttemptID)
+        #expect(editedConfiguration.metadata["generationState"]
+            == CanvasGenerationTaskState.configured.rawValue)
+        #expect(!CanvasGenerationAttemptValidator.isActive(
+            document: editedDocument,
+            configurationNodeID: graph.configurationNodeID,
+            resultNodeIDs: graph.resultNodeIDs,
+            generationAttemptID: oldAttemptID
+        ))
+        #expect(editedDocument.connections.filter {
+            $0.sourceNodeID == graph.configurationNodeID
+                && $0.kind == .generatedFrom
+                && graph.resultNodeIDs.contains($0.destinationNodeID)
+        }.count == 4)
+    }
+
+    @Test func delayedProviderErrorCannotMarkEditedFourImageTaskFailed() throws {
+        let oldAttemptID = "attempt-four-images-error"
+        let source = CanvasNode(
+            kind: .image,
+            position: .init(x: 100, y: 100),
+            size: .init(width: 240, height: 180)
+        )
+        let document = CanvasDocument(name: "Canvas", nodes: [source])
+        let project = CanvasProject(
+            id: UUID(), name: "Generation", documents: [document],
+            selectedDocumentID: document.id
+        )
+        let graph = try CanvasGenerationGraphPlanner.plan(
+            request: CanvasGenerationGraphRequest(
+                kind: .image,
+                prompt: "生成四张白天版本",
+                sourceNodeIDs: [source.id],
+                resultPosition: .init(x: 900, y: 100),
+                resultCount: 4,
+                metadata: [
+                    "generationAttemptID": oldAttemptID,
+                    "generationState": CanvasGenerationTaskState.running.rawValue
+                ]
+            ),
+            document: document
+        )
+        let preparePatch = CanvasPatch(
+            canvasID: project.id,
+            documentID: document.id,
+            expectedRevision: project.revision,
+            operations: graph.operations
+        )
+        let (prepared, _) = try CanvasCommandService.applying(preparePatch, to: project)
+        let preparedDocument = try #require(prepared.documents.first)
+        let configuration = try #require(preparedDocument.nodes.first {
+            $0.id == graph.configurationNodeID
+        })
+        let edit = try CanvasGenerationConfigurationPlanner.plan(
+            kind: .image,
+            prompt: "生成四张夜景版本",
+            sourceNodeIDs: [source.id],
+            position: configuration.position,
+            existingConfigurationNodeID: configuration.id,
+            metadata: configuration.metadata,
+            document: preparedDocument
+        )
+        let editPatch = CanvasPatch(
+            canvasID: prepared.id,
+            documentID: document.id,
+            expectedRevision: prepared.revision,
+            operations: edit.operations
+        )
+        let (edited, _) = try CanvasCommandService.applying(editPatch, to: prepared)
+        let editedDocument = try #require(edited.documents.first)
+
+        // The provider's delayed error follows the same ownership gate as a
+        // success. It cannot apply a failure patch to the newly configured task.
+        #expect(!CanvasGenerationAttemptValidator.isActive(
+            document: editedDocument,
+            configurationNodeID: graph.configurationNodeID,
+            resultNodeIDs: graph.resultNodeIDs,
+            generationAttemptID: oldAttemptID
+        ))
+        #expect(throws: FloeError.validationFailed(
+            "Canvas generation attempt was superseded before its local result was committed"
+        )) {
+            _ = try CanvasGenerationCommitPlanner.patch(
+                project: edited,
+                documentID: document.id,
+                configurationNodeID: graph.configurationNodeID,
+                resultNodeID: graph.resultNodeID,
+                generationAttemptID: oldAttemptID,
+                operations: [CanvasPatchOperation(
+                    kind: .update,
+                    nodeID: graph.configurationNodeID,
+                    metadata: [
+                        "generationState": CanvasGenerationTaskState.failed.rawValue,
+                        "generationError": "late provider error"
+                    ]
+                )]
+            )
+        }
+        #expect(editedDocument.nodes.first { $0.id == graph.configurationNodeID }?
+            .metadata["generationState"] == CanvasGenerationTaskState.configured.rawValue)
     }
 
     @Test func generationConfigurationCreatesOnlyOneNodeAndTypedSourceEdges() throws {
@@ -768,6 +1149,83 @@ struct CreativeMediaModelsTests {
 
         #expect(resolved == [note, reference, task])
         #expect(!resolved.contains(narrative))
+    }
+
+    @Test func savedGenerationContextRecoversTypedEdgesMetadataAndImagePrompts() throws {
+        let concept = CanvasNode(
+            kind: .text, text: "保留山谷构图",
+            position: .init(x: 0, y: 0), size: .init(width: 240, height: 160)
+        )
+        let linkedImage = CanvasNode(
+            kind: .image,
+            position: .init(x: 288, y: 0), size: .init(width: 240, height: 180),
+            metadata: ["generationPrompt": "清晨薄雾与暖色侧光"]
+        )
+        let metadataImage = CanvasNode(
+            kind: .image,
+            position: .init(x: 288, y: 240), size: .init(width: 240, height: 180),
+            metadata: ["generationPrompt": "木屋与远山"]
+        )
+        let configuration = CanvasNode(
+            kind: .generationTask, text: "图片生成",
+            position: .init(x: 600, y: 0), size: .init(width: 340, height: 210),
+            metadata: CanvasGenerationConfiguration(
+                kind: .image, prompt: "生成新版本", modelID: nil,
+                aspectRatio: "16:9", sourceNodeIDs: [metadataImage.id]
+            ).metadata
+        )
+        let oldResult = CanvasNode(
+            kind: .image, text: "旧结果",
+            position: .init(x: 1_000, y: 0), size: .init(width: 320, height: 260),
+            metadata: ["generationPrompt": "不得回流的旧结果提示词"]
+        )
+        let narrative = CanvasNode(
+            kind: .text, text: "普通箭头说明，不是生成输入",
+            position: .init(x: 0, y: 400), size: .init(width: 240, height: 160)
+        )
+        let document = CanvasDocument(
+            name: "Canvas",
+            nodes: [concept, linkedImage, metadataImage, configuration, oldResult, narrative],
+            connections: [
+                CanvasConnection(
+                    sourceNodeID: concept.id, destinationNodeID: linkedImage.id, kind: .source
+                ),
+                CanvasConnection(
+                    sourceNodeID: linkedImage.id,
+                    destinationNodeID: configuration.id,
+                    kind: .source
+                ),
+                CanvasConnection(
+                    sourceNodeID: narrative.id,
+                    destinationNodeID: configuration.id,
+                    kind: .arrow
+                ),
+                CanvasConnection(
+                    sourceNodeID: configuration.id,
+                    destinationNodeID: oldResult.id,
+                    kind: .generatedFrom
+                )
+            ]
+        )
+
+        let resolved = try CanvasGenerationContextResolver.resolvedNodeIDs(
+            requestedIDs: nil,
+            configurationNodeID: configuration.id,
+            document: document
+        )
+        #expect(Set(resolved) == Set([concept.id, linkedImage.id, metadataImage.id]))
+        #expect(!resolved.contains(oldResult.id))
+        #expect(!resolved.contains(narrative.id))
+
+        let nodesByID = Dictionary(uniqueKeysWithValues: document.nodes.map { ($0.id, $0) })
+        let context = CanvasGenerationContextResolver.contextText(
+            nodes: resolved.compactMap { nodesByID[$0] },
+            excluding: "生成新版本"
+        )
+        #expect(context.contains("保留山谷构图"))
+        #expect(context.contains("Reference image original prompt: 清晨薄雾与暖色侧光"))
+        #expect(context.contains("Reference image original prompt: 木屋与远山"))
+        #expect(!context.contains { $0.contains("旧结果") || $0.contains("普通箭头") })
     }
 
     @Test func ordinaryEdgeDoesNotReplaceExplicitGenerationSourceEdge() throws {

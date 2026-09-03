@@ -65,7 +65,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      - name: Canvas and PiP app regression tests
+      - name: Canvas, PiP, and timeline app regression tests
         run: |
           xcodebuild \
             -skipPackagePluginValidation \
@@ -74,7 +74,9 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
             -resultBundlePath FloeAgent-AppRegressionTests.xcresult \
             -only-testing:FloeAppTests/CanvasTouchInteractionTests \
+            -only-testing:FloeAppTests/CanvasAgentToolContractTests \
             -only-testing:FloeAppTests/CrashAndFeedbackRegressionTests \
+            -only-testing:FloeAppTests/ThreadTimelineTests \
             CODE_SIGNING_ALLOWED=NO \
             test
           python3 - FloeAgent-AppRegressionTests.xcresult <<'PY'
@@ -100,9 +102,9 @@ jobs:
           total = required_count("totalTestCount")
           passed = required_count("passedTests")
           failed = required_count("failedTests")
-          print(f"canvas-pip-app-regression-summary total={total} passed={passed} failed={failed}")
-          if total < 14 or failed != 0 or passed != total:
-              raise SystemExit("Canvas and PiP app regression focused test gate failed")
+          print(f"canvas-pip-timeline-app-regression-summary total={total} passed={passed} failed={failed}")
+          if total < 34 or failed != 0 or passed != total:
+              raise SystemExit("Canvas, PiP, and timeline app regression focused test gate failed")
           PY
 
       - name: SPM build (cross-platform targets)

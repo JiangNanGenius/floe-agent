@@ -48,6 +48,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     @available(iOS 26.0, *)
     private var continuedTask: BGContinuedProcessingTask?
 
+    nonisolated static func shouldRequestContinuedProcessing(
+        for preference: BackgroundExecutionPreference
+    ) -> Bool {
+        preference == .standard
+    }
+
     init(environment: AppEnvironment) {
         self.environment = environment
         if let data = UserDefaults.standard.data(
@@ -109,10 +115,24 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         FloeLogger(category: .app).info(
             "backgroundRunStarted run=\(runID.uuidString) conversation=\(conversationID.uuidString) preference=\(environment.settingsCenter.backgroundExecution.rawValue) activeRuns=\(activeRuns.count)"
         )
-        if #available(iOS 26.0, *) {
-            updateContinuedTask(title: title, stage: "正在运行", progress: 5)
+        if Self.shouldRequestContinuedProcessing(
+            for: environment.settingsCenter.backgroundExecution
+        ) {
+            if #available(iOS 26.0, *) {
+                updateContinuedTask(title: title, stage: "正在运行", progress: 5)
+            }
+            BackgroundPolicyRegistry.shared.requestContinuedProcessing()
+        } else {
+            if #available(iOS 26.0, *) {
+                // A continued task accepted from an earlier standard-mode run
+                // must not remain as a Live Activity after the user selects a
+                // visual background mode.
+                finishContinuedTask(success: true)
+            }
+            FloeLogger(category: .app).info(
+                "continuedProcessingSkipped reason=visualBackgroundPreference preference=\(environment.settingsCenter.backgroundExecution.rawValue)"
+            )
         }
-        BackgroundPolicyRegistry.shared.requestContinuedProcessing()
         applyBackgroundExecutionPreference(
             runID: runID,
             conversationID: conversationID,
@@ -226,24 +246,37 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     /// Applies the user's background-execution choice when a run starts.
     /// `standard` relies on the 30s lease + continued task (no extra UI);
-    /// Both visual modes prepare real task-progress content. PiP is started
-    /// only by the explicit task/canvas toolbar control; scene transitions
-    /// never stand in for user intent. Screen-share mode additionally asks the
-    /// matching thread to present ReplayKit's system consent flow.
+    /// Both visual modes expose real task-progress content from the existing
+    /// task/canvas toolbar. PiP lets AVKit automatically enter when the user
+    /// leaves an inline player, while scene transitions never call `start`.
+    /// Screen-share mode additionally asks the matching thread to present
+    /// ReplayKit's system consent flow.
     private func applyBackgroundExecutionPreference(
         runID: UUID,
         conversationID: UUID,
         runTitle: String
     ) {
+        let preference = environment.settingsCenter.backgroundExecution
         guard visualSurfacePolicy.allowsVisualSurface(
-            for: environment.settingsCenter.backgroundExecution
+            for: preference
         ) else {
+            if preference == .standard {
+                // Mode changes can happen while a failed run's visual surface
+                // is retained. Standard mode owns only its continued task and
+                // must not inherit an earlier PiP controller or broadcast.
+                surfacedRunID = nil
+                environment.backgroundVideoService.stop()
+                if environment.screenShareCenter.isSharing
+                    || environment.screenShareCenter.isWaitingForBroadcast {
+                    environment.screenShareCenter.stopSharing()
+                }
+            }
             FloeLogger(category: .app).info(
                 "backgroundSurfaceSkipped run=\(runID.uuidString) reason=preferenceOrBatchSuppression batch=\(visualSurfacePolicy.batchID.uuidString)"
             )
             return
         }
-        switch environment.settingsCenter.backgroundExecution {
+        switch preference {
         case .standard:
             FloeLogger(category: .app).info(
                 "backgroundSurfaceSkipped run=\(runID.uuidString) reason=standardPreference"
@@ -254,42 +287,21 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 "backgroundSurfaceRequested run=\(runID.uuidString) mode=pictureInPicture"
             )
             surfacedRunID = runID
-            if environment.backgroundVideoService.isPiPPrepared
-                || environment.backgroundVideoService.isPreparingPiP {
-                environment.backgroundVideoService.update(
-                    title: runTitle,
-                    progress: "正在运行"
-                )
-            } else {
-                Task { [weak self] in
-                    guard let self else { return }
-                    await self.environment.backgroundVideoService.begin(
-                        title: runTitle,
-                        initialProgress: "正在运行"
-                    )
-                }
-            }
+            environment.backgroundVideoService.setRunContext(
+                title: runTitle,
+                progress: "正在运行",
+                automaticallyStartsFromInline: true
+            )
         case .screenShare:
             FloeLogger(category: .app).info(
                 "backgroundSurfaceRequested run=\(runID.uuidString) mode=screenShare sharing=\(environment.screenShareCenter.isSharing)"
             )
             surfacedRunID = runID
-            if environment.backgroundVideoService.isPiPPrepared
-                || environment.backgroundVideoService.isPreparingPiP {
-                environment.backgroundVideoService.update(
-                    title: runTitle,
-                    progress: environment.screenShareCenter.isSharing
-                        ? "正在共享屏幕" : "任务正在运行"
-                )
-            } else {
-                Task { [weak self] in
-                    guard let self else { return }
-                    await self.environment.backgroundVideoService.begin(
-                        title: runTitle,
-                        initialProgress: "任务正在运行"
-                    )
-                }
-            }
+            environment.backgroundVideoService.setRunContext(
+                title: runTitle,
+                progress: environment.screenShareCenter.isSharing
+                    ? "正在共享屏幕" : "任务正在运行"
+            )
             if !environment.screenShareCenter.isSharing {
                 environment.screenShareCenter.requestBroadcast(for: conversationID)
             }
@@ -327,9 +339,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             startPiPCarousel()
         }
         guard !environment.backgroundVideoService.isPiPActive else { return }
-        // Prepared or preparing content deliberately stays dormant. Ordinary
-        // continuation is handled by BGContinuedProcessingTask and the short
-        // completion lease; background entry must not create or start PiP.
+        // Prepared inline content is handed to AVKit, which owns the automatic
+        // Home/app-switch transition. The scene callback never invokes start;
+        // it only preserves checkpoints under the short completion lease.
         FloeLogger(category: .app).debug(
             "pictureInPictureBackgroundTransitionNoStart state=\(environment.backgroundVideoService.preparationState.rawValue)"
         )
@@ -404,9 +416,26 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     @available(iOS 26.0, *)
     private func acceptContinuedTask(_ task: BGContinuedProcessingTask) {
+        guard Self.shouldRequestContinuedProcessing(
+            for: environment.settingsCenter.backgroundExecution
+        ) else {
+            // A request submitted before the user changed modes can be handed
+            // back later. Complete it immediately so it cannot revive a Live
+            // Activity alongside PiP or screen sharing.
+            task.progress.totalUnitCount = 100
+            task.progress.completedUnitCount = 100
+            task.setTaskCompleted(success: true)
+            FloeLogger(category: .app).info(
+                "backgroundTaskAcceptanceSkipped kind=continued reason=visualBackgroundPreference preference=\(environment.settingsCenter.backgroundExecution.rawValue)"
+            )
+            return
+        }
         continuedTask = task
         task.progress.totalUnitCount = 100
         task.progress.completedUnitCount = activeRuns.isEmpty ? 100 : 5
+        FloeLogger(category: .app).info(
+            "backgroundTaskAccepted kind=continued activeRuns=\(activeRuns.count)"
+        )
         task.expirationHandler = { [weak self, weak task] in
             Task { @MainActor in
                 guard let self else { return }
@@ -477,7 +506,6 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             pipCarouselTask?.cancel()
             pipCarouselTask = nil
             environment.backgroundVideoService.retractForForeground()
-            environment.backgroundVideoService.revalidatePreparedContentForForeground()
             if visualSurfacePolicy.allowsVisualSurface(
                 for: environment.settingsCenter.backgroundExecution
             ) {
@@ -508,25 +536,24 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         UserDefaults.standard.set(data, forKey: Self.visualSurfacePolicyDefaultsKey)
     }
 
-    /// A user/system close destroys AVKit's controller. Rebuild its detached
-    /// sample-buffer content while foregrounded; actual start remains manual.
+    /// Keeps the latest run available to the PiP toolbar control. In PiP mode
+    /// the inline host arms AVKit for the user's later Home/app-switch gesture;
+    /// this method itself never starts PiP from a scene-phase callback.
     private func prepareBackgroundSurfaceIfNeeded() {
         guard visualSurfacePolicy.allowsVisualSurface(
                   for: environment.settingsCenter.backgroundExecution
               ),
-              environment.backgroundVideoService.preparationState.allowsAutomaticPreparation,
               !environment.backgroundVideoService.isPreparingPiP else { return }
         let candidate = activeRuns.first.map { (id: $0.key, run: $0.value) }
             ?? retainedPausedRun
         guard let (runID, run) = candidate else { return }
         surfacedRunID = runID
-        Task { [weak self] in
-            guard let self else { return }
-            await self.environment.backgroundVideoService.begin(
-                title: run.title,
-                initialProgress: "\(run.stage) · \(run.progress)%"
-            )
-        }
+        environment.backgroundVideoService.setRunContext(
+            title: run.title,
+            progress: "\(run.stage) · \(run.progress)%",
+            automaticallyStartsFromInline:
+                environment.settingsCenter.backgroundExecution == .pictureInPicture
+        )
     }
 
     private func acceptProcessingTask(_ task: BGProcessingTask) {
@@ -818,13 +845,33 @@ final class MediaGenerationService {
         let descriptor = OfficialMediaModelCatalog.models.first {
             $0.remoteModelID == model.remoteModelID && $0.kind == .image
         }
-        let maximumReferences = max(1, descriptor?.maximumReferenceAssets ?? 8)
+        let adapterMaximum = max(0, adapter.maximumSourceImages(
+            for: operation,
+            modelRemoteID: model.remoteModelID
+        ))
+        let catalogMaximum = descriptor?.maximumReferenceAssets ?? 0
+        let maximumReferences: Int
+        if operation == .generate {
+            maximumReferences = 0
+        } else if catalogMaximum > 0, adapterMaximum > 0 {
+            maximumReferences = min(catalogMaximum, adapterMaximum)
+        } else {
+            maximumReferences = max(catalogMaximum, adapterMaximum)
+        }
         guard sourceImages.count <= maximumReferences else {
             throw FloeError.validationFailed(
-                "所选图片模型最多支持 \(maximumReferences) 张参考图。"
+                "所选图片模型最多支持 \(maximumReferences) 张参考图；当前有 \(sourceImages.count) 张。请减少连接到生成节点的参考图，或改用支持更多参考图的模型。"
             )
         }
-        let boundedSources = Array(sourceImages.prefix(maximumReferences))
+        let requestedOutputCount = max(1, min(options.count, 4))
+        let maximumOutputs = max(1, adapter.maximumOutputImages(
+            modelRemoteID: model.remoteModelID
+        ))
+        guard requestedOutputCount <= maximumOutputs else {
+            throw FloeError.validationFailed(
+                "所选图片模型单次最多生成 \(maximumOutputs) 张图片；当前请求 \(requestedOutputCount) 张。请减少生成数量，或改用支持多图输出的模型。"
+            )
+        }
         let qualityLooksLikeResolution = options.quality.map {
             ["1K", "2K", "4K"].contains($0.uppercased())
         } ?? false
@@ -838,18 +885,18 @@ final class MediaGenerationService {
             provider: provider.kind, modelRemoteID: model.remoteModelID,
             operation: operation, selection: selection
         )
-        let referenceBytes = boundedSources.reduce(0) { $0 + $1.count }
+        let referenceBytes = sourceImages.reduce(0) { $0 + $1.count }
         FloeLogger(category: .providers).info(
-            "imageGenerationStarted trace=\(traceID.uuidString) operation=\(operation.rawValue) provider=\(String(describing: provider.kind)) model=\(model.remoteModelID) aspect=\(selection.aspectRatio ?? "auto") size=\(resolvedSize ?? selection.resolution ?? "auto") references=\(boundedSources.count) referenceBytes=\(referenceBytes) count=\(max(1, min(options.count, 4)))"
+            "imageGenerationStarted trace=\(traceID.uuidString) operation=\(operation.rawValue) provider=\(String(describing: provider.kind)) model=\(model.remoteModelID) aspect=\(selection.aspectRatio ?? "auto") size=\(resolvedSize ?? selection.resolution ?? "auto") references=\(sourceImages.count) referenceBytes=\(referenceBytes) count=\(requestedOutputCount)"
         )
         let result: RemoteImageResult
         do {
             result = try await adapter.perform(
                 RemoteImageRequest(
                     operation: operation, prompt: prompt,
-                    sourceImages: boundedSources,
+                    sourceImages: sourceImages,
                     selection: selection,
-                    count: max(1, min(options.count, 4)),
+                    count: requestedOutputCount,
                     modelRemoteID: model.remoteModelID
                 ),
                 provider: provider,
@@ -859,7 +906,7 @@ final class MediaGenerationService {
             let nsError = error as NSError
             let elapsed = Int(Date().timeIntervalSince(startedAt) * 1_000)
             FloeLogger(category: .providers).warning(
-                "imageGenerationFailed trace=\(traceID.uuidString) operation=\(operation.rawValue) provider=\(String(describing: provider.kind)) references=\(boundedSources.count) durationMs=\(elapsed) domain=\(nsError.domain) code=\(nsError.code)"
+                "imageGenerationFailed trace=\(traceID.uuidString) operation=\(operation.rawValue) provider=\(String(describing: provider.kind)) references=\(sourceImages.count) durationMs=\(elapsed) domain=\(nsError.domain) code=\(nsError.code)"
             )
             throw error
         }
@@ -956,7 +1003,15 @@ final class MediaGenerationService {
                     jobID: job.id, remoteURL: resultURL
                 )
             }
-            BackgroundPolicyRegistry.shared.requestContinuedProcessing()
+            if BackgroundRunCoordinator.shouldRequestContinuedProcessing(
+                for: environment.settingsCenter.backgroundExecution
+            ) {
+                BackgroundPolicyRegistry.shared.requestContinuedProcessing()
+            } else {
+                FloeLogger(category: .app).info(
+                    "continuedProcessingSkipped reason=visualBackgroundPreference workload=video preference=\(environment.settingsCenter.backgroundExecution.rawValue)"
+                )
+            }
             BackgroundPolicyRegistry.shared.scheduleMediaRefresh(
                 earliest: job.nextPollAt ?? Date().addingTimeInterval(60)
             )

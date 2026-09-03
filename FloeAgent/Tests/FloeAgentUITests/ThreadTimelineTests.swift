@@ -103,6 +103,112 @@ struct ThreadTimelineTests {
         #expect(replyCount == 1)
     }
 
+    @Test("A confirmed final-answer review never renders trailing reasoning below the answer")
+    func confirmedVerificationReasoningIsHidden() {
+        let conversationID = UUID()
+        let run = makeRun(state: "completed", conversationID: conversationID)
+        let verificationReasoning = makeEvent(
+            runID: run.id, sequence: 5, kind: .reasoning,
+            payload: ["text": "Internal verification before CONFIRM"]
+        )
+        let terminal = makeEvent(
+            runID: run.id, sequence: 6, kind: .terminal,
+            payload: ["stopReason": "endTurn"]
+        )
+        let events = [
+            makeEvent(runID: run.id, sequence: 1, kind: .reasoning,
+                      payload: ["text": "Reasoning that produced the answer"]),
+            makeEvent(runID: run.id, sequence: 2, kind: .toolRequest,
+                      payload: ["tool": "canvas.getState", "id": "state-1"]),
+            makeEvent(runID: run.id, sequence: 3, kind: .toolResult,
+                      payload: ["tool": "canvas.getState", "id": "state-1", "status": "ok"]),
+            makeEvent(runID: run.id, sequence: 4, kind: .assistantText,
+                      payload: ["text": "最终答案"]),
+            verificationReasoning,
+            terminal
+        ]
+
+        let items = ThreadTimelineBuilder.build(
+            messages: [], events: events, run: run,
+            isRunning: false, liveStreamedText: "", liveReasoningText: "",
+            pendingApprovals: []
+        )
+
+        let projectedSequences = items.flatMap { item -> [Int] in
+            switch item {
+            case .event(let event): [event.sequence]
+            case .stepGroup(let events, _): events.map(\.sequence)
+            default: []
+            }
+        }
+        #expect(projectedSequences == [1, 2, 3])
+        #expect(!projectedSequences.contains(verificationReasoning.sequence))
+        #expect(items.last?.id == "terminal.\(terminal.id.uuidString)")
+    }
+
+    @Test("Reasoning after assistant text stays visible when it leads to a tool")
+    func postAnswerReasoningBeforeToolRemainsVisible() {
+        let conversationID = UUID()
+        let run = makeRun(state: "completed", conversationID: conversationID)
+        let reasoning = makeEvent(
+            runID: run.id, sequence: 2, kind: .reasoning,
+            payload: ["text": "Need one real tool check"]
+        )
+        let events = [
+            makeEvent(runID: run.id, sequence: 1, kind: .assistantText,
+                      payload: ["text": "Intermediate answer"]),
+            reasoning,
+            makeEvent(runID: run.id, sequence: 3, kind: .toolRequest,
+                      payload: ["tool": "canvas.getState", "id": "state-2"]),
+            makeEvent(runID: run.id, sequence: 4, kind: .toolResult,
+                      payload: ["tool": "canvas.getState", "id": "state-2", "status": "ok"]),
+            makeEvent(runID: run.id, sequence: 5, kind: .terminal,
+                      payload: ["stopReason": "endTurn"])
+        ]
+
+        let items = ThreadTimelineBuilder.build(
+            messages: [], events: events, run: run,
+            isRunning: false, liveStreamedText: "", liveReasoningText: "",
+            pendingApprovals: []
+        )
+        let projectedSequences = items.flatMap { item -> [Int] in
+            if case .stepGroup(let events, _) = item { return events.map(\.sequence) }
+            return []
+        }
+        #expect(projectedSequences.contains(reasoning.sequence))
+    }
+
+    @Test("A persisted terminal suppresses stale live animation tails")
+    func terminalSuppressesAnimatorDrainTail() {
+        let conversationID = UUID()
+        let run = makeRun(state: "completed", conversationID: conversationID)
+        let terminal = makeEvent(
+            runID: run.id, sequence: 2, kind: .terminal,
+            payload: ["stopReason": "endTurn"]
+        )
+        let items = ThreadTimelineBuilder.build(
+            messages: [],
+            events: [
+                makeEvent(runID: run.id, sequence: 1, kind: .assistantText,
+                          payload: ["text": "已经持久化的最终答案"]),
+                terminal
+            ],
+            run: run,
+            isRunning: true,
+            liveStreamedText: "尚未排空的动画文本",
+            liveReasoningText: "尚未排空的动画思考",
+            pendingApprovals: []
+        )
+
+        #expect(!items.contains { item in
+            switch item {
+            case .liveReasoning, .liveAssistantTail, .liveThinking: true
+            default: false
+            }
+        })
+        #expect(items.last?.id == "terminal.\(terminal.id.uuidString)")
+    }
+
     @Test("A final reply stays below the tool group that produced it")
     func finalReplyAfterToolGroup() {
         let conversationID = UUID()

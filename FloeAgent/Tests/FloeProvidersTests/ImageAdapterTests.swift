@@ -109,6 +109,16 @@ struct ImageAdapterTests {
 
         let google = GoogleGeminiImageAdapter()
         #expect(google.supportedOperations(for: provider(kind: .googleGemini)) == [.generate, .edit])
+
+        #expect(openai.maximumSourceImages(for: .edit, modelRemoteID: "gpt-image-2") == 16)
+        #expect(ark.maximumSourceImages(for: .edit, modelRemoteID: "doubao-seedream-5-0") == 10)
+        #expect(alibaba.maximumSourceImages(for: .edit, modelRemoteID: "wan2.7-image") == 9)
+        #expect(alibaba.maximumSourceImages(for: .edit, modelRemoteID: "qwen-image-3") == 3)
+        #expect(google.maximumSourceImages(for: .edit, modelRemoteID: "gemini-2.5-flash-image") == 3)
+        #expect(openai.maximumOutputImages(modelRemoteID: "gpt-image-2") == 4)
+        #expect(ark.maximumOutputImages(modelRemoteID: "doubao-seedream-5-0") == 4)
+        #expect(alibaba.maximumOutputImages(modelRemoteID: "wan2.7-image") == 4)
+        #expect(google.maximumOutputImages(modelRemoteID: "gemini-3-pro-image") == 1)
     }
 
     @Test("Unsupported operations throw unsupportedOperation, never fabricate")
@@ -175,11 +185,94 @@ struct ImageAdapterTests {
         let request = try #require(ImageAdapterURLProtocol.snapshotRequests().first)
         #expect(request.url?.path == "/openai/v1/images/generations")
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+        #expect(request.timeoutInterval >= 300)
         let body = try #require(request.httpBody)
         let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(json["model"] as? String == "gpt-image-2")
         #expect(json["size"] as? String == "1536x864")
         #expect(json["quality"] as? String == "high")
+    }
+
+    @Test("OpenAI GPT Image edits transmit every reference without truncation")
+    func openAIMultipleReferenceWireContract() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ImageAdapterURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let output = Data([0x89, 0x50, 0x4E, 0x47, 0x44])
+        ImageAdapterURLProtocol.prepare([
+            .init(statusCode: 200, body: try JSONSerialization.data(withJSONObject: [
+                "data": [["b64_json": output.base64EncodedString()]]
+            ]))
+        ])
+        let sources = (0..<5).map { index in
+            Data([0x89, 0x50, 0x4E, 0x47, UInt8(index)])
+        }
+        let adapter = OpenAIImageAdapter(session: session)
+        let result = try await adapter.perform(
+            RemoteImageRequest(
+                operation: .edit, prompt: "blend every reference",
+                sourceImages: sources, modelRemoteID: "gpt-image-2"
+            ),
+            provider: provider(kind: .openAI),
+            credentials: ProviderCredentials(apiKey: "test-key")
+        )
+        #expect(result.images == [output])
+        let request = try #require(ImageAdapterURLProtocol.snapshotRequests().first)
+        #expect(request.timeoutInterval >= 300)
+        let body = String(decoding: try #require(request.httpBody), as: UTF8.self)
+        #expect(body.components(separatedBy: "name=\"image[]\"").count - 1 == 5)
+        #expect(body.contains("filename=\"source-5.png\""))
+    }
+
+    @Test("Unsupported reference counts fail before networking")
+    func excessiveReferencesFailBeforeNetworking() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ImageAdapterURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let references = (0..<4).map { Data([UInt8($0)]) }
+
+        ImageAdapterURLProtocol.prepare([])
+        await #expect(throws: RemoteImageError.self) {
+            _ = try await GoogleGeminiImageAdapter(session: session).perform(
+                RemoteImageRequest(
+                    operation: .edit, prompt: "blend",
+                    sourceImages: references,
+                    modelRemoteID: "gemini-2.5-flash-image"
+                ),
+                provider: provider(kind: .googleGemini),
+                credentials: ProviderCredentials(apiKey: "test-key")
+            )
+        }
+        #expect(ImageAdapterURLProtocol.snapshotRequests().isEmpty)
+
+        ImageAdapterURLProtocol.prepare([])
+        await #expect(throws: RemoteImageError.self) {
+            _ = try await GoogleGeminiImageAdapter(session: session).perform(
+                RemoteImageRequest(
+                    operation: .generate, prompt: "four versions",
+                    count: 4, modelRemoteID: "gemini-3-pro-image"
+                ),
+                provider: provider(kind: .googleGemini),
+                credentials: ProviderCredentials(apiKey: "test-key")
+            )
+        }
+        #expect(ImageAdapterURLProtocol.snapshotRequests().isEmpty)
+
+        ImageAdapterURLProtocol.prepare([])
+        await #expect(throws: RemoteImageError.self) {
+            _ = try await AlibabaImageAdapter(session: session).perform(
+                RemoteImageRequest(
+                    operation: .edit, prompt: "blend",
+                    sourceImages: references,
+                    modelRemoteID: "qwen-image-3"
+                ),
+                provider: provider(kind: .alibabaStudio),
+                credentials: ProviderCredentials(apiKey: "test-key")
+            )
+        }
+        #expect(ImageAdapterURLProtocol.snapshotRequests().isEmpty)
     }
 
     @Test("Provider preset resolver never sends an aspect label as native size")
@@ -244,6 +337,7 @@ struct ImageAdapterTests {
         #expect(result.revisedPrompt == "completed")
         let request = try #require(ImageAdapterURLProtocol.snapshotRequests().first)
         #expect(request.url?.path == "/google/v1/models/gemini-3-pro-image:generateContent")
+        #expect(request.timeoutInterval >= 300)
         #expect(request.value(forHTTPHeaderField: "x-goog-api-key") == "google-test-key")
         #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
         let body = try #require(request.httpBody)
@@ -280,7 +374,9 @@ struct ImageAdapterTests {
                 RemoteImageRequest(
                     operation: .edit,
                     prompt: "make it warmer",
-                    sourceImages: [Data([0x89, 0x50, 0x4E, 0x47, 0x01])],
+                    sourceImages: (0..<5).map {
+                        Data([0x89, 0x50, 0x4E, 0x47, UInt8($0)])
+                    },
                     modelRemoteID: "wan2.7-image"
                 ),
                 provider: profile,
@@ -292,6 +388,7 @@ struct ImageAdapterTests {
         #expect(request.url?.path == "/api/v1/services/aigc/multimodal-generation/generation")
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
         #expect(request.value(forHTTPHeaderField: "X-DashScope-Async") == nil)
+        #expect(request.timeoutInterval >= 300)
         let body = try #require(request.httpBody)
         let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(json["model"] as? String == "wan2.7-image")
@@ -299,7 +396,10 @@ struct ImageAdapterTests {
         let messages = try #require(input["messages"] as? [[String: Any]])
         let content = try #require(messages.first?["content"] as? [[String: Any]])
         #expect(content.first?["text"] as? String == "make it warmer")
-        #expect((content.dropFirst().first?["image"] as? String)?.hasPrefix("data:image/png;base64,") == true)
+        #expect(content.dropFirst().count == 5)
+        #expect(content.dropFirst().allSatisfy {
+            ($0["image"] as? String)?.hasPrefix("data:image/png;base64,") == true
+        })
     }
 
     @Test("Alibaba legacy image models use the image-synthesis protocol")
@@ -377,7 +477,7 @@ struct ImageAdapterTests {
             operation: .generate,
             prompt: "draw a lake",
             sizeHint: size,
-            count: 8,
+            count: 4,
             modelRemoteID: model
         )
         await #expect(throws: RemoteImageError.self) {

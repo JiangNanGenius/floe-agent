@@ -14,6 +14,11 @@ import FloeCore
 
 /// Builds an authorized JSON POST request and redacts error bodies.
 enum RemoteImageHTTP {
+    /// Image generation is a bounded, cancellable but intentionally long
+    /// non-streaming request. Provider-side sequential batches routinely take
+    /// longer than the generic 60–75 second networking defaults.
+    static let nonStreamingRequestTimeout: TimeInterval = 300
+
     static func post(
         url: URL,
         apiKey: String?,
@@ -22,6 +27,7 @@ enum RemoteImageHTTP {
         body: some Encodable
     ) throws -> URLRequest {
         var request = URLRequest(url: url)
+        request.timeoutInterval = nonStreamingRequestTimeout
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -148,6 +154,17 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
         [.generate, .edit, .variation, .inpaint]
     }
 
+    public func maximumSourceImages(
+        for operation: RemoteImageOperation,
+        modelRemoteID: String?
+    ) -> Int {
+        guard operation != .generate else { return 0 }
+        let model = modelRemoteID?.lowercased() ?? ""
+        return model.hasPrefix("gpt-image") ? 16 : 1
+    }
+
+    public func maximumOutputImages(modelRemoteID: String?) -> Int { 4 }
+
     public func perform(
         _ request: RemoteImageRequest,
         provider: ProviderProfile,
@@ -156,6 +173,8 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
         guard supports(request.operation, for: provider) else {
             throw RemoteImageError.unsupportedOperation(request.operation, provider: "OpenAI")
         }
+        try validateSourceImageCount(request, providerName: "OpenAI")
+        try validateOutputImageCount(request, providerName: "OpenAI")
         // OpenAI's images endpoint is multipart for edits; the foundation
         // here performs generation via the JSON endpoint and labels
         // edit-family operations as requiring the multipart path. This keeps
@@ -223,7 +242,7 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
         provider: ProviderProfile,
         credentials: ProviderCredentials
     ) async throws -> RemoteImageResult {
-        guard let source = request.sourceImages.first else {
+        guard !request.sourceImages.isEmpty else {
             throw RemoteImageError.requestFailed("OpenAI image editing requires a source image")
         }
         let boundary = "FloeImage-\(UUID().uuidString)"
@@ -249,11 +268,15 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
         field("n", String(max(1, min(request.count, 4))))
         field("size", size)
         if let quality { field("quality", quality) }
-        file("image", "source.png", source)
+        let imageField = request.sourceImages.count == 1 ? "image" : "image[]"
+        for (index, source) in request.sourceImages.enumerated() {
+            file(imageField, "source-\(index + 1).png", source)
+        }
         if let mask = request.mask { file("mask", "mask.png", mask) }
         body.append(Data("--\(boundary)--\r\n".utf8))
 
         var urlRequest = URLRequest(url: provider.baseURL.appendingPathComponent("images/edits"))
+        urlRequest.timeoutInterval = RemoteImageHTTP.nonStreamingRequestTimeout
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -293,6 +316,16 @@ public struct GoogleGeminiImageAdapter: ImageProviderAdapter {
         [.generate, .edit]
     }
 
+    public func maximumSourceImages(
+        for operation: RemoteImageOperation,
+        modelRemoteID: String?
+    ) -> Int {
+        guard operation == .edit else { return 0 }
+        return modelRemoteID?.lowercased() == "gemini-2.5-flash-image" ? 3 : 14
+    }
+
+    public func maximumOutputImages(modelRemoteID: String?) -> Int { 1 }
+
     public func perform(
         _ request: RemoteImageRequest,
         provider: ProviderProfile,
@@ -301,6 +334,8 @@ public struct GoogleGeminiImageAdapter: ImageProviderAdapter {
         guard supports(request.operation, for: provider) else {
             throw RemoteImageError.unsupportedOperation(request.operation, provider: "Google Gemini Images")
         }
+        try validateSourceImageCount(request, providerName: "Google Gemini Images")
+        try validateOutputImageCount(request, providerName: "Google Gemini Images")
         guard let apiKey = credentials.apiKey, !apiKey.isEmpty else {
             throw RemoteImageError.requestFailed("Google Gemini API key is required")
         }
@@ -312,8 +347,7 @@ public struct GoogleGeminiImageAdapter: ImageProviderAdapter {
         if request.operation == .edit, request.sourceImages.isEmpty {
             throw RemoteImageError.requestFailed("Google Gemini image editing requires a source image")
         }
-        guard request.sourceImages.count <= 14,
-              request.sourceImages.allSatisfy({ $0.count <= Self.maximumImageBytes }),
+        guard request.sourceImages.allSatisfy({ $0.count <= Self.maximumImageBytes }),
               request.sourceImages.reduce(0, { $0 + $1.count }) <= Self.maximumRequestBytes else {
             throw RemoteImageError.requestFailed("Google Gemini image inputs exceed the bounded request limit")
         }
@@ -475,6 +509,15 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
         [.generate, .edit, .variation, .inpaint]
     }
 
+    public func maximumSourceImages(
+        for operation: RemoteImageOperation,
+        modelRemoteID: String?
+    ) -> Int {
+        operation == .generate ? 0 : 10
+    }
+
+    public func maximumOutputImages(modelRemoteID: String?) -> Int { 4 }
+
     public func perform(
         _ request: RemoteImageRequest,
         provider: ProviderProfile,
@@ -483,6 +526,8 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
         guard supports(request.operation, for: provider) else {
             throw RemoteImageError.unsupportedOperation(request.operation, provider: "Volcengine Ark")
         }
+        try validateSourceImageCount(request, providerName: "Volcengine Ark")
+        try validateOutputImageCount(request, providerName: "Volcengine Ark")
         guard let model = request.modelRemoteID, !model.isEmpty else {
             throw RemoteImageError.requestFailed("Volcengine image model ID is required")
         }
@@ -567,6 +612,20 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
         [.generate, .edit]
     }
 
+    public func maximumSourceImages(
+        for operation: RemoteImageOperation,
+        modelRemoteID: String?
+    ) -> Int {
+        guard operation == .edit else { return 0 }
+        let model = modelRemoteID?.lowercased() ?? ""
+        if model.contains("qwen-image") { return 3 }
+        if model.contains("wan2.7") { return 9 }
+        if model.contains("wan2.6") { return 4 }
+        return 0
+    }
+
+    public func maximumOutputImages(modelRemoteID: String?) -> Int { 4 }
+
     public func perform(
         _ request: RemoteImageRequest,
         provider: ProviderProfile,
@@ -575,6 +634,8 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
         guard supports(request.operation, for: provider) else {
             throw RemoteImageError.unsupportedOperation(request.operation, provider: "DashScope")
         }
+        try validateSourceImageCount(request, providerName: "DashScope")
+        try validateOutputImageCount(request, providerName: "DashScope")
         guard let model = request.modelRemoteID, !model.isEmpty else {
             throw RemoteImageError.requestFailed("DashScope image model ID is required")
         }
@@ -655,7 +716,7 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             text: request.prompt,
             image: nil
         )]
-        content.append(contentsOf: request.sourceImages.prefix(4).map {
+        content.append(contentsOf: request.sourceImages.map {
             .init(text: nil, image: Self.imageDataURL($0))
         })
         let nativeSize = try ImageGenerationPresetResolver.nativeSize(

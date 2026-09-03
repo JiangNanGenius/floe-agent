@@ -218,14 +218,12 @@ actor CanvasToolCoordinator {
         guard let document = activeProject.documents.first(where: { $0.id == targetDocumentID }) else {
             throw FloeError.validationFailed("Canvas document does not exist")
         }
-        let sources = sourceNodeIDs ?? persisted?.selectedNodeIDs ?? []
-        let availableNodeIDs = Set(document.nodes.map(\.id))
-        let missingSourceIDs = Set(sources).subtracting(availableNodeIDs)
-        guard missingSourceIDs.isEmpty else {
-            throw FloeError.validationFailed(
-                "Generation references missing canvas nodes: \(missingSourceIDs.map(\.uuidString).sorted().joined(separator: ", "))"
-            )
-        }
+        let sources = try CanvasGenerationContextResolver.resolvedNodeIDs(
+            requestedIDs: sourceNodeIDs,
+            fallbackIDs: persisted?.selectedNodeIDs ?? [],
+            configurationNodeID: configurationNodeID,
+            document: document
+        )
         let fingerprint = generationFingerprint(
             kind: kind, prompt: prompt, modelID: modelID,
             sourceNodeIDs: sources, aspectRatio: aspectRatio,
@@ -282,13 +280,15 @@ actor CanvasToolCoordinator {
                 kind: kind, prompt: prompt, sourceNodeIDs: sources,
                 resultPosition: position,
                 existingConfigurationNodeID: configurationNodeID,
+                resultCount: kind == .image ? max(1, min(count, 4)) : 1,
                 createdByRunID: runID, metadata: graphMetadata
             ),
             document: document
         )
         var preparedMetadata = graphMetadata
         preparedMetadata["generationPromptNodeID"] = graph.promptNodeID.uuidString
-        preparedMetadata["generationResultNodeIDs"] = graph.resultNodeID.uuidString
+        preparedMetadata["generationResultNodeIDs"] = graph.resultNodeIDs
+            .map(\.uuidString).joined(separator: ",")
         var operations = graph.operations
         operations.append(CanvasPatchOperation(
             kind: .update, nodeID: graph.configurationNodeID,
@@ -315,51 +315,25 @@ actor CanvasToolCoordinator {
                     ),
                     referenceData, modelID
                 )
-                guard !assets.isEmpty else {
-                    throw FloeError.internalError("Image provider returned no assets")
-                }
+                let resultIDs = try CanvasGenerationOutputContract.resultNodeIDs(
+                    expectedCount: count,
+                    actualCount: assets.count,
+                    preparedResultNodeIDs: graph.resultNodeIDs
+                )
                 logger.info(
                     "canvasGenerationProviderCompleted attempt=\(generationAttemptID) kind=image outputs=\(assets.count)"
                 )
-                var resultIDs = [graph.resultNodeID]
                 var resultOperations: [CanvasPatchOperation] = []
                 for (index, asset) in assets.enumerated() {
-                    let resultID: UUID
-                    if index == 0 {
-                        resultID = graph.resultNodeID
-                        resultOperations.append(CanvasPatchOperation(
-                            kind: .update, nodeID: resultID, nodeKind: .image,
-                            text: "生成图片", asset: asset,
-                            metadata: graphMetadata.merging([
-                                "generationState": "ready",
-                                "imageGroupPrimary": "true"
-                            ]) { _, new in new }
-                        ))
-                    } else {
-                        resultID = UUID(); resultIDs.append(resultID)
-                        resultOperations.append(CanvasPatchOperation(
-                            kind: .create, nodeID: resultID, nodeKind: .image,
-                            text: "生成图片",
-                            position: .init(
-                                x: position.x + Double(index) * 54,
-                                y: position.y + Double(index) * 42
-                            ),
-                            size: .init(width: 320, height: 260), asset: asset,
-                            createdByRunID: runID,
-                            metadata: graphMetadata.merging([
-                                "generationState": "ready",
-                                "imageGroupPrimary": "false"
-                            ]) { _, new in new }
-                        ))
-                        resultOperations.append(CanvasPatchOperation(
-                            kind: .connect,
-                            sourceNodeID: graph.configurationNodeID,
-                            destinationNodeID: resultID,
-                            connectionKind: .generatedFrom,
-                            sourcePort: .trailing, destinationPort: .leading,
-                            label: "生成结果"
-                        ))
-                    }
+                    let resultID = resultIDs[index]
+                    resultOperations.append(CanvasPatchOperation(
+                        kind: .update, nodeID: resultID, nodeKind: .image,
+                        text: "生成图片", asset: asset,
+                        metadata: graphMetadata.merging([
+                            "generationState": "ready",
+                            "imageGroupPrimary": index == 0 ? "true" : "false"
+                        ]) { _, new in new }
+                    ))
                 }
                 resultOperations.append(CanvasPatchOperation(
                     kind: .update, nodeID: graph.configurationNodeID,
@@ -446,7 +420,7 @@ actor CanvasToolCoordinator {
                 runID: runID, canvasID: activeProject.id,
                 documentID: targetDocumentID,
                 configurationNodeID: graph.configurationNodeID,
-                resultNodeID: graph.resultNodeID,
+                resultNodeIDs: graph.resultNodeIDs,
                 generationAttemptID: generationAttemptID,
                 message: error.localizedDescription
             )
@@ -515,7 +489,7 @@ actor CanvasToolCoordinator {
 
     private func markGenerationFailed(
         runID: UUID, canvasID: UUID, documentID: UUID,
-        configurationNodeID: UUID, resultNodeID: UUID,
+        configurationNodeID: UUID, resultNodeIDs: [UUID],
         generationAttemptID: String, message: String
     ) async throws {
         _ = try await commitGenerationPatch(
@@ -523,20 +497,20 @@ actor CanvasToolCoordinator {
             canvasID: canvasID,
             documentID: documentID,
             configurationNodeID: configurationNodeID,
-            resultNodeID: resultNodeID,
+            resultNodeID: resultNodeIDs[0],
             generationAttemptID: generationAttemptID,
             phase: "failed",
             operations: [
                 CanvasPatchOperation(
                     kind: .update, nodeID: configurationNodeID,
                     metadata: ["generationState": "failed", "generationError": message]
-                ),
-                CanvasPatchOperation(
+                )
+            ] + resultNodeIDs.map { resultNodeID in CanvasPatchOperation(
                     kind: .update, nodeID: resultNodeID,
                     text: "生成失败，可从配置节点重试",
                     metadata: ["generationState": "failed", "generationError": message]
                 )
-            ]
+            }
         )
     }
 
@@ -575,28 +549,24 @@ actor CanvasToolCoordinator {
     private func providerPrompt(
         prompt: String, sourceNodeIDs: [UUID], document: CanvasDocument
     ) -> String {
-        let sourceSet = Set(sourceNodeIDs)
-        let context = document.nodes.compactMap { node -> String? in
-            guard sourceSet.contains(node.id), [.text, .stickyNote, .card].contains(node.kind) else {
-                return nil
-            }
-            let text = node.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.isEmpty || text == prompt ? nil : text
-        }
+        let nodesByID = Dictionary(uniqueKeysWithValues: document.nodes.map { ($0.id, $0) })
+        let context = CanvasGenerationContextResolver.contextText(
+            nodes: sourceNodeIDs.compactMap { nodesByID[$0] },
+            excluding: prompt
+        )
         return context.isEmpty ? prompt : "\(prompt)\n\n画布文字引用：\n\(context.joined(separator: "\n"))"
     }
 
     private func sourceImageData(
         sourceNodeIDs: [UUID], document: CanvasDocument
     ) throws -> [Data] {
-        let sourceSet = Set(sourceNodeIDs)
+        let nodesByID = Dictionary(uniqueKeysWithValues: document.nodes.map { ($0.id, $0) })
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: false
         ).appendingPathComponent("FloeAgent", isDirectory: true)
-        let requestedImages = document.nodes.filter {
-            sourceSet.contains($0.id) && $0.kind == .image
-        }
+        let requestedImages = sourceNodeIDs.compactMap { nodesByID[$0] }
+            .filter { $0.kind == .image }
         return try requestedImages.map { node in
             guard let relative = node.asset?.localRelativePath,
                   !relative.contains("..") else {
@@ -648,7 +618,7 @@ private enum CanvasToolOutput {
     }
 }
 
-private struct CanvasInspectionPage: Encodable {
+struct CanvasInspectionPage: Encodable {
     struct Node: Encodable {
         var id: UUID; var kind: CanvasNodeKind; var text: String
         var position: CanvasPoint; var size: CanvasSize
@@ -656,6 +626,7 @@ private struct CanvasInspectionPage: Encodable {
     }
     struct Connection: Encodable {
         var id: UUID; var sourceNodeID: UUID; var destinationNodeID: UUID
+        var kind: CanvasConnectionKind
         var sourcePort: CanvasConnectionPort?; var destinationPort: CanvasConnectionPort?
         var label: String?
     }
@@ -724,6 +695,7 @@ private struct CanvasInspectTool: AgentTool {
                 return .init(
                     id: $0.id, sourceNodeID: $0.sourceNodeID,
                     destinationNodeID: $0.destinationNodeID,
+                    kind: $0.kind,
                     sourcePort: $0.sourcePort, destinationPort: $0.destinationPort,
                     label: $0.label
                 )
@@ -840,8 +812,8 @@ private struct CanvasGenerateMediaTool: AgentTool {
         var quality: String?; var count: Int?; var durationSeconds: Int?
     }
     static let name = "canvas.generate"
-    static let toolDescription = "Generate media through the canonical canvas workflow. It creates or reuses a visible prompt node, a generation-configuration node, and connected image/video results. Inspect first and pass the exact revision."
-    static let parametersJSON = #"{"type":"object","properties":{"kind":{"type":"string","enum":["image","video"]},"prompt":{"type":"string"},"modelID":{"type":"string","format":"uuid"},"documentID":{"type":"string","format":"uuid"},"sourceNodeIDs":{"type":"array","items":{"type":"string","format":"uuid"}},"configurationNodeID":{"type":"string","format":"uuid"},"position":{"type":"object","description":"Preferred position of the first result node; prompt and configuration nodes are placed to its left.","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false},"expectedRevision":{"type":"integer"},"aspectRatio":{"type":"string"},"quality":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":4},"durationSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["kind","prompt","position","expectedRevision"],"additionalProperties":false}"#
+    static let toolDescription = "Generate media through the canonical canvas workflow. Explicit sourceNodeIDs and incoming source-kind connections are provider inputs; ordinary arrows and prior generated results are not. Every requested reference image is sent or the request fails before networking. The workflow creates or reuses a visible generation-configuration node and connected image/video results. Inspect first and pass the exact revision."
+    static let parametersJSON = #"{"type":"object","properties":{"kind":{"type":"string","enum":["image","video"]},"prompt":{"type":"string"},"modelID":{"type":"string","format":"uuid"},"documentID":{"type":"string","format":"uuid"},"sourceNodeIDs":{"type":"array","description":"Exact reference/context nodes. For an existing configuration, these are merged with its incoming source-kind connections and persisted generationSourceNodeIDs; only source-kind ancestry is expanded.","items":{"type":"string","format":"uuid"}},"configurationNodeID":{"type":"string","format":"uuid"},"position":{"type":"object","description":"Preferred flow area. New nodes are aligned on a fixed grid to the right of explicit sources without moving existing nodes.","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false},"expectedRevision":{"type":"integer"},"aspectRatio":{"type":"string"},"quality":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":4},"durationSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["kind","prompt","position","expectedRevision"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.networkAccess, .sendsDataToProvider, .persistsPersonalData]
     static let isSideEffecting = true
     let coordinator: CanvasToolCoordinator
