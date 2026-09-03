@@ -43,6 +43,7 @@ jobs:
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
       build: ${{ steps.release.outputs.build }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
 
     steps:
       - name: Check out tagged source
@@ -111,6 +112,7 @@ jobs:
             build
 
       - name: Verify Canvas, PiP, and timeline app regression contracts
+        id: app_regression
         run: |
           xcodebuild \
             -skipPackagePluginValidation \
@@ -121,38 +123,16 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/FloeAppRegressionDerivedData" \
             -resultBundlePath "$RUNNER_TEMP/FloeAgent-AppRegressionTests.xcresult" \
             -only-testing:FloeAppTests/CanvasTouchInteractionTests \
+            -only-testing:FloeAppTests/CanvasSavedImageBatchAtomicityTests \
             -only-testing:FloeAppTests/CanvasAgentToolContractTests \
             -only-testing:FloeAppTests/CrashAndFeedbackRegressionTests \
             -only-testing:FloeAppTests/ThreadTimelineTests \
             CODE_SIGNING_ALLOWED=NO \
             test
-          python3 - "$RUNNER_TEMP/FloeAgent-AppRegressionTests.xcresult" <<'PY'
-          import json
-          import subprocess
-          import sys
-
-          result_bundle = sys.argv[1]
-          summary = json.loads(subprocess.check_output(
-              [
-                  "xcrun", "xcresulttool", "get", "test-results", "summary",
-                  "--path", result_bundle, "--compact",
-              ],
-              text=True,
-          ))
-
-          def required_count(name: str) -> int:
-              value = summary.get(name)
-              if type(value) is not int:
-                  raise SystemExit(f"xcresult summary is missing integer {name}: {value!r}")
-              return value
-
-          total = required_count("totalTestCount")
-          passed = required_count("passedTests")
-          failed = required_count("failedTests")
-          print(f"canvas-pip-timeline-app-regression-summary total={total} passed={passed} failed={failed}")
-          if total < 34 or failed != 0 or passed != total:
-              raise SystemExit("Canvas, PiP, and timeline app regression focused test gate failed")
-          PY
+          python3 scripts/verify_app_regression_xcresult.py \
+            --result-bundle "$RUNNER_TEMP/FloeAgent-AppRegressionTests.xcresult" \
+            --github-output "$GITHUB_OUTPUT" \
+            --summary-output "$RUNNER_TEMP/FloeAgent-AppRegressionTests-SUMMARY.txt"
 
       - name: Scan source and generate compliance artifacts
         run: |
@@ -203,13 +183,22 @@ jobs:
           cp sbom.spdx.json release-assets/
           cp LICENSES-THIRD-PARTY.md release-assets/
           cp .gitleaks-report.json release-assets/source-gitleaks-report.json
+          cp "$RUNNER_TEMP/FloeAgent-AppRegressionTests-SUMMARY.txt" release-assets/
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$RUNNER_TEMP/FloeAgent-AppRegressionTests.xcresult" \
+            release-assets/FloeAgent-AppRegressionTests.xcresult.zip
+          unzip -t release-assets/FloeAgent-AppRegressionTests.xcresult.zip
           {
             echo "tag=${{ steps.release.outputs.tag }}"
             echo "version=${{ steps.release.outputs.version }}"
             echo "build=${{ steps.release.outputs.build }}"
+            echo "commit=${{ steps.release.outputs.source_sha }}"
             echo "bundle=${{ steps.package.outputs.bundle_id }}"
             echo "minimum_iOS=${{ steps.package.outputs.minimum_os }}"
             echo "swift_tests=passed"
+            echo "app_regression_tests=${{ steps.app_regression.outputs.passed }}/${{ steps.app_regression.outputs.total }} passed"
+            echo "app_regression_failed=${{ steps.app_regression.outputs.failed }}"
+            echo "app_regression_skipped=${{ steps.app_regression.outputs.skipped }}"
             echo "simulator_release_build=passed"
             echo "unsigned_device_build=passed"
             echo "remote_agent_asset=packaged"
@@ -242,14 +231,16 @@ jobs:
       run:
         working-directory: FloeAgent
     steps:
-      - name: Check out the exact release tag
+      - name: Check out the exact verified release commit
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
-          ref: ${{ needs.build-verify-release.outputs.tag }}
+          ref: ${{ needs.build-verify-release.outputs.source_sha }}
 
       - name: Require the App Store accepted Xcode toolchain
         run: |
+          test "$(git rev-parse HEAD)" = "${{ needs.build-verify-release.outputs.source_sha }}"
+          test "$(git rev-parse "refs/tags/${{ needs.build-verify-release.outputs.tag }}^{commit}")" = "${{ needs.build-verify-release.outputs.source_sha }}"
           XCODE_VERSION="$(xcodebuild -version)"
           printf '%s\n' "$XCODE_VERSION"
           printf '%s\n' "$XCODE_VERSION" | grep -F "$REQUIRED_XCODE_VERSION"
@@ -307,6 +298,29 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$STABLE_APP_PATH/Info.plist")" = "${{ needs.build-verify-release.outputs.build }}"
           mkdir -p "$RUNNER_TEMP/FloeSignedPayload/Payload"
           ditto "$STABLE_APP_PATH" "$RUNNER_TEMP/FloeSignedPayload/Payload/$(basename "$STABLE_APP_PATH")"
+
+      - name: Verify focused app regressions with the accepted App Store SDK
+        id: stable_app_regression
+        run: |
+          xcodebuild \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            -project FloeAgent.xcodeproj \
+            -scheme FloeAgent \
+            -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
+            -derivedDataPath "$RUNNER_TEMP/FloeStableDeviceDerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult" \
+            -only-testing:FloeAppTests/CanvasTouchInteractionTests \
+            -only-testing:FloeAppTests/CanvasSavedImageBatchAtomicityTests \
+            -only-testing:FloeAppTests/CanvasAgentToolContractTests \
+            -only-testing:FloeAppTests/CrashAndFeedbackRegressionTests \
+            -only-testing:FloeAppTests/ThreadTimelineTests \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+          python3 scripts/verify_app_regression_xcresult.py \
+            --result-bundle "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult" \
+            --github-output "$GITHUB_OUTPUT" \
+            --summary-output "$RUNNER_TEMP/FloeStable-AppRegressionTests-SUMMARY.txt"
 
       - name: Install App Store Connect API key
         env:
@@ -397,6 +411,12 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           mkdir -p "$RUNNER_TEMP/TestFlightExport"
+          cp "$RUNNER_TEMP/FloeStable-AppRegressionTests-SUMMARY.txt" \
+            "$RUNNER_TEMP/TestFlightExport/"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$RUNNER_TEMP/FloeStable-AppRegressionTests.xcresult" \
+            "$RUNNER_TEMP/TestFlightExport/FloeStable-AppRegressionTests.xcresult.zip"
+          unzip -t "$RUNNER_TEMP/TestFlightExport/FloeStable-AppRegressionTests.xcresult.zip"
           APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$APP_PATH"
           APPEX_PATH="$APP_PATH/PlugIns/Floe Screen Share.appex"
@@ -441,8 +461,14 @@ jobs:
             echo "tag=${{ needs.build-verify-release.outputs.tag }}"
             echo "version=${{ needs.build-verify-release.outputs.version }}"
             echo "build=${{ needs.build-verify-release.outputs.build }}"
-            echo "commit=$GITHUB_SHA"
+            echo "commit=${{ needs.build-verify-release.outputs.source_sha }}"
+            echo "accepted_sdk_toolchain=$REQUIRED_XCODE_VERSION ($REQUIRED_XCODE_BUILD)"
+            echo "accepted_sdk_app_regression_tests=${{ steps.stable_app_regression.outputs.passed }}/${{ steps.stable_app_regression.outputs.total }} passed"
+            echo "accepted_sdk_app_regression_failed=${{ steps.stable_app_regression.outputs.failed }}"
+            echo "accepted_sdk_app_regression_skipped=${{ steps.stable_app_regression.outputs.skipped }}"
             echo "testflight_upload=accepted_by_transport"
+            echo "apple_processing_state=not_verified"
+            echo "floe_qa_visibility=not_verified"
           } > "$RUNNER_TEMP/TestFlightExport/TESTFLIGHT-SUMMARY.txt"
 
       - name: Upload TestFlight evidence
@@ -452,8 +478,17 @@ jobs:
           path: ${{ runner.temp }}/TestFlightExport/
           if-no-files-found: error
 
+      - name: Upload accepted-SDK focused-test evidence for the GitHub release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: accepted-sdk-app-regression-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
+          path: |
+            ${{ runner.temp }}/TestFlightExport/FloeStable-AppRegressionTests-SUMMARY.txt
+            ${{ runner.temp }}/TestFlightExport/FloeStable-AppRegressionTests.xcresult.zip
+          if-no-files-found: error
+
   publish-release:
-    name: Publish GitHub assets only after TestFlight succeeds
+    name: Publish GitHub assets after TestFlight transport accepts the upload
     if: github.event_name == 'push' || inputs.publish
     needs: [build-verify-release, testflight]
     runs-on: ubuntu-latest
@@ -465,29 +500,53 @@ jobs:
       RELEASE_TAG: ${{ needs.build-verify-release.outputs.tag }}
       VERSION: ${{ needs.build-verify-release.outputs.version }}
       BUILD: ${{ needs.build-verify-release.outputs.build }}
+      SOURCE_SHA: ${{ needs.build-verify-release.outputs.source_sha }}
     steps:
+      - name: Check out the immutable release commit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.build-verify-release.outputs.source_sha }}
+      - name: Require the release tag to remain on the tested commit
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$SOURCE_SHA"
       - uses: actions/download-artifact@v5
         with:
           name: unsigned-ipa-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
           path: release-assets
-      - name: Publish the complete paired release
+      - name: Download accepted-SDK focused-test evidence
+        uses: actions/download-artifact@v5
+        with:
+          name: accepted-sdk-app-regression-${{ needs.build-verify-release.outputs.version }}-build${{ needs.build-verify-release.outputs.build }}
+          path: release-assets
+      - name: Publish the transport-accepted paired release
         run: |
-          cat > release-notes.md <<EOF
-          ## Floe Agent $VERSION (build $BUILD)
+          {
+            printf '## Floe Agent %s (build %s)\n\n' "$VERSION" "$BUILD"
+            cat <<'EOF'
+          - 一张已连接的参考图生成四张时，会一次发布四个独立结果节点和四条 `generatedFrom` 连线，并保留参考图进入生成任务的 `source` 连线。
+          - 四图结果、分组、提示词与来源元数据、修复后的连接拓扑通过一个画布 patch 保存；服务商少返或多返均整批失败，不留下半成品关系。
+          - 参考上下文只沿明确选择或连接的 `source` 上游传播，保存并重开画布后仍能恢复参考素材、提示词和四个结果的上下文关系。
+          - 新生成节点采用固定网格形成“来源 → 任务 → 对齐结果”的稳定布局，不移动用户已有内容。
+          - `canvas.generate` 对参考上下文采用明确替换语义：省略来源参数才继承旧关系，显式数组只使用指定来源，空数组清空来源。
+          - 每个 run 持久保存不可变的 chat / plan / goal 合同；计划 checkpoint 缺失、旧数据证据不足或模式冲突时会在模型和工具执行前停止恢复，不再默认降级成 Agent。
+          - VNC 观察和输入在未连接时保持关闭，连接工具使用独立建连动作，固定遵守 status → connect → observe/input 的前置链。
+          - 系统画中画修复前后台生命周期；只有前台显式用户会话任务可申请 continued-processing，自动恢复、定时、Goal 续跑、排队输入及全部图片/视频生成不会创建或延长右上角卡片；实体 iPad 的系统 PiP 窗口仍需单独验收。
+          - 画布助手最终答复固定在本地化终态行上方，答复后的私有校验思考和原始 `endTurn` 不再错误显示在末尾。
+          - Harness 把长思考中的 JSON、代码块和工具样符号保持为思考数据，不再误判为工具状态或任务终态。
 
-          - 创意模式画布补齐图片生成与编辑主链路：保留强制图片模型绑定，支持上游参考图、多图结果、比例、数量和生成状态持久化。
-          - 画布新增提示词库、Markdown/SVG/HTML/3D 原生节点、局部图片裁剪旋转、画布背景和外观、素材分享，并保持私有与 Workspace 画布共用同一引擎。
-          - 修复画布类型连接被降级为普通箭头的问题，生成来源和素材关系现在可正确持久化。
-          - 超大对话改为消息部件批量读取、最近消息/Run/事件有界投影，并增加时间线索引，避免 10,000 条消息时的 N+1 查询和全量加载。
-          - 启动恢复直接查询未终止 Run，前台刷新与实时事件合并均使用有界窗口并合并突发更新，提高长任务稳定性。
+          此版本已通过共享 Swift 与 iOS 模拟器发布构建；Xcode 27 和实际上传所用的 App Store accepted Xcode 26.6 均须让五个指定 focused app test 套件达到各自执行数门槛，并保持零失败、零跳过和零 expected failure。App Store Connect transport 已接受校验与上传；随附可审计的未签名 IPA 和两套 focused-test xcresult。
 
-          此版本已通过共享 Swift 与模拟器发布检查，并上传至 TestFlight；随附可审计的未签名 IPA。
+          > [!IMPORTANT]
+          > 当前发布流程只证明上传 transport 已接受；Apple `VALID` 处理状态和内部 Floe QA 测试组可见性会在上传后单独验证，本页不把它们视为已完成。
 
           > [!WARNING]
           > The GitHub IPA is unsigned and cannot be installed directly. Inspect it, verify its SHA-256, then sign it with your own certificate. It is not the App Store package.
 
           The release includes an SPDX SBOM, third-party licenses, secret-scan reports, a test summary, and GitHub build provenance.
           EOF
+          } > release-notes.md
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
             gh release edit "$RELEASE_TAG" --notes-file release-notes.md --draft=false --prerelease

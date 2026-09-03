@@ -171,6 +171,9 @@ struct RootView: View {
     @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.scenePhase) private var scenePhase
+    /// SceneStorage belongs to one WindowGroup content instance even though
+    /// navigation and the environment remain app-wide shared objects.
+    @SceneStorage("floe.windowSceneIdentity") private var sceneID = UUID().uuidString
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var expandedWorkspaceIDs: Set<UUID> = []
     @State private var renamingConversation: ConversationRecord?
@@ -208,7 +211,11 @@ struct RootView: View {
             }
         }
         .onChange(of: scenePhase, initial: true) { _, newPhase in
-            router.handleScenePhase(newPhase, environment: environment)
+            router.handleScenePhase(
+                newPhase,
+                sceneID: sceneID,
+                environment: environment
+            )
             if newPhase == .active, environment.persistenceReady {
                 Task {
                     try? await environment.configurationSync.synchronize()
@@ -221,6 +228,9 @@ struct RootView: View {
                 // crash or relaunch never loses the most recent evidence.
                 FloeLogger.buffer.flush()
             }
+        }
+        .onDisappear {
+            router.removeScene(sceneID: sceneID, environment: environment)
         }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) {
             environment.voiceInput.handleAudioInterruption($0)

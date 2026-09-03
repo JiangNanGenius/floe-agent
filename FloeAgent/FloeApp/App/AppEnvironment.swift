@@ -449,6 +449,9 @@ final class AppEnvironment: ObservableObject {
                 await remoteSessionCenter?.toolVNCStatus()
                     ?? VNCToolConnectionStatus(state: .unconfigured, configuredEndpointCount: 0)
             },
+            connect: { [weak remoteSessionCenter] in
+                try await remoteSessionCenter?.activeOrConnectVNCSession()
+            },
             reconnect: { [weak remoteSessionCenter] in
                 try await remoteSessionCenter?.reconnectToolVNCSession()
             },

@@ -181,7 +181,8 @@ final class HomeLaunchpadViewModel: ObservableObject {
             workspaceID: selectedProjectID,
             attachments: stagedAttachments,
             executionMode: agentMode,
-            initialPolicy: draftPolicy
+            initialPolicy: draftPolicy,
+            startOrigin: .explicitUserAction
         )
         return started.conversationID
     }

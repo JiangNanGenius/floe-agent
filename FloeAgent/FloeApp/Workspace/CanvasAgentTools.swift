@@ -11,27 +11,163 @@ extension Notification.Name {
     static let floeCanvasProjectDidChange = Notification.Name("floe.canvas.project.didChange")
 }
 
+/// Process-wide compare-and-swap authority for local canvas project files.
+///
+/// `FileCanvasDocumentRepository` is an actor, but the app creates more than
+/// one repository and the visible canvas also persists from `@MainActor`.
+/// Serializing inside an individual actor therefore cannot make the on-disk
+/// revision check and replacement atomic.  A per-canvas lock keeps unrelated
+/// canvases independent while ensuring every in-process writer observes the
+/// revision installed by the previous writer before replacing the file.
+final class CanvasProjectFileWriter: @unchecked Sendable {
+    static let shared = CanvasProjectFileWriter()
+
+    private let lockRegistry = NSLock()
+    private var locksByCanvasID: [UUID: NSLock] = [:]
+
+    private init() {}
+
+    func project(canvasID: UUID, at url: URL) throws -> CanvasProject {
+        try withCanvasLock(canvasID: canvasID) {
+            let project = try Self.decodeProject(canvasID: canvasID, at: url)
+            guard project.id == canvasID else {
+                throw FloeError.validationFailed(
+                    "Canvas file belongs to a different project"
+                )
+            }
+            return project
+        }
+    }
+
+    /// Writes `project` only when the file still has `expectedRevision`.
+    /// Normal mutations must advance the revision exactly once. The two
+    /// opt-outs are intentionally limited to initial file creation and
+    /// recovery of a file that is still unreadable at commit time.
+    @discardableResult
+    func compareAndSwap(
+        _ project: CanvasProject,
+        at url: URL,
+        expectedRevision: Int64,
+        requireRevisionAdvance: Bool = true,
+        allowCreateIfMissing: Bool = false,
+        allowReplacingUnreadableFile: Bool = false
+    ) throws -> Data {
+        try withCanvasLock(canvasID: project.id) {
+            let fileExists = FileManager.default.fileExists(atPath: url.path)
+            if fileExists {
+                let current: CanvasProject?
+                do {
+                    current = try Self.decodeProject(canvasID: project.id, at: url)
+                } catch {
+                    guard allowReplacingUnreadableFile else { throw error }
+                    current = nil
+                }
+                if let current {
+                    // Creation and unreadable-file recovery are conditional
+                    // modes, not permission to replace a file that another
+                    // writer made valid in the meantime. Even an equal
+                    // revision is an ABA-style conflict in those modes.
+                    if allowCreateIfMissing || allowReplacingUnreadableFile {
+                        throw Self.revisionConflict(
+                            expected: expectedRevision,
+                            current: current.revision
+                        )
+                    }
+                    guard current.id == project.id else {
+                        throw FloeError.validationFailed(
+                            "Canvas file belongs to a different project"
+                        )
+                    }
+                    guard current.revision == expectedRevision else {
+                        throw Self.revisionConflict(
+                            expected: expectedRevision,
+                            current: current.revision
+                        )
+                    }
+                }
+            } else if !allowCreateIfMissing {
+                throw FloeError.validationFailed("Canvas project file does not exist")
+            }
+
+            if requireRevisionAdvance,
+               project.revision != expectedRevision + 1 {
+                throw FloeError.validationFailed(
+                    "Canvas revision must advance exactly once: expected next "
+                        + "\(expectedRevision + 1), candidate \(project.revision)"
+                )
+            }
+
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try CanvasProjectCodec.encode(project, encoder: encoder)
+            try data.write(to: url, options: .atomic)
+            return data
+        }
+    }
+
+    private func withCanvasLock<T>(
+        canvasID: UUID,
+        _ operation: () throws -> T
+    ) rethrows -> T {
+        lockRegistry.lock()
+        let canvasLock: NSLock
+        if let existing = locksByCanvasID[canvasID] {
+            canvasLock = existing
+        } else {
+            let created = NSLock()
+            locksByCanvasID[canvasID] = created
+            canvasLock = created
+        }
+        lockRegistry.unlock()
+
+        canvasLock.lock()
+        defer { canvasLock.unlock() }
+        return try operation()
+    }
+
+    private static func decodeProject(
+        canvasID: UUID,
+        at url: URL
+    ) throws -> CanvasProject {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try CanvasProjectCodec.decode(
+            Data(contentsOf: url),
+            fallbackID: canvasID,
+            decoder: decoder
+        )
+    }
+
+    private static func revisionConflict(
+        expected: Int64,
+        current: Int64
+    ) -> FloeError {
+        FloeError.validationFailed(
+            "Canvas revision conflict: expected \(expected), current \(current)"
+        )
+    }
+
+    static func isRevisionConflict(_ error: Error) -> Bool {
+        guard let floeError = error as? FloeError,
+              case .validationFailed(let detail) = floeError else { return false }
+        return detail.hasPrefix("Canvas revision conflict:")
+    }
+}
+
 actor FileCanvasDocumentRepository: CanvasDocumentRepository {
     func project(canvasID: UUID) async throws -> CanvasProject {
         let url = try WorkspaceCanvasRegistry.projectURL(canvasID: canvasID, createDirectory: false)
-        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        return try CanvasProjectCodec.decode(
-            Data(contentsOf: url), fallbackID: canvasID, decoder: decoder
-        )
+        return try CanvasProjectFileWriter.shared.project(canvasID: canvasID, at: url)
     }
 
     func save(_ project: CanvasProject, expectedRevision: Int64) async throws {
         let url = try WorkspaceCanvasRegistry.projectURL(canvasID: project.id, createDirectory: false)
-        let current = try await self.project(canvasID: project.id)
-        guard current.revision == expectedRevision else {
-            throw FloeError.validationFailed(
-                "Canvas revision conflict: expected \(expectedRevision), current \(current.revision)"
-            )
-        }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        try CanvasProjectCodec.encode(project, encoder: encoder).write(to: url, options: .atomic)
+        try CanvasProjectFileWriter.shared.compareAndSwap(
+            project,
+            at: url,
+            expectedRevision: expectedRevision
+        )
     }
 }
 
@@ -67,8 +203,15 @@ actor CanvasToolCoordinator {
     private let logger = FloeLogger(category: .tools)
     private let conversationIDForRun: @Sendable (UUID) async throws -> UUID?
     private let generateImages: @Sendable (
-        String, ImageGenerationOptions, [Data], UUID?
-    ) async throws -> [CanvasAssetReference]
+        String, ImageGenerationOptions, [Data], UUID?,
+        GeneratedImageReservationOwner
+    ) async throws -> ReservedGeneratedImageBatch
+    private let markGeneratedAssetsReferenced: @Sendable (
+        ReservedGeneratedImageBatch
+    ) async -> Void
+    private let discardUnreferencedGeneratedAssets: @Sendable (
+        ReservedGeneratedImageBatch
+    ) async -> Void
     private let submitVideo: @Sendable (
         UUID, UUID, UUID, [UUID], UUID, RemoteVideoRequest
     ) async throws -> MediaGenerationJob
@@ -81,8 +224,15 @@ actor CanvasToolCoordinator {
         runContexts: CanvasRunContextStore,
         conversationIDForRun: @escaping @Sendable (UUID) async throws -> UUID?,
         generateImages: @escaping @Sendable (
-            String, ImageGenerationOptions, [Data], UUID?
-        ) async throws -> [CanvasAssetReference],
+            String, ImageGenerationOptions, [Data], UUID?,
+            GeneratedImageReservationOwner
+        ) async throws -> ReservedGeneratedImageBatch,
+        markGeneratedAssetsReferenced: @escaping @Sendable (
+            ReservedGeneratedImageBatch
+        ) async -> Void,
+        discardUnreferencedGeneratedAssets: @escaping @Sendable (
+            ReservedGeneratedImageBatch
+        ) async -> Void,
         submitVideo: @escaping @Sendable (
             UUID, UUID, UUID, [UUID], UUID, RemoteVideoRequest
         ) async throws -> MediaGenerationJob
@@ -91,7 +241,10 @@ actor CanvasToolCoordinator {
         self.assetIngestion = assetIngestion; self.jobs = jobs
         self.runContexts = runContexts
         self.conversationIDForRun = conversationIDForRun
-        self.generateImages = generateImages; self.submitVideo = submitVideo
+        self.generateImages = generateImages
+        self.markGeneratedAssetsReferenced = markGeneratedAssetsReferenced
+        self.discardUnreferencedGeneratedAssets = discardUnreferencedGeneratedAssets
+        self.submitVideo = submitVideo
     }
 
     func project(for runID: UUID) async throws -> CanvasProject {
@@ -266,12 +419,19 @@ actor CanvasToolCoordinator {
                 "Canvas revision conflict: expected \(expectedRevision), current \(activeProject.revision)"
             )
         }
-        var graphMetadata = generationMetadata(
-            kind: kind, prompt: prompt, modelID: modelID,
-            aspectRatio: aspectRatio, quality: quality,
-            count: count, durationSeconds: durationSeconds,
-            fingerprint: fingerprint, state: "running"
+        let generationConfiguration = CanvasGenerationConfiguration(
+            kind: kind == .image ? .image : .video,
+            prompt: prompt,
+            modelID: modelID,
+            aspectRatio: aspectRatio ?? "1:1",
+            quality: quality,
+            count: kind == .image ? count : 1,
+            durationSeconds: kind == .video ? durationSeconds : nil,
+            sourceNodeIDs: sources
         )
+        var graphMetadata = generationConfiguration.metadata
+        graphMetadata["generationRequestKey"] = fingerprint
+        graphMetadata["generationState"] = "running"
         let generationAttemptID = UUID().uuidString
         graphMetadata["generationAttemptID"] = generationAttemptID
         graphMetadata["generationAttemptIndex"] = "1"
@@ -302,71 +462,62 @@ actor CanvasToolCoordinator {
             "canvasGenerationPrepared attempt=\(generationAttemptID) kind=\(kind.rawValue) revision=\(prepared.revision)"
         )
 
+        var generatedImageBatch: ReservedGeneratedImageBatch?
         do {
             if kind == .image {
                 let referenceData = try sourceImageData(
                     sourceNodeIDs: sources, document: document
                 )
-                let assets = try await generateImages(
+                let batch = try await generateImages(
                     providerPrompt(prompt: prompt, sourceNodeIDs: sources, document: document),
                     ImageGenerationOptions(
                         aspectRatio: aspectRatio, quality: quality,
                         count: max(1, min(count, 4))
                     ),
-                    referenceData, modelID
+                    referenceData, modelID,
+                    GeneratedImageReservationOwner(
+                        canvasID: activeProject.id,
+                        documentID: targetDocumentID,
+                        configurationNodeID: graph.configurationNodeID,
+                        generationAttemptID: generationAttemptID,
+                        resultNodeIDs: graph.resultNodeIDs
+                    )
                 )
-                let resultIDs = try CanvasGenerationOutputContract.resultNodeIDs(
-                    expectedCount: count,
-                    actualCount: assets.count,
-                    preparedResultNodeIDs: graph.resultNodeIDs
+                generatedImageBatch = batch
+                let assets = batch.assets
+                let commitPlan = try CanvasSavedImageBatchCommitPlanner.plan(
+                    configurationNodeID: graph.configurationNodeID,
+                    preparedResultNodeIDs: graph.resultNodeIDs,
+                    assets: assets,
+                    configuration: generationConfiguration,
+                    sourceNodeIDs: graph.sourceNodeIDs,
+                    generationAttemptID: generationAttemptID
                 )
                 logger.info(
                     "canvasGenerationProviderCompleted attempt=\(generationAttemptID) kind=image outputs=\(assets.count)"
                 )
-                var resultOperations: [CanvasPatchOperation] = []
-                for (index, asset) in assets.enumerated() {
-                    let resultID = resultIDs[index]
-                    resultOperations.append(CanvasPatchOperation(
-                        kind: .update, nodeID: resultID, nodeKind: .image,
-                        text: "生成图片", asset: asset,
-                        metadata: graphMetadata.merging([
-                            "generationState": "ready",
-                            "imageGroupPrimary": index == 0 ? "true" : "false"
-                        ]) { _, new in new }
-                    ))
-                }
-                resultOperations.append(CanvasPatchOperation(
-                    kind: .update, nodeID: graph.configurationNodeID,
-                    metadata: [
-                        "generationState": "ready",
-                        "generationResultNodeIDs": resultIDs.map(\.uuidString).joined(separator: ",")
-                    ]
-                ))
                 let completed = try await commitGenerationPatch(
                     runID: runID,
                     canvasID: activeProject.id,
                     documentID: targetDocumentID,
                     configurationNodeID: graph.configurationNodeID,
-                    resultNodeID: graph.resultNodeID,
+                    resultNodeIDs: graph.resultNodeIDs,
+                    sourceNodeIDs: commitPlan.sourceNodeIDs,
                     generationAttemptID: generationAttemptID,
                     phase: "ready",
-                    operations: resultOperations
+                    operations: commitPlan.operations
                 )
-                for asset in assets {
-                    do {
-                        try await assetStore.adjustReference(assetID: asset.id, by: 1)
-                    } catch {
-                        let failure = error as NSError
-                        logger.warning(
-                            "canvasGenerationReferenceAdjustmentFailed attempt=\(generationAttemptID) domain=\(failure.domain) code=\(failure.code)"
-                        )
-                    }
-                }
+                // generateImages already reserved one database reference per
+                // result node atomically with canonical asset resolution. A
+                // successful canvas commit converts those reservations into
+                // ordinary references without incrementing them a second time.
+                await markGeneratedAssetsReferenced(batch)
                 return CanvasGenerationOutcome(
                     canvasID: activeProject.id, documentID: targetDocumentID,
                     revision: completed.revision, promptNodeID: graph.promptNodeID,
                     configurationNodeID: graph.configurationNodeID,
-                    resultNodeIDs: resultIDs, jobID: nil, state: "ready", reused: false
+                    resultNodeIDs: commitPlan.resultNodeIDs,
+                    jobID: nil, state: "ready", reused: false
                 )
             }
 
@@ -393,7 +544,8 @@ actor CanvasToolCoordinator {
                 canvasID: activeProject.id,
                 documentID: targetDocumentID,
                 configurationNodeID: graph.configurationNodeID,
-                resultNodeID: graph.resultNodeID,
+                resultNodeIDs: graph.resultNodeIDs,
+                sourceNodeIDs: graph.sourceNodeIDs,
                 generationAttemptID: generationAttemptID,
                 phase: "submitted",
                 operations: [
@@ -416,6 +568,9 @@ actor CanvasToolCoordinator {
                 state: "submitted", reused: false
             )
         } catch {
+            if kind == .image, let generatedImageBatch {
+                await discardUnreferencedGeneratedAssets(generatedImageBatch)
+            }
             try? await markGenerationFailed(
                 runID: runID, canvasID: activeProject.id,
                 documentID: targetDocumentID,
@@ -441,7 +596,8 @@ actor CanvasToolCoordinator {
         canvasID: UUID,
         documentID: UUID,
         configurationNodeID: UUID,
-        resultNodeID: UUID,
+        resultNodeIDs: [UUID],
+        sourceNodeIDs: [UUID],
         generationAttemptID: String,
         phase: String,
         operations: [CanvasPatchOperation]
@@ -455,7 +611,8 @@ actor CanvasToolCoordinator {
                 project: current,
                 documentID: documentID,
                 configurationNodeID: configurationNodeID,
-                resultNodeID: resultNodeID,
+                resultNodeIDs: resultNodeIDs,
+                sourceNodeIDs: sourceNodeIDs,
                 generationAttemptID: generationAttemptID,
                 operations: operations
             )
@@ -492,26 +649,84 @@ actor CanvasToolCoordinator {
         configurationNodeID: UUID, resultNodeIDs: [UUID],
         generationAttemptID: String, message: String
     ) async throws {
-        _ = try await commitGenerationPatch(
-            runID: runID,
-            canvasID: canvasID,
-            documentID: documentID,
-            configurationNodeID: configurationNodeID,
-            resultNodeID: resultNodeIDs[0],
-            generationAttemptID: generationAttemptID,
-            phase: "failed",
-            operations: [
-                CanvasPatchOperation(
-                    kind: .update, nodeID: configurationNodeID,
-                    metadata: ["generationState": "failed", "generationError": message]
-                )
-            ] + resultNodeIDs.map { resultNodeID in CanvasPatchOperation(
-                    kind: .update, nodeID: resultNodeID,
-                    text: "生成失败，可从配置节点重试",
-                    metadata: ["generationState": "failed", "generationError": message]
+        let operations = [
+            CanvasPatchOperation(
+                kind: .update,
+                nodeID: configurationNodeID,
+                metadata: [
+                    "generationState": CanvasGenerationTaskState.failed.rawValue,
+                    "generationError": message,
+                    "generationErrorDetail": message
+                ]
+            )
+        ] + resultNodeIDs.map { resultNodeID in
+            CanvasPatchOperation(
+                kind: .update,
+                nodeID: resultNodeID,
+                text: "生成失败，可从配置节点重试",
+                metadata: [
+                    "generationState": CanvasGenerationTaskState.failed.rawValue,
+                    "generationError": message,
+                    "generationErrorDetail": message
+                ]
+            )
+        }
+
+        for commitIndex in 0..<Self.generationCommitAttemptLimit {
+            let current = try await project(for: runID)
+            guard current.id == canvasID else {
+                throw FloeError.validationFailed(
+                    "The run cannot modify a different canvas"
                 )
             }
-        )
+            guard let document = current.documents.first(where: {
+                $0.id == documentID
+            }) else {
+                throw FloeError.validationFailed("Canvas document does not exist")
+            }
+            // Terminal state belongs to the attempt, not to its now-missing
+            // provider inputs. A user may delete a source while generation is
+            // in flight; the surviving task/results must still leave running
+            // state, without recreating that source or manufacturing an edge.
+            guard CanvasGenerationAttemptValidator.isActive(
+                document: document,
+                configurationNodeID: configurationNodeID,
+                resultNodeIDs: resultNodeIDs,
+                generationAttemptID: generationAttemptID
+            ) else {
+                throw FloeError.validationFailed(
+                    "Canvas generation attempt was superseded before its local result was committed"
+                )
+            }
+            let patch = CanvasPatch(
+                canvasID: canvasID,
+                documentID: documentID,
+                expectedRevision: current.revision,
+                operations: operations
+            )
+            let (updated, result) = try CanvasCommandService.applying(
+                patch,
+                to: current
+            )
+            try persistUndoSnapshot(current, token: result.undoToken)
+            do {
+                try await repository.save(
+                    updated,
+                    expectedRevision: current.revision
+                )
+                await notify(canvasID: canvasID)
+                logger.info(
+                    "canvasGenerationCommitted attempt=\(generationAttemptID) phase=failed revision=\(result.revision) rebaseCount=\(commitIndex)"
+                )
+                return
+            } catch {
+                guard Self.isCanvasRevisionConflict(error),
+                      commitIndex + 1 < Self.generationCommitAttemptLimit else {
+                    throw error
+                }
+            }
+        }
+        throw FloeError.internalError("Canvas generation failure commit retry exhausted")
     }
 
     private func generationFingerprint(
@@ -526,24 +741,6 @@ actor CanvasToolCoordinator {
         ].joined(separator: "|")
         return SHA256.hash(data: Data(canonical.utf8))
             .map { String(format: "%02x", $0) }.joined()
-    }
-
-    private func generationMetadata(
-        kind: CanvasGenerationGraphKind, prompt: String, modelID: UUID?,
-        aspectRatio: String?, quality: String?, count: Int,
-        durationSeconds: Int?, fingerprint: String, state: String
-    ) -> [String: String] {
-        [
-            "generationKind": kind.rawValue,
-            "generationPrompt": prompt,
-            "generationModelID": modelID?.uuidString ?? "",
-            "generationAspectRatio": aspectRatio ?? "",
-            "generationQuality": quality ?? "",
-            "generationCount": String(count),
-            "generationDurationSeconds": durationSeconds.map(String.init) ?? "",
-            "generationRequestKey": fingerprint,
-            "generationState": state
-        ]
     }
 
     private func providerPrompt(
@@ -812,8 +1009,8 @@ private struct CanvasGenerateMediaTool: AgentTool {
         var quality: String?; var count: Int?; var durationSeconds: Int?
     }
     static let name = "canvas.generate"
-    static let toolDescription = "Generate media through the canonical canvas workflow. Explicit sourceNodeIDs and incoming source-kind connections are provider inputs; ordinary arrows and prior generated results are not. Every requested reference image is sent or the request fails before networking. The workflow creates or reuses a visible generation-configuration node and connected image/video results. Inspect first and pass the exact revision."
-    static let parametersJSON = #"{"type":"object","properties":{"kind":{"type":"string","enum":["image","video"]},"prompt":{"type":"string"},"modelID":{"type":"string","format":"uuid"},"documentID":{"type":"string","format":"uuid"},"sourceNodeIDs":{"type":"array","description":"Exact reference/context nodes. For an existing configuration, these are merged with its incoming source-kind connections and persisted generationSourceNodeIDs; only source-kind ancestry is expanded.","items":{"type":"string","format":"uuid"}},"configurationNodeID":{"type":"string","format":"uuid"},"position":{"type":"object","description":"Preferred flow area. New nodes are aligned on a fixed grid to the right of explicit sources without moving existing nodes.","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false},"expectedRevision":{"type":"integer"},"aspectRatio":{"type":"string"},"quality":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":4},"durationSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["kind","prompt","position","expectedRevision"],"additionalProperties":false}"#
+    static let toolDescription = "Generate media through the canonical canvas workflow. Reference context follows only source-kind ancestry; ordinary arrows and prior generated results are never implicit inputs. For an existing configuration, omit sourceNodeIDs to inherit its incoming source connections and persisted source metadata, provide an array to replace the complete source set, or provide [] to clear it. Every resolved reference image is sent or the request fails before networking. The workflow creates or reuses a visible generation-configuration node and connected image/video results. Inspect first and pass the exact revision."
+    static let parametersJSON = #"{"type":"object","properties":{"kind":{"type":"string","enum":["image","video"]},"prompt":{"type":"string"},"modelID":{"type":"string","format":"uuid"},"documentID":{"type":"string","format":"uuid"},"sourceNodeIDs":{"type":"array","description":"Exact reference/context override. Omit this property to inherit the existing configuration's incoming source-kind connections and persisted generationSourceNodeIDs. A provided array replaces the complete source set; an empty array clears it. Only source-kind ancestry is expanded.","items":{"type":"string","format":"uuid"}},"configurationNodeID":{"type":"string","format":"uuid"},"position":{"type":"object","description":"Preferred flow area. New nodes are aligned on a fixed grid to the right of explicit sources without moving existing nodes.","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false},"expectedRevision":{"type":"integer"},"aspectRatio":{"type":"string"},"quality":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":4},"durationSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["kind","prompt","position","expectedRevision"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.networkAccess, .sendsDataToProvider, .persistsPersonalData]
     static let isSideEffecting = true
     let coordinator: CanvasToolCoordinator
@@ -948,14 +1145,23 @@ func registerCanvasAgentTools(environment: AppEnvironment, registry: ToolRunnerR
         conversationIDForRun: { [runStore = environment.runStore] runID in
             try await runStore.run(id: runID)?.conversationID
         },
-        generateImages: { [weak environment] prompt, options, sourceImages, modelID in
+        generateImages: { [weak environment] prompt, options, sourceImages, modelID, owner in
             guard let environment else { throw FloeError.internalError("Canvas environment unavailable") }
             return try await environment.mediaGenerationService.generateImages(
                 prompt: prompt,
                 options: options,
                 sourceImages: sourceImages,
-                modelID: modelID
+                modelID: modelID,
+                owner: owner
             )
+        },
+        markGeneratedAssetsReferenced: { [weak environment] batch in
+            guard let environment else { return }
+            await environment.mediaGenerationService.markGeneratedAssetsReferenced(batch)
+        },
+        discardUnreferencedGeneratedAssets: { [weak environment] batch in
+            guard let environment else { return }
+            await environment.mediaGenerationService.discardUnreferencedGeneratedAssets(batch)
         },
         submitVideo: { [weak environment] modelID, canvasID, documentID, sources, resultID, request in
             guard let environment else { throw FloeError.internalError("Canvas environment unavailable") }
@@ -966,7 +1172,8 @@ func registerCanvasAgentTools(environment: AppEnvironment, registry: ToolRunnerR
             resolvedRequest.modelRemoteID = model.remoteModelID
             return try await environment.mediaGenerationService.submitVideo(
                 modelID: modelID, canvasID: canvasID, documentID: documentID,
-                sourceNodeIDs: sources, resultNodeID: resultID, request: resolvedRequest
+                sourceNodeIDs: sources, resultNodeID: resultID,
+                request: resolvedRequest
             )
         }
     )

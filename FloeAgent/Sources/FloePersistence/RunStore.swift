@@ -20,6 +20,9 @@ public struct RunRecord: Sendable, Hashable, Identifiable {
     public var modelID: UUID?
     public var providerName: String?
     public var modelName: String?
+    /// Immutable execution contract for this run. NULL is reserved for legacy
+    /// rows whose historical mode could not be proven during migration.
+    public var conversationMode: String?
 
     public init(
         id: UUID,
@@ -32,7 +35,8 @@ public struct RunRecord: Sendable, Hashable, Identifiable {
         providerID: UUID? = nil,
         modelID: UUID? = nil,
         providerName: String? = nil,
-        modelName: String? = nil
+        modelName: String? = nil,
+        conversationMode: String? = nil
     ) {
         self.id = id
         self.conversationID = conversationID
@@ -45,6 +49,7 @@ public struct RunRecord: Sendable, Hashable, Identifiable {
         self.modelID = modelID
         self.providerName = providerName
         self.modelName = modelName
+        self.conversationMode = conversationMode
     }
 }
 
@@ -237,8 +242,9 @@ public actor SQLiteRunStore: RunStore {
                 sql: """
                     INSERT INTO runs (
                         id, conversation_id, state, goal, started_at, ended_at, goal_id,
-                        provider_id, model_id, provider_name_snapshot, model_name_snapshot
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        provider_id, model_id, provider_name_snapshot, model_name_snapshot,
+                        conversation_mode
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         state = excluded.state,
                         goal = excluded.goal,
@@ -250,7 +256,8 @@ public actor SQLiteRunStore: RunStore {
                         ),
                         model_name_snapshot = COALESCE(
                             excluded.model_name_snapshot, runs.model_name_snapshot
-                        )
+                        ),
+                        conversation_mode = runs.conversation_mode
                     """,
                 arguments: [
                     run.id.uuidString,
@@ -263,7 +270,8 @@ public actor SQLiteRunStore: RunStore {
                     run.providerID?.uuidString,
                     run.modelID?.uuidString,
                     run.providerName,
-                    run.modelName
+                    run.modelName,
+                    run.conversationMode
                 ]
             )
         }
@@ -543,7 +551,8 @@ public actor SQLiteRunStore: RunStore {
             providerID: (row["provider_id"] as String?).flatMap(UUID.init(uuidString:)),
             modelID: (row["model_id"] as String?).flatMap(UUID.init(uuidString:)),
             providerName: row["provider_name_snapshot"],
-            modelName: row["model_name_snapshot"]
+            modelName: row["model_name_snapshot"],
+            conversationMode: row["conversation_mode"]
         )
     }
 

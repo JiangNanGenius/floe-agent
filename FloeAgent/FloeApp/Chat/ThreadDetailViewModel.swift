@@ -546,7 +546,8 @@ final class ThreadDetailViewModel: ObservableObject {
                 attachments: stagedAttachments,
                 executionMode: executionMode,
                 runSurface: runSurface,
-                canvasContext: canvasContext
+                canvasContext: canvasContext,
+                startOrigin: .explicitUserAction
             )
             // The atomic launch returns a durable run identity immediately.
             // Subscribe before awaiting the provider loop so the UI no longer
@@ -642,7 +643,10 @@ final class ThreadDetailViewModel: ObservableObject {
         guard let runID = selectedRun?.id else { return }
         actionError = nil
         do {
-            let started = try await center.retry(runID: runID)
+            let started = try await center.retry(
+                runID: runID,
+                startOrigin: .explicitUserAction
+            )
             runs = try await center.environment.runStore.runs(conversationID: conversationID)
             selectedRunID = started.runID
             try await loadSelectedRunDetails()
@@ -738,7 +742,8 @@ final class ThreadDetailViewModel: ObservableObject {
                 provider: provider,
                 model: model,
                 workspaceID: selectedProjectID,
-                executionMode: selectedExecution == .goal ? .goal : .agent
+                executionMode: selectedExecution == .goal ? .goal : .agent,
+                startOrigin: .explicitUserAction
             )
             selectedRunID = started.runID
             await load()
@@ -784,7 +789,8 @@ final class ThreadDetailViewModel: ObservableObject {
                 provider: provider,
                 model: model,
                 workspaceID: selectedProjectID,
-                executionMode: .goal
+                executionMode: .goal,
+                startOrigin: .explicitUserAction
             )
             selectedRunID = started.runID
             await load()

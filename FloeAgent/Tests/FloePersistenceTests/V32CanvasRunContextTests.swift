@@ -48,6 +48,7 @@ struct V32CanvasRunContextTests {
             try db.execute(sql: "DELETE FROM runs WHERE id = ?", arguments: [runID.uuidString])
         }
         #expect(try await store.context(runID: runID) == nil)
-        #expect(try await database.userVersion() == 32)
+        #expect(try await database.userVersion()
+            == DatabaseManager.currentSchemaVersion)
     }
 }

@@ -4,6 +4,14 @@ import FloeCore
 import FloeTools
 @testable import FloeVNC
 
+private actor VNCProviderInvocationRecorder {
+    private(set) var connectCount = 0
+    private(set) var observationCount = 0
+
+    func recordConnect() { connectCount += 1 }
+    func recordObservation() { observationCount += 1 }
+}
+
 @Suite("VNC model tool contracts")
 struct VNCToolContractTests {
     private let unavailable: VNCSessionProvider = { nil }
@@ -40,6 +48,36 @@ struct VNCToolContractTests {
         #expect(output.summary.contains(#""connectionState":"failed""#))
         #expect(output.summary.contains(#""category":"connectionRefused""#))
         #expect(output.summary.contains(#""retryable":true"#))
+    }
+
+    @Test("Registered connect runner opens a session without reading the observation provider")
+    func registeredConnectUsesDedicatedAction() async throws {
+        let registry = ToolRunnerRegistry()
+        let invocations = VNCProviderInvocationRecorder()
+
+        registerVNCTools(
+            registry: registry,
+            statusProvider: {
+                VNCToolConnectionStatus(state: .connected, configuredEndpointCount: 1)
+            },
+            connect: {
+                await invocations.recordConnect()
+                return nil
+            }
+        ) {
+            await invocations.recordObservation()
+            return nil
+        }
+
+        let runner = try #require(registry.runner(named: VNCConnectTool.name))
+        let output = try await runner.execute(
+            argumentsJSON: Data("{}".utf8),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+
+        #expect(output.summary.contains(#""connectionState":"connected""#))
+        #expect(await invocations.connectCount == 1)
+        #expect(await invocations.observationCount == 0)
     }
 
     @Test("Observe advertises evidence-backed framebuffer coordinates")

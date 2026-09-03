@@ -762,10 +762,28 @@ enum WorkspaceCanvasRegistry {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let url = try projectURL(canvasID: canvasID, createDirectory: false)
-        var project = try decodeProject(at: url)
-        project.name = trimmed
-        project.updatedAt = Date()
-        try encodeProject(project, to: url)
+        for attempt in 0..<4 {
+            let current = try CanvasProjectFileWriter.shared.project(
+                canvasID: canvasID,
+                at: url
+            )
+            guard current.name != trimmed else { return }
+            var candidate = current
+            candidate.name = trimmed
+            candidate.updatedAt = Date()
+            candidate.revision += 1
+            do {
+                try CanvasProjectFileWriter.shared.compareAndSwap(
+                    candidate,
+                    at: url,
+                    expectedRevision: current.revision
+                )
+                return
+            } catch {
+                guard CanvasProjectFileWriter.isRevisionConflict(error),
+                      attempt < 3 else { throw error }
+            }
+        }
     }
 
     @discardableResult
@@ -853,10 +871,26 @@ enum WorkspaceCanvasRegistry {
             documents: [initial],
             selectedDocumentID: initial.id
         )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(project).write(to: url, options: .atomic)
+        do {
+            try CanvasProjectFileWriter.shared.compareAndSwap(
+                project,
+                at: url,
+                expectedRevision: project.revision,
+                requireRevisionAdvance: false,
+                allowCreateIfMissing: true
+            )
+        } catch {
+            // Another scene may win the initial-create race. `IfNeeded`
+            // treats a valid file for the requested canvas as success, while
+            // still surfacing unrelated I/O or identity failures.
+            guard CanvasProjectFileWriter.isRevisionConflict(error) else {
+                throw error
+            }
+            _ = try CanvasProjectFileWriter.shared.project(
+                canvasID: canvasID,
+                at: url
+            )
+        }
     }
 
     static func projectURL(
@@ -974,8 +1008,104 @@ private enum CanvasLifecycleService {
     }
 }
 
+/// Converts connection gestures into one validated patch. Generation-source
+/// metadata canonicalization lives in `CanvasCommandService`, shared by this UI
+/// and agent-authored patches.
+enum CanvasConnectionCommandPlanner {
+    static func connecting(
+        _ sourceNodeID: UUID,
+        to destinationNodeID: UUID,
+        requestedKind: CanvasConnectionKind,
+        sourcePort: CanvasConnectionPort?,
+        destinationPort: CanvasConnectionPort?,
+        document: CanvasDocument
+    ) -> [CanvasPatchOperation]? {
+        guard sourceNodeID != destinationNodeID,
+              document.nodes.contains(where: { $0.id == sourceNodeID }),
+              let destination = document.nodes.first(where: {
+                  $0.id == destinationNodeID
+              }) else { return nil }
+        // The connector UI has no separate edge-kind picker. Drawing an arrow
+        // into a generation task is therefore the user's explicit source edit.
+        let kind: CanvasConnectionKind = requestedKind == .arrow
+            && destination.kind == .generationTask ? .source : requestedKind
+        guard !document.connections.contains(where: {
+            $0.sourceNodeID == sourceNodeID
+                && $0.destinationNodeID == destinationNodeID
+                && $0.kind == kind
+                && $0.sourcePort == sourcePort
+                && $0.destinationPort == destinationPort
+        }) else { return nil }
+
+        let connection = CanvasConnection(
+            sourceNodeID: sourceNodeID,
+            destinationNodeID: destinationNodeID,
+            kind: kind,
+            label: kind == .source ? "生成输入" : nil,
+            sourcePort: sourcePort,
+            destinationPort: destinationPort
+        )
+        return [CanvasPatchOperation(
+            kind: .connect,
+            sourceNodeID: sourceNodeID,
+            destinationNodeID: destinationNodeID,
+            connectionID: connection.id,
+            connectionKind: kind,
+            sourcePort: sourcePort,
+            destinationPort: destinationPort,
+            label: connection.label
+        )]
+    }
+
+    static func disconnecting(
+        _ connectionID: UUID,
+        document: CanvasDocument
+    ) -> [CanvasPatchOperation]? {
+        guard document.connections.contains(where: {
+            $0.id == connectionID
+        }) else { return nil }
+        return [CanvasPatchOperation(
+            kind: .disconnect,
+            connectionID: connectionID
+        )]
+    }
+
+    static func reversing(
+        _ connectionID: UUID,
+        document: CanvasDocument
+    ) -> [CanvasPatchOperation]? {
+        guard let connection = document.connections.first(where: {
+            $0.id == connectionID
+        }) else { return nil }
+        let reversed = CanvasConnection(
+            id: connection.id,
+            sourceNodeID: connection.destinationNodeID,
+            destinationNodeID: connection.sourceNodeID,
+            kind: connection.kind,
+            label: connection.label,
+            sourcePort: connection.destinationPort,
+            destinationPort: connection.sourcePort
+        )
+        return [
+            CanvasPatchOperation(kind: .disconnect, connectionID: connectionID),
+            CanvasPatchOperation(
+                kind: .connect,
+                sourceNodeID: reversed.sourceNodeID,
+                destinationNodeID: reversed.destinationNodeID,
+                connectionID: reversed.id,
+                connectionKind: reversed.kind,
+                sourcePort: reversed.sourcePort,
+                destinationPort: reversed.destinationPort,
+                label: reversed.label
+            )
+        ]
+    }
+}
+
 @MainActor
 private final class CanvasDocumentStore: ObservableObject {
+    private static let fileCommitAttemptLimit = 4
+
     @Published private(set) var project: FloeCanvasProject
     @Published var saveError: String?
     @Published var wasDeletedRemotely = false
@@ -1007,34 +1137,68 @@ private final class CanvasDocumentStore: ObservableObject {
                 canvasID: canvasID,
                 createDirectory: true
             )
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            if FileManager.default.fileExists(atPath: fileURL.path) {
-                let data = try Data(contentsOf: fileURL)
-                if let decoded = try? CanvasProjectCodec.decode(
-                    data, fallbackID: canvasID, decoder: decoder
-                ),
-                   decoded.workspaceID == workspaceID,
-                   !decoded.documents.isEmpty {
-                    project = decoded
-                    // Canonicalize legacy schema without manufacturing an
-                    // edit revision merely because the document was opened.
-                    persist(incrementRevision: false)
-                } else {
-                    let backup = try Self.preserveReadOnlyBackup(of: fileURL)
-                    project = fallback
-                    persist(incrementRevision: false)
-                    saveError = "原画布无法迁移，已保留只读备份：\(backup.lastPathComponent)"
-                }
-            } else {
-                project = fallback
-                persist(incrementRevision: false)
-            }
         } catch {
             fileURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("floe-canvas-\(canvasID.uuidString).json")
             project = fallback
             saveError = error.localizedDescription
+            return
+        }
+
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            project = fallback
+            persist(
+                incrementRevision: false,
+                expectedRevision: fallback.revision,
+                requireRevisionAdvance: false,
+                allowCreateIfMissing: true
+            )
+            return
+        }
+
+        do {
+            let decoded = try CanvasProjectFileWriter.shared.project(
+                canvasID: canvasID,
+                at: fileURL
+            )
+            if decoded.workspaceID == workspaceID,
+               !decoded.documents.isEmpty {
+                project = decoded
+                // Keep migrated decoding in memory until the next real edit.
+                // Rewriting the same revision on open would defeat file CAS:
+                // another writer that read that revision could still commit a
+                // stale N -> N+1 candidate over the canonicalization write.
+            } else {
+                let backup = try Self.preserveReadOnlyBackup(of: fileURL)
+                var replacement = fallback
+                replacement.revision = decoded.revision + 1
+                project = replacement
+                let replaced = persist(
+                    incrementRevision: false,
+                    expectedRevision: decoded.revision,
+                    requireRevisionAdvance: true
+                )
+                if replaced {
+                    saveError = "原画布无法迁移，已保留只读备份：\(backup.lastPathComponent)"
+                }
+            }
+        } catch {
+            do {
+                let backup = try Self.preserveReadOnlyBackup(of: fileURL)
+                project = fallback
+                let replaced = persist(
+                    incrementRevision: false,
+                    expectedRevision: fallback.revision,
+                    requireRevisionAdvance: false,
+                    allowReplacingUnreadableFile: true
+                )
+                if replaced {
+                    saveError = "原画布无法读取，已保留只读备份：\(backup.lastPathComponent)"
+                }
+            } catch {
+                project = fallback
+                saveError = error.localizedDescription
+            }
         }
     }
 
@@ -1088,11 +1252,17 @@ private final class CanvasDocumentStore: ObservableObject {
         do {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            let remote = try CanvasProjectCodec.decode(
+            var remote = try CanvasProjectCodec.decode(
                 payload, fallbackID: canvasID, decoder: decoder
             )
             guard remote.id == canvasID else { return }
-            try payload.write(to: fileURL, options: .atomic)
+            let expectedRevision = project.revision
+            remote.revision = expectedRevision + 1
+            try CanvasProjectFileWriter.shared.compareAndSwap(
+                remote,
+                at: fileURL,
+                expectedRevision: expectedRevision
+            )
             project = remote
             undoStack.removeAll(); redoStack.removeAll()
             for hash in newest.assetHashes {
@@ -1100,7 +1270,11 @@ private final class CanvasDocumentStore: ObservableObject {
             }
             saveError = nil
         } catch {
-            saveError = "同步画布失败：\(error.localizedDescription)"
+            if CanvasProjectFileWriter.isRevisionConflict(error) {
+                _ = reloadAuthoritativeProject(after: error)
+            } else {
+                saveError = "同步画布失败：\(error.localizedDescription)"
+            }
         }
     }
 
@@ -1126,10 +1300,9 @@ private final class CanvasDocumentStore: ObservableObject {
 
     func reloadExternalChange() {
         do {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let incoming = try CanvasProjectCodec.decode(
-                Data(contentsOf: fileURL), fallbackID: project.id, decoder: decoder
+            let incoming = try CanvasProjectFileWriter.shared.project(
+                canvasID: project.id,
+                at: fileURL
             )
             guard incoming.id == project.id, incoming.revision > project.revision else { return }
             recordHistory()
@@ -1541,6 +1714,95 @@ private final class CanvasDocumentStore: ObservableObject {
         ])
     }
 
+    /// Keeps a generation phase transition consistent across the task and
+    /// every prepared result. One patch means persistence/sync never observes
+    /// only some of a four-image batch changing state.
+    @discardableResult
+    func updateGenerationState(
+        _ state: CanvasGenerationTaskState,
+        nodeIDs: [UUID],
+        error: String? = nil
+    ) -> Bool {
+        guard !nodeIDs.isEmpty else { return false }
+        let operations = CanvasGenerationStatePatchPlanner.operations(
+            state: state,
+            nodeIDs: nodeIDs,
+            error: error
+        )
+        return applyCommand(operations) != nil
+    }
+
+    /// Invalidates one in-flight attempt and publishes cancellation for the
+    /// task plus every prepared result in a single revision/write.
+    @discardableResult
+    func cancelGeneration(
+        nodeIDs: [UUID],
+        cancelledAttemptID: String
+    ) -> Bool {
+        let operations = CanvasGenerationCancellationPlanner.operations(
+            nodeIDs: nodeIDs,
+            cancelledAttemptID: cancelledAttemptID
+        )
+        guard !operations.isEmpty else { return false }
+        return applyCommand(operations) != nil
+    }
+
+    /// Publishes every image result, the owning task metadata and optional
+    /// visual group as one revision and one atomic project-file write.
+    @discardableResult
+    func commitGeneratedImageBatch(
+        assets: [CanvasAssetReference],
+        configuration: CanvasGenerationConfiguration,
+        graph: CanvasGenerationGraphPlan,
+        documentID: UUID,
+        generationAttemptID: String
+    ) throws -> [UUID] {
+        let plan = try CanvasSavedImageBatchCommitPlanner.plan(
+            configurationNodeID: graph.configurationNodeID,
+            preparedResultNodeIDs: graph.resultNodeIDs,
+            assets: assets,
+            configuration: configuration,
+            sourceNodeIDs: graph.sourceNodeIDs,
+            generationAttemptID: generationAttemptID
+        )
+        for commitIndex in 0..<Self.fileCommitAttemptLimit {
+            let current = project
+            do {
+                let patch = try CanvasGenerationCommitPlanner.patch(
+                    project: current,
+                    documentID: documentID,
+                    configurationNodeID: graph.configurationNodeID,
+                    resultNodeIDs: graph.resultNodeIDs,
+                    sourceNodeIDs: plan.sourceNodeIDs,
+                    generationAttemptID: generationAttemptID,
+                    operations: plan.operations
+                )
+                let (updated, _) = try CanvasCommandService.applying(
+                    patch,
+                    to: current
+                )
+                let candidate = projectPreparedForPersistence(
+                    updated,
+                    incrementRevision: false
+                )
+                try writeCandidate(
+                    candidate,
+                    expectedRevision: current.revision
+                )
+                recordHistory(current)
+                return plan.resultNodeIDs
+            } catch {
+                guard CanvasProjectFileWriter.isRevisionConflict(error),
+                      commitIndex + 1 < Self.fileCommitAttemptLimit,
+                      reloadAuthoritativeProject(after: error) else {
+                    saveError = error.localizedDescription
+                    throw error
+                }
+            }
+        }
+        throw FloeError.validationFailed("Canvas generation commit retry exhausted")
+    }
+
     func applyMediaJobs(_ jobs: [MediaGenerationJob]) {
         var changed = false
         var newlyReferencedAssets: [UUID] = []
@@ -1616,31 +1878,30 @@ private final class CanvasDocumentStore: ObservableObject {
         sourcePort: CanvasConnectionPort? = nil,
         destinationPort: CanvasConnectionPort? = nil
     ) {
-        guard source != destination else { return }
-        guard selectedDocument?.connections.contains(where: {
-            $0.sourceNodeID == source && $0.destinationNodeID == destination && $0.kind == kind
-                && $0.sourcePort == sourcePort && $0.destinationPort == destinationPort
-        }) != true else { return }
-        _ = applyCommand([
-            CanvasPatchOperation(
-                kind: .connect, sourceNodeID: source, destinationNodeID: destination,
-                connectionKind: kind,
-                sourcePort: sourcePort, destinationPort: destinationPort
+        guard let documentID = selectedDocument?.id else { return }
+        _ = applyCommand(documentID: documentID) { document in
+            CanvasConnectionCommandPlanner.connecting(
+                source,
+                to: destination,
+                requestedKind: kind,
+                sourcePort: sourcePort,
+                destinationPort: destinationPort,
+                document: document
             )
-        ])
+        }
     }
 
     func deleteConnection(_ id: UUID) {
-        _ = applyCommand([CanvasPatchOperation(kind: .disconnect, connectionID: id)])
+        guard let documentID = selectedDocument?.id else { return }
+        _ = applyCommand(documentID: documentID) { document in
+            CanvasConnectionCommandPlanner.disconnecting(id, document: document)
+        }
     }
 
     func reverseConnection(_ id: UUID) {
-        mutateSelectedDocument { document in
-            guard let index = document.connections.firstIndex(where: { $0.id == id }) else { return }
-            let source = document.connections[index].sourceNodeID
-            let destination = document.connections[index].destinationNodeID
-            document.connections[index].sourceNodeID = destination
-            document.connections[index].destinationNodeID = source
+        guard let documentID = selectedDocument?.id else { return }
+        _ = applyCommand(documentID: documentID) { document in
+            CanvasConnectionCommandPlanner.reversing(id, document: document)
         }
     }
 
@@ -2345,23 +2606,56 @@ private final class CanvasDocumentStore: ObservableObject {
         _ operations: [CanvasPatchOperation],
         documentID: UUID? = nil
     ) -> CanvasOperationResult? {
-        let targetDocumentID = documentID ?? project.selectedDocumentID
-        do {
-            let patch = CanvasPatch(
-                canvasID: project.id,
-                documentID: targetDocumentID,
-                expectedRevision: project.revision,
-                operations: operations
-            )
-            let (updated, result) = try CanvasCommandService.applying(patch, to: project)
-            recordHistory()
-            project = updated
-            persist(incrementRevision: false)
-            return result
-        } catch {
-            saveError = error.localizedDescription
-            return nil
+        applyCommand(documentID: documentID) { _ in operations }
+    }
+
+    /// Rebuilds dependent operations after a file-CAS rebase. Connection
+    /// metadata must describe the latest authoritative graph, not the stale
+    /// snapshot from the first attempt.
+    @discardableResult
+    private func applyCommand(
+        documentID: UUID? = nil,
+        operationsForDocument: (CanvasDocument) -> [CanvasPatchOperation]?
+    ) -> CanvasOperationResult? {
+        for commitIndex in 0..<Self.fileCommitAttemptLimit {
+            let current = project
+            let targetDocumentID = documentID ?? current.selectedDocumentID
+            guard let document = current.documents.first(where: {
+                $0.id == targetDocumentID
+            }), let operations = operationsForDocument(document),
+              !operations.isEmpty else { return nil }
+            do {
+                let patch = CanvasPatch(
+                    canvasID: current.id,
+                    documentID: targetDocumentID,
+                    expectedRevision: current.revision,
+                    operations: operations
+                )
+                let (updated, result) = try CanvasCommandService.applying(
+                    patch,
+                    to: current
+                )
+                let candidate = projectPreparedForPersistence(
+                    updated,
+                    incrementRevision: false
+                )
+                try writeCandidate(
+                    candidate,
+                    expectedRevision: current.revision
+                )
+                recordHistory(current)
+                return result
+            } catch {
+                guard CanvasProjectFileWriter.isRevisionConflict(error),
+                      commitIndex + 1 < Self.fileCommitAttemptLimit,
+                      reloadAuthoritativeProject(after: error) else {
+                    saveError = error.localizedDescription
+                    return nil
+                }
+            }
         }
+        saveError = "画布写入重试次数已用尽。"
+        return nil
     }
 
     private func mutateSelectedDocument(
@@ -2384,42 +2678,106 @@ private final class CanvasDocumentStore: ObservableObject {
         if persistAfter { persist() }
     }
 
-    private func recordHistory() {
-        undoStack.append(project)
+    private func recordHistory(_ snapshot: FloeCanvasProject? = nil) {
+        undoStack.append(snapshot ?? project)
         if undoStack.count > 80 { undoStack.removeFirst(undoStack.count - 80) }
         redoStack.removeAll()
     }
 
-    private func persist(incrementRevision: Bool = true) {
+    private func projectPreparedForPersistence(
+        _ source: FloeCanvasProject,
+        incrementRevision: Bool
+    ) -> FloeCanvasProject {
+        var candidate = source
+        if incrementRevision { candidate.revision += 1 }
+        if syncOperationStore != nil, globalSyncEnabled,
+           candidate.sync.isEnabled {
+            candidate.sync.revision += 1
+        }
+        return candidate
+    }
+
+    private func writeCandidate(
+        _ candidate: FloeCanvasProject,
+        expectedRevision: Int64,
+        requireRevisionAdvance: Bool = true,
+        allowCreateIfMissing: Bool = false,
+        allowReplacingUnreadableFile: Bool = false
+    ) throws {
+        let data = try CanvasProjectFileWriter.shared.compareAndSwap(
+            candidate,
+            at: fileURL,
+            expectedRevision: expectedRevision,
+            requireRevisionAdvance: requireRevisionAdvance,
+            allowCreateIfMissing: allowCreateIfMissing,
+            allowReplacingUnreadableFile: allowReplacingUnreadableFile
+        )
+        project = candidate
+        saveError = nil
+        guard let syncOperationStore, globalSyncEnabled,
+              candidate.sync.isEnabled else { return }
+        let canvasID = candidate.id
+        let operation = CanvasSyncOperation(
+            canvasID: canvasID, entityKind: .project,
+            entityID: canvasID, mutation: .upsert,
+            revision: candidate.sync.revision,
+            payload: data,
+            assetHashes: candidate.documents.flatMap(\.nodes)
+                .compactMap { $0.asset?.contentHash }
+        )
+        Task { try? await syncOperationStore.enqueue(operation) }
+    }
+
+    @discardableResult
+    private func reloadAuthoritativeProject(after error: Error) -> Bool {
         do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
-            if incrementRevision { project.revision += 1 }
-            if syncOperationStore != nil, globalSyncEnabled,
-               project.sync.isEnabled {
-                var sync = project.sync
-                sync.revision += 1
-                project.sync = sync
-            }
-            let data = try CanvasProjectCodec.encode(project, encoder: encoder)
-            try data.write(to: fileURL, options: .atomic)
-            saveError = nil
-            if let syncOperationStore, globalSyncEnabled,
-               project.sync.isEnabled {
-                let canvasID = project.id
-                let operation = CanvasSyncOperation(
-                    canvasID: canvasID, entityKind: .project,
-                    entityID: canvasID, mutation: .upsert,
-                    revision: project.sync.revision,
-                    payload: data,
-                    assetHashes: project.documents.flatMap(\.nodes)
-                        .compactMap { $0.asset?.contentHash }
-                )
-                Task { try? await syncOperationStore.enqueue(operation) }
-            }
+            project = try CanvasProjectFileWriter.shared.project(
+                canvasID: project.id,
+                at: fileURL
+            )
+            undoStack.removeAll()
+            redoStack.removeAll()
+            saveError = "画布已被另一项操作更新，已重新载入最新内容。"
+            return true
+        } catch let reloadError {
+            saveError = "\(error.localizedDescription)；重新载入失败："
+                + reloadError.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    private func persist(
+        incrementRevision: Bool = true,
+        expectedRevision explicitExpectedRevision: Int64? = nil,
+        requireRevisionAdvance explicitRequireRevisionAdvance: Bool? = nil,
+        allowCreateIfMissing: Bool = false,
+        allowReplacingUnreadableFile: Bool = false
+    ) -> Bool {
+        let source = project
+        let expectedRevision = explicitExpectedRevision ?? source.revision
+        let candidate = projectPreparedForPersistence(
+            source,
+            incrementRevision: incrementRevision
+        )
+        do {
+            try writeCandidate(
+                candidate,
+                expectedRevision: expectedRevision,
+                requireRevisionAdvance: explicitRequireRevisionAdvance
+                    ?? incrementRevision,
+                allowCreateIfMissing: allowCreateIfMissing,
+                allowReplacingUnreadableFile: allowReplacingUnreadableFile
+            )
+            return true
         } catch {
-            saveError = error.localizedDescription
+            project = source
+            if CanvasProjectFileWriter.isRevisionConflict(error) {
+                _ = reloadAuthoritativeProject(after: error)
+            } else {
+                saveError = error.localizedDescription
+            }
+            return false
         }
     }
 
@@ -2548,6 +2906,10 @@ struct WorkspaceCanvasView: View {
     @State private var activeGenerationTasks: [UUID: Task<Void, Never>] = [:]
     @State private var activeGenerationTokens: [UUID: UUID] = [:]
     @State private var generationSourceNodeIDs = Set<UUID>()
+    /// `nil` means an existing generation task was opened without editing its
+    /// inputs, so the resolver must inherit its durable `.source` topology.
+    /// A non-nil set, including an empty set, is an explicit replacement.
+    @State private var generationRequestedSourceNodeIDs: Set<UUID>?
     @State private var generationResultPoint: CGPoint?
     @State private var showsFileImporter = false
     @State private var showsPhotoImporter = false
@@ -2687,6 +3049,7 @@ struct WorkspaceCanvasView: View {
             CanvasMediaGenerationView(
                 store: store,
                 sourceNodeIDs: generationSourceNodeIDs,
+                requestedSourceNodeIDs: generationRequestedSourceNodeIDs,
                 preferredResultPoint: generationResultPoint
             )
                 .environmentObject(environment)
@@ -3243,6 +3606,7 @@ struct WorkspaceCanvasView: View {
                         }
                         Button {
                             generationSourceNodeIDs = selectedNodeIDs
+                            generationRequestedSourceNodeIDs = selectedNodeIDs
                             generationResultPoint = canvasPoint(CGPoint(x: 520, y: 380))
                             showsGeneration = true
                         } label: {
@@ -3531,6 +3895,7 @@ struct WorkspaceCanvasView: View {
             return
         case .generationTask:
             generationSourceNodeIDs = selectedNodeIDs
+            generationRequestedSourceNodeIDs = selectedNodeIDs
             generationResultPoint = point
             showsGeneration = true
             return
@@ -3574,6 +3939,7 @@ struct WorkspaceCanvasView: View {
         case .generationTask:
             cancelConnectionCreation()
             generationSourceNodeIDs = [draft.sourceNodeID]
+            generationRequestedSourceNodeIDs = [draft.sourceNodeID]
             generationResultPoint = point
             showsGeneration = true
             return
@@ -4242,10 +4608,15 @@ struct WorkspaceCanvasView: View {
         // A failed result is itself the retry target. Keep it selected with
         // its configuration so the graph planner updates this exact node
         // instead of appending another empty image/video beside it.
-        selectedNodeIDs = configurationID.map { [$0, node.id] } ?? [node.id]
+        let presentation = CanvasGenerationConfigurationPresentation.opening(
+            nodeID: node.id,
+            configurationNodeID: configurationID
+        )
+        selectedNodeIDs = presentation.selectedNodeIDs
         selectedConnectionID = nil
         editingNodeID = nil
         generationSourceNodeIDs = selectedNodeIDs
+        generationRequestedSourceNodeIDs = presentation.requestedSourceNodeIDs
         generationResultPoint = CGPoint(x: node.x, y: node.y)
         showsGeneration = true
     }
@@ -4303,17 +4674,20 @@ struct WorkspaceCanvasView: View {
         activeGenerationTasks[taskID]?.cancel()
         activeGenerationTasks[taskID] = nil
         activeGenerationTokens[taskID] = nil
-        let resultIDs = store.selectedDocument?.connections.filter {
+        let document = store.selectedDocument
+        let connectedResultIDs = document?.connections.filter {
             $0.sourceNodeID == taskID && $0.kind == .generatedFrom
         }.map(\.destinationNodeID) ?? []
+        let persistedResultIDs = document?.nodes.first(where: { $0.id == taskID })?
+            .metadata["generationResultNodeIDs"]?
+            .split(separator: ",")
+            .compactMap { UUID(uuidString: String($0)) } ?? []
+        let resultIDs = persistedResultIDs.isEmpty ? connectedResultIDs : persistedResultIDs
         let cancelledAttemptID = UUID().uuidString
-        for nodeID in [taskID] + resultIDs {
-            store.updateNodeMetadata(nodeID, values: [
-                "generationAttemptID": cancelledAttemptID,
-                "generationState": CanvasGenerationTaskState.cancelled.rawValue,
-                "generationError": nil
-            ])
-        }
+        _ = store.cancelGeneration(
+            nodeIDs: [taskID] + resultIDs,
+            cancelledAttemptID: cancelledAttemptID
+        )
         let jobID = store.selectedDocument?.nodes.first(where: {
             resultIDs.contains($0.id) && $0.generationJobID != nil
         })?.generationJobID
@@ -5058,6 +5432,7 @@ struct WorkspaceCanvasView: View {
                 if selectedGenerationNode == nil {
                     Button("生成", systemImage: "wand.and.stars") {
                         generationSourceNodeIDs = selectedNodeIDs
+                        generationRequestedSourceNodeIDs = selectedNodeIDs
                         generationResultPoint = store.selectedDocument?.nodes
                             .first(where: { selectedNodeIDs.contains($0.id) })
                             .map { CGPoint(x: $0.x + 420, y: $0.y) }
@@ -5495,7 +5870,9 @@ struct WorkspaceCanvasView: View {
     @MainActor
     private func retry(_ job: MediaGenerationJob) async -> String? {
         do {
-            let replacement = try await environment.mediaGenerationService.retryVideo(jobID: job.id)
+            let replacement = try await environment.mediaGenerationService.retryVideo(
+                jobID: job.id
+            )
             store.setGenerationJob(replacement.id, for: job.resultNodeID)
             canvasJobs = (try? await MediaGenerationJobStore(database: environment.database)
                 .jobs(canvasID: job.canvasID)) ?? canvasJobs
@@ -8910,13 +9287,10 @@ private enum CanvasGenerationExecutor {
                 generationAttemptID: attemptID,
                 store: store
             )
-            for nodeID in [graph.configurationNodeID] + graph.resultNodeIDs {
-                store.updateNodeMetadata(nodeID, values: [
-                    "generationState": CanvasGenerationTaskState.cancelled.rawValue,
-                    "generationError": nil,
-                    "generationErrorDetail": nil
-                ])
-            }
+            _ = store.updateGenerationState(
+                .cancelled,
+                nodeIDs: [graph.configurationNodeID] + graph.resultNodeIDs
+            )
             throw CancellationError()
         } catch let error as CanvasGenerationExecutionError {
             throw error
@@ -8928,13 +9302,11 @@ private enum CanvasGenerationExecutor {
                 store: store
             )
             let message = CanvasGenerationErrorPresentation.message(for: error)
-            for nodeID in [graph.configurationNodeID] + graph.resultNodeIDs {
-                store.updateNodeMetadata(nodeID, values: [
-                    "generationState": CanvasGenerationTaskState.failed.rawValue,
-                    "generationError": message,
-                    "generationErrorDetail": message
-                ])
-            }
+            _ = store.updateGenerationState(
+                .failed,
+                nodeIDs: [graph.configurationNodeID] + graph.resultNodeIDs,
+                error: message
+            )
             throw error
         }
     }
@@ -8950,7 +9322,6 @@ private enum CanvasGenerationExecutor {
         environment: AppEnvironment
     ) async throws {
         let ownerID = graph.configurationNodeID
-        let reusableResultIDs = graph.resultNodeIDs
         store.markGeneration(
             nodeID: ownerID, kind: .image, prompt: configuration.prompt,
             modelID: configuration.modelID, aspectRatio: configuration.aspectRatio,
@@ -8964,7 +9335,7 @@ private enum CanvasGenerationExecutor {
         }
         let referenceData = try referenceImages.map { try imageData(for: $0) }
         setState(.running, nodeIDs: [ownerID] + graph.resultNodeIDs, store: store)
-        let assets = try await environment.mediaGenerationService.generateImages(
+        let batch = try await environment.mediaGenerationService.generateImages(
             prompt: providerPrompt,
             options: ImageGenerationOptions(
                 aspectRatio: configuration.aspectRatio,
@@ -8973,45 +9344,37 @@ private enum CanvasGenerationExecutor {
                 count: configuration.count
             ),
             sourceImages: referenceData,
-            modelID: configuration.modelID
-        )
-        try validateCurrentAttempt(
-            documentID: documentID,
-            graph: graph,
-            generationAttemptID: generationAttemptID,
-            store: store
-        )
-        let resultNodeIDs = try CanvasGenerationOutputContract.resultNodeIDs(
-            expectedCount: configuration.count,
-            actualCount: assets.count,
-            preparedResultNodeIDs: reusableResultIDs
-        )
-        var resultIDs: [UUID] = []
-        for (index, asset) in assets.enumerated() {
-            let id = resultNodeIDs[index]
-            store.attachAsset(asset, kind: .image, to: id)
-            store.markGeneration(
-                nodeID: id, kind: .image, prompt: configuration.prompt,
-                modelID: configuration.modelID, aspectRatio: configuration.aspectRatio,
-                quality: configuration.quality, resolution: configuration.resolution,
-                count: assets.count, sourceNodeIDs: graph.sourceNodeIDs,
-                state: CanvasGenerationTaskState.ready.rawValue
+            modelID: configuration.modelID,
+            owner: GeneratedImageReservationOwner(
+                canvasID: store.project.id,
+                documentID: documentID,
+                configurationNodeID: graph.configurationNodeID,
+                generationAttemptID: generationAttemptID,
+                resultNodeIDs: graph.resultNodeIDs
             )
-            store.updateNodeMetadata(id, values: [
-                "imageGroupPrimary": index == 0 ? "true" : "false",
-                "artifactOrigin": "generated",
-                "generationError": nil,
-                "generationErrorDetail": nil
-            ])
-            resultIDs.append(id)
+        )
+        let assets = batch.assets
+        do {
+            try validateCurrentAttempt(
+                documentID: documentID,
+                graph: graph,
+                generationAttemptID: generationAttemptID,
+                store: store
+            )
+            _ = try store.commitGeneratedImageBatch(
+                assets: assets,
+                configuration: configuration,
+                graph: graph,
+                documentID: documentID,
+                generationAttemptID: generationAttemptID
+            )
+            await environment.mediaGenerationService
+                .markGeneratedAssetsReferenced(batch)
+        } catch {
+            await environment.mediaGenerationService
+                .discardUnreferencedGeneratedAssets(batch)
+            throw error
         }
-        if resultIDs.count > 1 { store.group(Set(resultIDs)) }
-        store.updateNodeMetadata(ownerID, values: [
-            "generationState": CanvasGenerationTaskState.ready.rawValue,
-            "generationResultNodeIDs": resultIDs.map(\.uuidString).joined(separator: ","),
-            "generationError": nil,
-            "generationErrorDetail": nil
-        ])
     }
 
     private static func executeVideo(
@@ -9088,13 +9451,7 @@ private enum CanvasGenerationExecutor {
         nodeIDs: [UUID],
         store: CanvasDocumentStore
     ) {
-        for nodeID in nodeIDs {
-            store.updateNodeMetadata(nodeID, values: [
-                "generationState": state.rawValue,
-                "generationError": nil,
-                "generationErrorDetail": nil
-            ])
-        }
+        _ = store.updateGenerationState(state, nodeIDs: nodeIDs)
     }
 
     private static func imageData(for node: FloeCanvasNode) throws -> Data {
@@ -9118,11 +9475,55 @@ private enum CanvasGenerationExecutor {
     }
 }
 
+struct CanvasGenerationConfigurationPresentation: Equatable {
+    var selectedNodeIDs: Set<UUID>
+    var requestedSourceNodeIDs: Set<UUID>?
+
+    /// Opening an existing task/result is an edit of its configuration, not
+    /// an explicit source replacement. Keep the task/result selected for UI
+    /// restoration while passing nil to the source resolver.
+    static func opening(
+        nodeID: UUID,
+        configurationNodeID: UUID?
+    ) -> CanvasGenerationConfigurationPresentation {
+        var selectedNodeIDs = Set([nodeID])
+        if let configurationNodeID { selectedNodeIDs.insert(configurationNodeID) }
+        return CanvasGenerationConfigurationPresentation(
+            selectedNodeIDs: selectedNodeIDs,
+            requestedSourceNodeIDs: nil
+        )
+    }
+
+    /// The edit presentation selects both the task and the tapped result so a
+    /// retry can target the existing graph. Neither is itself a reference
+    /// input; only explicit upstream `.source` ancestry belongs in this list.
+    static func referenceNodeIDs(
+        selectedNodeIDs: Set<UUID>,
+        configurationNodeID: UUID?,
+        document: CanvasDocument
+    ) -> Set<UUID> {
+        var included = CanvasGenerationContextResolver.nodeIDs(
+            selectedIDs: selectedNodeIDs,
+            connections: document.connections
+        )
+        if let configurationNodeID {
+            included.remove(configurationNodeID)
+            included.subtract(document.connections.compactMap { connection in
+                connection.kind == .generatedFrom
+                    && connection.sourceNodeID == configurationNodeID
+                    ? connection.destinationNodeID : nil
+            })
+        }
+        return included
+    }
+}
+
 private struct CanvasMediaGenerationView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @ObservedObject var store: CanvasDocumentStore
     let sourceNodeIDs: Set<UUID>
+    let requestedSourceNodeIDs: Set<UUID>?
     let preferredResultPoint: CGPoint?
 
     @State private var kind: MediaKind = .image
@@ -9214,8 +9615,22 @@ private struct CanvasMediaGenerationView: View {
                     }
                 }
 
+                let currentDocument = store.selectedDocument
+                let selectedNodes = currentDocument?.nodes.filter {
+                    sourceNodeIDs.contains($0.id)
+                } ?? []
+                let existingConfigurationID = selectedNodes.first(where: {
+                    $0.kind == .generationTask
+                })?.id
+                let referenceNodeIDs = currentDocument.map {
+                    CanvasGenerationConfigurationPresentation.referenceNodeIDs(
+                        selectedNodeIDs: sourceNodeIDs,
+                        configurationNodeID: existingConfigurationID,
+                        document: $0
+                    )
+                } ?? []
                 let sources = store.generationSourceNodes(for: sourceNodeIDs)
-                    .filter { $0.kind != .generationTask }
+                    .filter { referenceNodeIDs.contains($0.id) }
                 if !sources.isEmpty {
                     Section("引用输入") {
                         ForEach(sources) { node in
@@ -9310,7 +9725,7 @@ private struct CanvasMediaGenerationView: View {
         let resolvedSourceIDs: [UUID]
         do {
             resolvedSourceIDs = try CanvasGenerationContextResolver.resolvedNodeIDs(
-                requestedIDs: Array(sourceNodeIDs),
+                requestedIDs: requestedSourceNodeIDs.map(Array.init),
                 configurationNodeID: existingConfiguration?.id,
                 document: document
             )
@@ -9410,6 +9825,35 @@ private struct CanvasMediaGenerationView: View {
     }
 }
 
+struct CanvasMaterialAssetRecordIndex {
+    private let recordsByRelativePath: [String: CreativeAssetRecord]
+    private let recordsByID: [UUID: CreativeAssetRecord]
+
+    init(records: [CreativeAssetRecord]) {
+        var byRelativePath: [String: CreativeAssetRecord] = [:]
+        var byID: [UUID: CreativeAssetRecord] = [:]
+        for record in records {
+            byID[record.id] = record
+            if let relativePath = record.localRelativePath {
+                byRelativePath[relativePath] = record
+            }
+        }
+        recordsByRelativePath = byRelativePath
+        recordsByID = byID
+    }
+
+    func record(for fileURL: URL) -> CreativeAssetRecord? {
+        let relativePath = "Materials/\(fileURL.lastPathComponent)"
+        if let exactPath = recordsByRelativePath[relativePath] {
+            return exactPath
+        }
+        guard let filenameID = UUID(
+            uuidString: String(fileURL.lastPathComponent.prefix(36))
+        ) else { return nil }
+        return recordsByID[filenameID]
+    }
+}
+
 @MainActor
 private final class CanvasMaterialLibraryStore: ObservableObject {
     struct Item: Identifiable, Hashable {
@@ -9462,7 +9906,7 @@ private final class CanvasMaterialLibraryStore: ObservableObject {
     func reload() async {
         do {
             let records = try await assetStore?.allAssets() ?? []
-            let recordsByID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
+            let recordIndex = CanvasMaterialAssetRecordIndex(records: records)
             let urls = try FileManager.default.contentsOfDirectory(
                 at: directory,
                 includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
@@ -9471,8 +9915,10 @@ private final class CanvasMaterialLibraryStore: ObservableObject {
             items = urls.compactMap { url in
                 guard let kind = Self.kind(for: url) else { return nil }
                 let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-                let stable = UUID(uuidString: String(url.lastPathComponent.prefix(36))) ?? UUID()
-                let record = recordsByID[stable]
+                let record = recordIndex.record(for: url)
+                let stable = record?.id
+                    ?? UUID(uuidString: String(url.lastPathComponent.prefix(36)))
+                    ?? UUID()
                 return Item(
                     id: stable, url: url,
                     name: record?.displayName ?? url.deletingPathExtension().lastPathComponent,

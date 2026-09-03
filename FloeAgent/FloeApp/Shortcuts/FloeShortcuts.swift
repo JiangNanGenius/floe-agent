@@ -64,7 +64,8 @@ final class FloeShortcutsRuntime {
             goal: cleanPrompt,
             title: cleanTitle?.isEmpty == false ? cleanTitle! : String(cleanPrompt.prefix(40)),
             provider: provider,
-            model: model
+            model: model,
+            startOrigin: .externalAutomation
         )
         return started.conversationID
     }

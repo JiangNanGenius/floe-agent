@@ -24,6 +24,7 @@ public struct VNCSessionHandle: @unchecked Sendable {
 public typealias VNCSessionProvider = @Sendable () async throws -> VNCSessionHandle?
 public typealias VNCCredentialResolver = @Sendable (UUID) async throws -> Data
 public typealias VNCStatusProvider = @Sendable () async -> VNCToolConnectionStatus
+public typealias VNCConnectAction = @Sendable () async throws -> VNCSessionHandle?
 public typealias VNCReconnectAction = @Sendable () async throws -> VNCSessionHandle?
 public typealias VNCDisconnectAction = @Sendable () async -> VNCToolConnectionStatus
 
@@ -277,10 +278,10 @@ public struct VNCConnectTool: AgentTool {
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
     public static let requiresHostScope = false
-    private let connection: VNCReconnectAction
+    private let connection: VNCConnectAction
     private let statusProvider: VNCStatusProvider
 
-    public init(connection: @escaping VNCReconnectAction, statusProvider: @escaping VNCStatusProvider) {
+    public init(connection: @escaping VNCConnectAction, statusProvider: @escaping VNCStatusProvider) {
         self.connection = connection
         self.statusProvider = statusProvider
     }
@@ -837,6 +838,7 @@ public func registerVNCTools(
     statusProvider: @escaping VNCStatusProvider = {
         VNCToolConnectionStatus(state: .unconfigured, configuredEndpointCount: 0)
     },
+    connect: @escaping VNCConnectAction,
     reconnect: VNCReconnectAction? = nil,
     disconnect: VNCDisconnectAction? = nil,
     sessionProvider: @escaping VNCSessionProvider
@@ -854,7 +856,7 @@ public func registerVNCTools(
     ToolCatalog.register(VNCDragTool.self)
     ToolCatalog.register(VNCKeyPressTool.self)
     registry.register(VNCStatusTool(statusProvider: statusProvider))
-    registry.register(VNCConnectTool(connection: sessionProvider, statusProvider: statusProvider))
+    registry.register(VNCConnectTool(connection: connect, statusProvider: statusProvider))
     registry.register(VNCReconnectTool(
         reconnect: reconnect ?? sessionProvider,
         statusProvider: statusProvider

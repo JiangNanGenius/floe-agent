@@ -101,6 +101,65 @@ enum AgentRunSurface: Sendable {
     case canvas
 }
 
+enum RunConversationModeResolutionError: Error, Equatable, LocalizedError {
+    case invalidPersistedRunMode(String)
+    case conflictingEvidence(run: ConversationMode, checkpoint: ConversationMode)
+    case missingLegacyEvidence(checkpointWasUnreadable: Bool)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidPersistedRunMode(let raw):
+            "The saved run has an unsupported execution mode (\(raw)). Update Floe or start a new task."
+        case .conflictingEvidence:
+            "The saved run and its checkpoint disagree about execution mode. Recovery stopped before any model or tool execution."
+        case .missingLegacyEvidence(let checkpointWasUnreadable):
+            checkpointWasUnreadable
+                ? "The legacy run has no trusted execution mode and its checkpoint is unreadable. Recovery stopped before any model or tool execution."
+                : "The legacy run has no trusted execution mode. Recovery stopped before any model or tool execution."
+        }
+    }
+}
+
+/// Resolves the immutable run contract without consulting the conversation's
+/// mutable current mode. New V34 rows always carry `persistedRunMode`; a
+/// legacy NULL row may use a trustworthy checkpoint and otherwise fails closed.
+struct RunConversationModeResolver {
+    static func resolve(
+        persistedRunMode: String?,
+        checkpointMode: ConversationMode?,
+        checkpointWasUnreadable: Bool = false
+    ) throws -> ConversationMode {
+        let runMode: ConversationMode?
+        if let persistedRunMode {
+            guard let parsed = ConversationMode(rawValue: persistedRunMode) else {
+                throw RunConversationModeResolutionError
+                    .invalidPersistedRunMode(persistedRunMode)
+            }
+            runMode = parsed
+        } else {
+            runMode = nil
+        }
+
+        if let runMode {
+            if let checkpointMode, checkpointMode != runMode {
+                throw RunConversationModeResolutionError.conflictingEvidence(
+                    run: runMode,
+                    checkpoint: checkpointMode
+                )
+            }
+            // The V34 run row is authoritative. A missing/truncated checkpoint
+            // changes replay detail, not whether plan/goal semantics are safe.
+            return runMode
+        }
+        if !checkpointWasUnreadable, let checkpointMode {
+            return checkpointMode
+        }
+        throw RunConversationModeResolutionError.missingLegacyEvidence(
+            checkpointWasUnreadable: checkpointWasUnreadable
+        )
+    }
+}
+
 private struct GoalContinuationReservation: Hashable {
     let goalID: UUID
     let revision: Int
@@ -454,7 +513,10 @@ final class ConversationCenter: ObservableObject {
             // Resume the existing durable run with its recorded provider and
             // model. Creating a fresh run here duplicated the user turn and
             // made every foreground transition look like another task.
-            _ = try? await retry(runID: run.id)
+            _ = try? await retry(
+                runID: run.id,
+                startOrigin: .foregroundRecovery
+            )
         }
     }
 
@@ -827,7 +889,8 @@ final class ConversationCenter: ObservableObject {
         executionMode: AgentExecutionMode = .agent,
         runSurface: AgentRunSurface = .ordinary,
         canvasContext: CanvasRunContextSeed? = nil,
-        isGoalContinuation: Bool = false
+        isGoalContinuation: Bool = false,
+        startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationRun {
         let ingress = SecretIngressScanner.scan(goal)
         let trimmed = ingress.sanitizedText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -906,7 +969,8 @@ final class ConversationCenter: ObservableObject {
             model: model,
             executionMode: executionMode,
             runSurface: runSurface,
-            shouldGenerateTitle: false
+            shouldGenerateTitle: false,
+            startOrigin: startOrigin
         )
     }
 
@@ -920,7 +984,8 @@ final class ConversationCenter: ObservableObject {
         workspaceID: UUID? = nil,
         attachments: [AttachmentRef] = [],
         executionMode: AgentExecutionMode = .agent,
-        initialPolicy: DraftTaskPolicy? = nil
+        initialPolicy: DraftTaskPolicy? = nil,
+        startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationTask {
         let ingress = SecretIngressScanner.scan(goal)
         let trimmed = ingress.sanitizedText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -972,7 +1037,8 @@ final class ConversationCenter: ObservableObject {
             provider: provider,
             model: model,
             executionMode: executionMode,
-            shouldGenerateTitle: true
+            shouldGenerateTitle: true,
+            startOrigin: startOrigin
         )
         // Register the in-process owner before yielding to any reload or
         // launch-recovery work. This closes the final race between durable
@@ -1504,7 +1570,8 @@ final class ConversationCenter: ObservableObject {
             model: model,
             workspaceID: workspaceID,
             attachments: attachments,
-            executionMode: executionMode
+            executionMode: executionMode,
+            startOrigin: .explicitUserAction
         )
         switch await started.result.value {
         case .success:
@@ -1635,7 +1702,8 @@ final class ConversationCenter: ObservableObject {
                 model: model,
                 workspaceID: input.workspaceID,
                 attachments: input.attachments,
-                executionMode: mode
+                executionMode: mode,
+                startOrigin: .queuedInput
             )
             try await environment.runningInputStore.markConsumed(id: input.id, runID: started.runID)
         } catch {
@@ -1653,14 +1721,17 @@ final class ConversationCenter: ObservableObject {
             provider: ProviderProfile,
             model: ModelProfile,
             workspaceID: UUID
-        )? = nil
+        )? = nil,
+        startOrigin: ContinuedProcessingStartOrigin
     ) -> StartedConversationRun {
         let runID = service.runID
         runServices[runID] = service
         registerPreparingRun(
             runID: runID,
             conversationID: service.conversationID,
-            goal: goal
+            goal: goal,
+            conversationMode: service.conversationMode.rawValue,
+            startOrigin: startOrigin
         )
         track(service)
         let result = Task<Result<Void, Error>, Never> { [weak self, service] in
@@ -1686,11 +1757,18 @@ final class ConversationCenter: ObservableObject {
         model: ModelProfile,
         executionMode: AgentExecutionMode,
         runSurface: AgentRunSurface = .ordinary,
-        shouldGenerateTitle: Bool
+        shouldGenerateTitle: Bool,
+        startOrigin: ContinuedProcessingStartOrigin
     ) -> StartedConversationRun {
         let runID = prepared.run.id
         let conversationID = prepared.conversation.id
-        registerPreparingRun(runID: runID, conversationID: conversationID, goal: goal)
+        registerPreparingRun(
+            runID: runID,
+            conversationID: conversationID,
+            goal: goal,
+            conversationMode: prepared.run.conversationMode,
+            startOrigin: startOrigin
+        )
         let result = Task<Result<Void, Error>, Never> { [weak self] in
             guard let self else {
                 return .failure(FloeError.internalError("Conversation center was released"))
@@ -1879,20 +1957,24 @@ final class ConversationCenter: ObservableObject {
     private func registerPreparingRun(
         runID: UUID,
         conversationID: UUID,
-        goal: String
+        goal: String,
+        conversationMode: String?,
+        startOrigin: ContinuedProcessingStartOrigin
     ) {
         activeRuns[runID] = RunRecord(
             id: runID,
             conversationID: conversationID,
             state: "preparing",
             goal: goal,
-            startedAt: Date()
+            startedAt: Date(),
+            conversationMode: conversationMode
         )
         publishSession(conversationID)
         environment.backgroundRunCoordinator.didStart(
             conversationID: conversationID,
             runID: runID,
-            title: conversations.first(where: { $0.id == conversationID })?.title ?? goal
+            title: conversations.first(where: { $0.id == conversationID })?.title ?? goal,
+            origin: startOrigin
         )
     }
 
@@ -2226,7 +2308,8 @@ final class ConversationCenter: ObservableObject {
             model: model,
             workspaceID: workspaceID,
             executionMode: .goal,
-            isGoalContinuation: true
+            isGoalContinuation: true,
+            startOrigin: .goalContinuation
         )
     }
 
@@ -2649,7 +2732,10 @@ final class ConversationCenter: ObservableObject {
 
     /// Retries a terminal run by starting a fresh run with the same goal,
     /// provider and model in the same conversation.
-    func retry(runID: UUID) async throws -> StartedConversationRun {
+    func retry(
+        runID: UUID,
+        startOrigin: ContinuedProcessingStartOrigin
+    ) async throws -> StartedConversationRun {
         guard let record = try await environment.runStore.run(id: runID) else {
             throw FloeError.notFound("run \(runID.uuidString)")
         }
@@ -2664,7 +2750,12 @@ final class ConversationCenter: ObservableObject {
         // Continue the original durable run. The old implementation called
         // startRun(), duplicating the user's message and creating another
         // preparing row every time Continue was tapped.
-        return try await resumeExistingRun(record, provider: provider, model: model)
+        return try await resumeExistingRun(
+            record,
+            provider: provider,
+            model: model,
+            startOrigin: startOrigin
+        )
     }
 
     /// True while this process still owns either preprocessing or a concrete
@@ -2678,7 +2769,8 @@ final class ConversationCenter: ObservableObject {
     private func resumeExistingRun(
         _ record: RunRecord,
         provider: ProviderProfile,
-        model: ModelProfile
+        model: ModelProfile,
+        startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationRun {
         if runTasks[record.id] != nil {
             throw FloeError.validationFailed("This task is already resuming")
@@ -2688,6 +2780,7 @@ final class ConversationCenter: ObservableObject {
         // JSON file after suspension. Fall back to the persisted conversation
         // so an original stalled task cannot fail on every Continue tap.
         let checkpoint: AgentCheckpoint?
+        let checkpointWasUnreadable: Bool
         do {
             let loaded = try await environment.checkpointStore.load(runID: record.id)
             if let loaded,
@@ -2696,8 +2789,10 @@ final class ConversationCenter: ObservableObject {
                     "runResumeCheckpointIgnored run=\(record.id.uuidString) reason=identityMismatch format=\(loaded.formatVersion)"
                 )
                 checkpoint = nil
+                checkpointWasUnreadable = true
             } else {
                 checkpoint = loaded
+                checkpointWasUnreadable = false
             }
         } catch {
             let nsError = error as NSError
@@ -2705,16 +2800,40 @@ final class ConversationCenter: ObservableObject {
                 "runResumeCheckpointIgnored run=\(record.id.uuidString) reason=loadFailed domain=\(nsError.domain) code=\(nsError.code)"
             )
             checkpoint = nil
+            checkpointWasUnreadable = true
+        }
+        let restoredConversationMode: ConversationMode
+        do {
+            restoredConversationMode = try RunConversationModeResolver.resolve(
+                persistedRunMode: record.conversationMode,
+                checkpointMode: checkpoint?.conversationMode,
+                checkpointWasUnreadable: checkpointWasUnreadable
+            )
+        } catch {
+            let message = error.localizedDescription
+            try? await environment.runStore.recordError(RunErrorRecord(
+                runID: record.id,
+                kind: "recoveryMode",
+                message: message,
+                recoverable: true
+            ))
+            try? await environment.runStore.updateRunState(
+                id: record.id,
+                state: "failed",
+                endedAt: Date()
+            )
+            publishSession(record.conversationID)
+            throw FloeError.validationFailed(message)
         }
         let assembled = try await ConversationHistoryAssembler(
             store: environment.conversationStore
         ).build(conversationID: record.conversationID)
         let current = assembled.last(where: { $0.role == "user" })
         let history = current.map { item in assembled.filter { $0.id != item.id } } ?? assembled
-        let mode: AgentExecutionMode = switch checkpoint?.conversationMode {
+        let mode: AgentExecutionMode = switch restoredConversationMode {
         case .plan: .plan
         case .goal: .goal
-        case .chat, nil: .agent
+        case .chat: .agent
         }
         FloeLogger(category: .runtime).info(
             "runResumePrepared run=\(record.id.uuidString) conversation=\(record.conversationID.uuidString) originalState=\(record.state) providerKind=\(String(describing: provider.kind)) checkpoint=\(checkpoint == nil ? "fallback" : "loaded") checkpointFormat=\(checkpoint?.formatVersion ?? 0) checkpointMessages=\(checkpoint?.messages.count ?? 0) durableMessages=\(assembled.count) pendingCalls=\(checkpoint?.pendingToolCalls.count ?? 0) pendingResults=\(checkpoint?.pendingToolResults.count ?? 0)"
@@ -2764,7 +2883,9 @@ final class ConversationCenter: ObservableObject {
         registerPreparingRun(
             runID: record.id,
             conversationID: record.conversationID,
-            goal: record.goal
+            goal: record.goal,
+            conversationMode: restoredConversationMode.rawValue,
+            startOrigin: startOrigin
         )
         track(service)
         publishSession(record.conversationID)
@@ -3431,7 +3552,8 @@ final class ConversationCenter: ObservableObject {
                 state: snapshot.stateName,
                 goal: existing?.goal ?? "",
                 startedAt: existing?.startedAt ?? Date(),
-                endedAt: nil
+                endedAt: nil,
+                conversationMode: existing?.conversationMode
             )
         }
         let progress: (stage: String, value: Int64) = switch snapshot.stateName {

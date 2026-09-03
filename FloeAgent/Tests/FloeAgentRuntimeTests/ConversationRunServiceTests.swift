@@ -90,6 +90,7 @@ struct ConversationRunServiceTests {
         let run = try #require(await runStore.run(id: service.runID))
         #expect(run.goalID == goal.id)
         #expect(run.state == "completed")
+        #expect(run.conversationMode == "goal")
         #expect(goal.revision == 2)
         #expect(goal.status == .verifying)
         #expect(goal.progress.cycleCount == 1)
@@ -128,6 +129,8 @@ struct ConversationRunServiceTests {
         )
 
         try await service.start(goal: "Say hello")
+
+        #expect(try await runStore.run(id: service.runID)?.conversationMode == "chat")
 
         // The assistant message persisted.
         let messages = try await conversationStore.messages(conversationID: conversationID)

@@ -225,6 +225,37 @@ struct ImageAdapterTests {
         #expect(body.contains("filename=\"source-5.png\""))
     }
 
+    @Test("OpenAI exposes one excess output to the service cardinality gate")
+    func openAIExcessOutputObservationContract() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ImageAdapterURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let providerImages = (0..<6).map {
+            Data([0x89, 0x50, 0x4E, 0x47, UInt8($0)])
+        }
+        ImageAdapterURLProtocol.prepare([
+            .init(statusCode: 200, body: try JSONSerialization.data(withJSONObject: [
+                "data": providerImages.map { ["b64_json": $0.base64EncodedString()] }
+            ]))
+        ])
+
+        let result = try await OpenAIImageAdapter(session: session).perform(
+            RemoteImageRequest(
+                operation: .generate,
+                prompt: "four variations",
+                count: 4,
+                modelRemoteID: "gpt-image-2"
+            ),
+            provider: provider(kind: .openAI),
+            credentials: ProviderCredentials(apiKey: "test-key")
+        )
+
+        // The adapter keeps expected + 1, but never decodes an unbounded
+        // response. MediaGenerationService can therefore reject 5 != 4.
+        #expect(result.images == Array(providerImages.prefix(5)))
+    }
+
     @Test("Unsupported reference counts fail before networking")
     func excessiveReferencesFailBeforeNetworking() async throws {
         let configuration = URLSessionConfiguration.ephemeral
@@ -351,6 +382,40 @@ struct ImageAdapterTests {
         let format = try #require(responseFormat["image"] as? [String: Any])
         #expect(format["aspectRatio"] as? String == "1:1")
         #expect(format["imageSize"] as? String == "2K")
+    }
+
+    @Test("Gemini exposes one excess output to the service cardinality gate")
+    func googleGeminiExcessOutputObservationContract() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ImageAdapterURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let providerImages = (0..<3).map {
+            Data([0x89, 0x50, 0x4E, 0x47, UInt8($0 + 10)])
+        }
+        ImageAdapterURLProtocol.prepare([
+            .init(statusCode: 200, body: try JSONSerialization.data(withJSONObject: [
+                "candidates": [["content": ["parts": providerImages.map {
+                    ["inlineData": [
+                        "mimeType": "image/png",
+                        "data": $0.base64EncodedString()
+                    ]]
+                }]]]
+            ]))
+        ])
+
+        let result = try await GoogleGeminiImageAdapter(session: session).perform(
+            RemoteImageRequest(
+                operation: .generate,
+                prompt: "one image",
+                count: 1,
+                modelRemoteID: "gemini-3-pro-image"
+            ),
+            provider: provider(kind: .googleGemini),
+            credentials: ProviderCredentials(apiKey: "google-test-key")
+        )
+
+        #expect(result.images == Array(providerImages.prefix(2)))
     }
 
     @Test("DashScope current image models use multimodal generation for editing")

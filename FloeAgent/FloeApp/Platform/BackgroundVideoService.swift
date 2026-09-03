@@ -53,6 +53,215 @@ private final class BackgroundPiPSourceHostView: UIView {
     }
 }
 
+/// Small, AVKit-independent lifecycle reducer used by the service and by
+/// regression tests. Keeping the scene/readiness decision here makes races
+/// between SwiftUI host teardown and AVKit delegate callbacks explicit.
+enum BackgroundPiPEffectiveScenePhase: String, Sendable, Equatable {
+    case active
+    case inactive
+    case background
+}
+
+enum BackgroundPiPPreparationPhase: String, Sendable, Equatable {
+    case idle
+    case preparing
+    case prepared
+    case starting
+    case active
+    case failed
+}
+
+/// Separates the diagnostic attempt serial from the one bit that is allowed
+/// to classify an AVKit callback as user initiated. A timed-out or rejected
+/// request must clear that bit: AVKit can deliver a late callback after the
+/// service has already returned to the prepared state, and treating it as a
+/// still-live manual request would let a foreground PiP window escape the
+/// lifecycle policy's immediate-retraction rule.
+struct BackgroundPiPManualStartTracker: Sendable, Equatable {
+    private(set) var attemptSerial = 0
+    private(set) var isPending = false
+
+    @discardableResult
+    mutating func begin() -> Int {
+        attemptSerial += 1
+        isPending = true
+        return attemptSerial
+    }
+
+    mutating func settle() {
+        isPending = false
+    }
+
+    mutating func reset() {
+        attemptSerial = 0
+        isPending = false
+    }
+}
+
+enum BackgroundPiPStopOrigin: String, Sendable, Equatable {
+    case none
+    case foregroundRetraction
+    case manualControl
+    case controllerReplacement
+    case taskBatchEnded
+
+    var suppressesCurrentBatch: Bool { self == .manualControl }
+    var allowsAutomaticRepreparation: Bool { self == .foregroundRetraction }
+}
+
+struct BackgroundPiPLifecyclePolicy: Sendable, Equatable {
+    enum AutomaticTransition: String, Sendable, Equatable {
+        case disarmed
+        case armed
+        case missed
+    }
+
+    enum StartOrigin: String, Sendable, Equatable {
+        case automaticInline
+        case manualControl
+    }
+
+    enum ManualTapDecision: Sendable, Equatable {
+        case none
+        case prepareOnly
+        case startSynchronously
+        case stop
+    }
+
+    private(set) var effectivePhase: BackgroundPiPEffectiveScenePhase = .active
+    private(set) var automaticTransition: AutomaticTransition = .disarmed
+    private(set) var startOrigin: StartOrigin?
+    private(set) var stopWhenStartCompletes = false
+
+    var allowsAutomaticStartFromInline: Bool {
+        automaticTransition == .armed
+    }
+
+    mutating func setAutomaticStartEnabled(_ enabled: Bool, sourceReady: Bool) {
+        guard enabled else {
+            automaticTransition = .disarmed
+            return
+        }
+        if effectivePhase == .active {
+            automaticTransition = .armed
+        } else if !sourceReady || automaticTransition == .disarmed {
+            automaticTransition = .missed
+        }
+    }
+
+    mutating func transition(
+        to phase: BackgroundPiPEffectiveScenePhase,
+        automaticallyStartsFromInline: Bool,
+        sourceReady: Bool,
+        startPending: Bool
+    ) {
+        effectivePhase = phase
+        guard automaticallyStartsFromInline else {
+            automaticTransition = .disarmed
+            if phase == .active, startPending {
+                stopWhenStartCompletes = true
+            }
+            return
+        }
+        switch phase {
+        case .active:
+            // A fresh foreground interval arms the *next* Home/app-switch
+            // transition. It never tries to repair a transition already
+            // missed while media was still preparing.
+            automaticTransition = .armed
+            if startPending {
+                stopWhenStartCompletes = true
+            }
+        case .inactive, .background:
+            if !sourceReady, !startPending {
+                automaticTransition = .missed
+            }
+        }
+    }
+
+    mutating func preparationDidBecomeReady(automaticallyStartsFromInline: Bool) {
+        guard automaticallyStartsFromInline else {
+            automaticTransition = .disarmed
+            return
+        }
+        // Readiness arriving after Floe already left the foreground must not
+        // synthesize a late start. The next foreground interval re-arms it.
+        automaticTransition = effectivePhase == .active ? .armed : .missed
+    }
+
+    mutating func manualStartRequested() {
+        startOrigin = .manualControl
+    }
+
+    mutating func willStart(manualRequestPending: Bool) {
+        startOrigin = manualRequestPending ? .manualControl : .automaticInline
+    }
+
+    mutating func requestForegroundRetraction(startPending: Bool) {
+        if startPending {
+            stopWhenStartCompletes = true
+        }
+    }
+
+    func didStartRequiresImmediateStop() -> Bool {
+        stopWhenStartCompletes
+            || (effectivePhase == .active && startOrigin != .manualControl)
+    }
+
+    mutating func clearStartTracking() {
+        startOrigin = nil
+        stopWhenStartCompletes = false
+    }
+
+    static func retainsControllerWhenHostDetaches(
+        effectivePhase: BackgroundPiPEffectiveScenePhase,
+        preparationPhase: BackgroundPiPPreparationPhase
+    ) -> Bool {
+        effectivePhase != .active
+            || preparationPhase == .starting
+            || preparationPhase == .active
+    }
+
+    /// SwiftUI does not guarantee whether scenePhase or dismantleUIView is
+    /// delivered first during a Home/app-switch transition. Give the
+    /// reconciled scene callback a short opportunity to arrive before
+    /// destroying an automatic inline source that is otherwise ready.
+    static func defersAutomaticHostDetach(
+        effectivePhase: BackgroundPiPEffectiveScenePhase,
+        preparationPhase: BackgroundPiPPreparationPhase,
+        automaticallyStartsFromInline: Bool,
+        hasRunContext: Bool
+    ) -> Bool {
+        guard effectivePhase == .active,
+              automaticallyStartsFromInline,
+              hasRunContext else { return false }
+        return preparationPhase == .preparing || preparationPhase == .prepared
+    }
+
+    static func shouldCancelDeferredHostDetach(
+        hasUsableReplacementHost: Bool
+    ) -> Bool {
+        hasUsableReplacementHost
+    }
+
+    static func manualTapDecision(
+        preparationPhase: BackgroundPiPPreparationPhase,
+        hasRunContext: Bool
+    ) -> ManualTapDecision {
+        guard hasRunContext else { return .none }
+        switch preparationPhase {
+        case .idle, .failed:
+            return .prepareOnly
+        case .prepared:
+            return .startSynchronously
+        case .active:
+            return .stop
+        case .preparing, .starting:
+            return .none
+        }
+    }
+}
+
 @MainActor
 final class BackgroundVideoService: NSObject, ObservableObject {
     enum PiPPreparationState: String, Sendable {
@@ -96,6 +305,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
 
     enum PiPManualControlAction: Sendable, Equatable {
         case none
+        case prepare
         case start
         case stop
         case retryPreparation
@@ -135,23 +345,29 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     private var guidanceHints: [GuidanceHint] = []
     private var refreshTask: Task<Void, Never>?
     private var startGeneration: UInt64 = 0
-    private enum StopOrigin: String {
-        case none
-        case foregroundRetraction
-        case manualControl
-        case controllerReplacement
-        case taskBatchEnded
-    }
-    private var pendingStopOrigin: StopOrigin = .none
-    private var manualStartAttemptCount = 0
+    private var pendingStopOrigin: BackgroundPiPStopOrigin = .none
+    private var manualStartTracker = BackgroundPiPManualStartTracker()
     private var ownsAudioSessionActivation = false
     private var preparationTask: Task<Void, Never>?
     private var startTimeoutTask: Task<Void, Never>?
+    private var deferredSourceDetachTask: Task<Void, Never>?
     private var automaticallyStartsFromInline = false
+    private var lifecyclePolicy = BackgroundPiPLifecyclePolicy()
+
+    private var lifecyclePreparationPhase: BackgroundPiPPreparationPhase {
+        switch preparationState {
+        case .idle: .idle
+        case .renderingContent, .waitingForMedia: .preparing
+        case .prepared: .prepared
+        case .starting: .starting
+        case .active: .active
+        case .failed: .failed
+        }
+    }
 
     private var resolvedManualAction: PiPManualControlAction {
         if preparationState == .idle, hasRunContext {
-            return .start
+            return .prepare
         }
         return preparationState.manualAction
     }
@@ -166,15 +382,17 @@ final class BackgroundVideoService: NSObject, ObservableObject {
 
     var manualControlTitle: String {
         switch resolvedManualAction {
+        case .prepare: "准备画中画"
         case .start: "启动画中画"
         case .stop: "关闭画中画"
-        case .retryPreparation: "重试画中画准备"
+        case .retryPreparation: "重新准备画中画"
         case .none: preparationState.localizedDescription
         }
     }
 
     var manualControlSystemImage: String {
         switch resolvedManualAction {
+        case .prepare: "pip"
         case .start: "pip.enter"
         case .stop: "pip.exit"
         case .retryPreparation: "arrow.clockwise"
@@ -193,8 +411,13 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         currentTitle = title
         currentProgress = progress
         self.automaticallyStartsFromInline = automaticallyStartsFromInline
+        lifecyclePolicy.setAutomaticStartEnabled(
+            automaticallyStartsFromInline,
+            sourceReady: isPiPPrepared || isPiPActive
+        )
         pipController?.canStartPictureInPictureAutomaticallyFromInline =
             automaticallyStartsFromInline
+                && lifecyclePolicy.allowsAutomaticStartFromInline
         if !hasRunContext {
             hasRunContext = true
         }
@@ -210,17 +433,72 @@ final class BackgroundVideoService: NSObject, ObservableObject {
 
     fileprivate func registerSourceHost(_ hostView: BackgroundPiPSourceHostView) {
         sourceHostViews.add(hostView)
+        let usableHost = isAvailableSourceHost(hostView)
+            ? hostView
+            : availableSourceHost()
+        if BackgroundPiPLifecyclePolicy.shouldCancelDeferredHostDetach(
+            hasUsableReplacementHost: usableHost != nil
+        ) {
+            deferredSourceDetachTask?.cancel()
+            deferredSourceDetachTask = nil
+        }
+        guard let usableHost else { return }
+        replaceDetachedForegroundSourceIfNeeded(with: usableHost)
         scheduleAutomaticPreparationIfNeeded()
     }
 
     fileprivate func unregisterSourceHost(_ hostView: BackgroundPiPSourceHostView) {
         sourceHostViews.remove(hostView)
+        let hostID = ObjectIdentifier(hostView)
         let lostPendingSource = activeSourceHostView == nil
             && isPreparingPiP
             && availableSourceHost() == nil
         guard (activeSourceHostView === hostView || lostPendingSource),
-              !isPiPActive,
-              preparationState != .starting else { return }
+              !BackgroundPiPLifecyclePolicy.retainsControllerWhenHostDetaches(
+                effectivePhase: lifecyclePolicy.effectivePhase,
+                preparationPhase: lifecyclePreparationPhase
+              ) else {
+            FloeLogger(category: .app).debug(
+                "pictureInPictureSourceDetachRetained phase=\(lifecyclePolicy.effectivePhase.rawValue) state=\(preparationState.rawValue)"
+            )
+            return
+        }
+        if BackgroundPiPLifecyclePolicy.defersAutomaticHostDetach(
+            effectivePhase: lifecyclePolicy.effectivePhase,
+            preparationPhase: lifecyclePreparationPhase,
+            automaticallyStartsFromInline: automaticallyStartsFromInline,
+            hasRunContext: hasRunContext
+        ) {
+            deferredSourceDetachTask?.cancel()
+            deferredSourceDetachTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled, let self else { return }
+                self.deferredSourceDetachTask = nil
+                self.retireDetachedSourceIfNeeded(hostID: hostID)
+            }
+            FloeLogger(category: .app).debug(
+                "pictureInPictureSourceDetachDeferred phase=active state=\(preparationState.rawValue)"
+            )
+            return
+        }
+        retireDetachedSourceIfNeeded(hostID: hostID)
+    }
+
+    private func retireDetachedSourceIfNeeded(hostID: ObjectIdentifier) {
+        let lostPendingSource = activeSourceHostView == nil
+            && isPreparingPiP
+            && availableSourceHost() == nil
+        guard activeSourceHostView.map(ObjectIdentifier.init) == hostID
+                || lostPendingSource else { return }
+        guard !BackgroundPiPLifecyclePolicy.retainsControllerWhenHostDetaches(
+            effectivePhase: lifecyclePolicy.effectivePhase,
+            preparationPhase: lifecyclePreparationPhase
+        ) else {
+            FloeLogger(category: .app).debug(
+                "pictureInPictureDeferredSourceDetachRetained phase=\(lifecyclePolicy.effectivePhase.rawValue) state=\(preparationState.rawValue)"
+            )
+            return
+        }
         // A prepared controller cannot be moved to another backing layer.
         // Tear it down and invalidate any readiness wait; the newly visible
         // scene's host will prepare a fresh controller.
@@ -228,6 +506,55 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         preparationTask = nil
         startGeneration &+= 1
         stopPiPInternal(origin: .controllerReplacement)
+    }
+
+    /// Receives the coordinator's multi-scene effective phase before SwiftUI
+    /// dismantles an inline host. This lets an inactive/background transition
+    /// retain the source that AVKit is in the process of promoting to PiP.
+    func updateEffectiveScenePhase(_ phase: BackgroundPiPEffectiveScenePhase) {
+        let sourceReady = preparationState == .prepared
+            || preparationState == .starting
+            || preparationState == .active
+        lifecyclePolicy.transition(
+            to: phase,
+            automaticallyStartsFromInline: automaticallyStartsFromInline,
+            sourceReady: sourceReady,
+            startPending: preparationState == .starting
+        )
+        pipController?.canStartPictureInPictureAutomaticallyFromInline =
+            automaticallyStartsFromInline
+                && lifecyclePolicy.allowsAutomaticStartFromInline
+        if phase == .active,
+           automaticallyStartsFromInline,
+           preparationState == .prepared {
+            configureAudioSession()
+        } else if lifecyclePolicy.automaticTransition == .missed,
+                  preparationState != .starting,
+                  !isPiPActive {
+            deactivateAudioSession()
+        }
+        FloeLogger(category: .app).debug(
+            "pictureInPictureScenePhase phase=\(phase.rawValue) automaticTransition=\(lifecyclePolicy.automaticTransition.rawValue) state=\(preparationState.rawValue)"
+        )
+    }
+
+    private func replaceDetachedForegroundSourceIfNeeded(
+        with newlyAttachedHost: BackgroundPiPSourceHostView
+    ) {
+        guard lifecyclePolicy.effectivePhase == .active,
+              let activeSourceHostView,
+              activeSourceHostView !== newlyAttachedHost,
+              activeSourceHostView.window == nil,
+              newlyAttachedHost.window != nil,
+              !isPiPActive,
+              preparationState != .starting else { return }
+        preparationTask?.cancel()
+        preparationTask = nil
+        startGeneration &+= 1
+        stopPiPInternal(origin: .controllerReplacement)
+        FloeLogger(category: .app).debug(
+            "pictureInPictureDetachedSourceReplaced phase=active"
+        )
     }
 
     private func scheduleAutomaticPreparationIfNeeded() {
@@ -244,19 +571,17 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         preparationTask = Task { @MainActor [weak self] in
             await self?.prepareInlineSource(
                 title: title,
-                initialProgress: progress,
-                startAfterPreparation: false
+                initialProgress: progress
             )
         }
     }
 
-    /// Prepares a real inline sample-buffer source. Manual preparation starts
-    /// immediately after readiness; automatic preparation only arms AVKit for
-    /// the user's later Home/app-switch gesture.
+    /// Prepares a real inline sample-buffer source. Readiness never starts PiP
+    /// asynchronously: a manual flow needs a second tap, while automatic mode
+    /// only arms AVKit for a later Home/app-switch gesture.
     private func prepareInlineSource(
         title: String,
-        initialProgress: String,
-        startAfterPreparation: Bool
+        initialProgress: String
     ) async {
         guard !Task.isCancelled, hasRunContext else { return }
         startGeneration &+= 1
@@ -266,7 +591,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         guidanceImage = nil
         guidanceHints = []
         stopPiPInternal(origin: .controllerReplacement)
-        manualStartAttemptCount = 0
+        manualStartTracker.reset()
         isPreparingPiP = true
         preparationState = .renderingContent
         lastError = nil
@@ -332,7 +657,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         )
         let controller = AVPictureInPictureController(contentSource: source)
         controller.delegate = self
-        controller.canStartPictureInPictureAutomaticallyFromInline = automaticallyStartsFromInline
+        controller.canStartPictureInPictureAutomaticallyFromInline =
+            automaticallyStartsFromInline
+                && lifecyclePolicy.allowsAutomaticStartFromInline
         controller.requiresLinearPlayback = true
         sampleBufferLayer = layer
         activeSourceHostView = hostView
@@ -362,30 +689,42 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             lastError = "AVKit 尚未允许画中画，请稍后从任务工具栏重试"
             return
         }
+        let avKitAlreadyPromotingSource = preparationState == .starting
+            || preparationState == .active
         isPiPPrepared = true
-        preparationState = .prepared
+        if !avKitAlreadyPromotingSource {
+            preparationState = .prepared
+            lifecyclePolicy.preparationDidBecomeReady(
+                automaticallyStartsFromInline: automaticallyStartsFromInline
+            )
+            controller.canStartPictureInPictureAutomaticallyFromInline =
+                automaticallyStartsFromInline
+                    && lifecyclePolicy.allowsAutomaticStartFromInline
+        }
         lastError = nil
         FloeLogger(category: .app).info(
-            "pictureInPicturePrepared generation=\(generation) source=inlineSampleBuffer automaticFromInline=\(automaticallyStartsFromInline) manualStartRequested=\(startAfterPreparation)"
+            "pictureInPicturePrepared generation=\(generation) source=inlineSampleBuffer automaticFromInline=\(automaticallyStartsFromInline) transition=\(lifecyclePolicy.automaticTransition.rawValue)"
         )
-        if automaticallyStartsFromInline {
+        if !avKitAlreadyPromotingSource,
+           automaticallyStartsFromInline,
+           lifecyclePolicy.allowsAutomaticStartFromInline {
             // PiP background playback needs an active playback session before
             // the system handles the app-switch transition.
             configureAudioSession()
-        }
-        if startAfterPreparation {
-            startFromUserAction()
         }
     }
 
     /// Handles the visible PiP toolbar control. This is the only production
     /// entry point that may call AVKit's start method.
     func performManualControl() {
-        switch resolvedManualAction {
-        case .start:
-            if preparationState == .prepared {
-                startFromUserAction()
-            } else {
+        switch BackgroundPiPLifecyclePolicy.manualTapDecision(
+            preparationPhase: lifecyclePreparationPhase,
+            hasRunContext: hasRunContext
+        ) {
+        case .startSynchronously:
+            startFromUserAction()
+        case .prepareOnly:
+            if preparationState == .idle || preparationState == .failed {
                 let title = currentTitle
                 let progress = currentProgress
                 isPreparingPiP = true
@@ -394,26 +733,12 @@ final class BackgroundVideoService: NSObject, ObservableObject {
                 preparationTask = Task { @MainActor [weak self] in
                     await self?.prepareInlineSource(
                         title: title,
-                        initialProgress: progress,
-                        startAfterPreparation: true
+                        initialProgress: progress
                     )
                 }
             }
         case .stop:
             stopFromUserAction()
-        case .retryPreparation:
-            let title = currentTitle
-            let progress = currentProgress
-            isPreparingPiP = true
-            preparationState = .renderingContent
-            preparationTask?.cancel()
-            preparationTask = Task { @MainActor [weak self] in
-                await self?.prepareInlineSource(
-                    title: title,
-                    initialProgress: progress,
-                    startAfterPreparation: true
-                )
-            }
         case .none:
             FloeLogger(category: .app).info(
                 "pictureInPictureManualControlIgnored state=\(preparationState.rawValue)"
@@ -459,9 +784,10 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         }
         configureAudioSession()
         preparationState = .starting
-        manualStartAttemptCount += 1
+        let attempt = manualStartTracker.begin()
+        lifecyclePolicy.manualStartRequested()
         FloeLogger(category: .app).info(
-            "pictureInPictureStartRequested generation=\(startGeneration) source=userControl attempt=\(manualStartAttemptCount)"
+            "pictureInPictureStartRequested generation=\(startGeneration) source=userControl attempt=\(attempt)"
         )
         controller.startPictureInPicture()
         let generation = startGeneration
@@ -478,6 +804,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             self.isPiPPrepared = true
             self.preparationState = .prepared
             self.lastError = "系统没有完成画中画启动，请再次点击重试"
+            self.manualStartTracker.settle()
+            self.lifecyclePolicy.clearStartTracking()
+            self.pendingStopOrigin = .none
             self.deactivateAudioSession()
             FloeLogger(category: .app).warning(
                 "pictureInPictureStartTimedOut generation=\(generation)"
@@ -495,6 +824,16 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     /// Returning to Floe retracts the floating surface without destroying the
     /// prepared content source. Starting it again still requires another tap.
     func retractForForeground() {
+        lifecyclePolicy.requestForegroundRetraction(
+            startPending: preparationState == .starting
+        )
+        if preparationState == .starting {
+            pendingStopOrigin = .foregroundRetraction
+            FloeLogger(category: .app).info(
+                "pictureInPictureForegroundRetractionDeferred state=starting"
+            )
+            return
+        }
         guard let controller = pipController, controller.isPictureInPictureActive else { return }
         pendingStopOrigin = .foregroundRetraction
         controller.stopPictureInPicture()
@@ -582,9 +921,12 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         currentProgress = ""
         hasRunContext = false
         automaticallyStartsFromInline = false
+        lifecyclePolicy.setAutomaticStartEnabled(false, sourceReady: false)
     }
 
-    private func stopPiPInternal(origin: StopOrigin) {
+    private func stopPiPInternal(origin: BackgroundPiPStopOrigin) {
+        deferredSourceDetachTask?.cancel()
+        deferredSourceDetachTask = nil
         refreshTask?.cancel()
         refreshTask = nil
         startTimeoutTask?.cancel()
@@ -630,7 +972,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         isPiPPrepared = false
         preparationState = .idle
         pendingStopOrigin = .none
-        manualStartAttemptCount = 0
+        manualStartTracker.reset()
+        lifecyclePolicy.clearStartTracking()
         deactivateAudioSession()
     }
 
@@ -652,8 +995,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     private func handlePiPStopped(controllerID: ObjectIdentifier) {
         guard let currentController = pipController,
               ObjectIdentifier(currentController) == controllerID else { return }
-        if pendingStopOrigin == .foregroundRetraction
-            || pendingStopOrigin == .manualControl {
+        let stopOrigin = pendingStopOrigin
+        if stopOrigin == .foregroundRetraction
+            || stopOrigin == .manualControl {
             startTimeoutTask?.cancel()
             startTimeoutTask = nil
             possibleObservation?.invalidate()
@@ -668,9 +1012,16 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             sampleBufferLayer = nil
             activeSourceHostView = nil
             preparationState = .idle
+            lifecyclePolicy.clearStartTracking()
             deactivateAudioSession()
             FloeLogger(category: .app).info("pictureInPictureIntentionalStopCompleted")
-            scheduleAutomaticPreparationIfNeeded()
+            if stopOrigin.suppressesCurrentBatch {
+                automaticallyStartsFromInline = false
+                lifecyclePolicy.setAutomaticStartEnabled(false, sourceReady: false)
+                onUserStopped?()
+            } else if stopOrigin.allowsAutomaticRepreparation {
+                scheduleAutomaticPreparationIfNeeded()
+            }
             return
         }
         refreshTask?.cancel()
@@ -691,20 +1042,26 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         preparationState = .idle
         pendingStopOrigin = .none
         automaticallyStartsFromInline = false
+        lifecyclePolicy.setAutomaticStartEnabled(false, sourceReady: false)
+        lifecyclePolicy.clearStartTracking()
         deactivateAudioSession()
         onUserStopped?()
     }
 
     private func availableSourceHost() -> BackgroundPiPSourceHostView? {
-        sourceHostViews.allObjects.first { hostView in
-            guard let scene = hostView.window?.windowScene else { return false }
-            return !hostView.isHidden
-                && hostView.alpha > 0.01
-                && hostView.bounds.width >= 16
-                && hostView.bounds.height >= 9
-                && (scene.activationState == .foregroundActive
-                    || scene.activationState == .foregroundInactive)
-        }
+        sourceHostViews.allObjects.first(where: isAvailableSourceHost)
+    }
+
+    private func isAvailableSourceHost(
+        _ hostView: BackgroundPiPSourceHostView
+    ) -> Bool {
+        guard let scene = hostView.window?.windowScene else { return false }
+        return !hostView.isHidden
+            && hostView.alpha > 0.01
+            && hostView.bounds.width >= 16
+            && hostView.bounds.height >= 9
+            && (scene.activationState == .foregroundActive
+                || scene.activationState == .foregroundInactive)
     }
 
     /// AVKit readiness is KVO-backed. Keep the bounded wait as the control
@@ -1037,7 +1394,29 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
     nonisolated func pictureInPictureControllerWillStartPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
     ) {
-        FloeLogger(category: .app).info("pictureInPictureWillStart")
+        let controllerID = ObjectIdentifier(pictureInPictureController)
+        let markStarting = { @MainActor [weak self] in
+            guard let self,
+                  self.pipController.map(ObjectIdentifier.init) == controllerID else {
+                return
+            }
+            self.lifecyclePolicy.willStart(
+                manualRequestPending: self.manualStartTracker.isPending
+            )
+            self.preparationState = .starting
+            self.isPiPPrepared = true
+            FloeLogger(category: .app).info(
+                "pictureInPictureWillStart phase=\(self.lifecyclePolicy.effectivePhase.rawValue) origin=\(self.lifecyclePolicy.startOrigin?.rawValue ?? "unknown")"
+            )
+        }
+        // AVKit documents delegate delivery on the main thread in practice.
+        // Apply synchronously there so SwiftUI host dismantling cannot observe
+        // the stale `prepared` state between willStart and didStart.
+        if Thread.isMainThread {
+            MainActor.assumeIsolated(markStarting)
+        } else {
+            Task { @MainActor in markStarting() }
+        }
     }
 
     nonisolated func pictureInPictureControllerDidStartPictureInPicture(
@@ -1051,18 +1430,27 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
                 )
                 return
             }
+            let shouldStopForForeground = self.lifecyclePolicy
+                .didStartRequiresImmediateStop()
             self.isPiPActive = true
             self.preparationState = .active
             self.isPreparingPiP = false
             self.startTimeoutTask?.cancel()
             self.startTimeoutTask = nil
-            let startSource = self.manualStartAttemptCount > 0
+            let startSource = self.manualStartTracker.isPending
                 ? "userControl" : "systemAutomaticInline"
-            self.manualStartAttemptCount = 0
+            self.manualStartTracker.settle()
             self.lastError = nil
             FloeLogger(category: .app).info(
                 "pictureInPictureDidStart source=\(startSource) inlineHostAttached=\(self.activeSourceHostView?.window != nil)"
             )
+            if shouldStopForForeground {
+                self.pendingStopOrigin = .foregroundRetraction
+                self.pipController?.stopPictureInPicture()
+                FloeLogger(category: .app).info(
+                    "pictureInPictureLateStartRetracted phase=\(self.lifecyclePolicy.effectivePhase.rawValue) source=\(startSource)"
+                )
+            }
         }
     }
 
@@ -1101,7 +1489,7 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
             self.startTimeoutTask?.cancel()
             self.startTimeoutTask = nil
             FloeLogger(category: .app).error(
-                "pictureInPictureStartFailed domain=\(nsError.domain) code=\(nsError.code) attempt=\(self.manualStartAttemptCount)"
+                "pictureInPictureStartFailed domain=\(nsError.domain) code=\(nsError.code) attempt=\(self.manualStartTracker.attemptSerial)"
             )
             self.lastError = "画中画启动失败：\(error.localizedDescription)"
             // Keep the content source prepared. A later retry can only come
@@ -1109,6 +1497,9 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
             self.isPiPActive = false
             self.isPiPPrepared = true
             self.preparationState = .prepared
+            self.manualStartTracker.settle()
+            self.lifecyclePolicy.clearStartTracking()
+            self.pendingStopOrigin = .none
             self.deactivateAudioSession()
         }
     }

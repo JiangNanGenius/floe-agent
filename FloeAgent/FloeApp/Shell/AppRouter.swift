@@ -28,11 +28,73 @@ enum WorkbenchSelection: Hashable, Sendable {
     case conversation(UUID)
 }
 
+/// Pure per-window lifecycle bookkeeping. `AppRouter` remains shared navigation
+/// state, while every WindowGroup content instance supplies its own stable ID.
+/// Removing a scene drops its last phase so a discarded foreground window can
+/// never keep the app-wide aggregate falsely active.
+struct AppScenePhaseAggregation: Sendable, Equatable {
+    private(set) var phasesBySceneID: [String: PolicyScenePhase] = [:]
+
+    static func effectivePhase(
+        for phases: [PolicyScenePhase]
+    ) -> PolicyScenePhase {
+        if phases.contains(.active) { return .active }
+        if phases.contains(.inactive) { return .inactive }
+        // No remaining window is equivalent to app-wide background for
+        // resources shared across scenes (SSH/VNC owners in particular).
+        return .background
+    }
+
+    var effectivePhase: PolicyScenePhase {
+        Self.effectivePhase(for: Array(phasesBySceneID.values))
+    }
+
+    /// Returns the new aggregate only when this scene report changes it.
+    /// Callers can therefore keep app-wide resources stable when a background
+    /// window coexists with another active window.
+    @discardableResult
+    mutating func report(
+        _ phase: PolicyScenePhase,
+        sceneID: String
+    ) -> PolicyScenePhase? {
+        let previousEffectivePhase = effectivePhase
+        phasesBySceneID[sceneID] = phase
+        let newEffectivePhase = effectivePhase
+        return newEffectivePhase == previousEffectivePhase ? nil : newEffectivePhase
+    }
+
+    struct Removal: Sendable, Equatable {
+        var removedPhase: PolicyScenePhase
+        /// The new aggregate, or nil when another scene keeps it unchanged.
+        var effectivePhaseChange: PolicyScenePhase?
+    }
+
+    @discardableResult
+    mutating func remove(sceneID: String) -> Removal? {
+        let previousEffectivePhase = effectivePhase
+        guard let removedPhase = phasesBySceneID.removeValue(forKey: sceneID) else {
+            return nil
+        }
+        let newEffectivePhase = effectivePhase
+        return Removal(
+            removedPhase: removedPhase,
+            effectivePhaseChange: newEffectivePhase == previousEffectivePhase
+                ? nil
+                : newEffectivePhase
+        )
+    }
+}
+
 /// Navigation state and background-policy wiring for the whole app.
 /// Views bind to this; they never hold policy or selection state of their own.
 @MainActor
 final class AppRouter: ObservableObject {
     private var hasExplicitLaunchTarget = false
+    private var scenePhaseAggregation = AppScenePhaseAggregation()
+    /// Remote session owners are app-wide. Serialize effective scene changes
+    /// so a slow background suspension cannot finish after a newer foreground
+    /// reconciliation and leave the shared owners paused.
+    private var remoteScenePhaseTask: Task<Void, Never>?
 
     // MARK: - Selection
 
@@ -154,11 +216,6 @@ final class AppRouter: ObservableObject {
         columnVisibility = .doubleColumn
     }
 
-    /// Stable per-scene identifier used for iPad multi-scene background
-    /// accounting. Each scene creates its own router, so a per-router UUID
-    /// is a per-scene identifier.
-    let sceneID: String = UUID().uuidString
-
     // MARK: - Background policy
 
     /// Runtime-selected background policy (see Platform/).
@@ -189,11 +246,53 @@ final class AppRouter: ObservableObject {
     /// Feeds a SwiftUI scene-phase transition into the background policy
     /// and reconciles remote sessions (suspend on background, reconcile on
     /// active). The center owns the honest session lifecycle.
-    func handleScenePhase(_ phase: ScenePhase, environment: AppEnvironment) {
-        backgroundPolicy.handleScenePhase(policyPhase(for: phase), sceneID: sceneID)
+    func handleScenePhase(
+        _ phase: ScenePhase,
+        sceneID: String,
+        environment: AppEnvironment
+    ) {
+        let reportedPhase = policyPhase(for: phase)
+        let effectivePhaseChange = scenePhaseAggregation.report(
+            reportedPhase,
+            sceneID: sceneID
+        )
+        backgroundPolicy.handleScenePhase(reportedPhase, sceneID: sceneID)
         environment.backgroundRunCoordinator.handleScenePhase(phase, sceneID: sceneID)
-        let center = environment.remoteSessionCenter
-        Task { @MainActor in
+        if let effectivePhaseChange {
+            enqueueRemoteScenePhase(
+                effectivePhaseChange,
+                center: environment.remoteSessionCenter
+            )
+        }
+    }
+
+    /// SwiftUI normally publishes `.background` before discarding a scene, but
+    /// scene destruction is not required to preserve that callback ordering.
+    /// Explicitly downgrade the coordinator's existing per-ID entry before
+    /// removing our own record so no stale `.active` value survives the window.
+    func removeScene(sceneID: String, environment: AppEnvironment) {
+        guard let removal = scenePhaseAggregation.remove(sceneID: sceneID) else { return }
+        backgroundPolicy.handleScenePhase(.background, sceneID: sceneID)
+        environment.backgroundRunCoordinator.handleScenePhase(
+            .background,
+            sceneID: sceneID
+        )
+        if let effectivePhaseChange = removal.effectivePhaseChange {
+            enqueueRemoteScenePhase(
+                effectivePhaseChange,
+                center: environment.remoteSessionCenter
+            )
+        }
+    }
+
+    private func enqueueRemoteScenePhase(
+        _ phase: PolicyScenePhase,
+        center: RemoteSessionCenter
+    ) {
+        let precedingTask = remoteScenePhaseTask
+        remoteScenePhaseTask = Task { @MainActor in
+            await precedingTask?.value
+            guard !Task.isCancelled else { return }
             switch phase {
             case .background:
                 await center.handleScenePhase(.background)
@@ -201,8 +300,6 @@ final class AppRouter: ObservableObject {
                 await center.handleScenePhase(.active)
             case .inactive:
                 await center.handleScenePhase(.inactive)
-            @unknown default:
-                break
             }
         }
     }

@@ -152,6 +152,8 @@ struct RunLaunchStoreTests {
         #expect(prepared.workspace.id == workspace.id)
         #expect(try await conversations.conversation(id: prepared.conversation.id) != nil)
         #expect(try await runs.run(id: prepared.run.id)?.conversationID == prepared.conversation.id)
+        #expect(prepared.run.conversationMode == "goal")
+        #expect(try await runs.run(id: prepared.run.id)?.conversationMode == "goal")
         let messages = try await conversations.messages(conversationID: prepared.conversation.id)
         #expect(messages.count == 1)
         #expect(messages[0].runID == prepared.run.id)

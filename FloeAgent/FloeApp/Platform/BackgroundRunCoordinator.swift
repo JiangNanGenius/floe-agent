@@ -13,6 +13,71 @@ extension Notification.Name {
     static let floeOpenConversation = Notification.Name("org.floeagent.open-conversation")
 }
 
+struct BackgroundExecutionSurfaceTransition: Sendable, Equatable {
+    var stopsPictureInPicture: Bool
+    var stopsScreenShare: Bool
+    var preparesPictureInPicture: Bool
+    var requestsScreenShareAuthorization: Bool
+}
+
+/// Why a provider/media workload began. Continued-processing requests are
+/// legal only for work that still traces to an explicit in-app user action;
+/// every launch, schedule and automatic continuation path fails closed.
+enum ContinuedProcessingStartOrigin: String, Sendable, CaseIterable, Equatable {
+    case explicitUserAction
+    case foregroundRecovery
+    case scheduledTask
+    case goalContinuation
+    case queuedInput
+    case externalAutomation
+    case automaticTool
+
+    var allowsContinuedSubmission: Bool { self == .explicitUserAction }
+}
+
+/// Pure bookkeeping used by the coordinator and its regression tests. The
+/// first registration owns a run's origin so a duplicate recovery callback
+/// cannot upgrade automatic work into user-eligible work.
+struct ContinuedProcessingEligibilityState<RunID: Hashable> {
+    private(set) var runOrigins: [RunID: ContinuedProcessingStartOrigin] = [:]
+
+    @discardableResult
+    mutating func registerRun(
+        _ id: RunID,
+        origin: ContinuedProcessingStartOrigin
+    ) -> Bool {
+        guard runOrigins[id] == nil else { return false }
+        runOrigins[id] = origin
+        return true
+    }
+
+    mutating func finishRun(_ id: RunID) { runOrigins[id] = nil }
+
+    func origin(forRun id: RunID) -> ContinuedProcessingStartOrigin? {
+        runOrigins[id]
+    }
+
+    var hasEligibleWork: Bool {
+        runOrigins.values.contains(where: \.allowsContinuedSubmission)
+    }
+}
+
+/// Enforces the scheduler expiration ordering without depending on a system-
+/// constructed BGTask in tests. The managed check and sibling completion stay
+/// in one synchronous closure; persistence is deliberately the first await.
+@MainActor
+enum ContinuedProcessingExpirationSequence {
+    @discardableResult
+    static func runIfManaged(
+        drainAndCompleteIfManaged: () -> Bool,
+        persistRecoveryPoints: () async -> Void
+    ) async -> Bool {
+        guard drainAndCompleteIfManaged() else { return false }
+        await persistRecoveryPoints()
+        return true
+    }
+}
+
 /// App-lifetime owner for provider runs while views come and go. It writes
 /// recovery points before suspension, requests real iOS continued processing,
 /// and routes notification taps back to the durable task.
@@ -22,13 +87,18 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private struct ActiveRun {
         let conversationID: UUID
         let title: String
+        let continuedProcessingOrigin: ContinuedProcessingStartOrigin
         var stage: String = "正在运行"
         var progress: Int64 = 5
     }
     private var activeRuns: [UUID: ActiveRun] = [:]
+    private var continuedEligibility = ContinuedProcessingEligibilityState<UUID>()
     private var surfacedRunID: UUID?
     private var retainedPausedRun: (id: UUID, run: ActiveRun)?
-    private var isAppInBackground = false
+    // Match the fail-closed aggregate scene phase until SwiftUI reports a
+    // real active window. A first background callback may legitimately be a
+    // no-op transition, so both pieces of lifecycle state must start aligned.
+    private var isAppInBackground = true
     private var visualSurfacePolicy: BackgroundVisualSurfacePolicy
     private static let visualSurfacePolicyDefaultsKey = "backgroundVisualSurfacePolicy.v2"
     private var notifiedApprovalRuns: Set<UUID> = []
@@ -42,16 +112,211 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// those reports before touching the app-wide PiP surface so a secondary
     /// scene cannot repeatedly start/retract it while another scene is active.
     private var scenePhases: [String: ScenePhase] = [:]
-    private var effectiveScenePhase: ScenePhase = .active
+    // Fail closed until at least one real SwiftUI scene reports foreground.
+    // Background wakes and cold-launch restoration happen before that report.
+    private var effectiveScenePhase: ScenePhase = .background
     private var activeProcessingTaskID: UUID?
-    private lazy var mediaDownloads = MediaArtifactDownloadCoordinator(database: environment.database)
+    private lazy var mediaDownloads = MediaArtifactDownloadCoordinator(
+        database: environment.database
+    )
     @available(iOS 26.0, *)
-    private var continuedTask: BGContinuedProcessingTask?
+    private var continuedTasksByIdentifier:
+        [String: [ObjectIdentifier: BGContinuedProcessingTask]] = [:]
 
     nonisolated static func shouldRequestContinuedProcessing(
         for preference: BackgroundExecutionPreference
     ) -> Bool {
         preference == .standard
+    }
+
+    nonisolated static func shouldKeepContinuedProcessing(
+        for preference: BackgroundExecutionPreference,
+        launchPreferencesLoaded: Bool
+    ) -> Bool {
+        launchPreferencesLoaded
+            && shouldRequestContinuedProcessing(for: preference)
+    }
+
+    nonisolated static func shouldSubmitContinuedProcessing(
+        for preference: BackgroundExecutionPreference,
+        launchPreferencesLoaded: Bool,
+        origin: ContinuedProcessingStartOrigin,
+        hasAggregateForegroundScene: Bool
+    ) -> Bool {
+        origin.allowsContinuedSubmission
+            && hasAggregateForegroundScene
+            && shouldKeepContinuedProcessing(
+                for: preference,
+                launchPreferencesLoaded: launchPreferencesLoaded
+            )
+    }
+
+    /// Provider media jobs are durable and resume through BGAppRefresh,
+    /// BGProcessing and the background URLSession. They do not expose real
+    /// continuous progress, so they must never create or retain a system
+    /// continued-processing Live Activity, regardless of their caller.
+    nonisolated static func shouldSubmitContinuedProcessingForMediaGeneration(
+        origin: ContinuedProcessingStartOrigin
+    ) -> Bool {
+        _ = origin
+        return false
+    }
+
+    nonisolated static func visualSurfaceTransition(
+        for preference: BackgroundExecutionPreference
+    ) -> BackgroundExecutionSurfaceTransition {
+        switch preference {
+        case .standard:
+            BackgroundExecutionSurfaceTransition(
+                stopsPictureInPicture: true,
+                stopsScreenShare: true,
+                preparesPictureInPicture: false,
+                requestsScreenShareAuthorization: false
+            )
+        case .pictureInPicture:
+            BackgroundExecutionSurfaceTransition(
+                stopsPictureInPicture: false,
+                stopsScreenShare: true,
+                preparesPictureInPicture: true,
+                requestsScreenShareAuthorization: false
+            )
+        case .screenShare:
+            BackgroundExecutionSurfaceTransition(
+                stopsPictureInPicture: true,
+                stopsScreenShare: false,
+                preparesPictureInPicture: false,
+                requestsScreenShareAuthorization: false
+            )
+        }
+    }
+
+    nonisolated static func shouldReconcileVisualSurface(
+        hasActiveRuns: Bool,
+        hasRetainedPausedRun: Bool
+    ) -> Bool {
+        hasActiveRuns || hasRetainedPausedRun
+    }
+
+    /// Settings are live, not just launch defaults. A continued-processing
+    /// task is a system Live Activity, so changing to either visual mode must
+    /// complete an already accepted task immediately.
+    func backgroundExecutionPreferenceDidChange(
+        to preference: BackgroundExecutionPreference
+    ) {
+        if #available(iOS 26.0, *) {
+            if Self.shouldKeepContinuedProcessing(
+                for: preference,
+                launchPreferencesLoaded:
+                    environment.settingsCenter.launchPreferencesLoaded
+            ) {
+                if let active = activeRuns.values.first(where: {
+                    $0.continuedProcessingOrigin.allowsContinuedSubmission
+                }) {
+                    requestContinuedProcessingIfEligible(
+                        origin: active.continuedProcessingOrigin,
+                        workload: "settingsRunReconcile",
+                        title: active.title,
+                        stage: active.stage,
+                        progress: active.progress
+                    )
+                } else {
+                    // Preference restoration and automatic-only workloads
+                    // cannot retain a stale Live Activity from another run.
+                    finishContinuedTasks(success: true)
+                }
+            } else {
+                finishContinuedTasks(success: true)
+                FloeLogger(category: .app).info(
+                    "continuedProcessingFinished reason=preferenceChanged preference=\(preference.rawValue)"
+                )
+            }
+        }
+
+        // With no active or resumable workload there cannot be a live surface
+        // to reconcile. Besides being a no-op, touching the lazy screen-share
+        // stack during launch preference restoration could construct the
+        // conversation center while AppEnvironment is still warming up.
+        guard Self.shouldReconcileVisualSurface(
+            hasActiveRuns: !activeRuns.isEmpty,
+            hasRetainedPausedRun: retainedPausedRun != nil
+        ) else { return }
+
+        // Reconcile the visual surface in the same main-actor turn as the
+        // preference publication. Changing settings never starts PiP and never
+        // presents ReplayKit authorization; it only prepares/stops surfaces the
+        // user has already selected.
+        let transition = Self.visualSurfaceTransition(for: preference)
+        if transition.stopsPictureInPicture {
+            surfacedRunID = nil
+            pipCarouselTask?.cancel()
+            pipCarouselTask = nil
+            environment.backgroundVideoService.stop()
+        }
+        if transition.stopsScreenShare {
+            if environment.screenShareCenter.isSharing
+                || environment.screenShareCenter.isWaitingForBroadcast {
+                environment.screenShareCenter.stopSharing()
+            }
+        }
+        if transition.preparesPictureInPicture {
+            guard let candidate = activeRuns.sorted(by: {
+                $0.key.uuidString < $1.key.uuidString
+            }).first else { return }
+            surfacedRunID = candidate.key
+            environment.backgroundVideoService.setRunContext(
+                title: candidate.value.title,
+                progress: "\(candidate.value.stage) · \(candidate.value.progress)%",
+                automaticallyStartsFromInline: true
+            )
+        }
+        assert(!transition.requestsScreenShareAuthorization)
+        // Deliberately do not call requestBroadcast here. ReplayKit's system
+        // consent remains tied to a subsequent explicit run action.
+    }
+
+    private var hasAggregateForegroundScene: Bool {
+        effectiveScenePhase == .active && scenePhases.values.contains(.active)
+    }
+
+    func continuedProcessingOrigin(forRunID runID: UUID) -> ContinuedProcessingStartOrigin {
+        continuedEligibility.origin(forRun: runID) ?? .automaticTool
+    }
+
+    /// The only path that may submit a BGContinuedProcessingRequest. Keeping
+    /// the origin and aggregate-scene checks together prevents a future
+    /// caller from accidentally treating a background wake as user intent.
+    @discardableResult
+    func requestContinuedProcessingIfEligible(
+        origin: ContinuedProcessingStartOrigin,
+        workload: String,
+        title: String? = nil,
+        stage: String = "正在运行",
+        progress: Int64 = 5
+    ) -> Bool {
+        let preference = environment.settingsCenter.backgroundExecution
+        let loaded = environment.settingsCenter.launchPreferencesLoaded
+        guard Self.shouldSubmitContinuedProcessing(
+            for: preference,
+            launchPreferencesLoaded: loaded,
+            origin: origin,
+            hasAggregateForegroundScene: hasAggregateForegroundScene
+        ) else {
+            if !Self.shouldKeepContinuedProcessing(
+                for: preference,
+                launchPreferencesLoaded: loaded
+            ), #available(iOS 26.0, *) {
+                finishContinuedTasks(success: true)
+            }
+            FloeLogger(category: .app).info(
+                "continuedProcessingSkipped workload=\(workload) origin=\(origin.rawValue) foreground=\(hasAggregateForegroundScene) preference=\(preference.rawValue) loaded=\(loaded)"
+            )
+            return false
+        }
+        if #available(iOS 26.0, *), let title {
+            updateContinuedTask(title: title, stage: stage, progress: progress)
+        }
+        BackgroundPolicyRegistry.shared.requestContinuedProcessing()
+        return true
     }
 
     init(environment: AppEnvironment) {
@@ -86,7 +351,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         UNUserNotificationCenter.current().delegate = self
     }
 
-    func didStart(conversationID: UUID, runID: UUID, title: String) {
+    func didStart(
+        conversationID: UUID,
+        runID: UUID,
+        title: String,
+        origin: ContinuedProcessingStartOrigin
+    ) {
         // Session publication and launch recovery can report the same durable
         // run more than once. Re-preparing PiP for that duplicate stopped the
         // player that was still loading, so no generation ever reached ready.
@@ -100,7 +370,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // first task, never during a cold app launch. This keeps onboarding,
         // App Intents discovery and settings inspection free of an unrelated
         // system prompt.
-        if activeRuns.isEmpty {
+        if activeRuns.isEmpty,
+           origin.allowsContinuedSubmission,
+           hasAggregateForegroundScene {
             Task {
                 _ = try? await UNUserNotificationCenter.current()
                     .requestAuthorization(options: [.alert, .sound, .badge])
@@ -111,28 +383,20 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         )
         persistVisualSurfacePolicy()
         retainedPausedRun = nil
-        activeRuns[runID] = ActiveRun(conversationID: conversationID, title: title)
-        FloeLogger(category: .app).info(
-            "backgroundRunStarted run=\(runID.uuidString) conversation=\(conversationID.uuidString) preference=\(environment.settingsCenter.backgroundExecution.rawValue) activeRuns=\(activeRuns.count)"
+        activeRuns[runID] = ActiveRun(
+            conversationID: conversationID,
+            title: title,
+            continuedProcessingOrigin: origin
         )
-        if Self.shouldRequestContinuedProcessing(
-            for: environment.settingsCenter.backgroundExecution
-        ) {
-            if #available(iOS 26.0, *) {
-                updateContinuedTask(title: title, stage: "正在运行", progress: 5)
-            }
-            BackgroundPolicyRegistry.shared.requestContinuedProcessing()
-        } else {
-            if #available(iOS 26.0, *) {
-                // A continued task accepted from an earlier standard-mode run
-                // must not remain as a Live Activity after the user selects a
-                // visual background mode.
-                finishContinuedTask(success: true)
-            }
-            FloeLogger(category: .app).info(
-                "continuedProcessingSkipped reason=visualBackgroundPreference preference=\(environment.settingsCenter.backgroundExecution.rawValue)"
-            )
-        }
+        _ = continuedEligibility.registerRun(runID, origin: origin)
+        FloeLogger(category: .app).info(
+            "backgroundRunStarted run=\(runID.uuidString) conversation=\(conversationID.uuidString) origin=\(origin.rawValue) preference=\(environment.settingsCenter.backgroundExecution.rawValue) activeRuns=\(activeRuns.count)"
+        )
+        requestContinuedProcessingIfEligible(
+            origin: origin,
+            workload: "conversationRun",
+            title: title
+        )
         applyBackgroundExecutionPreference(
             runID: runID,
             conversationID: conversationID,
@@ -147,7 +411,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         active.stage = stage
         active.progress = progress
         activeRuns[runID] = active
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, *),
+           active.continuedProcessingOrigin.allowsContinuedSubmission {
             updateContinuedTask(title: "Floe Agent", stage: stage, progress: progress)
         }
         if surfacedRunID == runID {
@@ -164,7 +429,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         active.progress = max(active.progress, 60)
         activeRuns[runID] = active
         retainedPausedRun = (runID, active)
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, *),
+           active.continuedProcessingOrigin.allowsContinuedSubmission {
             updateContinuedTask(title: active.title, stage: message, progress: active.progress)
         }
         if surfacedRunID == runID {
@@ -177,6 +443,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     func didFinish(runID: UUID, succeeded: Bool, message: String?) {
         guard let finished = activeRuns.removeValue(forKey: runID) else { return }
+        continuedEligibility.finishRun(runID)
         visualSurfacePolicy.finishRun(runID)
         persistVisualSurfacePolicy()
         FloeLogger(category: .app).info(
@@ -201,8 +468,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 body: message ?? (succeeded ? "Floe Agent 已完成任务。" : "打开任务查看并恢复。")
             )
         }
-        if #available(iOS 26.0, *), activeRuns.isEmpty {
-            finishContinuedTask(success: succeeded)
+        if #available(iOS 26.0, *), !continuedEligibility.hasEligibleWork {
+            finishContinuedTasks(success: succeeded)
         }
         if surfacedRunID == runID, !activeRuns.isEmpty {
             surfacedRunID = nil
@@ -377,7 +644,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     func didRequireApproval(conversationID: UUID, runID: UUID, toolName: String) {
         guard notifiedApprovalRuns.insert(runID).inserted else { return }
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, *),
+           activeRuns[runID]?.continuedProcessingOrigin.allowsContinuedSubmission == true {
             updateContinuedTask(title: "Floe Agent", stage: "等待你的审批", progress: 60)
         }
         if surfacedRunID == runID {
@@ -416,36 +684,60 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     @available(iOS 26.0, *)
     private func acceptContinuedTask(_ task: BGContinuedProcessingTask) {
-        guard Self.shouldRequestContinuedProcessing(
-            for: environment.settingsCenter.backgroundExecution
-        ) else {
-            // A request submitted before the user changed modes can be handed
-            // back later. Complete it immediately so it cannot revive a Live
-            // Activity alongside PiP or screen sharing.
-            task.progress.totalUnitCount = 100
-            task.progress.completedUnitCount = 100
-            task.setTaskCompleted(success: true)
+        let handleID = ObjectIdentifier(task)
+        var handles = continuedTasksByIdentifier[task.identifier] ?? [:]
+        guard handles[handleID] == nil else { return }
+        handles[handleID] = task
+        continuedTasksByIdentifier[task.identifier] = handles
+
+        guard Self.shouldKeepContinuedProcessing(
+            for: environment.settingsCenter.backgroundExecution,
+            launchPreferencesLoaded:
+                environment.settingsCenter.launchPreferencesLoaded
+        ), continuedEligibility.hasEligibleWork else {
+            // A cold-launch callback can arrive while SettingsCenter still has
+            // its in-memory `.standard` default. Fail closed until the stored
+            // preference has been restored so no transient Live Activity is
+            // shown for a PiP/screen-share user.
+            finishContinuedTasks(success: true)
             FloeLogger(category: .app).info(
-                "backgroundTaskAcceptanceSkipped kind=continued reason=visualBackgroundPreference preference=\(environment.settingsCenter.backgroundExecution.rawValue)"
+                "backgroundTaskAcceptanceSkipped kind=continued reason=noEligibleUserWorkOrPreference preference=\(environment.settingsCenter.backgroundExecution.rawValue) loaded=\(environment.settingsCenter.launchPreferencesLoaded)"
             )
             return
         }
-        continuedTask = task
         task.progress.totalUnitCount = 100
-        task.progress.completedUnitCount = activeRuns.isEmpty ? 100 : 5
+        task.progress.completedUnitCount = continuedEligibility.hasEligibleWork ? 5 : 100
         FloeLogger(category: .app).info(
-            "backgroundTaskAccepted kind=continued activeRuns=\(activeRuns.count)"
+            "backgroundTaskAccepted kind=continued identifier=\(task.identifier) activeRuns=\(activeRuns.count) handles=\(continuedTaskHandleCount)"
         )
         task.expirationHandler = { [weak self, weak task] in
             Task { @MainActor in
-                guard let self else { return }
-                await self.environment.conversationCenter.persistActiveRecoveryPoints()
-                task?.setTaskCompleted(success: false)
-                if self.continuedTask === task { self.continuedTask = nil }
+                guard let self, let task else { return }
+                await ContinuedProcessingExpirationSequence.runIfManaged(
+                    drainAndCompleteIfManaged: {
+                        guard self.containsContinuedTask(task) else {
+                            // A sibling expiration or another terminal path
+                            // already drained this handle. Repeated callbacks
+                            // are intentionally idempotent.
+                            return false
+                        }
+                        // The scheduler may deliver more than one legacy or
+                        // racing identifier. Complete every sibling before the
+                        // first suspension point so no Live Activity can be
+                        // orphaned by slow/hung recovery-point persistence.
+                        self.finishContinuedTasks(success: false)
+                        return true
+                    },
+                    persistRecoveryPoints: { [weak self] in
+                        guard let self else { return }
+                        await self.environment.conversationCenter
+                            .persistActiveRecoveryPoints()
+                    }
+                )
             }
         }
-        if activeRuns.isEmpty {
-            finishContinuedTask(success: true)
+        if !continuedEligibility.hasEligibleWork {
+            finishContinuedTasks(success: true)
         } else {
             task.updateTitle("Floe Agent", subtitle: "正在后台继续任务")
         }
@@ -453,15 +745,49 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     @available(iOS 26.0, *)
     private func updateContinuedTask(title: String, stage: String, progress: Int64) {
-        continuedTask?.updateTitle(title, subtitle: stage)
-        continuedTask?.progress.completedUnitCount = min(95, max(1, progress))
+        guard Self.shouldKeepContinuedProcessing(
+            for: environment.settingsCenter.backgroundExecution,
+            launchPreferencesLoaded:
+                environment.settingsCenter.launchPreferencesLoaded
+        ) else {
+            // Every update site shares this last-line gate. A stale callback
+            // from progress/suspension/approval therefore cannot resurrect or
+            // keep updating a Live Activity after the mode changed.
+            finishContinuedTasks(success: true)
+            FloeLogger(category: .app).debug(
+                "continuedProcessingUpdateSkipped reason=visualBackgroundPreference preference=\(environment.settingsCenter.backgroundExecution.rawValue)"
+            )
+            return
+        }
+        for task in continuedTasksByIdentifier.values.flatMap(\.values) {
+            task.updateTitle(title, subtitle: stage)
+            task.progress.completedUnitCount = min(95, max(1, progress))
+        }
     }
 
     @available(iOS 26.0, *)
-    private func finishContinuedTask(success: Bool) {
-        continuedTask?.progress.completedUnitCount = 100
-        continuedTask?.setTaskCompleted(success: success)
-        continuedTask = nil
+    private var continuedTaskHandleCount: Int {
+        continuedTasksByIdentifier.values.reduce(0) { $0 + $1.count }
+    }
+
+    @available(iOS 26.0, *)
+    private func containsContinuedTask(_ task: BGContinuedProcessingTask) -> Bool {
+        continuedTasksByIdentifier[task.identifier]?[ObjectIdentifier(task)] != nil
+    }
+
+    @available(iOS 26.0, *)
+    private func finishContinuedTasks(success: Bool) {
+        let tasks = continuedTasksByIdentifier.values.flatMap(\.values)
+        continuedTasksByIdentifier.removeAll()
+        _ = BackgroundPolicyRegistry.shared.completeAllContinuedTaskHandles()
+        for task in tasks {
+            task.progress.totalUnitCount = 100
+            task.progress.completedUnitCount = 100
+            task.setTaskCompleted(success: success)
+        }
+        // Also cancel submitted-but-not-yet-accepted requests, including stale
+        // concrete identifiers discoverable from a previous process.
+        BackgroundPolicyRegistry.shared.cancelContinuedProcessingRequests()
     }
 
     func handleScenePhase(_ phase: ScenePhase, sceneID: String) {
@@ -474,6 +800,15 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         } else {
             effective = .background
         }
+        let pipPhase: BackgroundPiPEffectiveScenePhase = switch effective {
+        case .active: .active
+        case .inactive: .inactive
+        case .background: .background
+        @unknown default: .inactive
+        }
+        // Publish the reconciled app-wide phase before SwiftUI dismantles an
+        // inline source host during the same transition.
+        environment.backgroundVideoService.updateEffectiveScenePhase(pipPhase)
         guard effective != effectiveScenePhase else { return }
         effectiveScenePhase = effective
         visualSurfacePolicy.recordSceneTransition()
@@ -663,6 +998,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// processing wakeups. Provider task IDs are already durable before this
     /// method runs, so cancellation can only delay progress, not lose work.
     func reconcilePendingMediaJobs(now: Date = Date()) async {
+        // Generated-image reservations share this retry path with durable
+        // provider jobs. A Canvas or database that is temporarily unavailable
+        // at launch is therefore retried on foreground, refresh and processing
+        // wakeups instead of waiting for the next process launch. The media
+        // service skips batches that are still active in this process, and its
+        // reconciliation does not call back into this coordinator.
+        await environment.mediaGenerationService
+            .reconcileGeneratedAssetReservations()
         let store = MediaGenerationJobStore(database: environment.database)
         guard let jobs = try? await store.dueJobs(at: now) else { return }
         for job in jobs where !Task.isCancelled {
@@ -751,7 +1094,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                         title: schedule.title,
                         provider: provider,
                         model: model,
-                        workspaceID: schedule.workspaceID
+                        workspaceID: schedule.workspaceID,
+                        startOrigin: .scheduledTask
                     )
                     try await store.markStarted(id: schedule.id, at: Date())
                 } catch {
@@ -802,31 +1146,260 @@ final class MediaArtifactBackgroundEvents: @unchecked Sendable {
     }
 }
 
+/// Validates provider cardinality before image bytes can reach the file system
+/// or asset database. In particular, an unexpected fifth image is an error,
+/// not something callers are allowed to silently truncate.
+enum MediaGenerationImageBatchContract {
+    static let maximumImageBytes = 24 * 1_024 * 1_024
+
+    static func validatedImages(
+        _ images: [Data],
+        requestedOutputCount: Int
+    ) throws -> [Data] {
+        let expected = max(1, min(requestedOutputCount, 4))
+        guard images.count == expected else {
+            throw FloeError.validationFailed(
+                "图片服务应返回 \(expected) 张图片，但实际返回 \(images.count) 张；本次没有保存部分结果，请从配置节点重试。"
+            )
+        }
+        guard images.allSatisfy({ $0.count <= maximumImageBytes }) else {
+            throw FloeError.validationFailed("生成图片超过 24 MiB。")
+        }
+        return images
+    }
+}
+
+enum MediaGenerationAssetReusePolicy {
+    static func generatedRelativePath(assetID: UUID, isPNG: Bool) -> String {
+        "Materials/\(assetID.uuidString)-generated.\(isPNG ? "png" : "jpg")"
+    }
+
+    static func localURL(
+        relativePath: String,
+        applicationSupportRoot: URL
+    ) throws -> URL {
+        let root = applicationSupportRoot.appendingPathComponent(
+            "FloeAgent", isDirectory: true
+        ).standardizedFileURL.resolvingSymlinksInPath()
+        let url = root.appendingPathComponent(relativePath)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        guard !relativePath.isEmpty,
+              !relativePath.hasPrefix("/"),
+              !relativePath.contains(".."),
+              url.path.hasPrefix(root.path + "/") else {
+            throw FloeError.validationFailed(
+                "Generated asset path escapes application support"
+            )
+        }
+        return url
+    }
+
+    static func usesThrowawayCandidatePath(
+        record: CreativeAssetRecord,
+        candidateID: UUID,
+        candidateRelativePath: String
+    ) -> Bool {
+        record.id != candidateID
+            && record.localRelativePath == candidateRelativePath
+    }
+
+    static func localReferenceIfAvailable(
+        for record: CreativeAssetRecord,
+        applicationSupportRoot: URL,
+        fileManager: FileManager = .default
+    ) -> CanvasAssetReference? {
+        guard let relativePath = record.localRelativePath,
+              let url = try? localURL(
+                relativePath: relativePath,
+                applicationSupportRoot: applicationSupportRoot
+              ),
+              fileManager.fileExists(atPath: url.path) else { return nil }
+        return CanvasAssetReference(
+            id: record.id,
+            contentHash: record.contentHash,
+            localRelativePath: relativePath,
+            mimeType: record.mimeType,
+            byteCount: record.byteCount,
+            sourceURL: record.sourceURL,
+            license: record.license
+        )
+    }
+}
+
+/// Tracks ownership of newly-created hash rows across interleaved generation
+/// requests. A reused provisional asset is deleted only after every request
+/// that received it has independently abandoned its claim.
+struct ProvisionalGeneratedAssetClaims {
+    private struct Entry {
+        var count: Int
+        var wasCommitted: Bool
+        var canonicalAssetID: UUID?
+        var wasCreatedByService: Bool
+    }
+
+    private var entries: [String: Entry] = [:]
+    var pendingClaims: [String: Int] { entries.mapValues(\.count) }
+
+    /// Registers all output hashes synchronously before the first persistence
+    /// await, closing the gap where another request could abandon and delete
+    /// a canonical row while this request is still resolving it.
+    mutating func registerReturnedHashes(_ contentHashes: [String]) {
+        for contentHash in contentHashes {
+            var entry = entries[contentHash] ?? Entry(
+                count: 0,
+                wasCommitted: false,
+                canonicalAssetID: nil,
+                wasCreatedByService: false
+            )
+            entry.count += 1
+            entries[contentHash] = entry
+        }
+    }
+
+    mutating func bindCanonicalAsset(
+        contentHash: String,
+        assetID: UUID,
+        wasInserted: Bool
+    ) {
+        guard var entry = entries[contentHash] else { return }
+        entry.canonicalAssetID = assetID
+        entry.wasCreatedByService = entry.wasCreatedByService || wasInserted
+        entries[contentHash] = entry
+    }
+
+    /// Resolves one claim per returned hash. Duplicate bytes in a batch
+    /// deliberately create multiple claims for the same canonical asset row.
+    mutating func resolveReturnedHashes(
+        _ contentHashes: [String],
+        deleteWhenUnclaimed: Bool
+    ) -> Set<UUID> {
+        var deletable = Set<UUID>()
+        for contentHash in contentHashes {
+            guard var entry = entries[contentHash], entry.count > 0 else { continue }
+            if !deleteWhenUnclaimed { entry.wasCommitted = true }
+            if entry.count == 1 {
+                entries.removeValue(forKey: contentHash)
+                if deleteWhenUnclaimed,
+                   !entry.wasCommitted,
+                   entry.wasCreatedByService,
+                   let assetID = entry.canonicalAssetID {
+                    deletable.insert(assetID)
+                }
+            } else {
+                entry.count -= 1
+                entries[contentHash] = entry
+            }
+        }
+        return deletable
+    }
+}
+
+struct GeneratedImageReservationOwner: Sendable, Hashable {
+    var canvasID: UUID
+    var documentID: UUID
+    var configurationNodeID: UUID
+    var generationAttemptID: String
+    var resultNodeIDs: [UUID]
+}
+
+struct ReservedGeneratedImageBatch: Sendable, Hashable {
+    var reservationID: UUID
+    var assets: [CanvasAssetReference]
+}
+
+enum GeneratedAssetReservationRecoveryDecision: Sendable, Hashable {
+    case finalize
+    case abandon
+    case retain
+}
+
+enum GeneratedAssetReservationRecoveryPolicy {
+    static func decision(
+        batch: GeneratedAssetReservationBatchRecord,
+        project: CanvasProject
+    ) -> GeneratedAssetReservationRecoveryDecision {
+        guard project.id == batch.canvasID else { return .retain }
+        guard let document = project.documents.first(where: {
+            $0.id == batch.documentID
+        }) else { return .abandon }
+
+        let nodesByID = Dictionary(
+            uniqueKeysWithValues: document.nodes.map { ($0.id, $0) }
+        )
+        let exactMatches = batch.slots.filter { slot in
+            guard let canonicalAssetID = slot.canonicalAssetID,
+                  let node = nodesByID[slot.resultNodeID] else { return false }
+            return node.asset?.id == canonicalAssetID
+                && node.metadata["generationAttemptID"]
+                    == batch.generationAttemptID
+        }.count
+        if batch.slots.count == batch.expectedCount,
+           exactMatches == batch.expectedCount {
+            return .finalize
+        }
+        if exactMatches > 0 { return .retain }
+
+        // A ready owner with no exact results is internally inconsistent, not
+        // proof that the reservation is unused. Preserve it for diagnosis.
+        if let configuration = nodesByID[batch.configurationNodeID],
+           configuration.metadata["generationAttemptID"]
+                == batch.generationAttemptID,
+           configuration.metadata["generationState"]
+                == CanvasGenerationTaskState.ready.rawValue {
+            return .retain
+        }
+        return .abandon
+    }
+}
+
+/// Main-actor activity guard for the actor-reentrant gap while the durable
+/// batch insert awaits the database. Registration happens synchronously before
+/// `persist` can suspend; a successful begin stays active until the caller
+/// explicitly finalizes or abandons the batch.
+@MainActor
+final class GeneratedAssetReservationActivityRegistry {
+    private var activeIDs = Set<UUID>()
+
+    func begin(
+        id: UUID,
+        persist: @MainActor () async throws -> Void
+    ) async throws {
+        activeIDs.insert(id)
+        do {
+            try await persist()
+        } catch {
+            activeIDs.remove(id)
+            throw error
+        }
+    }
+
+    func finish(id: UUID) {
+        activeIDs.remove(id)
+    }
+
+    func shouldReconcile(id: UUID) -> Bool {
+        !activeIDs.contains(id)
+    }
+}
+
 @MainActor
 final class MediaGenerationService {
     private unowned let environment: AppEnvironment
+    private let generatedAssetReservationActivity =
+        GeneratedAssetReservationActivityRegistry()
 
     init(environment: AppEnvironment) { self.environment = environment }
 
-    func generateImage(
-        prompt: String,
-        options: ImageGenerationOptions = .init()
-    ) async throws -> CanvasAssetReference {
-        guard let first = try await generateImages(prompt: prompt, options: options).first else {
-            throw RemoteImageError.invalidResponse("供应商没有返回图片。")
-        }
-        return first
-    }
-
-    /// Generates or edits one image batch and persists every returned image.
-    /// The old singular API remains as a compatibility wrapper, while canvas
-    /// generation uses this method so count/reference semantics are honest.
+    /// Generates or edits one exact-cardinality image batch and persists it.
+    /// The returned reservation token must be finalized only after the Canvas
+    /// project-file commit, or abandoned when publication fails.
     func generateImages(
         prompt: String,
         options: ImageGenerationOptions = .init(),
         sourceImages: [Data] = [],
-        modelID: UUID? = nil
-    ) async throws -> [CanvasAssetReference] {
+        modelID: UUID? = nil,
+        owner: GeneratedImageReservationOwner
+    ) async throws -> ReservedGeneratedImageBatch {
         let center = environment.conversationCenter
         let operation: RemoteImageOperation = sourceImages.isEmpty ? .generate : .edit
         let selected = modelID.flatMap { center.providerAndModel(modelID: $0) }
@@ -864,6 +1437,13 @@ final class MediaGenerationService {
             )
         }
         let requestedOutputCount = max(1, min(options.count, 4))
+        guard owner.resultNodeIDs.count == requestedOutputCount,
+              !owner.generationAttemptID.isEmpty,
+              Set(owner.resultNodeIDs).count == requestedOutputCount else {
+            throw FloeError.validationFailed(
+                "Generated asset reservation owner does not match the requested output count"
+            )
+        }
         let maximumOutputs = max(1, adapter.maximumOutputImages(
             modelRemoteID: model.remoteModelID
         ))
@@ -913,47 +1493,307 @@ final class MediaGenerationService {
         FloeLogger(category: .providers).info(
             "imageGenerationCompleted trace=\(traceID.uuidString) operation=\(operation.rawValue) provider=\(String(describing: provider.kind)) images=\(result.images.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
         )
-        guard !result.images.isEmpty else {
-            throw RemoteImageError.invalidResponse("供应商没有返回图片。")
-        }
-        let returnedImages = Array(result.images.prefix(max(1, min(options.count, 4))))
-        guard returnedImages.allSatisfy({ $0.count <= 24 * 1_024 * 1_024 }) else {
-            throw FloeError.validationFailed("生成图片超过 24 MiB。")
-        }
+        // This must remain above every file/database write. Otherwise a short
+        // or oversized provider response leaves zero-reference orphan assets.
+        let returnedImages = try MediaGenerationImageBatchContract.validatedImages(
+            result.images,
+            requestedOutputCount: requestedOutputCount
+        )
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true
         )
-        var assets: [CanvasAssetReference] = []
-        for (index, data) in returnedImages.enumerated() {
-            let assetID = UUID()
+        let reservationID = UUID()
+        let preparedImages = returnedImages.enumerated().map { index, data in
+            let candidateID = UUID()
             let isPNG = data.starts(with: [0x89, 0x50, 0x4E, 0x47])
-            let fileExtension = isPNG ? "png" : "jpg"
-            let relativePath = "Materials/\(assetID.uuidString)-generated.\(fileExtension)"
-            let destination = support.appendingPathComponent("FloeAgent/\(relativePath)")
-            try FileManager.default.createDirectory(
-                at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
+            return (
+                index: index,
+                data: data,
+                contentHash: SHA256.hash(data: data)
+                    .map { String(format: "%02x", $0) }.joined(),
+                isPNG: isPNG,
+                candidateID: candidateID,
+                candidateRelativePath: MediaGenerationAssetReusePolicy
+                    .generatedRelativePath(
+                        assetID: candidateID,
+                        isPNG: isPNG
+                    )
             )
-            try data.write(to: destination, options: .atomic)
-            let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-            try await environment.creativeAssetStore.save(CreativeAssetRecord(
-                id: assetID, contentHash: hash, kind: .image,
-                displayName: result.images.count > 1 ? "生成图片 \(index + 1)" : "生成图片",
-                mimeType: isPNG ? "image/png" : "image/jpeg",
-                localRelativePath: relativePath, cloudRecordName: nil,
-                byteCount: Int64(data.count), sourceURL: nil,
-                license: nil, tags: ["生成内容"], referenceCount: 0,
-                createdAt: Date(), updatedAt: Date()
-            ))
-            assets.append(CanvasAssetReference(
-                id: assetID, contentHash: hash,
-                localRelativePath: relativePath,
-                mimeType: isPNG ? "image/png" : "image/jpeg",
-                byteCount: Int64(data.count), sourceURL: nil,
-                license: nil
-            ))
         }
-        return assets
+        try await generatedAssetReservationActivity.begin(id: reservationID) {
+            try await environment.creativeAssetStore
+                .beginGeneratedAssetReservationBatch(
+                    id: reservationID,
+                    canvasID: owner.canvasID,
+                    documentID: owner.documentID,
+                    configurationNodeID: owner.configurationNodeID,
+                    generationAttemptID: owner.generationAttemptID,
+                    slots: preparedImages.map { prepared in
+                        GeneratedAssetReservationSlotDraft(
+                            index: prepared.index,
+                            resultNodeID: owner.resultNodeIDs[prepared.index],
+                            candidateAssetID: prepared.candidateID,
+                            contentHash: prepared.contentHash,
+                            candidateRelativePath: prepared.candidateRelativePath
+                        )
+                    }
+                )
+        }
+        var assets: [CanvasAssetReference] = []
+        var writtenURLs: [URL] = []
+        do {
+            for prepared in preparedImages {
+                let candidateDestination = try MediaGenerationAssetReusePolicy.localURL(
+                    relativePath: prepared.candidateRelativePath,
+                    applicationSupportRoot: support
+                )
+                try FileManager.default.createDirectory(
+                    at: candidateDestination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try prepared.data.write(to: candidateDestination, options: .atomic)
+                writtenURLs.append(candidateDestination)
+                var canonical = try await environment.creativeAssetStore
+                    .reserveGeneratedAsset(
+                        batchID: reservationID,
+                        slotIndex: prepared.index,
+                        candidate: CreativeAssetRecord(
+                    id: prepared.candidateID,
+                    contentHash: prepared.contentHash,
+                    kind: .image,
+                    displayName: result.images.count > 1
+                        ? "生成图片 \(prepared.index + 1)" : "生成图片",
+                    mimeType: prepared.isPNG ? "image/png" : "image/jpeg",
+                    localRelativePath: prepared.candidateRelativePath,
+                    byteCount: Int64(prepared.data.count),
+                    tags: ["生成内容"],
+                    referenceCount: 0
+                ))
+                if canonical.id == prepared.candidateID {
+                    // The durable reservation now owns this canonical file.
+                    // Batch abandonment/reconciliation decides its cleanup.
+                    writtenURLs.removeAll { $0 == candidateDestination }
+                }
+
+                let mustCanonicalizeCandidatePath = MediaGenerationAssetReusePolicy
+                    .usesThrowawayCandidatePath(
+                        record: canonical,
+                        candidateID: prepared.candidateID,
+                        candidateRelativePath: prepared.candidateRelativePath
+                    )
+                var reference = mustCanonicalizeCandidatePath ? nil
+                    : MediaGenerationAssetReusePolicy.localReferenceIfAvailable(
+                        for: canonical,
+                        applicationSupportRoot: support
+                    )
+                if reference != nil {
+                    if canonical.id != prepared.candidateID {
+                        try FileManager.default.removeItem(at: candidateDestination)
+                        writtenURLs.removeAll { $0 == candidateDestination }
+                    }
+                } else {
+                    // A reused row may outlive a missing local copy. Repair it
+                    // at the canonical asset ID path, never at this request's
+                    // throwaway candidate UUID path.
+                    let canonicalRelativePath = MediaGenerationAssetReusePolicy
+                        .generatedRelativePath(
+                            assetID: canonical.id,
+                            isPNG: prepared.isPNG
+                        )
+                    let canonicalDestination = try MediaGenerationAssetReusePolicy.localURL(
+                        relativePath: canonicalRelativePath,
+                        applicationSupportRoot: support
+                    )
+                    if canonicalDestination != candidateDestination {
+                        if FileManager.default.fileExists(
+                            atPath: canonicalDestination.path
+                        ) {
+                            try FileManager.default.removeItem(at: canonicalDestination)
+                        }
+                        try FileManager.default.moveItem(
+                            at: candidateDestination,
+                            to: canonicalDestination
+                        )
+                        writtenURLs.removeAll { $0 == candidateDestination }
+                        writtenURLs.append(canonicalDestination)
+                    }
+                    canonical.localRelativePath = canonicalRelativePath
+                    canonical.mimeType = prepared.isPNG ? "image/png" : "image/jpeg"
+                    canonical.byteCount = Int64(prepared.data.count)
+                    try await environment.creativeAssetStore.save(canonical)
+                    writtenURLs.removeAll { $0 == canonicalDestination }
+                    reference = CanvasAssetReference(
+                        id: canonical.id,
+                        contentHash: canonical.contentHash,
+                        localRelativePath: canonicalRelativePath,
+                        mimeType: canonical.mimeType,
+                        byteCount: canonical.byteCount,
+                        sourceURL: canonical.sourceURL,
+                        license: canonical.license
+                    )
+                }
+                guard let reference else {
+                    throw FloeError.storageCorrupted(
+                        "Generated image canonical asset has no readable local copy"
+                    )
+                }
+                assets.append(reference)
+            }
+        } catch {
+            await abandonGeneratedAssetReservation(id: reservationID)
+            for url in writtenURLs where FileManager.default.fileExists(atPath: url.path) {
+                try? FileManager.default.removeItem(at: url)
+            }
+            throw error
+        }
+        return ReservedGeneratedImageBatch(
+            reservationID: reservationID,
+            assets: assets
+        )
+    }
+
+    func markGeneratedAssetsReferenced(
+        _ batch: ReservedGeneratedImageBatch
+    ) async {
+        defer {
+            generatedAssetReservationActivity.finish(id: batch.reservationID)
+        }
+        do {
+            try await environment.creativeAssetStore
+                .finalizeGeneratedAssetReservationBatch(
+                    id: batch.reservationID
+                )
+        } catch {
+            // The Canvas file is already authoritative. Keep the ledger pending
+            // so launch recovery can finalize it without decrementing a live
+            // reference.
+            FloeLogger(category: .providers).warning(
+                "generatedAssetReservationFinalizeDeferred batch=\(batch.reservationID.uuidString)"
+            )
+        }
+    }
+
+    func discardUnreferencedGeneratedAssets(
+        _ batch: ReservedGeneratedImageBatch
+    ) async {
+        await abandonGeneratedAssetReservation(id: batch.reservationID)
+    }
+
+    func reconcileGeneratedAssetReservations() async {
+        let batches: [GeneratedAssetReservationBatchRecord]
+        do {
+            batches = try await environment.creativeAssetStore
+                .pendingGeneratedAssetReservationBatches()
+        } catch {
+            FloeLogger(category: .providers).warning(
+                "generatedAssetReservationReconcileDeferred reason=storeUnreadable"
+            )
+            return
+        }
+        for batch in batches where generatedAssetReservationActivity
+            .shouldReconcile(id: batch.id) {
+            let project: CanvasProject
+            do {
+                project = try WorkspaceCanvasRegistry.project(
+                    canvasID: batch.canvasID
+                )
+            } catch {
+                // A missing or unreadable Canvas is ambiguous until workspace
+                // and cloud restoration have completed. Retaining a reservation
+                // is safer than deleting a potentially live generated file.
+                FloeLogger(category: .providers).warning(
+                    "generatedAssetReservationRetained batch=\(batch.id.uuidString) reason=canvasUnreadable"
+                )
+                continue
+            }
+            switch GeneratedAssetReservationRecoveryPolicy.decision(
+                batch: batch,
+                project: project
+            ) {
+            case .finalize:
+                do {
+                    try await environment.creativeAssetStore
+                        .finalizeGeneratedAssetReservationBatch(id: batch.id)
+                } catch {
+                    FloeLogger(category: .providers).warning(
+                        "generatedAssetReservationReconcileDeferred batch=\(batch.id.uuidString) action=finalize"
+                    )
+                }
+            case .abandon:
+                await abandonGeneratedAssetReservation(id: batch.id)
+            case .retain:
+                FloeLogger(category: .providers).warning(
+                    "generatedAssetReservationRetained batch=\(batch.id.uuidString) reason=partialOrInconsistentCanvas"
+                )
+            }
+        }
+    }
+
+    private func abandonGeneratedAssetReservation(id: UUID) async {
+        defer { generatedAssetReservationActivity.finish(id: id) }
+        let abandonment: GeneratedAssetReservationAbandonment
+        do {
+            abandonment = try await environment.creativeAssetStore
+                .abandonGeneratedAssetReservationBatch(id: id)
+        } catch {
+            FloeLogger(category: .providers).warning(
+                "generatedAssetReservationReleaseDeferred batch=\(id.uuidString) reason=storageRejected"
+            )
+            return
+        }
+        await cleanupAbandonedGeneratedAssetReservation(
+            abandonment
+        )
+    }
+
+    private func cleanupAbandonedGeneratedAssetReservation(
+        _ abandonment: GeneratedAssetReservationAbandonment
+    ) async {
+        guard !abandonment.slots.isEmpty
+                || !abandonment.deletedLocalRelativePaths.isEmpty else { return }
+        let support: URL
+        do {
+            support = try FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: false
+            )
+        } catch {
+            return
+        }
+        let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
+            .standardizedFileURL
+
+        // Unbound and losing-deduplication candidates can never be a canonical
+        // Canvas reference. Their durable slot path makes post-crash cleanup
+        // deterministic.
+        for slot in abandonment.slots
+        where slot.canonicalAssetID != slot.candidateAssetID {
+            guard !slot.candidateRelativePath.contains("..") else { continue }
+            let url = root.appendingPathComponent(
+                slot.candidateRelativePath
+            ).standardizedFileURL
+            guard url.path.hasPrefix(root.path + "/"),
+                  FileManager.default.fileExists(atPath: url.path) else { continue }
+            try? FileManager.default.removeItem(at: url)
+        }
+
+        // The persistence transaction already proved provenance, zero
+        // references, and absence of committed owners before deleting each
+        // catalog row. Only those returned paths may now be unlinked.
+        for relativePath in abandonment.deletedLocalRelativePaths {
+            guard !relativePath.contains("..") else { continue }
+            let url = root.appendingPathComponent(relativePath).standardizedFileURL
+            guard url.path.hasPrefix(root.path + "/"),
+                  FileManager.default.fileExists(atPath: url.path) else { continue }
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                FloeLogger(category: .providers).warning(
+                    "generatedAssetCleanupDeferred reason=fileRemovalFailed"
+                )
+            }
+        }
     }
 
     /// Submits a video job using a write-before-publish protocol. The returned
@@ -1003,15 +1843,6 @@ final class MediaGenerationService {
                     jobID: job.id, remoteURL: resultURL
                 )
             }
-            if BackgroundRunCoordinator.shouldRequestContinuedProcessing(
-                for: environment.settingsCenter.backgroundExecution
-            ) {
-                BackgroundPolicyRegistry.shared.requestContinuedProcessing()
-            } else {
-                FloeLogger(category: .app).info(
-                    "continuedProcessingSkipped reason=visualBackgroundPreference workload=video preference=\(environment.settingsCenter.backgroundExecution.rawValue)"
-                )
-            }
             BackgroundPolicyRegistry.shared.scheduleMediaRefresh(
                 earliest: job.nextPollAt ?? Date().addingTimeInterval(60)
             )
@@ -1032,7 +1863,9 @@ final class MediaGenerationService {
         guard let job = try await store.job(id: jobID) else {
             throw MediaGenerationJobStoreError.missingJob(jobID)
         }
-        guard !job.state.isTerminal else { return }
+        guard !job.state.isTerminal else {
+            return
+        }
         guard let taskID = job.providerTaskID,
               let provider = try await environment.configurationStore.provider(id: job.providerID),
               let adapter = VideoProviderAdapterFactory().adapter(for: provider) else {

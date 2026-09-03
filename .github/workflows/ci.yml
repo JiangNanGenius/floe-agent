@@ -74,38 +74,14 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
             -resultBundlePath FloeAgent-AppRegressionTests.xcresult \
             -only-testing:FloeAppTests/CanvasTouchInteractionTests \
+            -only-testing:FloeAppTests/CanvasSavedImageBatchAtomicityTests \
             -only-testing:FloeAppTests/CanvasAgentToolContractTests \
             -only-testing:FloeAppTests/CrashAndFeedbackRegressionTests \
             -only-testing:FloeAppTests/ThreadTimelineTests \
             CODE_SIGNING_ALLOWED=NO \
             test
-          python3 - FloeAgent-AppRegressionTests.xcresult <<'PY'
-          import json
-          import subprocess
-          import sys
-
-          result_bundle = sys.argv[1]
-          summary = json.loads(subprocess.check_output(
-              [
-                  "xcrun", "xcresulttool", "get", "test-results", "summary",
-                  "--path", result_bundle, "--compact",
-              ],
-              text=True,
-          ))
-
-          def required_count(name: str) -> int:
-              value = summary.get(name)
-              if type(value) is not int:
-                  raise SystemExit(f"xcresult summary is missing integer {name}: {value!r}")
-              return value
-
-          total = required_count("totalTestCount")
-          passed = required_count("passedTests")
-          failed = required_count("failedTests")
-          print(f"canvas-pip-timeline-app-regression-summary total={total} passed={passed} failed={failed}")
-          if total < 34 or failed != 0 or passed != total:
-              raise SystemExit("Canvas, PiP, and timeline app regression focused test gate failed")
-          PY
+          python3 scripts/verify_app_regression_xcresult.py \
+            --result-bundle FloeAgent-AppRegressionTests.xcresult
 
       - name: SPM build (cross-platform targets)
         run: swift build
@@ -171,9 +147,10 @@ jobs:
           if-no-files-found: ignore
 
   appstore-sdk-compatibility:
-    # TestFlight distribution uses Xcode 27. Keep this independent Xcode 26.6
-    # compatibility gate so the explicit unsupported-Foundation-Models path
-    # and the rest of Floe's non-iOS-27 source cannot silently stop compiling.
+    # TestFlight upload currently rebuilds the exact release commit with the
+    # App Store-accepted Xcode 26.6 toolchain. Keep this independent gate so
+    # the explicit unsupported-Foundation-Models path and the rest of Floe's
+    # non-iOS-27 source cannot silently stop compiling.
     runs-on: macos-26
     defaults:
       run:

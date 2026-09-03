@@ -266,6 +266,7 @@ public enum CanvasCommandService {
             throw FloeError.validationFailed("Canvas document does not exist")
         }
         var document = project.documents[documentIndex]
+        let originalGenerationSources = generationSourceNodeIDs(in: document)
         try validate(patch.operations, document: document)
         var changedNodes = Set<UUID>()
         var changedConnections = Set<UUID>()
@@ -275,6 +276,11 @@ public enum CanvasCommandService {
                 changedNodes: &changedNodes, changedConnections: &changedConnections
             )
         }
+        synchronizeGenerationSourceMetadata(
+            originalSourceNodeIDs: originalGenerationSources,
+            document: &document,
+            changedNodes: &changedNodes
+        )
         document.updatedAt = Date()
         project.documents[documentIndex] = document
         let previousRevision = project.revision
@@ -286,6 +292,52 @@ public enum CanvasCommandService {
             changedNodeIDs: changedNodes.sorted { $0.uuidString < $1.uuidString },
             changedConnectionIDs: changedConnections.sorted { $0.uuidString < $1.uuidString }
         ))
+    }
+
+    /// Incoming `.source` edges are the canonical generation-input contract.
+    /// Keep the task's metadata fallback synchronized inside the same document
+    /// mutation so every caller (UI, agent tools, recovery planners) observes
+    /// one revision. Only tasks whose edge set actually changed are rewritten;
+    /// this preserves legacy metadata on documents that have never materialized
+    /// source edges.
+    private static func synchronizeGenerationSourceMetadata(
+        originalSourceNodeIDs: [UUID: Set<UUID>],
+        document: inout CanvasDocument,
+        changedNodes: inout Set<UUID>
+    ) {
+        let currentSourceNodeIDs = generationSourceNodeIDs(in: document)
+        for index in document.nodes.indices
+        where document.nodes[index].kind == .generationTask {
+            let taskID = document.nodes[index].id
+            let original = originalSourceNodeIDs[taskID] ?? []
+            let current = currentSourceNodeIDs[taskID] ?? []
+            guard original != current else { continue }
+            document.nodes[index].metadata["generationSourceNodeIDs"] = current
+                .sorted { $0.uuidString < $1.uuidString }
+                .map(\.uuidString)
+                .joined(separator: ",")
+            changedNodes.insert(taskID)
+        }
+    }
+
+    private static func generationSourceNodeIDs(
+        in document: CanvasDocument
+    ) -> [UUID: Set<UUID>] {
+        let generationTaskIDs = Set(document.nodes.compactMap { node in
+            node.kind == .generationTask ? node.id : nil
+        })
+        let nodeIDs = Set(document.nodes.map(\.id))
+        var values = Dictionary(
+            uniqueKeysWithValues: generationTaskIDs.map { ($0, Set<UUID>()) }
+        )
+        for connection in document.connections
+        where connection.kind == .source
+            && generationTaskIDs.contains(connection.destinationNodeID)
+            && nodeIDs.contains(connection.sourceNodeID) {
+            values[connection.destinationNodeID, default: []]
+                .insert(connection.sourceNodeID)
+        }
+        return values
     }
 
     private static func validate(
@@ -529,10 +581,11 @@ public enum CanvasGenerationContextResolver {
     }
 
     /// Resolves the provider inputs for both agent-driven generation and a
-    /// saved generation-task retry. Existing typed source edges and the task's
-    /// persisted source metadata are recovered before following only `.source`
-    /// ancestry. Ordinary arrows and generated-result edges never become
-    /// implicit provider context.
+    /// saved generation-task retry. When the caller does not declare sources,
+    /// existing typed source edges and the task's persisted source metadata are
+    /// recovered before following only `.source` ancestry. An explicit source
+    /// array (including an empty one) replaces that saved context. Ordinary
+    /// arrows and generated-result edges never become implicit provider context.
     public static func resolvedNodeIDs(
         requestedIDs: [UUID]?,
         fallbackIDs: [UUID] = [],
@@ -551,7 +604,8 @@ public enum CanvasGenerationContextResolver {
         var direct = Set(requestedIDs == nil && configurationNodeID == nil
             ? fallbackIDs.filter { nodesByID[$0] != nil }
             : requested)
-        if let configurationNodeID,
+        if requestedIDs == nil,
+           let configurationNodeID,
            let configuration = nodesByID[configurationNodeID],
            configuration.kind == .generationTask {
             direct.formUnion(document.connections.compactMap { connection in
@@ -565,6 +619,10 @@ public enum CanvasGenerationContextResolver {
                     .compactMap { UUID(uuidString: String($0)) }
                     .filter { nodesByID[$0] != nil }
             )
+        }
+        if let configurationNodeID,
+           let configuration = nodesByID[configurationNodeID],
+           configuration.kind == .generationTask {
             direct.remove(configurationNodeID)
             let ownedResults = Set(document.connections.compactMap { connection in
                 connection.kind == .generatedFrom
@@ -930,9 +988,56 @@ public enum CanvasGenerationGraphPlanner {
             }
         }
 
-        let existingEdges = Set(document.connections.map {
-            "\($0.kind.rawValue):\($0.sourceNodeID.uuidString)>\($0.destinationNodeID.uuidString)"
-        })
+        var disconnectedConnectionIDs = Set<UUID>()
+
+        // Incoming source edges are the canonical provider-input contract.
+        // Replace stale/duplicate edges on retry without deleting the source
+        // nodes themselves, otherwise a prior reference can leak back into the
+        // next request through context resolution.
+        let currentSourceIDs = Set(sourceIDs)
+        var retainedSourceIDs = Set<UUID>()
+        let existingSourceConnections = document.connections
+            .filter {
+                $0.kind == .source && $0.destinationNodeID == configurationNodeID
+            }
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+        for connection in existingSourceConnections {
+            let keepsCanonicalEdge = currentSourceIDs.contains(connection.sourceNodeID)
+                && retainedSourceIDs.insert(connection.sourceNodeID).inserted
+            if !keepsCanonicalEdge {
+                disconnectedConnectionIDs.insert(connection.id)
+                operations.append(CanvasPatchOperation(
+                    kind: .disconnect, connectionID: connection.id
+                ))
+            }
+        }
+
+        // A generation task owns only the result nodes named by its current
+        // generationResultNodeIDs metadata. Retries preserve prior artifacts,
+        // but detach their historical generatedFrom edges so the active task
+        // topology cannot silently grow from four outputs to eight, twelve, …
+        let currentResultIDs = Set(resultNodeIDs)
+        var retainedResultIDs = Set<UUID>()
+        let existingResultConnections = document.connections
+            .filter {
+                $0.kind == .generatedFrom && $0.sourceNodeID == configurationNodeID
+            }
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+        for connection in existingResultConnections {
+            let keepsCanonicalEdge = currentResultIDs.contains(connection.destinationNodeID)
+                && retainedResultIDs.insert(connection.destinationNodeID).inserted
+            if !keepsCanonicalEdge {
+                disconnectedConnectionIDs.insert(connection.id)
+                operations.append(CanvasPatchOperation(
+                    kind: .disconnect, connectionID: connection.id
+                ))
+            }
+        }
+        let existingEdges = Set(document.connections.lazy
+            .filter { !disconnectedConnectionIDs.contains($0.id) }
+            .map {
+                "\($0.kind.rawValue):\($0.sourceNodeID.uuidString)>\($0.destinationNodeID.uuidString)"
+            })
         for sourceID in sourceIDs where sourceID != configurationNodeID {
             let key = "\(CanvasConnectionKind.source.rawValue):\(sourceID.uuidString)>\(configurationNodeID.uuidString)"
             if !existingEdges.contains(key) {
@@ -1042,7 +1147,8 @@ public enum CanvasGenerationCommitPlanner {
         project: CanvasProject,
         documentID: UUID,
         configurationNodeID: UUID,
-        resultNodeID: UUID,
+        resultNodeIDs: [UUID],
+        sourceNodeIDs: [UUID]? = nil,
         generationAttemptID: String,
         operations: [CanvasPatchOperation]
     ) throws -> CanvasPatch {
@@ -1052,22 +1158,189 @@ public enum CanvasGenerationCommitPlanner {
         guard let document = project.documents.first(where: { $0.id == documentID }) else {
             throw FloeError.validationFailed("Canvas document does not exist")
         }
-        guard CanvasGenerationAttemptValidator.matches(
+        guard CanvasGenerationAttemptValidator.isActive(
             document: document,
             configurationNodeID: configurationNodeID,
-            resultNodeIDs: [resultNodeID],
+            resultNodeIDs: resultNodeIDs,
             generationAttemptID: generationAttemptID
         ) else {
             throw FloeError.validationFailed(
                 "Canvas generation attempt was superseded before its local result was committed"
             )
         }
+
+        guard Set(resultNodeIDs).count == resultNodeIDs.count else {
+            throw FloeError.validationFailed(
+                "Canvas generation result node ids must be unique"
+            )
+        }
+        let nodesByID = Dictionary(uniqueKeysWithValues: document.nodes.map { ($0.id, $0) })
+        let persistedSourceNodeIDs = nodesByID[configurationNodeID]?
+            .metadata["generationSourceNodeIDs"]?
+            .split(separator: ",")
+            .compactMap { UUID(uuidString: String($0)) } ?? []
+        var seenSourceNodeIDs = Set<UUID>()
+        let canonicalSourceNodeIDs = (sourceNodeIDs ?? persistedSourceNodeIDs)
+            .filter { $0 != configurationNodeID && seenSourceNodeIDs.insert($0).inserted }
+        guard canonicalSourceNodeIDs.allSatisfy({ nodesByID[$0] != nil }) else {
+            throw FloeError.validationFailed(
+                "Canvas generation source was removed before its local result was committed"
+            )
+        }
+
+        let canonicalResultNodeIDs = resultNodeIDs
+        let canonicalSourceSet = Set(canonicalSourceNodeIDs)
+        let canonicalResultSet = Set(canonicalResultNodeIDs)
+        let connectionsByID = Dictionary(
+            uniqueKeysWithValues: document.connections.map { ($0.id, $0) }
+        )
+
+        // Completion owns the generation topology. Ignore any caller-supplied
+        // operations for these same relationships, then rebuild them from the
+        // latest document in this one atomic patch. This closes the window in
+        // which a user can delete or redirect an edge while the provider is
+        // still returning its result.
+        var normalizedOperations = operations.filter { operation in
+            switch operation.kind {
+            case .connect:
+                if operation.connectionKind == .source,
+                   operation.destinationNodeID == configurationNodeID {
+                    return false
+                }
+                if operation.connectionKind == .generatedFrom,
+                   operation.sourceNodeID == configurationNodeID
+                    || operation.destinationNodeID.map(canonicalResultSet.contains) == true {
+                    return false
+                }
+                return true
+            case .disconnect:
+                guard let connectionID = operation.connectionID,
+                      let connection = connectionsByID[connectionID] else { return true }
+                if connection.kind == .source,
+                   connection.destinationNodeID == configurationNodeID {
+                    return false
+                }
+                if connection.kind == .generatedFrom,
+                   connection.sourceNodeID == configurationNodeID
+                    || canonicalResultSet.contains(connection.destinationNodeID) {
+                    return false
+                }
+                return true
+            default:
+                return true
+            }
+        }
+
+        var retainedSourceNodeIDs = Set<UUID>()
+        var retainedResultNodeIDs = Set<UUID>()
+        for connection in document.connections.sorted(by: {
+            $0.id.uuidString < $1.id.uuidString
+        }) {
+            if connection.kind == .source,
+               connection.destinationNodeID == configurationNodeID {
+                let keep = canonicalSourceSet.contains(connection.sourceNodeID)
+                    && retainedSourceNodeIDs.insert(connection.sourceNodeID).inserted
+                if !keep {
+                    normalizedOperations.append(CanvasPatchOperation(
+                        kind: .disconnect,
+                        connectionID: connection.id
+                    ))
+                }
+                continue
+            }
+            if connection.kind == .generatedFrom,
+               connection.sourceNodeID == configurationNodeID
+                || canonicalResultSet.contains(connection.destinationNodeID) {
+                let keep = connection.sourceNodeID == configurationNodeID
+                    && canonicalResultSet.contains(connection.destinationNodeID)
+                    && retainedResultNodeIDs.insert(connection.destinationNodeID).inserted
+                if !keep {
+                    normalizedOperations.append(CanvasPatchOperation(
+                        kind: .disconnect,
+                        connectionID: connection.id
+                    ))
+                }
+            }
+        }
+
+        for sourceNodeID in canonicalSourceNodeIDs
+        where !retainedSourceNodeIDs.contains(sourceNodeID) {
+            normalizedOperations.append(CanvasPatchOperation(
+                kind: .connect,
+                sourceNodeID: sourceNodeID,
+                destinationNodeID: configurationNodeID,
+                connectionKind: .source,
+                sourcePort: .trailing,
+                destinationPort: .leading,
+                label: "生成输入"
+            ))
+        }
+        for resultNodeID in canonicalResultNodeIDs
+        where !retainedResultNodeIDs.contains(resultNodeID) {
+            normalizedOperations.append(CanvasPatchOperation(
+                kind: .connect,
+                sourceNodeID: configurationNodeID,
+                destinationNodeID: resultNodeID,
+                connectionKind: .generatedFrom,
+                sourcePort: .trailing,
+                destinationPort: .leading,
+                label: "生成结果"
+            ))
+        }
+
+        let sourceList = canonicalSourceNodeIDs.map(\.uuidString).joined(separator: ",")
+        let resultList = canonicalResultNodeIDs.map(\.uuidString).joined(separator: ",")
+        normalizedOperations.append(CanvasPatchOperation(
+            kind: .update,
+            nodeID: configurationNodeID,
+            metadata: [
+                "generationSourceNodeIDs": sourceList,
+                "generationResultNodeIDs": resultList
+            ]
+        ))
+        normalizedOperations.append(contentsOf: canonicalResultNodeIDs.map { resultNodeID in
+            CanvasPatchOperation(
+                kind: .update,
+                nodeID: resultNodeID,
+                metadata: [
+                    "generationSourceNodeIDs": sourceList,
+                    "generationResultNodeIDs": resultList,
+                    "generationTaskNodeID": configurationNodeID.uuidString
+                ]
+            )
+        })
         return CanvasPatch(
             canvasID: project.id,
             documentID: documentID,
             expectedRevision: project.revision,
-            operations: operations
+            operations: normalizedOperations
         )
+    }
+}
+
+/// Produces the one atomic mutation used when cancelling a generation task and
+/// all of its prepared result nodes. Replacing the attempt token first makes a
+/// late provider response fail validation without requiring another cleanup
+/// write from the executor's cancellation handler.
+public enum CanvasGenerationCancellationPlanner {
+    public static func operations(
+        nodeIDs: [UUID],
+        cancelledAttemptID: String
+    ) -> [CanvasPatchOperation] {
+        guard !cancelledAttemptID.isEmpty else { return [] }
+        var seenNodeIDs = Set<UUID>()
+        return nodeIDs.filter { seenNodeIDs.insert($0).inserted }.map { nodeID in
+            CanvasPatchOperation(
+                kind: .update,
+                nodeID: nodeID,
+                metadata: [
+                    "generationAttemptID": cancelledAttemptID,
+                    "generationState": CanvasGenerationTaskState.cancelled.rawValue,
+                    "generationError": "",
+                    "generationErrorDetail": ""
+                ]
+            )
+        }
     }
 }
 

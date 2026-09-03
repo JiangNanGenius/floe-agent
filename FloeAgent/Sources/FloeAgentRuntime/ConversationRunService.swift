@@ -81,6 +81,9 @@ public actor ConversationRunService {
     /// Model identity used to rebuild the effective policy when permissions
     /// change during this run.
     public nonisolated let primaryModel: ModelProfile
+    /// Immutable execution contract copied into the durable run and live UI
+    /// projection. Recovery must never infer this from mutable conversation UI.
+    public nonisolated let conversationMode: ConversationMode
     /// Push channel for UI projections. Durable writes remain coalesced, but
     /// token/reasoning display no longer polls actor snapshots at 20 Hz.
     public nonisolated let eventChannel = HarnessEventChannel(bufferLimit: 512)
@@ -90,7 +93,6 @@ public actor ConversationRunService {
     private let runStore: any RunStore
     private let runningInputStore: (any RunningInputStore)?
     private let intelligenceStore: SQLiteIntelligenceStore?
-    private let conversationMode: ConversationMode
     private let secretForRedaction: String?
     private let streamedTextLimitBytes: Int
     /// Whether the selected model advertises native structured tool calling.
@@ -373,7 +375,8 @@ public actor ConversationRunService {
             conversationID: conversationID,
             state: AgentState.preparing(AgentState.PreparingInfo(goal: goal)).name,
             goal: goal,
-            startedAt: Date()
+            startedAt: Date(),
+            conversationMode: conversationMode.rawValue
         ))
         let userMessageID = UUID()
         try await conversationStore.appendMessage(PersistedMessage(

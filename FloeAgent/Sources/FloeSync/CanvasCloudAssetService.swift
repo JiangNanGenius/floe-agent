@@ -4,6 +4,34 @@ import CloudKit
 import FloeCore
 import FloePersistence
 
+enum CanvasCloudAssetLocalFileDeletion {
+    /// Removes only a file whose canonicalized location remains below Floe's
+    /// application-support root. Missing files are an idempotent success.
+    @discardableResult
+    static func remove(
+        relativePath: String,
+        under rootURL: URL,
+        fileManager: FileManager = .default
+    ) throws -> Bool {
+        let root = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        let candidate = root
+            .appendingPathComponent(relativePath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        guard !relativePath.isEmpty,
+              !relativePath.hasPrefix("/"),
+              candidate.path.hasPrefix(root.path + "/")
+        else {
+            throw FloeError.validationFailed(
+                "Cloud asset local path escapes application support"
+            )
+        }
+        guard fileManager.fileExists(atPath: candidate.path) else { return false }
+        try fileManager.removeItem(at: candidate)
+        return true
+    }
+}
+
 /// Deletes unreferenced canvas assets immediately from the private CloudKit
 /// zone and only clears the local release queue after a confirming fetch
 /// proves the remote record is gone.
@@ -49,9 +77,16 @@ public actor CanvasCloudAssetService {
                         error: "CloudKit 删除后仍能查询到该素材。"
                     )
                 } catch let error as CKError where error.code == .unknownItem {
-                    try await store.confirmRelease(
+                    let localRoot = try applicationSupportRootURL()
+                    _ = try await store.confirmRelease(
                         id: item.release.id, assetID: item.release.assetID,
-                        deleteLocalAfterRelease: item.release.deleteLocalAfterRelease
+                        deleteLocalAfterRelease: item.release.deleteLocalAfterRelease,
+                        deleteLocalFile: { relativePath in
+                            try CanvasCloudAssetLocalFileDeletion.remove(
+                                relativePath: relativePath,
+                                under: localRoot
+                            )
+                        }
                     )
                 }
             } catch {
@@ -208,11 +243,31 @@ public actor CanvasCloudAssetService {
     }
 
     private func materialURL(relativePath: String) throws -> URL {
+        let root = try applicationSupportRootURL()
+        let candidate = root
+            .appendingPathComponent(relativePath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        guard !relativePath.isEmpty,
+              !relativePath.hasPrefix("/"),
+              candidate.path.hasPrefix(root.path + "/")
+        else {
+            throw FloeError.validationFailed(
+                "Cloud asset local path escapes application support"
+            )
+        }
+        return candidate
+    }
+
+    private func applicationSupportRootURL() throws -> URL {
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true
         )
-        return support.appendingPathComponent("FloeAgent/\(relativePath)")
+        return support
+            .appendingPathComponent("FloeAgent", isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
     }
 
     private static func decodeOperation(_ record: CKRecord) -> CanvasSyncOperation? {

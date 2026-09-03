@@ -318,14 +318,16 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 providerID: resolvedProviderID,
                 modelID: resolvedModelID,
                 providerName: request.providerName,
-                modelName: request.modelName
+                modelName: request.modelName,
+                conversationMode: request.conversationMode
             )
             try db.execute(
                 sql: """
                     INSERT INTO runs (
                         id, conversation_id, state, goal, started_at, ended_at, goal_id,
-                        provider_id, model_id, provider_name_snapshot, model_name_snapshot
-                    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
+                        provider_id, model_id, provider_name_snapshot, model_name_snapshot,
+                        conversation_mode
+                    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     run.id.uuidString,
@@ -336,7 +338,8 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                     run.providerID?.uuidString,
                     run.modelID?.uuidString,
                     run.providerName,
-                    run.modelName
+                    run.modelName,
+                    run.conversationMode
                 ]
             )
 

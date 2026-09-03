@@ -72,7 +72,8 @@ public final class iPadBackgroundPolicy: PlatformBackgroundPolicy, @unchecked Se
         try? BGTaskScheduler.shared.submit(request)
     }
 
-    public func requestContinuedProcessing(_ kind: BackgroundTaskKind) {
+    @discardableResult
+    public func requestContinuedProcessing(_ kind: BackgroundTaskKind) -> String? {
         // The initiating scene's window may already be closed; progress is
         // presented via Live Activity and the Runs list (GRDB polling),
         // never bound to a single scene.
@@ -91,9 +92,9 @@ public final class iPadBackgroundPolicy: PlatformBackgroundPolicy, @unchecked Se
                 FloeLogger(category: .app).error(
                     "backgroundTaskRegistrationFailed kind=continued"
                 )
-                return
+                return nil
             }
-            let request = BGContinuedProcessingTaskRequest(
+            let request = ContinuedProcessingRequestFactory.make(
                 identifier: identifier,
                 title: "Floe Agent task",
                 subtitle: "Continuing in the background"
@@ -101,16 +102,51 @@ public final class iPadBackgroundPolicy: PlatformBackgroundPolicy, @unchecked Se
             do {
                 try BGTaskScheduler.shared.submit(request)
                 FloeLogger(category: .app).info(
-                    "backgroundTaskSubmissionSucceeded kind=continued"
+                    "backgroundTaskSubmissionSucceeded kind=continued identifier=\(identifier)"
                 )
+                return identifier
             } catch {
                 FloeLogger(category: .app).warning(
                     "backgroundTaskSubmissionFailed kind=continued error=\(error.localizedDescription)"
                 )
+                return nil
             }
         } else {
             let request = BGProcessingTaskRequest(identifier: BackgroundTaskKind.processing.rawValue)
-            try? BGTaskScheduler.shared.submit(request)
+            do {
+                try BGTaskScheduler.shared.submit(request)
+                return request.identifier
+            } catch {
+                return nil
+            }
+        }
+    }
+
+    public func cancelContinuedProcessingRequests(
+        _ identifiers: Set<String>,
+        discoverUntrackedRequests: Bool
+    ) {
+        for identifier in identifiers {
+            BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
+        }
+        guard discoverUntrackedRequests else { return }
+        let prefix = BackgroundTaskKind.continued.submissionIdentifierPrefix
+        BGTaskScheduler.shared.getPendingTaskRequests { requests in
+            let candidateIdentifiers = requests
+                .map(\.identifier)
+                .filter { $0.hasPrefix(prefix) }
+            // Requests can outlive the process that submitted them. Discover
+            // only Floe's continued namespace; never use cancelAllTaskRequests,
+            // which would also remove refresh/media recovery work.
+            Task { @MainActor in
+                for identifier in candidateIdentifiers where
+                    BackgroundPolicyRegistry.shared
+                        .shouldCancelDiscoveredContinuedProcessingRequest(identifier) {
+                    BGTaskScheduler.shared.cancel(
+                        taskRequestWithIdentifier: identifier
+                    )
+                }
+            }
         }
     }
 

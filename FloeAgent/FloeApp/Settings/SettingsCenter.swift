@@ -52,7 +52,18 @@ final class SettingsCenter: ObservableObject {
     @Published private(set) var vncDefaults: RemoteSessionDefaults = RemoteSessionDefaults()
     @Published private(set) var idleDisconnectMinutes: Int = 15
     @Published private(set) var runningInputMode: RunningInputMode = .queue
-    @Published private(set) var backgroundExecution: BackgroundExecutionPreference = .standard
+    @Published private(set) var launchPreferencesLoaded = false
+    @Published private(set) var backgroundExecution: BackgroundExecutionPreference = .standard {
+        didSet {
+            guard backgroundExecution != oldValue else { return }
+            // Both types live in FloeApp and AppEnvironment vends the
+            // coordinator lazily, so this does not introduce a package/module
+            // dependency cycle. Direct coordination also cannot miss a cold
+            // launch preference load the way a transient notification could.
+            environment.backgroundRunCoordinator
+                .backgroundExecutionPreferenceDidChange(to: backgroundExecution)
+        }
+    }
     /// Self-critique pass on the final answer before the run completes.
     @Published private(set) var verifyFinalAnswer: Bool = false
     /// Speech settings for TTS.
@@ -141,8 +152,21 @@ final class SettingsCenter: ObservableObject {
     /// back to their in-memory defaults after a cold launch.
     func loadLaunchPreferences() async {
         loadUserDefaults()
-        let values = (try? await settingsStore.allValues()) ?? [:]
+        guard let values = try? await settingsStore.allValues() else {
+            launchPreferencesLoaded = false
+            environment.backgroundRunCoordinator
+                .backgroundExecutionPreferenceDidChange(to: backgroundExecution)
+            FloeLogger(category: .app).warning(
+                "launchPreferencesUnavailable backgroundExecutionFailClosed=true"
+            )
+            return
+        }
         applyStoredValues(values)
+        launchPreferencesLoaded = true
+        // Reconcile even when the stored value equals the in-memory default:
+        // before this point a cold-launch continued task must fail closed.
+        environment.backgroundRunCoordinator
+            .backgroundExecutionPreferenceDidChange(to: backgroundExecution)
         FloeLogger(category: .app).info(
             "launchPreferencesLoaded agentMode=\(defaultAgentMode.rawValue) background=\(backgroundExecution.rawValue)"
         )

@@ -70,7 +70,8 @@ public final class iPhoneBackgroundPolicy: PlatformBackgroundPolicy, @unchecked 
         try? BGTaskScheduler.shared.submit(request)
     }
 
-    public func requestContinuedProcessing(_ kind: BackgroundTaskKind) {
+    @discardableResult
+    public func requestContinuedProcessing(_ kind: BackgroundTaskKind) -> String? {
         if #available(iOS 26.0, *), kind == .continued {
             let identifier = kind.submissionIdentifier
             let didRegister = BackgroundTaskRegistrar.register(identifier: identifier) { task in
@@ -86,9 +87,9 @@ public final class iPhoneBackgroundPolicy: PlatformBackgroundPolicy, @unchecked 
                 FloeLogger(category: .app).error(
                     "backgroundTaskRegistrationFailed kind=continued"
                 )
-                return
+                return nil
             }
-            let request = BGContinuedProcessingTaskRequest(
+            let request = ContinuedProcessingRequestFactory.make(
                 identifier: identifier,
                 title: "Floe Agent task",
                 subtitle: "Continuing in the background"
@@ -96,17 +97,52 @@ public final class iPhoneBackgroundPolicy: PlatformBackgroundPolicy, @unchecked 
             do {
                 try BGTaskScheduler.shared.submit(request)
                 FloeLogger(category: .app).info(
-                    "backgroundTaskSubmissionSucceeded kind=continued"
+                    "backgroundTaskSubmissionSucceeded kind=continued identifier=\(identifier)"
                 )
+                return identifier
             } catch {
                 FloeLogger(category: .app).warning(
                     "backgroundTaskSubmissionFailed kind=continued error=\(error.localizedDescription)"
                 )
+                return nil
             }
         } else {
             // Fallback: plain processing task.
             let request = BGProcessingTaskRequest(identifier: BackgroundTaskKind.processing.rawValue)
-            try? BGTaskScheduler.shared.submit(request)
+            do {
+                try BGTaskScheduler.shared.submit(request)
+                return request.identifier
+            } catch {
+                return nil
+            }
+        }
+    }
+
+    public func cancelContinuedProcessingRequests(
+        _ identifiers: Set<String>,
+        discoverUntrackedRequests: Bool
+    ) {
+        for identifier in identifiers {
+            BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
+        }
+        guard discoverUntrackedRequests else { return }
+        let prefix = BackgroundTaskKind.continued.submissionIdentifierPrefix
+        BGTaskScheduler.shared.getPendingTaskRequests { requests in
+            let candidateIdentifiers = requests
+                .map(\.identifier)
+                .filter { $0.hasPrefix(prefix) }
+            // A queued request may have been submitted by an earlier process.
+            // Prefix filtering keeps cleanup isolated from Floe's other BGTask
+            // categories and avoids the destructive cancel-all API.
+            Task { @MainActor in
+                for identifier in candidateIdentifiers where
+                    BackgroundPolicyRegistry.shared
+                        .shouldCancelDiscoveredContinuedProcessingRequest(identifier) {
+                    BGTaskScheduler.shared.cancel(
+                        taskRequestWithIdentifier: identifier
+                    )
+                }
+            }
         }
     }
 

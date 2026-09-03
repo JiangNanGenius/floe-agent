@@ -13,6 +13,12 @@ if ! git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null; then
     echo "error: release tag '$TAG' does not exist in this checkout" >&2
     exit 1
 fi
+SOURCE_SHA="$(git rev-parse HEAD)"
+TAG_SHA="$(git rev-parse "refs/tags/$TAG^{commit}")"
+if [[ "$SOURCE_SHA" != "$TAG_SHA" ]]; then
+    echo "error: checkout $SOURCE_SHA does not match release tag $TAG at $TAG_SHA" >&2
+    exit 1
+fi
 
 setting() {
     local key="$1"
@@ -54,6 +60,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
         echo "tag=$TAG"
         echo "version=$VERSION"
         echo "build=$BUILD"
+        echo "source_sha=$SOURCE_SHA"
         echo "bundle_id=$BUNDLE_ID"
         echo "previous_tag=$PREVIOUS_TAG"
         echo "asset_name=Floe-Agent-$VERSION-build$BUILD-unsigned.ipa"

@@ -61,13 +61,33 @@ enum RemoteImageHTTP {
 }
 
 /// Decodes a base64 or URL image payload from a provider response.
+private enum RemoteImageOutputObservationPolicy {
+    /// Providers are contractually capped at four requested outputs. Keep one
+    /// additional result visible so the service can reject over-production,
+    /// while preventing a malformed response from amplifying decode/download
+    /// memory without bound.
+    static let hardMaximumImages = 5
+
+    static func limit(requestedCount: Int) -> Int {
+        let expected = max(1, min(requestedCount, 4))
+        return min(expected + 1, hardMaximumImages)
+    }
+}
+
 enum RemoteImageDecoder {
-    private static let maximumImages = 4
     private static let maximumImageBytes = 12 * 1_024 * 1_024
 
-    static func images(from data: Data, b64Key: String, urlKey: String) async throws -> [Data] {
+    static func images(
+        from data: Data,
+        b64Key: String,
+        urlKey: String,
+        requestedCount: Int
+    ) async throws -> [Data] {
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        let items = (object?["data"] as? [[String: Any]] ?? []).prefix(maximumImages)
+        let items = object?["data"] as? [[String: Any]] ?? []
+        let observationLimit = RemoteImageOutputObservationPolicy.limit(
+            requestedCount: requestedCount
+        )
         var images: [Data] = []
         for item in items {
             if let b64 = item[b64Key] as? String, let decoded = Data(base64Encoded: b64) {
@@ -95,6 +115,7 @@ enum RemoteImageDecoder {
                 }
                 images.append(imageData)
             }
+            if images.count == observationLimit { break }
         }
         return images
     }
@@ -233,7 +254,12 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
             provider: "OpenAI",
             apiKey: credentials.apiKey
         )
-        let images = try await RemoteImageDecoder.images(from: data, b64Key: "b64_json", urlKey: "url")
+        let images = try await RemoteImageDecoder.images(
+            from: data,
+            b64Key: "b64_json",
+            urlKey: "url",
+            requestedCount: request.count
+        )
         return RemoteImageResult(images: images)
     }
 
@@ -292,7 +318,10 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
         )
         try RemoteImageHTTP.validate(response, data: data, provider: "OpenAI", apiKey: credentials.apiKey)
         return RemoteImageResult(images: try await RemoteImageDecoder.images(
-            from: data, b64Key: "b64_json", urlKey: "url"
+            from: data,
+            b64Key: "b64_json",
+            urlKey: "url",
+            requestedCount: request.count
         ))
     }
 }
@@ -401,12 +430,17 @@ public struct GoogleGeminiImageAdapter: ImageProviderAdapter {
             provider: "Google Gemini Images",
             apiKey: apiKey
         )
-        let decoded = try Self.decodeResponse(data)
+        let decoded = try Self.decodeResponse(
+            data,
+            maximumImages: RemoteImageOutputObservationPolicy.limit(
+                requestedCount: request.count
+            )
+        )
         guard !decoded.images.isEmpty else {
             throw RemoteImageError.invalidResponse("Google Gemini returned no image parts")
         }
         return RemoteImageResult(
-            images: Array(decoded.images.prefix(max(1, min(request.count, 4)))),
+            images: decoded.images,
             revisedPrompt: decoded.text.isEmpty ? nil : decoded.text,
             metadata: ["model": resolvedModel]
         )
@@ -436,7 +470,10 @@ public struct GoogleGeminiImageAdapter: ImageProviderAdapter {
         let imageSize: String?
     }
 
-    private static func decodeResponse(_ data: Data) throws -> (images: [Data], text: String) {
+    private static func decodeResponse(
+        _ data: Data,
+        maximumImages: Int
+    ) throws -> (images: [Data], text: String) {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw RemoteImageError.invalidResponse("Google Gemini returned invalid JSON")
         }
@@ -456,9 +493,9 @@ public struct GoogleGeminiImageAdapter: ImageProviderAdapter {
                     throw RemoteImageError.invalidResponse("Google Gemini image exceeds the 12 MiB limit")
                 }
                 images.append(image)
-                if images.count == 4 { break }
+                if images.count == maximumImages { break }
             }
-            if images.count == 4 { break }
+            if images.count == maximumImages { break }
         }
         return (images, text.joined(separator: "\n"))
     }
@@ -576,7 +613,12 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
         try RemoteImageHTTP.validate(
             response, data: data, provider: "Volcengine Ark", apiKey: credentials.apiKey
         )
-        let output = try await RemoteImageDecoder.images(from: data, b64Key: "b64_json", urlKey: "url")
+        let output = try await RemoteImageDecoder.images(
+            from: data,
+            b64Key: "b64_json",
+            urlKey: "url",
+            requestedCount: request.count
+        )
         guard !output.isEmpty else {
             throw RemoteImageError.invalidResponse("Volcengine returned no images")
         }
@@ -668,7 +710,11 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             provider: provider,
             credentials: credentials
         )
-        let images = try await downloadImages(imageURLs, providerHost: root.host)
+        let images = try await downloadImages(
+            imageURLs,
+            providerHost: root.host,
+            requestedCount: request.count
+        )
         guard !images.isEmpty else {
             throw RemoteImageError.invalidResponse("DashScope returned no images")
         }
@@ -754,7 +800,11 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             response, data: data, provider: "DashScope", apiKey: credentials.apiKey
         )
         let urls = try Self.multimodalImageURLs(from: data)
-        let images = try await downloadImages(urls, providerHost: root.host)
+        let images = try await downloadImages(
+            urls,
+            providerHost: root.host,
+            requestedCount: request.count
+        )
         guard !images.isEmpty else {
             throw RemoteImageError.invalidResponse("DashScope returned no images")
         }
@@ -942,9 +992,16 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
 
     // MARK: - Download
 
-    private func downloadImages(_ urls: [URL], providerHost: String?) async throws -> [Data] {
+    private func downloadImages(
+        _ urls: [URL],
+        providerHost: String?,
+        requestedCount: Int
+    ) async throws -> [Data] {
         var images: [Data] = []
-        for url in urls.prefix(4) {
+        let observationLimit = RemoteImageOutputObservationPolicy.limit(
+            requestedCount: requestedCount
+        )
+        for url in urls.prefix(observationLimit) {
             try Task.checkCancellation()
             guard Self.isAllowedResultURL(url, providerHost: providerHost) else {
                 throw RemoteImageError.invalidResponse("DashScope returned an unsafe image URL")
