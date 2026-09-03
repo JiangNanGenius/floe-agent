@@ -5,8 +5,8 @@ import SwiftUI
 import FloeCore
 
 /// Lets the user choose how an agent run stays alive when the app is
-/// backgrounded: standard lease + continued task, a Picture-in-Picture
-/// progress video, or screen sharing with an operation guide.
+/// backgrounded: continued processing, optional user-started PiP progress,
+/// or screen sharing with an operation guide.
 struct BackgroundExecutionSettingsView: View {
     @ObservedObject var center: SettingsCenter
     @ObservedObject var videoService: BackgroundVideoService
@@ -43,6 +43,9 @@ struct BackgroundExecutionSettingsView: View {
                             .foregroundStyle(FloeTheme.destructive)
                             .font(.footnote)
                     }
+                    Text("画中画不会因切换应用自动弹出。任务运行时，请从任务或画布工具栏手动启动；普通后台任务仍由系统后台处理继续。")
+                        .foregroundStyle(.secondary)
+                        .font(.footnote)
                 }
             }
         }

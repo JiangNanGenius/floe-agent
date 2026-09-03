@@ -3205,6 +3205,10 @@ struct WorkspaceCanvasView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack {
+                        BackgroundPiPToolbarButton(
+                            videoService: environment.backgroundVideoService,
+                            isRunActive: environment.backgroundVideoService.shouldOfferManualControl
+                        )
                         Menu {
                             CanvasNodeCreationMenu { kind in
                                 createNode(kind, at: canvasPoint(CGPoint(x: 520, y: 380)))

@@ -10,9 +10,8 @@ public enum BackgroundExecutionPreference: String, Sendable, Codable, CaseIterab
     /// The 30s completion lease plus an iOS 26 continued-processing task
     /// (progress on the Dynamic Island, checkpoint + resume). No extra UI.
     case standard
-    /// A Picture-in-Picture video that plays the run's progress; keeps the
-    /// app alive while the user leaves the PiP floating (translation-app
-    /// style — the video carries real content, so it passes review).
+    /// A user-started Picture-in-Picture surface that displays run progress.
+    /// Continued processing remains independent of the optional visual UI.
     case pictureInPicture
     /// Screen sharing with an on-screen operation guide; the Broadcast
     /// Upload Extension stays alive while the user is broadcasting.
@@ -24,7 +23,7 @@ public extension BackgroundExecutionPreference {
     var title: String {
         switch self {
         case .standard: return "普通后台任务"
-        case .pictureInPicture: return "画中画视频"
+        case .pictureInPicture: return "手动画中画"
         case .screenShare: return "屏幕共享引导"
         }
     }
@@ -33,8 +32,8 @@ public extension BackgroundExecutionPreference {
     var subtitle: String {
         switch self {
         case .standard: return "30 秒完成窗口 + 动态岛进度 + 检查点恢复"
-        case .pictureInPicture: return "浮窗播任务进度视频，切后台不断流"
-        case .screenShare: return "任务开始时自动打开系统共享授权；画中画显示任务进度或操作引导"
+        case .pictureInPicture: return "后台任务照常继续；可从任务或画布工具栏手动显示进度画中画"
+        case .screenShare: return "任务开始时打开系统共享授权；需要时可从工具栏手动显示进度画中画"
         }
     }
 }

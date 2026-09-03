@@ -464,6 +464,12 @@ struct ThreadDetailView: View {
             .accessibilityLabel("inspector.files")
         }
         ToolbarItem(placement: .topBarTrailing) {
+            BackgroundPiPToolbarButton(
+                videoService: environment.backgroundVideoService,
+                isRunActive: viewModel.isRunning
+            )
+        }
+        ToolbarItem(placement: .topBarTrailing) {
             if viewModel.isRunning {
                 Button(role: .destructive) {
                     Task { await viewModel.cancel() }

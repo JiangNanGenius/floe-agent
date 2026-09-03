@@ -57,11 +57,14 @@ struct CanvasAssetImportOutcome: Encodable {
 }
 
 actor CanvasToolCoordinator {
+    private static let generationCommitAttemptLimit = 4
+
     private let repository: any CanvasDocumentRepository
     private let assetStore: CreativeAssetStore
     private let assetIngestion: CreativeAssetIngestionService
     private let jobs: MediaGenerationJobStore
     private let runContexts: CanvasRunContextStore
+    private let logger = FloeLogger(category: .tools)
     private let conversationIDForRun: @Sendable (UUID) async throws -> UUID?
     private let generateImages: @Sendable (
         String, ImageGenerationOptions, [Data], UUID?
@@ -271,7 +274,8 @@ actor CanvasToolCoordinator {
             count: count, durationSeconds: durationSeconds,
             fingerprint: fingerprint, state: "running"
         )
-        graphMetadata["generationAttemptID"] = UUID().uuidString
+        let generationAttemptID = UUID().uuidString
+        graphMetadata["generationAttemptID"] = generationAttemptID
         graphMetadata["generationAttemptIndex"] = "1"
         let graph = try CanvasGenerationGraphPlanner.plan(
             request: CanvasGenerationGraphRequest(
@@ -294,6 +298,9 @@ actor CanvasToolCoordinator {
             canvasID: activeProject.id, documentID: targetDocumentID,
             expectedRevision: expectedRevision, operations: operations
         ))
+        logger.info(
+            "canvasGenerationPrepared attempt=\(generationAttemptID) kind=\(kind.rawValue) revision=\(prepared.revision)"
+        )
 
         do {
             if kind == .image {
@@ -311,6 +318,9 @@ actor CanvasToolCoordinator {
                 guard !assets.isEmpty else {
                     throw FloeError.internalError("Image provider returned no assets")
                 }
+                logger.info(
+                    "canvasGenerationProviderCompleted attempt=\(generationAttemptID) kind=image outputs=\(assets.count)"
+                )
                 var resultIDs = [graph.resultNodeID]
                 var resultOperations: [CanvasPatchOperation] = []
                 for (index, asset) in assets.enumerated() {
@@ -358,12 +368,25 @@ actor CanvasToolCoordinator {
                         "generationResultNodeIDs": resultIDs.map(\.uuidString).joined(separator: ",")
                     ]
                 ))
-                let completed = try await apply(runID: runID, patch: CanvasPatch(
-                    canvasID: activeProject.id, documentID: targetDocumentID,
-                    expectedRevision: prepared.revision, operations: resultOperations
-                ))
+                let completed = try await commitGenerationPatch(
+                    runID: runID,
+                    canvasID: activeProject.id,
+                    documentID: targetDocumentID,
+                    configurationNodeID: graph.configurationNodeID,
+                    resultNodeID: graph.resultNodeID,
+                    generationAttemptID: generationAttemptID,
+                    phase: "ready",
+                    operations: resultOperations
+                )
                 for asset in assets {
-                    try await assetStore.adjustReference(assetID: asset.id, by: 1)
+                    do {
+                        try await assetStore.adjustReference(assetID: asset.id, by: 1)
+                    } catch {
+                        let failure = error as NSError
+                        logger.warning(
+                            "canvasGenerationReferenceAdjustmentFailed attempt=\(generationAttemptID) domain=\(failure.domain) code=\(failure.code)"
+                        )
+                    }
                 }
                 return CanvasGenerationOutcome(
                     canvasID: activeProject.id, documentID: targetDocumentID,
@@ -388,9 +411,17 @@ actor CanvasToolCoordinator {
                     )
                 )
             )
-            let submitted = try await apply(runID: runID, patch: CanvasPatch(
-                canvasID: activeProject.id, documentID: targetDocumentID,
-                expectedRevision: prepared.revision,
+            logger.info(
+                "canvasGenerationProviderCompleted attempt=\(generationAttemptID) kind=video outputs=1"
+            )
+            let submitted = try await commitGenerationPatch(
+                runID: runID,
+                canvasID: activeProject.id,
+                documentID: targetDocumentID,
+                configurationNodeID: graph.configurationNodeID,
+                resultNodeID: graph.resultNodeID,
+                generationAttemptID: generationAttemptID,
+                phase: "submitted",
                 operations: [
                     CanvasPatchOperation(
                         kind: .update, nodeID: graph.resultNodeID,
@@ -402,7 +433,7 @@ actor CanvasToolCoordinator {
                         metadata: ["generationState": "submitted"]
                     )
                 ]
-            ))
+            )
             return CanvasGenerationOutcome(
                 canvasID: activeProject.id, documentID: targetDocumentID,
                 revision: submitted.revision, promptNodeID: graph.promptNodeID,
@@ -416,20 +447,85 @@ actor CanvasToolCoordinator {
                 documentID: targetDocumentID,
                 configurationNodeID: graph.configurationNodeID,
                 resultNodeID: graph.resultNodeID,
+                generationAttemptID: generationAttemptID,
                 message: error.localizedDescription
+            )
+            let failure = error as NSError
+            logger.warning(
+                "canvasGenerationFailed attempt=\(generationAttemptID) kind=\(kind.rawValue) domain=\(failure.domain) code=\(failure.code)"
             )
             throw error
         }
     }
 
+    /// Commits only the local result of an already-finished provider request.
+    /// Each retry reloads the project and rebases the same patch operations;
+    /// the provider closure is deliberately outside this method and therefore
+    /// can never be invoked again by a revision conflict.
+    private func commitGenerationPatch(
+        runID: UUID,
+        canvasID: UUID,
+        documentID: UUID,
+        configurationNodeID: UUID,
+        resultNodeID: UUID,
+        generationAttemptID: String,
+        phase: String,
+        operations: [CanvasPatchOperation]
+    ) async throws -> CanvasOperationResult {
+        for commitIndex in 0..<Self.generationCommitAttemptLimit {
+            let current = try await project(for: runID)
+            guard current.id == canvasID else {
+                throw FloeError.validationFailed("The run cannot modify a different canvas")
+            }
+            let patch = try CanvasGenerationCommitPlanner.patch(
+                project: current,
+                documentID: documentID,
+                configurationNodeID: configurationNodeID,
+                resultNodeID: resultNodeID,
+                generationAttemptID: generationAttemptID,
+                operations: operations
+            )
+            let (updated, result) = try CanvasCommandService.applying(patch, to: current)
+            try persistUndoSnapshot(current, token: result.undoToken)
+            do {
+                try await repository.save(updated, expectedRevision: current.revision)
+                await notify(canvasID: canvasID)
+                logger.info(
+                    "canvasGenerationCommitted attempt=\(generationAttemptID) phase=\(phase) revision=\(result.revision) rebaseCount=\(commitIndex)"
+                )
+                return result
+            } catch {
+                guard Self.isCanvasRevisionConflict(error),
+                      commitIndex + 1 < Self.generationCommitAttemptLimit else {
+                    throw error
+                }
+                logger.info(
+                    "canvasGenerationRevisionRebase attempt=\(generationAttemptID) phase=\(phase) baseRevision=\(current.revision) retry=\(commitIndex + 1)"
+                )
+            }
+        }
+        throw FloeError.internalError("Canvas generation commit retry exhausted")
+    }
+
+    private static func isCanvasRevisionConflict(_ error: Error) -> Bool {
+        guard let floeError = error as? FloeError,
+              case .validationFailed(let detail) = floeError else { return false }
+        return detail.hasPrefix("Canvas revision conflict:")
+    }
+
     private func markGenerationFailed(
         runID: UUID, canvasID: UUID, documentID: UUID,
-        configurationNodeID: UUID, resultNodeID: UUID, message: String
+        configurationNodeID: UUID, resultNodeID: UUID,
+        generationAttemptID: String, message: String
     ) async throws {
-        let current = try await repository.project(canvasID: canvasID)
-        _ = try await apply(runID: runID, patch: CanvasPatch(
-            canvasID: canvasID, documentID: documentID,
-            expectedRevision: current.revision,
+        _ = try await commitGenerationPatch(
+            runID: runID,
+            canvasID: canvasID,
+            documentID: documentID,
+            configurationNodeID: configurationNodeID,
+            resultNodeID: resultNodeID,
+            generationAttemptID: generationAttemptID,
+            phase: "failed",
             operations: [
                 CanvasPatchOperation(
                     kind: .update, nodeID: configurationNodeID,
@@ -441,7 +537,7 @@ actor CanvasToolCoordinator {
                     metadata: ["generationState": "failed", "generationError": message]
                 )
             ]
-        ))
+        )
     }
 
     private func generationFingerprint(

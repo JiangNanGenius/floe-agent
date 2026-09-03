@@ -483,6 +483,145 @@ struct CreativeMediaModelsTests {
         })
     }
 
+    @Test func generationCommitRebasesOntoLatestCanvasRevision() throws {
+        let attemptID = "attempt-current"
+        let document = CanvasDocument(name: "Canvas")
+        let project = CanvasProject(
+            id: UUID(), name: "Generation", documents: [document],
+            selectedDocumentID: document.id, revision: 28
+        )
+        let graph = try CanvasGenerationGraphPlanner.plan(
+            request: CanvasGenerationGraphRequest(
+                kind: .image,
+                prompt: "雾中雪山",
+                resultPosition: .init(x: 900, y: 200),
+                metadata: [
+                    "generationAttemptID": attemptID,
+                    "generationState": "running"
+                ]
+            ),
+            document: document
+        )
+        let preparedPatch = CanvasPatch(
+            canvasID: project.id,
+            documentID: document.id,
+            expectedRevision: project.revision,
+            operations: graph.operations
+        )
+        var (current, _) = try CanvasCommandService.applying(preparedPatch, to: project)
+        #expect(current.revision == 29)
+
+        let viewport = CanvasViewportState(center: .init(x: 44, y: 72), scale: 0.65)
+        current.viewports[document.id] = viewport
+        current.revision += 1
+
+        let completionPatch = try CanvasGenerationCommitPlanner.patch(
+            project: current,
+            documentID: document.id,
+            configurationNodeID: graph.configurationNodeID,
+            resultNodeID: graph.resultNodeID,
+            generationAttemptID: attemptID,
+            operations: [
+                CanvasPatchOperation(
+                    kind: .update,
+                    nodeID: graph.configurationNodeID,
+                    metadata: ["generationState": "ready"]
+                ),
+                CanvasPatchOperation(
+                    kind: .update,
+                    nodeID: graph.resultNodeID,
+                    metadata: ["generationState": "ready"]
+                )
+            ]
+        )
+        #expect(completionPatch.expectedRevision == 30)
+        let (committed, result) = try CanvasCommandService.applying(
+            completionPatch,
+            to: current
+        )
+
+        #expect(result.previousRevision == 30)
+        #expect(result.revision == 31)
+        #expect(committed.viewports[document.id] == viewport)
+        #expect(committed.documents[0].nodes.first {
+            $0.id == graph.configurationNodeID
+        }?.metadata["generationState"] == "ready")
+        #expect(committed.documents[0].nodes.first {
+            $0.id == graph.resultNodeID
+        }?.metadata["generationState"] == "ready")
+    }
+
+    @Test func oldGenerationAttemptCannotOverwriteNewAttempt() throws {
+        let oldAttemptID = "attempt-old"
+        let newAttemptID = "attempt-new"
+        let document = CanvasDocument(name: "Canvas")
+        let project = CanvasProject(
+            id: UUID(), name: "Generation", documents: [document],
+            selectedDocumentID: document.id, revision: 10
+        )
+        let graph = try CanvasGenerationGraphPlanner.plan(
+            request: CanvasGenerationGraphRequest(
+                kind: .video,
+                prompt: "清晨海岸",
+                resultPosition: .init(x: 900, y: 200),
+                metadata: [
+                    "generationAttemptID": oldAttemptID,
+                    "generationState": "running"
+                ]
+            ),
+            document: document
+        )
+        let preparedPatch = CanvasPatch(
+            canvasID: project.id,
+            documentID: document.id,
+            expectedRevision: project.revision,
+            operations: graph.operations
+        )
+        var (superseded, _) = try CanvasCommandService.applying(preparedPatch, to: project)
+        let documentIndex = try #require(
+            superseded.documents.firstIndex(where: { $0.id == document.id })
+        )
+        for nodeID in [graph.configurationNodeID, graph.resultNodeID] {
+            let nodeIndex = try #require(
+                superseded.documents[documentIndex].nodes.firstIndex(where: { $0.id == nodeID })
+            )
+            superseded.documents[documentIndex].nodes[nodeIndex]
+                .metadata["generationAttemptID"] = newAttemptID
+        }
+        superseded.revision += 1
+
+        #expect(throws: FloeError.validationFailed(
+            "Canvas generation attempt was superseded before its local result was committed"
+        )) {
+            _ = try CanvasGenerationCommitPlanner.patch(
+                project: superseded,
+                documentID: document.id,
+                configurationNodeID: graph.configurationNodeID,
+                resultNodeID: graph.resultNodeID,
+                generationAttemptID: oldAttemptID,
+                operations: [CanvasPatchOperation(
+                    kind: .update,
+                    nodeID: graph.resultNodeID,
+                    metadata: ["generationState": "ready"]
+                )]
+            )
+        }
+
+        let currentPatch = try CanvasGenerationCommitPlanner.patch(
+            project: superseded,
+            documentID: document.id,
+            configurationNodeID: graph.configurationNodeID,
+            resultNodeID: graph.resultNodeID,
+            generationAttemptID: newAttemptID,
+            operations: [CanvasPatchOperation(
+                kind: .update,
+                nodeID: graph.resultNodeID,
+                metadata: ["generationState": "submitted"]
+            )]
+        )
+        #expect(currentPatch.expectedRevision == superseded.revision)
+    }
+
     @Test func generationConfigurationCreatesOnlyOneNodeAndTypedSourceEdges() throws {
         let source = CanvasNode(
             kind: .text, text: "清晨海边的构思",

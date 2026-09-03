@@ -1,14 +1,13 @@
 // FloeApp — Picture-in-Picture background keep-alive for agent runs.
 //
-// Translation-app style: a Picture-in-Picture video that plays the run's
-// progress keeps the app alive while the user leaves the PiP floating.
-// The video carries real, visible content (task title + progress + status),
-// so it satisfies App Review's "must actually present audible/visual
-// content" rule. The looping progress asset is synthesized on-device.
+// A user-started Picture-in-Picture surface that shows the current run's
+// progress. Ordinary background continuation is owned independently by
+// BackgroundRunCoordinator; PiP is an optional, explicitly requested view.
 
 #if canImport(UIKit)
 import Foundation
 import UIKit
+import SwiftUI
 import AVKit
 import AVFoundation
 import FloeCore
@@ -17,8 +16,7 @@ import FloeCore
 final class BackgroundVideoService: NSObject, ObservableObject {
     enum PiPPreparationState: String, Sendable {
         case idle
-        case attachingVisibleSource
-        case synthesizingVideo
+        case renderingContent
         case waitingForMedia
         case prepared
         case starting
@@ -28,15 +26,45 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         var localizedDescription: String {
             switch self {
             case .idle: "等待任务启动"
-            case .attachingVisibleSource: "正在挂载画中画预览"
-            case .synthesizingVideo: "正在生成任务进度视频"
+            case .renderingContent: "正在准备画中画内容"
             case .waitingForMedia: "正在等待 AVKit 就绪"
-            case .prepared: "画中画已准备"
+            case .prepared: "可从任务工具栏启动"
             case .starting: "正在启动画中画"
             case .active: "正在显示"
             case .failed: "画中画准备失败"
             }
         }
+
+        var manualAction: PiPManualControlAction {
+            switch self {
+            case .prepared: .start
+            case .active: .stop
+            case .failed: .retryPreparation
+            case .idle, .renderingContent, .waitingForMedia, .starting: .none
+            }
+        }
+
+        var offersManualControl: Bool {
+            switch self {
+            case .prepared, .starting, .active, .failed: true
+            case .idle, .renderingContent, .waitingForMedia: false
+            }
+        }
+
+        var allowsAutomaticPreparation: Bool {
+            self == .idle
+        }
+
+        var requiresForegroundRevalidation: Bool {
+            self == .prepared
+        }
+    }
+
+    enum PiPManualControlAction: Sendable, Equatable {
+        case none
+        case start
+        case stop
+        case retryPreparation
     }
     struct GuidanceHint: Sendable {
         var label: String
@@ -54,44 +82,61 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     var onUserStopped: (() -> Void)?
 
     private var pipController: AVPictureInPictureController?
-    private var playerLayer: AVPlayerLayer?
-    private var player: AVQueuePlayer?
-    private var looper: AVPlayerLooper?
+    private var sampleBufferLayer: AVSampleBufferDisplayLayer?
+    private struct RetiringPiPSource {
+        let controller: AVPictureInPictureController
+        let layer: AVSampleBufferDisplayLayer?
+    }
+    private var retiringPiPSources: [ObjectIdentifier: RetiringPiPSource] = [:]
+    private var retiringPiPCleanupTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     private var currentTitle = ""
     private var currentProgress = ""
     private var guidanceImage: UIImage?
     private var guidanceHints: [GuidanceHint] = []
     private var refreshTask: Task<Void, Never>?
     private var startGeneration: UInt64 = 0
-    private var currentAssetURL: URL?
-    /// AVKit requires the source layer to be in a visible hierarchy before
-    /// PiP starts. Keep a non-trivial source host attached behind the app's
-    /// root content; it must never cover Floe controls in the foreground.
-    private var inlinePreview: UIView?
     private enum StopOrigin: String {
         case none
         case foregroundRetraction
+        case manualControl
         case controllerReplacement
         case taskBatchEnded
     }
     private var pendingStopOrigin: StopOrigin = .none
-    /// Scene transitions can request PiP while the progress asset is still
-    /// being encoded. Remember that request instead of launching a second
-    /// preparation task that tears down the first controller.
-    private var startWhenPrepared = false
-    /// AVKit can reject the first request while the scene is between
-    /// foreground-inactive and background. Keep the prepared source alive and
-    /// retry once after that transition instead of rebuilding without a key
-    /// window (which can never succeed).
-    private var startAttemptCount = 0
-    private var startRetryTask: Task<Void, Never>?
+    private var manualStartAttemptCount = 0
+    private var ownsAudioSessionActivation = false
 
-    /// Starts (or updates) the PiP progress video for an active run. The
-    /// user keeps the app alive by floating this PiP while in background.
+    var shouldOfferManualControl: Bool {
+        preparationState.offersManualControl
+    }
+
+    var canPerformManualControl: Bool {
+        preparationState.manualAction != .none
+    }
+
+    var manualControlTitle: String {
+        switch preparationState.manualAction {
+        case .start: "启动画中画"
+        case .stop: "关闭画中画"
+        case .retryPreparation: "重试画中画准备"
+        case .none: preparationState.localizedDescription
+        }
+    }
+
+    var manualControlSystemImage: String {
+        switch preparationState.manualAction {
+        case .start: "pip.enter"
+        case .stop: "pip.exit"
+        case .retryPreparation: "arrow.clockwise"
+        case .none: "pip"
+        }
+    }
+
+    /// Prepares PiP progress content for an active run. It never starts the
+    /// system PiP window; only `performManualControl()` may do that.
     func begin(
         title: String,
-        initialProgress: String,
-        startImmediately: Bool = true
+        initialProgress: String
     ) async {
         startGeneration &+= 1
         let generation = startGeneration
@@ -100,47 +145,20 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         guidanceImage = nil
         guidanceHints = []
         stopPiPInternal(origin: .controllerReplacement)
-        startAttemptCount = 0
-        startWhenPrepared = startImmediately
+        manualStartAttemptCount = 0
         isPreparingPiP = true
-        preparationState = .attachingVisibleSource
+        preparationState = .renderingContent
         lastError = nil
         FloeLogger(category: .app).info(
             "pictureInPicturePrepareStarted generation=\(generation)"
         )
-        defer { isPreparingPiP = false }
-        // Build the visual PiP source without owning the device audio session.
-        // The session is activated only at the actual PiP start boundary so a
-        // foreground agent run never pauses Music, podcasts or another app.
-        guard prepareInlinePreview() else {
-            preparationState = .failed
-            lastError = "画中画需要可见的应用窗口"
-            FloeLogger(category: .app).warning(
-                "pictureInPicturePrepareFailed stage=inlinePreviewContainer generation=\(generation)"
-            )
-            deactivateAudioSession()
-            return
-        }
-        preparationState = .synthesizingVideo
-        guard let assetURL = await synthesizeProgressVideo(
-            title: title,
-            progress: initialProgress,
-            guidanceImage: nil,
-            guidanceHints: []
-        ) else {
-            preparationState = .failed
-            lastError = "无法创建画中画进度视频"
-            FloeLogger(category: .app).error(
-                "pictureInPicturePrepareFailed stage=videoSynthesis generation=\(generation)"
-            )
-            removeInlinePreview()
-            deactivateAudioSession()
-            return
-        }
-        guard !Task.isCancelled, generation == startGeneration else {
-            try? FileManager.default.removeItem(at: assetURL)
-            deactivateAudioSession()
-            return
+        // A later run can supersede this asynchronous preparation while AVKit
+        // is publishing readiness. Never let the older task clear the newer
+        // task's in-progress state when it eventually resumes.
+        defer {
+            if generation == startGeneration {
+                isPreparingPiP = false
+            }
         }
         guard AVPictureInPictureController.isPictureInPictureSupported() else {
             preparationState = .failed
@@ -148,115 +166,149 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             FloeLogger(category: .app).warning(
                 "pictureInPicturePrepareFailed stage=unsupported generation=\(generation)"
             )
-            try? FileManager.default.removeItem(at: assetURL)
-            deactivateAudioSession()
             return
         }
-        let item = AVPlayerItem(url: assetURL)
-        // AVPlayerLooper owns the queue population. Initializing the queue
-        // with the same template item and then handing that item to the
-        // looper can leave AVKit attached to an exhausted/black first item on
-        // some iPadOS builds.
-        let queue = AVQueuePlayer()
-        queue.automaticallyWaitsToMinimizeStalling = false
-        let layer = AVPlayerLayer(player: queue)
+        // AVKit requires a playback-capable audio category before the PiP
+        // controller is created and `isPictureInPicturePossible` is observed.
+        // Setting the category does not activate or steal the session; actual
+        // activation remains paired with an explicit user start below.
+        configureAudioSessionCategory()
+
+        // A sample-buffer content source gives AVKit real 16:9 task content
+        // without adding an ad-hoc UIView above the foreground app. The system
+        // PiP controller is still started only from an explicit user button.
+        let layer = AVSampleBufferDisplayLayer()
+        layer.frame = CGRect(x: 0, y: 0, width: 640, height: 360)
         layer.videoGravity = .resizeAspect
-        guard attachInlinePreview(layer: layer) else {
+        layer.backgroundColor = UIColor(red: 0.035, green: 0.043, blue: 0.065, alpha: 1).cgColor
+        guard enqueueProgressFrame(
+            on: layer,
+            title: title,
+            progress: initialProgress,
+            guidanceImage: nil,
+            guidanceHints: []
+        ) else {
             preparationState = .failed
-            lastError = "画中画需要应用处于前台并显示预览"
-            FloeLogger(category: .app).warning(
-                "pictureInPicturePrepareFailed stage=inlinePreview generation=\(generation)"
-            )
-            try? FileManager.default.removeItem(at: assetURL)
-            deactivateAudioSession()
-            return
-        }
-        guard let controller = AVPictureInPictureController(playerLayer: layer) else {
-            preparationState = .failed
-            lastError = "无法初始化画中画控制器"
+            lastError = "无法创建画中画进度画面"
             FloeLogger(category: .app).error(
-                "pictureInPicturePrepareFailed stage=controller generation=\(generation)"
+                "pictureInPicturePrepareFailed stage=frameRender generation=\(generation)"
             )
-            removeInlinePreview()
-            try? FileManager.default.removeItem(at: assetURL)
-            deactivateAudioSession()
             return
         }
-        currentAssetURL = assetURL
-        player = queue
-        playerLayer = layer
-        looper = AVPlayerLooper(player: queue, templateItem: item)
-        // AVPlayerLooper enqueues a copy of its template item. The template
-        // itself never becomes the queue's active item and can remain
-        // `.unknown` forever; Build 23 waited on that inactive object for ten
-        // seconds and then discarded an otherwise valid PiP controller.
+
+        let source = AVPictureInPictureController.ContentSource(
+            sampleBufferDisplayLayer: layer,
+            playbackDelegate: self
+        )
+        let controller = AVPictureInPictureController(contentSource: source)
         controller.delegate = self
-        controller.canStartPictureInPictureAutomaticallyFromInline = true
+        controller.canStartPictureInPictureAutomaticallyFromInline = false
         controller.requiresLinearPlayback = true
+        sampleBufferLayer = layer
         pipController = controller
-        await queue.seek(to: .zero)
-        queue.play()
         preparationState = .waitingForMedia
-        // AVKit readiness is asynchronous and varies by device. Starting at
-        // a fixed delay silently fails on slower iPads, so wait for the real
-        // capability signal with a bounded timeout.
+
+        // AVKit publishes possibility asynchronously. Waiting here means the
+        // toolbar button calls start synchronously from the eventual user tap,
+        // rather than storing a tap and starting later from a lifecycle event.
         let deadline = Date().addingTimeInterval(10)
-        var playbackItem = queue.currentItem
-        while (playbackItem == nil
-                || playbackItem?.status == .unknown
-                || !controller.isPictureInPicturePossible)
-                && Date() < deadline {
+        while (!controller.isPictureInPicturePossible || !layer.isReadyForDisplay)
+            && Date() < deadline {
             guard generation == startGeneration, !Task.isCancelled else { return }
             try? await Task.sleep(for: .milliseconds(100))
-            playbackItem = queue.currentItem
         }
         guard generation == startGeneration else { return }
-        guard let playbackItem,
-              playbackItem.status == .readyToPlay,
-              controller.isPictureInPicturePossible else {
+        guard controller.isPictureInPicturePossible, layer.isReadyForDisplay else {
             preparationState = .failed
-            lastError = "画中画尚未就绪，请保持应用在前台后重试"
-            let itemError = playbackItem?.error as NSError?
+            lastError = "AVKit 尚未允许画中画，请稍后从任务工具栏重试"
+            let rendererError = layer.sampleBufferRenderer.error as NSError?
             FloeLogger(category: .app).warning(
-                "pictureInPicturePrepareFailed stage=readinessTimeout generation=\(generation) itemStatus=\(String(describing: playbackItem?.status)) possible=\(controller.isPictureInPicturePossible) errorDomain=\(itemError?.domain ?? "none") errorCode=\(itemError?.code ?? 0)"
+                "pictureInPicturePrepareFailed stage=readinessTimeout generation=\(generation) possible=\(controller.isPictureInPicturePossible) readyForDisplay=\(layer.isReadyForDisplay) renderStatus=\(String(describing: layer.sampleBufferRenderer.status)) errorDomain=\(rendererError?.domain ?? "none") errorCode=\(rendererError?.code ?? 0)"
             )
             stopPiPInternal(origin: .controllerReplacement)
+            preparationState = .failed
+            lastError = "AVKit 尚未允许画中画，请稍后从任务工具栏重试"
             return
         }
         isPiPPrepared = true
         preparationState = .prepared
-        guard startWhenPrepared else {
-            FloeLogger(category: .app).info(
-                "pictureInPicturePrepared generation=\(generation)"
-            )
-            return
-        }
-        startPreparedPictureInPicture()
+        FloeLogger(category: .app).info(
+            "pictureInPicturePrepared generation=\(generation) source=sampleBuffer manualStartRequired=true"
+        )
     }
 
-    func startPreparedPictureInPicture() {
-        startWhenPrepared = true
-        if isPreparingPiP, pipController == nil {
+    /// Handles the visible PiP toolbar control. This is the only production
+    /// entry point that may call AVKit's start method.
+    func performManualControl() {
+        switch preparationState.manualAction {
+        case .start:
+            startFromUserAction()
+        case .stop:
+            stopFromUserAction()
+        case .retryPreparation:
+            let title = currentTitle
+            let progress = currentProgress
+            Task { @MainActor [weak self] in
+                await self?.begin(title: title, initialProgress: progress)
+            }
+        case .none:
             FloeLogger(category: .app).info(
-                "pictureInPictureStartDeferred generation=\(startGeneration)"
+                "pictureInPictureManualControlIgnored state=\(preparationState.rawValue)"
+            )
+        }
+    }
+
+    private func startFromUserAction() {
+        guard preparationState == .prepared else { return }
+        guard let controller = pipController,
+              let sampleBufferLayer else {
+            stopPiPInternal(origin: .controllerReplacement)
+            preparationState = .failed
+            lastError = "画中画内容已失效，请从工具栏重试"
+            FloeLogger(category: .app).warning(
+                "pictureInPictureManualStartUnavailable reason=missingPreparedSource generation=\(startGeneration)"
             )
             return
         }
-        guard let controller = pipController,
-              controller.isPictureInPicturePossible,
-              !controller.isPictureInPictureActive else { return }
+        let renderer = sampleBufferLayer.sampleBufferRenderer
+        guard sampleBufferLayer.isReadyForDisplay,
+              renderer.status != .failed,
+              !renderer.requiresFlushToResumeDecoding else {
+            let rendererError = renderer.error as NSError?
+            FloeLogger(category: .app).warning(
+                "pictureInPictureManualStartUnavailable reason=stalePreparedSource generation=\(startGeneration) readyForDisplay=\(sampleBufferLayer.isReadyForDisplay) renderStatus=\(String(describing: renderer.status)) errorDomain=\(rendererError?.domain ?? "none") errorCode=\(rendererError?.code ?? 0)"
+            )
+            stopPiPInternal(origin: .controllerReplacement)
+            preparationState = .failed
+            lastError = "画中画内容需要重新准备，请从工具栏重试"
+            return
+        }
+        guard controller.isPictureInPicturePossible,
+              !controller.isPictureInPictureActive else {
+            lastError = "当前系统暂时不能启动画中画，请稍后重试"
+            FloeLogger(category: .app).warning(
+                "pictureInPictureManualStartUnavailable generation=\(startGeneration)"
+            )
+            return
+        }
         configureAudioSession()
         preparationState = .starting
+        manualStartAttemptCount += 1
         FloeLogger(category: .app).info(
-            "pictureInPictureStartRequested generation=\(startGeneration) attempt=\(startAttemptCount + 1) playerStatus=\(String(describing: player?.timeControlStatus)) itemStatus=\(String(describing: player?.currentItem?.status))"
+            "pictureInPictureStartRequested generation=\(startGeneration) source=userControl attempt=\(manualStartAttemptCount)"
         )
-        startAttemptCount += 1
         controller.startPictureInPicture()
     }
 
-    /// Returning to Floe retracts the floating surface without destroying
-    /// the prepared player. Leaving the app again can therefore resume PiP
-    /// while the same task batch remains active.
+    private func stopFromUserAction() {
+        guard let controller = pipController, controller.isPictureInPictureActive else { return }
+        pendingStopOrigin = .manualControl
+        controller.stopPictureInPicture()
+        FloeLogger(category: .app).info("pictureInPictureStopRequested source=userControl")
+    }
+
+    /// Returning to Floe retracts the floating surface without destroying the
+    /// prepared content source. Starting it again still requires another tap.
     func retractForForeground() {
         guard let controller = pipController, controller.isPictureInPictureActive else { return }
         pendingStopOrigin = .foregroundRetraction
@@ -264,8 +316,88 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         FloeLogger(category: .app).info("pictureInPictureRetractedForForeground")
     }
 
-    /// Updates the progress text and re-renders the looping video so the PiP
-    /// actually reflects the latest state instead of a frozen first frame.
+    /// A prepared sample-buffer renderer can be invalidated while the app is
+    /// backgrounded even when PiP never started. Re-enqueue the current frame
+    /// and wait for AVKit readiness again before offering the start button.
+    /// This only repairs prepared content; a user-visible failure remains in
+    /// the manual retry state until the user presses the toolbar control.
+    func revalidatePreparedContentForForeground() {
+        guard preparationState.requiresForegroundRevalidation else { return }
+        let generation = startGeneration
+        Task { @MainActor [weak self] in
+            await self?.revalidatePreparedContent(generation: generation)
+        }
+    }
+
+    private func revalidatePreparedContent(generation: UInt64) async {
+        guard generation == startGeneration,
+              preparationState == .prepared else { return }
+        guard let controller = pipController,
+              let sampleBufferLayer else {
+            stopPiPInternal(origin: .controllerReplacement)
+            preparationState = .failed
+            lastError = "画中画内容已失效，请从工具栏重试"
+            FloeLogger(category: .app).warning(
+                "pictureInPictureRevalidationFailed stage=missingPreparedSource generation=\(generation)"
+            )
+            return
+        }
+
+        isPreparingPiP = true
+        isPiPPrepared = false
+        preparationState = .renderingContent
+        defer {
+            if generation == startGeneration {
+                isPreparingPiP = false
+            }
+        }
+        guard enqueueProgressFrame(
+            on: sampleBufferLayer,
+            title: currentTitle,
+            progress: currentProgress,
+            guidanceImage: guidanceImage,
+            guidanceHints: guidanceHints
+        ) else {
+            let rendererError = sampleBufferLayer.sampleBufferRenderer.error as NSError?
+            FloeLogger(category: .app).warning(
+                "pictureInPictureRevalidationFailed stage=frameRender generation=\(generation) errorDomain=\(rendererError?.domain ?? "none") errorCode=\(rendererError?.code ?? 0)"
+            )
+            stopPiPInternal(origin: .controllerReplacement)
+            preparationState = .failed
+            lastError = "画中画内容需要重新准备，请从工具栏重试"
+            return
+        }
+
+        preparationState = .waitingForMedia
+        let deadline = Date().addingTimeInterval(10)
+        while (!controller.isPictureInPicturePossible || !sampleBufferLayer.isReadyForDisplay)
+            && Date() < deadline {
+            guard generation == startGeneration else { return }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard generation == startGeneration else { return }
+        guard controller.isPictureInPicturePossible,
+              sampleBufferLayer.isReadyForDisplay,
+              sampleBufferLayer.sampleBufferRenderer.status != .failed else {
+            let rendererError = sampleBufferLayer.sampleBufferRenderer.error as NSError?
+            FloeLogger(category: .app).warning(
+                "pictureInPictureRevalidationFailed stage=readinessTimeout generation=\(generation) possible=\(controller.isPictureInPicturePossible) readyForDisplay=\(sampleBufferLayer.isReadyForDisplay) renderStatus=\(String(describing: sampleBufferLayer.sampleBufferRenderer.status)) errorDomain=\(rendererError?.domain ?? "none") errorCode=\(rendererError?.code ?? 0)"
+            )
+            stopPiPInternal(origin: .controllerReplacement)
+            preparationState = .failed
+            lastError = "AVKit 尚未允许画中画，请从任务工具栏重试"
+            return
+        }
+        isPiPPrepared = true
+        preparationState = .prepared
+        lastError = nil
+        FloeLogger(category: .app).info(
+            "pictureInPictureRevalidated generation=\(generation) source=foreground"
+        )
+    }
+
+    /// Updates the progress text and replaces the sample-buffer frame so an
+    /// active PiP reflects the latest state instead of a frozen first frame.
     func update(progress: String) {
         update(title: currentTitle, progress: progress)
     }
@@ -278,21 +410,10 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         refreshTask?.cancel()
         refreshTask = Task { @MainActor [weak self] in
             // Collapse rapid run-state publications into one visual update.
-            // Replacing AVPlayerItem on every database refresh made the PiP
-            // transport overlay flash even when the text had not settled yet.
             try? await Task.sleep(for: .milliseconds(800))
             guard !Task.isCancelled else { return }
             guard let self, generation == self.startGeneration else { return }
-            // Never empty or replace the AVQueuePlayer while PiP owns it.
-            // AVKit treats that short empty queue as end-of-playback and
-            // closes the floating window at ordinary run-stage boundaries.
-            guard !self.isPiPActive else {
-                FloeLogger(category: .app).debug(
-                    "pictureInPictureVisualRefreshDeferred reason=activePlayback generation=\(generation)"
-                )
-                return
-            }
-            await self.refreshVideo(
+            self.refreshFrame(
                 title: title,
                 progress: progress,
                 guidanceImage: self.guidanceImage,
@@ -311,7 +432,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         refreshTask?.cancel()
         refreshTask = Task { @MainActor [weak self] in
             guard let self, generation == self.startGeneration else { return }
-            await self.refreshVideo(
+            self.refreshFrame(
                 title: self.currentTitle,
                 progress: self.currentProgress,
                 guidanceImage: image,
@@ -321,38 +442,25 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         }
     }
 
-    /// Re-synthesizes the progress asset and hot-swaps the player item so the
-    /// floating PiP shows the latest title/progress without restarting PiP.
-    private func refreshVideo(
+    private func refreshFrame(
         title: String,
         progress: String,
         guidanceImage: UIImage?,
         guidanceHints: [GuidanceHint],
         generation: UInt64
-    ) async {
-        guard !isPiPActive, let player else { return }
-        guard let assetURL = await synthesizeProgressVideo(
-            title: title,
-            progress: progress,
-            guidanceImage: guidanceImage,
-            guidanceHints: guidanceHints
-        ) else { return }
-        guard !Task.isCancelled, generation == startGeneration, !isPiPActive else {
-            try? FileManager.default.removeItem(at: assetURL)
-            return
-        }
-        let item = AVPlayerItem(url: assetURL)
-        looper?.disableLooping()
-        for queuedItem in player.items() {
-            player.remove(queuedItem)
-        }
-        looper = AVPlayerLooper(player: player, templateItem: item)
-        await player.seek(to: .zero)
-        player.play()
-        if let old = currentAssetURL {
-            try? FileManager.default.removeItem(at: old)
-        }
-        currentAssetURL = assetURL
+    ) {
+        guard generation == startGeneration,
+              let sampleBufferLayer,
+              enqueueProgressFrame(
+                on: sampleBufferLayer,
+                title: title,
+                progress: progress,
+                guidanceImage: guidanceImage,
+                guidanceHints: guidanceHints
+              ) else { return }
+        FloeLogger(category: .app).debug(
+            "pictureInPictureFrameUpdated generation=\(generation) active=\(isPiPActive)"
+        )
     }
 
     func stop() {
@@ -365,30 +473,56 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     private func stopPiPInternal(origin: StopOrigin) {
         refreshTask?.cancel()
         refreshTask = nil
-        startRetryTask?.cancel()
-        startRetryTask = nil
         pendingStopOrigin = origin
-        pipController?.stopPictureInPicture()
+        if let pipController {
+            let controllerID = ObjectIdentifier(pipController)
+            let needsDeferredSourceRelease = pipController.isPictureInPictureActive
+                || preparationState == .starting
+            if needsDeferredSourceRelease {
+                // AVKit still renders from this source during its stop
+                // animation. Keep both objects alive until didStop (with a
+                // bounded fallback in case the callback is never delivered).
+                retiringPiPSources[controllerID] = RetiringPiPSource(
+                    controller: pipController,
+                    layer: sampleBufferLayer
+                )
+                retiringPiPCleanupTasks[controllerID]?.cancel()
+                retiringPiPCleanupTasks[controllerID] = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(2))
+                    self?.releaseRetiringPiPSource(controllerID: controllerID)
+                }
+            }
+            pipController.stopPictureInPicture()
+            if !needsDeferredSourceRelease {
+                sampleBufferLayer?.sampleBufferRenderer.flush()
+            }
+        } else {
+            sampleBufferLayer?.sampleBufferRenderer.flush()
+        }
         pipController = nil
-        looper = nil
-        player?.pause()
-        player = nil
-        playerLayer = nil
+        sampleBufferLayer = nil
         guidanceImage = nil
         guidanceHints = []
-        removeInlinePreview()
-        if let currentAssetURL {
-            try? FileManager.default.removeItem(at: currentAssetURL)
-            self.currentAssetURL = nil
-        }
         isPiPActive = false
         isPreparingPiP = false
         isPiPPrepared = false
         preparationState = .idle
         pendingStopOrigin = .none
-        startWhenPrepared = false
-        startAttemptCount = 0
+        manualStartAttemptCount = 0
         deactivateAudioSession()
+    }
+
+    @discardableResult
+    private func releaseRetiringPiPSource(controllerID: ObjectIdentifier) -> Bool {
+        retiringPiPCleanupTasks.removeValue(forKey: controllerID)?.cancel()
+        guard let source = retiringPiPSources.removeValue(forKey: controllerID) else {
+            return false
+        }
+        source.layer?.sampleBufferRenderer.flush()
+        FloeLogger(category: .app).debug(
+            "pictureInPictureRetiringSourceReleased controller=completedStop"
+        )
+        return true
     }
 
     /// Releases playback state after the user or system closes PiP without
@@ -396,41 +530,24 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     private func handlePiPStopped(controllerID: ObjectIdentifier) {
         guard let currentController = pipController,
               ObjectIdentifier(currentController) == controllerID else { return }
-        if pendingStopOrigin == .foregroundRetraction {
+        if pendingStopOrigin == .foregroundRetraction
+            || pendingStopOrigin == .manualControl {
             pendingStopOrigin = .none
             isPiPActive = false
             preparationState = .prepared
             deactivateAudioSession()
-            FloeLogger(category: .app).info("pictureInPictureRetractionCompleted")
-            let generation = startGeneration
-            refreshTask?.cancel()
-            refreshTask = Task { @MainActor [weak self] in
-                guard let self, generation == self.startGeneration else { return }
-                await self.refreshVideo(
-                    title: self.currentTitle,
-                    progress: self.currentProgress,
-                    guidanceImage: self.guidanceImage,
-                    guidanceHints: self.guidanceHints,
-                    generation: generation
-                )
-            }
+            FloeLogger(category: .app).info("pictureInPictureIntentionalStopCompleted")
+            revalidatePreparedContentForForeground()
             return
         }
         refreshTask?.cancel()
         refreshTask = nil
         startGeneration &+= 1
         pipController = nil
-        looper = nil
-        player?.pause()
-        player = nil
-        playerLayer = nil
+        sampleBufferLayer?.sampleBufferRenderer.flush()
+        sampleBufferLayer = nil
         guidanceImage = nil
         guidanceHints = []
-        removeInlinePreview()
-        if let currentAssetURL {
-            try? FileManager.default.removeItem(at: currentAssetURL)
-            self.currentAssetURL = nil
-        }
         isPiPActive = false
         isPiPPrepared = false
         preparationState = .idle
@@ -444,76 +561,60 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     /// backgrounds even while the PiP floats. Failure never breaks the run.
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
+        guard configureAudioSessionCategory() else { return }
         do {
-            try session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
             try session.setActive(true)
+            ownsAudioSessionActivation = true
         } catch {
             let nsError = error as NSError
             FloeLogger(category: .app).warning(
-                "pictureInPictureAudioSessionFailed domain=\(nsError.domain) code=\(nsError.code)"
+                "pictureInPictureAudioSessionActivationFailed domain=\(nsError.domain) code=\(nsError.code)"
             )
         }
     }
 
+    @discardableResult
+    private func configureAudioSessionCategory() -> Bool {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(
+                .playback,
+                mode: .moviePlayback,
+                options: [.mixWithOthers]
+            )
+            return true
+        } catch {
+            let nsError = error as NSError
+            FloeLogger(category: .app).warning(
+                "pictureInPictureAudioSessionCategoryFailed domain=\(nsError.domain) code=\(nsError.code)"
+            )
+            return false
+        }
+    }
+
     private func deactivateAudioSession() {
-        try? AVAudioSession.sharedInstance().setActive(
-            false,
-            options: .notifyOthersOnDeactivation
-        )
-    }
-
-    private func prepareInlinePreview() -> Bool {
-        if inlinePreview?.window != nil { return true }
-        guard let scene = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .first(where: {
-                $0.activationState == .foregroundActive
-                    || $0.activationState == .foregroundInactive
-            }),
-              let window = scene.windows.first(where: \.isKeyWindow)
-                ?? scene.windows.first(where: { !$0.isHidden }) else { return false }
-        removeInlinePreview()
-        // AVKit requires the inline source to be genuinely visible. Inserting
-        // it behind an opaque root view leaves isPictureInPicturePossible
-        // false on iPadOS even though the layer has a window. Present the real
-        // task-progress source as a small, non-interactive preview instead.
-        let size = CGSize(width: 160, height: 90)
-        let view = UIView(frame: CGRect(
-            x: max(window.safeAreaInsets.left, window.bounds.width - window.safeAreaInsets.right - size.width - 12),
-            y: max(window.safeAreaInsets.top + 12, 12),
-            width: size.width,
-            height: size.height
-        ))
-        view.backgroundColor = UIColor(red: 0.035, green: 0.043, blue: 0.065, alpha: 1)
-        // Keep the source fully rendered. Reduced alpha can make AVKit reject
-        // the source as non-visible. It is inserted behind the app's root
-        // content, so no internal preview tile covers foreground controls.
-        view.alpha = 1
-        view.layer.masksToBounds = true
-        view.layer.cornerRadius = 12
-        view.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
-        view.layer.borderWidth = 1
-        view.layer.shadowColor = UIColor.black.cgColor
-        view.layer.shadowOpacity = 0.28
-        view.layer.shadowRadius = 8
-        view.isUserInteractionEnabled = false
-        view.accessibilityElementsHidden = true
-        window.addSubview(view)
-        inlinePreview = view
-        return true
-    }
-
-    private func attachInlinePreview(layer: CALayer) -> Bool {
-        guard prepareInlinePreview(), let inlinePreview else { return false }
-        inlinePreview.layer.sublayers?.forEach { $0.removeFromSuperlayer() }
-        layer.frame = inlinePreview.bounds
-        inlinePreview.layer.addSublayer(layer)
-        return true
-    }
-
-    private func removeInlinePreview() {
-        inlinePreview?.removeFromSuperview()
-        inlinePreview = nil
+        guard ownsAudioSessionActivation else { return }
+        ownsAudioSessionActivation = false
+        let session = AVAudioSession.sharedInstance()
+        guard session.category == .playback,
+              session.mode == .moviePlayback else {
+            // Another Floe feature (for example voice input) has taken over
+            // the process-wide session. It now owns deactivation as well.
+            FloeLogger(category: .app).debug(
+                "pictureInPictureAudioSessionRelinquished reason=configurationChanged"
+            )
+            return
+        }
+        do {
+            try session.setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
+        } catch {
+            let nsError = error as NSError
+            FloeLogger(category: .app).warning(
+                "pictureInPictureAudioSessionDeactivationFailed domain=\(nsError.domain) code=\(nsError.code)"
+            )
+        }
     }
 
     private func renderProgressFrame(
@@ -655,19 +756,13 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         return min(100, max(0, value))
     }
 
-    /// Synthesizes a short looping MP4 whose frames carry the run title and
-    /// progress. Real, visible content — the surface review expects. PiP owns
-    /// video playback continuity; avoiding a hand-built compressed audio
-    /// sample also avoids AVAssetWriter rejecting the whole progress asset on
-    /// some devices before PiP can even be requested.
-    private func synthesizeProgressVideo(
+    private func enqueueProgressFrame(
+        on layer: AVSampleBufferDisplayLayer,
         title: String,
         progress: String,
         guidanceImage: UIImage?,
         guidanceHints: [GuidanceHint]
-    ) async -> URL? {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("floe-progress-\(UUID().uuidString).mp4")
+    ) -> Bool {
         let size = CGSize(width: 640, height: 360)
         guard let frame = renderProgressFrame(
             title: title,
@@ -675,113 +770,50 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             guidanceImage: guidanceImage,
             guidanceHints: guidanceHints
         ),
-              let cgImage = frame.cgImage else { return nil }
-        do {
-            let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
-            let videoSettings: [String: Any] = [
-                AVVideoCodecKey: AVVideoCodecType.h264,
-                AVVideoWidthKey: Int(size.width),
-                AVVideoHeightKey: Int(size.height)
-            ]
-            let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-            let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-                assetWriterInput: input,
-                sourcePixelBufferAttributes: [
-                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
-                    kCVPixelBufferWidthKey as String: Int(size.width),
-                    kCVPixelBufferHeightKey as String: Int(size.height)
-                ]
-            )
-            guard writer.canAdd(input) else { return nil }
-            writer.add(input)
-            guard writer.startWriting() else { return nil }
-            writer.startSession(atSourceTime: .zero)
-            // 5 seconds at 2 fps = 10 frames of the same progress image.
-            let readinessDeadline = Date().addingTimeInterval(2)
-            for index in 0..<10 {
-                while !input.isReadyForMoreMediaData {
-                    try Task.checkCancellation()
-                    guard writer.status == .writing, Date() < readinessDeadline else {
-                        writer.cancelWriting()
-                        return nil
-                    }
-                    try await Task.sleep(for: .milliseconds(10))
-                }
-                if let buffer = Self.pixelBuffer(from: cgImage, size: size) {
-                    guard adaptor.append(
-                        buffer,
-                        withPresentationTime: CMTime(value: CMTimeValue(index), timescale: 2)
-                    ) else {
-                        writer.cancelWriting()
-                        return nil
-                    }
-                }
-            }
-            input.markAsFinished()
-            await writer.finishWriting()
-            return writer.status == .completed ? url : nil
-        } catch {
-            return nil
+              let cgImage = frame.cgImage,
+              let pixelBuffer = Self.pixelBuffer(from: cgImage, size: size),
+              let sampleBuffer = Self.videoSampleBuffer(from: pixelBuffer) else { return false }
+        let renderer = layer.sampleBufferRenderer
+        if renderer.requiresFlushToResumeDecoding {
+            renderer.flush()
         }
+        renderer.enqueue(sampleBuffer)
+        return renderer.status != .failed
     }
 
-    /// Builds a silent mono 16-bit PCM sample buffer of the given duration.
-    /// Used so the synthesized PiP video carries an audio track.
-    private static func silentAudioSampleBuffer(duration: Double, sampleRate: Double = 44_100) -> CMSampleBuffer? {
-        let sampleCount = Int(duration * sampleRate)
-        var asbd = AudioStreamBasicDescription(
-            mSampleRate: sampleRate,
-            mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
-            mBytesPerPacket: 2,
-            mFramesPerPacket: 1,
-            mBytesPerFrame: 2,
-            mChannelsPerFrame: 1,
-            mBitsPerChannel: 16,
-            mReserved: 0
-        )
-        var format: CMAudioFormatDescription?
-        CMAudioFormatDescriptionCreate(
+    /// Creates a display-immediately video sample. No visible in-app view or
+    /// artificial playback timebase is needed; AVKit owns the detached layer
+    /// only after a user explicitly starts PiP.
+    private static func videoSampleBuffer(from pixelBuffer: CVPixelBuffer) -> CMSampleBuffer? {
+        var formatDescription: CMVideoFormatDescription?
+        guard CMVideoFormatDescriptionCreateForImageBuffer(
             allocator: kCFAllocatorDefault,
-            asbd: &asbd,
-            layoutSize: 0,
-            layout: nil,
-            magicCookieSize: 0,
-            magicCookie: nil,
-            extensions: nil,
-            formatDescriptionOut: &format
-        )
-        guard let format else { return nil }
-        let dataSize = sampleCount * 2
-        var blockBuffer: CMBlockBuffer?
-        CMBlockBufferCreateWithMemoryBlock(
-            allocator: kCFAllocatorDefault,
-            memoryBlock: nil,
-            blockLength: dataSize,
-            blockAllocator: kCFAllocatorDefault,
-            customBlockSource: nil,
-            offsetToData: 0,
-            dataLength: dataSize,
-            flags: 0,
-            blockBufferOut: &blockBuffer
-        )
-        guard let blockBuffer else { return nil }
-        // Explicitly zero the samples so the track is genuinely silent.
-        var pointer: UnsafeMutablePointer<Int8>?
-        CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: nil, dataPointerOut: &pointer)
-        if let pointer {
-            memset(pointer, 0, dataSize)
-        }
-        var sampleBuffer: CMSampleBuffer?
-        CMAudioSampleBufferCreateReadyWithPacketDescriptions(
-            allocator: kCFAllocatorDefault,
-            dataBuffer: blockBuffer,
-            formatDescription: format,
-            sampleCount: sampleCount,
+            imageBuffer: pixelBuffer,
+            formatDescriptionOut: &formatDescription
+        ) == noErr,
+              let formatDescription else { return nil }
+
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: 30),
             presentationTimeStamp: .zero,
-            packetDescriptions: nil,
-            sampleBufferOut: &sampleBuffer
+            decodeTimeStamp: .invalid
         )
+        var sampleBuffer: CMSampleBuffer?
+        guard CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: pixelBuffer,
+            formatDescription: formatDescription,
+            sampleTiming: &timing,
+            sampleBufferOut: &sampleBuffer
+        ) == noErr,
+              let sampleBuffer else { return nil }
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(
+            sampleBuffer,
+            createIfNecessary: true
+        ) as? [NSMutableDictionary],
+           let first = attachments.first {
+            first[kCMSampleAttachmentKey_DisplayImmediately] = kCFBooleanTrue
+        }
         return sampleBuffer
     }
 
@@ -789,7 +821,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         var buffer: CVPixelBuffer?
         let attributes: [String: Any] = [
             kCVPixelBufferCGImageCompatibilityKey as String: true,
-            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ]
         CVPixelBufferCreate(
             kCFAllocatorDefault,
@@ -817,6 +850,12 @@ final class BackgroundVideoService: NSObject, ObservableObject {
 }
 
 extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
+    nonisolated func pictureInPictureControllerWillStartPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        FloeLogger(category: .app).info("pictureInPictureWillStart")
+    }
+
     nonisolated func pictureInPictureControllerDidStartPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
     ) {
@@ -831,12 +870,16 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
             self.isPiPActive = true
             self.preparationState = .active
             self.isPreparingPiP = false
-            self.startRetryTask?.cancel()
-            self.startRetryTask = nil
-            self.startAttemptCount = 0
+            self.manualStartAttemptCount = 0
             self.lastError = nil
             FloeLogger(category: .app).info("pictureInPictureDidStart")
         }
+    }
+
+    nonisolated func pictureInPictureControllerWillStopPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        FloeLogger(category: .app).info("pictureInPictureWillStop")
     }
 
     nonisolated func pictureInPictureControllerDidStopPictureInPicture(
@@ -845,6 +888,9 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
         let controllerID = ObjectIdentifier(pictureInPictureController)
         Task { @MainActor in
             FloeLogger(category: .app).info("pictureInPictureDidStop")
+            if self.releaseRetiringPiPSource(controllerID: controllerID) {
+                return
+            }
             self.handlePiPStopped(controllerID: controllerID)
         }
     }
@@ -855,30 +901,87 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
     ) {
         let controllerID = ObjectIdentifier(pictureInPictureController)
         Task { @MainActor in
-            let nsError = error as NSError
-            FloeLogger(category: .app).error(
-                "pictureInPictureStartFailed domain=\(nsError.domain) code=\(nsError.code) attempt=\(self.startAttemptCount) description=\(nsError.localizedDescription)"
-            )
-            self.lastError = "画中画启动失败：\(error.localizedDescription)"
-            self.preparationState = .failed
-            guard self.startWhenPrepared,
-                  self.startAttemptCount < 2,
-                  self.pipController.map(ObjectIdentifier.init) == controllerID else {
-                // Preserve the valid foreground-prepared controller. A later
-                // app departure can try it again without attempting to attach
-                // a new source view while already backgrounded.
-                self.isPiPPrepared = self.pipController != nil
-                self.deactivateAudioSession()
+            guard self.pipController.map(ObjectIdentifier.init) == controllerID else {
+                FloeLogger(category: .app).debug(
+                    "pictureInPictureStartFailureIgnored reason=staleController"
+                )
                 return
             }
-            let generation = self.startGeneration
-            self.startRetryTask?.cancel()
-            self.startRetryTask = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(600))
-                guard !Task.isCancelled,
-                      generation == self.startGeneration else { return }
-                self.startPreparedPictureInPicture()
+            let nsError = error as NSError
+            FloeLogger(category: .app).error(
+                "pictureInPictureStartFailed domain=\(nsError.domain) code=\(nsError.code) attempt=\(self.manualStartAttemptCount)"
+            )
+            self.lastError = "画中画启动失败：\(error.localizedDescription)"
+            // Keep the content source prepared. A later retry can only come
+            // from a new explicit button press.
+            self.isPiPActive = false
+            self.isPiPPrepared = true
+            self.preparationState = .prepared
+            self.deactivateAudioSession()
+        }
+    }
+}
+
+extension BackgroundVideoService: AVPictureInPictureSampleBufferPlaybackDelegate {
+    nonisolated func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        setPlaying playing: Bool
+    ) {
+        FloeLogger(category: .app).debug(
+            "pictureInPicturePlaybackRequest playing=\(playing) staticProgress=true"
+        )
+    }
+
+    nonisolated func pictureInPictureControllerTimeRangeForPlayback(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) -> CMTimeRange {
+        CMTimeRange(start: .zero, duration: .positiveInfinity)
+    }
+
+    nonisolated func pictureInPictureControllerIsPlaybackPaused(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) -> Bool {
+        false
+    }
+
+    nonisolated func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        didTransitionToRenderSize newRenderSize: CMVideoDimensions
+    ) {
+        FloeLogger(category: .app).debug(
+            "pictureInPictureRenderSizeChanged width=\(newRenderSize.width) height=\(newRenderSize.height)"
+        )
+    }
+
+    nonisolated func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        skipByInterval skipInterval: CMTime,
+        completion completionHandler: @escaping () -> Void
+    ) {
+        completionHandler()
+    }
+}
+
+/// Shared run-surface control. It stays out of the UI until PiP has prepared
+/// content (or a recoverable preparation error), and never starts from a
+/// scene-phase transition.
+struct BackgroundPiPToolbarButton: View {
+    @ObservedObject var videoService: BackgroundVideoService
+    var isRunActive: Bool
+
+    var body: some View {
+        if isRunActive && videoService.shouldOfferManualControl {
+            Button {
+                videoService.performManualControl()
+            } label: {
+                Label(
+                    videoService.manualControlTitle,
+                    systemImage: videoService.manualControlSystemImage
+                )
             }
+            .disabled(!videoService.canPerformManualControl)
+            .accessibilityIdentifier("background.pip.control")
+            .help(videoService.preparationState.localizedDescription)
         }
     }
 }

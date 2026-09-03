@@ -153,5 +153,30 @@ struct CrashAndFeedbackRegressionTests {
         ))
         #expect(FeedbackUploadService.retryAfterSeconds(from: response) == 17)
     }
+
+    @Test("PiP starts and retries only from actionable stable states")
+    @MainActor
+    func pictureInPictureManualControlStateContract() {
+        typealias State = BackgroundVideoService.PiPPreparationState
+        #expect(State.prepared.manualAction == .start)
+        #expect(State.active.manualAction == .stop)
+        #expect(State.failed.manualAction == .retryPreparation)
+        #expect(State.starting.manualAction == .none)
+        #expect(State.renderingContent.manualAction == .none)
+        #expect(State.waitingForMedia.manualAction == .none)
+        #expect(State.idle.manualAction == .none)
+        #expect(State.prepared.offersManualControl)
+        #expect(State.starting.offersManualControl)
+        #expect(State.active.offersManualControl)
+        #expect(State.failed.offersManualControl)
+        #expect(!State.renderingContent.offersManualControl)
+        #expect(!State.waitingForMedia.offersManualControl)
+        #expect(!State.idle.offersManualControl)
+        #expect(State.idle.allowsAutomaticPreparation)
+        #expect(!State.failed.allowsAutomaticPreparation)
+        #expect(!State.prepared.allowsAutomaticPreparation)
+        #expect(State.prepared.requiresForegroundRevalidation)
+        #expect(!State.failed.requiresForegroundRevalidation)
+    }
 }
 #endif

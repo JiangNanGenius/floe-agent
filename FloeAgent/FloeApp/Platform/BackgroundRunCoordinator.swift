@@ -226,10 +226,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     /// Applies the user's background-execution choice when a run starts.
     /// `standard` relies on the 30s lease + continued task (no extra UI);
-    /// Both visual modes prepare a real task-progress PiP. It is started only
-    /// after the scene enters background. Screen-share mode
-    /// additionally asks the matching thread to present ReplayKit's system
-    /// consent flow as soon as the task starts.
+    /// Both visual modes prepare real task-progress content. PiP is started
+    /// only by the explicit task/canvas toolbar control; scene transitions
+    /// never stand in for user intent. Screen-share mode additionally asks the
+    /// matching thread to present ReplayKit's system consent flow.
     private func applyBackgroundExecutionPreference(
         runID: UUID,
         conversationID: UUID,
@@ -260,16 +260,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     title: runTitle,
                     progress: "正在运行"
                 )
-                if isAppInBackground {
-                    environment.backgroundVideoService.startPreparedPictureInPicture()
-                }
             } else {
                 Task { [weak self] in
                     guard let self else { return }
                     await self.environment.backgroundVideoService.begin(
                         title: runTitle,
-                        initialProgress: "正在运行",
-                        startImmediately: self.isAppInBackground
+                        initialProgress: "正在运行"
                     )
                 }
             }
@@ -285,16 +281,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     progress: environment.screenShareCenter.isSharing
                         ? "正在共享屏幕" : "任务正在运行"
                 )
-                if isAppInBackground {
-                    environment.backgroundVideoService.startPreparedPictureInPicture()
-                }
             } else {
                 Task { [weak self] in
                     guard let self else { return }
                     await self.environment.backgroundVideoService.begin(
                         title: runTitle,
-                        initialProgress: "任务正在运行",
-                        startImmediately: self.isAppInBackground
+                        initialProgress: "任务正在运行"
                     )
                 }
             }
@@ -320,41 +312,27 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// still active, move the surface to a real remaining run instead of
     /// leaving the completed title frozen indefinitely.
     private func resumeBackgroundSurfaceIfNeeded() {
-        guard isAppInBackground,
-              visualSurfacePolicy.allowsVisualSurface(
+        guard visualSurfacePolicy.allowsVisualSurface(
                   for: environment.settingsCenter.backgroundExecution
               ) else { return }
         let candidate = activeRuns.first.map { (id: $0.key, run: $0.value) }
             ?? retainedPausedRun
         guard let (runID, run) = candidate else { return }
         surfacedRunID = runID
-        startPiPCarousel()
-        if environment.backgroundVideoService.isPiPActive {
-            environment.backgroundVideoService.update(
-                title: run.title,
-                progress: "正在运行"
-            )
-            return
+        environment.backgroundVideoService.update(
+            title: run.title,
+            progress: "\(run.stage) · \(run.progress)%"
+        )
+        if isAppInBackground {
+            startPiPCarousel()
         }
-        if environment.backgroundVideoService.isPiPPrepared {
-            environment.backgroundVideoService.startPreparedPictureInPicture()
-            return
-        }
-        if environment.backgroundVideoService.isPreparingPiP {
-            // The foreground preparation already owns the source view and
-            // encoder. Mark it to start when ready; beginning again here would
-            // cancel it after the scene has lost its attachable key window.
-            environment.backgroundVideoService.startPreparedPictureInPicture()
-            return
-        }
-        Task { [weak self] in
-            guard let self else { return }
-            await self.environment.backgroundVideoService.begin(
-                title: run.title,
-                initialProgress: "正在运行",
-                startImmediately: true
-            )
-        }
+        guard !environment.backgroundVideoService.isPiPActive else { return }
+        // Prepared or preparing content deliberately stays dormant. Ordinary
+        // continuation is handled by BGContinuedProcessingTask and the short
+        // completion lease; background entry must not create or start PiP.
+        FloeLogger(category: .app).debug(
+            "pictureInPictureBackgroundTransitionNoStart state=\(environment.backgroundVideoService.preparationState.rawValue)"
+        )
     }
 
     /// Keep a multi-task PiP useful without cramming several unreadable rows
@@ -499,6 +477,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             pipCarouselTask?.cancel()
             pipCarouselTask = nil
             environment.backgroundVideoService.retractForForeground()
+            environment.backgroundVideoService.revalidatePreparedContentForForeground()
             if visualSurfacePolicy.allowsVisualSurface(
                 for: environment.settingsCenter.backgroundExecution
             ) {
@@ -514,17 +493,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 await self?.environment.memoryDreamService.deepDream()
             }
         case .inactive:
-            // iPadOS may move directly through inactive while automatic PiP
-            // begins and delay/omit the SwiftUI background callback. Request
-            // the controller during this transition while the source view is
-            // still attached to a foreground window. If video synthesis is
-            // still running, the service records the deferred start instead
-            // of losing this only reliable lifecycle signal.
-            if visualSurfacePolicy.allowsVisualSurface(
-                for: environment.settingsCenter.backgroundExecution
-            ), !activeRuns.isEmpty {
-                environment.backgroundVideoService.startPreparedPictureInPicture()
-            }
+            // Inactive can mean Control Center, a notification, scene handoff,
+            // or the start of backgrounding. None is explicit PiP intent.
+            FloeLogger(category: .app).debug(
+                "pictureInPictureInactiveTransitionNoStart activeRuns=\(activeRuns.count)"
+            )
         @unknown default:
             break
         }
@@ -535,15 +508,13 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         UserDefaults.standard.set(data, forKey: Self.visualSurfacePolicyDefaultsKey)
     }
 
-    /// A user/system close destroys AVKit's controller. Rebuild it while a
-    /// foreground key window exists so the next background transition can
-    /// start immediately; attempting this only after entering background
-    /// cannot attach the required inline player layer.
-    private func prepareBackgroundSurfaceIfNeeded(startImmediately: Bool = false) {
+    /// A user/system close destroys AVKit's controller. Rebuild its detached
+    /// sample-buffer content while foregrounded; actual start remains manual.
+    private func prepareBackgroundSurfaceIfNeeded() {
         guard visualSurfacePolicy.allowsVisualSurface(
                   for: environment.settingsCenter.backgroundExecution
               ),
-              !environment.backgroundVideoService.isPiPPrepared,
+              environment.backgroundVideoService.preparationState.allowsAutomaticPreparation,
               !environment.backgroundVideoService.isPreparingPiP else { return }
         let candidate = activeRuns.first.map { (id: $0.key, run: $0.value) }
             ?? retainedPausedRun
@@ -553,8 +524,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             guard let self else { return }
             await self.environment.backgroundVideoService.begin(
                 title: run.title,
-                initialProgress: "\(run.stage) · \(run.progress)%",
-                startImmediately: startImmediately
+                initialProgress: "\(run.stage) · \(run.progress)%"
             )
         }
     }

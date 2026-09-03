@@ -110,7 +110,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      - name: Verify canvas touch interaction contract
+      - name: Verify Canvas and PiP app regression contracts
         run: |
           xcodebuild \
             -skipPackagePluginValidation \
@@ -118,10 +118,39 @@ jobs:
             -project FloeAgent.xcodeproj \
             -scheme FloeAgent \
             -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
-            -derivedDataPath "$RUNNER_TEMP/FloeCanvasTouchDerivedData" \
+            -derivedDataPath "$RUNNER_TEMP/FloeAppRegressionDerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/FloeAgent-AppRegressionTests.xcresult" \
             -only-testing:FloeAppTests/CanvasTouchInteractionTests \
+            -only-testing:FloeAppTests/CrashAndFeedbackRegressionTests \
             CODE_SIGNING_ALLOWED=NO \
             test
+          python3 - "$RUNNER_TEMP/FloeAgent-AppRegressionTests.xcresult" <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          result_bundle = sys.argv[1]
+          summary = json.loads(subprocess.check_output(
+              [
+                  "xcrun", "xcresulttool", "get", "test-results", "summary",
+                  "--path", result_bundle, "--compact",
+              ],
+              text=True,
+          ))
+
+          def required_count(name: str) -> int:
+              value = summary.get(name)
+              if type(value) is not int:
+                  raise SystemExit(f"xcresult summary is missing integer {name}: {value!r}")
+              return value
+
+          total = required_count("totalTestCount")
+          passed = required_count("passedTests")
+          failed = required_count("failedTests")
+          print(f"canvas-pip-app-regression-summary total={total} passed={passed} failed={failed}")
+          if total < 14 or failed != 0 or passed != total:
+              raise SystemExit("Canvas and PiP app regression focused test gate failed")
+          PY
 
       - name: Scan source and generate compliance artifacts
         run: |

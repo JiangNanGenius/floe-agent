@@ -719,6 +719,45 @@ public enum CanvasGenerationGraphPlanner {
     }
 }
 
+/// Rebuilds the local commit for a completed media-generation attempt against
+/// the latest canvas revision. The provider request may take long enough for a
+/// viewport or node edit to advance the project while it is in flight; those
+/// unrelated changes must be preserved instead of turning a successful remote
+/// generation into a revision-conflict failure.
+public enum CanvasGenerationCommitPlanner {
+    public static func patch(
+        project: CanvasProject,
+        documentID: UUID,
+        configurationNodeID: UUID,
+        resultNodeID: UUID,
+        generationAttemptID: String,
+        operations: [CanvasPatchOperation]
+    ) throws -> CanvasPatch {
+        guard !generationAttemptID.isEmpty else {
+            throw FloeError.validationFailed("Canvas generation attempt id is missing")
+        }
+        guard let document = project.documents.first(where: { $0.id == documentID }) else {
+            throw FloeError.validationFailed("Canvas document does not exist")
+        }
+        guard let configuration = document.nodes.first(where: {
+            $0.id == configurationNodeID && $0.kind == .generationTask
+        }),
+              configuration.metadata["generationAttemptID"] == generationAttemptID,
+              let result = document.nodes.first(where: { $0.id == resultNodeID }),
+              result.metadata["generationAttemptID"] == generationAttemptID else {
+            throw FloeError.validationFailed(
+                "Canvas generation attempt was superseded before its local result was committed"
+            )
+        }
+        return CanvasPatch(
+            canvasID: project.id,
+            documentID: documentID,
+            expectedRevision: project.revision,
+            operations: operations
+        )
+    }
+}
+
 /// Saves the editable generation node without manufacturing prompt or result
 /// nodes. Generation execution uses `CanvasGenerationGraphPlanner` later to
 /// materialize exactly the provider result that was actually requested.

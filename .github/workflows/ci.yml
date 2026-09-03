@@ -65,17 +65,45 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      - name: Canvas touch interaction regression tests
+      - name: Canvas and PiP app regression tests
         run: |
           xcodebuild \
             -skipPackagePluginValidation \
             -skipMacroValidation \
             -scheme FloeAgent \
             -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
-            -resultBundlePath FloeAgent-CanvasTouchTests.xcresult \
+            -resultBundlePath FloeAgent-AppRegressionTests.xcresult \
             -only-testing:FloeAppTests/CanvasTouchInteractionTests \
+            -only-testing:FloeAppTests/CrashAndFeedbackRegressionTests \
             CODE_SIGNING_ALLOWED=NO \
             test
+          python3 - FloeAgent-AppRegressionTests.xcresult <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          result_bundle = sys.argv[1]
+          summary = json.loads(subprocess.check_output(
+              [
+                  "xcrun", "xcresulttool", "get", "test-results", "summary",
+                  "--path", result_bundle, "--compact",
+              ],
+              text=True,
+          ))
+
+          def required_count(name: str) -> int:
+              value = summary.get(name)
+              if type(value) is not int:
+                  raise SystemExit(f"xcresult summary is missing integer {name}: {value!r}")
+              return value
+
+          total = required_count("totalTestCount")
+          passed = required_count("passedTests")
+          failed = required_count("failedTests")
+          print(f"canvas-pip-app-regression-summary total={total} passed={passed} failed={failed}")
+          if total < 14 or failed != 0 or passed != total:
+              raise SystemExit("Canvas and PiP app regression focused test gate failed")
+          PY
 
       - name: SPM build (cross-platform targets)
         run: swift build
@@ -137,7 +165,7 @@ jobs:
             FloeAgent/.gitleaks-report.json
             FloeAgent/FloeAgent-iPhone.xcresult
             FloeAgent/FloeAgent-iPad.xcresult
-            FloeAgent/FloeAgent-CanvasTouchTests.xcresult
+            FloeAgent/FloeAgent-AppRegressionTests.xcresult
           if-no-files-found: ignore
 
   appstore-sdk-compatibility:
