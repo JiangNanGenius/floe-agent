@@ -242,6 +242,7 @@ struct AgentRuntimeTests {
         store: any CheckpointStore = MockCheckpointStore(),
         sink: MockSink = MockSink(),
         verifyFinalAnswer: Bool = false,
+        unchangedToolOutcomeLimit: Int = 3,
         toolCallNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)? = nil
     ) -> FloeAgentRuntime {
         let provider = TestFixtures.localhostProvider()
@@ -251,6 +252,7 @@ struct AgentRuntimeTests {
                 model: model ?? TestFixtures.testModel(providerID: provider.id),
                 pauseTimeout: 0.1,
                 verifyFinalAnswer: verifyFinalAnswer,
+                unchangedToolOutcomeLimit: unchangedToolOutcomeLimit,
                 providerRetryBaseDelay: 0,
                 providerRetryMaxDelay: 0,
                 providerRetryJitterRatio: 0
@@ -1210,6 +1212,41 @@ struct AgentRuntimeTests {
         #expect(store.saved.contains {
             $0.toolLifecycleEntries?.contains { $0.phase == .resultCommitted } == true
         })
+    }
+
+    @Test("Tool-free no-progress finalization preserves the last provider call/result pair")
+    func noProgressFinalizationPreservesDispatchPair() async throws {
+        let adapter = MockAdapter()
+        let first = try TestFixtures.toolCall(id: "repeat-1")
+        let second = try TestFixtures.toolCall(id: "repeat-2")
+        adapter.script = [
+            [.toolRequest(first), .completed(.init(stopReason: .toolUse))],
+            [.toolRequest(second), .completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "Stopped after unchanged evidence.")),
+             .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let store = MockCheckpointStore()
+        let runtime = makeRuntime(
+            adapter: adapter,
+            executor: executor,
+            store: store,
+            unchangedToolOutcomeLimit: 2
+        )
+
+        try await runtime.start(goal: "do not repeat unchanged work")
+
+        let finalRequest = try #require(adapter.requests.last)
+        #expect(finalRequest.toolSchemas.isEmpty)
+        #expect(finalRequest.pendingToolCalls.map(\.id) == [second.id])
+        #expect(finalRequest.toolResults.map(\.callID) == [second.id])
+        #expect(!store.saved.contains { checkpoint in
+            HarnessInvariantRegistry.validateCheckpoint(checkpoint).contains {
+                $0.name == "checkpoint.dispatchPairingMismatch"
+            }
+        })
+        #expect(await runtime.state.name == "completed")
     }
 
     @Test("Provider server error fails the run as recoverable")

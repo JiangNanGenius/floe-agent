@@ -200,6 +200,27 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         hasActiveRuns || hasRetainedPausedRun
     }
 
+    nonisolated static func shouldOfferVisualSurfaceControl(
+        conversationID: UUID,
+        activeConversationIDs: [UUID?],
+        retainedConversationID: UUID?
+    ) -> Bool {
+        retainedConversationID == conversationID
+            || activeConversationIDs.contains { $0 == conversationID }
+    }
+
+    /// Ordinary chat can leave a failed or checkpointed run intentionally
+    /// retained after `ConversationCenter` stops reporting it as running. The
+    /// PiP source host must follow this coordinator-owned lifetime, otherwise
+    /// the inline AVKit source disappears before iOS can detach it into PiP.
+    func shouldOfferVisualSurfaceControl(conversationID: UUID) -> Bool {
+        Self.shouldOfferVisualSurfaceControl(
+            conversationID: conversationID,
+            activeConversationIDs: activeRuns.values.map(\.conversationID),
+            retainedConversationID: retainedPausedRun?.run.conversationID
+        )
+    }
+
     /// Settings are live, not just launch defaults. A continued-processing
     /// task is a system Live Activity, so changing to either visual mode must
     /// complete an already accepted task immediately.

@@ -15,7 +15,7 @@ SUITE_MINIMUMS = {
     "CanvasTouchInteractionTests": 3,
     "CanvasSavedImageBatchAtomicityTests": 9,
     "CanvasAgentToolContractTests": 7,
-    "CrashAndFeedbackRegressionTests": 28,
+    "CrashAndFeedbackRegressionTests": 32,
     "ThreadTimelineTests": 18,
 }
 

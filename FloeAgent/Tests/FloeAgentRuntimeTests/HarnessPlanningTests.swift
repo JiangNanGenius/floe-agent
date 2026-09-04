@@ -147,6 +147,103 @@ struct HarnessPlanningTests {
         #expect(prompt.contains("resource bindings"))
     }
 
+    @Test("VNC schemas advance only after durable prerequisite evidence")
+    func vncStatefulToolGate() throws {
+        var ledger = HarnessExecutionLedger()
+        #expect(ledger.allowsStatefulTool(named: "vnc.status"))
+        #expect(!ledger.allowsStatefulTool(named: "vnc.observe"))
+        #expect(!ledger.allowsStatefulTool(named: "vnc.connect"))
+
+        let status = try ToolCall(
+            id: "vnc-status",
+            toolName: "vnc.status",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        ledger.record(call: status, result: ToolResult(
+            callID: status.id,
+            status: .ok,
+            outputSummary: #"{"status":"ok","connectionState":"disconnected","configuredEndpointCount":1}"#,
+            outputDigest: "status"
+        ))
+        #expect(ledger.allowsStatefulTool(named: "vnc.connect"))
+        #expect(!ledger.allowsStatefulTool(named: "vnc.observe"))
+
+        let connect = try ToolCall(
+            id: "vnc-connect",
+            toolName: "vnc.connect",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        ledger.record(call: connect, result: ToolResult(
+            callID: connect.id,
+            status: .ok,
+            outputSummary: #"{"status":"ok","connectionState":"connected"}"#,
+            outputDigest: "connected"
+        ))
+        #expect(ledger.allowsStatefulTool(named: "vnc.observe"))
+        #expect(ledger.allowsStatefulTool(named: "vnc.click"))
+    }
+
+    @Test("Unconfigured VNC waits for resolver and memory writes wait for prior inspection")
+    func statefulConfigurationAndMemoryGates() throws {
+        var ledger = HarnessExecutionLedger()
+        let status = try ToolCall(
+            id: "unconfigured",
+            toolName: "vnc.status",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        ledger.record(call: status, result: ToolResult(
+            callID: status.id,
+            status: .ok,
+            outputSummary: #"{"connectionState":"unconfigured","configuredEndpointCount":0}"#,
+            outputDigest: "unconfigured"
+        ))
+        #expect(!ledger.allowsStatefulTool(named: "vnc.connect"))
+        #expect(ledger.allowsStatefulTool(named: "ssh.listHosts"))
+        #expect(!ledger.allowsStatefulTool(named: "memory.remember"))
+
+        let search = try ToolCall(
+            id: "memory-search",
+            toolName: "memory.search",
+            argumentsJSON: Data(#"{"query":"current version"}"#.utf8),
+            scope: .local
+        )
+        ledger.record(call: search, result: ToolResult(
+            callID: search.id,
+            status: .ok,
+            outputSummary: "status=ok count=0",
+            outputDigest: "searched"
+        ))
+        #expect(ledger.allowsStatefulTool(named: "memory.remember"))
+        #expect(ledger.allowsStatefulTool(named: "memory.update"))
+    }
+
+    @Test("An explicit SSH-before-VNC request keeps every VNC tool hidden until SSH executes")
+    func explicitSSHBeforeVNCGate() throws {
+        let goal = "请先用 SSH 配置主机，再用 VNC 测试点击"
+        var ledger = HarnessExecutionLedger()
+        #expect(HarnessExecutionLedger.requiresSSHBeforeVNC(goal))
+        #expect(!ledger.allowsStatefulTool(named: "vnc.status", userGoal: goal))
+        #expect(ledger.allowsStatefulTool(named: "ssh.listHosts", userGoal: goal))
+
+        let execute = try ToolCall(
+            id: "ssh-execute",
+            toolName: "ssh.execute",
+            argumentsJSON: Data(#"{"command":"start-vnc"}"#.utf8),
+            scope: .local
+        )
+        ledger.record(call: execute, result: ToolResult(
+            callID: execute.id,
+            status: .ok,
+            outputSummary: #"{"state":"completed","exitStatus":0}"#,
+            outputDigest: "ssh-completed"
+        ))
+        #expect(ledger.allowsStatefulTool(named: "vnc.status", userGoal: goal))
+        #expect(!ledger.allowsStatefulTool(named: "vnc.observe", userGoal: goal))
+    }
+
     @Test("resource discovery produces bounded structured bindings")
     func structuredResourceBindings() {
         let hostID = UUID().uuidString
@@ -177,7 +274,8 @@ struct HarnessPlanningTests {
         )
         #expect(prompt.contains("Remote-host workflow"))
         #expect(prompt.contains("remote.connection.open -> reuse its sessionID"))
-        #expect(prompt.contains("memory.search/list returns stable memory IDs"))
+        #expect(prompt.contains("before every remember, update, forget, or batchApply"))
+        #expect(prompt.contains("Search/list returns stable memory IDs"))
         #expect(prompt.contains("reuse its exact taskID with ssh.taskStatus"))
         #expect(prompt.contains("vnc.status -> vnc.connect -> vnc.observe"))
         #expect(prompt.contains("explicit user-requested prerequisite method or tool order is binding"))

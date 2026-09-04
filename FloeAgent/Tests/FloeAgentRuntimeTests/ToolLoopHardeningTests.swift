@@ -62,8 +62,8 @@ struct ToolLoopHardeningTests {
         let adapter = MockAdapter()
         adapter.script = [[.completed(.init(stopReason: .endTurn))]]
         let executor = MockExecutor()
-        executor.descriptors["vnc.observe"] = ToolCatalog.Descriptor(
-            name: "vnc.observe",
+        executor.descriptors["test.observe"] = ToolCatalog.Descriptor(
+            name: "test.observe",
             toolDescription: "Observe the active VNC framebuffer.",
             riskLabels: [],
             isSideEffecting: false,
@@ -88,7 +88,7 @@ struct ToolLoopHardeningTests {
 
         let request = try #require(adapter.requests.first)
         let description = try #require(
-            request.toolSchemas.first(where: { $0.name == "vnc.observe" })?.description
+            request.toolSchemas.first(where: { $0.name == "test.observe" })?.description
         )
         #expect(description.contains("Requires state vnc.connected"))
         #expect(description.contains("resolve explicitly with vnc.connect"))
@@ -251,11 +251,11 @@ struct ToolLoopHardeningTests {
     @Test("duplicate calls in one provider batch execute only once")
     func duplicateCallsInOneBatchExecuteOnce() async throws {
         let first = try ToolCall(
-            id: "batch-vnc-1", toolName: "vnc.observe",
+            id: "batch-observe-1", toolName: "test.observe",
             argumentsJSON: Data("{}".utf8), scope: .local
         )
         let duplicate = try ToolCall(
-            id: "batch-vnc-2", toolName: "vnc.observe",
+            id: "batch-observe-2", toolName: "test.observe",
             argumentsJSON: Data("{}".utf8), scope: .local
         )
         let adapter = MockAdapter()
@@ -264,8 +264,8 @@ struct ToolLoopHardeningTests {
             [.completed(.init(stopReason: .endTurn))]
         ]
         let executor = MockExecutor()
-        executor.descriptors["vnc.observe"] = ToolCatalog.Descriptor(
-            name: "vnc.observe", riskLabels: [], isSideEffecting: false
+        executor.descriptors["test.observe"] = ToolCatalog.Descriptor(
+            name: "test.observe", riskLabels: [], isSideEffecting: false
         )
         let sink = MockSink()
         let provider = TestFixtures.localhostProvider()
@@ -295,7 +295,7 @@ struct ToolLoopHardeningTests {
     func nonretryableFailureBlocksUnchangedRetry() async throws {
         let calls = try (1...3).map {
             try ToolCall(
-                id: "vnc-missing-\($0)", toolName: "vnc.observe",
+                id: "observe-missing-\($0)", toolName: "test.observe",
                 argumentsJSON: Data("{}".utf8), scope: .local
             )
         }
@@ -303,8 +303,8 @@ struct ToolLoopHardeningTests {
         adapter.script = calls.map { [.toolRequest($0)] }
             + [[.completed(.init(stopReason: .endTurn))]]
         let executor = MockExecutor()
-        executor.descriptors["vnc.observe"] = ToolCatalog.Descriptor(
-            name: "vnc.observe", riskLabels: [], isSideEffecting: false
+        executor.descriptors["test.observe"] = ToolCatalog.Descriptor(
+            name: "test.observe", riskLabels: [], isSideEffecting: false
         )
         executor.results = [ToolResult(
             callID: calls[0].id,
@@ -336,11 +336,11 @@ struct ToolLoopHardeningTests {
     @Test("a suppressed non-retryable retry can change to a recovery route")
     func nonretryableFailureCanChangeRoute() async throws {
         let failed = try ToolCall(
-            id: "vnc-missing-first", toolName: "vnc.observe",
+            id: "observe-missing-first", toolName: "test.observe",
             argumentsJSON: Data("{}".utf8), scope: .local
         )
         let suppressed = try ToolCall(
-            id: "vnc-missing-suppressed", toolName: "vnc.observe",
+            id: "observe-missing-suppressed", toolName: "test.observe",
             argumentsJSON: Data("{}".utf8), scope: .local
         )
         let recovery = try ToolCall(
@@ -355,8 +355,8 @@ struct ToolLoopHardeningTests {
             [.completed(.init(stopReason: .endTurn))]
         ]
         let executor = MockExecutor()
-        executor.descriptors["vnc.observe"] = ToolCatalog.Descriptor(
-            name: "vnc.observe", riskLabels: [], isSideEffecting: false
+        executor.descriptors["test.observe"] = ToolCatalog.Descriptor(
+            name: "test.observe", riskLabels: [], isSideEffecting: false
         )
         executor.descriptors["ssh.listHosts"] = ToolCatalog.Descriptor(
             name: "ssh.listHosts", riskLabels: [], isSideEffecting: false

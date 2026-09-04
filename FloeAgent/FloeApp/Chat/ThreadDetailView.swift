@@ -467,6 +467,8 @@ struct ThreadDetailView: View {
             BackgroundPiPToolbarButton(
                 videoService: environment.backgroundVideoService,
                 isRunActive: viewModel.isRunning
+                    || environment.backgroundRunCoordinator
+                        .shouldOfferVisualSurfaceControl(conversationID: viewModel.conversationID)
             )
         }
         ToolbarItem(placement: .topBarTrailing) {

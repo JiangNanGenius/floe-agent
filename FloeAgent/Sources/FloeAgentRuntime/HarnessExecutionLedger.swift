@@ -7,6 +7,13 @@ import FloeModels
 /// immediately preceding pair forward. This ledger gives later turns a small
 /// continuation signal without replaying large outputs or exposing arguments.
 struct HarnessExecutionLedger: Sendable {
+    enum VNCWorkflowStage: Sendable, Equatable {
+        case needsStatus
+        case needsConfiguration
+        case needsConnection
+        case connected
+    }
+
     struct Entry: Sendable, Hashable {
         var toolName: String
         var callFingerprint: String
@@ -44,6 +51,128 @@ struct HarnessExecutionLedger: Sendable {
             )
         }
     }
+
+    /// Tool schemas for stateful workflows are exposed progressively. This is
+    /// deliberately derived from the durable ledger so recovery cannot forget
+    /// that a prerequisite already ran (or, worse, skip one that did not).
+    func allowsStatefulTool(named toolName: String, userGoal: String = "") -> Bool {
+        if toolName.hasPrefix("vnc.") {
+            if Self.requiresSSHBeforeVNC(userGoal), !completedSSHPrerequisite {
+                return false
+            }
+            switch vncWorkflowStage {
+            case .needsStatus, .needsConfiguration:
+                return toolName == "vnc.status"
+            case .needsConnection:
+                return ["vnc.status", "vnc.connect", "vnc.reconnect"].contains(toolName)
+            case .connected:
+                return true
+            }
+        }
+        if Self.memoryMutationTools.contains(toolName) {
+            return entries.contains {
+                $0.status == .ok && Self.memoryInspectionTools.contains($0.toolName)
+            }
+        }
+        return true
+    }
+
+    func statefulToolDenialReason(
+        for toolName: String,
+        userGoal: String = ""
+    ) -> String? {
+        guard !allowsStatefulTool(named: toolName, userGoal: userGoal) else { return nil }
+        if toolName.hasPrefix("vnc.") {
+            if Self.requiresSSHBeforeVNC(userGoal), !completedSSHPrerequisite {
+                return "The user explicitly required SSH before VNC. Complete the SSH command route first; do not call any VNC tool yet."
+            }
+            return switch vncWorkflowStage {
+            case .needsStatus:
+                "VNC workflow prerequisite is incomplete. Call vnc.status first."
+            case .needsConfiguration:
+                "VNC is unconfigured. Complete the user-selected configuration route, then call vnc.status again before connecting."
+            case .needsConnection:
+                "VNC is disconnected. Call vnc.connect before observation or input."
+            case .connected:
+                nil
+            }
+        }
+        if Self.memoryMutationTools.contains(toolName) {
+            return "Inspect prior memory with memory.search, memory.list, memory.recall, or memory.organizePreview before writing, updating, or deleting memory."
+        }
+        return nil
+    }
+
+    var vncWorkflowStage: VNCWorkflowStage {
+        var stage: VNCWorkflowStage = .needsStatus
+        for entry in entries {
+            guard entry.status == .ok else {
+                if entry.toolName.hasPrefix("vnc."), entry.toolName != "vnc.status" {
+                    stage = .needsStatus
+                }
+                continue
+            }
+            switch entry.toolName {
+            case "ssh.updateHost", "vnc.disconnect":
+                stage = .needsStatus
+            case "vnc.connect", "vnc.reconnect", "vnc.observe":
+                stage = .connected
+            case "vnc.status":
+                let compact = entry.excerpt
+                    .lowercased()
+                    .filter { !$0.isWhitespace }
+                if compact.contains("\"connectionstate\":\"connected\"") {
+                    stage = .connected
+                } else if compact.contains("\"connectionstate\":\"unconfigured\"")
+                            || compact.contains("\"category\":\"configurationmissing\"")
+                            || compact.contains("\"category\":\"credentialmissing\"")
+                            || compact.contains("\"category\":\"authenticationfailed\"") {
+                    stage = .needsConfiguration
+                } else if compact.contains("\"connectionstate\":\"disconnected\"")
+                            || compact.contains("\"connectionstate\":\"failed\"") {
+                    stage = .needsConnection
+                } else {
+                    stage = .needsStatus
+                }
+            default:
+                break
+            }
+        }
+        return stage
+    }
+
+    private var completedSSHPrerequisite: Bool {
+        guard let commandIndex = entries.lastIndex(where: {
+            $0.toolName == "ssh.execute" && $0.status == .ok
+        }) else { return false }
+        let command = entries[commandIndex]
+        let compact = command.excerpt.lowercased().filter { !$0.isWhitespace }
+        guard compact.contains("\"state\":\"running\"") else { return true }
+        return entries.indices.contains { index in
+            index > commandIndex
+                && entries[index].toolName == "ssh.taskStatus"
+                && entries[index].status == .ok
+                && !entries[index].excerpt.lowercased().filter { !$0.isWhitespace }
+                    .contains("\"state\":\"running\"")
+        }
+    }
+
+    static func requiresSSHBeforeVNC(_ goal: String) -> Bool {
+        let value = goal.lowercased()
+        guard let ssh = value.range(of: "ssh"), let vnc = value.range(of: "vnc"),
+              ssh.lowerBound < vnc.lowerBound else { return false }
+        let between = value[ssh.lowerBound..<vnc.lowerBound]
+        return between.contains("先") || between.contains("再")
+            || between.contains("before") || between.contains("then")
+            || value.contains("ssh first")
+    }
+
+    private static let memoryInspectionTools: Set<String> = [
+        "memory.search", "memory.list", "memory.recall", "memory.organizePreview"
+    ]
+    private static let memoryMutationTools: Set<String> = [
+        "memory.remember", "memory.update", "memory.forget", "memory.batchApply"
+    ]
 
     /// Returns a terminal result that is safe to feed back to the provider
     /// when a recovered model emits the same call again. Successful calls are

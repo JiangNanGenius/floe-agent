@@ -6,6 +6,8 @@ import Foundation
 import AVFoundation
 import BackgroundTasks
 import Testing
+import FloeAgentRuntime
+import FloePersistence
 @testable import FloeApp
 
 private actor ContinuedProcessingExpirationTestGate {
@@ -770,6 +772,95 @@ struct CrashAndFeedbackRegressionTests {
         #expect(!screenShare.stopsScreenShare)
         #expect(!screenShare.preparesPictureInPicture)
         #expect(!screenShare.requestsScreenShareAuthorization)
+    }
+
+    @Test("Ordinary conversation retains its PiP source while checkpointed")
+    func ordinaryConversationRetainedPiPSourceOwnership() {
+        let conversationID = UUID()
+        #expect(BackgroundRunCoordinator.shouldOfferVisualSurfaceControl(
+            conversationID: conversationID,
+            activeConversationIDs: [],
+            retainedConversationID: conversationID
+        ))
+        #expect(BackgroundRunCoordinator.shouldOfferVisualSurfaceControl(
+            conversationID: conversationID,
+            activeConversationIDs: [nil, conversationID],
+            retainedConversationID: nil
+        ))
+        #expect(!BackgroundRunCoordinator.shouldOfferVisualSurfaceControl(
+            conversationID: conversationID,
+            activeConversationIDs: [UUID(), nil],
+            retainedConversationID: UUID()
+        ))
+    }
+
+    @Test("Explicit SSH to VNC route excludes unrelated execution runtimes")
+    func explicitRemoteRouteToolRestriction() {
+        let available: Set<String> = [
+            "ssh.listHosts", "ssh.execute", "ssh.updateHost",
+            "vnc.status", "vnc.connect", "vnc.observe",
+            "exec.javascript", "exec.localPython"
+        ]
+        let selected = ConversationCenter.toolsForExplicitRemoteRoute(
+            request: "先用 SSH 配置主机，再测试 VNC 点击",
+            from: available
+        )
+        #expect(selected == [
+            "ssh.listHosts", "ssh.execute", "ssh.updateHost",
+            "vnc.status", "vnc.connect", "vnc.observe"
+        ])
+        #expect(ConversationCenter.toolsForExplicitRemoteRoute(
+            request: "用 VNC 看一下屏幕",
+            from: available
+        ) == nil)
+    }
+
+    @Test("Memory dream compares new facts with prior versions")
+    @MainActor
+    func memoryDreamPromptIncludesPriorMemoryAudit() {
+        let conversationID = UUID()
+        let oldMemory = MemoryEntry(
+            scope: .agentGlobal,
+            status: .active,
+            content: "Floe version is 1.4.82",
+            confidence: 1,
+            importance: 0.8,
+            sourceKind: .explicitUserRequest
+        )
+        let prompt = MemoryDreamService.buildPrompt([
+            PersistedMessage(
+                id: UUID(),
+                conversationID: conversationID,
+                role: "user",
+                content: "Floe has upgraded to 1.4.83",
+                createdAt: Date()
+            )
+        ], existing: [oldMemory])
+
+        #expect(prompt.contains(oldMemory.id.uuidString))
+        #expect(prompt.contains("Floe version is 1.4.82"))
+        #expect(prompt.contains("conflictsWithEntryIDs"))
+        #expect(prompt.contains("Never assume an older value is still current"))
+    }
+
+    @Test("Semantic organizer never duplicates deterministic review suggestions")
+    func semanticMemorySuggestionMergeIsStable() {
+        let first = UUID()
+        let second = UUID()
+        let deterministic = MemoryOrganizationSuggestion(
+            kind: .possibleDuplicate,
+            memoryIDs: [first, second],
+            reason: "deterministic",
+            canApplyAutomatically: false
+        )
+        let semantic = MemoryOrganizationSuggestion(
+            kind: .possibleDuplicate,
+            memoryIDs: [second, first],
+            reason: "semantic",
+            canApplyAutomatically: false
+        )
+
+        #expect(MemorySemanticOrganizer.merging([deterministic], [semantic]).count == 1)
     }
 }
 #endif

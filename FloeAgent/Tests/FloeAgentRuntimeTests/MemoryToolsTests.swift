@@ -43,6 +43,30 @@ struct MemoryToolsTests {
         #expect(await store.activeFor(.agentGlobal).isEmpty)
     }
 
+    @Test("memory.remember checks prior memory and does not duplicate identical content")
+    func rememberAvoidsExactDuplicate() async throws {
+        let store = FakeMemoryStore()
+        let existing = MemoryEntry(
+            scope: .agentGlobal,
+            status: .active,
+            content: "Floe uses dark mode",
+            confidence: 1,
+            importance: 0.8,
+            sourceKind: .explicitUserRequest
+        )
+        await store.preload([existing])
+        let tool = MemoryRememberTool(store: store) { _ in UUID() }
+
+        let output = try await tool.execute(
+            .init(content: "  floe uses dark mode  "),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+
+        #expect(output.summary.contains("status=unchanged"))
+        #expect(output.summary.contains("priorMemoryChecked=true"))
+        #expect(await store.activeFor(.agentGlobal).count == 1)
+    }
+
     @Test("memory.remember rejects empty content")
     func rememberValidation() async {
         let tool = MemoryRememberTool(store: FakeMemoryStore())

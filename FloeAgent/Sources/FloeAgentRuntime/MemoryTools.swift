@@ -39,7 +39,7 @@ public struct MemoryRememberTool: AgentTool {
 
     public static let name = "memory.remember"
     public static let toolDescription =
-        "Record a durable memory. Use scope \"task\" for task-owned facts, \"user\" for cross-task preferences, or \"global\" for agent-wide notes. For mutable facts such as an address or software version, provide stable subjectKey and attributeKey so a new value replaces the old value instead of creating a conflicting memory. Authentication secrets are never memory."
+        "Record a durable memory only after inspecting prior memory in this run. Use scope \"task\" for task-owned facts, \"user\" for cross-task preferences, or \"global\" for agent-wide notes. For mutable facts such as an environment, address or software version, provide stable subjectKey and attributeKey so a new value replaces the old value instead of creating a conflicting memory. Authentication secrets are never memory."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -103,8 +103,28 @@ public struct MemoryRememberTool: AgentTool {
         } else {
             factIdentity = nil
         }
+        let scope = Self.parseScope(args.scope, taskID: ownerTaskID)
+        let normalized = args.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let priorEntries = try await store.memories(scope: scope, status: .active)
+        if let existing = priorEntries.first(where: {
+            $0.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized
+        }) {
+            return Self.output(
+                "status=unchanged priorMemoryChecked=true id=\(existing.id.uuidString)",
+                exitStatus: 0
+            )
+        }
+        let supersededCount: Int
+        if let factIdentity {
+            supersededCount = try await store.memories(
+                factIdentity: factIdentity,
+                scope: scope
+            ).count
+        } else {
+            supersededCount = 0
+        }
         let entry = MemoryEntry(
-            scope: Self.parseScope(args.scope, taskID: ownerTaskID),
+            scope: scope,
             status: .active,
             content: args.content,
             confidence: 1.0,
@@ -116,7 +136,10 @@ public struct MemoryRememberTool: AgentTool {
         )
         do {
             try await store.saveMemory(entry, evidence: [])
-            return Self.output("status=remembered id=\(entry.id.uuidString)", exitStatus: 0)
+            return Self.output(
+                "status=remembered priorMemoryChecked=true superseded=\(supersededCount) id=\(entry.id.uuidString)",
+                exitStatus: 0
+            )
         } catch {
             return Self.output("status=failed error=\(error.localizedDescription)", exitStatus: 1)
         }

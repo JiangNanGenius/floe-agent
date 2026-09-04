@@ -31,7 +31,7 @@ enum ToolWorkflowGuidance {
             lines.append("Canvas workflow: inspect/getState returns canvasID, documentID, revision, and node IDs. Reuse that exact revision and IDs for one patch or generation; refresh state only after a mutation or revision conflict. Media status IDs come from the generation result.")
         }
         if names.contains("memory.list") || names.contains("memory.search") {
-            lines.append("Memory workflow: memory.search/list returns stable memory IDs; reuse them for update/forget. organizePreview returns the batch and entry IDs consumed by batchApply.")
+            lines.append("Memory workflow: before every remember, update, forget, or batchApply, inspect prior memory in this run with memory.search/list/recall or organizePreview. Compare the proposed fact with existing values. For changed environment, address, version, or other mutable facts, reuse the existing memory ID with memory.update or use the same stable subjectKey + attributeKey so the old value is superseded instead of creating a conflict. Search/list returns stable memory IDs; organizePreview returns the batch and entry IDs consumed by batchApply.")
         }
         if names.contains("conversation.search") && names.contains("conversation.read") {
             lines.append("Conversation workflow: conversation.search returns conversationID; pass it unchanged to conversation.read and reuse its cursor for older pages.")

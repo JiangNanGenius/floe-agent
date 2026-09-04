@@ -216,6 +216,21 @@ final class ConversationCenter: ObservableObject {
         UserDefaults.standard.synchronize()
     }
 
+    /// An explicit user-selected SSH -> VNC route is a capability contract,
+    /// not a prompt suggestion. Keep unrelated local runtimes (especially
+    /// exec.javascript) out of the provider schema so the model cannot replace
+    /// the requested remote prerequisite with an arbitrary computation tool.
+    nonisolated static func toolsForExplicitRemoteRoute(
+        request: String,
+        from available: Set<String>
+    ) -> Set<String>? {
+        let normalized = request.lowercased()
+        guard normalized.contains("vnc"), normalized.contains("ssh") else { return nil }
+        return Set(available.filter {
+            $0.hasPrefix("ssh.") || $0.hasPrefix("vnc.")
+        })
+    }
+
     // MARK: - Published state
 
     /// Conversations in deterministic recency order.
@@ -679,6 +694,12 @@ final class ConversationCenter: ObservableObject {
                 ?? Set(availableDescriptors.map(\.name))
             offered.remove("image.inspect")
             allowedToolNames = offered
+        }
+        if let routeTools = Self.toolsForExplicitRemoteRoute(
+            request: memoryQuery,
+            from: Set(availableDescriptors.map(\.name))
+        ) {
+            allowedToolNames = (allowedToolNames ?? routeTools).intersection(routeTools)
         }
         let credentials = resolveCredentials(for: provider)
         let forceInitialCompaction = consumeManualCompaction(conversationID: conversationID)

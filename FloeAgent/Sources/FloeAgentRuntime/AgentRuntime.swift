@@ -1107,6 +1107,12 @@ public actor FloeAgentRuntime {
         if let effectiveAllowedNames {
             catalogDescriptors.removeAll { !effectiveAllowedNames.contains($0.name) }
         }
+        // Prerequisite wording belongs to the current user turn. Do not let a
+        // historical SSH-before-VNC request constrain a later, unrelated turn.
+        let statefulRouteGoal = messages.last(where: { $0.role == "user" })?.content ?? ""
+        catalogDescriptors.removeAll {
+            !executionLedger.allowsStatefulTool(named: $0.name, userGoal: statefulRouteGoal)
+        }
         var legacyMessages = messages.map { (role: $0.role, content: $0.content) }
         var contentMessages = messages.map { message in
             var parts: [ProviderContentPart] = [.text(message.content)]
@@ -1178,7 +1184,10 @@ public actor FloeAgentRuntime {
             toolResults: pendingToolResults.map {
                 (callID: $0.callID, output: Self.modelVisibleToolResult($0))
             },
-            pendingToolCalls: supportsTools ? pendingToolCalls : [],
+            // Tool-call/result pairs are provider history, not permission to
+            // issue another tool. A forced tool-free finalization must hide
+            // schemas while still replaying the complete ordered pair.
+            pendingToolCalls: pendingToolCalls,
             pendingAssistantReasoning: pendingToolCalls.isEmpty || responseReasoning.isEmpty
                 ? nil : responseReasoning,
             toolSchemas: supportsTools ? catalogDescriptors.map {
@@ -1747,6 +1756,13 @@ public actor FloeAgentRuntime {
                 reason: "Tool '\(call.toolName)' is outside the active skill capability set",
                 decision: "deny:skill-capability"
             )
+        }
+        let statefulRouteGoal = messages.last(where: { $0.role == "user" })?.content ?? ""
+        if let reason = executionLedger.statefulToolDenialReason(
+            for: call.toolName,
+            userGoal: statefulRouteGoal
+        ) {
+            return .denied(reason: reason, decision: "deny:stateful-prerequisite")
         }
         if configuration.conversationMode == .plan,
            let denial = PlanToolPolicy().denialResult(call: call, descriptor: descriptor) {
