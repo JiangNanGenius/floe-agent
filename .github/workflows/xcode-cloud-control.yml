@@ -167,6 +167,17 @@ jobs:
             > "$RUNNER_TEMP/apps.json"
           app_id="$(jq -r '.data[0].id // empty' "$RUNNER_TEMP/apps.json")"
           test -n "$app_id"
+          # Read the actual latest uploads before choosing a new build number.
+          api_get /v1/builds \
+            --data-urlencode "filter[app]=$app_id" \
+            --data-urlencode 'sort=-uploadedDate' \
+            --data-urlencode 'limit=20' \
+            --data-urlencode 'fields[builds]=version,uploadedDate,processingState,preReleaseVersion' \
+            --data-urlencode 'fields[preReleaseVersions]=version,platform' \
+            --data-urlencode 'include=preReleaseVersion' \
+            > "$RUNNER_TEMP/latest-builds.json"
+          jq -r '. as $root | .data[] as $build | ($root.included[]? | select(.id == $build.relationships.preReleaseVersion.data.id)) as $release | "latest-upload id=\($build.id) version=\($release.attributes.version) build=\($build.attributes.version) processing=\($build.attributes.processingState) uploaded=\($build.attributes.uploadedDate)"' \
+            "$RUNNER_TEMP/latest-builds.json"
           api_get /v1/builds \
             --data-urlencode "filter[app]=$app_id" \
             --data-urlencode "filter[version]=$build_number" \

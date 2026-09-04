@@ -50,7 +50,7 @@ private enum NetworkDiagnosticSupport {
     static func target(_ value: String) throws -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.count <= 253,
-              trimmed.range(of: #"^[A-Za-z0-9][A-Za-z0-9._:-]*$"#, options: .regularExpression) != nil else {
+              trimmed.range(of: #"^[A-Za-z0-9:][A-Za-z0-9._:-]*$"#, options: .regularExpression) != nil else {
             throw FloeError.validationFailed("target must be a hostname or IP address")
         }
         return trimmed

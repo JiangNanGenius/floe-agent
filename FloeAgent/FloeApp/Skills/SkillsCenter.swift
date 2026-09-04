@@ -422,7 +422,10 @@ final class SkillsCenter: ObservableObject {
         sourceURL: URL,
         modelID: UUID?
     ) async throws -> FinderEnvelope {
-        guard let (provider, model) = environment.conversationCenter.providerAndModel(modelID: modelID) else {
+        let route = modelID == nil
+            ? environment.conversationCenter.generalAuxiliaryProviderAndModel()
+            : environment.conversationCenter.providerAndModel(modelID: modelID)
+        guard let (provider, model) = route else {
             throw FloeError.invalidConfiguration("Choose a configured text model to rewrite this skill for iOS")
         }
         let sourceData = try JSONEncoder().encode(source)
