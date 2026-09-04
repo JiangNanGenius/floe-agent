@@ -37,6 +37,20 @@ if [[ "$TAG" != "v$VERSION" ]]; then
     exit 1
 fi
 
+# App extensions must carry the same version/build as the containing app.
+# Check every target, not only the first project.yml occurrence.
+if ! awk -F': ' -v version="$VERSION" -v build="$BUILD" '
+    $1 ~ /^[[:space:]]*MARKETING_VERSION$/ {
+        gsub(/[\"[:space:]]/, "", $2); if ($2 != version) exit 1
+    }
+    $1 ~ /^[[:space:]]*CURRENT_PROJECT_VERSION$/ {
+        gsub(/[\"[:space:]]/, "", $2); if ($2 != build) exit 1
+    }
+' project.yml; then
+    echo "error: every app/extension target must use version $VERSION and build $BUILD" >&2
+    exit 1
+fi
+
 SCREEN_SHARE_PLIST="FloeScreenShare/Info.plist"
 SCREEN_SHARE_DISPLAY_NAME="$(plutil -extract CFBundleDisplayName raw -o - "$SCREEN_SHARE_PLIST" 2>/dev/null || true)"
 if [[ -z "$SCREEN_SHARE_DISPLAY_NAME" ]]; then
