@@ -225,6 +225,44 @@ struct ImageAdapterTests {
         #expect(body.contains("filename=\"source-5.png\""))
     }
 
+    @Test("Volcengine Seedream edits transmit all five reference images")
+    func volcengineFiveReferenceWireContract() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ImageAdapterURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let output = Data([0x89, 0x50, 0x4E, 0x47, 0x55])
+        ImageAdapterURLProtocol.prepare([
+            .init(statusCode: 200, body: try JSONSerialization.data(withJSONObject: [
+                "data": [["b64_json": output.base64EncodedString()]]
+            ]))
+        ])
+        let references = (0..<5).map { index in
+            Data([0x89, 0x50, 0x4E, 0x47, UInt8(index)])
+        }
+        let adapter = VolcengineImageAdapter(session: session)
+        let result = try await adapter.perform(
+            RemoteImageRequest(
+                operation: .edit,
+                prompt: "compose all five references",
+                sourceImages: references,
+                modelRemoteID: "doubao-seedream-5-0-260128"
+            ),
+            provider: provider(kind: .volcengineArk),
+            credentials: ProviderCredentials(apiKey: "test-key")
+        )
+
+        #expect(result.images == [output])
+        let request = try #require(ImageAdapterURLProtocol.snapshotRequests().first)
+        #expect(request.url?.path == "/images/generations")
+        #expect(request.timeoutInterval >= 300)
+        let body = try #require(request.httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let images = try #require(json["image"] as? [String])
+        #expect(images.count == 5)
+        #expect(images.allSatisfy { $0.hasPrefix("data:image/png;base64,") })
+    }
+
     @Test("OpenAI exposes one excess output to the service cardinality gate")
     func openAIExcessOutputObservationContract() async throws {
         let configuration = URLSessionConfiguration.ephemeral

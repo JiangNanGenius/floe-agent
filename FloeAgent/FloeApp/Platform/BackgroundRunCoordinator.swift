@@ -85,9 +85,12 @@ enum ContinuedProcessingExpirationSequence {
 final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate {
     private unowned let environment: AppEnvironment
     private struct ActiveRun {
-        let conversationID: UUID
+        let conversationID: UUID?
         let title: String
         let continuedProcessingOrigin: ContinuedProcessingStartOrigin
+        let allowsContinuedProcessing: Bool
+        let retainsSurfaceOnFailure: Bool
+        let sendsTerminalNotification: Bool
         var stage: String = "正在运行"
         var progress: Int64 = 5
     }
@@ -210,7 +213,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     environment.settingsCenter.launchPreferencesLoaded
             ) {
                 if let active = activeRuns.values.first(where: {
-                    $0.continuedProcessingOrigin.allowsContinuedSubmission
+                    $0.allowsContinuedProcessing
+                        && $0.continuedProcessingOrigin.allowsContinuedSubmission
                 }) {
                     requestContinuedProcessingIfEligible(
                         origin: active.continuedProcessingOrigin,
@@ -386,7 +390,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         activeRuns[runID] = ActiveRun(
             conversationID: conversationID,
             title: title,
-            continuedProcessingOrigin: origin
+            continuedProcessingOrigin: origin,
+            allowsContinuedProcessing: true,
+            retainsSurfaceOnFailure: true,
+            sendsTerminalNotification: true
         )
         _ = continuedEligibility.registerRun(runID, origin: origin)
         FloeLogger(category: .app).info(
@@ -404,6 +411,54 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         )
     }
 
+    /// A user-started Canvas image request is also a long provider workload.
+    /// Register it with the same lifecycle owner as conversation runs so
+    /// leaving the Canvas does not make the coordinator report zero active
+    /// work and tear down continued processing/PiP underneath the request.
+    func didStartMediaGeneration(workID: UUID, title: String) {
+        guard activeRuns[workID] == nil else { return }
+        visualSurfacePolicy.beginRun(
+            workID, currentlyActiveRunIDs: Set(activeRuns.keys)
+        )
+        persistVisualSurfacePolicy()
+        retainedPausedRun = nil
+        activeRuns[workID] = ActiveRun(
+            conversationID: nil,
+            title: title,
+            continuedProcessingOrigin: .explicitUserAction,
+            allowsContinuedProcessing: false,
+            retainsSurfaceOnFailure: false,
+            sendsTerminalNotification: false,
+            stage: "正在生成媒体",
+            progress: 10
+        )
+        FloeLogger(category: .app).info(
+            "backgroundMediaStarted work=\(workID.uuidString) activeRuns=\(activeRuns.count)"
+        )
+        // A continued-processing task is the top-right system Live Activity
+        // users reported as a false PiP surface. Canvas media owns a real
+        // AVKit PiP context instead and must never submit that request.
+        assert(!Self.shouldSubmitContinuedProcessingForMediaGeneration(
+            origin: .explicitUserAction
+        ))
+        FloeLogger(category: .app).info(
+            "continuedProcessingSkipped workload=canvasMediaGeneration reason=mediaUsesDurableRecoveryOrPiP"
+        )
+        applyBackgroundExecutionPreference(
+            runID: workID,
+            conversationID: nil,
+            runTitle: title
+        )
+    }
+
+    func didFinishMediaGeneration(
+        workID: UUID,
+        succeeded: Bool,
+        message: String?
+    ) {
+        didFinish(runID: workID, succeeded: succeeded, message: message)
+    }
+
     /// Pushes a progress stage update to the active background surface (the
     /// continued task's Live Activity subtitle, and the PiP progress video).
     func didUpdateProgress(runID: UUID, stage: String, progress: Int64) {
@@ -412,6 +467,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         active.progress = progress
         activeRuns[runID] = active
         if #available(iOS 26.0, *),
+           active.allowsContinuedProcessing,
            active.continuedProcessingOrigin.allowsContinuedSubmission {
             updateContinuedTask(title: "Floe Agent", stage: stage, progress: progress)
         }
@@ -430,6 +486,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         activeRuns[runID] = active
         retainedPausedRun = (runID, active)
         if #available(iOS 26.0, *),
+           active.allowsContinuedProcessing,
            active.continuedProcessingOrigin.allowsContinuedSubmission {
             updateContinuedTask(title: active.title, stage: message, progress: active.progress)
         }
@@ -451,22 +508,24 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         )
         let conversationID = finished.conversationID
         notifiedApprovalRuns.remove(runID)
-        Task { [weak self] in
-            guard let self else { return }
-            let policy = try? await SQLiteWorkspaceStore(database: environment.database)
-                .taskPolicy(conversationID: conversationID)
-            let shouldNotify = switch policy?.notificationPolicy {
-            case .off: false
-            case .critical: !succeeded
-            case .terminal, .stages, nil: true
+        if finished.sendsTerminalNotification, let conversationID {
+            Task { [weak self] in
+                guard let self else { return }
+                let policy = try? await SQLiteWorkspaceStore(database: environment.database)
+                    .taskPolicy(conversationID: conversationID)
+                let shouldNotify = switch policy?.notificationPolicy {
+                case .off: false
+                case .critical: !succeeded
+                case .terminal, .stages, nil: true
+                }
+                guard shouldNotify else { return }
+                self.postNotification(
+                    identifier: "run.\(runID.uuidString)",
+                    conversationID: conversationID,
+                    title: succeeded ? "任务已完成" : "任务失败",
+                    body: message ?? (succeeded ? "Floe Agent 已完成任务。" : "打开任务查看并恢复。")
+                )
             }
-            guard shouldNotify else { return }
-            self.postNotification(
-                identifier: "run.\(runID.uuidString)",
-                conversationID: conversationID,
-                title: succeeded ? "任务已完成" : "任务失败",
-                body: message ?? (succeeded ? "Floe Agent 已完成任务。" : "打开任务查看并恢复。")
-            )
         }
         if #available(iOS 26.0, *), !continuedEligibility.hasEligibleWork {
             finishContinuedTasks(success: succeeded)
@@ -475,7 +534,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             surfacedRunID = nil
             resumeBackgroundSurfaceIfNeeded()
         }
-        if activeRuns.isEmpty, succeeded {
+        if activeRuns.isEmpty,
+           succeeded || !finished.retainsSurfaceOnFailure {
             retainedPausedRun = nil
             tearDownBackgroundExecutionPreference()
         } else if activeRuns.isEmpty {
@@ -520,7 +580,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// ReplayKit's system consent flow.
     private func applyBackgroundExecutionPreference(
         runID: UUID,
-        conversationID: UUID,
+        conversationID: UUID?,
         runTitle: String
     ) {
         let preference = environment.settingsCenter.backgroundExecution
@@ -560,6 +620,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 automaticallyStartsFromInline: true
             )
         case .screenShare:
+            guard let conversationID else {
+                FloeLogger(category: .app).info(
+                    "backgroundSurfaceSkipped run=\(runID.uuidString) reason=canvasMediaHasNoConversationForScreenShare"
+                )
+                break
+            }
             FloeLogger(category: .app).info(
                 "backgroundSurfaceRequested run=\(runID.uuidString) mode=screenShare sharing=\(environment.screenShareCenter.isSharing)"
             )

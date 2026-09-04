@@ -25,7 +25,7 @@ enum ToolWorkflowGuidance {
             lines.append("Browser workflow: browser.navigate returns tab/document identifiers; browser.observe refreshes refs for that document; reuse the returned tabID/documentID and fresh element refs for one action, then observe again.")
         }
         if names.contains("vnc.observe") {
-            lines.append("VNC workflow: call vnc.status first when state is unknown; if disconnected and exactly one endpoint is configured, use vnc.connect, then vnc.observe. Reuse the fresh screenshotSHA256 for one click/scroll/drag and observe again. Observation never opens a connection.")
+            lines.append("VNC workflow is a strict state machine: vnc.status -> vnc.connect -> vnc.observe -> one input -> vnc.observe. Never call observe or an input tool while disconnected. If status reports unconfigured/configurationMissing and the user authorized host setup, change route immediately: ssh.listHosts -> ssh.inspectTarget -> ssh.execute in explicit host mode to inspect/configure the VNC service -> ssh.updateHost to save the direct or SSH-tunnel endpoint and its Keychain-backed credential -> vnc.connect. Never repeat an unchanged non-retryable VNC call and never ask for a password when an existing secure credential reference or an authorized generated setup credential can be stored without exposing it.")
         }
         if names.contains("canvas.getState") || names.contains("canvas.inspect") {
             lines.append("Canvas workflow: inspect/getState returns canvasID, documentID, revision, and node IDs. Reuse that exact revision and IDs for one patch or generation; refresh state only after a mutation or revision conflict. Media status IDs come from the generation result.")
@@ -56,9 +56,11 @@ enum ToolWorkflowGuidance {
 
     static func recoveryHint(for toolName: String) -> String? {
         switch toolName {
+        case "vnc.connect", "vnc.reconnect":
+            return "If vnc.status reports unconfigured, do not retry connect. For an authorized host setup, use ssh.listHosts, ssh.inspectTarget, ssh.execute in host mode, and ssh.updateHost to save one endpoint and its Keychain-backed credential before connecting."
         case "vnc.observe", "vnc.click", "vnc.clickElement", "vnc.scroll",
              "vnc.drag", "vnc.typeText", "vnc.typeCredential", "vnc.keyPress":
-            return "Call vnc.status; connect the intended endpoint with vnc.connect when disconnected, then observe a fresh framebuffer before input."
+            return "Call vnc.status. If configured, use vnc.connect before observation or input. If unconfigured and host setup was authorized, switch to ssh.listHosts, ssh.inspectTarget, ssh.execute in host mode, and ssh.updateHost to create the saved VNC endpoint with a Keychain-backed credential; then call vnc.connect. Do not repeat the unchanged VNC call."
         case "ssh.execute", "ssh.inspectTarget", "ssh.updateHost",
              "ssh.bootstrapExecutionHost", "ssh.bootstrapRemoteAgent":
             return "Resolve hostID with ssh.listHosts and reuse the returned value; do not guess it."

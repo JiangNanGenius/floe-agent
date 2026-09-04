@@ -540,7 +540,15 @@ public struct GoogleGeminiImageAdapter: ImageProviderAdapter {
 /// Volcengine Ark Seedream/SeedEdit endpoints. Generation and edit are
 /// supported; other operations are labelled unsupported.
 public struct VolcengineImageAdapter: ImageProviderAdapter {
-    public init() {}
+    private let session: URLSession
+
+    public init() {
+        session = .shared
+    }
+
+    init(session: URLSession) {
+        self.session = session
+    }
 
     public func supportedOperations(for provider: ProviderProfile) -> Set<RemoteImageOperation> {
         [.generate, .edit, .variation, .inpaint]
@@ -608,6 +616,7 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
         )
         let (data, response) = try await BoundedHTTP.data(
             for: urlRequest,
+            session: session,
             maxBytes: 48 * 1_024 * 1_024
         )
         try RemoteImageHTTP.validate(

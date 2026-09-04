@@ -75,6 +75,25 @@ struct CanvasViewportTransform: Equatable {
     }
 }
 
+/// Keeps node movement subordinate to a live connector gesture. SwiftUI's
+/// recognizer priority prevents both drags from beginning together; this
+/// state guard also makes a late parent callback harmless.
+struct CanvasNodeGesturePolicy {
+    static func allowsNodeDrag(
+        isSelectMode: Bool,
+        isMultiTouchNavigating: Bool,
+        hasLiveConnectionDrag: Bool,
+        isEditing: Bool,
+        isLocked: Bool
+    ) -> Bool {
+        isSelectMode
+            && !isMultiTouchNavigating
+            && !hasLiveConnectionDrag
+            && !isEditing
+            && !isLocked
+    }
+}
+
 /// Stable sidebar entry for creative work. A private canvas works without a
 /// Workspace; optional Workspace canvases remain available for project-owned
 /// material and explicit file export.
@@ -4505,17 +4524,25 @@ struct WorkspaceCanvasView: View {
                     editingNodeID = nil
                 }
             }
-            .simultaneousGesture(
+            // Node movement must lose gesture arbitration to a connector port.
+            // A simultaneous parent drag made the card follow the wire on
+            // iPad because both recognizers received the same translation.
+            .gesture(
                 DragGesture()
                     .onChanged { value in
-                        guard mode == .select,
-                              !isMultiTouchNavigating,
-                              editingNodeID == nil,
-                              !node.isLocked else { return }
+                        guard CanvasNodeGesturePolicy.allowsNodeDrag(
+                            isSelectMode: mode == .select,
+                            isMultiTouchNavigating: isMultiTouchNavigating,
+                            hasLiveConnectionDrag: liveConnectionDrag != nil,
+                            isEditing: editingNodeID != nil,
+                            isLocked: node.isLocked
+                        ) else { return }
                         updateNodeDrag(node, translation: value.translation)
                     }
                     .onEnded { _ in
-                        guard mode == .select, editingNodeID == nil else { return }
+                        guard mode == .select,
+                              liveConnectionDrag == nil,
+                              editingNodeID == nil else { return }
                         finishNodeDrag()
                     }
             )
@@ -4633,24 +4660,43 @@ struct WorkspaceCanvasView: View {
         }
         let executionToken = UUID()
         activeGenerationTokens[task.id] = executionToken
+        let mediaTitle = task.metadata["generationKind"] == MediaKind.video.rawValue
+            ? "画布视频生成" : "画布图片生成"
+        environment.backgroundRunCoordinator.didStartMediaGeneration(
+            workID: executionToken,
+            title: mediaTitle
+        )
         activeGenerationTasks[task.id] = Task { @MainActor in
+            var succeeded = false
+            var terminalMessage: String?
             defer {
                 if activeGenerationTokens[task.id] == executionToken {
                     activeGenerationTasks[task.id] = nil
                     activeGenerationTokens[task.id] = nil
                 }
+                environment.backgroundRunCoordinator.didFinishMediaGeneration(
+                    workID: executionToken,
+                    succeeded: succeeded,
+                    message: terminalMessage
+                )
             }
             do {
                 try await CanvasGenerationExecutor.execute(
                     taskNodeID: task.id, store: store, environment: environment
                 )
+                succeeded = true
+                terminalMessage = "媒体生成已完成"
             } catch is CancellationError {
                 // Cancellation state is applied by the executor/cancel action.
+                terminalMessage = "媒体生成已取消"
             } catch CanvasGenerationExecutionError.superseded {
                 // A newer saved configuration owns the task now. The provider
                 // response from this execution is intentionally discarded.
+                terminalMessage = "媒体生成已被新的配置取代"
             } catch {
-                store.saveError = CanvasGenerationErrorPresentation.message(for: error)
+                let message = CanvasGenerationErrorPresentation.message(for: error)
+                terminalMessage = message
+                store.saveError = message
             }
         }
     }
@@ -7603,7 +7649,7 @@ private struct CanvasConnectionPortsOverlay: View {
                         .overlay { Circle().stroke(FloeTheme.primary, lineWidth: 1.5) }
                 }
                 .buttonStyle(.plain)
-                .simultaneousGesture(
+                .highPriorityGesture(
                     DragGesture(minimumDistance: 8)
                         .onChanged { onDragChanged(port, $0.translation) }
                         .onEnded { onDragEnded(port, $0.translation) }

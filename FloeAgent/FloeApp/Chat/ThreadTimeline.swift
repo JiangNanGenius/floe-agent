@@ -158,6 +158,20 @@ enum ThreadTimelineBuilder {
         //    assistantText event becomes the final-reply row; older ones
         //    (multi-turn text before tool calls) render in place.
         let sortedEvents = events.sorted { $0.sequence < $1.sequence }
+        // The provider still receives one paired result for every call ID,
+        // including calls that the Harness intentionally coalesced or blocked.
+        // Those synthetic pairs are protocol bookkeeping, not user steps;
+        // omit the matching request/result/approval rows so the timeline shows
+        // the single authoritative execution instead of duplicate failures.
+        let suppressedToolCallIDs = Set(sortedEvents.compactMap { event -> String? in
+            guard event.kind == .toolResult else { return nil }
+            let payload = decodePayload(event.payloadJSON)
+            guard payload["summary"]?.hasPrefix("Harness suppression:") == true else {
+                return nil
+            }
+            let callID = payload["callID"] ?? payload["id"] ?? ""
+            return callID.isEmpty ? nil : callID
+        })
         let terminalEvent = sortedEvents.last(where: { $0.kind == .terminal })
         let hasReachedTerminal = terminalEvent != nil
             || run.map { RunStateLocalizer.isTerminal($0.state) } == true
@@ -171,6 +185,10 @@ enum ThreadTimelineBuilder {
             $0.kind != .terminal
                 && !isTerminalStatusEvent($0)
                 && !isStaleStatusEvent($0, currentState: run?.state)
+                && !isSuppressedToolProtocolEvent(
+                    $0,
+                    suppressedCallIDs: suppressedToolCallIDs
+                )
                 && !isTrailingVerificationReasoning(
                     $0,
                     hasReachedTerminal: hasReachedTerminal,
@@ -340,6 +358,19 @@ enum ThreadTimelineBuilder {
         guard event.kind == .status else { return false }
         let state = decodePayload(event.payloadJSON)["state"] ?? ""
         return RunStateLocalizer.isTerminal(state)
+    }
+
+    private static func isSuppressedToolProtocolEvent(
+        _ event: RunEventRecord,
+        suppressedCallIDs: Set<String>
+    ) -> Bool {
+        guard event.kind == .toolRequest
+                || event.kind == .toolResult
+                || event.kind == .approval
+                || event.kind == .autoApproved else { return false }
+        let payload = decodePayload(event.payloadJSON)
+        let callID = payload["callID"] ?? payload["id"] ?? ""
+        return !callID.isEmpty && suppressedCallIDs.contains(callID)
     }
 
     /// Final-answer verification is deliberately private harness work. When

@@ -92,6 +92,24 @@ struct CanvasTouchInteractionTests {
         #expect(moved.scale == initial.scale)
         #expect(moved.pan == CGSize(width: -5, height: 55))
     }
+
+    @Test("A live connector drag suppresses node movement")
+    func connectorDragWinsNodeArbitration() {
+        #expect(CanvasNodeGesturePolicy.allowsNodeDrag(
+            isSelectMode: true,
+            isMultiTouchNavigating: false,
+            hasLiveConnectionDrag: false,
+            isEditing: false,
+            isLocked: false
+        ))
+        #expect(!CanvasNodeGesturePolicy.allowsNodeDrag(
+            isSelectMode: true,
+            isMultiTouchNavigating: false,
+            hasLiveConnectionDrag: true,
+            isEditing: false,
+            isLocked: false
+        ))
+    }
 }
 
 @Suite("FloeApp saved image batch atomicity")

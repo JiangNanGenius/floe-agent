@@ -57,6 +57,43 @@ private final class LoopingAdapter: ProviderAdapter, @unchecked Sendable {
 @Suite("FloeAgentRuntime.ToolLoopHardening")
 struct ToolLoopHardeningTests {
 
+    @Test("provider tool descriptions include explicit prerequisite resolvers")
+    func providerToolDescriptionsIncludePrerequisites() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        executor.descriptors["vnc.observe"] = ToolCatalog.Descriptor(
+            name: "vnc.observe",
+            toolDescription: "Observe the active VNC framebuffer.",
+            riskLabels: [],
+            isSideEffecting: false,
+            prerequisites: [ToolPrerequisite(
+                state: "vnc.connected",
+                resolverToolName: "vnc.connect",
+                mayResolveAutomatically: true
+            )]
+        )
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id)
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "observe only after connecting")
+
+        let request = try #require(adapter.requests.first)
+        let description = try #require(
+            request.toolSchemas.first(where: { $0.name == "vnc.observe" })?.description
+        )
+        #expect(description.contains("Requires state vnc.connected"))
+        #expect(description.contains("resolve explicitly with vnc.connect"))
+    }
+
     @Test("subsequent model turns receive a compact activation ledger")
     func activationLedgerInjected() async throws {
         let adapter = MockAdapter()
@@ -209,6 +246,154 @@ struct ToolLoopHardeningTests {
             return
         }
         #expect(completion.stopReason == .noProgress)
+    }
+
+    @Test("duplicate calls in one provider batch execute only once")
+    func duplicateCallsInOneBatchExecuteOnce() async throws {
+        let first = try ToolCall(
+            id: "batch-vnc-1", toolName: "vnc.observe",
+            argumentsJSON: Data("{}".utf8), scope: .local
+        )
+        let duplicate = try ToolCall(
+            id: "batch-vnc-2", toolName: "vnc.observe",
+            argumentsJSON: Data("{}".utf8), scope: .local
+        )
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(first), .toolRequest(duplicate), .completed(.init(stopReason: .toolUse))],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors["vnc.observe"] = ToolCatalog.Descriptor(
+            name: "vnc.observe", riskLabels: [], isSideEffecting: false
+        )
+        let sink = MockSink()
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id)
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            sink: sink
+        )
+
+        try await runtime.start(goal: "observe once")
+
+        #expect(executor.executedCalls.map(\.id) == [first.id])
+        let results = sink.events.compactMap { event -> ToolResult? in
+            if case .toolResult(let result) = event { return result }
+            return nil
+        }
+        #expect(results.count == 2)
+        #expect(results.contains { $0.callID == duplicate.id && $0.outputSummary.contains("duplicate") })
+    }
+
+    @Test("non-retryable failure suppresses unchanged execution then stops the dead end")
+    func nonretryableFailureBlocksUnchangedRetry() async throws {
+        let calls = try (1...3).map {
+            try ToolCall(
+                id: "vnc-missing-\($0)", toolName: "vnc.observe",
+                argumentsJSON: Data("{}".utf8), scope: .local
+            )
+        }
+        let adapter = MockAdapter()
+        adapter.script = calls.map { [.toolRequest($0)] }
+            + [[.completed(.init(stopReason: .endTurn))]]
+        let executor = MockExecutor()
+        executor.descriptors["vnc.observe"] = ToolCatalog.Descriptor(
+            name: "vnc.observe", riskLabels: [], isSideEffecting: false
+        )
+        executor.results = [ToolResult(
+            callID: calls[0].id,
+            status: .failed,
+            outputSummary: #"{"category":"configurationMissing","retryable":false}"#,
+            outputDigest: ""
+        )]
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id)
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "do not retry an unconfigured endpoint")
+
+        #expect(executor.executedCalls.map(\.id) == [calls[0].id])
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected no-progress finalization")
+            return
+        }
+        #expect(completion.stopReason == .noProgress)
+    }
+
+    @Test("a suppressed non-retryable retry can change to a recovery route")
+    func nonretryableFailureCanChangeRoute() async throws {
+        let failed = try ToolCall(
+            id: "vnc-missing-first", toolName: "vnc.observe",
+            argumentsJSON: Data("{}".utf8), scope: .local
+        )
+        let suppressed = try ToolCall(
+            id: "vnc-missing-suppressed", toolName: "vnc.observe",
+            argumentsJSON: Data("{}".utf8), scope: .local
+        )
+        let recovery = try ToolCall(
+            id: "ssh-recovery", toolName: "ssh.listHosts",
+            argumentsJSON: Data("{}".utf8), scope: .local
+        )
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(failed)],
+            [.toolRequest(suppressed)],
+            [.toolRequest(recovery)],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors["vnc.observe"] = ToolCatalog.Descriptor(
+            name: "vnc.observe", riskLabels: [], isSideEffecting: false
+        )
+        executor.descriptors["ssh.listHosts"] = ToolCatalog.Descriptor(
+            name: "ssh.listHosts", riskLabels: [], isSideEffecting: false
+        )
+        executor.results = [
+            ToolResult(
+                callID: failed.id,
+                status: .failed,
+                outputSummary: #"{"category":"configurationMissing","retryable":false}"#,
+                outputDigest: ""
+            ),
+            ToolResult(
+                callID: recovery.id,
+                status: .ok,
+                outputSummary: #"{"hosts":[{"id":"saved-host"}]}"#,
+                outputDigest: "hosts"
+            )
+        ]
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id)
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor
+        )
+
+        try await runtime.start(goal: "recover VNC through the saved SSH host")
+
+        #expect(executor.executedCalls.map(\.id) == [failed.id, recovery.id])
+        guard case .completed(let completion) = await runtime.state else {
+            Issue.record("expected the changed recovery route to complete")
+            return
+        }
+        #expect(completion.stopReason == .endTurn)
     }
 
     @Test("a successful mutation opens a new no-progress epoch")

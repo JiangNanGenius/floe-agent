@@ -265,6 +265,48 @@ struct ThreadTimelineTests {
         #expect(groups.first?.map(\.kind) == [.toolRequest, .toolResult])
     }
 
+    @Test("Harness-suppressed duplicate protocol pairs stay out of the timeline")
+    func suppressedDuplicateToolPairIsHidden() {
+        let conversationID = UUID()
+        let run = makeRun(state: "completed", conversationID: conversationID)
+        let events = [
+            makeEvent(
+                runID: run.id, sequence: 1, kind: .toolRequest,
+                payload: ["tool": "vnc.observe", "id": "vnc-1"]
+            ),
+            makeEvent(
+                runID: run.id, sequence: 2, kind: .toolResult,
+                payload: [
+                    "tool": "vnc.observe", "id": "vnc-1", "status": "failed",
+                    "summary": #"{"category":"configurationMissing","retryable":false}"#
+                ]
+            ),
+            makeEvent(
+                runID: run.id, sequence: 3, kind: .toolRequest,
+                payload: ["tool": "vnc.observe", "id": "vnc-duplicate"]
+            ),
+            makeEvent(
+                runID: run.id, sequence: 4, kind: .toolResult,
+                payload: [
+                    "tool": "vnc.observe", "id": "vnc-duplicate", "status": "failed",
+                    "summary": "Harness suppression: duplicate tool request"
+                ]
+            )
+        ]
+
+        let items = ThreadTimelineBuilder.build(
+            messages: [], events: events, run: run,
+            isRunning: false, liveStreamedText: "", liveReasoningText: "",
+            pendingApprovals: []
+        )
+        let projected = items.flatMap { item -> [RunEventRecord] in
+            if case .stepGroup(let values, _) = item { return values }
+            return []
+        }
+
+        #expect(projected.map(\.sequence) == [1, 2])
+    }
+
     @Test("Reasoning after a tool result starts the next step group")
     func nextTurnReasoningStartsNewStepGroup() {
         let conversationID = UUID()

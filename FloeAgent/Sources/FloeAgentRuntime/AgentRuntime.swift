@@ -1184,7 +1184,7 @@ public actor FloeAgentRuntime {
             toolSchemas: supportsTools ? catalogDescriptors.map {
                 ToolSchemaDescriptor(
                     name: $0.name,
-                    description: $0.toolDescription,
+                    description: Self.providerToolDescription($0),
                     parametersJSON: $0.parametersJSON
                 )
             } + (configuration.conversationMode == .plan ? [
@@ -2059,6 +2059,9 @@ public actor FloeAgentRuntime {
         var approvedByID: [String: ApprovalGrant] = [:]
         var resultsByID: [String: ToolResult] = [:]
         var budgetWasExhausted = false
+        var blockedNoProgressCallIDs: Set<String> = []
+        var suppressedCallIDs: Set<String> = []
+        var firstCallIDByRoute: [String: String] = [:]
 
         // Record the complete provider batch first. Even if the iteration
         // budget expires during resolution, every structured call must still
@@ -2066,10 +2069,29 @@ public actor FloeAgentRuntime {
         for call in calls {
             pendingToolCalls.append(call)
             setToolLifecycle(call: call, phase: .recorded)
+            let route = ToolLoopGuard.canonicalRoute(for: call)
+            if let firstCallID = firstCallIDByRoute[route] {
+                let duplicate = ToolResult(
+                    callID: call.id,
+                    status: .failed,
+                    outputSummary: "Harness suppression: duplicate tool request in the same model batch. The matching call \(firstCallID) is the single authoritative execution; use its result and choose a different route if it fails.",
+                    outputDigest: ""
+                )
+                await audit(
+                    toolCall: call,
+                    result: duplicate,
+                    decision: "deny:duplicate-batch-route"
+                )
+                resultsByID[call.id] = duplicate
+                suppressedCallIDs.insert(call.id)
+            } else {
+                firstCallIDByRoute[route] = call.id
+            }
         }
 
         // Phase 1 — resolve serially (approval escalation blocks).
         for call in calls {
+            if resultsByID[call.id] != nil { continue }
             if budgetWasExhausted {
                 let skipped = ToolResult(
                     callID: call.id,
@@ -2079,6 +2101,25 @@ public actor FloeAgentRuntime {
                 )
                 await audit(toolCall: call, result: skipped, decision: "deny:harness-budget")
                 resultsByID[call.id] = skipped
+                continue
+            }
+            if let guardrail = loopGuard.blockDecision(for: call) {
+                let blocked = ToolResult(
+                    callID: call.id,
+                    status: .failed,
+                    outputSummary: "Harness suppression: " + guardrail.message,
+                    outputDigest: ""
+                )
+                await audit(
+                    toolCall: call,
+                    result: blocked,
+                    decision: "deny:nonretryable-route"
+                )
+                resultsByID[call.id] = blocked
+                suppressedCallIDs.insert(call.id)
+                if guardrail.shouldStop {
+                    blockedNoProgressCallIDs.insert(call.id)
+                }
                 continue
             }
             if resumedFromCheckpoint,
@@ -2183,7 +2224,8 @@ public actor FloeAgentRuntime {
             result = finalizeToolResult(result, for: call)
             if result.status == .needsUser {
                 needsUserResult = needsUserResult ?? result
-            } else if let guardrail = loopGuard.record(
+            } else if !suppressedCallIDs.contains(call.id),
+                      let guardrail = loopGuard.record(
                 call: call,
                 result: result,
                 isSideEffecting: executor.descriptor(named: call.toolName)?.isSideEffecting == true,
@@ -2191,6 +2233,9 @@ public actor FloeAgentRuntime {
             ) {
                 noProgressDetected = noProgressDetected || guardrail.shouldStop
                 result.outputSummary += "\n\nHarness warning: \(guardrail.message)"
+            }
+            if blockedNoProgressCallIDs.contains(call.id) {
+                noProgressDetected = true
             }
             pendingToolResults.append(result)
             executionLedger.record(call: call, result: result)
@@ -2237,6 +2282,25 @@ public actor FloeAgentRuntime {
         } else {
             modelTurnContinuationRequested = true
         }
+    }
+
+    private static func providerToolDescription(
+        _ descriptor: ToolCatalog.Descriptor
+    ) -> String {
+        guard !descriptor.prerequisites.isEmpty else {
+            return descriptor.toolDescription
+        }
+        let requirements = descriptor.prerequisites.map { prerequisite in
+            let resolver: String
+            if let resolverToolName = prerequisite.resolverToolName {
+                resolver = "; resolve explicitly with " + resolverToolName
+                    + " before this tool"
+            } else {
+                resolver = "; no automatic resolver is available"
+            }
+            return "Requires state " + prerequisite.state + resolver + "."
+        }.joined(separator: " ")
+        return descriptor.toolDescription + " " + requirements
     }
 
     /// The runtime, not a tool implementation or provider, owns provenance.
@@ -3146,7 +3210,7 @@ public actor FloeAgentRuntime {
     }
 }
 
-private struct ToolLoopGuardrailDecision {
+struct ToolLoopGuardrailDecision {
     var shouldStop: Bool
     var message: String
 }
@@ -3154,13 +3218,30 @@ private struct ToolLoopGuardrailDecision {
 /// Hermes-style per-user-turn guardrails. This deliberately compares
 /// canonical arguments and observable results rather than call IDs, which
 /// providers commonly regenerate on every retry.
-private struct ToolLoopGuard {
+struct ToolLoopGuard {
     private var outcomeCountsInEpoch: [String: Int] = [:]
     private var lastObservationInEpoch: String?
+    private var nonretryableRoutesInEpoch: Set<String> = []
+    private var blockedNonretryableRouteCounts: [String: Int] = [:]
 
     mutating func advanceProgressEpoch() {
         outcomeCountsInEpoch.removeAll(keepingCapacity: true)
         lastObservationInEpoch = nil
+        nonretryableRoutesInEpoch.removeAll(keepingCapacity: true)
+        blockedNonretryableRouteCounts.removeAll(keepingCapacity: true)
+    }
+
+    mutating func blockDecision(for call: ToolCall) -> ToolLoopGuardrailDecision? {
+        let route = Self.canonicalRoute(for: call)
+        guard nonretryableRoutesInEpoch.contains(route) else { return nil }
+        blockedNonretryableRouteCounts[route, default: 0] += 1
+        let count = blockedNonretryableRouteCounts[route, default: 0]
+        return ToolLoopGuardrailDecision(
+            shouldStop: count >= 2,
+            message: count >= 2
+                ? "This unchanged call already returned a non-retryable failure and was suppressed again. Stop this dead-end route and preserve its evidence."
+                : "This unchanged call already returned a non-retryable failure in the current progress epoch. It was not executed again. Change route now by satisfying prerequisites, updating configuration, or using materially different arguments."
+        )
     }
 
     mutating func record(
@@ -3192,6 +3273,11 @@ private struct ToolLoopGuard {
         }
         lastObservationInEpoch = exact
 
+        if result.status == .failed || result.status == .denied,
+           Self.isExplicitlyNonretryable(result.outputSummary) {
+            nonretryableRoutesInEpoch.insert(route)
+        }
+
         outcomeCountsInEpoch[exact, default: 0] += 1
         if outcomeCountsInEpoch[exact, default: 0] >= stopLimit {
             return ToolLoopGuardrailDecision(
@@ -3206,6 +3292,21 @@ private struct ToolLoopGuard {
             )
         }
         return nil
+    }
+
+    static func canonicalRoute(for call: ToolCall) -> String {
+        "\(call.toolName)|\(canonicalDigest(call.argumentsJSON))"
+    }
+
+    private static func isExplicitlyNonretryable(_ summary: String) -> Bool {
+        let compact = summary.lowercased()
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\t", with: "")
+        return compact.contains(#""retryable":false"#)
+            || compact.contains("retryable=false")
+            || compact.contains("non-retryable")
+            || compact.contains("nonretryable")
     }
 
     private static func canonicalDigest(_ data: Data) -> String {
