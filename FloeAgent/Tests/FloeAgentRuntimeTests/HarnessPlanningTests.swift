@@ -342,7 +342,9 @@ struct HarnessPlanningTests {
             outputSummary: #"{"connectionState":"disconnected","configuredEndpointCount":1}"#,
             outputDigest: "disconnected"
         ))
-        #expect(ledger.recoveredResult(for: status) != nil)
+        // Even without a recorded mutation, another app/the host can have
+        // changed connectivity while this run was suspended.
+        #expect(ledger.recoveredResult(for: status) == nil)
 
         let repair = try ToolCall(
             id: "repair-vnc",
@@ -365,6 +367,11 @@ struct HarnessPlanningTests {
         #expect(ledger.recoveredResult(for: repair) != nil)
         let checkpoint = try #require(ledger.checkpointRecords().last)
         #expect(checkpoint.isSideEffecting == true)
+        let laterWrite = try ToolCall(id: "later-write", toolName: "ssh.updateHost",
+            argumentsJSON: Data(#"{"name":"updated"}"#.utf8), scope: .local)
+        ledger.record(call: laterWrite, result: ToolResult(callID: laterWrite.id,
+            status: .ok, outputSummary: "saved", outputDigest: "saved"), isSideEffecting: true)
+        #expect(ledger.recoveredResult(for: repair) != nil)
     }
 
     @Test("resource discovery produces bounded structured bindings")

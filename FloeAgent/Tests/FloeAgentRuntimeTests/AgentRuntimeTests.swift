@@ -1136,8 +1136,8 @@ struct AgentRuntimeTests {
         #expect(await replay.state.name == "completed")
     }
 
-    @Test("Recovery ledger prevents a completed tool from executing twice")
-    func recoveryLedgerDeduplicatesCompletedTool() async throws {
+    @Test("Recovery refreshes observations but never replays completed mutations", arguments: [false, true])
+    func recoveryLedgerDeduplicatesCompletedTool(sideEffecting: Bool) async throws {
         let adapter = MockAdapter()
         let call = try TestFixtures.toolCall(id: "recovered-call")
         adapter.script = [
@@ -1158,13 +1158,14 @@ struct AgentRuntimeTests {
                 status: .ok,
                 resultFingerprint: "result",
                 excerpt: "already inspected",
-                occurrenceCount: 1
+                occurrenceCount: 1,
+                isSideEffecting: sideEffecting
             )]
         )
 
         try await runtime.resume(from: checkpoint)
 
-        #expect(executor.executedCalls.isEmpty)
+        #expect(executor.executedCalls.count == (sideEffecting ? 0 : 1))
         #expect(await runtime.state.name == "completed")
     }
 

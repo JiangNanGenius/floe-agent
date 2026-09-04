@@ -14,7 +14,7 @@ from typing import Any, Iterator
 SUITE_MINIMUMS = {
     "CanvasTouchInteractionTests": 3,
     "CanvasSavedImageBatchAtomicityTests": 9,
-    "CanvasAgentToolContractTests": 7,
+    "CanvasAgentToolContractTests": 8,
     "CrashAndFeedbackRegressionTests": 37,
     "ThreadTimelineTests": 18,
 }

@@ -4,6 +4,7 @@
 
 - 工具按任务加载：先提供相关工具组，其余通过 `tools.search` 检索。完整 VNC 生命周期保持可发现，连接前置条件由执行器检查；删除旧 Canvas 工具别名。
 - 工具描述、参数与执行入口以运行时注册表为准，避免静态目录中“有声明、没执行器”的工具进入模型请求。
+- 恢复任务时重新读取状态查询，不再把旧的 VNC 状态当作当前结果；已完成的副作用操作始终保留防重放保护。
 - 新增通用辅助 LLM 设置，记忆整理、长期记忆提炼、用户画像、SOUL、技能和自动标题跟随该路由；视觉、图片、视频与审批仍独立。
 - 新增所有 UTF-8 文本扩展名通用的追加和精确替换；保留完整文件、并发哈希检查与二进制拒绝。
 - DNS/TCP 默认可从设备运行；真实 ICMP ping/traceroute 使用明确指定的 SSH 主机。内网诊断可按需访问 HTTP，公网明文、凭据 URL 和元数据端点仍受限制。
@@ -17,6 +18,7 @@
 
 - Load task-relevant tool groups first and discover others through `tools.search`. The complete VNC lifecycle remains discoverable with execution-time prerequisites. Removed legacy Canvas tool aliases.
 - Use the executable registry as the authority for descriptions, schemas and runners, preventing static-only declarations from entering model requests.
+- Refresh observations after recovery instead of presenting stale VNC status as current evidence. Completed mutations retain replay protection even after later state changes.
 - Add a general auxiliary LLM route for memory, personalization, SOUL, skills and automatic titles. Vision, images, video and approval remain independently routed.
 - Add extension-independent UTF-8 append and exact replacement with complete-file preservation, hash conflict checks and binary rejection.
 - Run DNS/TCP on the device by default; use an explicitly selected SSH host for real ICMP ping/traceroute. Opt-in LAN diagnostics support HTTP while retaining restrictions on public plaintext, credential URLs and metadata endpoints.

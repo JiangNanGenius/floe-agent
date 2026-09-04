@@ -85,6 +85,30 @@ private struct CanvasGenerationFixture {
 @Suite("Canvas agent tool contracts")
 struct CanvasAgentToolContractTests {
     @MainActor
+    @Test("App bootstrap exposes only paired native descriptors and executable runners")
+    func appToolRegistryIsBidirectional() throws {
+        let environment = AppEnvironment.preview()
+        defer { withExtendedLifetime(environment) {} }
+        let registry = ToolRunnerRegistry.shared
+        let executable = registry.allDescriptors.filter { !$0.name.hasPrefix("mcp.") }
+        let declared = ToolCatalog.allDescriptors.filter { !$0.name.hasPrefix("mcp.") }
+        #expect(Set(executable.map(\.name)) == Set(declared.map(\.name)))
+        for descriptor in executable {
+            #expect(registry.runner(named: descriptor.name) != nil)
+            #expect(!descriptor.toolDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            let schema = try JSONSerialization.jsonObject(with: Data(descriptor.parametersJSON.utf8))
+            #expect(schema is [String: Any])
+        }
+        for name in ["vnc.connect", "vnc.observe", "vnc.click", "vnc.typeText", "vnc.disconnect",
+                     "workspace.appendFile", "workspace.replaceText", "network.dnsLookup", "network.tcpProbe"] {
+            #expect(registry.runner(named: name) != nil)
+        }
+        for removed in ["canvas.inspect", "canvas.applyPatch", "canvas.generateMedia", "canvas.mediaStatus"] {
+            #expect(registry.descriptor(named: removed) == nil)
+        }
+    }
+
+    @MainActor
     @Test("canvas.generate schema matches exact source replacement semantics")
     func generateSchemaDescribesExactSourceReplacement() throws {
         let registry = ToolRunnerRegistry()

@@ -226,8 +226,9 @@ struct HarnessExecutionLedger: Sendable {
     ]
 
     /// Returns a terminal result that is safe to feed back to the provider
-    /// when a recovered model emits the same call again. Successful calls are
-    /// never re-run after recovery; an unchanged failure is suppressed only
+    /// when a recovered model emits the same call again. Successful mutations
+    /// are never re-run; observations must be refreshed because the user or
+    /// remote host can change state while Floe is suspended. An unchanged failure is suppressed only
     /// after it has already been observed twice, leaving one retry for a
     /// plausibly transient failure.
     func recoveredResult(for call: ToolCall) -> ToolResult? {
@@ -236,11 +237,10 @@ struct HarnessExecutionLedger: Sendable {
             $0.toolName == call.toolName && $0.callFingerprint == callFingerprint
         }) else { return nil }
         let entry = entries[entryIndex]
-        // A later successful mutation invalidates earlier observations. This
-        // matters across recovery checkpoints: after ssh.execute/updateHost
-        // repairs a VNC endpoint, vnc.status must execute again instead of
-        // replaying the stale disconnected result as a "successful" read.
-        if entries.indices.contains(where: { index in
+        if entry.status == .ok && !entry.isSideEffecting { return nil }
+        // A repair can invalidate a previous failure, but must never invalidate
+        // the replay protection for a completed side effect.
+        if entry.status != .ok && entries.indices.contains(where: { index in
             index > entryIndex
                 && entries[index].status == .ok
                 && entries[index].isSideEffecting
