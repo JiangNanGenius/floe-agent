@@ -38,6 +38,8 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         FLOEGitHubOAuthClientID: $(FLOE_GITHUB_OAUTH_CLIENT_ID)
         ITSAppUsesNonExemptEncryption: false
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         NSMicrophoneUsageDescription: Floe uses the microphone only while you dictate a message.
         NSSpeechRecognitionUsageDescription: Floe converts your speech into text for the message composer.
         NSCalendarsFullAccessUsageDescription: Floe accesses calendars only when you ask the agent to read or edit events.

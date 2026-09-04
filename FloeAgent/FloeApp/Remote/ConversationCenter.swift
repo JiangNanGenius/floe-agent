@@ -814,7 +814,8 @@ final class ConversationCenter: ObservableObject {
         for taskPolicy: TaskPolicy,
         primaryModel: ModelProfile
     ) async -> any ApprovalPolicy {
-        let packageBackend = reviewBackend(modelID: modelPreferences.packageReviewModelID)
+        let packageBackend = reviewBackend(modelID: modelPreferences.packageReviewModelID
+            ?? generalAuxiliaryProviderAndModel()?.1.id)
         let localBackend = await localApprovalBackend(primaryModel: primaryModel)
         let mustUseLocalApproval = environment.networkStatusMonitor.isOffline
             || primaryModel.providerID == ProviderProfile.onDeviceProviderID
@@ -2160,11 +2161,14 @@ final class ConversationCenter: ObservableObject {
             userMessages: userMessages,
             workspaceID: workspaceID
         )
-        for kind in PersonalizationDocumentKind.allCases {
-            _ = try? await environment.personalizationService.generateIfDue(
-                kind: kind,
-                workspaceID: workspaceID
-            )
+        if let generator = generalAuxiliaryPersonalizationGenerator() {
+            for kind in PersonalizationDocumentKind.allCases {
+                _ = try? await environment.personalizationService.generateIfDue(
+                    kind: kind,
+                    workspaceID: workspaceID,
+                    generator: generator
+                )
+            }
         }
         // Post-run memory "dream": count the run, then distill durable
         // candidates from the just-completed exchange (cadence-gated, and
@@ -2478,6 +2482,7 @@ final class ConversationCenter: ObservableObject {
         guard let conversation = try? await environment.conversationStore
             .conversation(id: conversationID),
               conversation.titleOrigin == .autoPending else { return }
+        let (provider, model) = generalAuxiliaryProviderAndModel() ?? (provider, model)
         var title = ""
         let request = ProviderStreamRequest(
             provider: provider,
@@ -3156,6 +3161,27 @@ final class ConversationCenter: ObservableObject {
     /// Canvas uses its own stable routes so switching the chat model never
     /// silently changes how a drawing is interpreted or which agent operates
     /// on the board.
+    func generalAuxiliaryProviderAndModel() -> (ProviderProfile, ModelProfile)? {
+        let id = modelPreferences.generalAuxiliaryLLMModelID ?? modelPreferences.defaultAgentModelID
+        guard let id,
+              let model = modelsByProvider.values.flatMap({ $0 }).first(where: {
+                  $0.id == id && $0.isEnabled && $0.capabilities.contains(.text)
+              }),
+              let provider = providers.first(where: { $0.id == model.providerID }) else { return nil }
+        return (provider, model)
+    }
+
+    var generalAuxiliaryModelLabel: String {
+        guard let (provider, model) = generalAuxiliaryProviderAndModel() else { return "未配置可用的文本模型" }
+        return "\(model.displayName) · \(provider.displayName ?? provider.kind.rawValue)"
+    }
+
+    func generalAuxiliaryPersonalizationGenerator() -> ModelPersonalizationGenerator? {
+        guard let (provider, model) = generalAuxiliaryProviderAndModel() else { return nil }
+        return ModelPersonalizationGenerator(provider: provider, model: model,
+            credentials: resolveCredentials(for: provider))
+    }
+
     func canvasAssistantProviderAndModel() -> (ProviderProfile, ModelProfile)? {
         let preferredID = modelPreferences.canvasAgentModelID
             ?? modelPreferences.defaultAgentModelID

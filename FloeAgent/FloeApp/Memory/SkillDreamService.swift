@@ -33,7 +33,7 @@ final class SkillDreamService {
         guard shouldDream() else { return }
         // Curator runs on the same low-frequency cadence.
         await environment.skillsCenter.curate()
-        guard let (provider, model) = environment.conversationCenter.providerAndModel(modelID: nil) else {
+        guard let (provider, model) = environment.conversationCenter.generalAuxiliaryProviderAndModel() else {
             return
         }
         let messages = (try? await environment.conversationStore.messages(conversationID: conversationID)) ?? []

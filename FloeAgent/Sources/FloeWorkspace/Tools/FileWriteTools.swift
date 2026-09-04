@@ -33,8 +33,7 @@ public struct WorkspaceCreateFileTool: AgentTool {
       "type": "object",
       "properties": {
         "path": {"type": "string", "description": "Workspace-relative path for the new file"},
-        "content": {"type": "string", "description": "Full file content (UTF-8)"},
-        "scope": {"type": "string", "description": "Execution scope; only the local workspace is supported"}
+        "content": {"type": "string", "description": "Full file content (UTF-8)"}
       },
       "required": ["path", "content"],
       "additionalProperties": false
@@ -121,8 +120,7 @@ public struct WorkspaceWriteFileTool: AgentTool {
         "path": {"type": "string", "description": "Workspace-relative file path"},
         "content": {"type": "string", "description": "New full file content (UTF-8)"},
         "expectedMtime": {"type": "number", "description": "mtime (seconds since 1970) last observed by the caller"},
-        "expectedSHA256": {"type": "string", "description": "sha256 of the content last observed by the caller"},
-        "scope": {"type": "string", "description": "Execution scope; only the local workspace is supported"}
+        "expectedSHA256": {"type": "string", "description": "sha256 of the content last observed by the caller"}
       },
       "required": ["path", "content"],
       "additionalProperties": false
@@ -224,8 +222,7 @@ public struct WorkspaceApplyPatchTool: AgentTool {
       "type": "object",
       "properties": {
         "path": {"type": "string", "description": "Workspace-relative file path to patch"},
-        "patch": {"type": "string", "description": "Unified diff (diff -u subset) for this one file"},
-        "scope": {"type": "string", "description": "Execution scope; only the local workspace is supported"}
+        "patch": {"type": "string", "description": "Unified diff (diff -u subset) for this one file"}
       },
       "required": ["path", "patch"],
       "additionalProperties": false
@@ -307,8 +304,7 @@ public struct WorkspaceCreateDirectoryTool: AgentTool {
     {
       "type": "object",
       "properties": {
-        "path": {"type": "string", "description": "Workspace-relative directory path to create"},
-        "scope": {"type": "string", "description": "Execution scope; only the local workspace is supported"}
+        "path": {"type": "string", "description": "Workspace-relative directory path to create"}
       },
       "required": ["path"],
       "additionalProperties": false

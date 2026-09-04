@@ -11,6 +11,39 @@ struct ModelConfigurationStoreTests {
         return ModelConfigurationStore(database: database)
     }
 
+    @Test("General auxiliary LLM persists independently and unrelated stale routes do not block saving")
+    func generalAuxiliaryRouting() async throws {
+        let store = try await makeStore()
+        let provider = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://example.com/v1")!)
+        try await store.saveProvider(provider)
+        var approval = ModelProfile(providerID: provider.id, remoteModelID: "review", displayName: "Review",
+            limits: .init(contextTokens: 4096, maxOutputTokens: 1024), capabilities: [.text])
+        let auxiliary = ModelProfile(providerID: provider.id, remoteModelID: "aux", displayName: "Aux",
+            limits: .init(contextTokens: 4096, maxOutputTokens: 1024), capabilities: [.text])
+        let image = ModelProfile(providerID: provider.id, remoteModelID: "image", displayName: "Image",
+            limits: .init(contextTokens: 4096, maxOutputTokens: 1024), capabilities: [.imageGeneration])
+        try await store.saveModel(approval)
+        try await store.saveModel(auxiliary)
+        try await store.saveModel(image)
+        var prefs = ModelSelectionPreferences(approvalModelID: approval.id)
+        try await store.savePreferences(prefs)
+        approval.isEnabled = false
+        try await store.saveModel(approval)
+        prefs.generalAuxiliaryLLMModelID = auxiliary.id
+        try await store.savePreferences(prefs)
+        let loaded = try await store.preferences()
+        #expect(loaded.generalAuxiliaryLLMModelID == auxiliary.id)
+        #expect(loaded.approvalModelID == approval.id)
+        #expect(loaded.sharedImageModelID == nil)
+        #expect(loaded.defaultVideoModelID == nil)
+        prefs.generalAuxiliaryLLMModelID = image.id
+        await #expect(throws: FloeError.self) { try await store.savePreferences(prefs) }
+        let legacy = try JSONDecoder().decode(ModelSelectionPreferences.self,
+            from: JSONEncoder().encode(ModelSelectionPreferences()))
+        #expect(legacy.generalAuxiliaryLLMModelID == nil)
+    }
+
     @Test("Device-local reconciliation persists launch identities and disables removed models")
     func localCatalogReconciliation() async throws {
         let store = try await makeStore()

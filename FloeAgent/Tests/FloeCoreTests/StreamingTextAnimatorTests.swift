@@ -7,6 +7,16 @@ import Testing
 
 @Suite("FloeCore.StreamingTextAnimator")
 struct StreamingTextAnimatorTests {
+    @Test("Oversized stream backlog is coalesced without losing text")
+    @MainActor
+    func boundedBacklog() async {
+        let animator = StreamingTextAnimator()
+        let full = String(repeating: "文字🙂", count: 10_000)
+        animator.update(target: full)
+        #expect(full.hasPrefix(animator.displayedText))
+        #expect(full.count - animator.displayedText.count <= 2048)
+        animator.cancel()
+    }
 
     /// Captures structured diagnostics for assertions.
     private final class DiagnosticsRecorder: StreamingTextAnimatorDiagnostics, @unchecked Sendable {

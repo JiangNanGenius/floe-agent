@@ -72,7 +72,7 @@ struct FileToolsTests {
             "workspace.listDirectory", "workspace.readFile", "workspace.searchFiles",
             "workspace.inspectFileMetadata", "workspace.createFile", "workspace.writeFile",
             "workspace.applyPatch", "workspace.moveFile", "workspace.deleteFile",
-            "workspace.createDirectory", "workspace.copyFile"
+            "workspace.createDirectory", "workspace.copyFile", "workspace.appendFile", "workspace.replaceText"
         ]
         for name in expected {
             #expect(ToolCatalog.descriptor(named: name) != nil, "descriptor missing for \(name)")
@@ -87,6 +87,35 @@ struct FileToolsTests {
     }
 
     // MARK: listDirectory
+
+    @Test("UTF-8 edits are extension-independent and preserve full contents", arguments: ["html", "py", "swift", "json", "md", "conf"])
+    func textEdits(ext: String) async throws {
+        let f = try makeFixture()
+        let path = "sample." + ext
+        let original = String(repeating: "x", count: 70_000) + "unique旧内容"
+        try f.write(path, original)
+        _ = try await WorkspaceAppendFileTool(environment: f.environment).execute(.init(path: path, content: "\nappended"), context: f.context)
+        _ = try await WorkspaceReplaceTextTool(environment: f.environment).execute(.init(path: path, oldText: "unique旧内容", newText: "new内容"), context: f.context)
+        #expect(try f.read(path) == String(repeating: "x", count: 70_000) + "new内容\nappended")
+        await #expect(throws: WorkspaceToolError.self) {
+            _ = try await WorkspaceAppendFileTool(environment: f.environment).execute(.init(path: path, content: "bad", expectedSHA256: "stale"), context: f.context)
+        }
+        #expect(try !f.read(path).hasSuffix("bad"))
+    }
+
+    @Test("Text transformations reject ambiguous matches and binary contents")
+    func unsafeTextEdits() async throws {
+        let f = try makeFixture()
+        try f.write("a.py", "same same")
+        await #expect(throws: WorkspaceToolError.self) {
+            _ = try await WorkspaceReplaceTextTool(environment: f.environment).execute(.init(path: "a.py", oldText: "same", newText: "changed"), context: f.context)
+        }
+        #expect(try f.read("a.py") == "same same")
+        try Data([0, 255, 12]).write(to: f.root.appendingPathComponent("binary.html"))
+        await #expect(throws: WorkspaceToolError.self) {
+            _ = try await WorkspaceAppendFileTool(environment: f.environment).execute(.init(path: "binary.html", content: "text"), context: f.context)
+        }
+    }
 
     @Test("listDirectory returns entries sorted dirs-first and paginates")
     func listDirectory() async throws {

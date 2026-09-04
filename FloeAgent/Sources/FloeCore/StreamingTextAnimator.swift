@@ -107,6 +107,11 @@ public final class StreamingTextAnimator {
             return
         }
         targetText = target
+        // Coalesce oversized bursts into one prefix update. The transcript
+        // remains complete while animation debt stays within one screenful.
+        if pendingCount > 2048 {
+            displayedText = String(target.dropLast(512))
+        }
         diagnostics?.streamTargetAdvanced(pendingCharacters: pendingCount)
         startAnimationIfNeeded()
     }
@@ -200,7 +205,8 @@ public final class StreamingTextAnimator {
         case 1..<24: return 1
         case 24..<96: return 2
         case 96..<480: return 4
-        default: return 6
+        case 480..<1024: return 24
+        default: return 64
         }
     }
 

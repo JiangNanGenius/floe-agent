@@ -125,10 +125,8 @@ public extension ToolExecutor {
     }
 }
 
-/// Default executor bridging the compile-time catalog and the runtime
-/// `ToolRunnerRegistry`. Tools whose descriptor exists but have no runner
-/// registered still fail with a structured "No runner registered" result
-/// so the runtime keeps flowing.
+/// The runtime registry is the single source for executable descriptions,
+/// schemas and runners. Static-only declarations are never advertised.
 public struct CatalogToolExecutor: ToolExecutor {
     private let runners: ToolRunnerRegistry
 
@@ -137,17 +135,12 @@ public struct CatalogToolExecutor: ToolExecutor {
     }
 
     public func descriptor(named name: String) -> ToolCatalog.Descriptor? {
-        ToolCatalog.descriptor(named: name) ?? runners.descriptor(named: name)
+        runners.descriptor(named: name)
     }
 
     public var allDescriptors: [ToolCatalog.Descriptor] {
-        var merged = Dictionary(
-            uniqueKeysWithValues: ToolCatalog.allDescriptors.map { ($0.name, $0) }
-        )
-        for descriptor in runners.allDescriptors {
-            merged[descriptor.name] = descriptor
-        }
-        return merged.values.sorted { $0.name < $1.name }
+        // A static catalog entry is documentation, not an executable tool.
+        return runners.allDescriptors
     }
 
     public func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
@@ -469,6 +462,8 @@ public actor FloeAgentRuntime {
     private var providerReceivedFirstEvent = false
     private var providerLastEventWasReasoning = false
     private var providerLastProgressAt = Date()
+    private var discoveredToolNames: Set<String> = []
+    private var discoverableDescriptors: [ToolCatalog.Descriptor] = []
     private var providerAttemptStartedAt = Date()
     private var providerRetryRequested = false
     private var providerRetryDelay: TimeInterval = 0
@@ -1111,11 +1106,28 @@ public actor FloeAgentRuntime {
         if let effectiveAllowedNames {
             catalogDescriptors.removeAll { !effectiveAllowedNames.contains($0.name) }
         }
+        discoverableDescriptors = catalogDescriptors
+        let userTask = messages.last(where: { $0.role == "user" })?.content ?? ""
+        if discoveredToolNames.isEmpty {
+            let initial = ToolDiscovery.matches(query: userTask, descriptors: catalogDescriptors)
+            discoveredToolNames.formUnion(initial.map(\.name))
+        }
+        // Restore recently used groups without replaying a discovery call.
+        let recentGroups = Set(executionLedger.entries.suffix(6).map { ToolDiscovery.group($0.toolName) })
+        catalogDescriptors = catalogDescriptors.filter {
+            discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
+        }
+        catalogDescriptors.append(ToolDiscovery.descriptor)
         // Prerequisite wording belongs to the current user turn. Do not let a
         // historical SSH-before-VNC request constrain a later, unrelated turn.
         let statefulRouteGoal = messages.last(where: { $0.role == "user" })?.content ?? ""
-        catalogDescriptors.removeAll {
-            !executionLedger.allowsStatefulTool(named: $0.name, userGoal: statefulRouteGoal)
+        // Keep installed capabilities discoverable. Preconditions are checked
+        // at execution time, not by silently removing tools from the schema.
+        let prerequisiteNotes = catalogDescriptors.compactMap { descriptor -> String? in
+            guard let reason = executionLedger.statefulToolDenialReason(
+                for: descriptor.name, userGoal: statefulRouteGoal
+            ) else { return nil }
+            return "\(descriptor.name): \(reason)"
         }
         var legacyMessages = messages.map { (role: $0.role, content: $0.content) }
         var contentMessages = messages.map { message in
@@ -1126,6 +1138,31 @@ public actor FloeAgentRuntime {
                 }
             }
             return ProviderMessage(role: message.role, content: parts)
+        }
+        // Refresh on every dispatch, including long-running and resumed tasks.
+        // This is transient request context, never a durable historical fact.
+        let now = Date()
+        let zone = TimeZone.current
+        let temporalContext = "Current runtime time: \(ISO8601DateFormatter().string(from: now)); timeZone=\(zone.identifier); utcOffsetSeconds=\(zone.secondsFromGMT(for: now)); locale=\(Locale.current.identifier). This timestamp supersedes older time context."
+        if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
+            legacyMessages[index].content += "\n\n" + temporalContext
+            contentMessages[index].content.append(.text(temporalContext))
+        } else {
+            legacyMessages.insert((role: "system", content: temporalContext), at: 0)
+            contentMessages.insert(ProviderMessage(role: "system", content: [.text(temporalContext)]), at: 0)
+        }
+        if !prerequisiteNotes.isEmpty {
+            let note = "Installed tools remain callable; satisfy these execution prerequisites first:\n"
+                + prerequisiteNotes.joined(separator: "\n")
+            if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
+                legacyMessages[index].content += "\n\n" + note
+                contentMessages[index].content.append(.text(note))
+            }
+        }
+        if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
+            let discovery = ToolDiscovery.index(discoverableDescriptors)
+            legacyMessages[index].content += "\n\n" + discovery
+            contentMessages[index].content.append(.text(discovery))
         }
         // Hermes-style budget pressure is ephemeral: it guides this provider
         // request but never pollutes durable conversation history.
@@ -2112,6 +2149,18 @@ public actor FloeAgentRuntime {
         // Phase 1 — resolve serially (approval escalation blocks).
         for call in calls {
             if resultsByID[call.id] != nil { continue }
+            if call.toolName == ToolDiscovery.name {
+                let query = (try? JSONSerialization.jsonObject(with: call.argumentsJSON)) as? [String: String]
+                let matches = ToolDiscovery.matches(query: query?["query"] ?? "", descriptors: discoverableDescriptors)
+                discoveredToolNames.formUnion(matches.map(\.name))
+                let summary = matches.isEmpty
+                    ? "No matching executable tool in this task's capability set. " + ToolDiscovery.index(discoverableDescriptors)
+                    : "Loaded for the next request:\n" + matches.map { $0.name + ": " + String($0.toolDescription.prefix(160)) }.joined(separator: "\n")
+                let result = ToolResult(callID: call.id, status: .ok, outputSummary: summary, outputDigest: "")
+                await audit(toolCall: call, result: result, decision: "allow:tool-discovery")
+                resultsByID[call.id] = result
+                continue
+            }
             if budgetWasExhausted {
                 let skipped = ToolResult(
                     callID: call.id,

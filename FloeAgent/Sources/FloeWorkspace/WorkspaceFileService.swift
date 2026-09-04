@@ -284,7 +284,7 @@ public struct WorkspaceFileService: Sendable {
             throw WorkspaceToolError.invalidArguments("file is not editable text: \(path)")
         }
 
-        let text = String(decoding: data, as: UTF8.self)
+        let text = try WorkspaceTextEdit.decode(data)
         return FileContent(
             text: text,
             truncated: false,
@@ -447,7 +447,7 @@ public struct WorkspaceFileService: Sendable {
 
         let hunks = try Self.parseUnifiedDiff(patch)
         let originalData = try Data(floeContentsOf: url)
-        let original = String(decoding: originalData, as: UTF8.self)
+        let original = try WorkspaceTextEdit.decode(originalData)
         var lines = original.components(separatedBy: "\n")
 
         var applied = 0

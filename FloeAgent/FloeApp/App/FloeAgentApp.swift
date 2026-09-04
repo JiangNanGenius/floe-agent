@@ -18,6 +18,15 @@ import FloePersistence
 import FloeLocalModelCatalog
 
 final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        RuntimeDiagnostics.shared.start()
+        return true
+    }
+
+    func applicationWillTerminate(_ application: UIApplication) {
+        RuntimeDiagnostics.shared.normalTermination()
+    }
+
     func application(
         _ application: UIApplication,
         handleEventsForBackgroundURLSession identifier: String,
@@ -209,6 +218,9 @@ struct RootView: View {
             } else {
                 iPhoneRoot
             }
+        }
+        .background(alignment: .bottomTrailing) {
+            BackgroundPiPSceneSource(videoService: environment.backgroundVideoService)
         }
         .onChange(of: scenePhase, initial: true) { _, newPhase in
             router.handleScenePhase(

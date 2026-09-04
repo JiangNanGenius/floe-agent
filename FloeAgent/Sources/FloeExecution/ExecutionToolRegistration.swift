@@ -77,10 +77,6 @@ public func registerExecutionTools(
         ToolCatalog.register(CloudWorkspaceGitBranchTool.self)
         ToolCatalog.register(RemoteHostingInspectTool.self)
         ToolCatalog.register(RemoteHostingManageTool.self)
-        ToolCatalog.register(NetworkPingTool.self)
-        ToolCatalog.register(NetworkTracerouteTool.self)
-        ToolCatalog.register(NetworkDNSLookupTool.self)
-        ToolCatalog.register(NetworkTCPProbeTool.self)
     }
     if remoteHostStore != nil {
         ToolCatalog.register(SSHListHostsTool.self)
@@ -95,6 +91,10 @@ public func registerExecutionTools(
         ToolCatalog.register(BluetoothSerialExchangeTool.self)
         ToolCatalog.register(BluetoothSerialCloseTool.self)
     }
+    ToolCatalog.register(NetworkPingTool.self)
+    ToolCatalog.register(NetworkTracerouteTool.self)
+    ToolCatalog.register(NetworkDNSLookupTool.self)
+    ToolCatalog.register(NetworkTCPProbeTool.self)
     ToolCatalog.register(HTTPRequestTool.self)
     ToolCatalog.register(WebSearchTool.self)
     ToolCatalog.register(BochaAISearchTool.self)
@@ -149,10 +149,6 @@ public func registerExecutionTools(
         registry.register(CloudWorkspaceGitBranchTool(service: cloudWorkspaceService))
         registry.register(RemoteHostingInspectTool(service: cloudWorkspaceService))
         registry.register(RemoteHostingManageTool(service: cloudWorkspaceService))
-        registry.register(NetworkPingTool(service: sshCommandService))
-        registry.register(NetworkTracerouteTool(service: sshCommandService))
-        registry.register(NetworkDNSLookupTool(service: sshCommandService))
-        registry.register(NetworkTCPProbeTool(service: sshCommandService))
     }
     if let remoteHostStore {
         registry.register(SSHListHostsTool(store: remoteHostStore))
@@ -173,6 +169,10 @@ public func registerExecutionTools(
         registry.register(BluetoothSerialExchangeTool(service: bluetoothSerialService))
         registry.register(BluetoothSerialCloseTool(service: bluetoothSerialService))
     }
+    registry.register(NetworkPingTool(service: sshCommandService))
+    registry.register(NetworkTracerouteTool(service: sshCommandService))
+    registry.register(NetworkDNSLookupTool(service: sshCommandService))
+    registry.register(NetworkTCPProbeTool(service: sshCommandService))
     registry.register(HTTPRequestTool(service: httpRequestService))
     registry.register(WebSearchTool(service: webSearchService))
     registry.register(BochaAISearchTool(service: webSearchService))

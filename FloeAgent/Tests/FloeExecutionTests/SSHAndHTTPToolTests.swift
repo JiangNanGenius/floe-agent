@@ -115,6 +115,36 @@ struct SSHAndHTTPToolTests {
 
     // MARK: - network.http
 
+    @Test("LAN diagnostic policy allows local HTTP, not public HTTP, metadata or credentials")
+    func localHTTPPolicy() throws {
+        for value in ["http://192.168.1.1/status", "http://10.0.0.1", "http://127.0.0.1:8080"] {
+            try HTTPRequestTool().validate(.init(url: value, localNetwork: true))
+        }
+        for value in ["http://8.8.8.8", "http://169.254.169.254/latest/meta-data", "http://user:password@192.168.1.1", "https://169.254.169.254"] {
+            #expect(throws: FloeError.self) {
+                try HTTPRequestTool().validate(.init(url: value, localNetwork: true))
+            }
+        }
+    }
+
+    @Test("Device diagnostics are registered without an SSH service, and ICMP fails honestly")
+    func deviceDiagnostics() async throws {
+        let registry = ToolRunnerRegistry()
+        registerExecutionTools(registry: registry)
+        for name in ["network.ping", "network.traceroute", "network.dnsLookup", "network.tcpProbe"] {
+            #expect(registry.runner(named: name) != nil)
+        }
+        let context = ToolContext(runID: UUID(), cancellation: CancellationToken())
+        let dns = try #require(registry.runner(named: "network.dnsLookup"))
+        let result = try await dns.execute(argumentsJSON: Data(#"{"target":"localhost"}"#.utf8), context: context)
+        #expect(result.summary.contains("executionTarget=device"))
+        #expect(result.summary.contains("127.0.0.1") || result.summary.contains("::1"))
+        let ping = try #require(registry.runner(named: "network.ping"))
+        await #expect(throws: FloeError.self) {
+            _ = try await ping.execute(argumentsJSON: Data(#"{"target":"127.0.0.1"}"#.utf8), context: context)
+        }
+    }
+
     @Test("network.http descriptor is network-flagged")
     func httpDescriptor() {
         #expect(HTTPRequestTool.name == "network.http")

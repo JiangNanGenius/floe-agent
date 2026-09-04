@@ -32,8 +32,7 @@ public struct WorkspaceMoveFileTool: AgentTool {
       "type": "object",
       "properties": {
         "from": {"type": "string", "description": "Current workspace-relative path"},
-        "to": {"type": "string", "description": "New workspace-relative path (must not exist)"},
-        "scope": {"type": "string", "description": "Execution scope; only the local workspace is supported"}
+        "to": {"type": "string", "description": "New workspace-relative path (must not exist)"}
       },
       "required": ["from", "to"],
       "additionalProperties": false
@@ -106,8 +105,7 @@ public struct WorkspaceDeleteFileTool: AgentTool {
       "type": "object",
       "properties": {
         "path": {"type": "string", "description": "Workspace-relative path to delete"},
-        "recursive": {"type": "boolean", "description": "Set true to remove a non-empty directory and its contents"},
-        "scope": {"type": "string", "description": "Execution scope; only the local workspace is supported"}
+        "recursive": {"type": "boolean", "description": "Set true to remove a non-empty directory and its contents"}
       },
       "required": ["path"],
       "additionalProperties": false
@@ -172,8 +170,7 @@ public struct WorkspaceCopyFileTool: AgentTool {
       "type": "object",
       "properties": {
         "from": {"type": "string", "description": "Current workspace-relative path"},
-        "to": {"type": "string", "description": "New workspace-relative path (must not exist)"},
-        "scope": {"type": "string", "description": "Execution scope; only the local workspace is supported"}
+        "to": {"type": "string", "description": "New workspace-relative path (must not exist)"}
       },
       "required": ["from", "to"],
       "additionalProperties": false

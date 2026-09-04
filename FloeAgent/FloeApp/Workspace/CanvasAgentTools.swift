@@ -1073,65 +1073,6 @@ private struct CanvasDeleteTool: AgentTool {
     }
 }
 
-// Recovered checkpoints keep the exact tool name that was originally
-// dispatched. Register legacy names internally, but exclude them from the
-// current canvas capability ceiling so models see only one canonical API.
-private struct LegacyCanvasInspectTool: AgentTool {
-    typealias Arguments = CanvasInspectTool.Arguments
-    static let name = "canvas.inspect"
-    static let toolDescription = CanvasInspectTool.toolDescription
-    static let parametersJSON = CanvasInspectTool.parametersJSON
-    static let riskLabels: Set<RiskLabel> = []
-    static let isSideEffecting = false
-    let coordinator: CanvasToolCoordinator
-    func validate(_ args: Arguments) throws { try CanvasInspectTool(coordinator: coordinator).validate(args) }
-    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await CanvasInspectTool(coordinator: coordinator).execute(args, context: context)
-    }
-}
-
-private struct LegacyCanvasApplyPatchTool: AgentTool {
-    typealias Arguments = CanvasApplyPatchTool.Arguments
-    static let name = "canvas.applyPatch"
-    static let toolDescription = CanvasApplyPatchTool.toolDescription
-    static let parametersJSON = CanvasApplyPatchTool.parametersJSON
-    static let riskLabels: Set<RiskLabel> = [.persistsPersonalData, .deletesFiles]
-    static let isSideEffecting = true
-    static let toolEffect: ToolEffect = .internalState
-    let coordinator: CanvasToolCoordinator
-    func validate(_ args: Arguments) throws {}
-    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await CanvasToolOutput.make(coordinator.apply(runID: context.runID, patch: args.patch))
-    }
-}
-
-private struct LegacyCanvasGenerateMediaTool: AgentTool {
-    typealias Arguments = CanvasGenerateMediaTool.Arguments
-    static let name = "canvas.generateMedia"
-    static let toolDescription = CanvasGenerateMediaTool.toolDescription
-    static let parametersJSON = CanvasGenerateMediaTool.parametersJSON
-    static let riskLabels = CanvasGenerateMediaTool.riskLabels
-    static let isSideEffecting = true
-    let coordinator: CanvasToolCoordinator
-    func validate(_ args: Arguments) throws { try CanvasGenerateMediaTool(coordinator: coordinator).validate(args) }
-    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await CanvasGenerateMediaTool(coordinator: coordinator).execute(args, context: context)
-    }
-}
-
-private struct LegacyCanvasMediaStatusTool: AgentTool {
-    typealias Arguments = CanvasMediaStatusTool.Arguments
-    static let name = "canvas.mediaStatus"
-    static let toolDescription = CanvasMediaStatusTool.toolDescription
-    static let parametersJSON = CanvasMediaStatusTool.parametersJSON
-    static let riskLabels: Set<RiskLabel> = []
-    static let isSideEffecting = false
-    let coordinator: CanvasToolCoordinator
-    func validate(_ args: Arguments) throws {}
-    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await CanvasMediaStatusTool(coordinator: coordinator).execute(args, context: context)
-    }
-}
 
 @MainActor
 func registerCanvasAgentTools(environment: AppEnvironment, registry: ToolRunnerRegistry = .shared) {
@@ -1185,9 +1126,5 @@ func registerCanvasAgentTools(environment: AppEnvironment, registry: ToolRunnerR
     ToolCatalog.register(CanvasAssetImportTool.self); registry.register(CanvasAssetImportTool(coordinator: coordinator))
     ToolCatalog.register(CanvasGenerateMediaTool.self); registry.register(CanvasGenerateMediaTool(coordinator: coordinator))
     ToolCatalog.register(CanvasMediaStatusTool.self); registry.register(CanvasMediaStatusTool(coordinator: coordinator))
-    ToolCatalog.register(LegacyCanvasInspectTool.self); registry.register(LegacyCanvasInspectTool(coordinator: coordinator))
-    ToolCatalog.register(LegacyCanvasApplyPatchTool.self); registry.register(LegacyCanvasApplyPatchTool(coordinator: coordinator))
-    ToolCatalog.register(LegacyCanvasGenerateMediaTool.self); registry.register(LegacyCanvasGenerateMediaTool(coordinator: coordinator))
-    ToolCatalog.register(LegacyCanvasMediaStatusTool.self); registry.register(LegacyCanvasMediaStatusTool(coordinator: coordinator))
 }
 #endif

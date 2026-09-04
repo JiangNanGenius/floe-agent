@@ -784,6 +784,7 @@ public actor ConfigSyncEngine {
         guard let configurationStore else { return [] }
         let selected = Set([
             preferences.defaultAgentModelID,
+            preferences.generalAuxiliaryLLMModelID,
             preferences.canvasAgentModelID,
             preferences.visionModelID,
             preferences.canvasVisionModelID,
@@ -807,6 +808,9 @@ public actor ConfigSyncEngine {
         var value = value
         if value.defaultAgentModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
             value.defaultAgentModelID = nil
+        }
+        if value.generalAuxiliaryLLMModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
+            value.generalAuxiliaryLLMModelID = nil
         }
         if value.canvasAgentModelID.map(ProviderProfile.onDeviceModelIDs.contains) == true {
             value.canvasAgentModelID = nil
@@ -850,6 +854,7 @@ public actor ConfigSyncEngine {
             id.flatMap { ProviderProfile.onDeviceModelIDs.contains($0) ? $0 : nil }
         }
         value.defaultAgentModelID = deviceValue(local.defaultAgentModelID) ?? value.defaultAgentModelID
+        value.generalAuxiliaryLLMModelID = deviceValue(local.generalAuxiliaryLLMModelID) ?? value.generalAuxiliaryLLMModelID
         value.canvasAgentModelID = deviceValue(local.canvasAgentModelID) ?? value.canvasAgentModelID
         value.visionModelID = deviceValue(local.visionModelID) ?? value.visionModelID
         value.canvasVisionModelID = deviceValue(local.canvasVisionModelID) ?? value.canvasVisionModelID

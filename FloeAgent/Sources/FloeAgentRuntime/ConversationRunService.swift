@@ -1583,7 +1583,7 @@ public actor ConversationRunService {
         lines.append("Current time zone: \(timeZone.identifier) (UTC\(utcOffset(timeZone.secondsFromGMT(for: currentDate))))")
         let toolNames = toolsAvailable
             ? (context?.availableToolNames.map(Array.init)?.sorted()
-                ?? ToolCatalog.allDescriptors.map(\.name).sorted())
+                ?? ToolRunnerRegistry.shared.allDescriptors.map(\.name).sorted())
             : []
         if let workspace = context?.workspaceName, !workspace.isEmpty {
             lines.append("Workspace: \(workspace)")

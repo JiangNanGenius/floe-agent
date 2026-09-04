@@ -27,7 +27,7 @@ enum ToolWorkflowGuidance {
         if names.contains("vnc.observe") {
             lines.append("VNC workflow is a strict state machine: vnc.status -> vnc.connect -> vnc.observe -> one input -> vnc.observe. Never call observe or an input tool while disconnected. An explicit user-requested prerequisite method or tool order is binding for this run: execute that route before any later VNC step. For example, when the user requested SSH setup first, use ssh.listHosts -> ssh.inspectTarget -> ssh.execute in explicit host mode -> ssh.updateHost, then vnc.connect and only then vnc.observe. SSH is an example recovery route, not a mandatory fallback when the user chose another available resolver. If no route was specified, select an available configuration resolver from the tools and current evidence. Never repeat an unchanged non-retryable VNC call and never ask for a password when an existing secure credential reference or an authorized generated setup credential can be stored without exposing it.")
         }
-        if names.contains("canvas.getState") || names.contains("canvas.inspect") {
+        if names.contains("canvas.getState") {
             lines.append("Canvas workflow: inspect/getState returns canvasID, documentID, revision, and node IDs. Reuse that exact revision and IDs for one patch or generation; refresh state only after a mutation or revision conflict. Media status IDs come from the generation result.")
         }
         if names.contains("memory.list") || names.contains("memory.search") {
@@ -99,7 +99,7 @@ enum ToolWorkflowGuidance {
                 return "Use a workspaceID from Workspace links, cloudWorkspace.catalog, or cloudWorkspace.create."
             }
             if toolName.hasPrefix("canvas.") {
-                return "Use canvas/document/node IDs and the current revision from canvas.getState or canvas.inspect."
+                return "Use canvas/document/node IDs and the current revision from canvas.getState."
             }
             return nil
         }

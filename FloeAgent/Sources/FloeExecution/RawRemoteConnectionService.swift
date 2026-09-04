@@ -68,7 +68,7 @@ public actor RawRemoteConnectionService {
     }
 }
 
-private final class RawTCPConnection: @unchecked Sendable {
+final class RawTCPConnection: @unchecked Sendable {
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "org.floeagent.raw-remote-connection")
     private let telnet: Bool

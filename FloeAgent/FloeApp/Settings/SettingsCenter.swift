@@ -216,7 +216,7 @@ final class SettingsCenter: ObservableObject {
         capabilitySummary = CapabilitySummary(
             providerCount: providerList.count,
             modelCount: modelList.count,
-            toolCount: ToolCatalog.allDescriptors.count,
+            toolCount: ToolRunnerRegistry.shared.allDescriptors.count,
             adapterKinds: providerList.map(\.kind.rawValue)
         )
         gateIsFailClosed = environment.catastrophicGate.evaluate(command: "true").stopped

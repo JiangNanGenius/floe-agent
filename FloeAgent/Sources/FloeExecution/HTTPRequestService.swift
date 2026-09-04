@@ -74,7 +74,7 @@ public struct HTTPRequestService: Sendable {
             throw HTTPRequestError.invalidMethod(method)
         }
         if allowsPrivateNetwork {
-            try PrivateNetworkTargetPolicy.validate(url)
+            try DiagnosticNetworkTargetPolicy.validate(url)
         } else {
             try PublicNetworkTargetPolicy.validate(url)
         }
@@ -94,7 +94,15 @@ public struct HTTPRequestService: Sendable {
 
         let (data, response): (Data, URLResponse)
         do {
-            (data, response) = try await session.data(for: request)
+            let (bytes, receivedResponse) = try await session.bytes(for: request)
+            var bounded = Data()
+            let cap = max(1, min(maxResponseBytes, 256 * 1024))
+            for try await byte in bytes {
+                bounded.append(byte)
+                if bounded.count > cap { break }
+            }
+            data = bounded
+            response = receivedResponse
         } catch {
             throw HTTPRequestError.requestFailed(error.localizedDescription)
         }
@@ -255,14 +263,11 @@ enum PrivateNetworkTargetPolicy {
               !host.isEmpty else {
             throw HTTPRequestError.invalidURL(url.absoluteString)
         }
-        // Allow .local/.lan/.internal/.home mDNS names and private IPs.
-        let allowedSuffixes = [".local", ".lan", ".internal", ".home", ".localhost"]
-        if allowedSuffixes.contains(where: { host.hasSuffix($0) }) {
-            return
-        }
+        // Resolve names as well as literals: a local-looking suffix must not
+        // bypass address validation or reach a metadata/link-local service.
         // Validate IP ranges directly for numeric hosts.
         if let ip = IPAddress(host) {
-            if ip.isPrivate || ip.isLoopback || ip.isLinkLocal {
+            if ip.isPrivate || ip.isLoopback {
                 return
             }
         }
@@ -313,7 +318,6 @@ enum PrivateNetworkTargetPolicy {
             if first == 10 { return true }
             if first == 172 && (16...31).contains(second) { return true }
             if first == 192 && second == 168 { return true }
-            if first == 169 && second == 254 { return true } // link-local
             if first == 127 { return true } // loopback
             return false
         case AF_INET6:
@@ -324,7 +328,6 @@ enum PrivateNetworkTargetPolicy {
             if bytes.allSatisfy({ $0 == 0 }) { return false }
             if bytes.dropLast().allSatisfy({ $0 == 0 }) && bytes.last == 1 { return true } // loopback
             if bytes[0] & 0xfe == 0xfc { return true } // unique local fc00::/7
-            if bytes[0] == 0xfe && bytes[1] & 0xc0 == 0x80 { return true } // link local
             return false
         default:
             return false
@@ -387,6 +390,13 @@ private struct IPAddress {
     }
 }
 
+public enum DiagnosticNetworkTargetPolicy {
+    public static func validate(_ url: URL) throws {
+        if (try? PrivateNetworkTargetPolicy.validate(url)) != nil { return }
+        try PublicNetworkTargetPolicy.validate(url)
+    }
+}
+
 private final class PrivateRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(
         _ session: URLSession,
@@ -395,7 +405,7 @@ private final class PrivateRedirectDelegate: NSObject, URLSessionTaskDelegate, @
         newRequest request: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
-        guard let url = request.url, (try? PrivateNetworkTargetPolicy.validate(url)) != nil else {
+        guard let url = request.url, (try? DiagnosticNetworkTargetPolicy.validate(url)) != nil else {
             completionHandler(nil)
             return
         }

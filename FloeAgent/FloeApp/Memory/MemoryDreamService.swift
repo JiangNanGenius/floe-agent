@@ -75,10 +75,12 @@ final class MemoryDreamService {
     /// cadence is due, then distill memory from the most recently active
     /// conversation (gated by the dream cadence).
     func deepDream() async {
-        for kind in PersonalizationDocumentKind.allCases {
-            _ = try? await environment.personalizationService.generateIfDue(
-                kind: kind, workspaceID: nil
-            )
+        if let generator = environment.conversationCenter.generalAuxiliaryPersonalizationGenerator() {
+            for kind in PersonalizationDocumentKind.allCases {
+                _ = try? await environment.personalizationService.generateIfDue(
+                    kind: kind, workspaceID: nil, generator: generator
+                )
+            }
         }
         guard let recent = (try? await environment.conversationStore.conversations())?
             .sorted(by: { $0.updatedAt > $1.updatedAt }).first else { return }
@@ -90,7 +92,7 @@ final class MemoryDreamService {
     /// best-effort and must never break the run's own completion path.
     func dream(conversationID: UUID, workspaceID: UUID?) async {
         guard shouldDream() else { return }
-        guard let (provider, model) = environment.conversationCenter.providerAndModel(modelID: nil) else {
+        guard let (provider, model) = environment.conversationCenter.generalAuxiliaryProviderAndModel() else {
             return
         }
         let messages: [PersistedMessage]

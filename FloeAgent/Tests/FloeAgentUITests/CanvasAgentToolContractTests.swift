@@ -451,7 +451,7 @@ struct CanvasAgentToolContractTests {
         let registry = ToolRunnerRegistry()
         registerCanvasAgentTools(environment: environment, registry: registry)
 
-        for toolName in ["canvas.getState", "canvas.inspect"] {
+        for toolName in ["canvas.getState"] {
             let runner = try #require(registry.runner(named: toolName))
             let output = try await runner.execute(
                 argumentsJSON: Data(#"{"limit":30}"#.utf8),

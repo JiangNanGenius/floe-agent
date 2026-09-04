@@ -190,17 +190,18 @@ public actor ModelConfigurationStore {
             try db.execute(
                 sql: """
                     INSERT INTO model_preferences (
-                        id, onboarding_status, default_agent_model_id,
+                        id, onboarding_status, default_agent_model_id, general_auxiliary_llm_model_id,
                         canvas_agent_model_id, vision_model_id, canvas_vision_model_id,
                         approval_model_id, package_review_model_id,
                         auxiliary_image_mode, shared_image_model_id,
                         image_generation_model_id, image_editing_model_id,
                         default_video_model_id,
                         updated_at, sync_revision
-                    ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         onboarding_status = excluded.onboarding_status,
                         default_agent_model_id = excluded.default_agent_model_id,
+                        general_auxiliary_llm_model_id = excluded.general_auxiliary_llm_model_id,
                         canvas_agent_model_id = excluded.canvas_agent_model_id,
                         vision_model_id = excluded.vision_model_id,
                         canvas_vision_model_id = excluded.canvas_vision_model_id,
@@ -217,6 +218,7 @@ public actor ModelConfigurationStore {
                 arguments: [
                     preferences.onboardingStatus.rawValue,
                     preferences.defaultAgentModelID?.uuidString,
+                    preferences.generalAuxiliaryLLMModelID?.uuidString,
                     preferences.canvasAgentModelID?.uuidString,
                     preferences.visionModelID?.uuidString,
                     preferences.canvasVisionModelID?.uuidString,
@@ -450,6 +452,7 @@ enum ConfigurationCodec {
         return ModelSelectionPreferences(
             onboardingStatus: onboardingStatus,
             defaultAgentModelID: uuid("default_agent_model_id"),
+            generalAuxiliaryLLMModelID: uuid("general_auxiliary_llm_model_id"),
             canvasAgentModelID: uuid("canvas_agent_model_id"),
             visionModelID: uuid("vision_model_id"),
             canvasVisionModelID: uuid("canvas_vision_model_id"),
@@ -466,7 +469,13 @@ enum ConfigurationCodec {
     }
 
     static func validate(_ preferences: ModelSelectionPreferences, in db: Database) throws {
-        func model(for id: UUID?) throws -> ModelProfile? {
+        let previous = try Row.fetchOne(db, sql: "SELECT * FROM model_preferences WHERE id = 'default'")
+            .map { try Self.preferences(from: $0) }
+        func model(for key: KeyPath<ModelSelectionPreferences, UUID?>) throws -> ModelProfile? {
+            let id = preferences[keyPath: key]
+            // An unrelated setting must not be held hostage by a stale route.
+            // Actual use still checks capabilities; editing that route validates it.
+            if let previous, previous[keyPath: key] == id { return nil }
             guard let id else { return nil }
             guard let row = try Row.fetchOne(
                 db,
@@ -475,47 +484,51 @@ enum ConfigurationCodec {
             ) else { throw FloeError.invalidConfiguration("Selected model is unavailable") }
             return try ConfigurationCodec.model(from: row)
         }
-        if let selected = try model(for: preferences.defaultAgentModelID),
+        if let selected = try model(for: \.generalAuxiliaryLLMModelID),
+           !selected.capabilities.contains(.text) {
+            throw FloeError.invalidConfiguration("General auxiliary LLM must support text")
+        }
+        if let selected = try model(for: \.defaultAgentModelID),
            !selected.supportsChatAgentSurface {
             throw FloeError.invalidConfiguration("Default agent model must support text")
         }
-        if let selected = try model(for: preferences.canvasAgentModelID),
+        if let selected = try model(for: \.canvasAgentModelID),
            !(selected.supportsChatAgentSurface && selected.capabilities.contains(.tools)) {
             throw FloeError.invalidConfiguration("Canvas assistant model must support text and tools")
         }
-        if let selected = try model(for: preferences.visionModelID),
+        if let selected = try model(for: \.visionModelID),
            !selected.supportsAuxiliaryVisionSurface {
             throw FloeError.invalidConfiguration("Vision model must support image understanding")
         }
-        if let selected = try model(for: preferences.canvasVisionModelID),
+        if let selected = try model(for: \.canvasVisionModelID),
            !selected.supportsAuxiliaryVisionSurface {
             throw FloeError.invalidConfiguration("Canvas visual understanding model must support vision")
         }
-        if let selected = try model(for: preferences.approvalModelID),
+        if let selected = try model(for: \.approvalModelID),
            !selected.supportsApprovalSurface {
             throw FloeError.invalidConfiguration("Approval model must support text")
         }
-        if let selected = try model(for: preferences.packageReviewModelID),
+        if let selected = try model(for: \.packageReviewModelID),
            !selected.supportsApprovalSurface {
             throw FloeError.invalidConfiguration("Package review model must support text")
         }
-        if let selected = try model(for: preferences.sharedImageModelID),
+        if let selected = try model(for: \.sharedImageModelID),
            !(selected.supportsImageGenerationSurface
                 && selected.capabilities.contains(.imageGeneration)
                 && selected.capabilities.contains(.imageEditing)) {
             throw FloeError.invalidConfiguration("Shared image model must support generation and editing")
         }
-        if let selected = try model(for: preferences.imageGenerationModelID),
+        if let selected = try model(for: \.imageGenerationModelID),
            !(selected.supportsImageGenerationSurface
                 && selected.capabilities.contains(.imageGeneration)) {
             throw FloeError.invalidConfiguration("Image generation model lacks generation capability")
         }
-        if let selected = try model(for: preferences.imageEditingModelID),
+        if let selected = try model(for: \.imageEditingModelID),
            !(selected.supportsImageGenerationSurface
                 && selected.capabilities.contains(.imageEditing)) {
             throw FloeError.invalidConfiguration("Image editing model lacks editing capability")
         }
-        if let selected = try model(for: preferences.defaultVideoModelID),
+        if let selected = try model(for: \.defaultVideoModelID),
            !selected.supportsVideoGenerationSurface {
             throw FloeError.invalidConfiguration("Video model lacks generation capability")
         }

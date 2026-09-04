@@ -411,7 +411,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     }
 
     /// Records an active run without creating an independent foreground
-    /// surface. PiP mode prepares through the inline toolbar host so AVKit can
+    /// surface. PiP mode prepares through the persistent scene host so AVKit can
     /// honor the user's Home/app-switch gesture; other modes remain manual.
     func setRunContext(
         title: String,
@@ -632,15 +632,15 @@ final class BackgroundVideoService: NSObject, ObservableObject {
 
         guard let hostView = availableSourceHost() else {
             preparationState = .failed
-            lastError = "画中画按钮尚未连接到当前窗口，请保持此页面可见后重试"
+            lastError = "画中画来源尚未连接到应用窗口，请保持应用在前台后重试"
             FloeLogger(category: .app).warning(
                 "pictureInPicturePrepareFailed stage=inlineSourceHost generation=\(generation)"
             )
             return
         }
 
-        // The layer is the backing layer of the small, existing toolbar
-        // control. It is never installed directly on UIWindow and therefore
+        // The layer is the backing layer of the persistent scene source.
+        // It is never installed directly on UIWindow and therefore
         // cannot become the old top-right floating preview.
         let layer = hostView.sampleBufferDisplayLayer
         layer.sampleBufferRenderer.flush()
@@ -1716,7 +1716,19 @@ private struct BackgroundPiPSourceHost: UIViewRepresentable {
     }
 }
 
-/// Shared run-surface control. The tiny inline preview is part of the existing
+/// A stable scene-owned source, independent of navigation and run controls.
+struct BackgroundPiPSceneSource: View {
+    let videoService: BackgroundVideoService
+
+    var body: some View {
+        BackgroundPiPSourceHost(videoService: videoService)
+            .frame(width: 28, height: 16)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Shared run-surface control. The inline source is owned by the scene;
 /// toolbar; it never creates an independent foreground overlay or starts PiP
 /// from a scene-phase callback.
 struct BackgroundPiPToolbarButton: View {
@@ -1729,14 +1741,6 @@ struct BackgroundPiPToolbarButton: View {
                 videoService.performManualControl()
             } label: {
                 HStack(spacing: 6) {
-                    BackgroundPiPSourceHost(videoService: videoService)
-                        .frame(width: 28, height: 16)
-                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .stroke(.secondary.opacity(0.3), lineWidth: 0.5)
-                        }
-                        .accessibilityHidden(true)
                     Label(
                         videoService.manualControlTitle,
                         systemImage: videoService.manualControlSystemImage

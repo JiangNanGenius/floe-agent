@@ -15,6 +15,7 @@ public struct HTTPRequestTool: AgentTool {
         public var body: String?
         public var timeout: Double?
         public var maxResponseBytes: Int?
+        public var localNetwork: Bool?
 
         public init(
             url: String,
@@ -22,7 +23,8 @@ public struct HTTPRequestTool: AgentTool {
             headers: String? = nil,
             body: String? = nil,
             timeout: Double? = nil,
-            maxResponseBytes: Int? = nil
+            maxResponseBytes: Int? = nil,
+            localNetwork: Bool? = nil
         ) {
             self.url = url
             self.method = method
@@ -30,17 +32,19 @@ public struct HTTPRequestTool: AgentTool {
             self.body = body
             self.timeout = timeout
             self.maxResponseBytes = maxResponseBytes
+            self.localNetwork = localNetwork
         }
     }
 
     public static let name = "network.http"
     public static let toolDescription =
-        "Send an HTTPS request to a public Internet endpoint and return the status code, content type, and bounded UTF-8 body. Private, loopback, link-local, and local-network targets are rejected; redirects are revalidated."
+        "Send a bounded HTTP request. Public endpoints require HTTPS. Set localNetwork for user-requested LAN diagnostics, including local HTTP. Metadata/link-local endpoints are blocked and every redirect is revalidated."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
-        "url": {"type": "string", "description": "Public HTTPS URL to request"},
+        "url": {"type": "string", "description": "HTTPS URL or local HTTP diagnostic endpoint"},
+        "localNetwork": {"type": "boolean", "description": "Enable only for a local-network target requested by the user"},
         "method": {"type": "string", "description": "HTTP method: GET (default), POST, PUT, DELETE, HEAD"},
         "headers": {"type": "string", "description": "Optional JSON object of header name/value pairs"},
         "body": {"type": "string", "description": "Optional request body (for POST/PUT/DELETE)"},
@@ -68,10 +72,10 @@ public struct HTTPRequestTool: AgentTool {
         guard let url = URL(string: args.url), !args.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw FloeError.validationFailed("url must be a valid http/https URL")
         }
-        guard url.scheme?.lowercased() == "https" else {
-            throw FloeError.validationFailed("url must use https")
+        do {
+            if args.localNetwork == true { try DiagnosticNetworkTargetPolicy.validate(url) }
+            else { try PublicNetworkTargetPolicy.validate(url) }
         }
-        do { try PublicNetworkTargetPolicy.validate(url) }
         catch { throw FloeError.validationFailed(error.localizedDescription) }
         if let headers = args.headers, !headers.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             guard (try? JSONSerialization.jsonObject(with: Data(headers.utf8))) is [String: String] else {
@@ -97,7 +101,8 @@ public struct HTTPRequestTool: AgentTool {
         let body = args.body?.data(using: .utf8)
 
         do {
-            let response = try await service.send(
+            let transport = args.localNetwork == true ? HTTPRequestService(allowsPrivateNetwork: true) : service
+            let response = try await transport.send(
                 method: args.method ?? "GET",
                 url: url,
                 headers: headers,

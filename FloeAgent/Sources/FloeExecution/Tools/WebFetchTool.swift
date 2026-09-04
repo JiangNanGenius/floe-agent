@@ -8,6 +8,7 @@ public struct WebFetchTool: AgentTool {
         public var url: String
         public var maxCharacters: Int?
         public var timeout: Double?
+        public var localNetwork: Bool?
     }
 
     public static let name = "web.fetch"
@@ -15,7 +16,8 @@ public struct WebFetchTool: AgentTool {
         "Fetch and extract readable content from a public HTTPS URL without opening the visual browser. Supports bounded HTML, JSON, and text responses. Returns source metadata and a browserFallback reason when the response is PDF/binary, client-rendered, authenticated, interactive, unavailable, or insufficient. Prefer this after web.search; use browser or document tools only for the reported fallback cases."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
-      "url":{"type":"string","description":"Public HTTPS URL"},
+      "url":{"type":"string","description":"HTTPS URL, or local HTTP URL for user-requested diagnostics"},
+      "localNetwork":{"type":"boolean","description":"Enable only for a local-network target requested by the user"},
       "maxCharacters":{"type":"integer","minimum":1000,"maximum":200000},
       "timeout":{"type":"number","minimum":1,"maximum":120}
     },"required":["url"],"additionalProperties":false}
@@ -28,10 +30,11 @@ public struct WebFetchTool: AgentTool {
     public init(service: HTTPRequestService = HTTPRequestService()) { self.service = service }
 
     public func validate(_ args: Arguments) throws {
-        guard let url = URL(string: args.url), url.scheme?.lowercased() == "https" else {
+        guard let url = URL(string: args.url) else {
             throw FloeError.validationFailed("url must be a public HTTPS URL")
         }
-        try PublicNetworkTargetPolicy.validate(url)
+        if args.localNetwork == true { try DiagnosticNetworkTargetPolicy.validate(url) }
+        else { try PublicNetworkTargetPolicy.validate(url) }
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
@@ -45,7 +48,8 @@ public struct WebFetchTool: AgentTool {
         )
         let response: HTTPResponse
         do {
-            response = try await service.send(
+            let transport = args.localNetwork == true ? HTTPRequestService(allowsPrivateNetwork: true) : service
+            response = try await transport.send(
                 method: "GET", url: url, headers: ["Accept": "text/html,application/json,text/plain,application/pdf"],
                 body: nil, timeout: args.timeout ?? 30,
                 maxResponseBytes: min(256 * 1_024, maxCharacters * 4)

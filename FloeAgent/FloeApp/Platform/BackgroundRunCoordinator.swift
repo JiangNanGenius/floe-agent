@@ -95,6 +95,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         var progress: Int64 = 5
     }
     private var activeRuns: [UUID: ActiveRun] = [:]
+    private var lastSkippedContinuedUpdateAt: Date = .distantPast
     private var continuedEligibility = ContinuedProcessingEligibilityState<UUID>()
     private var surfacedRunID: UUID?
     private var retainedPausedRun: (id: UUID, run: ActiveRun)?
@@ -841,9 +842,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // from progress/suspension/approval therefore cannot resurrect or
             // keep updating a Live Activity after the mode changed.
             finishContinuedTasks(success: true)
-            FloeLogger(category: .app).debug(
-                "continuedProcessingUpdateSkipped reason=visualBackgroundPreference preference=\(environment.settingsCenter.backgroundExecution.rawValue)"
-            )
+            if Date().timeIntervalSince(lastSkippedContinuedUpdateAt) >= 60 {
+                lastSkippedContinuedUpdateAt = Date()
+                FloeLogger(category: .app).debug(
+                    "continuedProcessingUpdateSkipped reason=visualBackgroundPreference preference=\(environment.settingsCenter.backgroundExecution.rawValue)"
+                )
+            }
             return
         }
         for task in continuedTasksByIdentifier.values.flatMap(\.values) {

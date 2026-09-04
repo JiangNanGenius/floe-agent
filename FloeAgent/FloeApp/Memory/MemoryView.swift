@@ -13,8 +13,8 @@ enum MemoryOrganizationMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .reviewFirst: "规则 + 审核"
-        case .modelManaged: "完全交给模型"
+        case .reviewFirst: "审核后应用"
+        case .modelManaged: "自动应用安全建议"
         }
     }
 }
@@ -180,7 +180,7 @@ final class MemoryCenter: ObservableObject {
             if inventory.count > 1 {
                 do {
                     guard let (provider, model) = environment.conversationCenter
-                        .providerAndModel(modelID: nil) else {
+                        .generalAuxiliaryProviderAndModel() else {
                         throw FloeError.invalidConfiguration("请先配置默认文本模型")
                     }
                     semanticSuggestions = try await MemorySemanticOrganizer(
@@ -284,7 +284,7 @@ final class MemoryCenter: ObservableObject {
     }
 
     private func modelGenerator() throws -> ModelPersonalizationGenerator {
-        guard let (provider, model) = environment.conversationCenter.providerAndModel(modelID: nil) else {
+        guard let (provider, model) = environment.conversationCenter.generalAuxiliaryProviderAndModel() else {
             throw FloeError.invalidConfiguration("请先配置默认文本模型，再使用快速整理。")
         }
         return ModelPersonalizationGenerator(
@@ -335,6 +335,8 @@ struct MemoryView: View {
         // actually pushing their destination.
         List {
             Section("整理方式") {
+                LabeledContent("当前实际使用", value: center.environment.conversationCenter.generalAuxiliaryModelLabel)
+                    .font(.subheadline)
                 Picker("智能整理", selection: $center.organizationMode) {
                     ForEach(MemoryOrganizationMode.allCases) { mode in
                         Text(mode.title).tag(mode)
@@ -342,7 +344,7 @@ struct MemoryView: View {
                 }
                 .pickerStyle(.segmented)
                 Text(center.organizationMode == .modelManaged
-                     ? "模型会先检查全部现有记忆与冲突，再自动应用由现有 UUID 约束的过期与去重建议。"
+                     ? "检查现有记忆后，自动处理重复与过期内容。你可以查看每次整理的结果。"
                      : "确定性重复会自动清理；语义冲突和版本变化由模型提出建议，确认后再应用。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -644,7 +646,7 @@ private struct MemoryEntryDetailView: View {
     }
 }
 
-private struct ModelPersonalizationGenerator: PersonalizationGenerator {
+struct ModelPersonalizationGenerator: PersonalizationGenerator {
     let provider: ProviderProfile
     let model: ModelProfile
     let credentials: ProviderCredentials

@@ -185,6 +185,7 @@
 		A6C15214795012140B3AC46D /* CrashAndFeedbackRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C249A312D3F94BF9CBA98F76 /* CrashAndFeedbackRegressionTests.swift */; };
 		A778949A4707059C79A4E425 /* mmap.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BBD2144374FF4E9AD173B157 /* mmap.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AB3605779C6F0C4864D85CE2 /* VNCViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BA323DAAD3913411F1D5340 /* VNCViewModel.swift */; };
+		AB7BCBD6DC7FD37ADEF2C945 /* RuntimeDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2795FA9C3C98A62982F843B2 /* RuntimeDiagnostics.swift */; };
 		ABAF2700584FE5E93C50DA1B /* FloeImages in Frameworks */ = {isa = PBXBuildFile; productRef = EBF97B079841247A01DFCE52 /* FloeImages */; };
 		AD09F21466C778C43633A947 /* RemoteImageInspectToolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 183A97BE093D68D231492DC7 /* RemoteImageInspectToolTests.swift */; };
 		AD229E781FF8EEAD58275F19 /* _datetime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1B3181E829C356459CFA9723 /* _datetime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -397,6 +398,7 @@
 		20554886B0FDA45513A6ECF9 /* FloeAppTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FloeAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		219CD6341FB443743691F92D /* LocalPreviewServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPreviewServer.swift; sourceTree = "<group>"; };
 		224C3D6B873B21963949DAA8 /* SkillDreamService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillDreamService.swift; sourceTree = "<group>"; };
+		2795FA9C3C98A62982F843B2 /* RuntimeDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeDiagnostics.swift; sourceTree = "<group>"; };
 		27BD00E30D4F02142C2C3B51 /* FloeShare.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FloeShare.entitlements; sourceTree = "<group>"; };
 		28E0216FA93D4EE0E28FC155 /* _asyncio.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _asyncio.xcframework; path = Vendor/PythonExtensions/_asyncio.xcframework; sourceTree = "<group>"; };
 		2A7AA9D321701A98A3C0B09E /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
@@ -705,6 +707,7 @@
 				EB400574B41454793B7461C2 /* iPadBackgroundPolicy.swift */,
 				699FBAE02E34D628B5FC48B7 /* iPhoneBackgroundPolicy.swift */,
 				E3EF97C2442DD744CEB320A0 /* PlatformBackgroundPolicy.swift */,
+				2795FA9C3C98A62982F843B2 /* RuntimeDiagnostics.swift */,
 			);
 			path = Platform;
 			sourceTree = "<group>";
@@ -1550,6 +1553,7 @@
 				F97E858A6A5915882FA5E428 /* RemoteSettingsView.swift in Sources */,
 				7019692CCE4AC0CD840E1152 /* RichArtifactView.swift in Sources */,
 				EFB8B154A44004A6D4A9366C /* RunStateLocalizer.swift in Sources */,
+				AB7BCBD6DC7FD37ADEF2C945 /* RuntimeDiagnostics.swift in Sources */,
 				4ADD4F72F382289B6D7101CB /* SSHSessionOwner.swift in Sources */,
 				4C2AB5B8C64EC6493BF92520 /* ScreenShareCenter.swift in Sources */,
 				BF6E2087DAC07E6A4A903720 /* ScreenShareGuideView.swift in Sources */,

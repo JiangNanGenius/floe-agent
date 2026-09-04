@@ -54,8 +54,11 @@ struct GitHubSettingsView: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(center.isBusy)
                     }
-                    Divider()
+                    DisclosureGroup("使用访问令牌（高级）") {
+                    Text("访问令牌")
+                        .font(.subheadline.weight(.medium))
                     SecureField("GitHub 细粒度访问令牌", text: $token)
+                        .textFieldStyle(.roundedBorder)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .privacySensitive()
@@ -77,6 +80,7 @@ struct GitHubSettingsView: View {
                             || center.isBusy
                             || center.isDeviceLoginPending
                     )
+                    }
                 }
                 Text("登录凭据只保存在本机钥匙串。Floe 不会把令牌写入仓库、远程地址、日志或模型上下文。")
                     .font(FloeTheme.Typography.metadata)

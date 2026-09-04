@@ -84,7 +84,7 @@ public actor SubagentRunner {
             (role: "system", content: Self.systemPrompt(context: request.context)),
             (role: "user", content: request.task)
         ]
-        let schemas = Self.schemas(allowedToolNames: context.allowedToolNames)
+        let schemas = schemas(allowedToolNames: context.allowedToolNames)
         var pendingToolCalls: [ToolCall] = []
         var pendingToolResults: [(callID: String, output: String)] = []
 
@@ -204,8 +204,8 @@ public actor SubagentRunner {
 
     // MARK: - Schema / prompt
 
-    private static func schemas(allowedToolNames: Set<String>?) -> [ToolSchemaDescriptor] {
-        ToolCatalog.allDescriptors
+    private func schemas(allowedToolNames: Set<String>?) -> [ToolSchemaDescriptor] {
+        executor.allDescriptors
             .filter {
                 $0.effect == .readOnly
                     && $0.name != DelegateTool.name

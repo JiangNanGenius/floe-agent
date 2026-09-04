@@ -14,6 +14,20 @@ struct AuxiliaryModelsView: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker("通用辅助 LLM", selection: $viewModel.generalLLMModelID) {
+                    Text("跟随主对话模型").tag(Optional<UUID>.none)
+                    ForEach(viewModel.textCandidates) { model in
+                        Text(viewModel.label(for: model)).tag(Optional(model.id))
+                    }
+                }
+                LabeledContent("当前实际使用", value: viewModel.center.generalAuxiliaryModelLabel)
+                    .font(FloeTheme.Typography.metadata)
+            } header: {
+                Text("文本辅助")
+            } footer: {
+                Text("用于记忆整理、用户画像、技能提炼与自动标题。视觉理解、图片和视频使用下方各自的模型。")
+            }
             Section("model.capability.vision") {
                 modelPicker(selection: $viewModel.visionModelID, models: viewModel.visionCandidates)
                 Toggle("auxiliary.vision.reasoning", isOn: $viewModel.visionReasoningEnabled)
@@ -27,10 +41,12 @@ struct AuxiliaryModelsView: View {
             }
 
             Section {
-                modelPicker(
-                    selection: $viewModel.packageReviewModelID,
-                    models: viewModel.packageReviewCandidates
-                )
+                Picker("软件包审查", selection: $viewModel.packageReviewModelID) {
+                    Text("跟随通用辅助 LLM").tag(Optional<UUID>.none)
+                    ForEach(viewModel.packageReviewCandidates) { model in
+                        Text(viewModel.label(for: model)).tag(Optional(model.id))
+                    }
+                }
                 Text("安装 Python 包前，会确认它确实用于当前任务。需要额外系统权限或不适合本机运行的包仍会被阻止。")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
@@ -85,6 +101,7 @@ struct AuxiliaryModelsView: View {
         }
         .task { await viewModel.load() }
         .onChange(of: viewModel.mode) { _, _ in viewModel.scheduleSave() }
+        .onChange(of: viewModel.generalLLMModelID) { _, _ in viewModel.scheduleSave() }
         .onChange(of: viewModel.visionModelID) { _, _ in viewModel.scheduleSave() }
         .onChange(of: viewModel.visionReasoningEnabled) { _, value in
             viewModel.saveVisionReasoning(value)
@@ -125,6 +142,7 @@ struct AuxiliaryModelsView: View {
 
 @MainActor
 final class AuxiliaryModelsViewModel: ObservableObject {
+    @Published var generalLLMModelID: UUID?
     @Published var mode: AuxiliaryImageMode = .shared
     @Published var visionModelID: UUID?
     @Published var visionReasoningEnabled = false
@@ -145,6 +163,11 @@ final class AuxiliaryModelsViewModel: ObservableObject {
     init(center: ConversationCenter) { self.center = center }
 
     var visionCandidates: [ModelProfile] { center.visionModels }
+    var textCandidates: [ModelProfile] {
+        center.modelsByProvider.values.flatMap { $0 }
+            .filter { $0.isEnabled && $0.capabilities.contains(.text) }
+            .sorted { $0.displayName < $1.displayName }
+    }
     var packageReviewCandidates: [ModelProfile] { center.approvalModels }
 
     var generationCandidates: [ModelProfile] {
@@ -170,6 +193,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
         saveTask?.cancel()
         await center.reload()
         let preferences = center.modelPreferences
+        generalLLMModelID = preferences.generalAuxiliaryLLMModelID
         mode = preferences.auxiliaryImageMode
         visionModelID = preferences.visionModelID
         if cloudPreferences.object(
@@ -234,6 +258,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
         errorMessage = nil
         do {
             var preferences = center.modelPreferences
+            preferences.generalAuxiliaryLLMModelID = generalLLMModelID
             preferences.visionModelID = visionModelID
             preferences.packageReviewModelID = packageReviewModelID
             preferences.auxiliaryImageMode = mode

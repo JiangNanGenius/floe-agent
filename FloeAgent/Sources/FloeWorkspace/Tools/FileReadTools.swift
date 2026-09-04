@@ -164,8 +164,7 @@ public struct WorkspaceListDirectoryTool: AgentTool {
       "type": "object",
       "properties": {
         "path": {"type": "string", "description": "Workspace-relative directory path (use \".\" for the root)"},
-        "pageToken": {"type": "string", "description": "Opaque cursor from a previous call"},
-        "scope": {"type": "string", "description": "Execution scope; only the local workspace is supported"}
+        "pageToken": {"type": "string", "description": "Opaque cursor from a previous call"}
       },
       "required": ["path"],
       "additionalProperties": false
@@ -253,8 +252,7 @@ public struct WorkspaceReadFileTool: AgentTool {
       "properties": {
         "path": {"type": "string", "description": "Workspace-relative file path"},
         "offset": {"type": "integer", "description": "Byte offset to start reading at (0-based)"},
-        "limit": {"type": "integer", "description": "Maximum bytes to read; clamped to 65536"},
-        "scope": {"type": "string", "description": "Execution scope; only the local workspace is supported"}
+        "limit": {"type": "integer", "description": "Maximum bytes to read; clamped to 65536"}
       },
       "required": ["path"],
       "additionalProperties": false
@@ -347,8 +345,7 @@ public struct WorkspaceSearchFilesTool: AgentTool {
       "properties": {
         "query": {"type": "string", "description": "Substring to search for (case-insensitive)"},
         "path": {"type": "string", "description": "Workspace-relative directory or file to search; defaults to the root"},
-        "maxResults": {"type": "integer", "description": "Maximum hits; clamped to 100"},
-        "scope": {"type": "string", "description": "Execution scope; only the local workspace is supported"}
+        "maxResults": {"type": "integer", "description": "Maximum hits; clamped to 100"}
       },
       "required": ["query"],
       "additionalProperties": false
@@ -472,8 +469,7 @@ public struct WorkspaceInspectMetadataTool: AgentTool {
     {
       "type": "object",
       "properties": {
-        "path": {"type": "string", "description": "Workspace-relative path"},
-        "scope": {"type": "string", "description": "Execution scope; only the local workspace is supported"}
+        "path": {"type": "string", "description": "Workspace-relative path"}
       },
       "required": ["path"],
       "additionalProperties": false

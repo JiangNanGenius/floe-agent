@@ -59,6 +59,8 @@ enum DiagnosticsExporter {
         lines.append("python_remote: \(describe(center.remotePythonCapability))")
         lines.append("icloud_drive: \(describe(center.iCloudDrive))")
         lines.append("keychain: \(describe(center.keychainState))")
+        lines.append("== System runtime evidence ==")
+        lines.append(RuntimeDiagnostics.shared.report())
 
         let logText = FloeLogger.buffer.renderedText()
         if !logText.isEmpty {
