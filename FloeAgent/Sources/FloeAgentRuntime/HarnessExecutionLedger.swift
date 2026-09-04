@@ -57,7 +57,7 @@ struct HarnessExecutionLedger: Sendable {
     /// that a prerequisite already ran (or, worse, skip one that did not).
     func allowsStatefulTool(named toolName: String, userGoal: String = "") -> Bool {
         if toolName.hasPrefix("vnc.") {
-            if Self.requiresSSHBeforeVNC(userGoal), !completedSSHPrerequisite {
+            if shouldBlockVNCUntilSSHCompletes(userGoal: userGoal) {
                 return false
             }
             switch vncWorkflowStage {
@@ -83,8 +83,10 @@ struct HarnessExecutionLedger: Sendable {
     ) -> String? {
         guard !allowsStatefulTool(named: toolName, userGoal: userGoal) else { return nil }
         if toolName.hasPrefix("vnc.") {
-            if Self.requiresSSHBeforeVNC(userGoal), !completedSSHPrerequisite {
-                return "The user explicitly required SSH before VNC. Complete the SSH command route first; do not call any VNC tool yet."
+            if shouldBlockVNCUntilSSHCompletes(userGoal: userGoal) {
+                return hasFailedVNCConnectionAttempt
+                    ? "The VNC connection failed and the user selected SSH as the recovery route. Complete the SSH repair and any running SSH task before calling VNC again."
+                    : "The user explicitly required SSH before VNC. Complete the SSH command route first; do not call any VNC tool yet."
             }
             return switch vncWorkflowStage {
             case .needsStatus:
@@ -155,6 +157,28 @@ struct HarnessExecutionLedger: Sendable {
                 && !entries[index].excerpt.lowercased().filter { !$0.isWhitespace }
                     .contains("\"state\":\"running\"")
         }
+    }
+
+    private var hasFailedVNCConnectionAttempt: Bool {
+        entries.contains {
+            $0.status == .failed
+                && ["vnc.connect", "vnc.reconnect", "vnc.observe"].contains($0.toolName)
+        }
+    }
+
+    private func shouldBlockVNCUntilSSHCompletes(userGoal: String) -> Bool {
+        guard !completedSSHPrerequisite else { return false }
+        if Self.requiresSSHBeforeVNC(userGoal) { return true }
+        // Conditional routes are commonly phrased as “try VNC; if it fails,
+        // repair it with SSH”. The VNC token consequently appears before SSH,
+        // so the strict ordering detector alone cannot protect the fallback.
+        return hasFailedVNCConnectionAttempt
+            && Self.mentionsSSHAndVNC(userGoal)
+    }
+
+    static func mentionsSSHAndVNC(_ goal: String) -> Bool {
+        let value = goal.lowercased()
+        return value.contains("ssh") && value.contains("vnc")
     }
 
     static func requiresSSHBeforeVNC(_ goal: String) -> Bool {

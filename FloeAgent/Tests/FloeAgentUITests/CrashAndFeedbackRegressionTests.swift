@@ -494,6 +494,36 @@ struct CrashAndFeedbackRegressionTests {
         #expect(policy.allowsAutomaticStartFromInline)
     }
 
+    @Test("PiP fallback starts only after a confirmed background transition")
+    func pictureInPictureConfirmedBackgroundStartContract() {
+        #expect(BackgroundPiPLifecyclePolicy.shouldStartAfterBackgroundTransition(
+            effectivePhase: .background,
+            preparationPhase: .prepared,
+            automaticallyStartsFromInline: true,
+            hasRunContext: true
+        ))
+        for phase in [BackgroundPiPEffectiveScenePhase.active, .inactive] {
+            #expect(!BackgroundPiPLifecyclePolicy.shouldStartAfterBackgroundTransition(
+                effectivePhase: phase,
+                preparationPhase: .prepared,
+                automaticallyStartsFromInline: true,
+                hasRunContext: true
+            ))
+        }
+        #expect(!BackgroundPiPLifecyclePolicy.shouldStartAfterBackgroundTransition(
+            effectivePhase: .background,
+            preparationPhase: .preparing,
+            automaticallyStartsFromInline: true,
+            hasRunContext: true
+        ))
+        #expect(!BackgroundPiPLifecyclePolicy.shouldStartAfterBackgroundTransition(
+            effectivePhase: .background,
+            preparationPhase: .prepared,
+            automaticallyStartsFromInline: false,
+            hasRunContext: true
+        ))
+    }
+
     @Test("PiP retracts an automatic start that completes after foreground return")
     func pictureInPictureLateStartContract() {
         var policy = BackgroundPiPLifecyclePolicy()
@@ -799,7 +829,7 @@ struct CrashAndFeedbackRegressionTests {
         let available: Set<String> = [
             "ssh.listHosts", "ssh.execute", "ssh.updateHost",
             "vnc.status", "vnc.connect", "vnc.observe",
-            "exec.javascript", "exec.localPython"
+            "exec.javascript", "exec.localPython", "memory.organizePreview"
         ]
         let selected = ConversationCenter.toolsForExplicitRemoteRoute(
             request: "先用 SSH 配置主机，再测试 VNC 点击",
@@ -812,7 +842,21 @@ struct CrashAndFeedbackRegressionTests {
         #expect(ConversationCenter.toolsForExplicitRemoteRoute(
             request: "用 VNC 看一下屏幕",
             from: available
-        ) == nil)
+        ) == selected)
+        #expect(!selected!.contains("memory.organizePreview"))
+    }
+
+    @Test("Agent memory tools require current-turn memory intent")
+    func agentMemoryToolIntentGate() {
+        #expect(!ConversationCenter.requestsAgentMemoryTools(
+            "测试 VNC，连接失败就用 SSH 修复"
+        ))
+        #expect(ConversationCenter.requestsAgentMemoryTools(
+            "记住这台主机的新版本，并检查以前的记忆是否冲突"
+        ))
+        #expect(ConversationCenter.requestsAgentMemoryTools(
+            "Please remember this version and replace the old memory"
+        ))
     }
 
     @Test("Memory dream compares new facts with prior versions")

@@ -184,8 +184,9 @@ struct BackgroundPiPLifecyclePolicy: Sendable, Equatable {
             automaticTransition = .disarmed
             return
         }
-        // Readiness arriving after Floe already left the foreground must not
-        // synthesize a late start. The next foreground interval re-arms it.
+        // Record that AVKit missed its inline promotion window. The service
+        // may still use the stricter confirmed-background fallback, which
+        // cannot create the old foreground popup.
         automaticTransition = effectivePhase == .active ? .armed : .missed
     }
 
@@ -259,6 +260,22 @@ struct BackgroundPiPLifecyclePolicy: Sendable, Equatable {
         case .preparing, .starting:
             return .none
         }
+    }
+
+    /// Sample-buffer PiP does not reliably receive AVKit's automatic-inline
+    /// promotion on every iPadOS transition. A true background phase is the
+    /// safe fallback boundary: it is late enough to avoid a foreground popup,
+    /// but still inside the app's scene-transition execution window.
+    static func shouldStartAfterBackgroundTransition(
+        effectivePhase: BackgroundPiPEffectiveScenePhase,
+        preparationPhase: BackgroundPiPPreparationPhase,
+        automaticallyStartsFromInline: Bool,
+        hasRunContext: Bool
+    ) -> Bool {
+        effectivePhase == .background
+            && preparationPhase == .prepared
+            && automaticallyStartsFromInline
+            && hasRunContext
     }
 }
 
@@ -536,6 +553,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         FloeLogger(category: .app).debug(
             "pictureInPictureScenePhase phase=\(phase.rawValue) automaticTransition=\(lifecyclePolicy.automaticTransition.rawValue) state=\(preparationState.rawValue)"
         )
+        startFromBackgroundTransitionIfPossible(trigger: "scenePhase")
     }
 
     private func replaceDetachedForegroundSourceIfNeeded(
@@ -712,10 +730,15 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             // the system handles the app-switch transition.
             configureAudioSession()
         }
+        // If readiness arrived just after the real background transition,
+        // AVKit has already missed its automatic-inline promotion window.
+        // Start only from the confirmed background state; returning active
+        // before the delegate completes is handled by foreground retraction.
+        startFromBackgroundTransitionIfPossible(trigger: "readiness")
     }
 
-    /// Handles the visible PiP toolbar control. This is the only production
-    /// entry point that may call AVKit's start method.
+    /// Handles the visible PiP toolbar control. The other production start
+    /// path is the confirmed-background fallback for missed inline promotion.
     func performManualControl() {
         switch BackgroundPiPLifecyclePolicy.manualTapDecision(
             preparationPhase: lifecyclePreparationPhase,
@@ -790,7 +813,58 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             "pictureInPictureStartRequested generation=\(startGeneration) source=userControl attempt=\(attempt)"
         )
         controller.startPictureInPicture()
-        let generation = startGeneration
+        scheduleStartTimeout(
+            controller: controller,
+            generation: startGeneration,
+            message: "系统没有完成画中画启动，请再次点击重试"
+        )
+    }
+
+    private func startFromBackgroundTransitionIfPossible(trigger: String) {
+        guard BackgroundPiPLifecyclePolicy.shouldStartAfterBackgroundTransition(
+            effectivePhase: lifecyclePolicy.effectivePhase,
+            preparationPhase: lifecyclePreparationPhase,
+            automaticallyStartsFromInline: automaticallyStartsFromInline,
+            hasRunContext: hasRunContext
+        ) else { return }
+        guard let controller = pipController,
+              let sampleBufferLayer,
+              activeSourceHostView?.sampleBufferDisplayLayer === sampleBufferLayer else {
+            FloeLogger(category: .app).warning(
+                "pictureInPictureBackgroundStartUnavailable reason=missingPreparedSource trigger=\(trigger)"
+            )
+            return
+        }
+        let renderer = sampleBufferLayer.sampleBufferRenderer
+        guard controller.isPictureInPicturePossible,
+              !controller.isPictureInPictureActive,
+              sampleBufferLayer.isReadyForDisplay,
+              renderer.status != .failed,
+              !renderer.requiresFlushToResumeDecoding else {
+            FloeLogger(category: .app).warning(
+                "pictureInPictureBackgroundStartUnavailable reason=sourceNotReady trigger=\(trigger) possible=\(controller.isPictureInPicturePossible) readyForDisplay=\(sampleBufferLayer.isReadyForDisplay)"
+            )
+            return
+        }
+        configureAudioSession()
+        preparationState = .starting
+        manualStartTracker.settle()
+        FloeLogger(category: .app).info(
+            "pictureInPictureStartRequested generation=\(startGeneration) source=confirmedBackground trigger=\(trigger)"
+        )
+        controller.startPictureInPicture()
+        scheduleStartTimeout(
+            controller: controller,
+            generation: startGeneration,
+            message: "系统没有完成后台画中画启动，请返回 Floe 后重试"
+        )
+    }
+
+    private func scheduleStartTimeout(
+        controller: AVPictureInPictureController,
+        generation: UInt64,
+        message: String
+    ) {
         startTimeoutTask?.cancel()
         startTimeoutTask = Task { @MainActor [weak self, weak controller] in
             try? await Task.sleep(for: .seconds(5))
@@ -803,7 +877,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             self.isPiPActive = false
             self.isPiPPrepared = true
             self.preparationState = .prepared
-            self.lastError = "系统没有完成画中画启动，请再次点击重试"
+            self.lastError = message
             self.manualStartTracker.settle()
             self.lifecyclePolicy.clearStartTracking()
             self.pendingStopOrigin = .none

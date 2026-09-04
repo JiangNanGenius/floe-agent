@@ -244,6 +244,58 @@ struct HarnessPlanningTests {
         #expect(!ledger.allowsStatefulTool(named: "vnc.observe", userGoal: goal))
     }
 
+    @Test("A conditional SSH fallback takes over after VNC connection failure")
+    func conditionalSSHAfterVNCFailureGate() throws {
+        let goal = "先测试 VNC；如果连接失败，就用 SSH 到主机修复服务"
+        var ledger = HarnessExecutionLedger()
+        #expect(!HarnessExecutionLedger.requiresSSHBeforeVNC(goal))
+        #expect(HarnessExecutionLedger.mentionsSSHAndVNC(goal))
+
+        let status = try ToolCall(
+            id: "vnc-status",
+            toolName: "vnc.status",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        ledger.record(call: status, result: ToolResult(
+            callID: status.id,
+            status: .ok,
+            outputSummary: #"{"connectionState":"disconnected","configuredEndpointCount":1}"#,
+            outputDigest: "disconnected"
+        ))
+        #expect(ledger.allowsStatefulTool(named: "vnc.connect", userGoal: goal))
+
+        let connect = try ToolCall(
+            id: "vnc-connect",
+            toolName: "vnc.connect",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        ledger.record(call: connect, result: ToolResult(
+            callID: connect.id,
+            status: .failed,
+            outputSummary: #"{"category":"connectionRefused"}"#,
+            outputDigest: "refused"
+        ))
+        #expect(!ledger.allowsStatefulTool(named: "vnc.status", userGoal: goal))
+        #expect(!ledger.allowsStatefulTool(named: "vnc.connect", userGoal: goal))
+        #expect(ledger.allowsStatefulTool(named: "ssh.listHosts", userGoal: goal))
+
+        let execute = try ToolCall(
+            id: "ssh-execute",
+            toolName: "ssh.execute",
+            argumentsJSON: Data(#"{"command":"repair-vnc"}"#.utf8),
+            scope: .local
+        )
+        ledger.record(call: execute, result: ToolResult(
+            callID: execute.id,
+            status: .ok,
+            outputSummary: #"{"state":"completed","exitStatus":0}"#,
+            outputDigest: "repaired"
+        ))
+        #expect(ledger.allowsStatefulTool(named: "vnc.status", userGoal: goal))
+    }
+
     @Test("resource discovery produces bounded structured bindings")
     func structuredResourceBindings() {
         let hostID = UUID().uuidString

@@ -216,19 +216,33 @@ final class ConversationCenter: ObservableObject {
         UserDefaults.standard.synchronize()
     }
 
-    /// An explicit user-selected SSH -> VNC route is a capability contract,
-    /// not a prompt suggestion. Keep unrelated local runtimes (especially
-    /// exec.javascript) out of the provider schema so the model cannot replace
-    /// the requested remote prerequisite with an arbitrary computation tool.
+    /// A VNC task is a focused remote workflow, not an invitation to use every
+    /// tool in the ordinary-chat catalog. Keep unrelated runtimes and memory
+    /// maintenance out of the provider schema even when the SSH fallback was
+    /// established in an earlier turn rather than repeated in the latest
+    /// message.
     nonisolated static func toolsForExplicitRemoteRoute(
         request: String,
         from available: Set<String>
     ) -> Set<String>? {
         let normalized = request.lowercased()
-        guard normalized.contains("vnc"), normalized.contains("ssh") else { return nil }
+        guard normalized.contains("vnc") else { return nil }
         return Set(available.filter {
             $0.hasPrefix("ssh.") || $0.hasPrefix("vnc.")
         })
+    }
+
+    /// Automatic memory extraction is owned by MemoryDreamService. Agent
+    /// memory tools are therefore exposed only when the current user turn asks
+    /// to inspect or change memory. Merely having memory tools installed must
+    /// never divert an unrelated operational task into organizePreview.
+    nonisolated static func requestsAgentMemoryTools(_ request: String) -> Bool {
+        let normalized = request.lowercased()
+        let markers = [
+            "记忆", "记住", "记下", "回忆", "忘记", "智能整理",
+            "memory", "remember", "recall", "forget", "organize memories"
+        ]
+        return markers.contains { normalized.contains($0) }
     }
 
     // MARK: - Published state
@@ -668,6 +682,13 @@ final class ConversationCenter: ObservableObject {
         )
         allowedToolNames = allowedToolNames.map { $0.intersection(appleEnabledTools) }
             ?? appleEnabledTools
+        if !Self.requestsAgentMemoryTools(memoryQuery) {
+            let withoutMemory = Set(availableDescriptors.lazy
+                .map(\.name)
+                .filter { !$0.hasPrefix("memory.") })
+            allowedToolNames = allowedToolNames.map { $0.intersection(withoutMemory) }
+                ?? withoutMemory
+        }
         if taskRootLease == nil {
             let nonWorkspace = Set(availableDescriptors.lazy
                 .map(\.name)
