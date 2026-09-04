@@ -140,6 +140,29 @@ final class RemoteSessionCenter: ObservableObject {
         await loadHosts()
     }
 
+    /// Model-side `ssh.updateHost` writes through the shared persistence
+    /// store, bypassing this center's Settings save path. Invalidate stale
+    /// endpoint failures and live sessions immediately so the next
+    /// vnc.status/connect observes the newly saved endpoint and credential.
+    func agentDidUpdateHost(
+        hostID: UUID,
+        vncEndpointIDs: Set<UUID>
+    ) async {
+        let staleSessionIDs = vncEndpointBySessionID.compactMap { sessionID, endpointID in
+            vncEndpointIDs.contains(endpointID) ? sessionID : nil
+        }
+        for sessionID in staleSessionIDs {
+            await disconnectVNC(sessionID: sessionID)
+        }
+        for endpointID in vncEndpointIDs {
+            latestVNCFailureByEndpointID[endpointID] = nil
+        }
+        await loadHosts()
+        FloeLogger(category: .vnc).info(
+            "vncConfigurationReloaded source=ssh.updateHost host=\(hostID.uuidString) endpoints=\(vncEndpointIDs.count)"
+        )
+    }
+
     func deleteHost(id: UUID) async throws {
         let profile = hosts.first { $0.id == id }
         let credentials = try await environment.credentialStore.records(owner: nil)

@@ -19,6 +19,11 @@ public typealias VNCPasswordDeleter = @Sendable (
     _ connectionID: UUID
 ) async throws -> Void
 
+public typealias RemoteHostUpdateObserver = @Sendable (
+    _ hostID: UUID,
+    _ changedVNCEndpointIDs: Set<UUID>
+) async -> Void
+
 public struct SSHListHostsTool: AgentTool {
     public struct Arguments: Decodable, Sendable { public init() {} }
     public static let name = "ssh.listHosts"
@@ -153,15 +158,18 @@ public struct SSHUpdateHostTool: AgentTool {
     private let store: RemoteHostStore
     private let passwordWriter: VNCPasswordWriter?
     private let passwordDeleter: VNCPasswordDeleter?
+    private let updateObserver: RemoteHostUpdateObserver?
 
     public init(
         store: RemoteHostStore,
         passwordWriter: VNCPasswordWriter? = nil,
-        passwordDeleter: VNCPasswordDeleter? = nil
+        passwordDeleter: VNCPasswordDeleter? = nil,
+        updateObserver: RemoteHostUpdateObserver? = nil
     ) {
         self.store = store
         self.passwordWriter = passwordWriter
         self.passwordDeleter = passwordDeleter
+        self.updateObserver = updateObserver
     }
     public func validate(_ args: Arguments) throws {
         guard UUID(uuidString: args.hostID) != nil else { throw FloeError.validationFailed("hostID must be a UUID") }
@@ -321,6 +329,22 @@ public struct SSHUpdateHostTool: AgentTool {
             for connectionID in removedCredentialIDs {
                 try? await passwordDeleter(id, connectionID)
             }
+        }
+        if let updateObserver {
+            var changedEndpointIDs = Set(
+                ((try? JSONDecoder().decode(
+                    [VNCEndpoint].self,
+                    from: Data((host.vncEndpointsJSON ?? "[]").utf8)
+                )) ?? []).map(\.id)
+            ).union(removedCredentialIDs)
+            if let legacyJSON = host.vncEndpointJSON,
+               let legacy = try? JSONDecoder().decode(
+                   VNCEndpoint.self,
+                   from: Data(legacyJSON.utf8)
+               ) {
+                changedEndpointIDs.insert(legacy.id)
+            }
+            await updateObserver(id, changedEndpointIDs)
         }
         FloeLogger(category: .ssh).info(
             "sshHostUpdateFinished trace=\(traceID) host=\(id.uuidString) fields=\(changedFields.joined(separator: ",")) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"

@@ -296,6 +296,46 @@ struct HarnessPlanningTests {
         #expect(ledger.allowsStatefulTool(named: "vnc.status", userGoal: goal))
     }
 
+    @Test("A successful mutation invalidates a recovered status observation")
+    func mutationInvalidatesRecoveredObservation() throws {
+        var ledger = HarnessExecutionLedger()
+        let status = try ToolCall(
+            id: "status-before-repair",
+            toolName: "vnc.status",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        ledger.record(call: status, result: ToolResult(
+            callID: status.id,
+            status: .ok,
+            outputSummary: #"{"connectionState":"disconnected","configuredEndpointCount":1}"#,
+            outputDigest: "disconnected"
+        ))
+        #expect(ledger.recoveredResult(for: status) != nil)
+
+        let repair = try ToolCall(
+            id: "repair-vnc",
+            toolName: "ssh.execute",
+            argumentsJSON: Data(#"{"command":"repair-vnc"}"#.utf8),
+            scope: .local
+        )
+        ledger.record(
+            call: repair,
+            result: ToolResult(
+                callID: repair.id,
+                status: .ok,
+                outputSummary: #"{"state":"completed","exitStatus":0}"#,
+                outputDigest: "repaired"
+            ),
+            isSideEffecting: true
+        )
+
+        #expect(ledger.recoveredResult(for: status) == nil)
+        #expect(ledger.recoveredResult(for: repair) != nil)
+        let checkpoint = try #require(ledger.checkpointRecords().last)
+        #expect(checkpoint.isSideEffecting == true)
+    }
+
     @Test("resource discovery produces bounded structured bindings")
     func structuredResourceBindings() {
         let hostID = UUID().uuidString

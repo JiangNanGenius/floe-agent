@@ -20,6 +20,9 @@ public struct AgentExecutionLedgerEntry: Sendable, Codable, Hashable {
     public var resultFingerprint: String
     public var excerpt: String
     public var occurrenceCount: Int
+    /// Whether the committed call crossed a mutating tool boundary. Optional
+    /// keeps checkpoints written by older builds decodable.
+    public var isSideEffecting: Bool?
 
     public init(
         toolName: String,
@@ -27,7 +30,8 @@ public struct AgentExecutionLedgerEntry: Sendable, Codable, Hashable {
         status: ToolResult.Status,
         resultFingerprint: String,
         excerpt: String,
-        occurrenceCount: Int
+        occurrenceCount: Int,
+        isSideEffecting: Bool? = nil
     ) {
         self.toolName = toolName
         self.callFingerprint = callFingerprint
@@ -35,6 +39,7 @@ public struct AgentExecutionLedgerEntry: Sendable, Codable, Hashable {
         self.resultFingerprint = resultFingerprint
         self.excerpt = excerpt
         self.occurrenceCount = occurrenceCount
+        self.isSideEffecting = isSideEffecting
     }
 }
 

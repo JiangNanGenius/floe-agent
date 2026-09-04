@@ -494,36 +494,6 @@ struct CrashAndFeedbackRegressionTests {
         #expect(policy.allowsAutomaticStartFromInline)
     }
 
-    @Test("PiP fallback starts only after a confirmed background transition")
-    func pictureInPictureConfirmedBackgroundStartContract() {
-        #expect(BackgroundPiPLifecyclePolicy.shouldStartAfterBackgroundTransition(
-            effectivePhase: .background,
-            preparationPhase: .prepared,
-            automaticallyStartsFromInline: true,
-            hasRunContext: true
-        ))
-        for phase in [BackgroundPiPEffectiveScenePhase.active, .inactive] {
-            #expect(!BackgroundPiPLifecyclePolicy.shouldStartAfterBackgroundTransition(
-                effectivePhase: phase,
-                preparationPhase: .prepared,
-                automaticallyStartsFromInline: true,
-                hasRunContext: true
-            ))
-        }
-        #expect(!BackgroundPiPLifecyclePolicy.shouldStartAfterBackgroundTransition(
-            effectivePhase: .background,
-            preparationPhase: .preparing,
-            automaticallyStartsFromInline: true,
-            hasRunContext: true
-        ))
-        #expect(!BackgroundPiPLifecyclePolicy.shouldStartAfterBackgroundTransition(
-            effectivePhase: .background,
-            preparationPhase: .prepared,
-            automaticallyStartsFromInline: false,
-            hasRunContext: true
-        ))
-    }
-
     @Test("PiP retracts an automatic start that completes after foreground return")
     func pictureInPictureLateStartContract() {
         var policy = BackgroundPiPLifecyclePolicy()

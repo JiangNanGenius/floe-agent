@@ -30,6 +30,7 @@ struct SSHHostProfileToolTests {
             vncEndpointsJSON: "[]"
         )
         let recorder = VNCPasswordRecorder()
+        let updateRecorder = RemoteHostUpdateRecorder()
         let tool = SSHUpdateHostTool(
             store: store,
             passwordWriter: { savedHostID, savedConnectionID, secret in
@@ -39,7 +40,10 @@ struct SSHHostProfileToolTests {
                     synchronizable: false
                 )
             },
-            passwordDeleter: { _, _ in }
+            passwordDeleter: { _, _ in },
+            updateObserver: { savedHostID, endpointIDs in
+                await updateRecorder.record(hostID: savedHostID, endpointIDs: endpointIDs)
+            }
         )
         let arguments = try JSONDecoder().decode(
             SSHUpdateHostTool.Arguments.self,
@@ -64,6 +68,8 @@ struct SSHHostProfileToolTests {
             from: Data(try #require(saved.vncEndpointsJSON).utf8)
         )
         #expect(endpoints.first?.passwordRef?.keychainAccount == "host.vnc.\(hostID.uuidString).\(connectionID.uuidString)")
+        #expect(await updateRecorder.value?.hostID == hostID)
+        #expect(await updateRecorder.value?.endpointIDs == [connectionID])
     }
 
     @Test("Legacy password field remains placeholder-only compatible")
@@ -112,6 +118,19 @@ struct SSHHostProfileToolTests {
         try tool.validate(arguments)
         _ = try await tool.execute(arguments, context: ToolContext(runID: UUID(), cancellation: CancellationToken()))
         #expect(String(data: await recorder.value?.secret ?? Data(), encoding: .utf8) == "raw-secret")
+    }
+}
+
+private actor RemoteHostUpdateRecorder {
+    struct Value: Sendable {
+        var hostID: UUID
+        var endpointIDs: Set<UUID>
+    }
+
+    private(set) var value: Value?
+
+    func record(hostID: UUID, endpointIDs: Set<UUID>) {
+        value = Value(hostID: hostID, endpointIDs: endpointIDs)
     }
 }
 

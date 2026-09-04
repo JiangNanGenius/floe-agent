@@ -365,6 +365,12 @@ final class AppEnvironment: ObservableObject {
                     scope: .hostVNCConnection(hostID: hostID, connectionID: connectionID)
                 )
             },
+            remoteHostUpdateObserver: { [weak remoteSessionCenter] hostID, endpointIDs in
+                await remoteSessionCenter?.agentDidUpdateHost(
+                    hostID: hostID,
+                    vncEndpointIDs: endpointIDs
+                )
+            },
             bluetoothSerialService: bluetoothSerialService,
             webSearchService: WebSearchService(configurations: WebSearchSettingsCenter.resolvedConfigurations),
             includeOnDeviceJavaScript: true

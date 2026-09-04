@@ -184,9 +184,9 @@ struct BackgroundPiPLifecyclePolicy: Sendable, Equatable {
             automaticTransition = .disarmed
             return
         }
-        // Record that AVKit missed its inline promotion window. The service
-        // may still use the stricter confirmed-background fallback, which
-        // cannot create the old foreground popup.
+        // Record that AVKit missed its inline promotion window. Floe does not
+        // synthesize a background start for a custom source; a fresh active
+        // interval arms the next system-managed transition.
         automaticTransition = effectivePhase == .active ? .armed : .missed
     }
 
@@ -262,21 +262,6 @@ struct BackgroundPiPLifecyclePolicy: Sendable, Equatable {
         }
     }
 
-    /// Sample-buffer PiP does not reliably receive AVKit's automatic-inline
-    /// promotion on every iPadOS transition. A true background phase is the
-    /// safe fallback boundary: it is late enough to avoid a foreground popup,
-    /// but still inside the app's scene-transition execution window.
-    static func shouldStartAfterBackgroundTransition(
-        effectivePhase: BackgroundPiPEffectiveScenePhase,
-        preparationPhase: BackgroundPiPPreparationPhase,
-        automaticallyStartsFromInline: Bool,
-        hasRunContext: Bool
-    ) -> Bool {
-        effectivePhase == .background
-            && preparationPhase == .prepared
-            && automaticallyStartsFromInline
-            && hasRunContext
-    }
 }
 
 @MainActor
@@ -361,6 +346,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     private var guidanceImage: UIImage?
     private var guidanceHints: [GuidanceHint] = []
     private var refreshTask: Task<Void, Never>?
+    private var frameHeartbeatTask: Task<Void, Never>?
     private var startGeneration: UInt64 = 0
     private var pendingStopOrigin: BackgroundPiPStopOrigin = .none
     private var manualStartTracker = BackgroundPiPManualStartTracker()
@@ -553,7 +539,6 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         FloeLogger(category: .app).debug(
             "pictureInPictureScenePhase phase=\(phase.rawValue) automaticTransition=\(lifecyclePolicy.automaticTransition.rawValue) state=\(preparationState.rawValue)"
         )
-        startFromBackgroundTransitionIfPossible(trigger: "scenePhase")
     }
 
     private func replaceDetachedForegroundSourceIfNeeded(
@@ -682,6 +667,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         sampleBufferLayer = layer
         activeSourceHostView = hostView
         pipController = controller
+        startFrameHeartbeat(layer: layer, generation: generation)
         installReadinessObservers(controller: controller, layer: layer, generation: generation)
         preparationState = .waitingForMedia
 
@@ -719,6 +705,11 @@ final class BackgroundVideoService: NSObject, ObservableObject {
                 automaticallyStartsFromInline
                     && lifecyclePolicy.allowsAutomaticStartFromInline
         }
+        // Sample-buffer PiP asks its delegate for playback state. Explicitly
+        // invalidate after media readiness so automatic inline promotion sees
+        // the live state rather than the controller's construction-time
+        // snapshot.
+        controller.invalidatePlaybackState()
         lastError = nil
         FloeLogger(category: .app).info(
             "pictureInPicturePrepared generation=\(generation) source=inlineSampleBuffer automaticFromInline=\(automaticallyStartsFromInline) transition=\(lifecyclePolicy.automaticTransition.rawValue)"
@@ -730,15 +721,11 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             // the system handles the app-switch transition.
             configureAudioSession()
         }
-        // If readiness arrived just after the real background transition,
-        // AVKit has already missed its automatic-inline promotion window.
-        // Start only from the confirmed background state; returning active
-        // before the delegate completes is handled by foreground retraction.
-        startFromBackgroundTransitionIfPossible(trigger: "readiness")
     }
 
-    /// Handles the visible PiP toolbar control. The other production start
-    /// path is the confirmed-background fallback for missed inline promotion.
+    /// Handles the visible PiP toolbar control. Automatic entry is delegated
+    /// to AVKit's inline-transition contract; Floe never synthesizes a start
+    /// from a background callback.
     func performManualControl() {
         switch BackgroundPiPLifecyclePolicy.manualTapDecision(
             preparationPhase: lifecyclePreparationPhase,
@@ -817,46 +804,6 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             controller: controller,
             generation: startGeneration,
             message: "系统没有完成画中画启动，请再次点击重试"
-        )
-    }
-
-    private func startFromBackgroundTransitionIfPossible(trigger: String) {
-        guard BackgroundPiPLifecyclePolicy.shouldStartAfterBackgroundTransition(
-            effectivePhase: lifecyclePolicy.effectivePhase,
-            preparationPhase: lifecyclePreparationPhase,
-            automaticallyStartsFromInline: automaticallyStartsFromInline,
-            hasRunContext: hasRunContext
-        ) else { return }
-        guard let controller = pipController,
-              let sampleBufferLayer,
-              activeSourceHostView?.sampleBufferDisplayLayer === sampleBufferLayer else {
-            FloeLogger(category: .app).warning(
-                "pictureInPictureBackgroundStartUnavailable reason=missingPreparedSource trigger=\(trigger)"
-            )
-            return
-        }
-        let renderer = sampleBufferLayer.sampleBufferRenderer
-        guard controller.isPictureInPicturePossible,
-              !controller.isPictureInPictureActive,
-              sampleBufferLayer.isReadyForDisplay,
-              renderer.status != .failed,
-              !renderer.requiresFlushToResumeDecoding else {
-            FloeLogger(category: .app).warning(
-                "pictureInPictureBackgroundStartUnavailable reason=sourceNotReady trigger=\(trigger) possible=\(controller.isPictureInPicturePossible) readyForDisplay=\(sampleBufferLayer.isReadyForDisplay)"
-            )
-            return
-        }
-        configureAudioSession()
-        preparationState = .starting
-        manualStartTracker.settle()
-        FloeLogger(category: .app).info(
-            "pictureInPictureStartRequested generation=\(startGeneration) source=confirmedBackground trigger=\(trigger)"
-        )
-        controller.startPictureInPicture()
-        scheduleStartTimeout(
-            controller: controller,
-            generation: startGeneration,
-            message: "系统没有完成后台画中画启动，请返回 Floe 后重试"
         )
     }
 
@@ -984,11 +931,48 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         )
     }
 
+    /// Keep the inline source genuinely live while a task is running. A lone
+    /// display-immediately frame can remain visible yet cease to qualify as
+    /// active playback before the user presses Home, especially in an
+    /// ordinary chat whose progress text changes infrequently.
+    private func startFrameHeartbeat(
+        layer: AVSampleBufferDisplayLayer,
+        generation: UInt64
+    ) {
+        frameHeartbeatTask?.cancel()
+        frameHeartbeatTask = Task { @MainActor [weak self, weak layer] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled,
+                      let self,
+                      let layer,
+                      generation == self.startGeneration,
+                      self.sampleBufferLayer === layer,
+                      self.hasRunContext else { return }
+                guard self.enqueueProgressFrame(
+                    on: layer,
+                    title: self.currentTitle,
+                    progress: self.currentProgress,
+                    guidanceImage: self.guidanceImage,
+                    guidanceHints: self.guidanceHints
+                ) else {
+                    FloeLogger(category: .app).warning(
+                        "pictureInPictureHeartbeatFailed generation=\(generation)"
+                    )
+                    return
+                }
+                self.pipController?.invalidatePlaybackState()
+            }
+        }
+    }
+
     func stop() {
         preparationTask?.cancel()
         preparationTask = nil
         refreshTask?.cancel()
         refreshTask = nil
+        frameHeartbeatTask?.cancel()
+        frameHeartbeatTask = nil
         startGeneration &+= 1
         stopPiPInternal(origin: .taskBatchEnded)
         currentTitle = ""
@@ -1003,6 +987,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         deferredSourceDetachTask = nil
         refreshTask?.cancel()
         refreshTask = nil
+        frameHeartbeatTask?.cancel()
+        frameHeartbeatTask = nil
         startTimeoutTask?.cancel()
         startTimeoutTask = nil
         possibleObservation?.invalidate()
@@ -1396,9 +1382,9 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         return renderer.status != .failed
     }
 
-    /// Creates a display-immediately video sample. No visible in-app view or
-    /// artificial playback timebase is needed; AVKit owns the detached layer
-    /// only after a user explicitly starts PiP.
+    /// Creates a display-immediately video sample on the monotonic host clock.
+    /// Reusing timestamp zero for every progress refresh made an apparently
+    /// visible layer look stalled to AVKit's automatic-inline state machine.
     private static func videoSampleBuffer(from pixelBuffer: CVPixelBuffer) -> CMSampleBuffer? {
         var formatDescription: CMVideoFormatDescription?
         guard CMVideoFormatDescriptionCreateForImageBuffer(
@@ -1410,7 +1396,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
 
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: 30),
-            presentationTimeStamp: .zero,
+            presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()),
             decodeTimeStamp: .invalid
         )
         var sampleBuffer: CMSampleBuffer?

@@ -873,7 +873,11 @@ public actor FloeAgentRuntime {
             }
             pendingToolResults.append(result)
             pairedIDs.insert(call.id)
-            executionLedger.record(call: call, result: result)
+            executionLedger.record(
+                call: call,
+                result: result,
+                isSideEffecting: executor.descriptor(named: call.toolName)?.isSideEffecting == true
+            )
             setToolLifecycle(call: call, phase: .resultCommitted)
         }
         // Provider protocols require results in the same order as their
@@ -2254,7 +2258,11 @@ public actor FloeAgentRuntime {
                 noProgressDetected = true
             }
             pendingToolResults.append(result)
-            executionLedger.record(call: call, result: result)
+            executionLedger.record(
+                call: call,
+                result: result,
+                isSideEffecting: executor.descriptor(named: call.toolName)?.isSideEffecting == true
+            )
             setToolLifecycle(call: call, phase: .resultCommitted)
             orderedResults.append((call, result))
         }

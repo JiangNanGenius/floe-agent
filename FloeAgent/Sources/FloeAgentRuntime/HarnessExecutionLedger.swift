@@ -21,6 +21,7 @@ struct HarnessExecutionLedger: Sendable {
         var resultFingerprint: String
         var excerpt: String
         var occurrenceCount: Int
+        var isSideEffecting: Bool
     }
 
     private(set) var entries: [Entry] = []
@@ -34,7 +35,9 @@ struct HarnessExecutionLedger: Sendable {
                 status: record.status,
                 resultFingerprint: record.resultFingerprint,
                 excerpt: String(record.excerpt.prefix(360)),
-                occurrenceCount: max(1, record.occurrenceCount)
+                occurrenceCount: max(1, record.occurrenceCount),
+                isSideEffecting: record.isSideEffecting
+                    ?? Self.legacySideEffectingTools.contains(record.toolName)
             )
         }
     }
@@ -47,7 +50,8 @@ struct HarnessExecutionLedger: Sendable {
                 status: entry.status,
                 resultFingerprint: entry.resultFingerprint,
                 excerpt: entry.excerpt,
-                occurrenceCount: entry.occurrenceCount
+                occurrenceCount: entry.occurrenceCount,
+                isSideEffecting: entry.isSideEffecting
             )
         }
     }
@@ -205,9 +209,21 @@ struct HarnessExecutionLedger: Sendable {
     /// plausibly transient failure.
     func recoveredResult(for call: ToolCall) -> ToolResult? {
         let callFingerprint = Self.fingerprint(call.argumentsJSON)
-        guard let entry = entries.last(where: {
+        guard let entryIndex = entries.lastIndex(where: {
             $0.toolName == call.toolName && $0.callFingerprint == callFingerprint
         }) else { return nil }
+        let entry = entries[entryIndex]
+        // A later successful mutation invalidates earlier observations. This
+        // matters across recovery checkpoints: after ssh.execute/updateHost
+        // repairs a VNC endpoint, vnc.status must execute again instead of
+        // replaying the stale disconnected result as a "successful" read.
+        if entries.indices.contains(where: { index in
+            index > entryIndex
+                && entries[index].status == .ok
+                && entries[index].isSideEffecting
+        }) {
+            return nil
+        }
         guard entry.status == .ok || (entry.status == .failed && entry.occurrenceCount >= 2) else {
             return nil
         }
@@ -222,7 +238,11 @@ struct HarnessExecutionLedger: Sendable {
         )
     }
 
-    mutating func record(call: ToolCall, result: ToolResult) {
+    mutating func record(
+        call: ToolCall,
+        result: ToolResult,
+        isSideEffecting: Bool = false
+    ) {
         let callFingerprint = Self.fingerprint(call.argumentsJSON)
         let resultData = result.outputDigest.isEmpty
             ? Data(result.outputSummary.utf8)
@@ -239,6 +259,7 @@ struct HarnessExecutionLedger: Sendable {
             var entry = entries.remove(at: index)
             entry.occurrenceCount += 1
             entry.excerpt = excerpt
+            entry.isSideEffecting = entry.isSideEffecting || isSideEffecting
             entries.append(entry)
         } else {
             entries.append(Entry(
@@ -247,7 +268,8 @@ struct HarnessExecutionLedger: Sendable {
                 status: result.status,
                 resultFingerprint: resultFingerprint,
                 excerpt: excerpt,
-                occurrenceCount: 1
+                occurrenceCount: 1,
+                isSideEffecting: isSideEffecting
             ))
         }
         if entries.count > maximumEntries {
@@ -309,4 +331,11 @@ struct HarnessExecutionLedger: Sendable {
                 .prefix(12)
         )
     }
+
+    /// Only used when restoring checkpoints written before the effect bit was
+    /// persisted. New checkpoints always carry the descriptor-derived value.
+    private static let legacySideEffectingTools: Set<String> = [
+        "ssh.execute", "ssh.updateHost", "vnc.connect", "vnc.reconnect",
+        "vnc.disconnect"
+    ]
 }
