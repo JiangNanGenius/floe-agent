@@ -49,6 +49,7 @@ final class SkillDreamService {
                 provider: provider,
                 model: model,
                 credentials: environment.conversationCenter.resolveCredentials(for: provider),
+                adapter: environment.conversationCenter.providerAdapter(for: provider),
                 prompt: prompt
             )
         } catch {
@@ -103,6 +104,7 @@ final class SkillDreamService {
         provider: ProviderProfile,
         model: ModelProfile,
         credentials: ProviderCredentials,
+        adapter: any ProviderAdapter,
         prompt: String
     ) async throws -> String {
         let request = ProviderStreamRequest(
@@ -114,7 +116,6 @@ final class SkillDreamService {
             ],
             toolSchemas: []
         )
-        let adapter = ProviderAdapterFactory().adapter(for: provider)
         var output = ""
         for try await event in adapter.stream(request: request, credentials: credentials) {
             switch event {

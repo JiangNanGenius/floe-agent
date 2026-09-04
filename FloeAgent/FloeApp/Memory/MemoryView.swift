@@ -186,7 +186,8 @@ final class MemoryCenter: ObservableObject {
                     semanticSuggestions = try await MemorySemanticOrganizer(
                         provider: provider,
                         model: model,
-                        credentials: environment.conversationCenter.resolveCredentials(for: provider)
+                        credentials: environment.conversationCenter.resolveCredentials(for: provider),
+                        adapter: environment.conversationCenter.providerAdapter(for: provider)
                     ).suggestions(
                         for: inventory,
                         allowAutomaticApplication: organizationMode == .modelManaged
@@ -290,7 +291,8 @@ final class MemoryCenter: ObservableObject {
         return ModelPersonalizationGenerator(
             provider: provider,
             model: model,
-            credentials: environment.conversationCenter.resolveCredentials(for: provider)
+            credentials: environment.conversationCenter.resolveCredentials(for: provider),
+            adapter: environment.conversationCenter.providerAdapter(for: provider)
         )
     }
 
@@ -662,6 +664,7 @@ struct ModelPersonalizationGenerator: PersonalizationGenerator {
     let provider: ProviderProfile
     let model: ModelProfile
     let credentials: ProviderCredentials
+    let adapter: any ProviderAdapter
 
     func generate(_ request: PersonalizationGenerationRequest) async throws
         -> PersonalizationGenerationResult {
@@ -690,7 +693,6 @@ struct ModelPersonalizationGenerator: PersonalizationGenerator {
             ],
             toolSchemas: []
         )
-        let adapter = ProviderAdapterFactory().adapter(for: provider)
         var output = ""
         for try await event in adapter.stream(request: streamRequest, credentials: credentials) {
             switch event {
@@ -727,6 +729,7 @@ struct MemorySemanticOrganizer {
     let provider: ProviderProfile
     let model: ModelProfile
     let credentials: ProviderCredentials
+    let adapter: any ProviderAdapter
 
     func suggestions(
         for entries: [MemoryEntry],
@@ -764,7 +767,6 @@ struct MemorySemanticOrganizer {
             ],
             toolSchemas: []
         )
-        let adapter = ProviderAdapterFactory().adapter(for: provider)
         var output = ""
         for try await event in adapter.stream(request: request, credentials: credentials) {
             switch event {

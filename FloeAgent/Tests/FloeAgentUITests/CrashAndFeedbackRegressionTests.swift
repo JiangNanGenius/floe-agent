@@ -10,6 +10,9 @@ import BackgroundTasks
 import Testing
 import FloeAgentRuntime
 import FloePersistence
+import FloeCore
+import FloeProviders
+import FloeLocalModels
 @testable import FloeApp
 
 private actor ContinuedProcessingExpirationTestGate {
@@ -43,6 +46,18 @@ private actor ContinuedProcessingExpirationTestGate {
 
 @Suite("FloeApp crash and feedback regressions")
 struct CrashAndFeedbackRegressionTests {
+    @MainActor
+    @Test("Auxiliary local LLMs use the device adapter, never a cloud HTTP adapter")
+    func auxiliaryAdapterFollowsExecutionLocation() {
+        let environment = AppEnvironment.preview()
+        let local = ProviderProfile(kind: .local, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "http://localhost")!)
+        let cloud = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://example.test/v1")!)
+        #expect(environment.conversationCenter.providerAdapter(for: local) is LocalProviderAdapter)
+        #expect(environment.conversationCenter.providerAdapter(for: cloud) is OpenAIChatCompletionsAdapter)
+    }
+
     @Test("Window scene phases aggregate by stable per-scene identity")
     func windowScenePhaseIdentityContract() {
         var aggregation = AppScenePhaseAggregation()

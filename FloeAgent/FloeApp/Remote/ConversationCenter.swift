@@ -302,7 +302,7 @@ final class ConversationCenter: ObservableObject {
     private var attemptedForegroundRecovery: Set<UUID> = []
     private let adapterFactory = ProviderAdapterFactory()
 
-    private func providerAdapter(for provider: ProviderProfile) -> any ProviderAdapter {
+    func providerAdapter(for provider: ProviderProfile) -> any ProviderAdapter {
         if provider.kind == .local {
             return LocalProviderAdapter(
                 runtime: environment.localModelRuntime,
@@ -3177,7 +3177,7 @@ final class ConversationCenter: ObservableObject {
     func generalAuxiliaryPersonalizationGenerator() -> ModelPersonalizationGenerator? {
         guard let (provider, model) = generalAuxiliaryProviderAndModel() else { return nil }
         return ModelPersonalizationGenerator(provider: provider, model: model,
-            credentials: resolveCredentials(for: provider))
+            credentials: resolveCredentials(for: provider), adapter: providerAdapter(for: provider))
     }
 
     /// Canvas has independent routes so changing the helper LLM cannot

@@ -466,7 +466,7 @@ final class SkillsCenter: ObservableObject {
             ],
             toolSchemas: []
         )
-        let adapter = ProviderAdapterFactory().adapter(for: provider)
+        let adapter = environment.conversationCenter.providerAdapter(for: provider)
         let credentials = environment.conversationCenter.resolveCredentials(for: provider)
         var output = ""
         for try await event in adapter.stream(request: request, credentials: credentials) {
