@@ -776,6 +776,20 @@ struct ToolLoopHardeningTests {
 
     // MARK: 5. Run-context system message injection
 
+    @Test("Run context includes the live local clock and UTC offset")
+    func systemContextIncludesCurrentTimeZone() throws {
+        let timeZone = try #require(TimeZone(secondsFromGMT: 9 * 3_600 + 30 * 60))
+        let message = ConversationRunService.buildContextMessage(
+            nil,
+            toolsAvailable: false,
+            currentDate: Date(timeIntervalSince1970: 0),
+            timeZone: timeZone
+        )
+
+        #expect(message.contains("Current local date and time at run start: 1970-01-01T09:30:00+09:30"))
+        #expect(message.contains("Current time zone: GMT+0930 (UTC+09:30)"))
+    }
+
     @Test("The first model message is the injected system context with tool names")
     func systemContextInjected() async throws {
         let (conversationStore, runStore) = try await makeStores()
@@ -817,6 +831,8 @@ struct ToolLoopHardeningTests {
         #expect(first.content.contains("Workspace: Demo Project"))
         #expect(first.content.contains("src/main.swift"))
         #expect(first.content.contains("Execution target: local"))
+        #expect(first.content.contains("Current local date and time at run start:"))
+        #expect(first.content.contains("Current time zone:"))
         #expect(first.content.contains("Available tools:"))
         #expect(first.content.contains("test.contextProbe"))
         // The user goal follows the system message.

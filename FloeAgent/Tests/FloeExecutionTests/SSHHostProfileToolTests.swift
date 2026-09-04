@@ -62,6 +62,7 @@ struct SSHHostProfileToolTests {
         #expect(String(data: captured?.secret ?? Data(), encoding: .utf8)?.hasPrefix("⟨credential:") == true)
         #expect(!output.summary.contains("00000000-0000-0000-0000-000000000001"))
         #expect(output.summary.contains(#""passwordConfigured":true"#))
+        #expect(output.summary.contains(#""configuredVNCCount":1"#))
         let saved = try #require(await store.host(id: hostID))
         let endpoints = try JSONDecoder().decode(
             [VNCEndpoint].self,

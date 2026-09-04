@@ -123,7 +123,7 @@ OpenAI image generation/editing defaults to `gpt-image-2`. Google Gemini Images 
 
 ### Workspaces, Git and approvals
 
-Private task workspaces are created and bound atomically with the first message. Project workspaces retain their explicit Files scope. The Files inspector includes a lightweight Source Control tab, while **Settings → GitHub & Source Control** stores a fine-grained GitHub token only in the device Keychain and supports listing, cloning and creating repositories.
+Private task workspaces are created and bound atomically with the first message. Project workspaces retain their explicit Files scope. The Files inspector includes a lightweight Source Control tab, while **Settings → GitHub & Source Control** supports GitHub's official device authorization flow plus fine-grained token fallback. Credentials remain in the device Keychain, with repository listing, cloning, and creation available after connection.
 
 Routine bounded reads, local workspace operations, image generation/inspection, OCR, read-only PDF work and LAN discovery do not wait for an approval-model round trip. The composer permission control saves immediately and can change a live task. Once the user requests installation, deployment, environment repair, or a Floe guardian update, ordinary system packages, package-source changes, dependency repair, and Floe's verified atomic guardian update do not interrupt for command-by-command approval. Destructive changes, credentials, uploads, payments, ambiguous broad remote commands and force/history-rewriting Git operations remain blocked or explicitly reviewed. A broad request such as “test all tools” can authorize safe diagnostics, but cannot silently expand into destructive or credential-bearing tests.
 

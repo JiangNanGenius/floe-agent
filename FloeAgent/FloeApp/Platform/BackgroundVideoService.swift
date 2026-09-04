@@ -330,6 +330,12 @@ final class BackgroundVideoService: NSObject, ObservableObject {
 
     private var pipController: AVPictureInPictureController?
     private var sampleBufferLayer: AVSampleBufferDisplayLayer?
+    /// AVSampleBufferDisplayLayer is a timed media renderer. A visible
+    /// `DisplayImmediately` image is not a playback timeline and AVKit may
+    /// therefore refuse to promote it to PiP. Keep a host-clock timebase and
+    /// monotonically timestamp every progress frame.
+    private var playbackTimebase: CMTimebase?
+    private var nextSampleTime: CMTime = .invalid
     private var activeSourceHostView: BackgroundPiPSourceHostView?
     private let sourceHostViews = NSHashTable<BackgroundPiPSourceHostView>.weakObjects()
     private var possibleObservation: NSKeyValueObservation?
@@ -337,6 +343,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
     private struct RetiringPiPSource {
         let controller: AVPictureInPictureController
         let layer: AVSampleBufferDisplayLayer?
+        let timebase: CMTimebase?
         let hostView: BackgroundPiPSourceHostView?
     }
     private var retiringPiPSources: [ObjectIdentifier: RetiringPiPSource] = [:]
@@ -639,6 +646,14 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         layer.sampleBufferRenderer.flush()
         layer.videoGravity = .resizeAspect
         layer.backgroundColor = UIColor(red: 0.035, green: 0.043, blue: 0.065, alpha: 1).cgColor
+        guard configurePlaybackTimeline(for: layer) else {
+            preparationState = .failed
+            lastError = "无法创建画中画播放时间线"
+            FloeLogger(category: .app).error(
+                "pictureInPicturePrepareFailed stage=timebase generation=\(generation)"
+            )
+            return
+        }
         guard enqueueProgressFrame(
             on: layer,
             title: title,
@@ -1007,6 +1022,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
                 retiringPiPSources[controllerID] = RetiringPiPSource(
                     controller: pipController,
                     layer: sampleBufferLayer,
+                    timebase: playbackTimebase,
                     hostView: activeSourceHostView
                 )
                 retiringPiPCleanupTasks[controllerID]?.cancel()
@@ -1017,13 +1033,17 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             }
             pipController.stopPictureInPicture()
             if !needsDeferredSourceRelease {
+                stopPlaybackTimeline(on: sampleBufferLayer)
                 sampleBufferLayer?.sampleBufferRenderer.flush()
             }
         } else {
+            stopPlaybackTimeline(on: sampleBufferLayer)
             sampleBufferLayer?.sampleBufferRenderer.flush()
         }
         pipController = nil
         sampleBufferLayer = nil
+        playbackTimebase = nil
+        nextSampleTime = .invalid
         activeSourceHostView = nil
         guidanceImage = nil
         guidanceHints = []
@@ -1043,6 +1063,10 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         guard let source = retiringPiPSources.removeValue(forKey: controllerID) else {
             return false
         }
+        if let timebase = source.timebase {
+            CMTimebaseSetRate(timebase, rate: 0)
+        }
+        source.layer?.controlTimebase = nil
         source.layer?.sampleBufferRenderer.flush()
         FloeLogger(category: .app).debug(
             "pictureInPictureRetiringSourceReleased controller=completedStop"
@@ -1068,8 +1092,11 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             isPiPActive = false
             isPiPPrepared = false
             pipController = nil
+            stopPlaybackTimeline(on: sampleBufferLayer)
             sampleBufferLayer?.sampleBufferRenderer.flush()
             sampleBufferLayer = nil
+            playbackTimebase = nil
+            nextSampleTime = .invalid
             activeSourceHostView = nil
             preparationState = .idle
             lifecyclePolicy.clearStartTracking()
@@ -1092,8 +1119,11 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         possibleObservation = nil
         readyForDisplayObservation?.invalidate()
         readyForDisplayObservation = nil
+        stopPlaybackTimeline(on: sampleBufferLayer)
         sampleBufferLayer?.sampleBufferRenderer.flush()
         sampleBufferLayer = nil
+        playbackTimebase = nil
+        nextSampleTime = .invalid
         activeSourceHostView = nil
         guidanceImage = nil
         guidanceHints = []
@@ -1373,7 +1403,11 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         ),
               let cgImage = frame.cgImage,
               let pixelBuffer = Self.pixelBuffer(from: cgImage, size: size),
-              let sampleBuffer = Self.videoSampleBuffer(from: pixelBuffer) else { return false }
+              let presentationTime = nextPresentationTime(),
+              let sampleBuffer = Self.videoSampleBuffer(
+                from: pixelBuffer,
+                presentationTime: presentationTime
+              ) else { return false }
         let renderer = layer.sampleBufferRenderer
         if renderer.requiresFlushToResumeDecoding {
             renderer.flush()
@@ -1382,10 +1416,48 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         return renderer.status != .failed
     }
 
-    /// Creates a display-immediately video sample on the monotonic host clock.
-    /// Reusing timestamp zero for every progress refresh made an apparently
-    /// visible layer look stalled to AVKit's automatic-inline state machine.
-    private static func videoSampleBuffer(from pixelBuffer: CVPixelBuffer) -> CMSampleBuffer? {
+    private func configurePlaybackTimeline(for layer: AVSampleBufferDisplayLayer) -> Bool {
+        var created: CMTimebase?
+        guard CMTimebaseCreateWithSourceClock(
+            allocator: kCFAllocatorDefault,
+            sourceClock: CMClockGetHostTimeClock(),
+            timebaseOut: &created
+        ) == noErr, let created else { return false }
+        let now = CMClockGetTime(CMClockGetHostTimeClock())
+        CMTimebaseSetTime(created, time: now)
+        CMTimebaseSetRate(created, rate: 1)
+        layer.controlTimebase = created
+        playbackTimebase = created
+        nextSampleTime = now
+        return true
+    }
+
+    private func stopPlaybackTimeline(on layer: AVSampleBufferDisplayLayer?) {
+        if let playbackTimebase {
+            CMTimebaseSetRate(playbackTimebase, rate: 0)
+        }
+        layer?.controlTimebase = nil
+    }
+
+    private func nextPresentationTime() -> CMTime? {
+        guard let playbackTimebase else { return nil }
+        let now = CMTimebaseGetTime(playbackTimebase)
+        let minimumStep = CMTime(value: 1, timescale: 30)
+        let candidate = nextSampleTime.isValid
+            ? CMTimeAdd(nextSampleTime, minimumStep)
+            : now
+        let selected = CMTimeCompare(candidate, now) >= 0 ? candidate : now
+        nextSampleTime = selected
+        return selected
+    }
+
+    /// Creates a timed video sample on the layer's monotonic playback
+    /// timeline. AVKit receives real advancing media state instead of a series
+    /// of unrelated display-immediately still images.
+    private static func videoSampleBuffer(
+        from pixelBuffer: CVPixelBuffer,
+        presentationTime: CMTime
+    ) -> CMSampleBuffer? {
         var formatDescription: CMVideoFormatDescription?
         guard CMVideoFormatDescriptionCreateForImageBuffer(
             allocator: kCFAllocatorDefault,
@@ -1395,8 +1467,8 @@ final class BackgroundVideoService: NSObject, ObservableObject {
               let formatDescription else { return nil }
 
         var timing = CMSampleTimingInfo(
-            duration: CMTime(value: 1, timescale: 30),
-            presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()),
+            duration: CMTime(value: 1, timescale: 1),
+            presentationTimeStamp: presentationTime,
             decodeTimeStamp: .invalid
         )
         var sampleBuffer: CMSampleBuffer?
@@ -1408,13 +1480,6 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             sampleBufferOut: &sampleBuffer
         ) == noErr,
               let sampleBuffer else { return nil }
-        if let attachments = CMSampleBufferGetSampleAttachmentsArray(
-            sampleBuffer,
-            createIfNecessary: true
-        ) as? [NSMutableDictionary],
-           let first = attachments.first {
-            first[kCMSampleAttachmentKey_DisplayImmediately] = kCFBooleanTrue
-        }
         return sampleBuffer
     }
 
@@ -1570,9 +1635,15 @@ extension BackgroundVideoService: AVPictureInPictureSampleBufferPlaybackDelegate
         _ pictureInPictureController: AVPictureInPictureController,
         setPlaying playing: Bool
     ) {
-        FloeLogger(category: .app).debug(
-            "pictureInPicturePlaybackRequest playing=\(playing) staticProgress=true"
-        )
+        let controllerID = ObjectIdentifier(pictureInPictureController)
+        Task { @MainActor in
+            guard self.pipController.map(ObjectIdentifier.init) == controllerID,
+                  let timebase = self.playbackTimebase else { return }
+            CMTimebaseSetRate(timebase, rate: playing ? 1 : 0)
+            FloeLogger(category: .app).debug(
+                "pictureInPicturePlaybackRequest playing=\(playing) timeline=hostClock"
+            )
+        }
     }
 
     nonisolated func pictureInPictureControllerTimeRangeForPlayback(

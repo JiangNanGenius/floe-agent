@@ -4,6 +4,7 @@ import FloeGit
 
 struct GitHubSettingsView: View {
     @ObservedObject var center: SourceControlCenter
+    @Environment(\.openURL) private var openURL
     @State private var token = ""
     @State private var showCreateRepository = false
     @State private var repositoryName = ""
@@ -24,10 +25,41 @@ struct GitHubSettingsView: View {
                         catch { center.errorMessage = error.localizedDescription }
                     }
                 } else {
+                    if let authorization = center.deviceAuthorization {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("在 GitHub 输入验证码")
+                                .font(.headline)
+                            Text(authorization.userCode)
+                                .font(.system(.title2, design: .monospaced).weight(.bold))
+                                .textSelection(.enabled)
+                            HStack {
+                                Button("打开 GitHub 授权页") {
+                                    openURL(authorization.verificationURL)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                Button("取消", role: .cancel) {
+                                    center.cancelDeviceLogin()
+                                }
+                            }
+                            Text("授权后会自动完成连接；Floe 按 GitHub 返回的间隔检查状态。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Button {
+                            Task { await center.startDeviceLogin() }
+                        } label: {
+                            Label("登录 GitHub", systemImage: "person.crop.circle.badge.checkmark")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(center.isBusy)
+                    }
+                    Divider()
                     SecureField("GitHub 细粒度访问令牌", text: $token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .privacySensitive()
+                        .disabled(center.isDeviceLoginPending)
                     Button("验证并连接") {
                         let value = token
                         Task {
@@ -40,9 +72,13 @@ struct GitHubSettingsView: View {
                             }
                         }
                     }
-                    .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || center.isBusy)
+                    .disabled(
+                        token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || center.isBusy
+                            || center.isDeviceLoginPending
+                    )
                 }
-                Text("凭据只保存在本机钥匙串。Floe 不会把令牌写入仓库、远程地址、日志或模型上下文。")
+                Text("登录凭据只保存在本机钥匙串。Floe 不会把令牌写入仓库、远程地址、日志或模型上下文。")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
             }

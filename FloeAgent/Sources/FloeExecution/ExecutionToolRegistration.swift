@@ -77,6 +77,10 @@ public func registerExecutionTools(
         ToolCatalog.register(CloudWorkspaceGitBranchTool.self)
         ToolCatalog.register(RemoteHostingInspectTool.self)
         ToolCatalog.register(RemoteHostingManageTool.self)
+        ToolCatalog.register(NetworkPingTool.self)
+        ToolCatalog.register(NetworkTracerouteTool.self)
+        ToolCatalog.register(NetworkDNSLookupTool.self)
+        ToolCatalog.register(NetworkTCPProbeTool.self)
     }
     if remoteHostStore != nil {
         ToolCatalog.register(SSHListHostsTool.self)
@@ -145,6 +149,10 @@ public func registerExecutionTools(
         registry.register(CloudWorkspaceGitBranchTool(service: cloudWorkspaceService))
         registry.register(RemoteHostingInspectTool(service: cloudWorkspaceService))
         registry.register(RemoteHostingManageTool(service: cloudWorkspaceService))
+        registry.register(NetworkPingTool(service: sshCommandService))
+        registry.register(NetworkTracerouteTool(service: sshCommandService))
+        registry.register(NetworkDNSLookupTool(service: sshCommandService))
+        registry.register(NetworkTCPProbeTool(service: sshCommandService))
     }
     if let remoteHostStore {
         registry.register(SSHListHostsTool(store: remoteHostStore))

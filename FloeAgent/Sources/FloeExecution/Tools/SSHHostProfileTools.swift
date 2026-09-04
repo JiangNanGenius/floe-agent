@@ -360,6 +360,10 @@ public struct SSHUpdateHostTool: AgentTool {
                  "displayName": endpoint.displayName,
                  "passwordConfigured": endpoint.passwordRef != nil]
             }
+            // Keep a compact prerequisite signal near the start of the sorted
+            // result. The Harness ledger intentionally stores only a bounded
+            // excerpt, while a host may contain many named VNC endpoints.
+            response["configuredVNCCount"] = saved.count
             response["credentialsUpdated"] = updatedCredentialCount
             response["credentialsRemoved"] = removedCredentialIDs.count
         }

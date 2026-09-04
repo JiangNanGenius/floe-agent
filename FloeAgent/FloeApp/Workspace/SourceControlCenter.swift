@@ -9,6 +9,7 @@ final class SourceControlCenter: ObservableObject {
     @Published private(set) var snapshot = GitRepositorySnapshot(isRepository: false)
     @Published private(set) var account: GitHubAccount?
     @Published private(set) var repositories: [GitHubRepository] = []
+    @Published private(set) var deviceAuthorization: GitHubDeviceAuthorization?
     @Published private(set) var isBusy = false
     @Published var errorMessage: String?
 
@@ -16,12 +17,22 @@ final class SourceControlCenter: ObservableObject {
     private let git = LocalGitService()
     private let github = GitHubService()
     private let credentials = GitHubCredentialStore()
+    private var deviceLoginTask: Task<Void, Never>?
 
     init(environment: AppEnvironment) {
         self.environment = environment
     }
 
     var isGitHubConnected: Bool { account != nil }
+    var isDeviceLoginPending: Bool { deviceAuthorization != nil }
+
+    private var githubOAuthClientID: String? {
+        guard let value = Bundle.main.object(
+            forInfoDictionaryKey: "FLOEGitHubOAuthClientID"
+        ) as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed.hasPrefix("$(") ? nil : trimmed
+    }
 
     func perform(_ operation: @escaping @MainActor () async throws -> Void) async {
         guard !isBusy else { return }
@@ -65,7 +76,60 @@ final class SourceControlCenter: ObservableObject {
         errorMessage = nil
     }
 
+    func startDeviceLogin() async {
+        guard !isBusy, deviceLoginTask == nil else { return }
+        guard let clientID = githubOAuthClientID else {
+            errorMessage = "此构建尚未配置 GitHub OAuth Client ID，请联系构建管理员；访问令牌登录仍可使用。"
+            return
+        }
+        isBusy = true
+        do {
+            let authorization = try await github.beginDeviceAuthorization(clientID: clientID)
+            deviceAuthorization = authorization
+            errorMessage = nil
+            isBusy = false
+            deviceLoginTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    let token = try await self.github.completeDeviceAuthorization(
+                        authorization,
+                        clientID: clientID
+                    )
+                    try Task.checkCancellation()
+                    // GitHub requires identity to be revalidated for every new
+                    // token before it can become the active local account.
+                    let loadedAccount = try await self.github.account(token: token)
+                    let loadedRepositories = try await self.github.repositories(token: token)
+                    try self.credentials.save(token: token)
+                    self.account = loadedAccount
+                    self.repositories = loadedRepositories
+                    self.deviceAuthorization = nil
+                    self.errorMessage = nil
+                } catch is CancellationError {
+                    self.deviceAuthorization = nil
+                } catch let error as FloeError where error == .cancelled {
+                    self.deviceAuthorization = nil
+                } catch {
+                    self.deviceAuthorization = nil
+                    self.errorMessage = SecretRedactor.redact(error.localizedDescription)
+                }
+                self.deviceLoginTask = nil
+            }
+        } catch {
+            isBusy = false
+            errorMessage = SecretRedactor.redact(error.localizedDescription)
+        }
+    }
+
+    func cancelDeviceLogin() {
+        deviceLoginTask?.cancel()
+        deviceLoginTask = nil
+        deviceAuthorization = nil
+        isBusy = false
+    }
+
     func disconnect() throws {
+        cancelDeviceLogin()
         try credentials.delete()
         account = nil
         repositories = []

@@ -67,4 +67,32 @@ struct ModelSelectionPreferencesTests {
         }
         #expect(preferences.defaultVideoModelID == videoID)
     }
+
+    @Test("Known media models are removed from approval routes without clearing missing synced models")
+    func clearsKnownIncompatibleApprovalModels() {
+        let providerID = UUID()
+        let mediaID = UUID()
+        let temporarilyMissingID = UUID()
+        let media = ModelProfile(
+            id: mediaID,
+            providerID: providerID,
+            remoteModelID: "image-only",
+            displayName: "Image only",
+            limits: ModelLimits(contextTokens: 1, maxOutputTokens: 0),
+            capabilities: [.imageGeneration],
+            useSurfaces: [.imageGeneration]
+        )
+        var preferences = ModelSelectionPreferences(
+            approvalModelID: mediaID,
+            packageReviewModelID: temporarilyMissingID
+        )
+
+        let cleared = preferences.clearKnownIncompatibleApprovalModels(
+            modelsByID: [mediaID: media]
+        )
+
+        #expect(cleared == [mediaID])
+        #expect(preferences.approvalModelID == nil)
+        #expect(preferences.packageReviewModelID == temporarilyMissingID)
+    }
 }

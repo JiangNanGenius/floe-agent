@@ -103,4 +103,27 @@ public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
         }
         auxiliaryImageMode = newMode
     }
+
+    /// Removes only auxiliary selections that are present in the current
+    /// catalog and positively known to be incompatible. Temporarily missing
+    /// synced models are preserved for a later provider refresh.
+    @discardableResult
+    public mutating func clearKnownIncompatibleApprovalModels(
+        modelsByID: [UUID: ModelProfile]
+    ) -> Set<UUID> {
+        var cleared: Set<UUID> = []
+        if let id = approvalModelID,
+           let model = modelsByID[id],
+           !model.supportsApprovalSurface {
+            approvalModelID = nil
+            cleared.insert(id)
+        }
+        if let id = packageReviewModelID,
+           let model = modelsByID[id],
+           !model.supportsApprovalSurface {
+            packageReviewModelID = nil
+            cleared.insert(id)
+        }
+        return cleared
+    }
 }

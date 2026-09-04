@@ -229,6 +229,7 @@ final class ConversationCenter: ObservableObject {
         guard normalized.contains("vnc") else { return nil }
         return Set(available.filter {
             $0.hasPrefix("ssh.") || $0.hasPrefix("vnc.")
+                || $0.hasPrefix("network.")
         })
     }
 
@@ -3456,6 +3457,21 @@ final class ConversationCenter: ObservableObject {
 
     func saveModelPreferences(_ preferences: ModelSelectionPreferences) async throws {
         var updated = preferences
+        // Provider catalogs can change a model's declared capabilities after a
+        // preference has synced. Do not let a stale auxiliary choice prevent an
+        // unrelated Settings page (for example Canvas) from saving. Only clear
+        // IDs we can positively identify as capability-incompatible; an ID that
+        // is temporarily absent is left intact for the next catalog refresh.
+        let configuredModels = configuredModelsByProvider.values.flatMap { $0 }
+        let modelsByID = Dictionary(
+            configuredModels.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for id in updated.clearKnownIncompatibleApprovalModels(modelsByID: modelsByID) {
+            FloeLogger(category: .app).warning(
+                "staleModelPreferenceCleared role=approvalOrPackageReview model=\(id.uuidString)"
+            )
+        }
         updated.updatedAt = Date()
         updated.syncRevision += 1
         // Route new work immediately. CloudKit delivery and the subsequent

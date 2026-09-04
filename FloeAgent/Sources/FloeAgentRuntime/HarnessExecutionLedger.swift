@@ -65,7 +65,14 @@ struct HarnessExecutionLedger: Sendable {
                 return false
             }
             switch vncWorkflowStage {
-            case .needsStatus, .needsConfiguration:
+            case .needsStatus:
+                // A status read is useful but must not be a second hard
+                // prerequisite for connect. Recovered/truncated status output
+                // previously left providers in a loop where connect was never
+                // exposed. Connect itself performs a real, bounded handshake
+                // and returns the same structured state.
+                return ["vnc.status", "vnc.connect", "vnc.reconnect"].contains(toolName)
+            case .needsConfiguration:
                 return toolName == "vnc.status"
             case .needsConnection:
                 return ["vnc.status", "vnc.connect", "vnc.reconnect"].contains(toolName)
@@ -94,7 +101,7 @@ struct HarnessExecutionLedger: Sendable {
             }
             return switch vncWorkflowStage {
             case .needsStatus:
-                "VNC workflow prerequisite is incomplete. Call vnc.status first."
+                "VNC observation and input require a connected session. Call vnc.status or establish it with vnc.connect before observing or sending input."
             case .needsConfiguration:
                 "VNC is unconfigured. Complete the user-selected configuration route, then call vnc.status again before connecting."
             case .needsConnection:
@@ -119,7 +126,23 @@ struct HarnessExecutionLedger: Sendable {
                 continue
             }
             switch entry.toolName {
-            case "ssh.updateHost", "vnc.disconnect":
+            case "ssh.updateHost":
+                // updateHost returns the saved VNC profiles in its bounded
+                // result. That mutation is stronger evidence than a stale
+                // pre-update status call, so expose connect immediately when
+                // at least one endpoint was actually persisted.
+                let compact = entry.excerpt.lowercased().filter { !$0.isWhitespace }
+                let hasConfiguredCount = compact.range(
+                    of: #""configuredvnccount":[1-9][0-9]*"#,
+                    options: .regularExpression
+                ) != nil
+                if compact.contains("\"updated\":true"),
+                   hasConfiguredCount || compact.contains("\"vncconnections\":[{") {
+                    stage = .needsConnection
+                } else {
+                    stage = .needsStatus
+                }
+            case "vnc.disconnect":
                 stage = .needsStatus
             case "vnc.connect", "vnc.reconnect", "vnc.observe":
                 stage = .connected

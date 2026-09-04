@@ -825,6 +825,7 @@ struct CrashAndFeedbackRegressionTests {
         let available: Set<String> = [
             "ssh.listHosts", "ssh.execute", "ssh.updateHost",
             "vnc.status", "vnc.connect", "vnc.observe",
+            "network.ping", "network.traceroute", "network.tcpProbe",
             "exec.javascript", "exec.localPython", "memory.organizePreview"
         ]
         let selected = ConversationCenter.toolsForExplicitRemoteRoute(
@@ -833,7 +834,8 @@ struct CrashAndFeedbackRegressionTests {
         )
         #expect(selected == [
             "ssh.listHosts", "ssh.execute", "ssh.updateHost",
-            "vnc.status", "vnc.connect", "vnc.observe"
+            "vnc.status", "vnc.connect", "vnc.observe",
+            "network.ping", "network.traceroute", "network.tcpProbe"
         ])
         #expect(ConversationCenter.toolsForExplicitRemoteRoute(
             request: "用 VNC 看一下屏幕",
@@ -900,7 +902,67 @@ struct CrashAndFeedbackRegressionTests {
             canApplyAutomatically: false
         )
 
-        #expect(MemorySemanticOrganizer.merging([deterministic], [semantic]).count == 1)
+        let merged = MemorySemanticOrganizer.merging([deterministic], [semantic])
+        #expect(merged.count == 1)
+        #expect(!merged[0].canApplyAutomatically)
+    }
+
+    @Test("Model-managed semantic decisions can upgrade the same bounded suggestion")
+    func modelManagedMemorySuggestionUpgrade() {
+        let first = UUID()
+        let second = UUID()
+        let deterministic = MemoryOrganizationSuggestion(
+            kind: .sameFactReplacement,
+            memoryIDs: [first, second],
+            preferredMemoryID: first,
+            reason: "review",
+            canApplyAutomatically: false
+        )
+        let semantic = MemoryOrganizationSuggestion(
+            kind: .sameFactReplacement,
+            memoryIDs: [second, first],
+            preferredMemoryID: second,
+            reason: "model-managed",
+            canApplyAutomatically: true
+        )
+
+        let merged = MemorySemanticOrganizer.merging([deterministic], [semantic])
+
+        #expect(merged.count == 1)
+        #expect(merged[0].canApplyAutomatically)
+        #expect(merged[0].preferredMemoryID == second)
+    }
+
+    @Test("Model-managed memory only applies bounded safe deletion suggestions")
+    @MainActor
+    func modelManagedMemoryDeletionIsBounded() {
+        let keep = UUID()
+        let stale = UUID()
+        let expired = UUID()
+        let needsOwner = UUID()
+        let suggestions = [
+            MemoryOrganizationSuggestion(
+                kind: .sameFactReplacement,
+                memoryIDs: [keep, stale],
+                preferredMemoryID: keep,
+                reason: "new version",
+                canApplyAutomatically: true
+            ),
+            MemoryOrganizationSuggestion(
+                kind: .expired,
+                memoryIDs: [expired],
+                reason: "temporary state",
+                canApplyAutomatically: true
+            ),
+            MemoryOrganizationSuggestion(
+                kind: .missingOwnership,
+                memoryIDs: [needsOwner],
+                reason: "review",
+                canApplyAutomatically: true
+            )
+        ]
+
+        #expect(MemoryCenter.automaticDeleteIDs(in: suggestions) == [stale, expired])
     }
 }
 #endif

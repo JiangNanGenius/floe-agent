@@ -152,7 +152,7 @@ struct HarnessPlanningTests {
         var ledger = HarnessExecutionLedger()
         #expect(ledger.allowsStatefulTool(named: "vnc.status"))
         #expect(!ledger.allowsStatefulTool(named: "vnc.observe"))
-        #expect(!ledger.allowsStatefulTool(named: "vnc.connect"))
+        #expect(ledger.allowsStatefulTool(named: "vnc.connect"))
 
         let status = try ToolCall(
             id: "vnc-status",
@@ -218,6 +218,37 @@ struct HarnessPlanningTests {
         ))
         #expect(ledger.allowsStatefulTool(named: "memory.remember"))
         #expect(ledger.allowsStatefulTool(named: "memory.update"))
+    }
+
+    @Test("Saving a VNC endpoint exposes connect without another stale status pass")
+    func vncHostUpdateAdvancesToConnect() throws {
+        var ledger = HarnessExecutionLedger()
+        let update = try ToolCall(
+            id: "save-vnc",
+            toolName: "ssh.updateHost",
+            argumentsJSON: Data(#"{"hostID":"00000000-0000-0000-0000-000000000001"}"#.utf8),
+            scope: .local
+        )
+        ledger.record(call: update, result: ToolResult(
+            callID: update.id,
+            status: .ok,
+            outputSummary: #"{"configuredVNCCount":1,"updated":true,"vncConnections":[{"id":"00000000-0000-0000-0000-000000000002"}]}"#,
+            outputDigest: "saved"
+        ))
+
+        #expect(ledger.vncWorkflowStage == .needsConnection)
+        #expect(ledger.allowsStatefulTool(named: "vnc.connect"))
+        #expect(!ledger.allowsStatefulTool(named: "vnc.observe"))
+    }
+
+    @Test("VNC connect is available before an optional status read but observation remains gated")
+    func vncConnectDoesNotDependOnStatusRoundTrip() {
+        let ledger = HarnessExecutionLedger()
+        #expect(ledger.allowsStatefulTool(named: "vnc.status"))
+        #expect(ledger.allowsStatefulTool(named: "vnc.connect"))
+        #expect(ledger.allowsStatefulTool(named: "vnc.reconnect"))
+        #expect(!ledger.allowsStatefulTool(named: "vnc.observe"))
+        #expect(!ledger.allowsStatefulTool(named: "vnc.click"))
     }
 
     @Test("An explicit SSH-before-VNC request keeps every VNC tool hidden until SSH executes")
@@ -366,7 +397,8 @@ struct HarnessPlanningTests {
         )
         #expect(prompt.contains("Remote-host workflow"))
         #expect(prompt.contains("remote.connection.open -> reuse its sessionID"))
-        #expect(prompt.contains("before every remember, update, forget, or batchApply"))
+        #expect(prompt.contains("Do not inspect or save memory during an unrelated diagnostic"))
+        #expect(prompt.contains("after one successful inspection, continue the requested task"))
         #expect(prompt.contains("Search/list returns stable memory IDs"))
         #expect(prompt.contains("reuse its exact taskID with ssh.taskStatus"))
         #expect(prompt.contains("vnc.status -> vnc.connect -> vnc.observe"))

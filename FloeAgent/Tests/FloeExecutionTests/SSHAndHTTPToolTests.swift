@@ -169,6 +169,24 @@ struct SSHAndHTTPToolTests {
         #expect(output.exitStatus == 2)
         #expect(output.summary.contains("status=error"))
     }
+
+    @Test("structured network diagnostics reject command injection and stay read-only")
+    func networkDiagnosticContracts() throws {
+        let service = SSHCommandService(
+            sessionFactory: { _ in FakeSession() },
+            hostResolver: { id in RemotePythonService.RemotePythonHost(id: id, displayName: "probe") },
+            defaultHostProvider: { UUID() }
+        )
+        let ping = NetworkPingTool(service: service)
+        try ping.validate(.init(target: "example.com", hostID: nil, count: 2, timeoutSeconds: 2))
+        #expect(throws: FloeError.self) {
+            try ping.validate(.init(target: "example.com; reboot", hostID: nil, count: 2, timeoutSeconds: 2))
+        }
+        #expect(NetworkPingTool.toolEffect == .readOnly)
+        #expect(NetworkTracerouteTool.toolEffect == .readOnly)
+        #expect(NetworkDNSLookupTool.toolEffect == .readOnly)
+        #expect(NetworkTCPProbeTool.toolEffect == .readOnly)
+    }
 }
 
 private struct FakeSession: RemotePythonSession {

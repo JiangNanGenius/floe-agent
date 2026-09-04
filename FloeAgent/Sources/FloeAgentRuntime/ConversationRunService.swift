@@ -1565,17 +1565,22 @@ public actor ConversationRunService {
         return string
     }
 
-    /// Builds the injected system message: workspace name, selected file,
-    /// execution target, and the available tool names from the catalog.
+    /// Builds the injected system message: the run-start clock and time zone,
+    /// workspace name, selected file, execution target, and the available tool
+    /// names from the catalog.
     /// When the selected model does not advertise native tool calling, the
     /// tool list is omitted so it never fabricates pseudo `<tool_call>` text.
     static func buildContextMessage(
         _ context: RunContext?,
         mode: ConversationMode = .chat,
         toolsAvailable: Bool = true,
-        hasImageAttachments: Bool = false
+        hasImageAttachments: Bool = false,
+        currentDate: Date = Date(),
+        timeZone: TimeZone = .autoupdatingCurrent
     ) -> String {
         var lines: [String] = ["# Run context"]
+        lines.append("Current local date and time at run start: \(localTimestamp(currentDate, in: timeZone))")
+        lines.append("Current time zone: \(timeZone.identifier) (UTC\(utcOffset(timeZone.secondsFromGMT(for: currentDate))))")
         let toolNames = toolsAvailable
             ? (context?.availableToolNames.map(Array.init)?.sorted()
                 ?? ToolCatalog.allDescriptors.map(\.name).sorted())
@@ -1643,6 +1648,21 @@ public actor ConversationRunService {
             activePlan: context?.activePlan,
             activeGoal: context?.activeGoal
         )
+    }
+
+    private static func localTimestamp(_ date: Date, in timeZone: TimeZone) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXX"
+        return formatter.string(from: date)
+    }
+
+    private static func utcOffset(_ seconds: Int) -> String {
+        let sign = seconds < 0 ? "-" : "+"
+        let magnitude = abs(seconds)
+        return String(format: "%@%02d:%02d", sign, magnitude / 3_600, (magnitude % 3_600) / 60)
     }
 
     /// Whole milliseconds between `start` and now, clamped at zero. A
