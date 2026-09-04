@@ -179,9 +179,11 @@ struct HarnessPlanningTests {
         #expect(prompt.contains("remote.connection.open -> reuse its sessionID"))
         #expect(prompt.contains("memory.search/list returns stable memory IDs"))
         #expect(prompt.contains("reuse its exact taskID with ssh.taskStatus"))
-        #expect(prompt.contains("call vnc.status first"))
-        #expect(prompt.contains("use vnc.connect, then vnc.observe"))
-        #expect(prompt.contains("one click/scroll/drag and observe again"))
+        #expect(prompt.contains("vnc.status -> vnc.connect -> vnc.observe"))
+        #expect(prompt.contains("explicit user-requested prerequisite method or tool order is binding"))
+        #expect(prompt.contains("SSH is an example recovery route, not a mandatory fallback"))
+        #expect(!prompt.contains("call vnc.observe first"))
+        #expect(prompt.contains("require vnc.status -> vnc.connect before the first vnc.observe"))
         #expect(prompt.contains("action=list to discover shareIDs"))
     }
 
@@ -191,7 +193,8 @@ struct HarnessPlanningTests {
         #expect(ToolWorkflowGuidance.recoveryHint(for: "remoteHosting.manage")?.contains("action=list") == true)
         #expect(ToolWorkflowGuidance.recoveryHint(for: "cloudWorkspace.gitStatus")?.contains("cloudWorkspace.catalog") == true)
         #expect(ToolWorkflowGuidance.recoveryHint(for: "vnc.observe")?.contains("vnc.connect") == true)
-        #expect(ToolWorkflowGuidance.recoveryHint(for: "vnc.typeCredential")?.contains("observe a fresh framebuffer") == true)
+        #expect(ToolWorkflowGuidance.recoveryHint(for: "vnc.typeCredential")?.contains("obey the user's explicit prerequisite route") == true)
+        #expect(ToolWorkflowGuidance.recoveryHint(for: "vnc.typeCredential")?.contains("SSH is not mandatory") == true)
     }
 
     @Test("artifact bindings are exposed before bounded tool output")

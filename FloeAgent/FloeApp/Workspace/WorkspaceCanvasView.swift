@@ -1121,6 +1121,62 @@ enum CanvasConnectionCommandPlanner {
     }
 }
 
+/// Counts the image context that one prospective source edge would make
+/// reachable from a generation task. This includes explicitly connected
+/// source ancestry, so a single wire cannot smuggle a larger image bundle
+/// past the selected model's declared limit.
+enum CanvasGenerationReferenceLimitPolicy {
+    static func imageReferenceCount(
+        afterConnecting sourceNodeID: UUID,
+        to destinationNodeID: UUID,
+        document: CanvasDocument
+    ) -> Int? {
+        guard document.nodes.contains(where: { $0.id == sourceNodeID }),
+              let destination = document.nodes.first(where: {
+                  $0.id == destinationNodeID && $0.kind == .generationTask
+              }),
+              destination.generationConfiguration?.kind == .image else {
+            return nil
+        }
+        var candidate = document
+        if !candidate.connections.contains(where: {
+            $0.sourceNodeID == sourceNodeID
+                && $0.destinationNodeID == destinationNodeID
+                && $0.kind == .source
+        }) {
+            candidate.connections.append(CanvasConnection(
+                sourceNodeID: sourceNodeID,
+                destinationNodeID: destinationNodeID,
+                kind: .source
+            ))
+        }
+        guard let resolved = try? CanvasGenerationContextResolver.resolvedNodeIDs(
+            requestedIDs: nil,
+            configurationNodeID: destinationNodeID,
+            document: candidate
+        ) else { return nil }
+        let nodesByID = Dictionary(uniqueKeysWithValues: candidate.nodes.map { ($0.id, $0) })
+        return resolved.reduce(into: 0) { count, nodeID in
+            if nodesByID[nodeID]?.kind == .image { count += 1 }
+        }
+    }
+
+    static func rejectionMessage(
+        afterConnecting sourceNodeID: UUID,
+        to destinationNodeID: UUID,
+        document: CanvasDocument,
+        maximumReferenceImages: Int,
+        modelName: String
+    ) -> String? {
+        guard let count = imageReferenceCount(
+            afterConnecting: sourceNodeID,
+            to: destinationNodeID,
+            document: document
+        ), count > maximumReferenceImages else { return nil }
+        return "\(modelName) 最多支持 \(maximumReferenceImages) 张参考图；这条连线会形成 \(count) 张参考图输入。请先移除其他参考图连线，或更换支持更多参考图的模型。"
+    }
+}
+
 @MainActor
 private final class CanvasDocumentStore: ObservableObject {
     private static let fileCommitAttemptLimit = 4
@@ -4509,7 +4565,11 @@ struct WorkspaceCanvasView: View {
             .onTapGesture {
                 if mode == .connector {
                     if let source = connectionStartID {
-                        store.connect(source, to: node.id, sourcePort: connectionStartPort)
+                        _ = connectCanvasNodes(
+                            source,
+                            to: node.id,
+                            sourcePort: connectionStartPort
+                        )
                         cancelConnectionCreation()
                     } else {
                         connectionStartID = node.id
@@ -4750,7 +4810,7 @@ struct WorkspaceCanvasView: View {
         selectedConnectionID = nil
         editingNodeID = nil
         if let source = connectionStartID, source != nodeID {
-            store.connect(
+            let connected = connectCanvasNodes(
                 source,
                 to: nodeID,
                 sourcePort: connectionStartPort,
@@ -4758,7 +4818,9 @@ struct WorkspaceCanvasView: View {
             )
             cancelConnectionCreation()
             selectedNodeIDs = [nodeID]
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            if connected {
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            }
         } else {
             selectedNodeIDs = [nodeID]
             guard let node = store.selectedDocument?.nodes.first(where: { $0.id == nodeID }) else {
@@ -4785,11 +4847,17 @@ struct WorkspaceCanvasView: View {
         )
         liveConnectionDrag = nil
         if let target = connectionDropTarget(at: release, excluding: node.id) {
-            store.connect(node.id, to: target.id, sourcePort: port)
+            let connected = connectCanvasNodes(
+                node.id,
+                to: target.id,
+                sourcePort: port
+            )
             selectedNodeIDs = [target.id]
             selectedConnectionID = nil
             cancelConnectionCreation()
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            if connected {
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            }
         } else {
             selectedNodeIDs = [node.id]
             beginConnectionCreation(node: node, port: port, screenPoint: release)
@@ -4812,6 +4880,51 @@ struct WorkspaceCanvasView: View {
             sourceNodeID: node.id, sourcePort: port,
             currentPoint: point, targetNodeID: targetID
         )
+    }
+
+    @discardableResult
+    private func connectCanvasNodes(
+        _ sourceNodeID: UUID,
+        to destinationNodeID: UUID,
+        sourcePort: CanvasConnectionPort? = nil,
+        destinationPort: CanvasConnectionPort? = nil
+    ) -> Bool {
+        if let document = store.selectedDocument,
+           let destination = document.nodes.first(where: {
+               $0.id == destinationNodeID && $0.kind == .generationTask
+           }),
+           let configuration = destination.generationConfiguration,
+           configuration.kind == .image,
+           let modelID = configuration.modelID {
+            guard let (provider, model) = environment.conversationCenter
+                .mediaProviderAndModel(modelID: modelID) else {
+                store.saveError = "这个生成节点选择的图片模型当前不可用，请先打开节点配置并重新选择模型。"
+                UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                return false
+            }
+            let maximum = ImageReferenceCapabilityResolver.maximumReferenceImages(
+                provider: provider,
+                model: model
+            )
+            if let message = CanvasGenerationReferenceLimitPolicy.rejectionMessage(
+                afterConnecting: sourceNodeID,
+                to: destinationNodeID,
+                document: document,
+                maximumReferenceImages: maximum,
+                modelName: model.displayName
+            ) {
+                store.saveError = message
+                UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                return false
+            }
+        }
+        store.connect(
+            sourceNodeID,
+            to: destinationNodeID,
+            sourcePort: sourcePort,
+            destinationPort: destinationPort
+        )
+        return true
     }
 
     private func beginConnectionCreation(
@@ -9604,6 +9717,36 @@ private struct CanvasMediaGenerationView: View {
             $0.remoteModelID == remoteID && $0.kind == kind
         }
     }
+    private var selectedReferenceNodes: [FloeCanvasNode] {
+        guard let document = store.selectedDocument else { return [] }
+        let selectedNodes = document.nodes.filter { sourceNodeIDs.contains($0.id) }
+        let existingConfigurationID = selectedNodes.first(where: {
+            $0.kind == .generationTask
+        })?.id
+        let referenceNodeIDs = CanvasGenerationConfigurationPresentation.referenceNodeIDs(
+            selectedNodeIDs: sourceNodeIDs,
+            configurationNodeID: existingConfigurationID,
+            document: document
+        )
+        return store.generationSourceNodes(for: sourceNodeIDs)
+            .filter { referenceNodeIDs.contains($0.id) }
+    }
+    private var selectedReferenceImageCount: Int {
+        selectedReferenceNodes.filter { $0.kind == .image }.count
+    }
+    private var maximumReferenceImages: Int? {
+        guard kind == .image,
+              let selectedImageModelID,
+              let (provider, model) = environment.conversationCenter
+                .mediaProviderAndModel(modelID: selectedImageModelID) else { return nil }
+        return ImageReferenceCapabilityResolver.maximumReferenceImages(
+            provider: provider,
+            model: model
+        )
+    }
+    private var exceedsReferenceImageLimit: Bool {
+        maximumReferenceImages.map { selectedReferenceImageCount > $0 } ?? false
+    }
 
     var body: some View {
         NavigationStack {
@@ -9628,6 +9771,11 @@ private struct CanvasMediaGenerationView: View {
                             ForEach(imageModels) { model in
                                 Text(model.displayName).tag(Optional(model.id))
                             }
+                        }
+                        if let maximumReferenceImages {
+                            Text("此模型最多接收 \(maximumReferenceImages) 张参考图。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                         if !availableResolutions.isEmpty {
                             Picker("分辨率", selection: $resolution) {
@@ -9661,22 +9809,7 @@ private struct CanvasMediaGenerationView: View {
                     }
                 }
 
-                let currentDocument = store.selectedDocument
-                let selectedNodes = currentDocument?.nodes.filter {
-                    sourceNodeIDs.contains($0.id)
-                } ?? []
-                let existingConfigurationID = selectedNodes.first(where: {
-                    $0.kind == .generationTask
-                })?.id
-                let referenceNodeIDs = currentDocument.map {
-                    CanvasGenerationConfigurationPresentation.referenceNodeIDs(
-                        selectedNodeIDs: sourceNodeIDs,
-                        configurationNodeID: existingConfigurationID,
-                        document: $0
-                    )
-                } ?? []
-                let sources = store.generationSourceNodes(for: sourceNodeIDs)
-                    .filter { referenceNodeIDs.contains($0.id) }
+                let sources = selectedReferenceNodes
                 if !sources.isEmpty {
                     Section("引用输入") {
                         ForEach(sources) { node in
@@ -9688,6 +9821,16 @@ private struct CanvasMediaGenerationView: View {
                         Text("会按画布连接顺序读取所选节点及其上游节点；原节点始终保留。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        if kind == .image, let maximumReferenceImages {
+                            Text("参考图：\(selectedReferenceImageCount) / \(maximumReferenceImages)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(exceedsReferenceImageLimit ? .red : .secondary)
+                            if exceedsReferenceImageLimit {
+                                Text("参考图数量超过所选模型能力。请移除多余输入，或更换支持更多参考图的模型。")
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                            }
+                        }
                     }
                 }
 
@@ -9699,7 +9842,8 @@ private struct CanvasMediaGenerationView: View {
                     }
                     .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || (kind == .image && selectedImageModelID == nil)
-                              || (kind == .video && selectedVideoModelID == nil))
+                              || (kind == .video && selectedVideoModelID == nil)
+                              || exceedsReferenceImageLimit)
                 } footer: {
                     Text("canvas.generation.save_footer")
                 }
@@ -9781,6 +9925,12 @@ private struct CanvasMediaGenerationView: View {
         }
         let nodesByID = Dictionary(uniqueKeysWithValues: document.nodes.map { ($0.id, $0) })
         let sources = resolvedSourceIDs.compactMap { nodesByID[$0] }
+        if kind == .image,
+           let maximumReferenceImages,
+           sources.filter({ $0.kind == .image }).count > maximumReferenceImages {
+            error = "所选图片模型最多支持 \(maximumReferenceImages) 张参考图；当前上下文包含 \(sources.filter { $0.kind == .image }.count) 张。请移除多余输入，或更换模型。"
+            return
+        }
         let configurationPoint: CGPoint = if let existingConfiguration {
             CGPoint(x: existingConfiguration.x, y: existingConfiguration.y)
         } else if let preferredResultPoint {

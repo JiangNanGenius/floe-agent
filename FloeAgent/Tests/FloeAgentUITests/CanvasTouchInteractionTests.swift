@@ -110,6 +110,57 @@ struct CanvasTouchInteractionTests {
             isLocked: false
         ))
     }
+
+    @Test("Generation input wiring respects the selected model reference limit")
+    func generationReferenceLimitRejectsExcessWire() {
+        let first = CanvasNode.placeholder(
+            kind: .image,
+            position: .init(x: 0, y: 0)
+        )
+        let second = CanvasNode.placeholder(
+            kind: .image,
+            position: .init(x: 0, y: 260)
+        )
+        var task = CanvasNode.placeholder(
+            kind: .generationTask,
+            position: .init(x: 420, y: 120)
+        )
+        task.metadata.merge(CanvasGenerationConfiguration(
+            kind: .image,
+            prompt: "combine references",
+            modelID: UUID(),
+            aspectRatio: "1:1"
+        ).metadata) { _, new in new }
+        let document = CanvasDocument(
+            name: "limits",
+            nodes: [first, second, task],
+            connections: [CanvasConnection(
+                sourceNodeID: first.id,
+                destinationNodeID: task.id,
+                kind: .source
+            )]
+        )
+
+        #expect(CanvasGenerationReferenceLimitPolicy.imageReferenceCount(
+            afterConnecting: second.id,
+            to: task.id,
+            document: document
+        ) == 2)
+        #expect(CanvasGenerationReferenceLimitPolicy.rejectionMessage(
+            afterConnecting: second.id,
+            to: task.id,
+            document: document,
+            maximumReferenceImages: 1,
+            modelName: "Single Reference Model"
+        )?.contains("2 张参考图") == true)
+        #expect(CanvasGenerationReferenceLimitPolicy.rejectionMessage(
+            afterConnecting: second.id,
+            to: task.id,
+            document: document,
+            maximumReferenceImages: 2,
+            modelName: "Two Reference Model"
+        ) == nil)
+    }
 }
 
 @Suite("FloeApp saved image batch atomicity")

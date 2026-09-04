@@ -179,3 +179,41 @@ public struct ImageProviderAdapterFactory: Sendable {
         }
     }
 }
+
+/// Resolves the strictest reference-image limit declared by the selected
+/// model catalog and its concrete provider adapter. The adapter remains the
+/// wire-contract authority for custom/new remote IDs; the first-party catalog
+/// may narrow that allowance for a specific product model.
+public enum ImageReferenceCapabilityResolver {
+    public static func maximumReferenceImages(
+        provider: ProviderProfile,
+        model: ModelProfile
+    ) -> Int {
+        guard model.capabilities.contains(.imageEditing),
+              let adapter = ImageProviderAdapterFactory().adapter(for: provider),
+              adapter.supports(.edit, for: provider) else { return 0 }
+        let adapterMaximum = max(0, adapter.maximumSourceImages(
+            for: .edit,
+            modelRemoteID: model.remoteModelID
+        ))
+        let catalogMaximum = OfficialMediaModelCatalog.models.first {
+            $0.remoteModelID == model.remoteModelID
+                && $0.kind == .image
+                && $0.provider == mediaProviderFamily(for: provider.kind)
+        }.map(\.maximumReferenceAssets) ?? 0
+        if catalogMaximum > 0, adapterMaximum > 0 {
+            return min(catalogMaximum, adapterMaximum)
+        }
+        return max(catalogMaximum, adapterMaximum)
+    }
+
+    private static func mediaProviderFamily(for kind: ProviderKind) -> MediaProviderFamily? {
+        switch kind {
+        case .openAI: return .openAI
+        case .googleGemini: return .googleGemini
+        case .volcengineArk: return .volcengineArk
+        case .alibabaStudio: return .alibabaModelStudio
+        case .anthropic, .local, .custom: return nil
+        }
+    }
+}

@@ -3488,6 +3488,16 @@ final class ConversationCenter: ObservableObject {
         return (provider, model)
     }
 
+    /// Resolves an explicitly selected media endpoint without routing it
+    /// through the chat-agent surface. Media-only models are intentionally
+    /// absent from `enabledAgentModels`.
+    func mediaProviderAndModel(modelID: UUID) -> (ProviderProfile, ModelProfile)? {
+        guard let model = (imageModels + videoModels).first(where: { $0.id == modelID }),
+              let provider = providers.first(where: { $0.id == model.providerID })
+        else { return nil }
+        return (provider, model)
+    }
+
     /// Metadata lookup for historical usage presentation. Unlike
     /// `providerAndModel`, this must continue to resolve a completed run after
     /// the user disables that model or a transient local availability refresh

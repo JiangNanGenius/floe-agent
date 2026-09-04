@@ -1,5 +1,7 @@
 # Floe Agent 1.4.80 (Build 111) TestFlight Notes
 
+> This candidate was cancelled during CI before archive, signing, or TestFlight upload after an additional model-aware Canvas input-limit requirement was identified. It is retained as an immutable source tag only; use Build 112 or later for testing.
+
 [简体中文](#简体中文) · [User guide](USER_GUIDE.md) · [Canvas architecture](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.md)
 
 This candidate hardens VNC prerequisite recovery, long-running multi-reference Canvas generation, tool-step presentation, and connector dragging. Build 111 is available only after CI reports a non-zero verified test count, App Store Connect reports a valid processed build, and the internal Floe QA group can see it.

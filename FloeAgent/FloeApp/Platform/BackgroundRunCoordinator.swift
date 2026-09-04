@@ -1468,7 +1468,7 @@ final class MediaGenerationService {
     ) async throws -> ReservedGeneratedImageBatch {
         let center = environment.conversationCenter
         let operation: RemoteImageOperation = sourceImages.isEmpty ? .generate : .edit
-        let selected = modelID.flatMap { center.providerAndModel(modelID: $0) }
+        let selected = modelID.flatMap { center.mediaProviderAndModel(modelID: $0) }
             ?? center.auxiliaryProviderAndModel(for: operation == .generate ? .generate : .edit)
         guard let (provider, model) = selected,
               let adapter = ImageProviderAdapterFactory().adapter(for: provider),
@@ -1481,22 +1481,11 @@ final class MediaGenerationService {
         }
         let traceID = UUID()
         let startedAt = Date()
-        let descriptor = OfficialMediaModelCatalog.models.first {
-            $0.remoteModelID == model.remoteModelID && $0.kind == .image
-        }
-        let adapterMaximum = max(0, adapter.maximumSourceImages(
-            for: operation,
-            modelRemoteID: model.remoteModelID
-        ))
-        let catalogMaximum = descriptor?.maximumReferenceAssets ?? 0
-        let maximumReferences: Int
-        if operation == .generate {
-            maximumReferences = 0
-        } else if catalogMaximum > 0, adapterMaximum > 0 {
-            maximumReferences = min(catalogMaximum, adapterMaximum)
-        } else {
-            maximumReferences = max(catalogMaximum, adapterMaximum)
-        }
+        let maximumReferences = operation == .generate ? 0
+            : ImageReferenceCapabilityResolver.maximumReferenceImages(
+                provider: provider,
+                model: model
+            )
         guard sourceImages.count <= maximumReferences else {
             throw FloeError.validationFailed(
                 "所选图片模型最多支持 \(maximumReferences) 张参考图；当前有 \(sourceImages.count) 张。请减少连接到生成节点的参考图，或改用支持更多参考图的模型。"

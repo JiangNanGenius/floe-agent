@@ -121,6 +121,29 @@ struct ImageAdapterTests {
         #expect(google.maximumOutputImages(modelRemoteID: "gemini-3-pro-image") == 1)
     }
 
+    @Test("Reference limit resolves the strictest model and provider capability")
+    func referenceCapabilityResolution() {
+        let arkProvider = provider(kind: .volcengineArk)
+        let seedream = ModelProfile(
+            providerID: arkProvider.id,
+            remoteModelID: "doubao-seedream-4-0-250828",
+            displayName: "Seedream 4.0",
+            limits: .init(contextTokens: 1, maxOutputTokens: 0),
+            capabilities: [.imageGeneration, .imageEditing]
+        )
+        #expect(ImageReferenceCapabilityResolver.maximumReferenceImages(
+            provider: arkProvider,
+            model: seedream
+        ) == 10)
+
+        var generationOnly = seedream
+        generationOnly.capabilities = [.imageGeneration]
+        #expect(ImageReferenceCapabilityResolver.maximumReferenceImages(
+            provider: arkProvider,
+            model: generationOnly
+        ) == 0)
+    }
+
     @Test("Unsupported operations throw unsupportedOperation, never fabricate")
     func unsupportedThrows() async {
         let adapter = OpenAIImageAdapter()
