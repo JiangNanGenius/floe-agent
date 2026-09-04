@@ -13,7 +13,7 @@ public struct WebFetchTool: AgentTool {
 
     public static let name = "web.fetch"
     public static let toolDescription =
-        "Fetch and extract readable content from a public HTTPS URL without opening the visual browser. Supports bounded HTML, JSON, and text responses. Returns source metadata and a browserFallback reason when the response is PDF/binary, client-rendered, authenticated, interactive, unavailable, or insufficient. Prefer this after web.search; use browser or document tools only for the reported fallback cases."
+        "Fetch readable HTML, JSON or text without opening the browser. Public targets require HTTPS; for user-requested LAN diagnostics, set localNetwork=true to allow local HTTP URLs. Every redirect is revalidated; credential URLs and metadata endpoints are blocked. Returns source metadata and a browserFallback reason for binary, interactive or insufficient content."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "url":{"type":"string","description":"HTTPS URL, or local HTTP URL for user-requested diagnostics"},
@@ -31,7 +31,7 @@ public struct WebFetchTool: AgentTool {
 
     public func validate(_ args: Arguments) throws {
         guard let url = URL(string: args.url) else {
-            throw FloeError.validationFailed("url must be a public HTTPS URL")
+            throw FloeError.validationFailed("url must be a valid HTTP or HTTPS URL")
         }
         if args.localNetwork == true { try DiagnosticNetworkTargetPolicy.validate(url) }
         else { try PublicNetworkTargetPolicy.validate(url) }

@@ -1,8 +1,8 @@
 // FloeExecution — Bounded outbound HTTP request.
 //
 // Gives the agent a narrow, budgeted way to call public APIs and fetch
-// resources. Targets must resolve exclusively to public Internet addresses;
-// redirects are revalidated and response bodies are size-capped.
+// resources. Public targets require HTTPS; explicitly enabled LAN diagnostics
+// also accept local HTTP. Redirects are revalidated and bodies are size-capped.
 
 import Foundation
 import Darwin
@@ -40,15 +40,16 @@ public enum HTTPRequestError: Error, Sendable, LocalizedError {
     }
 }
 
-/// Performs bounded requests to public HTTPS endpoints. Every redirect is
-/// revalidated and cross-origin credentials are stripped.
+/// Performs bounded HTTPS and opt-in local HTTP requests. Every redirect is
+/// revalidated and cross-origin credentials are stripped. The policy is immutable
+/// so initial-request validation cannot diverge from its redirect delegate.
 public struct HTTPRequestService: Sendable {
     private let session: URLSession
     /// Whether private/local network targets are allowed. When true, the
     /// agent can reach LAN devices (smart home, HA, local servers). Requests
     /// to private IPs trigger iOS's local-network permission prompt on first
     /// use. When false (default), only public Internet targets are allowed.
-    public var allowsPrivateNetwork: Bool
+    public let allowsPrivateNetwork: Bool
 
     public init(configuration: URLSessionConfiguration = .ephemeral, allowsPrivateNetwork: Bool = false) {
         let delegate: URLSessionTaskDelegate = allowsPrivateNetwork
