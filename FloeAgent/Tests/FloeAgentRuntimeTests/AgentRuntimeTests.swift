@@ -536,11 +536,14 @@ struct AgentRuntimeTests {
         ) == true)
     }
 
-    @Test("Multiple tool calls from one response are paired exactly once")
+    @Test("Distinct tool calls from one response are paired exactly once")
     func toolBatchPairsEveryCallOnce() async throws {
         let adapter = MockAdapter()
         let first = try TestFixtures.toolCall(id: "batch_1")
-        let second = try TestFixtures.toolCall(id: "batch_2")
+        let second = try TestFixtures.toolCall(
+            id: "batch_2",
+            arguments: #"{"text":"second"}"#
+        )
         adapter.script = [
             [
                 .toolRequest(first),
