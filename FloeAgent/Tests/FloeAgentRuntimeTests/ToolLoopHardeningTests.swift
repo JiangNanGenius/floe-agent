@@ -798,8 +798,8 @@ struct ToolLoopHardeningTests {
             id: conversationID, title: "", createdAt: Date(), updatedAt: Date()
         ))
 
-        // Register a catalog tool so the injected list is non-empty.
-        ToolCatalog.register(WorkspaceProbeTool.self)
+        // Supply the actual run capability set; a static catalog declaration
+        // alone is intentionally no longer advertised as executable.
 
         let adapter = MockAdapter()
         adapter.script = [[.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]]
@@ -819,7 +819,8 @@ struct ToolLoopHardeningTests {
             runContext: ConversationRunService.RunContext(
                 workspaceName: "Demo Project",
                 selectedRelativePath: "src/main.swift",
-                executionTarget: "local"
+                executionTarget: "local",
+                availableToolNames: ["test.contextProbe"]
             )
         )
 

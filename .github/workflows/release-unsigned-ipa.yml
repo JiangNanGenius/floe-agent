@@ -522,63 +522,24 @@ jobs:
           path: release-assets
       - name: Publish the transport-accepted paired release
         run: |
-          {
-            printf '## Floe Agent %s (build %s)\n\n' "$VERSION" "$BUILD"
-            cat <<'EOF'
-          ### 简体中文
-
-          - VNC 前置条件会进入模型实际看到的工具说明；未配置时改走已保存主机的 SSH 检查、配置和安全端点保存，再连接与观察，不再反复执行同一个不可重试的 `vnc.observe`。
-          - Harness 会在执行前合并同一模型批次内参数相同的工具调用，并拦截不可重试失败后的原样重试；协议配对结果仍返回模型，但抑制步骤不再污染用户时间线。
-          - 五张参考图会完整进入 Seedream 请求；画布图片/视频生成在整个服务商调用期间登记为真实活跃媒体工作，系统画中画获得实际运行上下文，同时媒体任务不会创建右上角 continued-processing 卡片。
-          - 连接端口拖拽现在优先于节点拖拽，拉线时来源节点不再跟着移动。
-          - 生成节点按明确选中的图片模型与服务商适配器取更严格的参考图上限；拉线和保存配置都会计算显式上游图片数量，超限时即时拒绝并给出可操作提示，不会静默截断或换用默认模型。
-          - 一张已连接的参考图生成四张时，会一次发布四个独立结果节点和四条 `generatedFrom` 连线，并保留参考图进入生成任务的 `source` 连线。
-          - 四图结果、分组、提示词与来源元数据、修复后的连接拓扑通过一个画布 patch 保存；服务商少返或多返均整批失败，不留下半成品关系。
-          - 参考上下文只沿明确选择或连接的 `source` 上游传播，保存并重开画布后仍能恢复参考素材、提示词和四个结果的上下文关系。
-          - 新生成节点采用固定网格形成“来源 → 任务 → 对齐结果”的稳定布局，不移动用户已有内容。
-          - `canvas.generate` 对参考上下文采用明确替换语义：省略来源参数才继承旧关系，显式数组只使用指定来源，空数组清空来源。
-          - 每个 run 持久保存不可变的 chat / plan / goal 合同；计划 checkpoint 缺失、旧数据证据不足或模式冲突时会在模型和工具执行前停止恢复，不再默认降级成 Agent。
-          - VNC 观察和输入在未连接时保持关闭，连接工具使用独立建连动作，固定遵守 status → connect → observe/input 的前置链。
-          - 系统画中画修复前后台生命周期；只有前台显式用户会话任务可申请 continued-processing，自动恢复、定时、Goal 续跑、排队输入及全部图片/视频生成不会创建或延长右上角卡片；实体 iPad 的系统 PiP 窗口仍需单独验收。
-          - 画布助手最终答复固定在本地化终态行上方，答复后的私有校验思考和原始 `endTurn` 不再错误显示在末尾。
-          - Harness 把长思考中的 JSON、代码块和工具样符号保持为思考数据，不再误判为工具状态或任务终态。
-
-          此版本已通过共享 Swift 与 iOS 模拟器发布构建；Xcode 27 和实际上传所用的 App Store accepted Xcode 26.6 均须让五个指定 focused app test 套件达到各自执行数门槛，并保持零失败、零跳过和零 expected failure。App Store Connect transport 已接受校验与上传；随附可审计的未签名 IPA 和两套 focused-test xcresult。
+          NOTES_PATH="docs/RELEASE_NOTES_$VERSION.md"
+          test -s "$NOTES_PATH"
+          grep -q '^### 简体中文' "$NOTES_PATH"
+          grep -q '^### English' "$NOTES_PATH"
+          cp "$NOTES_PATH" release-notes.md
+          cat <<'EOF' >> release-notes.md
 
           > [!IMPORTANT]
-          > 当前发布流程只证明上传 transport 已接受；Apple `VALID` 处理状态和内部 Floe QA 测试组可见性会在上传后单独验证，本页不把它们视为已完成。
-
-          ### English
-
-          - VNC prerequisites are included in the tool guidance visible to the model. When no endpoint is configured, Floe follows the saved-host SSH inspection, repair, and secure endpoint-saving path before connecting and observing, instead of repeating a non-retryable `vnc.observe`.
-          - The Harness deduplicates identical tool calls within one model batch and blocks unchanged retries after non-retryable failures. Protocol pairing results still reach the model without polluting the user timeline with suppressed steps.
-          - All five reference images reach Seedream requests. Canvas image and video generation remains registered as active media work for the entire provider call, giving system Picture in Picture a real runtime context without creating a continued-processing card.
-          - Connector dragging now takes priority over node dragging, so drawing an edge no longer moves the source node.
-          - Generation nodes use the stricter reference-image limit reported by the selected model and provider adapter. Connecting or saving over the limit is rejected with an actionable message instead of silently truncating inputs or switching models.
-          - Generating four images from one connected reference creates four independent result nodes and four `generatedFrom` edges while retaining the reference-to-task `source` edge.
-          - The four results, group, prompt and source metadata, and repaired topology are saved in one canvas patch. Provider under-return or over-return fails the batch without leaving partial relationships.
-          - Reference context propagates only through explicitly selected or connected `source` ancestors and survives saving and reopening the canvas.
-          - New generation nodes follow a stable grid layout of source, task, and aligned results without moving existing user content.
-          - `canvas.generate` now has explicit replacement semantics: omitted source arguments inherit prior relationships, an explicit array uses only those sources, and an empty array clears them.
-          - Every run persists an immutable chat, plan, or goal contract. Missing plan checkpoints, insufficient legacy evidence, or mode conflicts stop recovery before model or tool execution instead of silently falling back to Agent mode.
-          - VNC observation and input stay disabled until a real connection succeeds. Connection uses a separate action and follows the required status → connect → observe/input sequence.
-          - System Picture in Picture now follows the foreground/background lifecycle. Only explicit foreground user-session work may request continued processing; automatic recovery, schedules, Goal continuation, queued input, and image/video generation do not create or extend the top-right card. The system PiP window still requires physical-iPad acceptance.
-          - The Canvas assistant's final response stays above the localized terminal row; private post-answer verification reasoning and raw `endTurn` markers no longer appear at the bottom.
-          - Long reasoning that contains JSON, code blocks, or tool-like symbols remains reasoning data and is no longer misclassified as tool or task state by the Harness.
-
-          This release passed shared Swift and iOS Simulator release builds. Both Xcode 27 and the App Store-accepted Xcode 26.6 used for the upload must meet the execution-count thresholds for all five focused app-test suites with zero failures, skips, or expected failures. App Store Connect transport accepted validation and upload. The release includes an auditable unsigned IPA and both focused-test xcresult bundles.
-
-          > [!IMPORTANT]
-          > This release workflow proves only that App Store Connect transport accepted the upload. Apple `VALID` processing and visibility in the internal Floe QA group are verified separately and are not treated as complete here.
+          > 发布工作流已完成签名上传；Apple `VALID` 和内部 Floe QA 可见性仍需单独核验。
+          > The release workflow completed signed upload; Apple `VALID` processing and internal Floe QA visibility require separate verification.
 
           > [!WARNING]
-          > GitHub 中的 IPA 未签名，不能直接安装。请先检查文件并核对 SHA-256，再使用自己的证书签名；它不是 App Store 上传包。
-          > The GitHub IPA is unsigned and cannot be installed directly. Inspect it, verify its SHA-256, then sign it with your own certificate. It is not the App Store package.
+          > GitHub IPA 未签名，不能直接安装，也不是 App Store 上传包。
+          > The GitHub IPA is unsigned, cannot be installed directly, and is not the App Store upload package.
 
-          发布资产包含 SPDX SBOM、第三方许可证、密钥扫描报告、测试摘要和 GitHub 构建来源证明。
-          The release assets include an SPDX SBOM, third-party licenses, secret-scan reports, a test summary, and GitHub build provenance.
+          发布资产包含测试证据、SPDX SBOM、第三方许可证、密钥扫描报告和构建来源证明。
+          Assets include test evidence, an SPDX SBOM, third-party licenses, secret-scan reports and build provenance.
           EOF
-          } > release-notes.md
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
             gh release edit "$RELEASE_TAG" --notes-file release-notes.md --draft=false --prerelease

@@ -112,6 +112,28 @@ public struct ProviderStreamRequest: Sendable {
         if !contentMessages.isEmpty { return contentMessages }
         return messages.map { ProviderMessage(role: $0.role, text: $0.content) }
     }
+
+    /// Transient device context at the actual dispatch boundary. Also covers
+    /// auxiliary requests and frozen checkpoint retries without editing history.
+    public func refreshingRuntimeClock(
+        now: Date = Date(), timeZone: TimeZone = .current, locale: Locale = .current
+    ) -> Self {
+        var copy = self
+        let clock = "Runtime clock at dispatch: \(ISO8601DateFormatter().string(from: now)); timeZone=\(timeZone.identifier); utcOffsetSeconds=\(timeZone.secondsFromGMT(for: now)); locale=\(locale.identifier). Use this clock instead of older timestamps when answering about now."
+        if let index = copy.messages.firstIndex(where: { $0.role == "system" }) {
+            copy.messages[index].content += "\n\n" + clock
+        } else {
+            copy.messages.insert((role: "system", content: clock), at: 0)
+        }
+        if !copy.contentMessages.isEmpty {
+            if let index = copy.contentMessages.firstIndex(where: { $0.role == "system" }) {
+                copy.contentMessages[index].content.append(.text(clock))
+            } else {
+                copy.contentMessages.insert(ProviderMessage(role: "system", text: clock), at: 0)
+            }
+        }
+        return copy
+    }
 }
 
 /// One provider endpoint speaking one wire protocol. Implementations must
@@ -306,7 +328,8 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
         request: ProviderStreamRequest,
         credentials: ProviderCredentials
     ) -> AsyncThrowingStream<AgentEvent, Error> {
-        AsyncThrowingStream { continuation in
+        let request = request.refreshingRuntimeClock()
+        return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     var urlRequest = try buildURLRequest(request: request, credentials: credentials)
@@ -445,7 +468,8 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
         request: ProviderStreamRequest,
         credentials: ProviderCredentials
     ) -> AsyncThrowingStream<AgentEvent, Error> {
-        AsyncThrowingStream { continuation in
+        let request = request.refreshingRuntimeClock()
+        return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     var urlRequest = try buildURLRequest(request: request, credentials: credentials)
@@ -651,7 +675,8 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
         request: ProviderStreamRequest,
         credentials: ProviderCredentials
     ) -> AsyncThrowingStream<AgentEvent, Error> {
-        AsyncThrowingStream { continuation in
+        let request = request.refreshingRuntimeClock()
+        return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     var urlRequest = try buildURLRequest(request: request, credentials: credentials)

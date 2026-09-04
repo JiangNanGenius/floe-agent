@@ -47,6 +47,8 @@ struct AuxiliaryModelsView: View {
                         Text(viewModel.label(for: model)).tag(Optional(model.id))
                     }
                 }
+                LabeledContent("当前实际使用", value: viewModel.packageReviewModelLabel)
+                    .font(FloeTheme.Typography.metadata)
                 Text("安装 Python 包前，会确认它确实用于当前任务。需要额外系统权限或不适合本机运行的包仍会被阻止。")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
@@ -92,6 +94,10 @@ struct AuxiliaryModelsView: View {
                 if viewModel.isSaving {
                     ProgressView()
                         .accessibilityLabel("正在自动保存")
+                } else if viewModel.errorMessage != nil {
+                    Label("未保存", systemImage: "exclamationmark.circle")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.destructive)
                 } else {
                     Text("已自动保存")
                         .font(FloeTheme.Typography.metadata)
@@ -165,10 +171,19 @@ final class AuxiliaryModelsViewModel: ObservableObject {
     var visionCandidates: [ModelProfile] { center.visionModels }
     var textCandidates: [ModelProfile] {
         center.modelsByProvider.values.flatMap { $0 }
-            .filter { $0.isEnabled && $0.capabilities.contains(.text) }
+            .filter { $0.isEnabled && $0.supportsGeneralAuxiliaryLLM }
             .sorted { $0.displayName < $1.displayName }
     }
     var packageReviewCandidates: [ModelProfile] { center.approvalModels }
+    var packageReviewModelLabel: String {
+        guard let id = center.modelPreferences.packageReviewModelID else {
+            return center.generalAuxiliaryModelLabel
+        }
+        guard let model = packageReviewCandidates.first(where: { $0.id == id }) else {
+            return "所选模型不可用，请重新选择"
+        }
+        return label(for: model)
+    }
 
     var generationCandidates: [ModelProfile] {
         center.imageModels.filter {

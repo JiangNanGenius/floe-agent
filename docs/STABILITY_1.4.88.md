@@ -19,8 +19,10 @@ Explicit Canvas input/output edges, model reference caps, revision snapshots, de
 
 ## Evidence / 证据
 
-- Initial targeted runtime, execution and workspace builds passed locally. Regression tests and cloud release gates remain pending until recorded below.
-- 已完成首轮运行时、执行模块、工作区模块定向编译；测试、云端 CI 和发布门以实际后续回执为准。
+- Local SwiftPM passed 862 tests plus 12 isolated JavaScript engine and 12 isolated JavaScript tool tests (886 total). Coverage includes deferred discovery-to-execution, file edits/conflicts, provider time context, model persistence/sync, VNC protocol/contracts, HTTP and Harness recovery.
+- 本地 SwiftPM 通过 862 项主回归、12 项独立 JavaScript 引擎测试和 12 项独立 JavaScript 工具测试（共 886 项），覆盖工具发现到执行、文本编辑与冲突、时间上下文、模型持久化/同步、VNC 协议契约、HTTP 和 Harness 恢复。
+- Cloud CI and release gates remain pending for the final release commit; the earlier candidate passed iPhone/iPad builds and focused app regressions. This is not a final-release or physical-device acceptance claim.
+- 最终发布提交仍需云端 CI 与发布回执；此前候选提交已通过 iPhone/iPad 编译和应用定向回归，但不代表最终版本或实体设备已经验收。
 - GitHub OAuth app logo uploaded and GitHub confirmed it was updated; Device Flow remains enabled.
 - GitHub OAuth 应用图标已上传且收到保存确认；Device Flow 保持启用。
 

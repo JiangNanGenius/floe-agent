@@ -485,7 +485,7 @@ enum ConfigurationCodec {
             return try ConfigurationCodec.model(from: row)
         }
         if let selected = try model(for: \.generalAuxiliaryLLMModelID),
-           !selected.capabilities.contains(.text) {
+           !selected.supportsGeneralAuxiliaryLLM {
             throw FloeError.invalidConfiguration("General auxiliary LLM must support text")
         }
         if let selected = try model(for: \.defaultAgentModelID),

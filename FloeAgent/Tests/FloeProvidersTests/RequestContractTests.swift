@@ -6,6 +6,25 @@ import Testing
 
 @Suite("FloeProviders.RequestContracts")
 struct RequestContractTests {
+    @Test("Dispatch clock refresh is transient and preserves tool pairing and images")
+    func dispatchClock() throws {
+        let provider = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://example.test/v1")!)
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "text", displayName: "Text",
+            limits: .init(contextTokens: 4096, maxOutputTokens: 1024), capabilities: [.text])
+        let request = ProviderStreamRequest(provider: provider, model: model,
+            messages: [(role: "user", content: "now?")],
+            contentMessages: [.init(role: "user", content: [.text("now?"), .imageData(mimeType: "image/png", base64: "data")])])
+        let updated = request.refreshingRuntimeClock(now: Date(timeIntervalSince1970: 0),
+            timeZone: TimeZone(secondsFromGMT: 36_000)!, locale: Locale(identifier: "en_AU"))
+        #expect(request.messages.count == 1)
+        #expect(updated.messages.first?.content.contains("1970-01-01T00:00:00Z") == true)
+        #expect(updated.messages.first?.content.contains("utcOffsetSeconds=36000") == true)
+        #expect(updated.messages.first?.content.contains("locale=en_AU") == true)
+        #expect(updated.contentMessages.last == request.contentMessages.last)
+        #expect(updated.pendingToolCalls == request.pendingToolCalls)
+    }
+
     private let schema = #"{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}"#
 
     @Test("Provider tool schemas encode as JSON objects, never quoted strings")

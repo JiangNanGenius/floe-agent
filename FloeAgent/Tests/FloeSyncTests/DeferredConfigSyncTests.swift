@@ -6,6 +6,32 @@ import FloeCore
 
 @Suite("Deferred configuration sync")
 struct DeferredConfigSyncTests {
+    @Test("Auxiliary LLM preference waits for its model dependency and restores independently")
+    func auxiliaryDependency() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let configuration = ModelConfigurationStore(database: database)
+        let metadata = ConfigSyncMetadataStore(database: database)
+        let engine = ConfigSyncEngine(configurationStore: configuration, metadataStore: metadata)
+        let provider = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://example.test/v1")!)
+        try await configuration.saveProvider(provider)
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "aux", displayName: "Aux",
+            limits: .init(contextTokens: 4096, maxOutputTokens: 1024), capabilities: [.text])
+        try await metadata.save(ConfigSyncMetadata(
+            recordType: ConfigSyncRecordType.preference.rawValue, recordID: "default",
+            deferredRemotePayload: try encode(ModelSelectionPreferences(generalAuxiliaryLLMModelID: model.id))))
+        try await engine.retryDeferredRecords()
+        #expect(try await configuration.preferences().generalAuxiliaryLLMModelID == nil)
+        try await configuration.saveModel(model)
+        try await engine.retryDeferredRecords()
+        let restored = try await configuration.preferences()
+        #expect(restored.generalAuxiliaryLLMModelID == model.id)
+        #expect(restored.visionModelID == nil)
+        #expect(restored.approvalModelID == nil)
+        #expect(restored.defaultVideoModelID == nil)
+    }
+
     @Test("Provider and model dependencies replay durable remote payloads in order")
     func dependenciesReplayInOrder() async throws {
         let database = try DatabaseManager.inMemory()

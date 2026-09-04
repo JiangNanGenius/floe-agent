@@ -343,6 +343,23 @@ struct MemoryView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                Button {
+                    Task { await center.quickOrganize() }
+                } label: {
+                    HStack {
+                        Label("整理记忆", systemImage: "wand.and.stars")
+                        Spacer()
+                        if center.isWorking {
+                            ProgressView()
+                            Text(center.organizationPhase ?? "处理中")
+                                .font(FloeTheme.Typography.metadata)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(minHeight: 36)
+                }
+                .disabled(center.isWorking)
+                .accessibilityIdentifier("memory.organize")
                 Text(center.organizationMode == .modelManaged
                      ? "检查现有记忆后，自动处理重复与过期内容。你可以查看每次整理的结果。"
                      : "确定性重复会自动清理；语义冲突和版本变化由模型提出建议，确认后再应用。")
@@ -426,11 +443,6 @@ struct MemoryView: View {
                     }
                     .disabled(selectedMemoryIDs.isEmpty || center.isWorking)
                 } else {
-                    Button("智能整理", systemImage: "wand.and.stars") {
-                        Task { await center.quickOrganize() }
-                    }
-                    .disabled(center.isWorking)
-                    .accessibilityHint("扫描长期记忆、自动处理确定性重复，并显示需要审核的建议")
                     Menu("管理记忆", systemImage: "checklist") {
                         Button("选择多条记忆", systemImage: "checkmark.circle") {
                             isSelecting = true

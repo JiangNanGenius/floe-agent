@@ -3158,14 +3158,12 @@ final class ConversationCenter: ObservableObject {
         return (provider, model)
     }
 
-    /// Canvas uses its own stable routes so switching the chat model never
-    /// silently changes how a drawing is interpreted or which agent operates
-    /// on the board.
+    /// Text-only helper route. No media or approval selection participates.
     func generalAuxiliaryProviderAndModel() -> (ProviderProfile, ModelProfile)? {
         let id = modelPreferences.generalAuxiliaryLLMModelID ?? modelPreferences.defaultAgentModelID
         guard let id,
               let model = modelsByProvider.values.flatMap({ $0 }).first(where: {
-                  $0.id == id && $0.isEnabled && $0.capabilities.contains(.text)
+                  $0.id == id && $0.isEnabled && $0.supportsGeneralAuxiliaryLLM
               }),
               let provider = providers.first(where: { $0.id == model.providerID }) else { return nil }
         return (provider, model)
@@ -3182,6 +3180,8 @@ final class ConversationCenter: ObservableObject {
             credentials: resolveCredentials(for: provider))
     }
 
+    /// Canvas has independent routes so changing the helper LLM cannot
+    /// silently change how a drawing is interpreted or generated.
     func canvasAssistantProviderAndModel() -> (ProviderProfile, ModelProfile)? {
         let preferredID = modelPreferences.canvasAgentModelID
             ?? modelPreferences.defaultAgentModelID

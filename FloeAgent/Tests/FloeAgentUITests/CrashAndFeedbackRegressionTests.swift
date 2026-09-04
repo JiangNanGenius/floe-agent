@@ -3,6 +3,8 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import SwiftUI
+import UIKit
 import AVFoundation
 import BackgroundTasks
 import Testing
@@ -818,6 +820,30 @@ struct CrashAndFeedbackRegressionTests {
             activeConversationIDs: [UUID(), nil],
             retainedConversationID: UUID()
         ))
+    }
+
+    @MainActor
+    @Test("The scene PiP source mounts without any conditional toolbar button")
+    func scenePiPSourceMountsIndependently() async throws {
+        let service = BackgroundVideoService()
+        let controller = UIHostingController(rootView:
+            Color.clear.background(alignment: .bottomTrailing) {
+                BackgroundPiPSceneSource(videoService: service)
+            })
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 600, height: 800))
+        window.rootViewController = controller
+        window.isHidden = false
+        defer { window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        func sources(_ view: UIView) -> [UIView] {
+            (view.layer is AVSampleBufferDisplayLayer ? [view] : []) + view.subviews.flatMap(sources)
+        }
+        let source = try #require(sources(controller.view).first)
+        #expect(source.window === window)
+        #expect(!source.isHidden && source.alpha == 1)
+        #expect(source.bounds.width > 0 && source.bounds.height > 0)
+        #expect(!service.isPiPActive)
     }
 
     @Test("Explicit SSH to VNC route excludes unrelated execution runtimes")

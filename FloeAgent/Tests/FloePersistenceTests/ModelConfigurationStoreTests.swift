@@ -18,11 +18,11 @@ struct ModelConfigurationStoreTests {
             baseURL: URL(string: "https://example.com/v1")!)
         try await store.saveProvider(provider)
         var approval = ModelProfile(providerID: provider.id, remoteModelID: "review", displayName: "Review",
-            limits: .init(contextTokens: 4096, maxOutputTokens: 1024), capabilities: [.text])
+            limits: .init(contextTokens: 4096, maxOutputTokens: 1024), capabilities: [.text, .approval])
         let auxiliary = ModelProfile(providerID: provider.id, remoteModelID: "aux", displayName: "Aux",
             limits: .init(contextTokens: 4096, maxOutputTokens: 1024), capabilities: [.text])
         let image = ModelProfile(providerID: provider.id, remoteModelID: "image", displayName: "Image",
-            limits: .init(contextTokens: 4096, maxOutputTokens: 1024), capabilities: [.imageGeneration])
+            limits: .init(contextTokens: 4096, maxOutputTokens: 1024), capabilities: [.text, .imageGeneration])
         try await store.saveModel(approval)
         try await store.saveModel(auxiliary)
         try await store.saveModel(image)

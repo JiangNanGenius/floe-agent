@@ -226,10 +226,11 @@ struct ToolRunnerRegistryTests {
         let registry = ToolRunnerRegistry()
         let executor = CatalogToolExecutor(runners: registry)
 
-        // The descriptor is visible through the catalog…
-        #expect(executor.descriptor(named: "test.registryUnrun") != nil)
+        // Static-only declarations never advertise unavailable capabilities.
+        #expect(executor.descriptor(named: "test.registryUnrun") == nil)
+        #expect(!executor.allDescriptors.contains { $0.name == "test.registryUnrun" })
 
-        // …but with no runner the call fails in a structured way.
+        // A stale model call still fails in a structured way.
         let call = try makeCall("test.registryUnrun")
         let result = try await executor.execute(call, context: makeContext())
         #expect(result.status == .failed)

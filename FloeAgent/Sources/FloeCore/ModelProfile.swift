@@ -194,6 +194,15 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
             && capabilities.contains(.text)
     }
 
+    /// Text-producing inference, never a media-generation endpoint whose
+    /// advertised text flag merely describes prompt input.
+    public var supportsGeneralAuxiliaryLLM: Bool {
+        capabilities.contains(.text)
+            && capabilities.isDisjoint(with: [.imageGeneration, .imageEditing, .videoGeneration])
+            && !effectiveUseSurfaces.contains(.imageGeneration)
+            && !effectiveUseSurfaces.contains(.videoGeneration)
+    }
+
     /// A visual-understanding helper must be a dedicated inference model.
     /// Media generators sometimes advertise `vision` because they accept
     /// reference images, but that does not make them suitable for OCR or

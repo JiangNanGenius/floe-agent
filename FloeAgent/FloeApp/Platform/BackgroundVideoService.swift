@@ -1,7 +1,7 @@
 // FloeApp — Picture-in-Picture background keep-alive for agent runs.
 //
 // A Picture-in-Picture surface that shows the current run's progress. Its
-// inline source lives in Floe's existing task toolbar: AVKit may enter PiP when
+// inline source lives in Floe's stable root scene: AVKit may enter PiP when
 // the user leaves the app, or the user can start/stop it from that toolbar.
 
 #if canImport(UIKit)
@@ -1729,7 +1729,7 @@ struct BackgroundPiPSceneSource: View {
 }
 
 /// Shared run-surface control. The inline source is owned by the scene;
-/// toolbar; it never creates an independent foreground overlay or starts PiP
+/// it never creates an independent foreground overlay or starts PiP
 /// from a scene-phase callback.
 struct BackgroundPiPToolbarButton: View {
     @ObservedObject var videoService: BackgroundVideoService

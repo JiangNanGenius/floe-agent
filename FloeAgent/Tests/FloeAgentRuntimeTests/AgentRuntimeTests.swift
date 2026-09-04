@@ -381,7 +381,7 @@ struct AgentRuntimeTests {
         let sink = MockSink()
         let runtime = makeRuntime(adapter: adapter, executor: executor, sink: sink)
 
-        try await runtime.start(goal: "检查当前状态")
+        try await runtime.start(goal: "使用 test.echo 检查当前状态")
 
         #expect(executor.executedCalls.map(\.id) == ["promised-call"])
         #expect(adapter.requests.count == 3)
@@ -394,6 +394,29 @@ struct AgentRuntimeTests {
             Issue.record("Expected repaired run to complete")
             return
         }
+    }
+
+    @Test("Deferred discovery loads an executable schema before the next real call")
+    func discoveryThenExecution() async throws {
+        let adapter = MockAdapter()
+        let search = try TestFixtures.toolCall(id: "discover", toolName: "tools.search", arguments: #"{"query":"test.echo"}"#)
+        let echo = try TestFixtures.toolCall(id: "execute")
+        adapter.script = [
+            [.toolRequest(search), .completed(.init(stopReason: .toolUse))],
+            [.toolRequest(echo), .completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "Done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let runtime = makeRuntime(adapter: adapter, executor: executor)
+
+        try await runtime.start(goal: "开始")
+
+        #expect(adapter.requests.count == 3)
+        #expect(adapter.requests[0].toolSchemas.map(\.name) == ["tools.search"])
+        #expect(adapter.requests[1].toolSchemas.contains { $0.name == "test.echo" })
+        #expect(executor.executedCalls.map(\.id) == ["execute"])
+        #expect(adapter.requests[1].messages.contains { $0.content.contains("Loaded for the next request") })
     }
 
     @Test("Malformed tool calls receive one correction without a fabricated result pair")

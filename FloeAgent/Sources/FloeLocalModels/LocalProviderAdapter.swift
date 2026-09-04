@@ -445,7 +445,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
         request: ProviderStreamRequest,
         credentials: ProviderCredentials
     ) -> AsyncThrowingStream<AgentEvent, Error> {
-        AsyncThrowingStream { continuation in
+        let request = request.refreshingRuntimeClock()
+        return AsyncThrowingStream { continuation in
             let appleWatchdog: Task<Void, Never>? = if request.model.remoteModelID
                 == AppleFoundationModelIdentity.remoteModelID {
                 Task {
