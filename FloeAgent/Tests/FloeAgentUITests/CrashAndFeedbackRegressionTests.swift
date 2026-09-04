@@ -494,6 +494,32 @@ struct CrashAndFeedbackRegressionTests {
         #expect(policy.allowsAutomaticStartFromInline)
     }
 
+    @Test("A ready PiP source stays armed for the system-managed background transition")
+    func pictureInPictureSystemManagedTransitionContract() {
+        var policy = BackgroundPiPLifecyclePolicy()
+        policy.setAutomaticStartEnabled(true, sourceReady: true)
+        #expect(policy.allowsAutomaticStartFromInline)
+
+        policy.transition(
+            to: .inactive,
+            automaticallyStartsFromInline: true,
+            sourceReady: true,
+            startPending: false
+        )
+        #expect(policy.allowsAutomaticStartFromInline)
+
+        policy.transition(
+            to: .background,
+            automaticallyStartsFromInline: true,
+            sourceReady: true,
+            startPending: false
+        )
+        #expect(policy.allowsAutomaticStartFromInline)
+        policy.willStart(manualRequestPending: false)
+        #expect(policy.startOrigin == .automaticInline)
+        #expect(!policy.didStartRequiresImmediateStop())
+    }
+
     @Test("PiP retracts an automatic start that completes after foreground return")
     func pictureInPictureLateStartContract() {
         var policy = BackgroundPiPLifecyclePolicy()
