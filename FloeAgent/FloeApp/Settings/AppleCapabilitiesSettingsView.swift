@@ -7,7 +7,7 @@ import FloeTools
 /// switch controls whether a tool is advertised to the model; the operating
 /// system remains the final authority and prompts only on first real use.
 enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
-    case calendar, reminders, home, maps, web, watch, vision, mail, documents, camera, location, shortcuts, automation
+    case calendar, reminders, home, maps, web, watch, vision, mail, documents, camera, location, shortcuts, automation, clipboard
 
     var id: String { rawValue }
     var title: String {
@@ -25,6 +25,7 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
         case .location: "位置"
         case .shortcuts: "Shortcuts"
         case .automation: "自动任务"
+        case .clipboard: "剪贴板"
         }
     }
     var icon: String {
@@ -42,6 +43,7 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
         case .location: "location"
         case .shortcuts: "square.on.square"
         case .automation: "clock.arrow.trianglehead.counterclockwise.rotate.90"
+        case .clipboard: "doc.on.clipboard"
         }
     }
     var detail: String {
@@ -77,6 +79,7 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
         case .location: ["apple.location.current"]
         case .shortcuts: ["apple.shortcuts."]
         case .automation: ["apple.automation."]
+        case .clipboard: ["apple.clipboard."]
         }
     }
 }
