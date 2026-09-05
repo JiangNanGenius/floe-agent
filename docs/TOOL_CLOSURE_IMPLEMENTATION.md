@@ -10,8 +10,10 @@ screenshots. One internal release only after completion; no public Beta.
   partial success, cancellation release, and provider image delivery.
 - [ ] Canvas exclusive gestures, multi-select/undo, explicit reference graph,
   deterministic new-node layout and actionable post-operation results.
-- [ ] Skills connector category; move GitHub and MCP without credential loss.
-- [ ] Official Gmail/Microsoft OAuth and TLS IMAP/SMTP; real mail/attachment tests.
+- [x] Skills connector category; move GitHub and MCP without changing credential storage.
+- [ ] Generic mail connector: SMTP sending, IMAP receiving/synchronization and
+  POP3 receiving over verified TLS; real mail/attachment tests. Default to
+  IMAP + SMTP, with POP3 as an alternative. Google/Microsoft OAuth is out of scope.
 - [ ] Skill CRUD and safe credential management; automation/cloud-Git contract audit.
 - [ ] SSH task cancellation and remote-session inventory/status.
 - [ ] Browser tabs, downloads, site data controls and explicit preview lifecycle.
@@ -28,10 +30,50 @@ screenshots. One internal release only after completion; no public Beta.
 
 ## External acceptance dependencies
 
-Official mail OAuth registrations and any provider verification require the
-account owner's participation where the provider requests it. No dummy client
-IDs, fake mail success, simulated BLE/device results, or blanket "complete" claims.
+Mail acceptance requires a test mailbox whose provider permits SMTP/IMAP/POP3 password
+or app-password authentication. Do not request Google/Microsoft app registration
+or brand verification. No fake mail success, simulated BLE/device results, or
+blanket "complete" claims.
 Keep the user-verified PiP implementation unchanged except proven regressions.
+
+## Mail scope revision / 邮件范围调整
+
+The user cancelled Google and Microsoft dedicated mail sign-in. Keep only a
+generic SMTP/IMAP/POP3 connector under Skills → Connectors; no OAuth buttons,
+embedded provider client IDs or OAuth dependencies in this scope.
+/ 用户取消 Google 和 Microsoft 专用邮件登录。本轮仅保留“技能 → 连接器”中的
+通用邮箱方案：SMTP 发信、IMAP 收信及同步、POP3 收信。默认 IMAP + SMTP，
+可切换 POP3；不加入 OAuth 入口、服务商客户端 ID 或 OAuth 依赖。
+
+- Configure incoming/outgoing server, port, TLS mode, username and a Keychain
+  credential reference. Never send passwords to the model, logs or sync payloads.
+- Require verified TLS before authentication; reject unsupported authentication
+  with an actionable error, not repeated password prompts or TLS downgrade.
+- POP3 retrieval leaves messages on the server by default. Do not silently delete
+  messages after retrieval or pretend POP3 provides IMAP folder synchronization.
+- IMAP supports folder listing, incremental message retrieval, attachments and
+  read/unread state synchronization. Message moves/deletion and outbound mail
+  remain explicit, approval-controlled mutations; do not expunge implicitly.
+- SMTP supports attachments and verified implicit TLS/STARTTLS. IMAP and POP3
+  also support verified implicit TLS or their protocol-specific TLS upgrade;
+  never fall back to unencrypted authentication if negotiation fails.
+- Exchange-specific protocols (EAS/EWS), JMAP and calendar/contact protocols are
+  not implied by this generic mail scope; no unimplemented capability is advertised.
+- Authentication compatibility is provider-specific. Outlook.com requires
+  OAuth2/Modern Auth and is not promised as supported by this password-only
+  connector. Gmail app passwords are subject to account eligibility and settings.
+- Existing user-created cloud registrations are not deleted or modified.
+- SMTP/IMAP/POP3 are implemented with protocol, actual TCP loopback and app tests.
+  Real-account and physical-device acceptance remain pending; these tests are
+  not evidence of mail delivery. See [Mail connector](MAIL_CONNECTOR.md).
+
+/ 默认保留服务器上的邮件，凭据仅存 Keychain，认证前必须建立通过证书验证的加密
+连接。服务商若只允许 OAuth，应明确提示不支持，不能反复索要密码。已注册的云端
+应用不作删除或修改。SMTP/IMAP/POP3 已实现并通过自动测试，真实邮箱及实体设备验收尚未完成。
+
+Provider references:
+[Outlook.com authentication](https://support.microsoft.com/en-US/Outlook/pop-imap-and-smtp-settings-for-outlook-com),
+[Google app passwords](https://support.google.com/mail/answer/185833).
 
 ## Audit facts (baseline 8c0a4fc)
 
@@ -59,8 +101,14 @@ Items above remain unchecked until implementation AND corresponding verification
   attach to the full target and clean up when interrupted.
   / 画布修改回传同一提交的节点、连线增量与版本；扩大端口拖线范围并清理中断状态。
 - GitHub and MCP navigation moved under Skills → Connectors without migrating
-  credentials. Mail remains unimplemented, pending the full connector work.
-  / GitHub 与 MCP 入口移入“技能 → 连接器”，凭据存储不变；邮件功能尚未完成。
+  credentials. Generic mail has its own server/TLS settings and device-local
+  Keychain storage; no provider OAuth registrations are included.
+  / GitHub 与 MCP 入口移入“技能 → 连接器”，凭据存储不变；通用邮箱独立配置服务器和 TLS，凭据仅存本机 Keychain，不加入服务商 OAuth 注册。
+- Mail exposes five paired executable tools through deferred group discovery.
+  IMAP/POP3 pagination, MIME attachment integrity, IMAP flag readback and durable
+  SMTP deduplication are covered by tests. Credential-write failure preserves the
+  previous configuration and rolls back newly stored secrets.
+  / 邮箱通过按需工具发现暴露五个声明/执行器成对工具；覆盖分页、MIME 附件、IMAP 状态读回及 SMTP 持久去重，凭据保存失败回滚并保留旧配置。
 - Browser tab management and run-scoped TCP connection inventory have executable
   registrations. Browser replies are no longer truncated into invalid JSON.
   / 补齐浏览器标签页与任务隔离的 TCP 会话查询工具，浏览器回执不再被截断为无效 JSON。
@@ -73,17 +121,21 @@ Items above remain unchecked until implementation AND corresponding verification
 
 ## Validation checkpoint / 验证进度
 
-- Complete SwiftPM run: 901 tests across 18 test products passed.
-  / 完整 SwiftPM 测试：18 个测试产品，共 901 项通过。
-- Final-source iPad Simulator regression: 85 tests in six suites passed,
+- Complete SwiftPM run including mail: 924 tests across 18 test products passed.
+  / 包含邮箱的完整 SwiftPM 测试：18 个测试产品，共 924 项通过。
+- Final-source iPad Simulator regression: 90 tests in seven suites passed,
   zero failures and zero skipped tests; result-bundle minimum-count checks passed.
-  / 最终源码 iPad 模拟器回归：6 组共 85 项通过，无失败、无跳过，结果包最低执行数量检查通过。
+  / 最终源码 iPad 模拟器回归：7 组共 90 项通过，无失败、无跳过，结果包最低执行数量检查通过。
+- Mail app credential rollback tests use an injected store. The unsigned simulator
+  host returned Keychain entitlement error -34018; this is not recorded as a
+  successful real Keychain test. Actual device Keychain acceptance remains open.
+  / 邮箱应用凭据回滚测试使用注入存储；未签名模拟器的真实 Keychain 返回 -34018 权限错误，不将其算作真实 Keychain 验收通过。
 - VNC wire tests use an actual loopback RFB peer and verify queued coordinates,
   frame evidence and cancellation button release. They are not physical-device
   or remote desktop acceptance.
   / VNC 线协议测试使用本机 RFB 对端验证坐标、画面证据和取消后的按键释放，不替代真机或远程桌面验收。
 
-These counts do not prove full-plan completion, real iPad interaction, mail OAuth
+These counts do not prove full-plan completion, real iPad interaction, SMTP/IMAP/POP3 mail
 or release readiness. Cloud SDK builds, physical QA and the unified internal
 release gates remain pending. The existing PiP implementation was not modified.
-/ 上述通过项不代表整体计划完成。邮件连接器、云端 SDK 构建、真机验收及统一内部发布门仍未完成；本轮未修改已修好的画中画实现。
+/ 上述通过项不代表整体计划完成。真实邮箱、云端 SDK 构建、真机验收及统一内部发布门仍未完成；本轮未修改已修好的画中画实现。

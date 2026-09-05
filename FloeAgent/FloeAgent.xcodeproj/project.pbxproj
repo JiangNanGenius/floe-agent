@@ -34,6 +34,7 @@
 		1435E19532A43E99363BB0FF /* SidebarCollapseGesture.swift in Sources */ = {isa = PBXBuildFile; fileRef = D469D627A123A3676681A3F3 /* SidebarCollapseGesture.swift */; };
 		144C0751E522D91EB3EAD196 /* ThreadDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17F136474D0FB91E6F810317 /* ThreadDetailView.swift */; };
 		158A4F0C9123183E73090756 /* CanvasAgentToolContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE65485FC8E0E948FC57BB93 /* CanvasAgentToolContractTests.swift */; };
+		17803F69FD25F626A646267F /* MailSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A1D2F99E9E151908419336F /* MailSettingsView.swift */; };
 		17C3C71EDCDEDB585CA63FF8 /* SettingsActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B115F54C03CD39CDBDCABC /* SettingsActions.swift */; };
 		1A6FCCA07D564C59EC82DBBF /* HostEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34D4C7AAC317C256EEB4AFAD /* HostEditorViewModel.swift */; };
 		1AA6526911DD256899CB8CDA /* RemoteImageTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DBCBE0360D88F15438CA23F /* RemoteImageTools.swift */; };
@@ -199,6 +200,7 @@
 		B2EFAC62B0DD7A4420F4B579 /* _asyncio.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 28E0216FA93D4EE0E28FC155 /* _asyncio.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B30C1248DF0B9FE004549E3F /* ConversationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA165A2C7BD607DB6F26AD7B /* ConversationListView.swift */; };
 		B33934D6A8A4190628D89B73 /* WorkspaceCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C71624FFDB9B76CB148DA3CE /* WorkspaceCanvasView.swift */; };
+		B3B2899A491FD31765C51A2C /* MailConnectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93F493C62CCACF635880C8F7 /* MailConnectorTests.swift */; };
 		B45AF4990B10532F1D1CD4CE /* _blake2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 620E189ED0BE974C6B1EA3DB /* _blake2.xcframework */; };
 		B81C50AA905334687754F195 /* Python.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7EC6304EFEA8100679656E2D /* Python.xcframework */; };
 		B850872108F008D942A08193 /* BrowserModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D499B038C15DC8EA198B669A /* BrowserModels.swift */; };
@@ -223,6 +225,7 @@
 		C5EF7D89863A823AEC36B81F /* FloeAgentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */; };
 		C6C8CB20E5F26468E3AD36B2 /* _pickle.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 69539A226361C83F15C72B91 /* _pickle.xcframework */; };
 		C6CD25F689A569EBCC25BDF6 /* marked.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 35BE65ADB5F2AA44F63AFCDB /* marked.min.js */; };
+		C7051607961D03C6E8BA402D /* MailTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF4D24163BFC581647517C5C /* MailTools.swift */; };
 		C7B7EEE61A3D6CEC98A41E7B /* AssistantMessageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31D98DFED3D114A699F77361 /* AssistantMessageView.swift */; };
 		C7DCF8C350C6328A24F07225 /* LocalSkillCreator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7846CD1BBE3A01E9CFE5CDFE /* LocalSkillCreator.swift */; };
 		C7F85CE15D1A3A53A80ED1CF /* DraftTaskPermissionsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15EA4020964BCD69B527952F /* DraftTaskPermissionsSheet.swift */; };
@@ -448,6 +451,7 @@
 		583BB494E657BD1BC7481C75 /* SkillsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsView.swift; sourceTree = "<group>"; };
 		58FD2460881B6EAAD9966732 /* VoiceInputLive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputLive.swift; sourceTree = "<group>"; };
 		59EFDCF31C5526A1B589BE5B /* pyexpat.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pyexpat.xcframework; path = Vendor/PythonExtensions/pyexpat.xcframework; sourceTree = "<group>"; };
+		5A1D2F99E9E151908419336F /* MailSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailSettingsView.swift; sourceTree = "<group>"; };
 		5A836CC647019173A92D3490 /* dayjs.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = dayjs.min.js; sourceTree = "<group>"; };
 		5BA323DAAD3913411F1D5340 /* VNCViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VNCViewModel.swift; sourceTree = "<group>"; };
 		5F1F13207E326EE5DC28108D /* _sqlite3.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _sqlite3.xcframework; path = Vendor/PythonExtensions/_sqlite3.xcframework; sourceTree = "<group>"; };
@@ -503,6 +507,7 @@
 		8FBC9F374C911EA91D944FB0 /* MoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreView.swift; sourceTree = "<group>"; };
 		916ACA33CDE6532714E49272 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		926B95CD92D851FFE3BB0DFE /* python */ = {isa = PBXFileReference; lastKnownFileType = folder; name = python; path = FloeApp/Resources/python; sourceTree = SOURCE_ROOT; };
+		93F493C62CCACF635880C8F7 /* MailConnectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailConnectorTests.swift; sourceTree = "<group>"; };
 		940DE18872CD21D45A855A30 /* FilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesView.swift; sourceTree = "<group>"; };
 		95A8E32A62F993F42084705E /* FloeShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeShortcuts.swift; sourceTree = "<group>"; };
 		96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeAgentApp.swift; sourceTree = "<group>"; };
@@ -569,6 +574,7 @@
 		DC33B8AF239E339094A7D999 /* BrowserURLPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserURLPolicy.swift; sourceTree = "<group>"; };
 		DC74E9DDD5C02BD49675B239 /* DataManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataManagementView.swift; sourceTree = "<group>"; };
 		DCC42125AA4BA415183B6A85 /* _ctypes.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _ctypes.xcframework; path = Vendor/PythonExtensions/_ctypes.xcframework; sourceTree = "<group>"; };
+		DF4D24163BFC581647517C5C /* MailTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailTools.swift; sourceTree = "<group>"; };
 		DFAFEA945AD87107AD86523A /* _opcode.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _opcode.xcframework; path = Vendor/PythonExtensions/_opcode.xcframework; sourceTree = "<group>"; };
 		E01FD1096C0BE9486FA630A6 /* LocalPythonRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPythonRuntimeTests.swift; sourceTree = "<group>"; };
 		E0E86FB249DA97D2FA57FBA7 /* AppRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRouter.swift; sourceTree = "<group>"; };
@@ -734,6 +740,7 @@
 				6E280242F651031E86A80A21 /* HomeChatVoiceUITests.swift */,
 				2C4FE642486885CDD514009A /* ImportantFileShortcutTests.swift */,
 				E01FD1096C0BE9486FA630A6 /* LocalPythonRuntimeTests.swift */,
+				93F493C62CCACF635880C8F7 /* MailConnectorTests.swift */,
 				183A97BE093D68D231492DC7 /* RemoteImageInspectToolTests.swift */,
 				725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */,
 				2E47EC0D4490B49AD44060DE /* SyncSettingsUITests.swift */,
@@ -832,6 +839,8 @@
 			isa = PBXGroup;
 			children = (
 				7846CD1BBE3A01E9CFE5CDFE /* LocalSkillCreator.swift */,
+				5A1D2F99E9E151908419336F /* MailSettingsView.swift */,
+				DF4D24163BFC581647517C5C /* MailTools.swift */,
 				4C7A649C2A6EC1875B18948E /* SkillsCenter.swift */,
 				583BB494E657BD1BC7481C75 /* SkillsView.swift */,
 			);
@@ -1524,6 +1533,8 @@
 				C7DCF8C350C6328A24F07225 /* LocalSkillCreator.swift in Sources */,
 				BAFCFD696F2EA6A8D174FBBD /* M0DiagnosticsModel.swift in Sources */,
 				0DB52308023E1468A623C1C7 /* M0DiagnosticsView.swift in Sources */,
+				17803F69FD25F626A646267F /* MailSettingsView.swift in Sources */,
+				C7051607961D03C6E8BA402D /* MailTools.swift in Sources */,
 				9CBCAF14A029D5BAF1B3ADCA /* MarkdownRendererView.swift in Sources */,
 				075390C32FF78D04726E9561 /* MemoryDreamService.swift in Sources */,
 				1BDE99A924FBC27B74F7940A /* MemoryView.swift in Sources */,
@@ -1623,6 +1634,7 @@
 				448125A55DDC627D8D972046 /* HomeChatSeparationTests.swift in Sources */,
 				5783D26BF683BAD283217A43 /* ImportantFileShortcutTests.swift in Sources */,
 				FEE62E3E419BA78474C58CBF /* LocalPythonRuntimeTests.swift in Sources */,
+				B3B2899A491FD31765C51A2C /* MailConnectorTests.swift in Sources */,
 				AD09F21466C778C43633A947 /* RemoteImageInspectToolTests.swift in Sources */,
 				24D360EC17E29EC2F3B4E2AA /* ThreadTimelineTests.swift in Sources */,
 				B8558423FFAEBC3CBA0916FA /* VoiceInputControllerTests.swift in Sources */,

@@ -99,6 +99,10 @@ struct ConnectorsView: View {
     var body: some View {
         List {
             Section("connectors.services") {
+                NavigationLink { MailSettingsView() } label: {
+                    Label("mail.settings.title", systemImage: "envelope")
+                }
+                .accessibilityIdentifier("connectors.mail")
                 NavigationLink {
                     GitHubSettingsView(center: sourceControl)
                 } label: {

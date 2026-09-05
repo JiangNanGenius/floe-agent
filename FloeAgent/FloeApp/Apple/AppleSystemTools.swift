@@ -256,7 +256,7 @@ struct AppleMapsOpenTool: AgentTool {
 struct AppleMailComposeTool: AgentTool {
     struct Arguments: Decodable, Sendable { var to: [String]?; var cc: [String]?; var subject: String?; var body: String? }
     static let name = "apple.mail.compose"
-    static let toolDescription = "Open Apple's mail compose UI with a draft. Floe cannot send mail; the user must review and tap Send."
+    static let toolDescription = "Open Apple's mail compose UI with a draft. This tool does not send mail; the user must review and tap Send. For configured generic SMTP accounts, use mail.send after approval."
     static let parametersJSON = #"{"type":"object","properties":{"to":{"type":"array","items":{"type":"string"}},"cc":{"type":"array","items":{"type":"string"}},"subject":{"type":"string"},"body":{"type":"string"}},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.controlsGUI]
     static let isSideEffecting = true

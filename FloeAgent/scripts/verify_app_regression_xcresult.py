@@ -18,6 +18,7 @@ SUITE_MINIMUMS = {
     "CrashAndFeedbackRegressionTests": 38,
     "ThreadTimelineTests": 18,
     "BrowserProtocolTests": 6,
+    "MailConnectorTests": 5,
 }
 
 

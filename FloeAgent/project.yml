@@ -380,6 +380,7 @@ targets:
           - CreativeAssetIngestionTests.swift
           - CanvasTouchInteractionTests.swift
           - CanvasAgentToolContractTests.swift
+          - MailConnectorTests.swift
     dependencies:
       - target: FloeAgent
     settings:
@@ -406,6 +407,7 @@ targets:
       - path: Tests/FloeAgentUITests/CreativeAssetIngestionTests.swift
       - path: Tests/FloeAgentUITests/CanvasTouchInteractionTests.swift
       - path: Tests/FloeAgentUITests/CanvasAgentToolContractTests.swift
+      - path: Tests/FloeAgentUITests/MailConnectorTests.swift
     dependencies:
       - target: FloeAgent
     settings:

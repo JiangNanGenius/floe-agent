@@ -24,6 +24,12 @@ struct ToolDiscoveryTests {
         #expect(ToolDiscovery.index(available).contains("workspace (1)"))
     }
 
+    @Test("Chinese mail discovery selects only available mail runners")
+    func mailGroup() {
+        let available = ["mail.accounts", "mail.read", "mail.send", "vnc.click", "memory.organizePreview"].map(descriptor)
+        #expect(ToolDiscovery.matches(query: "查看邮箱", descriptors: available).map(\.name) == ["mail.accounts", "mail.read", "mail.send"])
+    }
+
     @Test("The executable registry is authoritative; static-only declarations stay hidden")
     func executableSource() {
         let registry = ToolRunnerRegistry()

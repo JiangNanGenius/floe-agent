@@ -25,7 +25,8 @@ enum ToolDiscovery {
             "memory": ["memory", "记忆", "remember"],
             "browser": ["browser", "浏览器", "网页", "website"],
             "web": ["web", "搜索", "search", "查找"],
-            "git": ["git", "仓库", "commit", "repository"]
+            "git": ["git", "仓库", "commit", "repository"],
+            "mail": ["mail", "邮件", "邮箱", "收信", "发信", "imap", "pop3", "smtp"]
         ]
         var groups = Set(synonyms.compactMap { group, terms in
             terms.contains(where: query.contains) ? group : nil

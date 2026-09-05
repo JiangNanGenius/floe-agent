@@ -377,6 +377,7 @@ final class AppEnvironment: ObservableObject {
         )
         // Browser automation.
         registerBrowserTools(center: browserCenter)
+        registerMailTools()
         // Local preview server.
         registerPreviewTools(environment: previewCenter)
         // Skill authoring.
