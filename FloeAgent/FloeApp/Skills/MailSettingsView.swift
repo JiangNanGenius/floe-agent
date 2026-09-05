@@ -59,8 +59,11 @@ final class MailSettingsCenter: ObservableObject {
     }
     func remove(_ account: MailAccount) throws {
         let updated = accounts.filter { $0.id != account.id }
-        defaults.set(try JSONEncoder().encode(updated), forKey: settingsKey); accounts = updated
+        let encoded = try JSONEncoder().encode(updated)
+        // Retain the profile until both deletions succeed so a locked/failing
+        // Keychain leaves a retryable account, not unreachable stored secrets.
         try keychain.delete(account: key(account.id, false)); try keychain.delete(account: key(account.id, true))
+        defaults.set(encoded, forKey: settingsKey); accounts = updated
     }
     func account(_ id: UUID) throws -> MailAccount {
         guard let account = accounts.first(where: { $0.id == id }) else { throw MailFailure.invalidConfiguration }

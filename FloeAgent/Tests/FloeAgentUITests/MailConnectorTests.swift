@@ -12,6 +12,7 @@ private final class MailTestSecrets: KeychainProbeStore, @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String: Data] = [:]
     var failSMTPWrite = false
+    var failSMTPDelete = false
     var count: Int { lock.lock(); defer { lock.unlock() }; return values.count }
     func store(account: String, secret: Data) throws {
         lock.lock(); defer { lock.unlock() }
@@ -22,7 +23,11 @@ private final class MailTestSecrets: KeychainProbeStore, @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard let value = values[account] else { throw KeychainStoreError.itemNotFound }; return value
     }
-    func delete(account: String) throws { lock.lock(); defer { lock.unlock() }; values[account] = nil }
+    func delete(account: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        if failSMTPDelete, account.hasSuffix(".smtp") { throw KeychainStoreError.unexpectedStatus("fixture") }
+        values[account] = nil
+    }
 }
 
 @Suite("FloeApp.MailConnector", .serialized)
@@ -56,6 +61,15 @@ struct MailConnectorTests {
         #expect(center.accounts == [account])
         #expect(try center.password(for: account, outgoing: false) == "fixture-incoming-secret")
         #expect(defaults.data(forKey: "floe.mail.accounts.v1") == data)
+        keychain.failSMTPDelete = true
+        #expect(throws: KeychainStoreError.self) { try center.remove(account) }
+        #expect(center.accounts == [account])
+        #expect(defaults.data(forKey: "floe.mail.accounts.v1") == data)
+        #expect(keychain.count == 1)
+        keychain.failSMTPDelete = false
+        try center.remove(account)
+        #expect(center.accounts.isEmpty)
+        #expect(keychain.count == 0)
     }
     @Test @MainActor func corruptSettingsAreNotOverwritten() throws {
         let suite = "floe.mail.corrupt." + UUID().uuidString
