@@ -1,8 +1,9 @@
 # 工具闭环实施清单 / Tool closure implementation checklist
 
 Accepted scope: VNC post-action evidence, complete Canvas interaction loop,
-Skills → Connectors (GitHub, mail, MCP), and all capability gaps in the user's
-screenshots. One internal release only after completion; no public Beta.
+Skills → Connectors (GitHub, mail, MCP), and capability gaps in the user's
+screenshots. Ship the internal package after automated gates so device acceptance
+can proceed; no public Beta. Unimplemented platform expansion items stay open below.
 
 ## Delivery gates
 

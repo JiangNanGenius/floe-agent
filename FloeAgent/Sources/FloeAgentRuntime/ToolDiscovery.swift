@@ -23,6 +23,7 @@ enum ToolDiscovery {
             "workspace": ["workspace", "文件", "编辑", "file", "python", "html", "代码"],
             "canvas": ["canvas", "画布", "生成", "图片", "视频"],
             "memory": ["memory", "记忆", "remember"],
+            "skill": ["skill", "技能"],
             "browser": ["browser", "浏览器", "网页", "website"],
             "web": ["web", "搜索", "search", "查找"],
             "git": ["git", "仓库", "commit", "repository"],

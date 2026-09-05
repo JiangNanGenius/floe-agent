@@ -39,4 +39,10 @@ struct ToolDiscoveryTests {
         #expect(executor.allDescriptors.map(\.name) == ["test.live"])
         #expect(executor.descriptor(named: "vnc.observe") == nil)
     }
+
+    @Test("Chinese skill discovery loads the available lifecycle without unrelated tools")
+    func skillGroup() {
+        let available = ["skill.create", "skill.read", "skill.manage", "memory.organizePreview", "ssh.cancelTask"].map(descriptor)
+        #expect(ToolDiscovery.matches(query: "修改已有技能", descriptors: available).map(\.name) == ["skill.create", "skill.read", "skill.manage"])
+    }
 }
