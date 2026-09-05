@@ -23,18 +23,32 @@ public struct ImageProcessTool: AgentTool {
         public var width: Int?
         public var height: Int?
         public var degrees: Double?
+        /// Crop rectangle origin/extent, normalized to the 0...1 unit square.
+        public var x: Double?
+        public var y: Double?
+        public var cropWidth: Double?
+        public var cropHeight: Double?
+        /// Target format for "convert": png, jpeg or heic.
+        public var format: String?
         public var quality: Double?
         public var outputPath: String?
 
         public init(
             path: String, operation: String, width: Int? = nil, height: Int? = nil,
-            degrees: Double? = nil, quality: Double? = nil, outputPath: String? = nil
+            degrees: Double? = nil, x: Double? = nil, y: Double? = nil,
+            cropWidth: Double? = nil, cropHeight: Double? = nil,
+            format: String? = nil, quality: Double? = nil, outputPath: String? = nil
         ) {
             self.path = path
             self.operation = operation
             self.width = width
             self.height = height
             self.degrees = degrees
+            self.x = x
+            self.y = y
+            self.cropWidth = cropWidth
+            self.cropHeight = cropHeight
+            self.format = format
             self.quality = quality
             self.outputPath = outputPath
         }
@@ -42,17 +56,22 @@ public struct ImageProcessTool: AgentTool {
 
     public static let name = "image.process"
     public static let toolDescription =
-        "Process a workspace image with resize or rotate (Core Image, fully local). Writes the result to a new file and returns its path. The source is never modified."
+        "Process a workspace image with resize, rotate, crop or format conversion (Core Image, fully local). Writes the result to a new file and returns its path. The source is never modified. crop takes a normalized 0...1 rectangle (x, y, cropWidth, cropHeight). convert takes format png, jpeg or heic."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "path": {"type": "string", "description": "Workspace-relative path to the source image"},
-        "operation": {"type": "string", "description": "\"resize\" or \"rotate\""},
+        "operation": {"type": "string", "description": "\"resize\", \"rotate\", \"crop\" or \"convert\""},
         "width": {"type": "integer", "description": "Target width in pixels (resize)"},
         "height": {"type": "integer", "description": "Target height in pixels (resize)"},
         "degrees": {"type": "number", "description": "Rotation angle in degrees (rotate)"},
-        "quality": {"type": "number", "description": "JPEG export quality 0..1 (default 0.85)"},
+        "x": {"type": "number", "description": "Crop origin X, normalized 0...1 (crop)"},
+        "y": {"type": "number", "description": "Crop origin Y, normalized 0...1 (crop)"},
+        "cropWidth": {"type": "number", "description": "Crop width, normalized 0...1 (crop)"},
+        "cropHeight": {"type": "number", "description": "Crop height, normalized 0...1 (crop)"},
+        "format": {"type": "string", "description": "Target format for convert: png, jpeg or heic"},
+        "quality": {"type": "number", "description": "JPEG/HEIC export quality 0..1 (default 0.85)"},
         "outputPath": {"type": "string", "description": "Workspace-relative output path; defaults to <name>-edited.<ext>"}
       },
       "required": ["path", "operation"],
@@ -76,8 +95,8 @@ public struct ImageProcessTool: AgentTool {
             throw FloeError.validationFailed("path must not be empty")
         }
         let op = args.operation.lowercased()
-        guard op == "resize" || op == "rotate" else {
-            throw FloeError.validationFailed("operation must be \"resize\" or \"rotate\"")
+        guard ["resize", "rotate", "crop", "convert"].contains(op) else {
+            throw FloeError.validationFailed("operation must be \"resize\", \"rotate\", \"crop\" or \"convert\"")
         }
         if op == "resize" {
             guard args.width != nil || args.height != nil else {
@@ -92,7 +111,22 @@ public struct ImageProcessTool: AgentTool {
         if op == "rotate", args.degrees == nil {
             throw FloeError.validationFailed("rotate requires degrees")
         }
+        if op == "crop" {
+            guard let x = args.x, let y = args.y, let width = args.cropWidth, let height = args.cropHeight else {
+                throw FloeError.validationFailed("crop requires x, y, cropWidth and cropHeight (normalized 0...1)")
+            }
+            try ImageOperation.crop(rect: .init(x: x, y: y, width: width, height: height)).validate()
+        }
+        if op == "convert" {
+            guard let format = args.format?.lowercased(), Self.supportedFormats.keys.contains(format) else {
+                throw FloeError.validationFailed("convert requires format: png, jpeg or heic")
+            }
+        }
     }
+
+    private static let supportedFormats: [String: ImageOperation.ImageFormat] = [
+        "png": .png, "jpeg": .jpeg, "jpg": .jpeg, "heic": .heic
+    ]
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
@@ -109,7 +143,9 @@ public struct ImageProcessTool: AgentTool {
             let source = try Self.loadCGImage(from: sourceURL)
             let op = args.operation.lowercased()
             let operation: ImageOperation
-            if op == "resize" {
+            var convertFormat: ImageOperation.ImageFormat?
+            switch op {
+            case "resize":
                 let width = args.width ?? max(1, Int(
                     (Double(args.height ?? source.height) * Double(source.width)
                         / Double(max(1, source.height))).rounded()
@@ -119,13 +155,25 @@ public struct ImageProcessTool: AgentTool {
                         / Double(max(1, source.width))).rounded()
                 ))
                 operation = .resize(width: width, height: height, preserveAspect: true)
-            } else {
+            case "crop":
+                operation = .crop(rect: .init(
+                    x: args.x ?? 0, y: args.y ?? 0,
+                    width: args.cropWidth ?? 1, height: args.cropHeight ?? 1
+                ))
+            case "convert":
+                guard let format = args.format?.lowercased(),
+                      let target = Self.supportedFormats[format] else {
+                    throw FloeError.validationFailed("convert requires format: png, jpeg or heic")
+                }
+                convertFormat = target
+                operation = .convertFormat(target)
+            default:
                 operation = .rotate(degrees: args.degrees ?? 0)
             }
             let output = try pipeline.apply(operation, to: source)
 
             let outputRelativePath = Self.outputRelativePath(
-                sourcePath: args.path, outputPath: args.outputPath
+                sourcePath: args.path, outputPath: args.outputPath, convertFormat: convertFormat
             )
             try context.authorizeWorkspacePath(outputRelativePath)
             let outputURL = try pathGuard.resolve(outputRelativePath)
@@ -133,7 +181,7 @@ public struct ImageProcessTool: AgentTool {
             guard !FileManager.default.fileExists(atPath: outputURL.path) else {
                 throw FloeError.validationFailed("Output already exists: \(outputRelativePath)")
             }
-            try Self.saveCGImage(output, to: outputURL, quality: args.quality ?? 0.85)
+            try Self.saveCGImage(output, to: outputURL, format: convertFormat, quality: args.quality ?? 0.85)
             return Self.output("status=ok output=\(outputRelativePath)", exitStatus: 0)
         } catch {
             return Self.output("status=error error=\(error.localizedDescription)", exitStatus: 2)
@@ -150,9 +198,23 @@ public struct ImageProcessTool: AgentTool {
         return image
     }
 
-    private static func saveCGImage(_ image: CGImage, to url: URL, quality: Double) throws {
-        let ext = url.pathExtension.lowercased()
-        let type: UTType = ext == "png" || ext == "heic" ? .png : .jpeg
+    private static func saveCGImage(
+        _ image: CGImage,
+        to url: URL,
+        format explicitFormat: ImageOperation.ImageFormat? = nil,
+        quality: Double
+    ) throws {
+        let type: UTType
+        if let explicitFormat {
+            switch explicitFormat {
+            case .png: type = .png
+            case .heic: type = .heic
+            case .jpeg, .webp: type = .jpeg
+            }
+        } else {
+            let ext = url.pathExtension.lowercased()
+            type = ext == "png" ? .png : ext == "heic" ? .heic : .jpeg
+        }
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         guard let dest = CGImageDestinationCreateWithURL(url as CFURL, type.identifier as CFString, 1, nil) else {
@@ -165,13 +227,26 @@ public struct ImageProcessTool: AgentTool {
         }
     }
 
-    private static func outputRelativePath(sourcePath: String, outputPath: String?) -> String {
+    private static func outputRelativePath(
+        sourcePath: String,
+        outputPath: String?,
+        convertFormat: ImageOperation.ImageFormat? = nil
+    ) -> String {
         if let outputPath, !outputPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return outputPath
         }
         let source = sourcePath as NSString
-        let ext = source.pathExtension.isEmpty ? "jpg" : source.pathExtension
         let base = source.deletingPathExtension
+        let ext: String
+        if let convertFormat {
+            switch convertFormat {
+            case .png: ext = "png"
+            case .heic: ext = "heic"
+            case .jpeg, .webp: ext = "jpg"
+            }
+        } else {
+            ext = source.pathExtension.isEmpty ? "jpg" : source.pathExtension
+        }
         return base + "-edited." + ext
     }
 

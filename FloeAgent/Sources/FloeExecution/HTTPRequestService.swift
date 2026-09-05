@@ -120,6 +120,63 @@ public struct HTTPRequestService: Sendable {
             truncated: accepted.count < data.count
         )
     }
+
+    /// Bounded result of one GET download saved to disk.
+    public struct DownloadResult: Sendable, Equatable {
+        public var statusCode: Int
+        public var contentType: String
+        public var byteCount: Int64
+
+        public init(statusCode: Int, contentType: String, byteCount: Int64) {
+            self.statusCode = statusCode
+            self.contentType = contentType
+            self.byteCount = byteCount
+        }
+    }
+
+    /// Downloads a GET response to `destination` through the same redirect-
+    /// revalidating session used by `send`. The payload is bounded by
+    /// `maxBytes`: an oversized download is deleted and reported as an error
+    /// instead of being partially kept.
+    public func download(
+        url: URL,
+        timeout: TimeInterval,
+        maxBytes: Int,
+        to destination: URL
+    ) async throws -> DownloadResult {
+        if allowsPrivateNetwork {
+            try DiagnosticNetworkTargetPolicy.validate(url)
+        } else {
+            try PublicNetworkTargetPolicy.validate(url)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = max(1, min(timeout, 120))
+
+        let (temporary, response): (URL, URLResponse)
+        do {
+            (temporary, response) = try await session.download(for: request)
+        } catch {
+            throw HTTPRequestError.requestFailed(error.localizedDescription)
+        }
+        let http = response as? HTTPURLResponse
+        let statusCode = http?.statusCode ?? 0
+        let contentType = http?.value(forHTTPHeaderField: "Content-Type") ?? ""
+        let size = (try? FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber)?
+            .int64Value ?? 0
+        let cap = Int64(max(1, min(maxBytes, 64 * 1_024 * 1_024)))
+        guard size <= cap else {
+            try? FileManager.default.removeItem(at: temporary)
+            throw HTTPRequestError.requestFailed("download exceeds the \(cap)-byte limit")
+        }
+        do {
+            try FileManager.default.moveItem(at: temporary, to: destination)
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw HTTPRequestError.requestFailed("downloaded file could not be saved: \(error.localizedDescription)")
+        }
+        return DownloadResult(statusCode: statusCode, contentType: contentType, byteCount: size)
+    }
 }
 
 /// Deterministic public-network boundary shared by the initial request and

@@ -11,6 +11,7 @@ import FloeTools
 import UIKit
 import FloeModels
 import FloePersistence
+import FloeWorkspace
 
 private enum AppleToolOutput {
     static func make(_ text: String, exitStatus: Int32 = 0) -> ToolExecutionOutput {
@@ -598,6 +599,193 @@ private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
+// MARK: - Clipboard
+
+struct AppleClipboardWriteTool: AgentTool {
+    struct Arguments: Decodable, Sendable { var text: String }
+    static let name = "apple.clipboard.write"
+    static let toolDescription = "Copy text to the system clipboard. The clipboard is shared with every app, so only copy content the user asked to copy."
+    static let parametersJSON = #"{"type":"object","properties":{"text":{"type":"string","maxLength":100000}},"required":["text"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+    func validate(_ args: Arguments) throws {
+        guard args.text.utf8.count <= 100_000 else {
+            throw FloeError.validationFailed("clipboard text exceeds 100000 bytes")
+        }
+    }
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        UIPasteboard.general.string = args.text
+        return AppleToolOutput.make("status=ok characters=\(args.text.count)")
+    }
+}
+
+struct AppleClipboardReadTool: AgentTool {
+    struct Arguments: Decodable, Sendable {}
+    static let name = "apple.clipboard.read"
+    static let toolDescription = "Read text from the system clipboard. iOS notifies the user about clipboard access; read only when the user asked for clipboard content. Reports availability flags when no text is present."
+    static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
+    static let isSideEffecting = false
+    func validate(_ args: Arguments) throws {}
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        let pasteboard = UIPasteboard.general
+        if let text = pasteboard.string {
+            let clipped = text.count > 100_000 ? String(text.prefix(100_000)) : text
+            return AppleToolOutput.make("status=ok truncated=\(clipped.count < text.count)\n\(clipped)")
+        }
+        return AppleToolOutput.make("status=empty hasStrings=\(pasteboard.hasStrings) hasURLs=\(pasteboard.hasURLs) hasImages=\(pasteboard.hasImages)")
+    }
+}
+
+// MARK: - Shortcuts
+
+struct AppleShortcutsRunTool: AgentTool {
+    struct Arguments: Decodable, Sendable { var name: String; var input: String? }
+    static let name = "apple.shortcuts.run"
+    static let toolDescription = "Open the Shortcuts app and run one of the user's own shortcuts by exact name, optionally passing text input. The Shortcuts app stays in control of execution and consent; Floe cannot observe the shortcut's output."
+    static let parametersJSON = #"{"type":"object","properties":{"name":{"type":"string","maxLength":200},"input":{"type":"string","maxLength":10000}},"required":["name"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.controlsGUI]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+    func validate(_ args: Arguments) throws {
+        let name = args.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !name.contains("\n"), !name.contains("\r") else {
+            throw FloeError.validationFailed("Shortcut name must be a single non-empty line")
+        }
+    }
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        var components = URLComponents()
+        components.scheme = "shortcuts"
+        components.host = "run-shortcut"
+        var items = [URLQueryItem(name: "name", value: args.name.trimmingCharacters(in: .whitespacesAndNewlines))]
+        if let input = args.input {
+            items.append(URLQueryItem(name: "input", value: "text"))
+            items.append(URLQueryItem(name: "text", value: String(input.prefix(10_000))))
+        }
+        components.queryItems = items
+        guard let url = components.url else {
+            throw FloeError.validationFailed("Unable to create Shortcuts URL")
+        }
+        let opened = await openSystemURL(url)
+        return AppleToolOutput.make("status=\(opened ? "presented" : "unavailable") outputObservable=false userConfirmationRequired=true")
+    }
+}
+
+// MARK: - Camera
+
+@MainActor
+private final class CameraCaptureCoordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+    /// Strong self-retention for the duration of the system camera session;
+    /// the picker only holds its delegate weakly.
+    private static var active: CameraCaptureCoordinator?
+    private var continuation: CheckedContinuation<UIImage?, Never>?
+
+    func capture() async -> UIImage? {
+        Self.active = self
+        let image = await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            let picker = UIImagePickerController()
+            picker.sourceType = .camera
+            picker.cameraCaptureMode = .photo
+            picker.delegate = self
+            Self.topViewController()?.present(picker, animated: true)
+        }
+        Self.active = nil
+        return image
+    }
+
+    private func finish(_ image: UIImage?, afterDismissalOf picker: UIImagePickerController) {
+        picker.dismiss(animated: true) { [weak self] in
+            guard let self, let continuation = self.continuation else { return }
+            self.continuation = nil
+            continuation.resume(returning: image)
+        }
+    }
+
+    func imagePickerController(
+        _ picker: UIImagePickerController,
+        didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+    ) {
+        finish(info[.originalImage] as? UIImage, afterDismissalOf: picker)
+    }
+
+    func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+        finish(nil, afterDismissalOf: picker)
+    }
+
+    private static func topViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let window = scenes
+            .first(where: { $0.activationState == .foregroundActive })?
+            .windows.first(where: \.isKeyWindow)
+            ?? scenes.flatMap(\.windows).first(where: \.isKeyWindow)
+        var top = window?.rootViewController
+        while let presented = top?.presentedViewController { top = presented }
+        return top
+    }
+}
+
+struct AppleCameraCaptureTool: AgentTool {
+    struct Arguments: Decodable, Sendable { var outputPath: String?; var quality: Double? }
+    static let name = "apple.camera.capture"
+    static let toolDescription = "Open the system camera so the user can take a photo for this task. The photo is only captured if the user takes it themselves in the system camera UI; it is then saved as a new workspace JPEG. Never claim a capture happened without a saved file path."
+    static let parametersJSON = #"{"type":"object","properties":{"outputPath":{"type":"string","description":"Workspace-relative JPEG path; defaults to Camera/capture-<id>.jpg"},"quality":{"type":"number","description":"JPEG quality 0..1 (default 0.9)"}},"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.controlsGUI, .writesFiles]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+    func validate(_ args: Arguments) throws {
+        if let outputPath = args.outputPath {
+            let path = outputPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !path.isEmpty, !path.hasPrefix("/"), !path.hasPrefix("~"),
+                  !path.split(separator: "/").contains("..") else {
+                throw FloeError.validationFailed("outputPath must be workspace-relative")
+            }
+        }
+        if let quality = args.quality, !(0.01...1).contains(quality) {
+            throw FloeError.validationFailed("quality must be 0.01-1")
+        }
+    }
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+            return AppleToolOutput.make("status=unavailable reason=noCamera")
+        }
+        guard let root = context.workspaceRootURL else {
+            return AppleToolOutput.make("status=error error=No task workspace is available", exitStatus: 2)
+        }
+        let relativePath: String
+        if let outputPath = args.outputPath?.trimmingCharacters(in: .whitespacesAndNewlines), !outputPath.isEmpty {
+            relativePath = outputPath
+        } else {
+            relativePath = "Camera/capture-\(UUID().uuidString).jpg"
+        }
+        guard let image = await CameraCaptureCoordinator().capture() else {
+            return AppleToolOutput.make("status=cancelled userConfirmationRequired=true")
+        }
+        try context.cancellation.throwIfCancelled()
+        guard let data = image.jpegData(compressionQuality: CGFloat(args.quality ?? 0.9)) else {
+            throw FloeError.internalError("Captured photo could not be encoded as JPEG")
+        }
+        guard data.count <= 32 * 1_024 * 1_024 else {
+            throw FloeError.validationFailed("Captured photo exceeds the 32 MB limit")
+        }
+        try context.authorizeWorkspacePath(relativePath)
+        let guarder = WorkspacePathGuard(rootURL: root)
+        let url = try guarder.resolve(relativePath)
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            throw FloeError.validationFailed("Destination already exists: \(relativePath)")
+        }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: [.atomic, .withoutOverwriting])
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return AppleToolOutput.make("status=ok path=\(relativePath) bytes=\(data.count) sha256=\(digest)")
+    }
+}
+
 func registerAppleSystemTools(database: DatabaseManager, registry: ToolRunnerRegistry = .shared) {
     ToolCatalog.register(AppleCalendarListTool.self); registry.register(AppleCalendarListTool())
     ToolCatalog.register(AppleCalendarUpdateTool.self); registry.register(AppleCalendarUpdateTool())
@@ -614,5 +802,9 @@ func registerAppleSystemTools(database: DatabaseManager, registry: ToolRunnerReg
     let automationStore = SQLiteTaskScheduleStore(database: database)
     ToolCatalog.register(AppleAutomationListTool.self); registry.register(AppleAutomationListTool(store: automationStore))
     ToolCatalog.register(AppleAutomationUpdateTool.self); registry.register(AppleAutomationUpdateTool(store: automationStore))
+    ToolCatalog.register(AppleClipboardWriteTool.self); registry.register(AppleClipboardWriteTool())
+    ToolCatalog.register(AppleClipboardReadTool.self); registry.register(AppleClipboardReadTool())
+    ToolCatalog.register(AppleShortcutsRunTool.self); registry.register(AppleShortcutsRunTool())
+    ToolCatalog.register(AppleCameraCaptureTool.self); registry.register(AppleCameraCaptureTool())
 }
 #endif

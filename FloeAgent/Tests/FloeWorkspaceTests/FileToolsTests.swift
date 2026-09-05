@@ -162,6 +162,91 @@ struct FileToolsTests {
 
     // MARK: readFile
 
+    @Test("listDirectory filters by name substring and entry kind")
+    func listDirectoryFilters() async throws {
+        let fixture = try makeFixture()
+        try fixture.write("notes-alpha.txt", "a")
+        try fixture.write("notes-beta.md", "b")
+        try fixture.write("image.png", "p")
+        try fixture.write("docs/readme.txt", "r")
+
+        let tool = WorkspaceListDirectoryTool(environment: fixture.environment)
+        let named = try await tool.execute(
+            .init(path: ".", nameContains: "notes"), context: fixture.context
+        )
+        #expect(named.summary.contains("notes-alpha.txt"))
+        #expect(named.summary.contains("notes-beta.md"))
+        #expect(!named.summary.contains("image.png"))
+
+        let filesOnly = try await tool.execute(
+            .init(path: ".", kind: "file"), context: fixture.context
+        )
+        #expect(!filesOnly.summary.contains("\tdocs"))
+        #expect(filesOnly.summary.contains("image.png"))
+
+        let dirsOnly = try await tool.execute(
+            .init(path: ".", kind: "dir"), context: fixture.context
+        )
+        #expect(dirsOnly.summary.contains("\tdocs"))
+        #expect(!dirsOnly.summary.contains("notes-alpha.txt"))
+
+        #expect(throws: WorkspaceToolError.self) {
+            try tool.validate(.init(path: ".", kind: "symlink"))
+        }
+    }
+
+    @Test("listDirectory filters apply before pagination")
+    func listDirectoryFilterPagination() throws {
+        let fixture = try makeFixture()
+        for index in 0..<205 {
+            try fixture.write(String(format: "keep-%03d.txt", index), "x")
+        }
+        for index in 0..<50 {
+            try fixture.write(String(format: "skip-%03d.txt", index), "x")
+        }
+        let service = try fixture.environment.makeService()
+        let first = try service.listDirectory(".", pageToken: nil, nameContains: "keep")
+        #expect(first.entries.count == 200)
+        #expect(first.entries.allSatisfy { $0.name.hasPrefix("keep-") })
+        let second = try service.listDirectory(".", pageToken: first.nextPageToken, nameContains: "keep")
+        #expect(second.entries.count == 5)
+        #expect(second.nextPageToken == nil)
+    }
+
+    @Test("searchFiles filename mode matches file and directory names")
+    func searchFileNames() async throws {
+        let fixture = try makeFixture()
+        try fixture.write("reports/annual-report-2026.pdf", "x")
+        try fixture.write("reports/monthly-summary.txt", "needle content")
+        try fixture.write("src/report_generator.py", "print(1)")
+
+        let tool = WorkspaceSearchFilesTool(environment: fixture.environment)
+        let output = try await tool.execute(
+            .init(query: "report", mode: "filename"), context: fixture.context
+        )
+        #expect(output.summary.contains("mode=filename"))
+        #expect(output.summary.contains("annual-report-2026.pdf"))
+        #expect(output.summary.contains("report_generator.py"))
+        #expect(!output.summary.contains("monthly-summary.txt:1"))
+
+        let dirHit = try await tool.execute(
+            .init(query: "reports", mode: "filename"), context: fixture.context
+        )
+        #expect(dirHit.summary.contains("reports/"))
+
+        // Content mode is unchanged and still searches text.
+        let content = try await tool.execute(
+            .init(query: "needle"), context: fixture.context
+        )
+        #expect(content.summary.contains("monthly-summary.txt:1"))
+
+        #expect(throws: WorkspaceToolError.self) {
+            try tool.validate(.init(query: "x", mode: "regex"))
+        }
+    }
+
+    // MARK: readFile
+
     @Test("readFile returns full content for small files")
     func readFile() async throws {
         let fixture = try makeFixture()

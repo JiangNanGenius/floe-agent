@@ -164,10 +164,14 @@ public struct WorkspaceFileService: Sendable {
     // MARK: - Listing
 
     /// Lists a directory one page at a time (lazy loading). Directories sort
-    /// before files; both are ordered by localized name.
+    /// before files; both are ordered by localized name. Optional filters are
+    /// applied before pagination so page tokens stay consistent.
     public func listDirectory(
         _ path: String,
         pageToken: String?,
+        nameContains: String? = nil,
+        includeDirectories: Bool = true,
+        includeFiles: Bool = true,
         cancellation: CancellationToken? = nil
     ) throws -> DirectoryPage {
         try cancellation?.throwIfCancelled()
@@ -197,6 +201,20 @@ public struct WorkspaceFileService: Sendable {
             names.append(child.lastPathComponent)
         }
         names.sort { $0.localizedStandardCompare($1) == .orderedAscending }
+
+        if let nameContains {
+            let needle = nameContains.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !needle.isEmpty {
+                names = names.filter { $0.range(of: needle, options: .caseInsensitive) != nil }
+            }
+        }
+        if !includeDirectories || !includeFiles {
+            names = names.filter { name in
+                let child = url.appendingPathComponent(name)
+                let isDirectory = (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                return isDirectory ? includeDirectories : includeFiles
+            }
+        }
 
         let startIndex = Self.decodePageToken(pageToken, count: names.count)
         let endIndex = min(startIndex + Self.pageSize, names.count)
@@ -294,6 +312,66 @@ public struct WorkspaceFileService: Sendable {
     }
 
     // MARK: - Search
+
+    /// Case-insensitive substring search over file and directory *names*
+    /// beneath `path` (defaults to the root). Returns at most `maxResults`
+    /// relative paths; directories carry a trailing "/".
+    public func searchFileNames(
+        query: String,
+        in path: String = "",
+        maxResults: Int = WorkspaceFileService.maxSearchHits,
+        cancellation: CancellationToken? = nil
+    ) throws -> [String] {
+        try cancellation?.throwIfCancelled()
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw WorkspaceToolError.invalidArguments("query must not be empty")
+        }
+        let startURL = path.isEmpty
+            ? guardResolver.rootURL
+            : try guardResolver.resolve(path)
+        var startIsDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: startURL.path, isDirectory: &startIsDirectory) else {
+            throw WorkspaceToolError.notFound(path)
+        }
+        let cappedResults = max(1, min(maxResults, Self.maxSearchHits))
+        let basePath = guardResolver.rootURL.path
+        var hits: [String] = []
+
+        if !startIsDirectory.boolValue {
+            if startURL.lastPathComponent.range(of: trimmed, options: .caseInsensitive) != nil {
+                hits.append(Self.relativePath(of: startURL.path, under: basePath))
+            }
+            return hits
+        }
+        guard let enumerator = fileManager.enumerator(
+            at: startURL,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        var visited = 0
+        for case let url as URL in enumerator {
+            try cancellation?.throwIfCancelled()
+            visited += 1
+            guard visited <= Self.maxSearchFiles else {
+                throw WorkspaceToolError.tooLarge(limit: Self.maxSearchFiles)
+            }
+            let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+            let isDirectory = values.isDirectory == true
+            if isDirectory, Self.searchSkipDirectories.contains(url.lastPathComponent) {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard isDirectory || values.isRegularFile == true else { continue }
+            guard !guardResolver.isSecretPath(url) else { continue }
+            guard url.lastPathComponent.range(of: trimmed, options: .caseInsensitive) != nil else { continue }
+            var relative = Self.relativePath(of: url.path, under: basePath)
+            if isDirectory, !relative.hasSuffix("/") { relative += "/" }
+            hits.append(relative)
+            if hits.count >= cappedResults { break }
+        }
+        return hits
+    }
 
     /// Case-insensitive substring search over text files beneath `path`
     /// (defaults to the root). Returns at most `maxSearchHits` hits; each

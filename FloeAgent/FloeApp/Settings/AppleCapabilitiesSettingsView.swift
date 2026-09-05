@@ -57,8 +57,9 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
         case .documents: "读取、编辑和验证工作区文档与 PDF。"
         case .camera: "打开系统相机并把用户拍摄的照片加入任务。"
         case .location: "在系统授权后读取一次当前位置。"
-        case .shortcuts: "向 Siri 和快捷指令公开 Floe 操作。"
+        case .shortcuts: "按名称运行你的快捷指令；执行与确认由快捷指令 App 控制。"
         case .automation: "创建和管理系统尽力调度的 Floe 自动任务。"
+        case .clipboard: "读取或写入系统剪贴板文本；读取时系统会提示。"
         }
     }
     var toolPrefixes: [String] {
@@ -117,7 +118,7 @@ enum AppleCapabilityPreferences {
         if enabled.contains(.documents) {
             blocks.append("""
             ## Built-in skill: pdf-workbench
-            For PDF tasks follow this closed loop: inspect and extract text first; render only relevant pages for visual evidence; make page, annotation, form, redaction, watermark, or overlay edits through document.pdf.edit; save to a new output unless the user explicitly requested overwrite; reopen the saved PDF with document.pdf.inspect; render the changed pages to verify them. If the user asks for an interactive web companion, create it in the task workspace, use structured browser inspection before screenshots, exercise each interaction, and finish with a concise structured test report. PDF inspect/render and image recognition are built-in read operations and do not require Floe approval, although file and system access remain sandboxed.
+            For PDF tasks follow this closed loop: inspect and extract text first; render only relevant pages for visual evidence; make page-removal, 90-degree-rotation, or visible-text-watermark edits through document.pdf.edit (annotation, form-filling, redaction and overlay editing are not available); save to a new output unless the user explicitly requested overwrite; reopen the saved PDF with document.pdf.inspect; render the changed pages to verify them. If the user asks for an interactive web companion, create it in the task workspace, use structured browser inspection before screenshots, exercise each interaction, and finish with a concise structured test report. PDF inspect/render and image recognition are built-in read operations and do not require Floe approval, although file and system access remain sandboxed.
             When a Word or PDF workflow reports a missing font, call font.list first. Use font.install with a direct public HTTPS font URL or a workspace-relative font file; the validated font is stored once in Floe's global font library and becomes available to every Floe workspace. Do not redownload a font that font.list already reports. If iOS does not expose a requested system font to Floe, explain that platform boundary and install a permitted font into Floe's managed library instead.
             """)
         }

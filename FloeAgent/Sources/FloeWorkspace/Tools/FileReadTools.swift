@@ -146,25 +146,33 @@ public struct WorkspaceListDirectoryTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var path: String
         public var pageToken: String?
+        /// Optional case-insensitive substring filter on entry names.
+        public var nameContains: String?
+        /// Optional entry-kind filter: "file" or "dir".
+        public var kind: String?
         /// Present when the call is routed to a host scope; always rejected.
         public var scope: String?
 
-        public init(path: String, pageToken: String? = nil, scope: String? = nil) {
+        public init(path: String, pageToken: String? = nil, nameContains: String? = nil, kind: String? = nil, scope: String? = nil) {
             self.path = path
             self.pageToken = pageToken
+            self.nameContains = nameContains
+            self.kind = kind
             self.scope = scope
         }
     }
 
     public static let name = "workspace.listDirectory"
     public static let toolDescription =
-        "List the contents of a workspace directory, one page (up to 200 entries) at a time. Pass nextPageToken back as pageToken to continue."
+        "List the contents of a workspace directory, one page (up to 200 entries) at a time. Pass nextPageToken back as pageToken to continue. Optional filters: nameContains (case-insensitive substring on names) and kind (\"file\" or \"dir\")."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "path": {"type": "string", "description": "Workspace-relative directory path (use \".\" for the root)"},
-        "pageToken": {"type": "string", "description": "Opaque cursor from a previous call"}
+        "pageToken": {"type": "string", "description": "Opaque cursor from a previous call"},
+        "nameContains": {"type": "string", "description": "Only entries whose names contain this substring (case-insensitive)"},
+        "kind": {"type": "string", "enum": ["file", "dir"], "description": "Only files or only directories"}
       },
       "required": ["path"],
       "additionalProperties": false
@@ -182,6 +190,9 @@ public struct WorkspaceListDirectoryTool: AgentTool {
         if args.path.trimmingCharacters(in: .whitespaces).isEmpty {
             throw WorkspaceToolError.invalidArguments("path must not be empty")
         }
+        if let kind = args.kind, kind != "file", kind != "dir" {
+            throw WorkspaceToolError.invalidArguments("kind must be \"file\" or \"dir\"")
+        }
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
@@ -191,6 +202,8 @@ public struct WorkspaceListDirectoryTool: AgentTool {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
         try context.authorizeWorkspacePath(args.path)
+        let includeDirectories = args.kind != "file"
+        let includeFiles = args.kind != "dir"
         if args.path == "Network" || args.path == "Network/" {
             let mounts = try await environment.networkMounts(context: context)
             var lines = ["path=Network entries=\(mounts.count)"]
@@ -198,7 +211,11 @@ public struct WorkspaceListDirectoryTool: AgentTool {
             return WorkspaceToolSupport.output(lines.joined(separator: "\n"))
         }
         if let route = try await environment.networkRoute(path: args.path, context: context) {
-            let entries = try await route.adapter.list(path: route.relativePath)
+            var entries = try await route.adapter.list(path: route.relativePath)
+            if let needle = args.nameContains?.trimmingCharacters(in: .whitespacesAndNewlines), !needle.isEmpty {
+                entries = entries.filter { $0.name.range(of: needle, options: .caseInsensitive) != nil }
+            }
+            entries = entries.filter { $0.isDirectory ? includeDirectories : includeFiles }
             let offset = Int(args.pageToken ?? "0") ?? 0
             let end = min(entries.count, offset + WorkspaceFileService.pageSize)
             let page = offset < entries.count ? Array(entries[offset..<end]) : []
@@ -210,7 +227,14 @@ public struct WorkspaceListDirectoryTool: AgentTool {
             return WorkspaceToolSupport.output(lines.joined(separator: "\n"))
         }
         let service = try environment.makeService(context: context)
-        let page = try service.listDirectory(args.path, pageToken: args.pageToken, cancellation: context.cancellation)
+        let page = try service.listDirectory(
+            args.path,
+            pageToken: args.pageToken,
+            nameContains: args.nameContains,
+            includeDirectories: includeDirectories,
+            includeFiles: includeFiles,
+            cancellation: context.cancellation
+        )
         var lines = page.entries.map { entry in
             let kind = entry.isDirectory ? "dir" : "file"
             return "\(kind)\t\(entry.size)\t\(entry.relativePath)"
@@ -320,32 +344,36 @@ public struct WorkspaceReadFileTool: AgentTool {
 
 // MARK: - workspace.searchFiles
 
-/// Case-insensitive substring search over workspace text files.
+/// Case-insensitive substring search over workspace text files or file names.
 public struct WorkspaceSearchFilesTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var query: String
         public var path: String?
         public var maxResults: Int?
+        /// "content" (default) searches file text; "filename" matches names.
+        public var mode: String?
         public var scope: String?
 
-        public init(query: String, path: String? = nil, maxResults: Int? = nil, scope: String? = nil) {
+        public init(query: String, path: String? = nil, maxResults: Int? = nil, mode: String? = nil, scope: String? = nil) {
             self.query = query
             self.path = path
             self.maxResults = maxResults
+            self.mode = mode
             self.scope = scope
         }
     }
 
     public static let name = "workspace.searchFiles"
     public static let toolDescription =
-        "Search workspace text files for a case-insensitive substring. Returns up to 100 hits with path, line number and a short context line."
+        "Search the workspace with a case-insensitive substring. mode=\"content\" (default) searches text files and returns up to 100 hits with path, line number and a short context line. mode=\"filename\" matches file and directory names and returns up to 100 relative paths (directories end with /)."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "query": {"type": "string", "description": "Substring to search for (case-insensitive)"},
         "path": {"type": "string", "description": "Workspace-relative directory or file to search; defaults to the root"},
-        "maxResults": {"type": "integer", "description": "Maximum hits; clamped to 100"}
+        "maxResults": {"type": "integer", "description": "Maximum hits; clamped to 100"},
+        "mode": {"type": "string", "enum": ["content", "filename"], "description": "Search file contents (default) or file/directory names"}
       },
       "required": ["query"],
       "additionalProperties": false
@@ -366,6 +394,9 @@ public struct WorkspaceSearchFilesTool: AgentTool {
         if let maxResults = args.maxResults, maxResults <= 0 {
             throw WorkspaceToolError.invalidArguments("maxResults must be > 0")
         }
+        if let mode = args.mode, mode != "content", mode != "filename" {
+            throw WorkspaceToolError.invalidArguments("mode must be \"content\" or \"filename\"")
+        }
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
@@ -374,6 +405,7 @@ public struct WorkspaceSearchFilesTool: AgentTool {
         if let scope = args.scope, scope != "local" {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
+        let filenameMode = args.mode == "filename"
         try context.authorizeWorkspacePath(args.path ?? ".")
         if let requestedPath = args.path,
            let route = try await environment.networkRoute(path: requestedPath, context: context) {
@@ -383,6 +415,7 @@ public struct WorkspaceSearchFilesTool: AgentTool {
                 virtualRoot: requestedPath,
                 query: args.query,
                 maxResults: limit,
+                filenameOnly: filenameMode,
                 cancellation: context.cancellation
             )
             return WorkspaceToolSupport.output(
@@ -390,6 +423,17 @@ public struct WorkspaceSearchFilesTool: AgentTool {
             )
         }
         let service = try environment.makeService(context: context)
+        if filenameMode {
+            let hits = try service.searchFileNames(
+                query: args.query,
+                in: args.path ?? "",
+                maxResults: args.maxResults ?? WorkspaceFileService.maxSearchHits,
+                cancellation: context.cancellation
+            )
+            return WorkspaceToolSupport.output(
+                (["query=\(args.query) hits=\(hits.count) mode=filename"] + hits).joined(separator: "\n")
+            )
+        }
         let hits = try service.search(
             query: args.query,
             in: args.path ?? "",
@@ -411,6 +455,7 @@ public struct WorkspaceSearchFilesTool: AgentTool {
         virtualRoot: String,
         query: String,
         maxResults: Int,
+        filenameOnly: Bool = false,
         cancellation: CancellationToken
     ) async throws -> [String] {
         let normalizedQuery = query.lowercased()
@@ -426,9 +471,23 @@ public struct WorkspaceSearchFilesTool: AgentTool {
             visited += 1
 
             let metadata = try await route.adapter.metadata(path: path)
+            let name = path.split(separator: "/").last.map(String.init) ?? path
+            let relativeSuffix = path.isEmpty ? "" : "/\(path)"
+            let displayPath = virtualRoot.hasSuffix(relativeSuffix)
+                ? virtualRoot
+                : "\(route.mount.virtualRoot)\(relativeSuffix)"
             if metadata.isDirectory {
+                if filenameOnly, !path.isEmpty, name.lowercased().contains(normalizedQuery) {
+                    results.append(displayPath.hasSuffix("/") ? displayPath : displayPath + "/")
+                }
                 let children = try await route.adapter.list(path: path)
                 pending.append(contentsOf: children.reversed().map(\.path))
+                continue
+            }
+            if filenameOnly {
+                if name.lowercased().contains(normalizedQuery) {
+                    results.append(displayPath)
+                }
                 continue
             }
             guard metadata.byteCount <= 4 * 1_024 * 1_024 else { continue }
@@ -436,10 +495,6 @@ public struct WorkspaceSearchFilesTool: AgentTool {
             guard let text = String(data: data, encoding: .utf8), !text.contains("\0") else { continue }
             for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()
                 where line.lowercased().contains(normalizedQuery) {
-                let relativeSuffix = path.isEmpty ? "" : "/\(path)"
-                let displayPath = virtualRoot.hasSuffix(relativeSuffix)
-                    ? virtualRoot
-                    : "\(route.mount.virtualRoot)\(relativeSuffix)"
                 results.append("\(displayPath):\(index + 1): \(line.prefix(500))")
                 if results.count >= maxResults { break }
             }
