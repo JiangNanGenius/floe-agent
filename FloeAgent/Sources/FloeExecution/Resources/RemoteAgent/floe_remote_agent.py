@@ -11,7 +11,7 @@ import subprocess, tempfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 ROOT = pathlib.Path(os.environ.get("FLOE_CLOUD_ROOT", "~/.floe/cloud-workspaces")).expanduser().resolve()
 STATE = pathlib.Path(os.environ.get("FLOE_STATE_ROOT", "~/.local/state/floe-agent")).expanduser().resolve()
 CONFIG = pathlib.Path(os.environ.get("FLOE_CONFIG_ROOT", "~/.config/floe-agent")).expanduser().resolve()
@@ -282,6 +282,44 @@ def task_record(task_id):
         except (ProcessLookupError, PermissionError, ValueError): record["state"] = "interrupted"
     return record
 
+def cancel_task(task_id, device_id=None):
+    record = task_record(task_id)
+    if device_id and record.get("device_id") != device_id:
+        raise ValueError("task belongs to another device")
+    if record["state"] in ("succeeded", "failed", "cancelled", "interrupted"):
+        return record
+    if record.get("cancellation_protocol") != 1:
+        raise ValueError("legacy task cannot be safely cancelled; inspect its process through authorized SSH")
+    # Never signal a PID read from disk: it may have been reused. The runner
+    # that owns the unreaped Popen child handles this idempotent request.
+    atomic_json(task_dir(task_id) / "cancel.request", {"requested_at": time.time()})
+    record["state"] = "cancelRequested"
+    return record
+
+TASK_RUNNER = '''import json,os,signal,subprocess,sys,time
+argv=json.loads(sys.argv[1]); started=time.time(); cancelled=False
+with open(sys.argv[2],'ab',buffering=0) as out:
+ p=subprocess.Popen(argv,stdout=out,stderr=subprocess.STDOUT,start_new_session=True)
+ open(sys.argv[4],'w').write(str(p.pid))
+ while p.poll() is None:
+  if os.path.exists(sys.argv[5]):
+   cancelled=True
+   try: os.killpg(p.pid,signal.SIGTERM)
+   except ProcessLookupError: pass
+   try: p.wait(timeout=3)
+   except subprocess.TimeoutExpired:
+    try: os.killpg(p.pid,signal.SIGKILL)
+    except ProcessLookupError: pass
+    p.wait()
+   break
+  time.sleep(0.05)
+ code=p.wait()
+ tmp=sys.argv[3]+'.tmp'
+ with open(tmp,'w') as result:
+  json.dump({'state':'cancelled' if cancelled else ('succeeded' if code==0 else 'failed'),'exit_code':code,'ended_at':time.time(),'duration':time.time()-started},result)
+ os.replace(tmp,sys.argv[3])
+'''
+
 def launch_task(body, device_id):
     command, target = body.get("command", ""), body.get("target") or {"kind": "container"}
     validate_command(command); kind = target.get("kind", "container")
@@ -298,10 +336,12 @@ def launch_task(body, device_id):
         return record
     directory.mkdir(mode=0o700)
     runner = directory / "runner.py"
-    runner.write_text("import json,os,subprocess,sys,time\nargv=json.loads(sys.argv[1]); started=time.time()\nwith open(sys.argv[2],'ab',buffering=0) as out:\n p=subprocess.Popen(argv,stdout=out,stderr=subprocess.STDOUT,start_new_session=True); open(sys.argv[4],'w').write(str(p.pid)); code=p.wait()\n tmp=sys.argv[3]+'.tmp'; open(tmp,'w').write(json.dumps({'state':'succeeded' if code==0 else 'failed','exit_code':code,'ended_at':time.time(),'duration':time.time()-started})); os.replace(tmp,sys.argv[3])\n")
-    wrapper = subprocess.Popen(["python3", str(runner), json.dumps(argv), str(directory/"events.log"), str(directory/"result.json"), str(directory/"child.pid")], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    record = {"id":task_id,"state":"running","target":target,"command_sha256":hashlib.sha256(command.encode()).hexdigest(),"device_id":device_id or "ssh-recovery","created_at":time.time(),"pid":wrapper.pid}
-    atomic_json(directory / "task.json", record); return record
+    runner.write_text(TASK_RUNNER)
+    wrapper = subprocess.Popen(["python3", str(runner), json.dumps(argv), str(directory/"events.log"), str(directory/"result.json"), str(directory/"child.pid"), str(directory/"cancel.request")], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    record = {"id":task_id,"state":"running","target":target,"command_sha256":hashlib.sha256(command.encode()).hexdigest(),"device_id":device_id or "ssh-recovery","created_at":time.time(),"pid":wrapper.pid,"cancellation_protocol":1}
+    atomic_json(directory / "task.json", record)
+    threading.Thread(target=wrapper.wait, daemon=True).start()
+    return record
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "FloeRemoteAgent/" + VERSION
@@ -378,9 +418,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path.startswith("/v1/shares/") and self.path.endswith("/stop"):
                 share_id=self.path.strip("/").split("/")[2]; return self._send(200,stop_share(share_id))
             if self.path.startswith("/v1/tasks/") and self.path.endswith("/cancel"):
-                task_id=self.path.strip("/").split("/")[2]; record=task_record(task_id); pid_path=task_dir(task_id)/"child.pid"; pid=int(pid_path.read_text()) if pid_path.exists() else int(record.get("pid",0))
-                if pid>1: os.killpg(pid,signal.SIGTERM)
-                atomic_json(task_dir(task_id)/"result.json",{"state":"cancelled","ended_at":time.time()}); return self._send(200,{"ok":True,"id":task_id})
+                task_id=self.path.strip("/").split("/")[2]
+                return self._send(200,cancel_task(task_id,None if self._bearer() else self._device()))
             if self.path=="/v1/workspaces/delete":
                 return self._send(200,delete_workspace(body.get("workspace_id","")))
             if self.path=="/v1/git": return self._send(200,git_action(body))

@@ -43,6 +43,9 @@ jobs:
           swift package resolve
           scripts/pin_check.sh
 
+      - name: Guardian real subprocess cancellation regressions
+        run: python3 scripts/test_remote_task_cancel.py
+
       - name: xcodebuild iPhone Simulator
         run: |
           xcodebuild \
@@ -80,6 +83,7 @@ jobs:
             -only-testing:FloeAppTests/ThreadTimelineTests \
             -only-testing:FloeAppTests/BrowserProtocolTests \
             -only-testing:FloeAppTests/MailConnectorTests \
+            -only-testing:FloeAppTests/SkillLifecycleTests \
             CODE_SIGNING_ALLOWED=NO \
             test
           python3 scripts/verify_app_regression_xcresult.py \

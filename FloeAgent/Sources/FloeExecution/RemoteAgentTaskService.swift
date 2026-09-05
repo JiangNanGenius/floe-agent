@@ -172,6 +172,22 @@ public struct RemoteAgentTaskService: Sendable {
         throw lastError ?? FloeError.internalError("Remote guardian request failed")
     }
 
+    public func cancel(taskID: String, hostID: UUID?, cancellation: CancellationToken) async throws -> String {
+        guard Self.isValidTaskID(taskID) else {
+            throw FloeError.validationFailed("Invalid remote guardian task id")
+        }
+        let data = try await retryingRequest(
+            hostID: hostID, method: "POST", endpoint: "v1/tasks/\(taskID)/cancel",
+            body: Data("{}".utf8), cancellation: cancellation
+        )
+        let record = try Self.object(data)
+        guard let state = record["state"] as? String,
+              ["cancelRequested", "cancelled", "succeeded", "failed", "interrupted"].contains(state) else {
+            throw FloeError.validationFailed("Guardian did not return a confirmed cancellation state")
+        }
+        return state
+    }
+
     private func readOutput(
         hostID: UUID?,
         taskID: String,
@@ -205,9 +221,6 @@ public struct RemoteAgentTaskService: Sendable {
     }
 
     static func isValidTaskID(_ value: String) -> Bool {
-        guard !value.isEmpty, value.utf8.count <= 128 else { return false }
-        return value.unicodeScalars.allSatisfy {
-            CharacterSet.alphanumerics.contains($0) || "_.-".unicodeScalars.contains($0)
-        }
+        value.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", options: .regularExpression) != nil
     }
 }

@@ -87,6 +87,24 @@ Provider references:
 - Mail OAuth/IMAP/SMTP implementation is absent at baseline.
 
 Items above remain unchecked until implementation AND corresponding verification.
+The screenshot-derived platform expansion list is not a claim that every capability
+ships in this internal build; only implemented items in the checkpoint/release notes
+are advertised. Real mailbox/device tests happen after internal distribution.
+
+## Internal release order correction / 内测发布顺序更正
+
+User confirmation: ship internal TestFlight so physical acceptance is possible.
+Automated tests → CI → signed upload → Apple VALID → Floe QA internal visibility
+→ real mailbox and physical-iPad acceptance. The last step gates public Beta,
+not the internal upload. / 用户确认：先交付内部 TestFlight 才能进行真机验收。
+真实邮箱及设备测试不再阻挡内测上传，仍然阻挡外部公开 Beta。
+
+- Skill list/detail, digest-protected instruction updates, enable/disable and
+  recoverable removal are implemented; executable scripts/capabilities are not broadened.
+  / 补齐技能查询、哈希保护的指令更新、启停及可恢复删除，不扩大脚本和权限。
+- SSH cancellation uses runner-owned requests instead of persisted PID signalling;
+  pending cancellation is distinct from confirmed termination and terminal results
+  are preserved. / SSH 取消由任务自身处理，不按磁盘 PID 杀进程，不覆盖已有终态。
 
 ## Implementation checkpoint / 实施进度
 

@@ -125,17 +125,10 @@ private struct MailAccountEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("mail.settings.identity") {
-                    TextField("mail.settings.address", text: $account.address).keyboardType(.emailAddress)
-                    Picker("mail.settings.protocol", selection: $account.incomingProtocol) {
-                        Text("IMAP").tag(MailIncomingProtocol.imap)
-                        Text("POP3").tag(MailIncomingProtocol.pop3)
-                    }.onChange(of: account.incomingProtocol) { _, value in
-                        account.incoming.port = account.incoming.tls == .implicitTLS ? (value == .imap ? 993 : 995) : (value == .imap ? 143 : 110)
-                    }
-                }
-                serverSection(title: "mail.settings.incoming", server: $account.incoming, password: $incomingPassword)
-                serverSection(title: "mail.settings.outgoing", server: $account.outgoing, password: $outgoingPassword)
+                MailIdentitySection(address: $account.address, incomingProtocol: $account.incomingProtocol)
+                    .onChange(of: account.incomingProtocol, updateIncomingPort)
+                MailServerSection(title: "mail.settings.incoming", server: $account.incoming, password: $incomingPassword)
+                MailServerSection(title: "mail.settings.outgoing", server: $account.outgoing, password: $outgoingPassword)
                 Section {
                     Button("mail.settings.test") { test() }
                     if busy { ProgressView() }
@@ -148,28 +141,25 @@ private struct MailAccountEditor: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("action.cancel") { testTask?.cancel(); dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("action.save") {
-                        do {
-                            try center.save(account, incomingPassword: incomingPassword, outgoingPassword: outgoingPassword)
-                            incomingPassword = ""; outgoingPassword = ""; dismiss()
-                        } catch { result = MailSettingsCenter.errorText(error) }
-                    }.disabled(busy)
+                    Button("action.save", action: save).disabled(busy)
                 }
             }
         }
         .onDisappear { testTask?.cancel(); incomingPassword = ""; outgoingPassword = "" }
     }
-    private func serverSection(title: LocalizedStringKey, server: Binding<MailServer>, password: Binding<String>) -> some View {
-        Section(title) {
-            TextField("mail.settings.host", text: server.host).keyboardType(.URL)
-            TextField("mail.settings.port", value: server.port, format: .number.grouping(.never)).keyboardType(.numberPad)
-            Picker("mail.settings.tls", selection: server.tls) {
-                Text("SSL/TLS").tag(MailTLSMode.implicitTLS)
-                Text("STARTTLS").tag(MailTLSMode.startTLS)
-            }
-            TextField("mail.settings.username", text: server.username)
-            SecureField("mail.settings.password", text: password)
+    private func updateIncomingPort() {
+        switch (account.incomingProtocol, account.incoming.tls) {
+        case (.imap, .implicitTLS): account.incoming.port = 993
+        case (.imap, .startTLS): account.incoming.port = 143
+        case (.pop3, .implicitTLS): account.incoming.port = 995
+        case (.pop3, .startTLS): account.incoming.port = 110
         }
+    }
+    private func save() {
+        do {
+            try center.save(account, incomingPassword: incomingPassword, outgoingPassword: outgoingPassword)
+            incomingPassword = ""; outgoingPassword = ""; dismiss()
+        } catch { result = MailSettingsCenter.errorText(error) }
     }
     private func test() {
         busy = true; result = nil
@@ -189,6 +179,38 @@ private struct MailAccountEditor: View {
                 try await MailClient.shared.test(server: account.outgoing, protocolName: "smtp", password: outgoing)
                 result = String(localized: "mail.settings.test_success")
             } catch { if !Task.isCancelled { result = MailSettingsCenter.errorText(error) } }
+        }
+    }
+}
+
+private struct MailIdentitySection: View {
+    @Binding var address: String
+    @Binding var incomingProtocol: MailIncomingProtocol
+    var body: some View {
+        Section("mail.settings.identity") {
+            TextField("mail.settings.address", text: $address).keyboardType(.emailAddress)
+            Picker("mail.settings.protocol", selection: $incomingProtocol) {
+                Text("IMAP").tag(MailIncomingProtocol.imap)
+                Text("POP3").tag(MailIncomingProtocol.pop3)
+            }
+        }
+    }
+}
+
+private struct MailServerSection: View {
+    let title: LocalizedStringKey
+    @Binding var server: MailServer
+    @Binding var password: String
+    var body: some View {
+        Section(title) {
+            TextField("mail.settings.host", text: $server.host).keyboardType(.URL)
+            TextField("mail.settings.port", value: $server.port, format: .number.grouping(.never)).keyboardType(.numberPad)
+            Picker("mail.settings.tls", selection: $server.tls) {
+                Text("SSL/TLS").tag(MailTLSMode.implicitTLS)
+                Text("STARTTLS").tag(MailTLSMode.startTLS)
+            }
+            TextField("mail.settings.username", text: $server.username)
+            SecureField("mail.settings.password", text: $password)
         }
     }
 }

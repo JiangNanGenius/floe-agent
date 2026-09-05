@@ -381,7 +381,7 @@ final class AppEnvironment: ObservableObject {
         // Local preview server.
         registerPreviewTools(environment: previewCenter)
         // Skill authoring.
-        registerSkillTools(creator: LocalSkillCreator(center: skillsCenter))
+        registerSkillTools(creator: LocalSkillCreator(center: skillsCenter), manager: LocalSkillCreator(center: skillsCenter))
         // Durable memory.
         registerMemoryTools(store: intelligenceStore) { [runStore] runID in
             try await runStore.run(id: runID)?.conversationID

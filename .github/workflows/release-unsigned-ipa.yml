@@ -129,6 +129,7 @@ jobs:
             -only-testing:FloeAppTests/ThreadTimelineTests \
             -only-testing:FloeAppTests/BrowserProtocolTests \
             -only-testing:FloeAppTests/MailConnectorTests \
+            -only-testing:FloeAppTests/SkillLifecycleTests \
             CODE_SIGNING_ALLOWED=NO \
             test
           python3 scripts/verify_app_regression_xcresult.py \
@@ -144,7 +145,8 @@ jobs:
 
       - name: Package the matching Floe remote agent
         run: |
-          scripts/package_remote_agent.sh release-assets 1.4.2
+          python3 scripts/test_remote_task_cancel.py
+          scripts/package_remote_agent.sh release-assets 1.4.3
 
       - name: Build unsigned device application
         run: |
@@ -319,6 +321,7 @@ jobs:
             -only-testing:FloeAppTests/ThreadTimelineTests \
             -only-testing:FloeAppTests/BrowserProtocolTests \
             -only-testing:FloeAppTests/MailConnectorTests \
+            -only-testing:FloeAppTests/SkillLifecycleTests \
             CODE_SIGNING_ALLOWED=NO \
             test
           python3 scripts/verify_app_regression_xcresult.py \

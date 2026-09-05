@@ -56,6 +56,7 @@ public func registerExecutionTools(
     if sshCommandService != nil {
         ToolCatalog.register(SSHExecTool.self)
         ToolCatalog.register(SSHRemoteTaskStatusTool.self)
+        ToolCatalog.register(SSHRemoteTaskCancelTool.self)
         ToolCatalog.register(SSHInspectTargetTool.self)
         ToolCatalog.register(SSHBootstrapExecutionHostTool.self)
         ToolCatalog.register(SSHBootstrapRemoteAgentTool.self)
@@ -129,6 +130,7 @@ public func registerExecutionTools(
             remoteAgent: remoteAgent
         ))
         registry.register(SSHRemoteTaskStatusTool(remoteAgent: remoteAgent))
+        registry.register(SSHRemoteTaskCancelTool(remoteAgent: remoteAgent))
         registry.register(SSHInspectTargetTool(service: sshCommandService))
         registry.register(SSHBootstrapExecutionHostTool(service: sshCommandService))
         registry.register(SSHBootstrapRemoteAgentTool(service: sshCommandService))

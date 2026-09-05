@@ -41,7 +41,7 @@ public actor SQLiteSkillStore {
     private let database: DatabaseManager
     public init(database: DatabaseManager) { self.database = database }
 
-    public func save(_ skill: PersistedSkill) async throws {
+    public func save(_ skill: PersistedSkill, grantCapabilities: [String] = []) async throws {
         try await database.writer { db in
             try db.execute(sql: """
                 INSERT INTO skills (
@@ -66,6 +66,13 @@ public actor SQLiteSkillStore {
                     skill.rewrittenDigest, skill.rewriteModelID, skill.compatibilityReportJSON,
                     Self.date(skill.createdAt), Self.date(skill.updatedAt)
                 ])
+            for capability in grantCapabilities {
+                try db.execute(sql: """
+                    INSERT INTO skill_permissions (skill_id, capability, decision, scope_json, granted_at, expires_at)
+                    VALUES (?, ?, 'allow', '{}', ?, NULL)
+                    ON CONFLICT(skill_id, capability) DO UPDATE SET decision='allow', granted_at=excluded.granted_at, expires_at=NULL
+                    """, arguments: [skill.id, capability, Self.date(Date())])
+            }
         }
     }
 
@@ -75,16 +82,33 @@ public actor SQLiteSkillStore {
         }
     }
 
-    public func setEnabled(_ enabled: Bool, id: String) async throws {
+    public func setEnabled(_ enabled: Bool, id: String, expectedDigest: String? = nil) async throws {
         try await database.writer { db in
+            try Self.checkDigest(db, id: id, expected: expectedDigest)
             try db.execute(sql: "UPDATE skills SET status = ?, updated_at = ? WHERE id = ?",
                            arguments: [enabled ? "enabled" : "disabled", Self.date(Date()), id])
         }
     }
 
-    public func remove(id: String) async throws {
+    public func remove(id: String, expectedDigest: String? = nil) async throws {
         try await database.writer { db in
+            try Self.checkDigest(db, id: id, expected: expectedDigest)
             try db.execute(sql: "DELETE FROM skills WHERE id = ?", arguments: [id])
+        }
+    }
+
+    public func updateInstructions(id: String, markdown: String, digest: String, expectedDigest: String) async throws {
+        try await database.writer { db in
+            try Self.checkDigest(db, id: id, expected: expectedDigest)
+            try db.execute(sql: "UPDATE skills SET skill_markdown = ?, rewritten_digest = ?, updated_at = ? WHERE id = ?",
+                           arguments: [markdown, digest, Self.date(Date()), id])
+        }
+    }
+
+    private static func checkDigest(_ db: Database, id: String, expected: String?) throws {
+        guard let expected else { return }
+        guard try String.fetchOne(db, sql: "SELECT rewritten_digest FROM skills WHERE id = ?", arguments: [id]) == expected else {
+            throw SkillStoreConflict.changedOrMissing
         }
     }
 
@@ -129,4 +153,9 @@ public actor SQLiteSkillStore {
 
     private static func date(_ value: Date) -> String { ISO8601DateFormatter().string(from: value) }
     private static func parseDate(_ value: String) -> Date { ISO8601DateFormatter().date(from: value) ?? .distantPast }
+}
+
+public enum SkillStoreConflict: Error, LocalizedError, Sendable {
+    case changedOrMissing
+    public var errorDescription: String? { "Skill changed or was removed; read its current state before retrying." }
 }

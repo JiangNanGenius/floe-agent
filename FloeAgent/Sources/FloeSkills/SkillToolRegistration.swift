@@ -12,9 +12,16 @@ import FloeTools
 @discardableResult
 public func registerSkillTools(
     registry: ToolRunnerRegistry = .shared,
-    creator: any SkillCreating
+    creator: any SkillCreating,
+    manager: (any SkillManaging)? = nil
 ) -> any SkillCreating {
     ToolCatalog.register(SkillCreateTool.self)
     registry.register(SkillCreateTool(creator: creator))
+    if let manager {
+        ToolCatalog.register(SkillReadTool.self)
+        ToolCatalog.register(SkillManageTool.self)
+        registry.register(SkillReadTool(manager: manager))
+        registry.register(SkillManageTool(manager: manager))
+    }
     return creator
 }

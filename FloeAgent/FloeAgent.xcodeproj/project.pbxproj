@@ -232,6 +232,7 @@
 		C87A716B9A54B29B695F1F66 /* HostKeyTrustSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52EAF0302B89FA6FFFD6A697 /* HostKeyTrustSheet.swift */; };
 		C8CC648407E148C3FEFE0B18 /* _sha2.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = CE19791AC2454F6739825F8F /* _sha2.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C8EB11021CF07BD709D09AA5 /* VoiceInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DCEDA85D7E0A5B195344E38 /* VoiceInput.swift */; };
+		CA014FF410250DD56A683A39 /* SkillLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3453A73FCC9986445D9D3949 /* SkillLifecycleTests.swift */; };
 		CA0F31691897A12A961D8A4F /* ProviderServiceRole.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DFCAB0BEA5779876F42194A /* ProviderServiceRole.swift */; };
 		CA9BF8F68A6F0E40E85CDE9E /* binascii.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E25201278D78378B37FF1BBD /* binascii.xcframework */; };
 		CC3A849E9F7335BCB97424A1 /* _sqlite3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5F1F13207E326EE5DC28108D /* _sqlite3.xcframework */; };
@@ -415,6 +416,7 @@
 		30E546884B42CDF2BB96931B /* UserMessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMessageBubble.swift; sourceTree = "<group>"; };
 		31D98DFED3D114A699F77361 /* AssistantMessageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantMessageView.swift; sourceTree = "<group>"; };
 		3319E3323937D58167E59374 /* MemoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryView.swift; sourceTree = "<group>"; };
+		3453A73FCC9986445D9D3949 /* SkillLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillLifecycleTests.swift; sourceTree = "<group>"; };
 		34D4C7AAC317C256EEB4AFAD /* HostEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorViewModel.swift; sourceTree = "<group>"; };
 		35BE65ADB5F2AA44F63AFCDB /* marked.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = marked.min.js; sourceTree = "<group>"; };
 		35C112647BD8DF8C99E18D89 /* SampleHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleHandler.swift; sourceTree = "<group>"; };
@@ -743,6 +745,7 @@
 				93F493C62CCACF635880C8F7 /* MailConnectorTests.swift */,
 				183A97BE093D68D231492DC7 /* RemoteImageInspectToolTests.swift */,
 				725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */,
+				3453A73FCC9986445D9D3949 /* SkillLifecycleTests.swift */,
 				2E47EC0D4490B49AD44060DE /* SyncSettingsUITests.swift */,
 				FF07847A2353D846B363915C /* ThreadTimelineTests.swift */,
 				18C94A3850D88CA96343408E /* VoiceInputControllerTests.swift */,
@@ -1636,6 +1639,7 @@
 				FEE62E3E419BA78474C58CBF /* LocalPythonRuntimeTests.swift in Sources */,
 				B3B2899A491FD31765C51A2C /* MailConnectorTests.swift in Sources */,
 				AD09F21466C778C43633A947 /* RemoteImageInspectToolTests.swift in Sources */,
+				CA014FF410250DD56A683A39 /* SkillLifecycleTests.swift in Sources */,
 				24D360EC17E29EC2F3B4E2AA /* ThreadTimelineTests.swift in Sources */,
 				B8558423FFAEBC3CBA0916FA /* VoiceInputControllerTests.swift in Sources */,
 			);
@@ -1714,7 +1718,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 119;
+				CURRENT_PROJECT_VERSION = 120;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				FLOE_GITHUB_OAUTH_CLIENT_ID = Ov23litEyLPjXVLEDzWW;
@@ -1730,7 +1734,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4.88;
+				MARKETING_VERSION = 1.4.89;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios;
 				PRODUCT_MODULE_NAME = FloeApp;
 				PRODUCT_NAME = "Floe Agent";
@@ -1748,7 +1752,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 119;
+				CURRENT_PROJECT_VERSION = 120;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1759,7 +1763,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.88;
+				MARKETING_VERSION = 1.4.89;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -1831,7 +1835,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 119;
+				CURRENT_PROJECT_VERSION = 120;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1842,7 +1846,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.88;
+				MARKETING_VERSION = 1.4.89;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";
@@ -1877,7 +1881,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
-				CURRENT_PROJECT_VERSION = 119;
+				CURRENT_PROJECT_VERSION = 120;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1888,7 +1892,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.88;
+				MARKETING_VERSION = 1.4.89;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -1987,7 +1991,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 119;
+				CURRENT_PROJECT_VERSION = 120;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1998,7 +2002,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.88;
+				MARKETING_VERSION = 1.4.89;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -2016,7 +2020,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 119;
+				CURRENT_PROJECT_VERSION = 120;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				FLOE_GITHUB_OAUTH_CLIENT_ID = Ov23litEyLPjXVLEDzWW;
@@ -2032,7 +2036,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4.88;
+				MARKETING_VERSION = 1.4.89;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios;
 				PRODUCT_MODULE_NAME = FloeApp;
 				PRODUCT_NAME = "Floe Agent";
@@ -2051,7 +2055,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 119;
+				CURRENT_PROJECT_VERSION = 120;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2062,7 +2066,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.88;
+				MARKETING_VERSION = 1.4.89;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -2097,7 +2101,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
-				CURRENT_PROJECT_VERSION = 119;
+				CURRENT_PROJECT_VERSION = 120;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2108,7 +2112,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.88;
+				MARKETING_VERSION = 1.4.89;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";

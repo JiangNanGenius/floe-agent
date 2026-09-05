@@ -32,19 +32,20 @@ final class SkillsCenter: ObservableObject {
 
     private unowned let environment: AppEnvironment
     private let installationRoot: URL
+    private var packageMutationInProgress = false
 
     var rewriteModels: [ModelProfile] { environment.conversationCenter.availableAgentModels }
     var defaultRewriteModelID: UUID? {
         environment.conversationCenter.modelPreferences.defaultAgentModelID
     }
 
-    init(environment: AppEnvironment) {
+    init(environment: AppEnvironment, installationRoot: URL? = nil) {
         self.environment = environment
         let support = (try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true
         )) ?? FileManager.default.temporaryDirectory
-        installationRoot = support.appendingPathComponent("FloeAgent/Skills", isDirectory: true)
+        self.installationRoot = installationRoot ?? support.appendingPathComponent("FloeAgent/Skills", isDirectory: true)
     }
 
     func load() async {
@@ -306,7 +307,9 @@ final class SkillsCenter: ObservableObject {
     func cancelPendingInstallation() { pendingInstallation = nil }
 
     func setEnabled(_ enabled: Bool, skill: PersistedSkill) async {
-        await perform { try await self.environment.skillStore.setEnabled(enabled, id: skill.id) }
+        await perform {
+            _ = try await self.manageSkill(.init(action: .setEnabled, id: skill.id, expectedDigest: skill.rewrittenDigest, enabled: enabled))
+        }
     }
 
     /// Curator: disables agent-created skills that have been untouched for a
@@ -326,11 +329,73 @@ final class SkillsCenter: ObservableObject {
 
     func remove(_ skill: PersistedSkill) async {
         await perform {
-            try await self.environment.skillStore.remove(id: skill.id)
-            let package = self.installationRoot.appendingPathComponent(skill.id, isDirectory: true)
-            if FileManager.default.fileExists(atPath: package.path) {
-                try FileManager.default.removeItem(at: package)
+            _ = try await self.manageSkill(.init(action: .remove, id: skill.id, expectedDigest: skill.rewrittenDigest))
+        }
+    }
+
+    func readSkills(id: String?) async throws -> [ManagedSkill] {
+        if let id { try SkillManageTool.validateID(id) }
+        let rows = try await environment.skillStore.all().filter { id == nil || $0.id == id }
+        if id != nil, rows.isEmpty { throw SkillStoreConflict.changedOrMissing }
+        return rows.map { ManagedSkill(id: $0.id, name: $0.name, version: $0.version, enabled: $0.status == "enabled", digest: $0.rewrittenDigest, markdown: id == nil ? nil : $0.skillMarkdown) }
+    }
+
+    func manageSkill(_ request: SkillManageTool.Arguments) async throws -> String {
+        try SkillManageTool(manager: LocalSkillCreator(center: self)).validate(request)
+        guard !packageMutationInProgress else { throw FloeError.validationFailed("Another skill change is in progress") }
+        packageMutationInProgress = true
+        defer { packageMutationInProgress = false }
+        guard let skill = try await environment.skillStore.all().first(where: { $0.id == request.id }),
+              skill.rewrittenDigest == request.expectedDigest else { throw SkillStoreConflict.changedOrMissing }
+        let packageURL = installationRoot.appendingPathComponent(skill.id, isDirectory: true)
+        switch request.action {
+        case .setEnabled:
+            try await environment.skillStore.setEnabled(request.enabled!, id: skill.id, expectedDigest: request.expectedDigest)
+        case .remove:
+            // Keep a recoverable package outside the active store. If the DB
+            // mutation fails, restore the package before reporting failure.
+            let recovery = installationRoot.deletingLastPathComponent().appendingPathComponent("RemovedSkills", isDirectory: true)
+            try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+            let backup = recovery.appendingPathComponent("\(skill.id)-\(UUID().uuidString)", isDirectory: true)
+            let exists = FileManager.default.fileExists(atPath: packageURL.path)
+            if exists { try FileManager.default.moveItem(at: packageURL, to: backup) }
+            do { try await environment.skillStore.remove(id: skill.id, expectedDigest: request.expectedDigest) }
+            catch {
+                if exists { try FileManager.default.moveItem(at: backup, to: packageURL) }
+                throw error
             }
+            await load()
+            return "status=removed id=\(skill.id) recoverablePackage=\(exists ? backup.path : "none")"
+        case .update:
+            let validator = SkillPackageValidator()
+            let original = try validator.validate(packageAt: packageURL)
+            guard original.canonicalSHA256 == request.expectedDigest else { throw SkillStoreConflict.changedOrMissing }
+            let originalMarkdown = try String(contentsOf: packageURL.appendingPathComponent("SKILL.md"), encoding: .utf8)
+            let normalized = originalMarkdown.replacingOccurrences(of: "\r\n", with: "\n")
+            guard normalized.hasPrefix("---\n"), let end = normalized.range(of: "\n---\n") else {
+                throw FloeError.validationFailed("Skill frontmatter cannot be safely preserved")
+            }
+            let markdown = String(normalized[..<end.upperBound]) + request.instructions! + "\n"
+            let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("floe-skill-update-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            try FileManager.default.copyItem(at: packageURL, to: temporary)
+            try Data(markdown.utf8).write(to: temporary.appendingPathComponent("SKILL.md"), options: .atomic)
+            let updated = try validator.validate(packageAt: temporary)
+            let provenance = SkillInstallProvenance(sourceURL: URL(string: "floe-creator://local/\(skill.id)")!, originalSHA256: original.canonicalSHA256, expectedRewrittenSHA256: updated.canonicalSHA256, rewriteModelID: "instruction-update", compatibilitySummary: "Only instruction body changed; scripts and permissions preserved")
+            let metadata = InstructionUpdateMetadata(store: environment.skillStore, markdown: markdown, expectedDigest: request.expectedDigest)
+            _ = try await SkillInstallStagingService(installationRoot: installationRoot, metadataStore: metadata)
+                .installRewrittenPackage(at: temporary, provenance: provenance, replaceExisting: true)
+        }
+        await load()
+        return "status=applied id=\(skill.id) action=\(request.action.rawValue); use skill.read for the current digest"
+    }
+
+    private struct InstructionUpdateMetadata: SkillInstallationMetadataStore {
+        let store: SQLiteSkillStore
+        let markdown: String
+        let expectedDigest: String
+        func persist(_ record: SkillInstallationRecord) async throws {
+            try await store.updateInstructions(id: record.skillID, markdown: markdown, digest: record.canonicalSHA256, expectedDigest: expectedDigest)
         }
     }
 
@@ -341,6 +406,9 @@ final class SkillsCenter: ObservableObject {
         rewriteModelID: String? = nil,
         initialStatus: String = "enabled"
     ) async throws {
+        guard !packageMutationInProgress else { throw FloeError.validationFailed("Another skill change is in progress") }
+        packageMutationInProgress = true
+        defer { packageMutationInProgress = false }
         let validator = SkillPackageValidator()
         let package = try validator.validate(packageAt: url)
         try await requireCompatibility(package)
@@ -363,8 +431,6 @@ final class SkillsCenter: ObservableObject {
             rewriteModelID: rewriteModelID ?? (sourceURL.scheme == "floe-creator" ? "local-skill-creator" : "finder-rewrite"),
             compatibilitySummary: "Validated for iOS against the compiled Floe tool catalog"
         )
-        let record = try await SkillInstallStagingService(installationRoot: installationRoot)
-            .installRewrittenPackage(at: url, provenance: provenance, replaceExisting: false)
         // Lossless UTF-8 decode: a non-UTF-8 SKILL.md must not surface a
         // CocoaError.fileReadCorruptFile ("couldn't be opened because it
         // isn't in the correct format") as a user-facing error banner.
@@ -385,31 +451,36 @@ final class SkillsCenter: ObservableObject {
             withJSONObject: compatibilityObject,
             options: [.sortedKeys]
         )
-        try await environment.skillStore.save(PersistedSkill(
-            id: record.skillID,
+        let skill = PersistedSkill(
+            id: package.manifest.id,
             name: package.metadata.name,
-            version: record.version,
+            version: package.manifest.version,
             status: initialStatus,
             skillMarkdown: markdown,
             manifestJSON: String(decoding: manifestData, as: UTF8.self),
             declaredCapabilitiesJSON: capabilities,
             effectiveCapabilitiesJSON: capabilities,
-            sourceURL: record.provenance.sourceURL.absoluteString,
-            sourceDigest: record.provenance.originalSHA256,
-            rewrittenDigest: record.canonicalSHA256,
-            rewriteModelID: record.provenance.rewriteModelID,
+            sourceURL: provenance.sourceURL.absoluteString,
+            sourceDigest: provenance.originalSHA256,
+            rewrittenDigest: package.canonicalSHA256,
+            rewriteModelID: provenance.rewriteModelID,
             compatibilityReportJSON: String(decoding: compatibilityData, as: UTF8.self)
-        ))
+        )
         // This grant authorizes the skill's declared ceiling only. Exact
         // audited Python source/package fingerprints can be reused without a
         // second package review; changed code and all broader side effects
         // still pass the normal approval and catastrophic-action gates.
-        for capability in package.declaredCapabilities {
-            try await environment.skillStore.setPermission(
-                skillID: record.skillID,
-                capability: capability.rawValue,
-                decision: "allow"
-            )
+        let metadata = InitialSkillMetadata(store: environment.skillStore, skill: skill, capabilities: package.declaredCapabilities.map(\.rawValue))
+        _ = try await SkillInstallStagingService(installationRoot: installationRoot, metadataStore: metadata)
+            .installRewrittenPackage(at: url, provenance: provenance, replaceExisting: false)
+    }
+
+    private struct InitialSkillMetadata: SkillInstallationMetadataStore {
+        let store: SQLiteSkillStore
+        let skill: PersistedSkill
+        let capabilities: [String]
+        func persist(_ record: SkillInstallationRecord) async throws {
+            try await store.save(skill, grantCapabilities: capabilities)
         }
     }
 

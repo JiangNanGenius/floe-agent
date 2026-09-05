@@ -244,3 +244,32 @@ public struct SSHRemoteTaskStatusTool: AgentTool {
         )
     }
 }
+
+public struct SSHRemoteTaskCancelTool: AgentTool {
+    public struct Arguments: Decodable, Sendable {
+        public var taskID: String
+        public var hostID: String?
+        public init(taskID: String, hostID: String? = nil) { self.taskID = taskID; self.hostID = hostID }
+    }
+    public static let name = "ssh.cancelTask"
+    public static let toolDescription = "Request cancellation of the exact durable guardian task returned by ssh.execute on the same host. Requires approval. cancelRequested is not proof of termination: use ssh.taskStatus to confirm. Completed tasks are preserved; legacy tasks cannot be safely cancelled through this tool."
+    public static let parametersJSON = #"{"type":"object","properties":{"taskID":{"type":"string"},"hostID":{"type":"string","description":"UUID of the same paired host; omitted uses default"}},"required":["taskID"],"additionalProperties":false}"#
+    public static let riskLabels: Set<RiskLabel> = [.executesRemoteCommand, .networkAccess]
+    public static let isSideEffecting = true
+    public static let toolEffect: ToolEffect = .mutating
+    private let remoteAgent: RemoteAgentTaskService
+    public init(remoteAgent: RemoteAgentTaskService) { self.remoteAgent = remoteAgent }
+    public func validate(_ args: Arguments) throws {
+        guard RemoteAgentTaskService.isValidTaskID(args.taskID),
+              args.hostID == nil || UUID(uuidString: args.hostID!) != nil else {
+            throw FloeError.validationFailed("Exact taskID and valid hostID required")
+        }
+    }
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
+        guard context.approvalGrantID != nil else { throw FloeError.validationFailed("Task cancellation requires approval") }
+        let state = try await remoteAgent.cancel(taskID: args.taskID, hostID: args.hostID.flatMap(UUID.init(uuidString:)), cancellation: context.cancellation)
+        let data = try JSONSerialization.data(withJSONObject: ["taskID": args.taskID, "state": state, "nextTool": "ssh.taskStatus"], options: [.sortedKeys])
+        return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self), fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+    }
+}
