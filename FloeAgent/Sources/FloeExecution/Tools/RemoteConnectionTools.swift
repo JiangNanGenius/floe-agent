@@ -5,6 +5,28 @@ import FloePersistence
 import FloeSSH
 import FloeTools
 
+public struct RemoteConnectionStatusTool: AgentTool {
+    public struct Arguments: Decodable, Sendable { public var sessionID: UUID? }
+    public static let name = "remote.connection.status"
+    public static let toolDescription = "List this run's temporary TCP/Telnet connections, or inspect one exact sessionID. Returns endpoint, transport state and expiration without reading pending data, opening a connection or exposing other runs."
+    public static let parametersJSON = #"{"type":"object","properties":{"sessionID":{"type":"string","format":"uuid"}},"additionalProperties":false}"#
+    public static let riskLabels: Set<RiskLabel> = []
+    public static let isSideEffecting = false
+    public static let toolEffect: ToolEffect = .readOnly
+    public static let requiresHostScope = false
+    private let service: RawRemoteConnectionService
+    public init(service: RawRemoteConnectionService) { self.service = service }
+    public func validate(_ args: Arguments) throws {}
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        let snapshots = try await service.snapshots(runID: context.runID, sessionID: args.sessionID)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return RemoteConnectionOpenTool.output(String(decoding: try encoder.encode(snapshots), as: UTF8.self), 0)
+    }
+}
+
 public struct RemoteConnectionOpenTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var kind: RemoteTextConnectionKind?

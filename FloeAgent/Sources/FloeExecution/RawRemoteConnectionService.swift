@@ -9,10 +9,22 @@ public enum RemoteTextConnectionKind: String, Sendable, Codable, CaseIterable {
 
 /// Run-scoped raw TCP/Telnet sessions. Nothing here is persisted or synced.
 public actor RawRemoteConnectionService {
+    public struct SessionSnapshot: Sendable, Codable {
+        public let sessionID: UUID
+        public let kind: RemoteTextConnectionKind
+        public let host: String
+        public let port: Int
+        public let transportState: String
+        public let expiresAt: Date
+    }
+
     private struct Entry {
         var runID: UUID
         var kind: RemoteTextConnectionKind
         var client: RawTCPConnection
+        var host: String
+        var port: Int
+        var expiresAt: Date
     }
 
     private var sessions: [UUID: Entry] = [:]
@@ -34,12 +46,26 @@ public actor RawRemoteConnectionService {
         let client = RawTCPConnection(host: NWEndpoint.Host(host), port: networkPort, telnet: kind == .telnet)
         try await client.connect(timeout: timeout)
         let id = UUID()
-        sessions[id] = Entry(runID: runID, kind: kind, client: client)
+        sessions[id] = Entry(runID: runID, kind: kind, client: client,
+                             host: host, port: port, expiresAt: Date().addingTimeInterval(30 * 60))
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(30 * 60))
             await self?.expire(sessionID: id)
         }
         return id
+    }
+
+    /// Only sessions owned by this run are visible, even when an exact ID is supplied.
+    public func snapshots(runID: UUID, sessionID: UUID? = nil) throws -> [SessionSnapshot] {
+        if let sessionID, sessions[sessionID]?.runID != runID {
+            throw FloeError.notFound("Temporary connection session")
+        }
+        return sessions.compactMap { id, entry in
+            guard entry.runID == runID, sessionID == nil || sessionID == id else { return nil }
+            return SessionSnapshot(sessionID: id, kind: entry.kind, host: entry.host,
+                                   port: entry.port, transportState: entry.client.transportState,
+                                   expiresAt: entry.expiresAt)
+        }.sorted { $0.sessionID.uuidString < $1.sessionID.uuidString }
     }
 
     public func exchange(
@@ -72,6 +98,17 @@ final class RawTCPConnection: @unchecked Sendable {
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "org.floeagent.raw-remote-connection")
     private let telnet: Bool
+
+    var transportState: String {
+        switch connection.state {
+        case .ready: "connected"
+        case .setup, .preparing: "connecting"
+        case .waiting: "waiting"
+        case .failed: "failed"
+        case .cancelled: "closed"
+        @unknown default: "unknown"
+        }
+    }
 
     init(host: NWEndpoint.Host, port: NWEndpoint.Port, telnet: Bool) {
         self.connection = NWConnection(host: host, port: port, using: .tcp)

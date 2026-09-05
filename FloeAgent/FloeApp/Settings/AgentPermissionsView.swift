@@ -17,6 +17,7 @@ struct AgentPermissionsView: View {
     @ObservedObject var center: SettingsCenter
     @State private var isConfirmingFullAccess = false
     @State private var authenticationError: String?
+    @State private var approvalSaveError: String?
 
     var body: some View {
         Form {
@@ -53,6 +54,9 @@ struct AgentPermissionsView: View {
                 Text("审批模型不获得工具，只能返回允许、拒绝或询问；任何异常都会回退为询问。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let approvalSaveError {
+                    Text(approvalSaveError).font(.footnote).foregroundStyle(FloeTheme.destructive)
+                }
             }
 
             Section {
@@ -142,7 +146,12 @@ struct AgentPermissionsView: View {
                 Task {
                     var preferences = center.environment.conversationCenter.modelPreferences
                     preferences.approvalModelID = value
-                    try? await center.environment.conversationCenter.saveModelPreferences(preferences)
+                    do {
+                        try await center.environment.conversationCenter.saveModelPreferences(preferences)
+                        approvalSaveError = nil
+                    } catch {
+                        approvalSaveError = "审批模型设置未完整保存：\(error.localizedDescription)"
+                    }
                 }
             }
         )

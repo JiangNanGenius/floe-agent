@@ -96,6 +96,13 @@ public struct CanvasPatch: Sendable, Codable, Hashable {
     }
 }
 
+public struct CanvasOperationDelta: Sendable, Codable, Hashable {
+    public var nodes: [CanvasNode]
+    public var connections: [CanvasConnection]
+    public var removedNodeIDs: [UUID]
+    public var removedConnectionIDs: [UUID]
+}
+
 public struct CanvasOperationResult: Sendable, Codable, Hashable {
     public var canvasID: UUID
     public var documentID: UUID
@@ -104,17 +111,21 @@ public struct CanvasOperationResult: Sendable, Codable, Hashable {
     public var changedNodeIDs: [UUID]
     public var changedConnectionIDs: [UUID]
     public var undoToken: UUID
+    /// Exact committed mutation, not a later inspection that may race another edit.
+    public var delta: CanvasOperationDelta?
 
     public init(
         canvasID: UUID, documentID: UUID, previousRevision: Int64,
         revision: Int64, changedNodeIDs: [UUID],
-        changedConnectionIDs: [UUID], undoToken: UUID = UUID()
+        changedConnectionIDs: [UUID], undoToken: UUID = UUID(),
+        delta: CanvasOperationDelta? = nil
     ) {
         self.canvasID = canvasID; self.documentID = documentID
         self.previousRevision = previousRevision; self.revision = revision
         self.changedNodeIDs = changedNodeIDs
         self.changedConnectionIDs = changedConnectionIDs
         self.undoToken = undoToken
+        self.delta = delta
     }
 }
 
@@ -290,7 +301,15 @@ public enum CanvasCommandService {
             canvasID: project.id, documentID: document.id,
             previousRevision: previousRevision, revision: project.revision,
             changedNodeIDs: changedNodes.sorted { $0.uuidString < $1.uuidString },
-            changedConnectionIDs: changedConnections.sorted { $0.uuidString < $1.uuidString }
+            changedConnectionIDs: changedConnections.sorted { $0.uuidString < $1.uuidString },
+            delta: CanvasOperationDelta(
+                nodes: document.nodes.filter { changedNodes.contains($0.id) },
+                connections: document.connections.filter { changedConnections.contains($0.id) },
+                removedNodeIDs: changedNodes.subtracting(document.nodes.map(\.id))
+                    .sorted { $0.uuidString < $1.uuidString },
+                removedConnectionIDs: changedConnections.subtracting(document.connections.map(\.id))
+                    .sorted { $0.uuidString < $1.uuidString }
+            )
         ))
     }
 

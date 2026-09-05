@@ -17,6 +17,9 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
+    // Preserve persisted navigation values, not duplicate configuration pages.
+    static var visibleCases: [Self] { allCases.filter { $0 != .sourceControl } }
+
     var title: LocalizedStringKey {
         switch self {
         case .general: "settings.section.general"
@@ -80,7 +83,7 @@ struct SettingsRootView: View {
             // iPad: master-detail with a preselected first category so the
             // detail column is never blank.
             NavigationSplitView(columnVisibility: $columnVisibility) {
-                List(SettingsSection.allCases, selection: $selection) { section in
+                List(SettingsSection.visibleCases, selection: $selection) { section in
                     Label(section.title, systemImage: section.systemImage)
                         .tag(section)
                         .accessibilityIdentifier("settings.section.\(section.rawValue)")
@@ -108,7 +111,7 @@ struct SettingsRootView: View {
             // and from More without relying on an ancestor implementation
             // detail.
             NavigationStack {
-                List(SettingsSection.allCases) { section in
+                List(SettingsSection.visibleCases) { section in
                     NavigationLink(value: section) {
                         Label(section.title, systemImage: section.systemImage)
                     }
@@ -172,7 +175,7 @@ struct SettingsRootView: View {
         case .files:
             FilesSettingsView(center: environment.settingsCenter)
         case .sourceControl:
-            GitHubSettingsView(center: environment.sourceControlCenter)
+            ConnectorsView(sourceControl: environment.sourceControlCenter, mcpCenter: .shared)
         case .sync:
             SyncSettingsView(center: environment.settingsCenter)
         case .remote:

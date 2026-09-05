@@ -16,6 +16,29 @@ private actor VNCProviderInvocationRecorder {
 struct VNCToolContractTests {
     private let unavailable: VNCSessionProvider = { nil }
 
+    @Test("Action descriptions permit chaining from post-action evidence")
+    func postActionEvidenceContract() {
+        for description in [VNCClickTool.toolDescription, VNCClickElementTool.toolDescription,
+                            VNCDragTool.toolDescription] {
+            #expect(description.contains("action result"))
+            #expect(description.contains("reusable screenshotSHA256"))
+            #expect(description.lowercased().contains("do not routinely observe again"))
+        }
+    }
+
+    @Test("Post-input observation failure preserves mutation outcome without retry")
+    func partialObservationContract() throws {
+        for cancelled in [true, false] {
+            let fields = VNCToolSupport.partialObservationFields(cancelled: cancelled)
+            let output = try VNCToolSupport.output(fields)
+            let json = try #require(JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any])
+            #expect(json["status"] as? String == "partialSuccess")
+            #expect(json["retryInput"] as? Bool == false)
+            #expect(json["observationStatus"] as? String == (cancelled ? "cancelled" : "unavailable"))
+            #expect(output.exitStatus == 0)
+        }
+    }
+
     @Test("Lifecycle tools expose explicit connection control")
     func lifecycleDescriptors() async throws {
         #expect(VNCStatusTool.name == "vnc.status")

@@ -16,6 +16,9 @@ public struct ProposedAction: Sendable, Codable {
     /// A bounded, plain-text projection of the most recent conversation.
     /// This is context for the classifier only; it never becomes authority.
     public var recentContext: String
+    /// Role-checked user messages supplied by the runtime, independent of
+    /// tool-output volume. Never reconstruct authority from transcript lines.
+    public var userRequests: [String]?
     public var hostAndPathScope: ToolScope
     /// Exact source/package fingerprints audited while installed skills were
     /// activated. These values grant no general Python authority.
@@ -27,6 +30,7 @@ public struct ProposedAction: Sendable, Codable {
         riskLabels: Set<String>,
         userGoal: String,
         recentContext: String = "",
+        userRequests: [String]? = nil,
         hostAndPathScope: ToolScope,
         preapprovedPythonScriptSHA256: Set<String> = [],
         preapprovedPythonPackages: Set<String> = []
@@ -35,6 +39,7 @@ public struct ProposedAction: Sendable, Codable {
         self.riskLabels = riskLabels
         self.userGoal = String(userGoal.prefix(2048))
         self.recentContext = String(recentContext.prefix(8192))
+        self.userRequests = userRequests.map { $0.suffix(6).map { String($0.prefix(2048)) } }
         self.hostAndPathScope = hostAndPathScope
         self.preapprovedPythonScriptSHA256 = preapprovedPythonScriptSHA256
         self.preapprovedPythonPackages = preapprovedPythonPackages
@@ -216,8 +221,10 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "workspace.listDirectory", "workspace.readFile",
             "workspace.inspectMetadata", "workspace.searchFiles", "workspace.createFile",
             "workspace.writeFile", "workspace.applyPatch", "workspace.createDirectory",
+            "workspace.appendFile", "workspace.replaceText",
             "workspace.moveItem", "document.createDocument",
             "browser.observe", "browser.events", "browser.wait", "browser.navigate",
+            "browser.tabs", "remote.connection.status", "vnc.status",
             "network.scanLAN",
             "ssh.taskStatus", "ssh.bootstrapFloeRemoteAgent",
             "apple.calendar.list", "apple.reminders.list", "apple.maps.search",
@@ -438,14 +445,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "continue", "go ahead", "proceed", "ok", "okay", "approved"
         ]
         guard continuationPhrases.contains(current) else { return current }
-        let priorUserLines = action.recentContext
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .compactMap { line -> String? in
-                let text = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard text.lowercased().hasPrefix("user:") else { return nil }
-                return String(text.dropFirst(5))
-            }
-            .suffix(6)
+        let priorUserLines = (action.userRequests ?? []).suffix(6)
         return ([current] + priorUserLines)
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)

@@ -2,6 +2,7 @@
 
 #if canImport(SwiftUI) && canImport(WebKit)
 import Foundation
+import CryptoKit
 import FloeCore
 import FloeModels
 import FloeTools
@@ -34,7 +35,9 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         )
         let result = await center.execute(command)
         let data = try JSONEncoder().encode(result)
-        let summary = String(decoding: data.prefix(4096), as: UTF8.self)
+        // The protocol already bounds nodes, events and tabs. Byte truncation
+        // here creates invalid JSON and can remove action evidence mid-field.
+        let summary = String(decoding: data, as: UTF8.self)
         guard result.status == .ok || result.status == .needsUser else {
             throw FloeError.validationFailed(result.message ?? "Browser action failed")
         }
@@ -46,10 +49,59 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         } ?? []
         return ToolExecutionOutput(
             summary: summary,
-            fullOutputSHA256: result.page?.screenshotArtifact?.sha256 ?? "",
+            fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
             artifacts: artifacts,
             requiresUserAction: result.status == .needsUser
         )
+    }
+}
+
+private struct BrowserTabsTool: AgentTool {
+    struct Arguments: Decodable, Sendable {}
+    static let name = "browser.tabs"
+    static let toolDescription = "List tabs in this task's browser session with exact tab IDs and active state. Does not open, switch or close tabs."
+    static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = []
+    static let isSideEffecting = false
+    static let toolEffect: ToolEffect = .readOnly
+    let environment: BrowserToolEnvironment
+    func validate(_ args: Arguments) throws {}
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        return try await environment.run(action: .listTabs)
+    }
+}
+
+private struct BrowserTabTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        let action: String
+        let tabID: UUID?
+    }
+    static let name = "browser.tab"
+    static let toolDescription = "Create, activate, or close a tab in this task's browser session. Create returns a new tab ID; use browser.navigate on that ID to open a URL. Activate/close require an exact tabID from browser.tabs. Does not manage other apps' tabs."
+    static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["create","activate","close"]},"tabID":{"type":"string","format":"uuid"}},"required":["action"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.controlsGUI]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+    let environment: BrowserToolEnvironment
+    func validate(_ args: Arguments) throws {
+        guard ["create", "activate", "close"].contains(args.action) else {
+            throw FloeError.validationFailed("Unknown tab action")
+        }
+        guard (args.action == "create") == (args.tabID == nil) else {
+            throw FloeError.validationFailed("Create must omit tabID; activate/close require tabID")
+        }
+    }
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        try validate(args)
+        let action: BrowserAction
+        switch args.action {
+        case "create": action = .create
+        case "activate": action = .activateTab(args.tabID!)
+        default: action = .closeTab(args.tabID!)
+        }
+        return try await environment.run(action: action)
     }
 }
 
@@ -320,6 +372,10 @@ private struct BrowserScrollTool: AgentTool {
 
 @MainActor
 func registerBrowserTools(center: BrowserSessionCenter, registry: ToolRunnerRegistry = .shared) {
+    ToolCatalog.register(BrowserTabsTool.self)
+    ToolCatalog.register(BrowserTabTool.self)
+    registry.register(BrowserTabsTool(environment: BrowserToolEnvironment(center: center)))
+    registry.register(BrowserTabTool(environment: BrowserToolEnvironment(center: center)))
     let environment = BrowserToolEnvironment(center: center)
     ToolCatalog.register(BrowserNavigateTool.self)
     ToolCatalog.register(BrowserObserveTool.self)

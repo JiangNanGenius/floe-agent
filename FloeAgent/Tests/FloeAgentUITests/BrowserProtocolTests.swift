@@ -4,10 +4,38 @@
 import Foundation
 import Testing
 import WebKit
+import FloeTools
+import FloeCore
 @testable import FloeApp
 
 @Suite("FloeApp.FloeBrowserProtocol")
 struct BrowserProtocolTests {
+    @Test("Tab management is callable through the same registry advertised to models")
+    @MainActor
+    func registeredTabLifecycle() async throws {
+        let center = BrowserSessionCenter()
+        let runID = UUID()
+        center.bind(to: runID)
+        let initial = try #require(center.activeTabID)
+        let registry = ToolRunnerRegistry()
+        registerBrowserTools(center: center, registry: registry)
+        let tabs = try #require(registry.runner(named: "browser.tabs"))
+        let tab = try #require(registry.runner(named: "browser.tab"))
+        let context = ToolContext(runID: runID, cancellation: CancellationToken())
+        _ = try await tab.execute(argumentsJSON: Data(#"{"action":"create"}"#.utf8), context: context)
+        let created = try #require(center.activeTabID)
+        #expect(created != initial)
+        let listing = try await tabs.execute(argumentsJSON: Data("{}".utf8), context: context)
+        #expect((try? JSONSerialization.jsonObject(with: Data(listing.summary.utf8))) != nil)
+        #expect(listing.fullOutputSHA256.count == 64)
+        #expect(listing.summary.contains(created.uuidString))
+        _ = try await tab.execute(argumentsJSON: Data("{\"action\":\"activate\",\"tabID\":\"\(initial)\"}".utf8), context: context)
+        #expect(center.activeTabID == initial)
+        _ = try await tab.execute(argumentsJSON: Data("{\"action\":\"close\",\"tabID\":\"\(created)\"}".utf8), context: context)
+        let final = try await tabs.execute(argumentsJSON: Data("{}".utf8), context: context)
+        #expect(!final.summary.contains(created.uuidString))
+    }
+
     @Test("Static preview serves only its tokenized workspace files")
     func staticPreviewServerIsBounded() async throws {
         let root = FileManager.default.temporaryDirectory

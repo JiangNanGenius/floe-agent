@@ -68,7 +68,7 @@ private struct VNCCapturedArtifact {
     let reference: ToolArtifactReference
 }
 
-private enum VNCToolSupport {
+enum VNCToolSupport {
     static func statusOutput(_ status: VNCToolConnectionStatus) throws -> ToolExecutionOutput {
         var payload: [String: Any] = [
             "status": "ok",
@@ -115,7 +115,7 @@ private enum VNCToolSupport {
         return handle
     }
 
-    static func capture(_ handle: VNCSessionHandle) throws -> VNCCapturedArtifact {
+    private static func capture(_ handle: VNCSessionHandle) throws -> VNCCapturedArtifact {
         let capture = try handle.session.captureJPEG()
         let support = (try? FileManager.default.url(
             for: .applicationSupportDirectory,
@@ -197,19 +197,137 @@ private enum VNCToolSupport {
         return evidence
     }
 
-    static func postActionCapture(
+    private static func postActionCapture(
         _ handle: VNCSessionHandle,
         before: VNCVisualEvidence?,
         timeout: Duration = .milliseconds(1_500)
     ) async throws -> (artifact: VNCCapturedArtifact, changed: Bool) {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
-        while clock.now < deadline,
-              handle.session.currentFrameRevision == before?.revision {
-            try await Task.sleep(for: .milliseconds(100))
+        var lastRevision = handle.session.currentFrameRevision
+        var stableSince = clock.now
+        while clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+            let revision = handle.session.currentFrameRevision
+            if revision != lastRevision {
+                lastRevision = revision
+                stableSince = clock.now
+            }
+            if revision != before?.revision,
+               stableSince.duration(to: clock.now) >= .milliseconds(250) { break }
         }
         let artifact = try capture(handle)
         return (artifact, artifact.capture.sha256 != before?.sha256)
+    }
+
+    /// Once input has been queued, observation failure must not turn the
+    /// mutation into a retryable failure. RFB provides no input acknowledgement.
+    static func postActionOutput(
+        _ handle: VNCSessionHandle,
+        before: VNCVisualEvidence?,
+        details: [String: Any] = [:]
+    ) async throws -> ToolExecutionOutput {
+        var fields = details
+        fields["sessionID"] = handle.id.uuidString
+        fields["inputDispatched"] = true
+        fields["inputStatus"] = "queued"
+        fields["serverAcknowledged"] = false
+        fields["taskSuccessVerified"] = false
+        do {
+            let post = try await postActionCapture(handle, before: before)
+            let observation = await observationFields(handle, artifact: post.artifact)
+            fields.merge(observation) { _, new in new }
+            fields["status"] = "ok"
+            fields["frameChanged"] = post.changed
+            fields["frameUpdateReceived"] = post.artifact.capture.revision != before?.revision
+            fields["observationStatus"] = post.artifact.capture.revision == before?.revision
+                ? "noNewFrame" : (post.changed ? "changed" : "unchanged")
+            fields["postScreenshotSHA256"] = post.artifact.capture.sha256
+            fields["postScreenshotPath"] = post.artifact.reference.relativePath
+            fields["postRevision"] = post.artifact.capture.revision
+            fields["nextAction"] = observation["evidenceStatus"] as? String == "current"
+                ? "Use this result's screenshotSHA256 and elements directly; observe again only if evidence is stale or no new frame arrived."
+                : "The screen changed during observation. Do not replay the input; obtain fresh vnc.observe evidence before another coordinate action."
+            return try output(fields, artifacts: [post.artifact.reference])
+        } catch {
+            fields.merge(partialObservationFields(cancelled: error is CancellationError)) { _, new in new }
+            return try output(fields)
+        }
+    }
+
+    static func partialObservationFields(cancelled: Bool) -> [String: Any] {
+        ["status": "partialSuccess", "observationStatus": cancelled ? "cancelled" : "unavailable",
+         "retryInput": false,
+         "nextAction": "Input may already have executed. Do not replay it; obtain fresh vnc.observe evidence when the session is available."]
+    }
+
+    static func clickOutput(
+        _ handle: VNCSessionHandle, before: VNCVisualEvidence,
+        x: Int, y: Int, count: Int, context: ToolContext,
+        details: [String: Any] = [:]
+    ) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        try Task.checkCancellation()
+        var queued = 0
+        do {
+            for index in 0..<count {
+                try context.cancellation.throwIfCancelled()
+                handle.session.mouseMove(x: UInt16(x), y: UInt16(y))
+                handle.session.mouseDown(x: UInt16(x), y: UInt16(y))
+                handle.session.mouseUp(x: UInt16(x), y: UInt16(y))
+                queued += 1
+                if index + 1 < count { try await Task.sleep(for: .milliseconds(100)) }
+            }
+        } catch {
+            guard queued > 0 else { throw error }
+            var fields = partialObservationFields(cancelled: true)
+            fields["sessionID"] = handle.id.uuidString
+            fields["inputDispatched"] = true
+            fields["inputStatus"] = "partiallyQueued"
+            fields["clicksQueued"] = queued
+            fields["serverAcknowledged"] = false
+            return try output(fields)
+        }
+        var fields = details
+        fields["x"] = x; fields["y"] = y; fields["clickCount"] = count
+        return try await postActionOutput(handle, before: before, details: fields)
+    }
+
+    private static func observationFields(
+        _ handle: VNCSessionHandle, artifact: VNCCapturedArtifact
+    ) async -> [String: Any] {
+        let capture = artifact.capture
+        let recognition = await BoundedVisualTextRecognizer.shared.recognize {
+            try recognizeText(in: capture)
+        }
+        let elements = recognition.elements
+        let isCurrent = handle.session.currentFrameRevision == capture.revision
+            && handle.session.currentVisualEvidence?.sha256 == capture.sha256
+        if isCurrent {
+            handle.session.rememberStructuredEvidence(VNCStructuredEvidence(
+                screenshotSHA256: artifact.capture.sha256, revision: artifact.capture.revision,
+                capturedAt: artifact.capture.capturedAt, elements: elements
+            ))
+        }
+        return [
+            "pixelWidth": artifact.capture.pixelWidth, "pixelHeight": artifact.capture.pixelHeight,
+            "revision": artifact.capture.revision, "screenshotSHA256": artifact.capture.sha256,
+            "screenshotPath": artifact.reference.relativePath,
+            "capturedAt": artifact.capture.capturedAt.ISO8601Format(),
+            "coordinateSpace": "framebufferPixels", "structureSource": "onDeviceOCR",
+            "evidenceStatus": isCurrent ? "current" : "stale",
+            "structureStatus": recognition.status.rawValue,
+            "structuredElementCount": elements.count,
+            "elements": structuredJSON(elements)
+        ]
+    }
+
+    static func observeOutput(_ handle: VNCSessionHandle) async throws -> ToolExecutionOutput {
+        let artifact = try capture(handle)
+        var fields = await observationFields(handle, artifact: artifact)
+        fields["status"] = "ok"
+        fields["sessionID"] = handle.id.uuidString
+        return try output(fields, artifacts: [artifact.reference])
     }
 
     static func output(
@@ -360,27 +478,7 @@ public struct VNCObserveTool: AgentTool {
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         let handle = try await VNCToolSupport.connectedSession(from: sessionProvider)
-        let artifact = try VNCToolSupport.capture(handle)
-        let elements = try VNCToolSupport.recognizeText(in: artifact.capture)
-        handle.session.rememberStructuredEvidence(VNCStructuredEvidence(
-            screenshotSHA256: artifact.capture.sha256,
-            revision: artifact.capture.revision,
-            capturedAt: artifact.capture.capturedAt,
-            elements: elements
-        ))
-        return try VNCToolSupport.output([
-            "status": "ok",
-            "sessionID": handle.id.uuidString,
-            "pixelWidth": artifact.capture.pixelWidth,
-            "pixelHeight": artifact.capture.pixelHeight,
-            "revision": artifact.capture.revision,
-            "screenshotSHA256": artifact.capture.sha256,
-            "screenshotPath": artifact.reference.relativePath,
-            "coordinateSpace": "framebufferPixels",
-            "structureSource": "onDeviceOCR",
-            "structuredElementCount": elements.count,
-            "elements": VNCToolSupport.structuredJSON(elements)
-        ], artifacts: [artifact.reference])
+        return try await VNCToolSupport.observeOutput(handle)
     }
 }
 
@@ -398,7 +496,7 @@ public struct VNCClickElementTool: AgentTool {
     }
     public static let name = "vnc.clickElement"
     public static let toolDescription =
-        "Click the center of an OCR-backed recognizedText reference returned by the latest vnc.observe. This is a visual text anchor, not a claimed native accessibility control. Returns a post-action screenshot for verification."
+        "Click the center of an OCR-backed recognizedText reference from the latest VNC observation or action result. This is a visual text anchor, not a native accessibility control. Returns a post-action screenshot, OCR elements and reusable screenshotSHA256; do not routinely observe again."
     public static let parametersJSON = #"{"type":"object","properties":{"reference":{"type":"string","pattern":"^text-[1-9][0-9]*$"},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"},"clickCount":{"type":"integer","minimum":1,"maximum":2}},"required":["reference","screenshotSHA256"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.controlsGUI, .executesRemoteCommand]
     public static let isSideEffecting = true
@@ -432,28 +530,14 @@ public struct VNCClickElementTool: AgentTool {
             screenshotSHA256: args.screenshotSHA256,
             session: handle.session
         )
-        for index in 0..<(args.clickCount ?? 1) {
-            let x = UInt16(element.centerX)
-            let y = UInt16(element.centerY)
-            handle.session.mouseMove(x: x, y: y)
-            handle.session.mouseDown(x: x, y: y)
-            handle.session.mouseUp(x: x, y: y)
-            if index == 0, args.clickCount == 2 { try await Task.sleep(for: .milliseconds(100)) }
-        }
-        let post = try await VNCToolSupport.postActionCapture(handle, before: evidence)
-        return try VNCToolSupport.output([
-            "status": "ok",
-            "sessionID": handle.id.uuidString,
-            "inputDispatched": true,
+        return try await VNCToolSupport.clickOutput(handle, before: evidence,
+            x: element.centerX, y: element.centerY, count: args.clickCount ?? 1, context: context, details: [
             "reference": element.reference,
             "recognizedText": element.text,
             "x": element.centerX,
             "y": element.centerY,
-            "clickCount": args.clickCount ?? 1,
-            "frameChanged": post.changed,
-            "postScreenshotSHA256": post.artifact.capture.sha256,
-            "postScreenshotPath": post.artifact.reference.relativePath
-        ], artifacts: [post.artifact.reference])
+            "clickCount": args.clickCount ?? 1
+        ])
     }
 }
 
@@ -473,7 +557,7 @@ public struct VNCClickTool: AgentTool {
     }
     public static let name = "vnc.click"
     public static let toolDescription =
-        "Click a framebuffer pixel from the latest vnc.observe screenshot. Pass its exact screenshotSHA256. Returns a post-action screenshot and separate inputDispatched/frameChanged fields; frameChanged alone is not proof of task success."
+        "Click a framebuffer pixel from the latest VNC observation or action result. Pass its exact screenshotSHA256. Returns a post-action screenshot, OCR elements and reusable screenshotSHA256, plus separate inputDispatched/frameChanged fields; frameChanged alone is not proof of task success. Do not routinely observe again."
     public static let parametersJSON = #"{"type":"object","properties":{"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"},"clickCount":{"type":"integer","minimum":1,"maximum":2}},"required":["x","y","screenshotSHA256"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.controlsGUI, .executesRemoteCommand]
     public static let isSideEffecting = true
@@ -499,29 +583,8 @@ public struct VNCClickTool: AgentTool {
             screenshotSHA256: args.screenshotSHA256,
             session: handle.session
         )
-        let x = UInt16(args.x)
-        let y = UInt16(args.y)
-        for index in 0..<(args.clickCount ?? 1) {
-            handle.session.mouseMove(x: x, y: y)
-            handle.session.mouseDown(x: x, y: y)
-            handle.session.mouseUp(x: x, y: y)
-            if index == 0, args.clickCount == 2 {
-                try await Task.sleep(for: .milliseconds(100))
-            }
-        }
-        let post = try await VNCToolSupport.postActionCapture(handle, before: evidence)
-        return try VNCToolSupport.output([
-            "status": "ok",
-            "sessionID": handle.id.uuidString,
-            "inputDispatched": true,
-            "x": args.x,
-            "y": args.y,
-            "clickCount": args.clickCount ?? 1,
-            "frameChanged": post.changed,
-            "postScreenshotSHA256": post.artifact.capture.sha256,
-            "postScreenshotPath": post.artifact.reference.relativePath,
-            "postRevision": post.artifact.capture.revision
-        ], artifacts: [post.artifact.reference])
+        return try await VNCToolSupport.clickOutput(handle, before: evidence,
+            x: args.x, y: args.y, count: args.clickCount ?? 1, context: context)
     }
 }
 
@@ -554,18 +617,10 @@ public struct VNCTypeTextTool: AgentTool {
         let before = handle.session.currentVisualEvidence
         handle.session.send(text: args.text)
         if args.submit == true { handle.session.send(.return) }
-        let post = try await VNCToolSupport.postActionCapture(handle, before: before)
-        return try VNCToolSupport.output([
-            "status": "ok",
-            "sessionID": handle.id.uuidString,
-            "inputDispatched": true,
+        return try await VNCToolSupport.postActionOutput(handle, before: before, details: [
             "characterCount": args.text.count,
-            "submitted": args.submit == true,
-            "frameChanged": post.changed,
-            "postScreenshotSHA256": post.artifact.capture.sha256,
-            "postScreenshotPath": post.artifact.reference.relativePath,
-            "postRevision": post.artifact.capture.revision
-        ], artifacts: [post.artifact.reference])
+            "submitted": args.submit == true
+        ])
     }
 }
 
@@ -622,20 +677,17 @@ public struct VNCTypeCredentialTool: AgentTool {
             throw FloeError.validationFailed("Saved credential is empty, too large, or not UTF-8 text")
         }
         let handle = try await VNCToolSupport.connectedSession(from: sessionProvider)
-        let before = handle.session.currentVisualEvidence
         handle.session.send(text: text)
         if args.submit == true { handle.session.send(.return) }
-        let post = try await VNCToolSupport.postActionCapture(handle, before: before)
+        // Credential text may be visible in an arbitrary focus target. Do not
+        // automatically persist or expose an unredacted post-input screenshot.
         return try VNCToolSupport.output([
-            "status": "ok",
-            "sessionID": handle.id.uuidString,
-            "credentialDispatched": true,
-            "submitted": args.submit == true,
-            "frameChanged": post.changed,
-            "postScreenshotSHA256": post.artifact.capture.sha256,
-            "postScreenshotPath": post.artifact.reference.relativePath,
-            "postRevision": post.artifact.capture.revision
-        ], artifacts: [post.artifact.reference])
+            "status": "ok", "sessionID": handle.id.uuidString,
+            "credentialDispatched": true, "inputStatus": "queued",
+            "serverAcknowledged": false, "submitted": args.submit == true,
+            "observationStatus": "suppressedForCredentialPrivacy",
+            "nextAction": "Verify the remote focus safely before requesting new visual evidence. Do not replay credential input."
+        ])
     }
 }
 
@@ -678,16 +730,9 @@ public struct VNCScrollTool: AgentTool {
             y: UInt16(args.y),
             steps: UInt32(abs(args.deltaY))
         )
-        let post = try await VNCToolSupport.postActionCapture(handle, before: evidence)
-        return try VNCToolSupport.output([
-            "status": "ok",
-            "sessionID": handle.id.uuidString,
-            "inputDispatched": true,
-            "deltaY": args.deltaY,
-            "frameChanged": post.changed,
-            "postScreenshotSHA256": post.artifact.capture.sha256,
-            "postScreenshotPath": post.artifact.reference.relativePath
-        ], artifacts: [post.artifact.reference])
+        return try await VNCToolSupport.postActionOutput(handle, before: evidence, details: [
+            "deltaY": args.deltaY
+        ])
     }
 }
 
@@ -718,7 +763,7 @@ public struct VNCDragTool: AgentTool {
     }
     public static let name = "vnc.drag"
     public static let toolDescription =
-        "Drag between two framebuffer pixels from the latest vnc.observe screenshot. Returns a post-action screenshot; input dispatch is not proof that the intended item moved."
+        "Drag between two framebuffer pixels from the latest VNC observation or action result. Returns a post-action screenshot, OCR elements and reusable screenshotSHA256; do not routinely observe again. Input dispatch is not proof that the intended item moved."
     public static let parametersJSON = #"{"type":"object","properties":{"fromX":{"type":"integer","minimum":0},"fromY":{"type":"integer","minimum":0},"toX":{"type":"integer","minimum":0},"toY":{"type":"integer","minimum":0},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"},"durationMilliseconds":{"type":"integer","minimum":100,"maximum":3000}},"required":["fromX","fromY","toX","toY","screenshotSHA256"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.controlsGUI, .executesRemoteCommand]
     public static let isSideEffecting = true
@@ -758,28 +803,32 @@ public struct VNCDragTool: AgentTool {
         let duration = args.durationMilliseconds ?? 500
         handle.session.mouseMove(x: UInt16(args.fromX), y: UInt16(args.fromY))
         handle.session.mouseDown(x: UInt16(args.fromX), y: UInt16(args.fromY))
-        for step in 1...steps {
-            try context.cancellation.throwIfCancelled()
-            let progress = Double(step) / Double(steps)
-            let x = Int((Double(args.fromX) + Double(args.toX - args.fromX) * progress).rounded())
-            let y = Int((Double(args.fromY) + Double(args.toY - args.fromY) * progress).rounded())
-            handle.session.mouseMove(x: UInt16(x), y: UInt16(y))
-            try await Task.sleep(for: .milliseconds(duration / steps))
+        var lastX = UInt16(args.fromX)
+        var lastY = UInt16(args.fromY)
+        do {
+            defer { handle.session.mouseUp(x: lastX, y: lastY) }
+            for step in 1...steps {
+                try context.cancellation.throwIfCancelled()
+                let progress = Double(step) / Double(steps)
+                lastX = UInt16((Double(args.fromX) + Double(args.toX - args.fromX) * progress).rounded())
+                lastY = UInt16((Double(args.fromY) + Double(args.toY - args.fromY) * progress).rounded())
+                handle.session.mouseMove(x: lastX, y: lastY)
+                try await Task.sleep(for: .milliseconds(duration / steps))
+            }
+        } catch {
+            var fields = VNCToolSupport.partialObservationFields(cancelled: true)
+            fields["sessionID"] = handle.id.uuidString
+            fields["inputDispatched"] = true
+            fields["inputStatus"] = "partiallyQueued"
+            fields["releaseQueued"] = true
+            return try VNCToolSupport.output(fields)
         }
-        handle.session.mouseUp(x: UInt16(args.toX), y: UInt16(args.toY))
-        let post = try await VNCToolSupport.postActionCapture(handle, before: evidence)
-        return try VNCToolSupport.output([
-            "status": "ok",
-            "sessionID": handle.id.uuidString,
-            "inputDispatched": true,
+        return try await VNCToolSupport.postActionOutput(handle, before: evidence, details: [
             "fromX": args.fromX,
             "fromY": args.fromY,
             "toX": args.toX,
-            "toY": args.toY,
-            "frameChanged": post.changed,
-            "postScreenshotSHA256": post.artifact.capture.sha256,
-            "postScreenshotPath": post.artifact.reference.relativePath
-        ], artifacts: [post.artifact.reference])
+            "toY": args.toY
+        ])
     }
 }
 
@@ -810,16 +859,9 @@ public struct VNCKeyPressTool: AgentTool {
         let handle = try await VNCToolSupport.connectedSession(from: sessionProvider)
         let before = handle.session.currentVisualEvidence
         try handle.session.send(namedKey: args.key)
-        let post = try await VNCToolSupport.postActionCapture(handle, before: before)
-        return try VNCToolSupport.output([
-            "status": "ok",
-            "sessionID": handle.id.uuidString,
-            "inputDispatched": true,
-            "key": args.key,
-            "frameChanged": post.changed,
-            "postScreenshotSHA256": post.artifact.capture.sha256,
-            "postScreenshotPath": post.artifact.reference.relativePath
-        ], artifacts: [post.artifact.reference])
+        return try await VNCToolSupport.postActionOutput(handle, before: before, details: [
+            "key": args.key
+        ])
     }
 
     private static let supportedKeys: Set<String> = [

@@ -127,6 +127,7 @@ jobs:
             -only-testing:FloeAppTests/CanvasAgentToolContractTests \
             -only-testing:FloeAppTests/CrashAndFeedbackRegressionTests \
             -only-testing:FloeAppTests/ThreadTimelineTests \
+            -only-testing:FloeAppTests/BrowserProtocolTests \
             CODE_SIGNING_ALLOWED=NO \
             test
           python3 scripts/verify_app_regression_xcresult.py \
@@ -315,6 +316,7 @@ jobs:
             -only-testing:FloeAppTests/CanvasAgentToolContractTests \
             -only-testing:FloeAppTests/CrashAndFeedbackRegressionTests \
             -only-testing:FloeAppTests/ThreadTimelineTests \
+            -only-testing:FloeAppTests/BrowserProtocolTests \
             CODE_SIGNING_ALLOWED=NO \
             test
           python3 scripts/verify_app_regression_xcresult.py \

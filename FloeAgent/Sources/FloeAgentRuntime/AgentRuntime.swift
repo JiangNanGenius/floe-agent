@@ -911,6 +911,7 @@ public actor FloeAgentRuntime {
             riskLabels: Set(descriptor.riskLabels.map(\.rawValue)),
             userGoal: messages.last(where: { $0.role == "user" })?.content ?? "",
             recentContext: Self.approvalContext(from: messages),
+            userRequests: Self.approvalUserRequests(from: messages),
             hostAndPathScope: waiting.toolCall.scope,
             preapprovedPythonScriptSHA256: configuration.preapprovedPythonScriptSHA256,
             preapprovedPythonPackages: configuration.preapprovedPythonPackages
@@ -1213,7 +1214,7 @@ public actor FloeAgentRuntime {
             if !evidence.isEmpty {
                 contentMessages.append(ProviderMessage(
                     role: "user",
-                    content: [.text("Visible browser evidence for the immediately preceding tool result.")] + evidence
+                    content: [.text("Verified visual evidence for the immediately preceding tool results (browser, VNC, or generated images). Use the corresponding result's coordinates, revision and screenshot hash; no extra observation is needed while that evidence remains fresh.")] + evidence
                 ))
             }
         }
@@ -1820,6 +1821,7 @@ public actor FloeAgentRuntime {
             riskLabels: Set(descriptor.riskLabels.map(\.rawValue)),
             userGoal: messages.last(where: { $0.role == "user" })?.content ?? "",
             recentContext: Self.approvalContext(from: messages),
+            userRequests: Self.approvalUserRequests(from: messages),
             hostAndPathScope: call.scope,
             preapprovedPythonScriptSHA256: configuration.preapprovedPythonScriptSHA256,
             preapprovedPythonPackages: configuration.preapprovedPythonPackages
@@ -1933,6 +1935,10 @@ public actor FloeAgentRuntime {
     /// Recent conversational evidence supplied to the approval classifier.
     /// Tool output and user text are deliberately bounded so one decision
     /// cannot expand the provider request without limit.
+    nonisolated static func approvalUserRequests(from messages: [ConversationMessage]) -> [String] {
+        messages.filter { $0.role == "user" }.suffix(6).map { String($0.content.prefix(2048)) }
+    }
+
     private static func approvalContext(from messages: [ConversationMessage]) -> String {
         let projected = messages.suffix(12).map { message in
             "\(message.role): \(String(message.content.prefix(1200)))"

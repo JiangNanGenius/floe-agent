@@ -3482,6 +3482,10 @@ final class ConversationCenter: ObservableObject {
     }
 
     func saveModelPreferences(_ preferences: ModelSelectionPreferences) async throws {
+        let previousReviewModels = [modelPreferences.approvalModelID,
+                                    modelPreferences.packageReviewModelID,
+                                    modelPreferences.generalAuxiliaryLLMModelID,
+                                    modelPreferences.defaultAgentModelID]
         var updated = preferences
         // Provider catalogs can change a model's declared capabilities after a
         // preference has synced. Do not let a stale auxiliary choice prevent an
@@ -3512,6 +3516,7 @@ final class ConversationCenter: ObservableObject {
             // never leave memory disagreeing with SQLite.
             modelPreferences = (try? await environment.configurationStore.preferences())
                 ?? modelPreferences
+            try await refreshActiveApprovalPolicies(ifDifferentFrom: previousReviewModels)
             throw error
         }
         switch updated.onboardingStatus {
@@ -3521,6 +3526,23 @@ final class ConversationCenter: ObservableObject {
             Self.persistOnboardingSkippedMarker(false)
         }
         await reload()
+        try await refreshActiveApprovalPolicies(ifDifferentFrom: previousReviewModels)
+    }
+
+    private func refreshActiveApprovalPolicies(ifDifferentFrom previousReviewModels: [UUID?]) async throws {
+        // An active run holds a stable DynamicApprovalPolicy. Updating only
+        // model preferences left it using the old (or missing) classifier and
+        // made a newly selected automatic approval model appear ineffective.
+        guard previousReviewModels != [modelPreferences.approvalModelID,
+                                       modelPreferences.packageReviewModelID,
+                                       modelPreferences.generalAuxiliaryLLMModelID,
+                                       modelPreferences.defaultAgentModelID] else { return }
+        let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
+        for service in Array(runServices.values) {
+            let taskPolicy = try await workspaceStore.taskPolicy(conversationID: service.conversationID)
+            let nextPolicy = await approvalPolicy(for: taskPolicy, primaryModel: service.primaryModel)
+            await service.updateApprovalPolicy(nextPolicy)
+        }
     }
 
     /// Persists the agent model selection so a task keeps the chosen model

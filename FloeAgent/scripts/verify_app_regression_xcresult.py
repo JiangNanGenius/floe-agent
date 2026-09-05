@@ -17,6 +17,7 @@ SUITE_MINIMUMS = {
     "CanvasAgentToolContractTests": 8,
     "CrashAndFeedbackRegressionTests": 38,
     "ThreadTimelineTests": 18,
+    "BrowserProtocolTests": 6,
 }
 
 

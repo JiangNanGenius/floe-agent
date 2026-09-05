@@ -5,6 +5,7 @@ import FloeSecurity
 import FloeTools
 
 struct SkillsView: View {
+    @EnvironmentObject private var environment: AppEnvironment
     @ObservedObject var center: SkillsCenter
     @ObservedObject private var mcpCenter: MCPSettingsCenter
     @State private var showingCreator = false
@@ -18,14 +19,14 @@ struct SkillsView: View {
 
     var body: some View {
         List {
-            Section("工具来源") {
+            Section("connectors.title") {
                 NavigationLink {
-                    MCPServersView(center: mcpCenter)
+                    ConnectorsView(sourceControl: environment.sourceControlCenter, mcpCenter: mcpCenter)
                 } label: {
                     Label {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("标准 MCP")
-                            Text("已启用 \(mcpCenter.servers.filter(\.enabled).count) 个远程工具服务器")
+                            Text("connectors.manage")
+                            Text("connectors.summary")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -33,6 +34,7 @@ struct SkillsView: View {
                         Image(systemName: "network")
                     }
                 }
+                .accessibilityIdentifier("skills.connectors")
             }
             if center.installed.isEmpty {
                 ContentUnavailableView("skills.empty", systemImage: "puzzlepiece.extension")
@@ -85,6 +87,52 @@ struct SkillsView: View {
                 pendingRemoval = nil
             }
         }
+    }
+}
+
+/// Account integrations are not installable skill Markdown. Keep existing
+/// account stores and Keychain identities intact when changing navigation.
+struct ConnectorsView: View {
+    @ObservedObject var sourceControl: SourceControlCenter
+    @ObservedObject var mcpCenter: MCPSettingsCenter
+
+    var body: some View {
+        List {
+            Section("connectors.services") {
+                NavigationLink {
+                    GitHubSettingsView(center: sourceControl)
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("GitHub")
+                            Text(sourceControl.account.map { String(localized: "connectors.connected") + " · \($0.login)" }
+                                 ?? String(localized: "connectors.github.disconnected"))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: { Image(systemName: "arrow.triangle.branch") }
+                }
+                .accessibilityIdentifier("connectors.github")
+            }
+            Section {
+                NavigationLink {
+                    MCPServersView(center: mcpCenter)
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("connectors.mcp.title")
+                            Text(String.localizedStringWithFormat(String(localized: "connectors.mcp.enabled_count"), mcpCenter.servers.filter(\.enabled).count))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: { Image(systemName: "network") }
+                }
+                .accessibilityIdentifier("connectors.mcp")
+            } header: { Text("connectors.tool_sources") }
+            footer: {
+                Text("connectors.footer")
+            }
+        }
+        .navigationTitle("connectors.title")
+        .task { await sourceControl.loadConnection() }
     }
 }
 

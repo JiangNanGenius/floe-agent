@@ -4516,6 +4516,11 @@ struct WorkspaceCanvasView: View {
                                     port: port,
                                     translation: translation
                                 )
+                            },
+                            onDragCancelled: {
+                                if liveConnectionDrag?.sourceNodeID == node.id {
+                                    liveConnectionDrag = nil
+                                }
                             }
                         )
                     }
@@ -7747,6 +7752,8 @@ private struct CanvasConnectionPortsOverlay: View {
     let onTap: (CanvasConnectionPort) -> Void
     let onDragChanged: (CanvasConnectionPort, CGSize) -> Void
     let onDragEnded: (CanvasConnectionPort, CGSize) -> Void
+    let onDragCancelled: () -> Void
+    @GestureState private var isDragging = false
 
     var body: some View {
         ZStack {
@@ -7762,18 +7769,26 @@ private struct CanvasConnectionPortsOverlay: View {
                         .overlay { Circle().stroke(FloeTheme.primary, lineWidth: 1.5) }
                 }
                 .buttonStyle(.plain)
+                // Hit shape belongs to the recognizer, not an outer wrapper.
+                // Previously the visible 44pt target still dragged only at 20pt.
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
                 .highPriorityGesture(
                     DragGesture(minimumDistance: 8)
+                        .updating($isDragging) { _, dragging, _ in dragging = true }
                         .onChanged { onDragChanged(port, $0.translation) }
                         .onEnded { onDragEnded(port, $0.translation) }
                 )
-                .frame(width: 44, height: 44)
-                .contentShape(Circle())
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: port.alignment)
                 .offset(port.outwardOffset)
                 .accessibilityLabel("从节点\(port.accessibilityName)连接")
                 .accessibilityIdentifier("canvas.connection.port.\(port.rawValue)")
             }
+        }
+        .onChange(of: isDragging) { wasDragging, dragging in
+            // SwiftUI resets GestureState even when onEnded never arrives
+            // (e.g. a system gesture wins). Clear only the transient wire.
+            if wasDragging && !dragging { onDragCancelled() }
         }
         .overlay {
             if isDropTarget {

@@ -82,6 +82,7 @@ public func registerExecutionTools(
         ToolCatalog.register(SSHListHostsTool.self)
         ToolCatalog.register(SSHUpdateHostTool.self)
         ToolCatalog.register(RemoteConnectionOpenTool.self)
+        ToolCatalog.register(RemoteConnectionStatusTool.self)
         ToolCatalog.register(RemoteConnectionExchangeTool.self)
         ToolCatalog.register(RemoteConnectionCloseTool.self)
     }
@@ -159,6 +160,7 @@ public func registerExecutionTools(
             updateObserver: remoteHostUpdateObserver
         ))
         let rawConnections = RawRemoteConnectionService()
+        registry.register(RemoteConnectionStatusTool(service: rawConnections))
         registry.register(RemoteConnectionOpenTool(service: rawConnections, store: remoteHostStore))
         registry.register(RemoteConnectionExchangeTool(service: rawConnections))
         registry.register(RemoteConnectionCloseTool(service: rawConnections))

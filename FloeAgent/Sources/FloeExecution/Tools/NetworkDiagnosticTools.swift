@@ -6,7 +6,7 @@ import FloeSSH
 import Darwin
 import Network
 
-/// Fixed-command network diagnostics executed on a paired SSH host. These
+/// Device diagnostics and explicitly selected fixed-command SSH probes. These
 /// tools keep host IDs, timeouts and targets structured, so the model does not
 /// need to construct arbitrary shell just to answer basic connectivity
 /// questions.
@@ -65,7 +65,7 @@ private enum NetworkDiagnosticSupport {
     }
 
     static func output(_ result: SSHExecResult, method: String) -> ToolExecutionOutput {
-        var text = "method=\(method) exitCode=\(result.exitCode) truncated=\(result.truncated)"
+        var text = "executionTarget=host method=\(method) exitCode=\(result.exitCode) truncated=\(result.truncated)"
         if !result.stdout.isEmpty { text += "\nstdout:\n\(result.stdout)" }
         if !result.stderr.isEmpty { text += "\nstderr:\n\(result.stderr)" }
         let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -82,8 +82,8 @@ public struct NetworkPingTool: AgentTool {
         public var timeoutSeconds: Int?
     }
     public static let name = "network.ping"
-    public static let toolDescription = "Run a bounded ICMP ping from a paired SSH host. Use this before VNC or other connection attempts to distinguish host reachability from service failure."
-    public static let parametersJSON = #"{"type":"object","properties":{"target":{"type":"string","description":"Hostname or IP to ping"},"executionTarget":{"type":"string","enum":["device","host"],"description":"Defaults to device; host requires hostID"},"hostID":{"type":"string","description":"Optional paired SSH host UUID that runs the probe; omitted uses the default host"},"count":{"type":"integer","minimum":1,"maximum":10},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":10}},"required":["target"],"additionalProperties":false}"#
+    public static let toolDescription = "Run a bounded genuine ICMP ping on an explicitly selected SSH host. This build does not implement device ICMP: device returns deviceICMPUnavailable, never a simulated ping. For device service reachability use network.tcpProbe; ping is not a mandatory prerequisite for VNC."
+    public static let parametersJSON = #"{"type":"object","properties":{"target":{"type":"string","description":"Hostname or IP to ping"},"executionTarget":{"type":"string","enum":["device","host"],"description":"Defaults to device when hostID is omitted; device ICMP is unavailable in this build. Select host with hostID for ICMP."},"hostID":{"type":"string","description":"Explicit paired SSH host UUID. Supplying it selects host unless executionTarget is specified. No default host is inferred."},"count":{"type":"integer","minimum":1,"maximum":10},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":10}},"required":["target"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.networkAccess, .executesRemoteCommand]
     public static let isSideEffecting = false
     public static let toolEffect: ToolEffect = .readOnly
@@ -127,8 +127,8 @@ public struct NetworkTracerouteTool: AgentTool {
         public var timeoutSeconds: Int?
     }
     public static let name = "network.traceroute"
-    public static let toolDescription = "Run a bounded route trace from a paired SSH host. Returns the real hop output from traceroute or tracepath; it never fabricates unavailable hops."
-    public static let parametersJSON = #"{"type":"object","properties":{"target":{"type":"string","description":"Hostname or IP to trace"},"executionTarget":{"type":"string","enum":["device","host"],"description":"Defaults to device; host requires hostID"},"hostID":{"type":"string","description":"Optional paired SSH host UUID that runs the trace; omitted uses the default host"},"maxHops":{"type":"integer","minimum":1,"maximum":30},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":5}},"required":["target"],"additionalProperties":false}"#
+    public static let toolDescription = "Run a bounded genuine traceroute or tracepath on an explicitly selected SSH host. This build does not implement device traceroute: device returns deviceTracerouteUnavailable. Never infer hops from TCP or HTTP probes."
+    public static let parametersJSON = #"{"type":"object","properties":{"target":{"type":"string","description":"Hostname or IP to trace"},"executionTarget":{"type":"string","enum":["device","host"],"description":"Defaults to device when hostID is omitted; device traceroute is unavailable in this build. Select host with hostID for a route trace."},"hostID":{"type":"string","description":"Explicit paired SSH host UUID. Supplying it selects host unless executionTarget is specified. No default host is inferred."},"maxHops":{"type":"integer","minimum":1,"maximum":30},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":5}},"required":["target"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.networkAccess, .executesRemoteCommand]
     public static let isSideEffecting = false
     public static let toolEffect: ToolEffect = .readOnly
