@@ -264,6 +264,8 @@ public func registerImageTools(
 ) -> (@Sendable () -> URL?) {
     ToolCatalog.register(ImageProcessTool.self)
     registry.register(ImageProcessTool(rootProvider: rootProvider))
+    ToolCatalog.register(QRCodeGenerateTool.self)
+    registry.register(QRCodeGenerateTool(rootProvider: rootProvider))
     return rootProvider
 }
 #endif

@@ -573,13 +573,15 @@ struct PDFEditTool: AgentTool {
         var rotatePages: [Int]?
         var rotationDegrees: Int?
         var watermark: String?
+        var watermarkFontSize: Double?
+        var watermarkOpacity: Double?
     }
 
     static let name = "document.pdf.edit"
     static let toolDescription =
-        "Create a new PDF from a workspace PDF using native PDFKit. Can remove pages, rotate selected pages by 90-degree increments, and add a visible text watermark. Always writes outputPath and then reopens it to verify."
+        "Create a new PDF from a workspace PDF using native PDFKit. Can remove pages, rotate selected pages by 90-degree increments, and add a visible text watermark (optional watermarkFontSize 8-72, watermarkOpacity 0.05-1). Always writes outputPath and then reopens it to verify."
     static let parametersJSON = #"""
-    {"type":"object","properties":{"inputPath":{"type":"string"},"outputPath":{"type":"string"},"removePages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}},"rotatePages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}},"rotationDegrees":{"type":"integer"},"watermark":{"type":"string","maxLength":200}},"required":["inputPath","outputPath"],"additionalProperties":false}
+    {"type":"object","properties":{"inputPath":{"type":"string"},"outputPath":{"type":"string"},"removePages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}},"rotatePages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}},"rotationDegrees":{"type":"integer","enum":[0,90,180,270,-90,-180,-270]},"watermark":{"type":"string","maxLength":200},"watermarkFontSize":{"type":"number","minimum":8,"maximum":72},"watermarkOpacity":{"type":"number","minimum":0.05,"maximum":1}},"required":["inputPath","outputPath"],"additionalProperties":false}
     """#
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     static let isSideEffecting = true
@@ -593,6 +595,12 @@ struct PDFEditTool: AgentTool {
         }
         if let degrees = args.rotationDegrees, ![0, 90, 180, 270, -90, -180, -270].contains(degrees) {
             throw FloeError.validationFailed("rotationDegrees must be a 90-degree increment")
+        }
+        if let size = args.watermarkFontSize, !(8...72).contains(size) {
+            throw FloeError.validationFailed("watermarkFontSize must be 8-72")
+        }
+        if let opacity = args.watermarkOpacity, !(0.05...1).contains(opacity) {
+            throw FloeError.validationFailed("watermarkOpacity must be 0.05-1")
         }
     }
 
@@ -619,6 +627,8 @@ struct PDFEditTool: AgentTool {
             page.rotation = ((page.rotation + rotation) % 360 + 360) % 360
         }
         if let watermark = args.watermark?.trimmingCharacters(in: .whitespacesAndNewlines), !watermark.isEmpty {
+            let fontSize = CGFloat(args.watermarkFontSize ?? 28)
+            let opacity = CGFloat(args.watermarkOpacity ?? 0.35)
             for index in 0..<document.pageCount where document.page(at: index) != nil {
                 let page = document.page(at: index)!
                 let bounds = page.bounds(for: .mediaBox)
@@ -628,8 +638,8 @@ struct PDFEditTool: AgentTool {
                     withProperties: nil
                 )
                 annotation.contents = watermark
-                annotation.font = .boldSystemFont(ofSize: 28)
-                annotation.fontColor = UIColor.systemRed.withAlphaComponent(0.35)
+                annotation.font = .boldSystemFont(ofSize: fontSize)
+                annotation.fontColor = UIColor.systemRed.withAlphaComponent(opacity)
                 annotation.color = .clear
                 annotation.alignment = .center
                 page.addAnnotation(annotation)

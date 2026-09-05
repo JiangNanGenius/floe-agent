@@ -1519,6 +1519,18 @@ public actor FloeAgentRuntime {
             let nextBytes = delta.text.utf8.count
             let limit = configuration.model.limits.clientOutputSafetyBytes
             guard nextBytes <= limit - streamTextByteCount else {
+                if didVerifyFinalAnswer, isFinalizingWithoutTools {
+                    // Same fail-safe as provider errors: the sealed answer
+                    // stands; only the optional review output overflowed.
+                    streamText = ""
+                    await publishLiveness(
+                        phase: .verifying,
+                        message: "Final-answer verification skipped: review output exceeded the response limit",
+                        isRecoverable: true
+                    )
+                    await finishOrSteer(stopReason: forcedStopReason ?? .endTurn)
+                    return
+                }
                 await failRun(
                     message: "Provider output exceeded the configured response limit",
                     recoverable: false
@@ -1596,6 +1608,20 @@ public actor FloeAgentRuntime {
             break // Providers never emit tool results; runtime owns them.
 
         case .error(let error):
+            // The final-answer self-review is a best-effort extra pass: the
+            // conclusion is already sealed and delivered. A provider error
+            // here (context overflow, output limit, transport) must never
+            // fail a run whose answer is complete — finish with that answer.
+            if didVerifyFinalAnswer, isFinalizingWithoutTools {
+                streamText = ""
+                await publishLiveness(
+                    phase: .verifying,
+                    message: "Final-answer verification skipped: \(error.providerMessage)",
+                    isRecoverable: true
+                )
+                await finishOrSteer(stopReason: forcedStopReason ?? .endTurn)
+                return
+            }
             switch error.kind {
             case .contextOverflow:
                 guard contextOverflowRecoveryCount == 0 else {

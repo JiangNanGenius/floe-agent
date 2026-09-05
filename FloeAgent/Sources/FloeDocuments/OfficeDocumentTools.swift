@@ -191,7 +191,7 @@ public struct PresentationCreateDeckTool: AgentTool {
     }
     public static let name = "presentation.createDeck"
     public static let toolDescription =
-        "Create an editable native 16:9 .pptx in the workspace. First ground claims and assets with web.search/web.fetch, then plan a concise storyboard, vary slide content, keep audience-facing copy clean, and add source URLs to slide notes. Floe creates a local OOXML deck, validates it, and exposes its text for manual editing."
+        "Create an editable native 16:9 .pptx in the workspace. First ground claims and assets with web.search/web.fetch, then plan a concise storyboard, vary slide content, keep audience-facing copy clean, and add source URLs to slide notes. Floe creates a local OOXML deck, validates it, and exposes its text for manual editing. For an inline conversation table/chart/web preview instead of a .pptx file, use presentation.create."
     public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","description":"New workspace-relative .pptx path"},"title":{"type":"string","maxLength":300},"slides":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"title":{"type":"string","maxLength":300},"bullets":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":1000}},"notes":{"type":"string","description":"Optional speaker notes including [Sources] URLs","maxLength":20000}},"required":["title","bullets"],"additionalProperties":false}}},"required":["path","title","slides"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles]
     public static let isSideEffecting = true

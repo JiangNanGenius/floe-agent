@@ -397,6 +397,7 @@ let package = Package(
                 "FloeModels",
                 "FloeTools",
                 .product(name: "SMBClient", package: "SMBClient"),
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeWorkspace",

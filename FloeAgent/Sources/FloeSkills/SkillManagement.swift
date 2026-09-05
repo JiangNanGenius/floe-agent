@@ -58,7 +58,7 @@ public struct SkillManageTool: AgentTool {
         }
     }
     public static let name = "skill.manage"
-    public static let toolDescription = "Update an installed skill's instruction body, enable/disable it, or remove it recoverably. First use skill.read for the exact ID and expectedDigest. Requires approval. Update preserves frontmatter, scripts, manifest and capability grants; it does not edit executable code or broaden permissions."
+    public static let toolDescription = "Update an installed skill's instruction body, enable/disable it, or remove it. Removal retains a filesystem backup of the package for manual recovery; there is no automatic restore tool. First use skill.read for the exact ID and expectedDigest. Requires approval. Update preserves frontmatter, scripts, manifest and capability grants; it does not edit executable code or broaden permissions."
     public static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["update","setEnabled","remove"]},"id":{"type":"string"},"expectedDigest":{"type":"string"},"instructions":{"type":"string","description":"New Markdown body without frontmatter; update only"},"enabled":{"type":"boolean","description":"Required only for setEnabled"}},"required":["action","id","expectedDigest"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles, .changesAgentBehavior]
     public static let isSideEffecting = true

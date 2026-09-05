@@ -24,7 +24,7 @@ public struct DocumentCreateTool: AgentTool {
 
     public static let name = "document.createDocument"
     public static let toolDescription =
-        "Create a Markdown (.md) document in the workspace. Prefer .md for notes, reports, and documents; use .txt only for content that must not contain Markdown formatting."
+        "Create a Markdown (.md) document in the workspace. Prefer .md for notes, reports, and documents; use .txt only for content that must not contain Markdown formatting. This creates Markdown, not Word — use document.createWord for a .docx file."
     public static let parametersJSON = #"""
     {
       "type": "object",

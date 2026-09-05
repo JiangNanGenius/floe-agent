@@ -76,7 +76,7 @@ public struct PresentationArtifactTool: AgentTool {
 
     public static let name = "presentation.create"
     public static let toolDescription =
-        "Create a rich conversation result. Use table for native structured rows, chart for native line/bar/area/pie/scatter charts, or web for an interactive self-contained HTML preview. Web previews may use inline CSS and JavaScript but cannot access the network, frames, forms, plug-ins, native bridges, or arbitrary files. The result is saved, hash-verified, displayed inline, and can be shared."
+        "Create a rich conversation result shown inline in the chat. Use table for native structured rows, chart for native line/bar/area/pie/scatter charts, or web for an interactive self-contained HTML preview. Web previews may use inline CSS and JavaScript but cannot access the network, frames, forms, plug-ins, native bridges, or arbitrary files. The result is saved, hash-verified, displayed inline, and can be shared. For an editable .pptx slide-deck file instead of an inline result, use presentation.createDeck."
     public static let parametersJSON = #"""
     {
       "type":"object",

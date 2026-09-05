@@ -41,6 +41,7 @@ public func registerWorkspaceTools(
     ToolCatalog.register(WorkspaceDeleteFileTool.self)
     ToolCatalog.register(WorkspaceCreateDirectoryTool.self)
     ToolCatalog.register(WorkspaceCopyFileTool.self)
+    ToolCatalog.register(WorkspaceArchiveTool.self)
 
     // Runtime runners.
     registry.register(WorkspaceListDirectoryTool(environment: environment))
@@ -56,6 +57,7 @@ public func registerWorkspaceTools(
     registry.register(WorkspaceDeleteFileTool(environment: environment))
     registry.register(WorkspaceCreateDirectoryTool(environment: environment))
     registry.register(WorkspaceCopyFileTool(environment: environment))
+    registry.register(WorkspaceArchiveTool(environment: environment))
 
     return environment
 }
