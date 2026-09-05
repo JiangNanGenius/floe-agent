@@ -275,6 +275,31 @@ struct SkillPackageTests {
             try await service.installRewrittenPackage(at: fixture.root, provenance: provenance)
         }
     }
+
+    @Test("Failed metadata persistence restores the installed package")
+    func updateRollback() async throws {
+        let fixture = try SkillFixture()
+        try fixture.writeValidSkill()
+        let original = try SkillPackageValidator().validate(packageAt: fixture.root)
+        let root = fixture.base.appendingPathComponent("installed")
+        var provenance = SkillInstallProvenance(sourceURL: URL(string: "https://example.invalid/skill")!, originalSHA256: original.canonicalSHA256, expectedRewrittenSHA256: original.canonicalSHA256, rewriteModelID: "review", compatibilitySummary: "fixture")
+        _ = try await SkillInstallStagingService(installationRoot: root).installRewrittenPackage(at: fixture.root, provenance: provenance)
+        let markdownURL = fixture.root.appendingPathComponent("SKILL.md")
+        var markdown = try Data(contentsOf: markdownURL)
+        markdown.append(Data("\nChanged body\n".utf8))
+        try markdown.write(to: markdownURL)
+        provenance.expectedRewrittenSHA256 = try SkillPackageValidator().validate(packageAt: fixture.root).canonicalSHA256
+        let service = SkillInstallStagingService(installationRoot: root, metadataStore: RejectingMetadataStore())
+        await #expect(throws: SkillInstallError.invalidProvenance) {
+            try await service.installRewrittenPackage(at: fixture.root, provenance: provenance, replaceExisting: true)
+        }
+        let restored = try SkillPackageValidator().validate(packageAt: root.appendingPathComponent(original.manifest.id))
+        #expect(restored.canonicalSHA256 == original.canonicalSHA256)
+    }
+}
+
+private struct RejectingMetadataStore: SkillInstallationMetadataStore {
+    func persist(_ record: SkillInstallationRecord) async throws { throw SkillInstallError.invalidProvenance }
 }
 
 private actor RecordingMetadataStore: SkillInstallationMetadataStore {

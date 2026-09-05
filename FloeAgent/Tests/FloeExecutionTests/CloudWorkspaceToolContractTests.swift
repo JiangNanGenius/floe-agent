@@ -16,10 +16,10 @@ struct CloudWorkspaceToolContractTests {
 
     @Test("bundled guardian implements the matching workspace endpoint")
     func bundledEndpoint() throws {
-        #expect(RemoteAgentPayload.version == "1.4.2")
+        #expect(RemoteAgentPayload.version == "1.4.3")
         let source = try RemoteAgentPayload.agentSource()
         #expect(source.contains("def list_workspaces():"))
         #expect(source.contains("/v1/workspaces"))
-        #expect(source.contains("VERSION = \"1.4.2\""))
+        #expect(source.contains("VERSION = \"1.4.3\""))
     }
 }
