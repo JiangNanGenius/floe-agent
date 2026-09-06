@@ -131,5 +131,99 @@ struct ArchiveToolTests {
         #expect(throws: WorkspaceToolError.self) {
             try tool.validate(.init(action: "extract", source: "a.zip"))
         }
+        #expect(throws: WorkspaceToolError.self) {
+            try tool.validate(.init(action: "create", source: "a", destination: "x.tar", format: "rar"))
+        }
+    }
+
+    @Test("tar create + list + extract round-trips and auto-detects by extension")
+    func tarRoundTrip() async throws {
+        let f = try Fixture()
+        try f.write("bundle/one.txt", "first")
+        try f.write("bundle/deep/two.md", "second")
+        let tool = WorkspaceArchiveTool(environment: f.environment)
+
+        let created = try await tool.execute(
+            .init(action: "create", source: "bundle", destination: "pack.tar"),
+            context: f.context
+        )
+        #expect(created.summary.contains("format=tar"))
+        #expect(created.summary.contains("entries=2"))
+
+        let listed = try await tool.execute(.init(action: "list", source: "pack.tar"), context: f.context)
+        #expect(listed.summary.contains("format=tar"))
+        #expect(listed.summary.contains("bundle/one.txt"))
+        #expect(listed.summary.contains("bundle/deep/two.md"))
+
+        let extracted = try await tool.execute(
+            .init(action: "extract", source: "pack.tar", destination: "untarred"),
+            context: f.context
+        )
+        #expect(extracted.summary.contains("entries=2"))
+        #expect(try f.read("untarred/bundle/one.txt") == "first")
+        #expect(try f.read("untarred/bundle/deep/two.md") == "second")
+    }
+
+    @Test("tar archives produced by the system tar are readable")
+    func systemTarCompatibility() async throws {
+        let f = try Fixture()
+        try f.write("fromsys/a.txt", "sys-alpha")
+        try f.write("fromsys/sub/b.txt", "sys-beta")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        process.arguments = ["-cf", f.root.appendingPathComponent("sys.tar").path, "-C", f.root.path, "fromsys"]
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+
+        let tool = WorkspaceArchiveTool(environment: f.environment)
+        let listed = try await tool.execute(.init(action: "list", source: "sys.tar"), context: f.context)
+        #expect(listed.summary.contains("fromsys/a.txt"))
+        let extracted = try await tool.execute(
+            .init(action: "extract", source: "sys.tar", destination: "sysout"),
+            context: f.context
+        )
+        #expect(extracted.summary.contains("entries=2"))
+        #expect(try f.read("sysout/fromsys/sub/b.txt") == "sys-beta")
+    }
+
+    @Test("our tar is readable by the system tar")
+    func systemTarReadsOurs() async throws {
+        let f = try Fixture()
+        try f.write("mine/x.txt", "mine-content")
+        let tool = WorkspaceArchiveTool(environment: f.environment)
+        _ = try await tool.execute(
+            .init(action: "create", source: "mine", destination: "mine.tar"),
+            context: f.context
+        )
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        process.arguments = ["-tf", f.root.appendingPathComponent("mine.tar").path]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        #expect(output.contains("mine/x.txt"))
+    }
+
+    @Test("tar extraction skips traversal entries")
+    func tarTraversalSafety() async throws {
+        let f = try Fixture()
+        var writer = TarArchiveWriter()
+        try writer.addFile(name: "ok/good.txt", contents: Data("good".utf8))
+        try writer.addFile(name: "../evil.txt", contents: Data("evil".utf8))
+        try writer.finish().write(to: f.root.appendingPathComponent("evil.tar"))
+
+        let tool = WorkspaceArchiveTool(environment: f.environment)
+        let output = try await tool.execute(
+            .init(action: "extract", source: "evil.tar", destination: "safe"),
+            context: f.context
+        )
+        #expect(output.summary.contains("entries=1"))
+        #expect(output.summary.contains("skipped=1"))
+        #expect(try f.read("safe/ok/good.txt") == "good")
+        #expect(!f.exists("evil.txt"))
     }
 }

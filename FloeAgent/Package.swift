@@ -228,7 +228,7 @@ let package = Package(
         .target(
             name: "FloeExecution",
             dependencies: [
-                "FloeCore", "FloeTools", "FloeSSH", "FloeWorkspace",
+                "FloeCore", "FloeTools", "FloeSSH", "FloeWorkspace", "FloeSecurity",
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
                 .product(name: "Crypto", package: "swift-crypto")
             ],

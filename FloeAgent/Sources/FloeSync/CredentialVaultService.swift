@@ -65,6 +65,36 @@ public actor CredentialVaultService {
         try await records.save(record)
     }
 
+    /// Replaces the secret bytes of an existing credential in place, keeping
+    /// its stable ID (and therefore every ⟨credential:id⟩ reference) intact.
+    public func replaceSecret(_ handle: CredentialHandle, secret: Data) async throws {
+        guard var record = try await records.record(id: handle.id) else {
+            throw FloeError.notFound("credential \(handle.id.uuidString)")
+        }
+        try local.store(account: record.keychainAccount, secret: secret)
+        if record.synchronizable {
+            do {
+                try synchronized.store(account: record.keychainAccount, secret: secret)
+            } catch {
+                // The local copy is authoritative; a synchronizable copy that
+                // cannot be written is reconciled by the next sync pass.
+                record.synchronizable = false
+            }
+        }
+        record.updatedAt = Date()
+        try await records.save(record)
+    }
+
+    /// Updates secret-free metadata (label) without touching the secret.
+    public func updateLabel(_ handle: CredentialHandle, label: String) async throws {
+        guard var record = try await records.record(id: handle.id) else {
+            throw FloeError.notFound("credential \(handle.id.uuidString)")
+        }
+        record.label = label
+        record.updatedAt = Date()
+        try await records.save(record)
+    }
+
     /// Registers an already-existing Keychain item (for v10 host migration)
     /// without ever reading or copying its secret body.
     public func registerExisting(

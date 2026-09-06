@@ -780,7 +780,7 @@ struct AppleCameraCaptureTool: AgentTool {
             throw FloeError.validationFailed("Destination already exists: \(relativePath)")
         }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try data.write(to: url, options: [.atomic, .withoutOverwriting])
+        try data.write(to: url, options: [.atomic])
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         return AppleToolOutput.make("status=ok path=\(relativePath) bytes=\(data.count) sha256=\(digest)")
     }

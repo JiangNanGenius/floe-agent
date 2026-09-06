@@ -517,15 +517,17 @@ struct PDFInspectTool: AgentTool {
 struct PDFRenderTool: AgentTool {
     struct Arguments: Decodable, Sendable {
         var path: String
-        var page: Int
+        var page: Int?
+        /// 1-based multi-page spec like "1-3,5"; overrides page.
+        var pages: String?
         var outputPath: String?
     }
 
     static let name = "document.pdf.render"
     static let toolDescription =
-        "Render one 1-based PDF page to a bounded JPEG in the task workspace for preview, browser testing, OCR, or image.inspect. This built-in conversion does not require approval."
+        "Render 1-based PDF pages to bounded JPEGs in the task workspace for preview, browser testing, OCR, or image.inspect. Pass page for one page or pages like \"1-3,5\" for several (defaults to page 1). This built-in conversion does not require approval."
     static let parametersJSON = #"""
-    {"type":"object","properties":{"path":{"type":"string"},"page":{"type":"integer","minimum":1},"outputPath":{"type":"string","description":"Workspace-relative .jpg path; defaults to PDFRenders/page-N.jpg"}},"required":["path","page"],"additionalProperties":false}
+    {"type":"object","properties":{"path":{"type":"string"},"page":{"type":"integer","minimum":1},"pages":{"type":"string","description":"1-based multi-page spec, e.g. \"1-3,5\""},"outputPath":{"type":"string","description":"Workspace-relative .jpg path (single page only); multi-page defaults to PDFRenders/page-N-*.jpg"}},"required":["path"],"additionalProperties":false}
     """#
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     static let isSideEffecting = false
@@ -533,59 +535,110 @@ struct PDFRenderTool: AgentTool {
 
     func validate(_ args: Arguments) throws {
         try PDFToolSupport.validatePath(args.path)
-        guard args.page >= 1 else { throw FloeError.validationFailed("page must be 1 or greater") }
-        if let outputPath = args.outputPath { try PDFToolSupport.validatePath(outputPath) }
+        if let page = args.page, page < 1 { throw FloeError.validationFailed("page must be 1 or greater") }
+        if let outputPath = args.outputPath {
+            try PDFToolSupport.validatePath(outputPath)
+            if args.pages != nil {
+                throw FloeError.validationFailed("outputPath is only supported for a single page")
+            }
+        }
     }
 
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let document = try PDFToolSupport.open(args.path, context: context)
-        guard args.page <= document.pageCount,
-              let page = document.page(at: args.page - 1) else {
-            throw FloeError.validationFailed("page must be between 1 and \(document.pageCount)")
+        let pageNumbers: [Int]
+        if let spec = args.pages {
+            pageNumbers = try PDFToolSupport.pageNumbers(from: spec, pageCount: document.pageCount)
+        } else {
+            pageNumbers = [args.page ?? 1]
         }
-        let bounds = page.bounds(for: .mediaBox)
-        let scale = min(2_048 / max(bounds.width, bounds.height), 2)
-        let size = CGSize(width: max(1, bounds.width * scale), height: max(1, bounds.height * scale))
-        let format = UIGraphicsImageRendererFormat()
-        format.opaque = true
-        format.scale = 1
-        let image = UIGraphicsImageRenderer(size: size, format: format).image { renderer in
-            UIColor.white.setFill()
-            renderer.fill(CGRect(origin: .zero, size: size))
-            renderer.cgContext.translateBy(x: 0, y: size.height)
-            renderer.cgContext.scaleBy(x: scale, y: -scale)
-            page.draw(with: .mediaBox, to: renderer.cgContext)
+        var rendered: [String] = []
+        for pageNumber in pageNumbers {
+            try context.cancellation.throwIfCancelled()
+            guard pageNumber <= document.pageCount,
+                  let page = document.page(at: pageNumber - 1) else {
+                throw FloeError.validationFailed("page must be between 1 and \(document.pageCount)")
+            }
+            let bounds = page.bounds(for: .mediaBox)
+            let scale = min(2_048 / max(bounds.width, bounds.height), 2)
+            let size = CGSize(width: max(1, bounds.width * scale), height: max(1, bounds.height * scale))
+            let format = UIGraphicsImageRendererFormat()
+            format.opaque = true
+            format.scale = 1
+            let image = UIGraphicsImageRenderer(size: size, format: format).image { renderer in
+                UIColor.white.setFill()
+                renderer.fill(CGRect(origin: .zero, size: size))
+                renderer.cgContext.translateBy(x: 0, y: size.height)
+                renderer.cgContext.scaleBy(x: scale, y: -scale)
+                page.draw(with: .mediaBox, to: renderer.cgContext)
+            }
+            guard let data = image.jpegData(compressionQuality: 0.86) else {
+                throw FloeError.internalError("PDF page could not be encoded")
+            }
+            let outputPath: String
+            if let explicit = args.outputPath, pageNumbers.count == 1 {
+                outputPath = explicit
+            } else {
+                outputPath = "PDFRenders/page-\(pageNumber)-\(UUID().uuidString).jpg"
+            }
+            try PDFToolSupport.write(data, to: outputPath, context: context)
+            rendered.append("\(outputPath) (\(data.count) bytes)")
         }
-        guard let data = image.jpegData(compressionQuality: 0.86) else {
-            throw FloeError.internalError("PDF page could not be encoded")
-        }
-        let outputPath = args.outputPath ?? "PDFRenders/page-\(args.page)-\(UUID().uuidString).jpg"
-        try PDFToolSupport.write(data, to: outputPath, context: context)
-        return PDFToolSupport.output("Rendered page \(args.page)/\(document.pageCount) to \(outputPath) (\(data.count) bytes)", status: 0)
+        return PDFToolSupport.output(
+            "Rendered \(rendered.count)/\(document.pageCount) page(s):\n" + rendered.joined(separator: "\n"),
+            status: 0
+        )
     }
 }
 
 struct PDFEditTool: AgentTool {
+    struct PageRotation: Decodable, Sendable {
+        var page: Int
+        var degrees: Int
+    }
+    struct TextReplacement: Decodable, Sendable {
+        var find: String
+        var replace: String
+        var pages: [Int]?
+    }
     struct Arguments: Decodable, Sendable {
         var inputPath: String
         var outputPath: String
         var removePages: [Int]?
         var rotatePages: [Int]?
         var rotationDegrees: Int?
+        /// Per-page rotation: [{"page":1,"degrees":90},{"page":3,"degrees":180}].
+        var rotations: [PageRotation]?
         var watermark: String?
         var watermarkFontSize: Double?
         var watermarkOpacity: Double?
+        /// 1-based pages to watermark; defaults to every page.
+        var watermarkPages: [Int]?
+        /// center, top, bottom, topLeft, topRight, bottomLeft, bottomRight.
+        var watermarkPosition: String?
+        /// Stamp "N / total" page numbers.
+        var pageNumbers: Bool?
+        /// top or bottom (default bottom).
+        var pageNumberPosition: String?
+        var pageNumberStart: Int?
+        /// Annotation-layer text cover-and-replace (not a content-stream rewrite).
+        var replaceText: [TextReplacement]?
+        /// PDF open/permission passwords (stored only in the output file).
+        var userPassword: String?
+        var ownerPassword: String?
     }
 
     static let name = "document.pdf.edit"
     static let toolDescription =
-        "Create a new PDF from a workspace PDF using native PDFKit. Can remove pages, rotate selected pages by 90-degree increments, and add a visible text watermark (optional watermarkFontSize 8-72, watermarkOpacity 0.05-1). Always writes outputPath and then reopens it to verify."
+        "Create a new PDF from a workspace PDF using native PDFKit. Supports: remove pages; rotate pages by 90-degree increments (rotations for per-page angles, or rotatePages+rotationDegrees for one shared angle); a visible text watermark with optional font size, opacity, position (center/top/bottom/corners) and watermarkPages; pageNumbers stamping; replaceText as an annotation-layer cover-and-replace (the original content stream is visually covered, never rewritten — verify with render); userPassword/ownerPassword encryption. Always writes outputPath and then reopens it to verify. For merging or page extraction use document.pdf.merge / document.pdf.split."
     static let parametersJSON = #"""
-    {"type":"object","properties":{"inputPath":{"type":"string"},"outputPath":{"type":"string"},"removePages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}},"rotatePages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}},"rotationDegrees":{"type":"integer","enum":[0,90,180,270,-90,-180,-270]},"watermark":{"type":"string","maxLength":200},"watermarkFontSize":{"type":"number","minimum":8,"maximum":72},"watermarkOpacity":{"type":"number","minimum":0.05,"maximum":1}},"required":["inputPath","outputPath"],"additionalProperties":false}
+    {"type":"object","properties":{"inputPath":{"type":"string"},"outputPath":{"type":"string"},"removePages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}},"rotatePages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}},"rotationDegrees":{"type":"integer","enum":[0,90,180,270,-90,-180,-270]},"rotations":{"type":"array","maxItems":100,"items":{"type":"object","properties":{"page":{"type":"integer","minimum":1},"degrees":{"type":"integer","enum":[0,90,180,270,-90,-180,-270]}},"required":["page","degrees"],"additionalProperties":false}},"watermark":{"type":"string","maxLength":200},"watermarkFontSize":{"type":"number","minimum":8,"maximum":72},"watermarkOpacity":{"type":"number","minimum":0.05,"maximum":1},"watermarkPages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}},"watermarkPosition":{"type":"string","enum":["center","top","bottom","topLeft","topRight","bottomLeft","bottomRight"]},"pageNumbers":{"type":"boolean"},"pageNumberPosition":{"type":"string","enum":["top","bottom"]},"pageNumberStart":{"type":"integer","minimum":1,"maximum":10000},"replaceText":{"type":"array","maxItems":20,"items":{"type":"object","properties":{"find":{"type":"string","maxLength":500},"replace":{"type":"string","maxLength":500},"pages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}}},"required":["find","replace"],"additionalProperties":false}},"userPassword":{"type":"string","maxLength":200},"ownerPassword":{"type":"string","maxLength":200}},"required":["inputPath","outputPath"],"additionalProperties":false}
     """#
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .mutating
+
+    private static let allowedDegrees = [0, 90, 180, 270, -90, -180, -270]
 
     func validate(_ args: Arguments) throws {
         try PDFToolSupport.validatePath(args.inputPath)
@@ -593,14 +646,36 @@ struct PDFEditTool: AgentTool {
         guard args.inputPath != args.outputPath else {
             throw FloeError.validationFailed("outputPath must differ from inputPath")
         }
-        if let degrees = args.rotationDegrees, ![0, 90, 180, 270, -90, -180, -270].contains(degrees) {
+        if let degrees = args.rotationDegrees, !Self.allowedDegrees.contains(degrees) {
             throw FloeError.validationFailed("rotationDegrees must be a 90-degree increment")
+        }
+        for rotation in args.rotations ?? [] {
+            guard Self.allowedDegrees.contains(rotation.degrees), rotation.page >= 1 else {
+                throw FloeError.validationFailed("rotations require page >= 1 and a 90-degree increment")
+            }
         }
         if let size = args.watermarkFontSize, !(8...72).contains(size) {
             throw FloeError.validationFailed("watermarkFontSize must be 8-72")
         }
         if let opacity = args.watermarkOpacity, !(0.05...1).contains(opacity) {
             throw FloeError.validationFailed("watermarkOpacity must be 0.05-1")
+        }
+        if let position = args.watermarkPosition,
+           !["center", "top", "bottom", "topLeft", "topRight", "bottomLeft", "bottomRight"].contains(position) {
+            throw FloeError.validationFailed("watermarkPosition is not supported")
+        }
+        if let position = args.pageNumberPosition, position != "top", position != "bottom" {
+            throw FloeError.validationFailed("pageNumberPosition must be top or bottom")
+        }
+        for rule in args.replaceText ?? [] {
+            guard !rule.find.isEmpty else {
+                throw FloeError.validationFailed("replaceText find must not be empty")
+            }
+        }
+        if args.userPassword != nil || args.ownerPassword != nil {
+            guard !(args.userPassword ?? "").isEmpty || !(args.ownerPassword ?? "").isEmpty else {
+                throw FloeError.validationFailed("passwords must not be empty when provided")
+            }
         }
     }
 
@@ -619,24 +694,40 @@ struct PDFEditTool: AgentTool {
         guard document.pageCount > 0 else {
             throw FloeError.validationFailed("PDF must retain at least one page")
         }
-        let rotation = args.rotationDegrees ?? 90
-        for pageNumber in Set(args.rotatePages ?? []) {
+        // Per-page rotations take precedence; the shared-angle pair remains
+        // for backward compatibility.
+        var appliedRotations: [(page: Int, degrees: Int)] = (args.rotations ?? []).map {
+            (page: $0.page, degrees: $0.degrees)
+        }
+        if appliedRotations.isEmpty, let rotatePages = args.rotatePages {
+            let shared = args.rotationDegrees ?? 90
+            appliedRotations = rotatePages.map { (page: $0, degrees: shared) }
+        }
+        for rotation in Set(appliedRotations.map { "\($0.page):\($0.degrees)" }) {
+            let parts = rotation.split(separator: ":")
+            guard let pageNumber = Int(parts[0]), let degrees = Int(parts[1]) else { continue }
             guard let page = document.page(at: pageNumber - 1) else {
                 throw FloeError.validationFailed("rotate page \(pageNumber) is outside the edited document")
             }
-            page.rotation = ((page.rotation + rotation) % 360 + 360) % 360
+            page.rotation = ((page.rotation + degrees) % 360 + 360) % 360
         }
         if let watermark = args.watermark?.trimmingCharacters(in: .whitespacesAndNewlines), !watermark.isEmpty {
             let fontSize = CGFloat(args.watermarkFontSize ?? 28)
             let opacity = CGFloat(args.watermarkOpacity ?? 0.35)
-            for index in 0..<document.pageCount where document.page(at: index) != nil {
-                let page = document.page(at: index)!
+            let position = args.watermarkPosition ?? "center"
+            let targetPages: [Int]
+            if let watermarkPages = args.watermarkPages {
+                targetPages = watermarkPages
+            } else {
+                targetPages = Array(1...document.pageCount)
+            }
+            for pageNumber in Set(targetPages) {
+                guard let page = document.page(at: pageNumber - 1) else {
+                    throw FloeError.validationFailed("watermark page \(pageNumber) is outside the edited document")
+                }
                 let bounds = page.bounds(for: .mediaBox)
-                let annotation = PDFAnnotation(
-                    bounds: CGRect(x: bounds.midX - 160, y: bounds.midY - 25, width: 320, height: 50),
-                    forType: .freeText,
-                    withProperties: nil
-                )
+                let rect = PDFToolSupport.textRect(in: bounds, position: position, width: 320, height: 50)
+                let annotation = PDFAnnotation(bounds: rect, forType: .freeText, withProperties: nil)
                 annotation.contents = watermark
                 annotation.font = .boldSystemFont(ofSize: fontSize)
                 annotation.fontColor = UIColor.systemRed.withAlphaComponent(opacity)
@@ -645,14 +736,247 @@ struct PDFEditTool: AgentTool {
                 page.addAnnotation(annotation)
             }
         }
-        guard let edited = document.dataRepresentation() else {
-            throw FloeError.internalError("Edited PDF could not be serialized")
+        if args.pageNumbers == true {
+            let position = args.pageNumberPosition ?? "bottom"
+            let start = args.pageNumberStart ?? 1
+            for index in 0..<document.pageCount {
+                guard let page = document.page(at: index) else { continue }
+                let bounds = page.bounds(for: .mediaBox)
+                let rect = PDFToolSupport.textRect(in: bounds, position: position, width: 120, height: 20)
+                let annotation = PDFAnnotation(bounds: rect, forType: .freeText, withProperties: nil)
+                annotation.contents = "\(start + index) / \(start + document.pageCount - 1)"
+                annotation.font = .systemFont(ofSize: 10)
+                annotation.fontColor = UIColor.darkGray
+                annotation.color = .clear
+                annotation.alignment = .center
+                page.addAnnotation(annotation)
+            }
         }
-        try PDFToolSupport.write(edited, to: args.outputPath, context: context)
-        guard let verified = PDFDocument(data: edited), verified.pageCount == document.pageCount else {
-            throw FloeError.storageCorrupted("Saved PDF failed reopen verification")
+        var replacedCount = 0
+        for rule in args.replaceText ?? [] {
+            let allowedPages = rule.pages.map { Set($0) }
+            let matches = document.findString(rule.find, withOptions: .caseInsensitive)
+            for selection in matches.prefix(50) {
+                for page in selection.pages {
+                    guard let page = page as? PDFPage else { continue }
+                    let pageNumber = document.index(for: page) + 1
+                    if let allowedPages, !allowedPages.contains(pageNumber) { continue }
+                    let bounds = selection.bounds(for: page)
+                    guard !bounds.isNull, bounds.width > 1, bounds.height > 1 else { continue }
+                    let cover = PDFAnnotation(bounds: bounds, forType: .square, withProperties: nil)
+                    cover.color = .white
+                    cover.interiorColor = .white
+                    page.addAnnotation(cover)
+                    if !rule.replace.isEmpty {
+                        let label = PDFAnnotation(bounds: bounds, forType: .freeText, withProperties: nil)
+                        label.contents = rule.replace
+                        label.font = .systemFont(ofSize: max(6, bounds.height * 0.72))
+                        label.fontColor = .black
+                        label.color = .clear
+                        page.addAnnotation(label)
+                    }
+                    replacedCount += 1
+                    if replacedCount >= 200 { break }
+                }
+                if replacedCount >= 200 { break }
+            }
         }
-        return PDFToolSupport.output("Saved and reopened \(args.outputPath); pages=\(verified.pageCount) bytes=\(edited.count)", status: 0)
+        let encrypted = args.userPassword != nil || args.ownerPassword != nil
+        if encrypted {
+            try context.authorizeWorkspacePath(args.outputPath)
+            guard let root = context.workspaceRootURL else {
+                throw FloeError.invalidConfiguration("No task workspace is available")
+            }
+            let url = try WorkspacePathGuard(rootURL: root).resolve(args.outputPath)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            var options: [PDFDocumentWriteOption: Any] = [:]
+            if let user = args.userPassword, !user.isEmpty { options[.userPasswordOption] = user }
+            if let owner = args.ownerPassword, !owner.isEmpty { options[.ownerPasswordOption] = owner }
+            guard document.write(to: url, withOptions: options) else {
+                throw FloeError.internalError("Edited PDF could not be written")
+            }
+        } else {
+            guard let edited = document.dataRepresentation() else {
+                throw FloeError.internalError("Edited PDF could not be serialized")
+            }
+            try PDFToolSupport.write(edited, to: args.outputPath, context: context)
+        }
+        let verifiedPageCount: Int
+        if encrypted {
+            // An encrypted PDF only reports its real page count after unlock.
+            let raw = try PDFToolSupport.openEncrypted(args.outputPath, context: context)
+            let password = args.userPassword ?? args.ownerPassword ?? ""
+            guard raw.unlock(withPassword: password) else {
+                throw FloeError.storageCorrupted("Saved encrypted PDF failed unlock verification")
+            }
+            verifiedPageCount = raw.pageCount
+        } else {
+            verifiedPageCount = try PDFToolSupport.open(args.outputPath, context: context).pageCount
+        }
+        var summary = "Saved and reopened \(args.outputPath); pages=\(verifiedPageCount)"
+        if !appliedRotations.isEmpty { summary += " rotated=\(appliedRotations.count)" }
+        if replacedCount > 0 { summary += " replaceTextMatches=\(replacedCount) (annotation-layer cover)" }
+        if encrypted { summary += " encrypted=true" }
+        return PDFToolSupport.output(summary, status: 0)
+    }
+}
+
+// MARK: - PDF merge / split / fromImages
+
+struct PDFMergeTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        var inputPaths: [String]
+        var outputPath: String
+    }
+
+    static let name = "document.pdf.merge"
+    static let toolDescription =
+        "Merge 2-10 workspace PDFs into one new PDF, in the given order, using native PDFKit. Always writes outputPath and reopens it to verify the combined page count."
+    static let parametersJSON = #"""
+    {"type":"object","properties":{"inputPaths":{"type":"array","minItems":2,"maxItems":10,"items":{"type":"string","description":"Workspace-relative PDF paths in merge order"}},"outputPath":{"type":"string"}},"required":["inputPaths","outputPath"],"additionalProperties":false}
+    """#
+    static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+
+    func validate(_ args: Arguments) throws {
+        guard (2...10).contains(args.inputPaths.count) else {
+            throw FloeError.validationFailed("inputPaths requires 2-10 PDFs")
+        }
+        for path in args.inputPaths { try PDFToolSupport.validatePath(path) }
+        try PDFToolSupport.validatePath(args.outputPath)
+        guard !args.inputPaths.contains(args.outputPath) else {
+            throw FloeError.validationFailed("outputPath must differ from every inputPath")
+        }
+    }
+
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        let merged = PDFDocument()
+        var sourcePages: [Int] = []
+        for path in args.inputPaths {
+            try context.cancellation.throwIfCancelled()
+            let document = try PDFToolSupport.open(path, context: context)
+            sourcePages.append(document.pageCount)
+            for index in 0..<document.pageCount {
+                guard let page = document.page(at: index) else { continue }
+                merged.insert(page, at: merged.pageCount)
+            }
+        }
+        guard merged.pageCount > 0, let data = merged.dataRepresentation() else {
+            throw FloeError.internalError("Merged PDF could not be serialized")
+        }
+        try PDFToolSupport.write(data, to: args.outputPath, context: context)
+        let verified = try PDFToolSupport.open(args.outputPath, context: context)
+        return PDFToolSupport.output(
+            "Merged \(args.inputPaths.count) PDFs (\(sourcePages.map(String.init).joined(separator: "+")) pages) into \(args.outputPath); pages=\(verified.pageCount)",
+            status: 0
+        )
+    }
+}
+
+struct PDFSplitTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        var inputPath: String
+        var pages: String
+        var outputPath: String
+    }
+
+    static let name = "document.pdf.split"
+    static let toolDescription =
+        "Extract 1-based pages from a workspace PDF into a new PDF. pages accepts comma-separated numbers and ranges like \"1-3,5,8-10\", preserving spec order without duplicates. Always writes outputPath and reopens it to verify."
+    static let parametersJSON = #"""
+    {"type":"object","properties":{"inputPath":{"type":"string"},"pages":{"type":"string","description":"1-based pages, e.g. \"1-3,5,8-10\""},"outputPath":{"type":"string"}},"required":["inputPath","pages","outputPath"],"additionalProperties":false}
+    """#
+    static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+
+    func validate(_ args: Arguments) throws {
+        try PDFToolSupport.validatePath(args.inputPath)
+        try PDFToolSupport.validatePath(args.outputPath)
+        guard args.inputPath != args.outputPath else {
+            throw FloeError.validationFailed("outputPath must differ from inputPath")
+        }
+        guard !args.pages.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FloeError.validationFailed("pages must not be empty")
+        }
+    }
+
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        let source = try PDFToolSupport.open(args.inputPath, context: context)
+        let wanted = try PDFToolSupport.pageNumbers(from: args.pages, pageCount: source.pageCount)
+        let extracted = PDFDocument()
+        for pageNumber in wanted {
+            guard let page = source.page(at: pageNumber - 1) else { continue }
+            extracted.insert(page, at: extracted.pageCount)
+        }
+        guard extracted.pageCount > 0, let data = extracted.dataRepresentation() else {
+            throw FloeError.internalError("Extracted PDF could not be serialized")
+        }
+        try PDFToolSupport.write(data, to: args.outputPath, context: context)
+        let verified = try PDFToolSupport.open(args.outputPath, context: context)
+        return PDFToolSupport.output(
+            "Extracted \(wanted.count) pages from \(args.inputPath) into \(args.outputPath); pages=\(verified.pageCount)",
+            status: 0
+        )
+    }
+}
+
+struct PDFFromImagesTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        var inputPaths: [String]
+        var outputPath: String
+    }
+
+    static let name = "document.pdf.fromImages"
+    static let toolDescription =
+        "Create a new PDF from 1-50 workspace images (JPEG/PNG), one image per page in the given order, using native PDFKit. Always writes outputPath and reopens it to verify."
+    static let parametersJSON = #"""
+    {"type":"object","properties":{"inputPaths":{"type":"array","minItems":1,"maxItems":50,"items":{"type":"string","description":"Workspace-relative image paths in page order"}},"outputPath":{"type":"string"}},"required":["inputPaths","outputPath"],"additionalProperties":false}
+    """#
+    static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+
+    func validate(_ args: Arguments) throws {
+        guard (1...50).contains(args.inputPaths.count) else {
+            throw FloeError.validationFailed("inputPaths requires 1-50 images")
+        }
+        for path in args.inputPaths {
+            try PDFToolSupport.validatePath(path)
+            let ext = (path as NSString).pathExtension.lowercased()
+            guard ["jpg", "jpeg", "png", "heic"].contains(ext) else {
+                throw FloeError.validationFailed("Unsupported image type: \(path)")
+            }
+        }
+        try PDFToolSupport.validatePath(args.outputPath)
+    }
+
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        let document = PDFDocument()
+        for path in args.inputPaths {
+            try context.cancellation.throwIfCancelled()
+            try context.authorizeWorkspacePath(path)
+            guard let root = context.workspaceRootURL else {
+                throw FloeError.invalidConfiguration("No task workspace is available")
+            }
+            let url = try WorkspacePathGuard(rootURL: root).resolve(path)
+            let data = try Data(floeContentsOf: url, options: [.mappedIfSafe])
+            guard data.count <= 32 * 1_024 * 1_024, let image = UIImage(data: data),
+                  let page = PDFPage(image: image) else {
+                throw FloeError.validationFailed("Not a readable image: \(path)")
+            }
+            document.insert(page, at: document.pageCount)
+        }
+        guard document.pageCount > 0, let data = document.dataRepresentation() else {
+            throw FloeError.internalError("PDF could not be serialized")
+        }
+        try PDFToolSupport.write(data, to: args.outputPath, context: context)
+        let verified = try PDFToolSupport.open(args.outputPath, context: context)
+        return PDFToolSupport.output(
+            "Created \(args.outputPath) from \(args.inputPaths.count) images; pages=\(verified.pageCount)",
+            status: 0
+        )
     }
 }
 
@@ -676,6 +1000,72 @@ private enum PDFToolSupport {
             throw FloeError.validationFailed("Input is not a bounded readable PDF")
         }
         return document
+    }
+
+    /// Opens a possibly encrypted PDF without requiring pages; callers unlock
+    /// with the password they hold and verify explicitly.
+    static func openEncrypted(_ path: String, context: ToolContext) throws -> PDFDocument {
+        try validatePath(path)
+        guard let root = context.workspaceRootURL else {
+            throw FloeError.invalidConfiguration("No task workspace is available")
+        }
+        try context.authorizeWorkspacePath(path)
+        let url = try WorkspacePathGuard(rootURL: root).resolve(path)
+        let data = try Data(floeContentsOf: url, options: [.mappedIfSafe])
+        guard data.count <= 64 * 1_024 * 1_024, let document = PDFDocument(data: data) else {
+            throw FloeError.validationFailed("Input is not a bounded readable PDF")
+        }
+        return document
+    }
+
+    /// Positions a text annotation rect inside a page's media box.
+    static func textRect(in bounds: CGRect, position: String, width: CGFloat, height: CGFloat) -> CGRect {
+        let margin: CGFloat = 36
+        switch position {
+        case "top":
+            return CGRect(x: bounds.midX - width / 2, y: bounds.maxY - margin - height, width: width, height: height)
+        case "bottom":
+            return CGRect(x: bounds.midX - width / 2, y: margin, width: width, height: height)
+        case "topLeft":
+            return CGRect(x: bounds.minX + margin, y: bounds.maxY - margin - height, width: width, height: height)
+        case "topRight":
+            return CGRect(x: bounds.maxX - margin - width, y: bounds.maxY - margin - height, width: width, height: height)
+        case "bottomLeft":
+            return CGRect(x: bounds.minX + margin, y: margin, width: width, height: height)
+        case "bottomRight":
+            return CGRect(x: bounds.maxX - margin - width, y: margin, width: width, height: height)
+        default:
+            return CGRect(x: bounds.midX - width / 2, y: bounds.midY - height / 2, width: width, height: height)
+        }
+    }
+
+    /// Parses a 1-based page spec like "1-3,5,8-10" into sorted unique
+    /// 1-based page numbers bounded by the document page count.
+    static func pageNumbers(from spec: String, pageCount: Int) throws -> [Int] {
+        var numbers = Set<Int>()
+        for part in spec.split(separator: ",") {
+            let trimmed = part.trimmingCharacters(in: .whitespaces)
+            if let dash = trimmed.firstIndex(of: "-") {
+                let lower = Int(trimmed[..<dash])
+                let upper = Int(trimmed[trimmed.index(after: dash)...])
+                guard let lower, let upper, lower >= 1, upper >= lower else {
+                    throw FloeError.validationFailed("Invalid page range: \(trimmed)")
+                }
+                guard upper - lower <= 500 else {
+                    throw FloeError.validationFailed("Page range is too large: \(trimmed)")
+                }
+                for number in lower...upper { numbers.insert(number) }
+            } else if let number = Int(trimmed), number >= 1 {
+                numbers.insert(number)
+            } else {
+                throw FloeError.validationFailed("Invalid page spec: \(trimmed)")
+            }
+        }
+        let sorted = numbers.sorted()
+        guard let last = sorted.last, last <= pageCount else {
+            throw FloeError.validationFailed("Page spec exceeds the document's \(pageCount) pages")
+        }
+        return sorted
     }
 
     static func write(_ data: Data, to path: String, context: ToolContext) throws {
@@ -707,5 +1097,11 @@ func registerRemoteImageTools(center: FilesCenter, registry: ToolRunnerRegistry 
     registry.register(PDFRenderTool())
     ToolCatalog.register(PDFEditTool.self)
     registry.register(PDFEditTool())
+    ToolCatalog.register(PDFMergeTool.self)
+    registry.register(PDFMergeTool())
+    ToolCatalog.register(PDFSplitTool.self)
+    registry.register(PDFSplitTool())
+    ToolCatalog.register(PDFFromImagesTool.self)
+    registry.register(PDFFromImagesTool())
 }
 #endif

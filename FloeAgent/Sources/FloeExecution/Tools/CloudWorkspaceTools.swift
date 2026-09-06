@@ -30,16 +30,16 @@ private enum CloudWorkspaceToolSupport {
     /// Per-tool schemas: every tool advertises exactly the fields it consumes,
     /// so read-only tools never carry write-only parameters.
     private static let propertyFragments: [String: String] = [
-        "hostID": #""hostID":{"type":"string","description":"Paired SSH host UUID; omit to use the default host"}""#,
-        "path": #""path":{"type":"string","description":"Path relative to the daemon cloud-workspace root"}""#,
-        "contentBase64": #""contentBase64":{"type":"string","description":"Base64 file content for writes"}""#,
+        "hostID": #""hostID":{"type":"string","description":"Paired SSH host UUID; omit to use the default host"}"#,
+        "path": #""path":{"type":"string","description":"Path relative to the daemon cloud-workspace root"}"#,
+        "contentBase64": #""contentBase64":{"type":"string","description":"Base64 file content for writes"}"#,
         "port": #""port":{"type":"integer","minimum":1,"maximum":65535}"#
     ]
 
     static func schema(properties: [String], required: [String] = ["path"]) -> String {
         let props = properties.compactMap { propertyFragments[$0] }.joined(separator: ",")
         let req = required.map { "\"\($0)\"" }.joined(separator: ",")
-        return #"{"type":"object","properties":{"# + props + #"},"required":[# + req + #"],"additionalProperties":false}"#
+        return #"{"type":"object","properties":{"# + props + #"},"required":["# + req + #"],"additionalProperties":false}"#
     }
 
     /// hostID + path + port, for read-only file tools.
@@ -69,7 +69,7 @@ private enum CloudWorkspaceToolSupport {
 public struct CloudWorkspaceProvisionTool: AgentTool {
     public static let name = "cloudWorkspace.create"
     public static let toolDescription = "Create an isolated Floe-owned cloud workspace on a paired host. Omit workspaceID to generate one. Returns the stable workspace ID to link inside the task's local Cloud folder."
-    public static let parametersJSON = #"{"type":"object","properties":{"hostID":{"type":"string","description":"Paired host UUID; omit to use the default host"},"workspaceID":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},"port":{"type":"integer","minimum":1,"maximum":65535}},"additionalProperties":false}"#
+    public static let parametersJSON = #"{"type":"object","properties":{"hostID":{"type":"string","description":"Paired host UUID; omit to use the default host"},"workspaceID":{"type":"string","pattern":"^[\\A-Za-z0-9][\\A-Za-z0-9._-]{0,127}$"},"port":{"type":"integer","minimum":1,"maximum":65535}},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles, .executesRemoteCommand]
     public static let isSideEffecting = true
     private let service: CloudWorkspaceService
@@ -194,18 +194,18 @@ private enum CloudWorkspaceGitSupport {
     /// Per-tool schemas: each Git verb advertises only the fields it consumes,
     /// so read verbs never carry commit-only parameters like message/name.
     private static let propertyFragments: [String: String] = [
-        "hostID": #""hostID":{"type":"string","description":"Paired host UUID; omit to use the default host"}""#,
-        "workspaceID": #""workspaceID":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"}""#,
-        "path": #""path":{"type":"string","description":"Optional path relative to the cloud workspace"}""#,
-        "message": #""message":{"type":"string","maxLength":8192}""#,
-        "name": #""name":{"type":"string","maxLength":200}""#,
+        "hostID": #""hostID":{"type":"string","description":"Paired host UUID; omit to use the default host"}"#,
+        "workspaceID": #""workspaceID":{"type":"string","pattern":"^[\\A-Za-z0-9][\\A-Za-z0-9._-]{0,127}$"}"#,
+        "path": #""path":{"type":"string","description":"Optional path relative to the cloud workspace"}"#,
+        "message": #""message":{"type":"string","maxLength":8192}"#,
+        "name": #""name":{"type":"string","maxLength":200}"#,
         "port": #""port":{"type":"integer","minimum":1,"maximum":65535}"#
     ]
 
     static func schema(properties: [String], required: [String] = ["workspaceID"]) -> String {
         let props = properties.compactMap { propertyFragments[$0] }.joined(separator: ",")
         let req = required.map { "\"\($0)\"" }.joined(separator: ",")
-        return #"{"type":"object","properties":{"# + props + #"},"required":[# + req + #"],"additionalProperties":false}"#
+        return #"{"type":"object","properties":{"# + props + #"},"required":["# + req + #"],"additionalProperties":false}"#
     }
 
     static let readSchema = schema(properties: ["hostID", "workspaceID", "port"])

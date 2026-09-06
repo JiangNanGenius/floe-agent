@@ -329,6 +329,8 @@ final class AppEnvironment: ObservableObject {
         // Public Apple-framework integrations. Device-local settings filter
         // these descriptors before each provider request.
         registerAppleSystemTools(database: database)
+        // Independent credential-card management over the shared vault.
+        registerCredentialManageTool(vault: credentialVault, store: credentialStore)
         // Execution tools (JS, local Python, SSH, HTTP, LAN scan, OCR, barcode).
         registerExecutionTools(
             localPythonService: localPythonService,
