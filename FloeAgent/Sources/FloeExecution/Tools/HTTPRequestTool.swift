@@ -38,7 +38,7 @@ public struct HTTPRequestTool: AgentTool {
 
     public static let name = "network.http"
     public static let toolDescription =
-        "Send a bounded HTTP request. Public endpoints require HTTPS. Set localNetwork for user-requested LAN diagnostics, including local HTTP. Metadata/link-local endpoints are blocked and every redirect is revalidated."
+        "Send a bounded HTTP request with full method/headers/body control for APIs, status checks and non-browser HTTP. Public endpoints require HTTPS. Set localNetwork for user-requested LAN diagnostics, including local HTTP. Metadata/link-local endpoints are blocked and every redirect is revalidated. When the goal is reading a web page as content, use web.fetch instead."
     public static let parametersJSON = #"""
     {
       "type": "object",

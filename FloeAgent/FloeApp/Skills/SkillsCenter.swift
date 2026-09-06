@@ -352,6 +352,12 @@ final class SkillsCenter: ObservableObject {
         case .setEnabled:
             try await environment.skillStore.setEnabled(request.enabled!, id: skill.id, expectedDigest: request.expectedDigest)
         case .remove:
+            // Built-in domain skills are part of the app; they can be left
+            // disabled but never removed (a removed built-in would be
+            // re-seeded on the next launch anyway).
+            guard !(skill.sourceURL ?? "").hasPrefix(DomainSkillLibrary.builtinSourceScheme) else {
+                throw FloeError.validationFailed("Built-in skill \(skill.id) cannot be removed; leave it disabled instead")
+            }
             // Keep a recoverable package outside the active store. If the DB
             // mutation fails, restore the package before reporting failure.
             let recovery = installationRoot.deletingLastPathComponent().appendingPathComponent("RemovedSkills", isDirectory: true)
@@ -390,6 +396,104 @@ final class SkillsCenter: ObservableObject {
         return "status=applied id=\(skill.id) action=\(request.action.rawValue); use skill.read for the current digest"
     }
 
+    // MARK: - Built-in domain skills (seeded, upgraded only with app releases)
+
+    /// Bump when any bundled domain-skill text changes in an app release.
+    static let domainSkillSeedVersion = 1
+
+    /// Installs or upgrades the bundled domain skills. Idempotent: content
+    /// identical to the installed copy is skipped, user-edited copies are
+    /// respected, upgrades preserve the user's enabled state and capability
+    /// grants. Built-in skills only ever change with app updates — there is
+    /// no runtime or remote update channel.
+    func seedBuiltinDomainSkills() async {
+        let defaults = UserDefaults.standard
+        let seedKey = "floe.domainSkillSeeded"
+        let seeded = defaults.dictionary(forKey: seedKey) as? [String: String] ?? [:]
+        var updatedSeeds = seeded
+        let validator = SkillPackageValidator()
+        for definition in DomainSkillLibrary.all {
+            do {
+                let temporary = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("floe-domain-skill-\(definition.id)", isDirectory: true)
+                defer { try? FileManager.default.removeItem(at: temporary) }
+                try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+                let markdown = """
+                ---
+                name: \(definition.name)
+                description: \(definition.description)
+                ---
+
+                \(definition.markdown)
+                """
+                try Data(markdown.utf8).write(to: temporary.appendingPathComponent("SKILL.md"), options: .atomic)
+                let manifest: [String: Any] = [
+                    "schemaVersion": 1,
+                    "id": definition.id,
+                    "version": definition.version,
+                    "capabilities": [String](),
+                    "tools": [String](),
+                    "platforms": ["iOS"],
+                    "scriptRuntime": "none",
+                    "pythonPackages": [[String: Any]]()
+                ]
+                let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
+                try manifestData.write(to: temporary.appendingPathComponent("floe.json"), options: .atomic)
+                let package = try validator.validate(packageAt: temporary)
+
+                let existing = try? await environment.skillStore.all().first { $0.id == definition.id }
+                if let existing {
+                    let bundledIsNewer = Self.isVersion(definition.version, newerThan: existing.version)
+                    let contentMatches = existing.rewrittenDigest == package.canonicalSHA256
+                    if contentMatches {
+                        updatedSeeds[definition.id] = package.canonicalSHA256
+                        continue
+                    }
+                    if !bundledIsNewer {
+                        // Same or older bundled version with different digest:
+                        // the user edited this skill — respect their copy.
+                        updatedSeeds[definition.id] = existing.rewrittenDigest
+                        continue
+                    }
+                    // Upgrade: preserve the user's enabled state (and, through
+                    // the store metadata, their capability grants).
+                    try await installCanonicalPackage(
+                        at: temporary,
+                        sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
+                        initialStatus: existing.status,
+                        replaceExisting: true
+                    )
+                } else {
+                    try await installCanonicalPackage(
+                        at: temporary,
+                        sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
+                        initialStatus: "disabled",
+                        replaceExisting: true
+                    )
+                }
+                updatedSeeds[definition.id] = package.canonicalSHA256
+            } catch {
+                // A single broken seed must never block app startup.
+                FloeLogger(category: .app).error("seed domain skill \(definition.id) failed: \(error.localizedDescription)")
+            }
+        }
+        defaults.set(updatedSeeds, forKey: seedKey)
+        defaults.set(Self.domainSkillSeedVersion, forKey: "floe.domainSkillSeedVersion")
+        await load()
+    }
+
+    /// Numeric dotted-version comparison ("1.10.0" > "1.4.0").
+    private static func isVersion(_ candidate: String, newerThan installed: String) -> Bool {
+        let left = candidate.split(separator: ".").compactMap { Int($0) }
+        let right = installed.split(separator: ".").compactMap { Int($0) }
+        for index in 0..<max(left.count, right.count) {
+            let l = index < left.count ? left[index] : 0
+            let r = index < right.count ? right[index] : 0
+            if l != r { return l > r }
+        }
+        return false
+    }
+
     private struct InstructionUpdateMetadata: SkillInstallationMetadataStore {
         let store: SQLiteSkillStore
         let markdown: String
@@ -404,7 +508,8 @@ final class SkillsCenter: ObservableObject {
         sourceURL: URL,
         sourceDigest: String? = nil,
         rewriteModelID: String? = nil,
-        initialStatus: String = "enabled"
+        initialStatus: String = "enabled",
+        replaceExisting: Bool = false
     ) async throws {
         guard !packageMutationInProgress else { throw FloeError.validationFailed("Another skill change is in progress") }
         packageMutationInProgress = true
@@ -472,7 +577,7 @@ final class SkillsCenter: ObservableObject {
         // still pass the normal approval and catastrophic-action gates.
         let metadata = InitialSkillMetadata(store: environment.skillStore, skill: skill, capabilities: package.declaredCapabilities.map(\.rawValue))
         _ = try await SkillInstallStagingService(installationRoot: installationRoot, metadataStore: metadata)
-            .installRewrittenPackage(at: url, provenance: provenance, replaceExisting: false)
+            .installRewrittenPackage(at: url, provenance: provenance, replaceExisting: replaceExisting)
     }
 
     private struct InitialSkillMetadata: SkillInstallationMetadataStore {

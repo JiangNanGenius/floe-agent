@@ -915,10 +915,10 @@ struct ToolLoopHardeningTests {
             ])
         )
 
-        #expect(message.contains("browser.observe and stable DOM refs first"))
-        #expect(message.contains("When DOM structure is insufficient"))
-        #expect(message.contains("browser.clickVisualText"))
-        #expect(message.contains("fresh evidence from the current page"))
+        #expect(message.contains("prefer browser.observe DOM refs"))
+        #expect(message.contains("screenshots/OCR are the fallback"))
+        #expect(message.contains("fresh evidence"))
+        #expect(message.contains("skill.read id=floe.browser"))
     }
 }
 

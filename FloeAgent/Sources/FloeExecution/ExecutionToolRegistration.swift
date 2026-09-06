@@ -32,6 +32,7 @@ public func registerExecutionTools(
     service: any ScriptExecutionService = JavaScriptExecutionService(),
     localPythonService: LocalPythonService? = nil,
     sshCommandService: SSHCommandService? = nil,
+    interactiveShellService: InteractiveShellSessionService? = nil,
     cloudWorkspaceService: CloudWorkspaceService? = nil,
     remoteHostStore: RemoteHostStore? = nil,
     vncPasswordWriter: VNCPasswordWriter? = nil,
@@ -78,6 +79,14 @@ public func registerExecutionTools(
         ToolCatalog.register(CloudWorkspaceGitBranchTool.self)
         ToolCatalog.register(RemoteHostingInspectTool.self)
         ToolCatalog.register(RemoteHostingManageTool.self)
+    }
+    if let interactiveShellService {
+        ToolCatalog.register(SSHShellOpenTool.self)
+        ToolCatalog.register(SSHShellExchangeTool.self)
+        ToolCatalog.register(SSHShellCloseTool.self)
+        registry.register(SSHShellOpenTool(service: interactiveShellService))
+        registry.register(SSHShellExchangeTool(service: interactiveShellService))
+        registry.register(SSHShellCloseTool(service: interactiveShellService))
     }
     if remoteHostStore != nil {
         ToolCatalog.register(SSHListHostsTool.self)

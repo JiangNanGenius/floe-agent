@@ -30,7 +30,7 @@ public struct DocumentReadSheetTool: AgentTool {
 
     public static let name = "document.readSheet"
     public static let toolDescription =
-        "Read an .xlsx spreadsheet's cell values as a tab-separated text grid. Pass a workspace-relative path and optionally a sheet name (defaults to the first sheet). Row output is capped to avoid huge responses."
+        "Read an .xlsx spreadsheet's cell values as a tab-separated text grid. Pass a workspace-relative path and optionally a sheet name (defaults to the first sheet). Row output is capped to avoid huge responses. When you need editable text/fields/formulas or stable field IDs for document.office.updateText, use document.office.inspect instead."
     public static let parametersJSON = #"""
     {
       "type": "object",

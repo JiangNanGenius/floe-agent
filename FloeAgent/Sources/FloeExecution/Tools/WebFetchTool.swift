@@ -13,7 +13,7 @@ public struct WebFetchTool: AgentTool {
 
     public static let name = "web.fetch"
     public static let toolDescription =
-        "Fetch readable HTML, JSON or text without opening the browser. Public targets require HTTPS; for user-requested LAN diagnostics, set localNetwork=true to allow local HTTP URLs. Every redirect is revalidated; credential URLs and metadata endpoints are blocked. Returns source metadata and a browserFallback reason for binary, interactive or insufficient content."
+        "Fetch readable HTML, JSON or text without opening the browser. Prefer this over network.http when the goal is reading page content as markdown rather than issuing a raw request with custom method/headers/body. Public targets require HTTPS; for user-requested LAN diagnostics, set localNetwork=true to allow local HTTP URLs. Every redirect is revalidated; credential URLs and metadata endpoints are blocked. Returns source metadata and a browserFallback reason for binary, interactive or insufficient content."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "url":{"type":"string","description":"HTTPS URL, or local HTTP URL for user-requested diagnostics"},

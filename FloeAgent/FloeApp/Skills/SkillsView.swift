@@ -17,6 +17,17 @@ struct SkillsView: View {
         self.mcpCenter = mcpCenter
     }
 
+    /// The hub shows user skills plus the explicitly exposed built-ins
+    /// (office/pdf/network); hidden built-ins stay readable via skill.read
+    /// but never occupy hub space.
+    private var visibleInstalled: [PersistedSkill] {
+        let exposed = Set(DomainSkillLibrary.all.filter(\.exposed).map(\.id))
+        return center.installed.filter { skill in
+            guard (skill.sourceURL ?? "").hasPrefix(DomainSkillLibrary.builtinSourceScheme) else { return true }
+            return exposed.contains(skill.id)
+        }
+    }
+
     var body: some View {
         List {
             Section("connectors.title") {
@@ -36,10 +47,10 @@ struct SkillsView: View {
                 }
                 .accessibilityIdentifier("skills.connectors")
             }
-            if center.installed.isEmpty {
+            if visibleInstalled.isEmpty {
                 ContentUnavailableView("skills.empty", systemImage: "puzzlepiece.extension")
             } else {
-                ForEach(center.installed) { skill in
+                ForEach(visibleInstalled) { skill in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             VStack(alignment: .leading) {

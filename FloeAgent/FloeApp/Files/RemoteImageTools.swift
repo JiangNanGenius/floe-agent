@@ -349,7 +349,7 @@ struct RemoteImageGenerateTool: AgentTool {
 
     static let name = "image.generate"
     static let toolDescription =
-        "Generate images with the image model configured in Settings. Use this for user requests to draw, create, or render an image. Returns durable image artifacts; do not substitute SVG/HTML/Python when this tool is available."
+        "Generate images with the image model configured in Settings. Use this for user requests to draw, create, or render an image. Returns durable image artifacts; do not substitute SVG/HTML/Python when this tool is available. For media that must live inside a canvas document or generation graph with source-node ancestry, use canvas.generate instead."
     static let parametersJSON = #"""
     {
       "type": "object",

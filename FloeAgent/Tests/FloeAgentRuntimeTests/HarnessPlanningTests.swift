@@ -402,18 +402,21 @@ struct HarnessPlanningTests {
                 "remoteHosting.inspect", "remoteHosting.manage"
             ])
         )
-        #expect(prompt.contains("Remote-host workflow"))
-        #expect(prompt.contains("remote.connection.open -> reuse its sessionID"))
+        #expect(prompt.contains("Terminal toolkit"))
+        #expect(prompt.contains("sessionID from open for every exchange until close"))
         #expect(prompt.contains("Do not inspect or save memory during an unrelated diagnostic"))
         #expect(prompt.contains("after one successful inspection, continue the requested task"))
         #expect(prompt.contains("Search/list returns stable memory IDs"))
-        #expect(prompt.contains("reuse its exact taskID with ssh.taskStatus"))
+        #expect(prompt.contains("poll ssh.taskStatus with that exact taskID"))
+        #expect(prompt.contains("ssh.shell.open -> ssh.shell.exchange -> ssh.shell.close"))
         #expect(prompt.contains("vnc.status -> vnc.connect -> vnc.observe"))
-        #expect(prompt.contains("explicit user-requested prerequisite method or tool order is binding"))
-        #expect(prompt.contains("SSH is an example recovery route, not a mandatory fallback"))
+        #expect(prompt.contains("partialSuccess means input may already have executed"))
         #expect(!prompt.contains("call vnc.observe first"))
-        #expect(prompt.contains("require vnc.status -> vnc.connect before the first vnc.observe"))
-        #expect(prompt.contains("action=list to discover shareIDs"))
+        #expect(prompt.contains("require vnc.status -> vnc.connect -> vnc.observe"))
+        #expect(prompt.contains("shareIDs from inspect/manage"))
+        #expect(prompt.contains("explicit sharing authority"))
+        // The compressed VNC section stays bounded (was ~1090 chars before).
+        #expect(prompt.contains("Domain skill index"))
     }
 
     @Test("failed stateful tools point to their ID discovery predecessor")

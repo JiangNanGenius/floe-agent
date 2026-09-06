@@ -113,31 +113,12 @@ enum AppleCapabilityPreferences {
         let enabled = AppleCapability.allCases.filter { isEnabled($0) }
         guard !enabled.isEmpty else { return "" }
         let names = enabled.map(\.title).joined(separator: "、")
-        var blocks = ["""
+        return """
         ## Apple system integrations
         Enabled on this device: \(names).
-        Use only the corresponding compiled tools. Ask for the minimum system permission at first real use, handle denial without retry loops, and never claim that a system-owned UI was confirmed. For Web, prefer structured DOM/semantic evidence and use screenshot vision only when structure is absent or insufficient. Mail sending, camera capture, Home access, and other system consent remain user-controlled.
-        """]
-        if enabled.contains(.documents) {
-            blocks.append("""
-            ## Built-in skill: pdf-workbench
-            For PDF tasks follow this closed loop: inspect and extract text first; render only relevant pages for visual evidence; use document.pdf.merge to combine PDFs, document.pdf.split to extract pages, document.pdf.fillForm to list or fill interactive AcroForm fields (text, checkbox, dropdown, radio, option list), and document.pdf.edit for page-removal, per-page 90-degree rotation, positioned text watermarks, page numbers, annotation-layer text cover-and-replace, and password encryption (true content-stream rewriting requires an engine PDFKit does not provide and is not available); save to a new output unless the user explicitly requested overwrite; reopen the saved PDF with document.pdf.inspect; render the changed pages to verify them. If the user asks for an interactive web companion, create it in the task workspace, use structured browser inspection before screenshots, exercise each interaction, and finish with a concise structured test report. PDF inspect/render and image recognition are built-in read operations and do not require Floe approval, although file and system access remain sandboxed.
-            When a Word or PDF workflow reports a missing font, call font.list first. Use font.install with a direct public HTTPS font URL or a workspace-relative font file; the validated font is stored once in Floe's global font library and becomes available to every Floe workspace. Do not redownload a font that font.list already reports. If iOS does not expose a requested system font to Floe, explain that platform boundary and install a permitted font into Floe's managed library instead.
-            """)
-        }
-        if enabled.contains(.vision) {
-            blocks.append("""
-            ## Built-in skill: visual-inspection
-            Attached images, PDF page images, generated images, and browser screenshots are all valid image.inspect inputs. A text-only primary model must use the automatically supplied auxiliary visual evidence, or image.inspect when new visual evidence appears; OCR is only a text supplement. Never use browser, Python, or repeated OCR calls merely to rediscover an attachment already handed off by the vision model.
-            """)
-        }
-        if enabled.contains(.web) {
-            blocks.append("""
-            ## Built-in skill: structured-web
-            Prefer DOM, accessibility semantics, stable element references, and structured page state. Use a screenshot plus visual inspection only when structured evidence is unavailable or insufficient; record that fallback reason before coordinate interaction.
-            """)
-        }
-        return blocks.joined(separator: "\n\n")
+        Use only the corresponding compiled tools. Ask for the minimum system permission at first real use, handle denial without retry loops, and never claim that a system-owned UI was confirmed. Mail sending, camera capture, Home access, and other system consent remain user-controlled.
+        Detailed workflow guides are on-demand Floe skills (read via skill.read before non-trivial work): floe.apple for Apple capability tasks (mail/calendar/photos/home/reminders/shortcuts/clipboard/camera), floe.pdf / floe.office for document work, floe.browser for browser and visual tasks.
+        """
     }
 }
 

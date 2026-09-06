@@ -188,6 +188,85 @@ public struct RemoteAgentTaskService: Sendable {
         return state
     }
 
+    // MARK: - Interactive shell (/v1/shell, guardian 1.4.4+)
+
+    public struct ShellExchange: Sendable {
+        public var shellID: String
+        public var alive: Bool
+        public var output: Data
+
+        public init(shellID: String, alive: Bool, output: Data) {
+            self.shellID = shellID
+            self.alive = alive
+            self.output = output
+        }
+    }
+
+    public func shellOpen(
+        hostID: UUID?,
+        term: String,
+        columns: Int,
+        rows: Int,
+        cancellation: CancellationToken
+    ) async throws -> ShellExchange {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "term": term, "cols": columns, "rows": rows
+        ])
+        let data = try await retryingRequest(
+            hostID: hostID, method: "POST", endpoint: "v1/shell", body: body,
+            cancellation: cancellation
+        )
+        let object = try Self.object(data)
+        guard let shellID = object["shell_id"] as? String else {
+            throw FloeError.validationFailed("Remote guardian returned no shell id")
+        }
+        return ShellExchange(
+            shellID: shellID,
+            alive: object["alive"] as? Bool ?? true,
+            output: Self.decodeBase64(object["data_base64"])
+        )
+    }
+
+    public func shellIO(
+        hostID: UUID?,
+        shellID: String,
+        input: Data?,
+        waitMs: Int,
+        maxBytes: Int,
+        cancellation: CancellationToken
+    ) async throws -> ShellExchange {
+        var payload: [String: Any] = ["wait_ms": waitMs, "max_bytes": maxBytes]
+        if let input, !input.isEmpty { payload["input_base64"] = input.base64EncodedString() }
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let data = try await retryingRequest(
+            hostID: hostID, method: "POST", endpoint: "v1/shell/\(shellID)/io", body: body,
+            cancellation: cancellation
+        )
+        let object = try Self.object(data)
+        return ShellExchange(
+            shellID: shellID,
+            alive: object["alive"] as? Bool ?? false,
+            output: Self.decodeBase64(object["data_base64"])
+        )
+    }
+
+    public func shellClose(
+        hostID: UUID?,
+        shellID: String,
+        cancellation: CancellationToken
+    ) async throws {
+        _ = try await retryingRequest(
+            hostID: hostID, method: "POST", endpoint: "v1/shell/\(shellID)/close",
+            body: Data("{}".utf8),
+            cancellation: cancellation
+        )
+    }
+
+    private static func decodeBase64(_ value: Any?) -> Data {
+        guard let encoded = value as? String, let decoded = Data(base64Encoded: encoded) else { return Data() }
+        return decoded
+    }
+
     private func readOutput(
         hostID: UUID?,
         taskID: String,

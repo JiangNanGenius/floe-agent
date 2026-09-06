@@ -60,7 +60,7 @@ public struct OfficeInspectTool: AgentTool {
     public struct Arguments: Decodable, Sendable { public var path: String }
     public static let name = "document.office.inspect"
     public static let toolDescription =
-        "Inspect editable text, slide text, notes, formulas and cells in a workspace .docx, .pptx or .xlsx file. Returns stable field IDs for document.office.updateText and preserves the original package."
+        "Inspect editable text, slide text, notes, formulas and cells in a workspace .docx, .pptx or .xlsx file. Returns stable field IDs for document.office.updateText and preserves the original package. For a quick read-only dump of spreadsheet cell values use document.readSheet instead."
     public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative .docx, .pptx or .xlsx path"}},"required":["path"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.readsFiles]
     public static let isSideEffecting = false

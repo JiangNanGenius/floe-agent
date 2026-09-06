@@ -74,6 +74,7 @@ final class AppEnvironment: ObservableObject {
     /// Shared verified-SSH command service used by model tools and explicit
     /// host-management actions such as remote-agent updates.
     let sshCommandService: SSHCommandService
+    let interactiveShellService: InteractiveShellSessionService
     let cloudWorkspaceService: CloudWorkspaceService
     let cloudWorkspaceCleanupQueue: CloudWorkspaceCleanupQueue
     let bluetoothSerialService: CoreBluetoothSerialService
@@ -244,6 +245,7 @@ final class AppEnvironment: ObservableObject {
         let pythonService = remoteServices.python
         let sshCommandService = remoteServices.ssh
         self.sshCommandService = sshCommandService
+        self.interactiveShellService = remoteServices.interactiveShell
         let remoteAgentReadiness = RemoteAgentReadinessCoordinator(
             manager: RemoteAgentInstaller(service: sshCommandService),
             eligibility: { hostID in
@@ -335,9 +337,41 @@ final class AppEnvironment: ObservableObject {
         // Independent credential-card management over the shared vault.
         registerCredentialManageTool(vault: credentialVault, store: credentialStore)
         // Execution tools (JS, local Python, SSH, HTTP, LAN scan, OCR, barcode).
+        // Interactive shell sessions get their guardian backend now that the
+        // cloud-workspace channel exists.
+        let interactiveShell = self.interactiveShellService
+        if let cloudWorkspaceService {
+            let remoteAgentTasks = RemoteAgentTaskService(client: cloudWorkspaceService)
+            Task {
+                await interactiveShell.attachGuardian(GuardianShellClient(
+            open: { hostID, term, columns, rows in
+                let opened = try await remoteAgentTasks.shellOpen(
+                    hostID: hostID, term: term, columns: columns, rows: rows,
+                    cancellation: CancellationToken()
+                )
+                return (shellID: opened.shellID, output: opened.output, alive: opened.alive)
+            },
+            io: { hostID, shellID, input, waitMs, maxBytes in
+                let result = try await remoteAgentTasks.shellIO(
+                    hostID: hostID, shellID: shellID, input: input,
+                    waitMs: waitMs, maxBytes: maxBytes,
+                    cancellation: CancellationToken()
+                )
+                return (output: result.output, alive: result.alive)
+            },
+            close: { hostID, shellID in
+                try await remoteAgentTasks.shellClose(
+                    hostID: hostID, shellID: shellID,
+                    cancellation: CancellationToken()
+                )
+            }
+            ))
+            }
+        }
         registerExecutionTools(
             localPythonService: localPythonService,
             sshCommandService: sshCommandService,
+            interactiveShellService: interactiveShell,
             cloudWorkspaceService: cloudWorkspaceService,
             remoteHostStore: remoteHostStore,
             vncPasswordWriter: { hostID, connectionID, credentialInput in
@@ -387,6 +421,9 @@ final class AppEnvironment: ObservableObject {
         registerPreviewTools(environment: previewCenter)
         // Skill authoring.
         registerSkillTools(creator: LocalSkillCreator(center: skillsCenter), manager: LocalSkillCreator(center: skillsCenter))
+        // Bundled domain skills: seed/upgrade in the background; failures are
+        // logged inside the seeder and never block startup.
+        Task { await skillsCenter.seedBuiltinDomainSkills() }
         // Durable memory.
         registerMemoryTools(store: intelligenceStore) { [runStore] runID in
             try await runStore.run(id: runID)?.conversationID
@@ -487,7 +524,7 @@ final class AppEnvironment: ObservableObject {
     /// resolve through the Keychain and are never held beyond the connect.
     private static func makeRemoteServices(
         hostStore: RemoteHostStore
-    ) -> (python: RemotePythonService, ssh: SSHCommandService) {
+    ) -> (python: RemotePythonService, ssh: SSHCommandService, interactiveShell: InteractiveShellSessionService) {
         let sshService = SSHConnectionService(hostStore: hostStore)
 
         let sessionFactory: RemotePythonService.SessionFactory = { hostID in
@@ -544,7 +581,36 @@ final class AppEnvironment: ObservableObject {
             hostResolver: hostResolver,
             defaultHostProvider: defaultHostProvider
         )
-        return (python, ssh)
+        // Interactive shell sessions (ssh.shell.*) ride the same host store
+        // and credential path; the guardian backend is attached by the caller
+        // once CloudWorkspaceService exists.
+        let ptyFactory: InteractiveShellSessionService.DirectPTYFactory = { hostID, term, columns, rows in
+            guard let stored = try await hostStore.host(id: hostID) else {
+                throw RemotePythonError.hostNotFound(hostID)
+            }
+            let profile = try RemoteHostProfile(stored: stored)
+            do {
+                let connection = try await sshService.connect(
+                    profile: profile,
+                    credentialResolver: { reference in
+                        let store = KeychainStore(
+                            service: "org.floeagent.ios.secrets",
+                            synchronizable: reference.synchronizable
+                        )
+                        return try store.read(account: reference.keychainAccount)
+                    },
+                    hostKeyDecision: { _ in false }
+                )
+                return try await connection.openPTY(term: term, columns: columns, rows: rows)
+            } catch let error as SSHConnectionError {
+                throw RemotePythonError.sshConnection(error)
+            }
+        }
+        let interactiveShell = InteractiveShellSessionService(
+            directFactory: ptyFactory,
+            defaultHostProvider: defaultHostProvider
+        )
+        return (python, ssh, interactiveShell)
     }
 
     /// Builds the production environment against the on-disk database,

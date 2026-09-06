@@ -1621,13 +1621,14 @@ public actor ConversationRunService {
                     : "Available tools: \(toolNames.joined(separator: ", "))"
             )
             if toolNames.contains("browser.observe") && toolNames.contains("browser.screenshot") {
-                lines.append("Browser interaction policy: use browser.observe and stable DOM refs first. When DOM structure is insufficient, use browser.screenshot and prefer its on-device OCR visualTextRegions with browser.clickVisualText. Use browser.clickPoint only when neither DOM refs nor OCR text anchors identify the target. Every visual fallback must use fresh evidence from the current page and verify the returned post-action screenshot.")
+                lines.append("Browser interaction policy: prefer browser.observe DOM refs; screenshots/OCR are the fallback with fresh evidence. Full strategy: skill.read id=floe.browser.")
             }
             if toolNames.contains("vnc.observe") && toolNames.contains("vnc.click") {
-                lines.append("VNC interaction policy: satisfy any prerequisite route and order explicitly requested by the user, then require vnc.status -> vnc.connect before the first vnc.observe. After connection, prefer OCR-backed recognizedText references from a fresh observation with vnc.clickElement. Use exact screenshot framebuffer-pixel coordinates only when no suitable reference exists. Perform one bounded action, then inspect the returned post-action screenshot. inputDispatched=true only confirms protocol delivery; never claim task success without visual evidence. RFB does not provide native control roles or a DOM, so do not invent them.")
+                lines.append("VNC interaction policy: satisfy any user-requested prerequisite route, require vnc.status -> vnc.connect -> vnc.observe, prefer OCR recognizedText references over raw coordinates, perform one bounded action and verify the returned screenshot. inputDispatched=true is protocol delivery, never task success.")
             }
             lines.append(contentsOf: ToolWorkflowGuidance.contextLines(for: toolNames))
             lines.append("Tool inventory rule: when asked what tools are available, use only the exact names above and their supplied schemas. Never invent, rename, or imply an unavailable tool; state capability limits directly.")
+            lines.append("Domain skill index: on-demand workflow guides are installed as disabled Floe skills; read one via skill.read before non-trivial work — floe.pdf, floe.office, floe.network, floe.python, floe.data-code, floe.browser, floe.files-vcs, floe.crypto, floe.apple. Before creating a skill that carries Python scripts, read floe.python for the execution contract.")
         } else {
             lines.append("Available tools: none (native tool calling is disabled for this model)")
         }

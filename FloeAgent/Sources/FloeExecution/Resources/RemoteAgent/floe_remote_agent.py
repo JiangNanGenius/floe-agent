@@ -11,7 +11,7 @@ import subprocess, tempfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.4.3"
+VERSION = "1.4.4"
 ROOT = pathlib.Path(os.environ.get("FLOE_CLOUD_ROOT", "~/.floe/cloud-workspaces")).expanduser().resolve()
 STATE = pathlib.Path(os.environ.get("FLOE_STATE_ROOT", "~/.local/state/floe-agent")).expanduser().resolve()
 CONFIG = pathlib.Path(os.environ.get("FLOE_CONFIG_ROOT", "~/.config/floe-agent")).expanduser().resolve()
@@ -343,6 +343,71 @@ def launch_task(body, device_id):
     threading.Thread(target=wrapper.wait, daemon=True).start()
     return record
 
+SHELLS = {}
+SHELL_MAX_AGE = 30 * 60
+
+def _shell_drain(fd, wait, max_bytes):
+    import select as _select
+    chunks, total, deadline = [], 0, time.time() + wait
+    while total < max_bytes:
+        remaining = deadline - time.time()
+        if remaining <= 0: break
+        ready, _, _ = _select.select([fd], [], [], remaining)
+        if not ready: break
+        try: chunk = os.read(fd, min(65536, max_bytes - total))
+        except OSError: break
+        if not chunk: break
+        chunks.append(chunk); total += len(chunk)
+    return b"".join(chunks)
+
+def shell_open(body):
+    import pty, fcntl, termios, struct
+    term = re.sub(r"[^A-Za-z0-9._-]", "", str(body.get("term", "xterm-256color")))[:32] or "xterm-256color"
+    cols = min(max(int(body.get("cols", 80)), 20), 500); rows = min(max(int(body.get("rows", 24)), 5), 200)
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["TERM"] = term
+        shell = os.environ.get("SHELL") or "/bin/sh"
+        try: os.execvp(shell, [shell, "-i"])
+        except Exception: os._exit(127)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    os.set_blocking(fd, False)
+    shell_id = str(uuid.uuid4())
+    SHELLS[shell_id] = {"pid": pid, "fd": fd, "created": time.time(), "alive": True}
+    data = _shell_drain(fd, 0.4, 65536)
+    return {"shell_id": shell_id, "alive": True, "data_base64": base64.b64encode(data).decode()}
+
+def shell_io(shell_id, body):
+    entry = SHELLS.get(shell_id)
+    if not entry: raise ValueError("shell not found")
+    if time.time() - entry["created"] > SHELL_MAX_AGE:
+        shell_close(shell_id); raise ValueError("shell expired")
+    raw = body.get("input_base64") or ""
+    if raw:
+        data_in = base64.b64decode(raw, validate=True)
+        if len(data_in) > 65536: raise ValueError("input too large")
+        if entry["alive"]: os.write(entry["fd"], data_in)
+    wait = min(max(float(body.get("wait_ms", 200)) / 1000.0, 0.05), 30)
+    max_bytes = min(max(int(body.get("max_bytes", 65536)), 1), 262144)
+    data = _shell_drain(entry["fd"], wait, max_bytes)
+    if entry["alive"]:
+        pid, _ = os.waitpid(entry["pid"], os.WNOHANG)
+        if pid == entry["pid"]: entry["alive"] = False
+    if not entry["alive"]:
+        data += _shell_drain(entry["fd"], 0.1, max(0, max_bytes - len(data)))
+    return {"shell_id": shell_id, "alive": entry["alive"], "data_base64": base64.b64encode(data).decode()}
+
+def shell_close(shell_id):
+    entry = SHELLS.pop(shell_id, None)
+    if not entry: return {"ok": True}
+    try: os.close(entry["fd"])
+    except OSError: pass
+    try: os.kill(entry["pid"], signal.SIGHUP)
+    except OSError: pass
+    try: os.waitpid(entry["pid"], 0)
+    except (OSError, ChildProcessError): pass
+    return {"ok": True}
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "FloeRemoteAgent/" + VERSION
     def log_message(self, fmt, *args): pass
@@ -377,7 +442,7 @@ class Handler(BaseHTTPRequestHandler):
                 certificate={}
                 try: certificate=json.loads((STATE/"certificate-status.json").read_text())
                 except (OSError,ValueError): pass
-                return self._send(200,{"version":VERSION,"docker":available("docker"),"nginx":available("nginx"),"certbot":available("certbot"),"ufw":available("ufw"),"network_scope":scope,"detected_address":address,"certificate_maintenance":certificate})
+                return self._send(200,{"version":VERSION,"docker":available("docker"),"nginx":available("nginx"),"certbot":available("certbot"),"ufw":available("ufw"),"network_scope":scope,"detected_address":address,"certificate_maintenance":certificate,"interactive_shell":True})
             if parsed.path=="/v1/workspaces": return self._send(200,list_workspaces())
             if parsed.path=="/v1/shares":
                 rows=[]
@@ -409,6 +474,12 @@ class Handler(BaseHTTPRequestHandler):
         if not self._guard(): return
         try:
             body=self._body()
+            if self.path=="/v1/shell": return self._send(202,shell_open(body))
+            if self.path.startswith("/v1/shell/"):
+                pieces=self.path.strip("/").split("/")
+                if len(pieces)==4 and pieces[3]=="io": return self._send(200,shell_io(pieces[2],body))
+                if len(pieces)==4 and pieces[3]=="close": return self._send(200,shell_close(pieces[2]))
+                return self._send(404,{"error":"not_found"})
             if self.path=="/v1/tasks": return self._send(202,launch_task(body,self._device()))
             if self.path=="/v1/workspaces/create": return self._send(201,create_workspace(body,self._device()))
             if self.path=="/v1/shares/plan":
