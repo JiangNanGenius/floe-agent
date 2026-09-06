@@ -208,6 +208,40 @@ struct ArchiveToolTests {
         #expect(output.contains("mine/x.txt"))
     }
 
+    @Test("7z extract and list work with the bundled decoder")
+    func sevenZipRoundTrip() async throws {
+        let f = try Fixture()
+        // Pre-generated with py7zr: docs/a.txt ("seven content"), docs/sub/b.md ("nested content").
+        let fixtureB64 = "N3q8ryccAATxEVM9lQAAAAAAAAAVAAAAAAAAAEGDdB8AOZlLMuk+sMxcerjw9jIiGcCOUfKPeSqx//7nWADgAIYAb10AAIEzB64Pz+swFA/r6p4BDWIDjdNMQj8OhwznT/BcjGhRgWpylQWCW3UePPTvJFqatxAZSbplQ4ZhX84i1fWkwDn19BlrPIv9i+kUxNYKxOKtweRuQ9tYkWbXpEl2kYPe02y79AGDOpAo01stAAAAABcGHgEJdwAHCwEAASEhARgMgIcAAA=="
+        let data = try #require(Data(base64Encoded: fixtureB64))
+        try data.write(to: f.root.appendingPathComponent("sample.7z"))
+
+        let tool = WorkspaceArchiveTool(environment: f.environment)
+        let listed = try await tool.execute(.init(action: "list", source: "sample.7z"), context: f.context)
+        #expect(listed.summary.contains("format=7z"))
+        #expect(listed.summary.contains("docs/a.txt"))
+
+        let extracted = try await tool.execute(
+            .init(action: "extract", source: "sample.7z", destination: "out7z"),
+            context: f.context
+        )
+        #expect(extracted.summary.contains("entries=2"))
+        #expect(try f.read("out7z/docs/a.txt") == "seven content")
+        #expect(try f.read("out7z/docs/sub/b.md") == "nested content")
+
+        // 7z creation is honestly unavailable.
+        await #expect(throws: WorkspaceToolError.self) {
+            _ = try await tool.execute(
+                .init(action: "create", source: "out7z", destination: "x.7z"),
+                context: f.context
+            )
+        }
+        // rar reports an honest, actionable boundary.
+        await #expect(throws: WorkspaceToolError.self) {
+            _ = try await tool.execute(.init(action: "extract", source: "sample.7z", destination: "y", format: "rar"), context: f.context)
+        }
+    }
+
     @Test("tar extraction skips traversal entries")
     func tarTraversalSafety() async throws {
         let f = try Fixture()

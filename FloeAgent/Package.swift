@@ -55,6 +55,9 @@ let package = Package(
         // ZIPFoundation supplies the bounded archive reader used for local,
         // value-only Office Open XML spreadsheet inspection.
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20"),
+        // SWCompression supplies read-only 7z/RAR container decoding for
+        // workspace.archive; archive creation stays zip/tar only.
+        .package(url: "https://github.com/tsolomko/SWCompression.git", exact: "4.9.1"),
         // Exact revision: Qwen3.5 and Gemma 4 text/VLM support with a verified,
         // deterministic model-loading surface. Advance this pin only together
         // with iPad memory, crash, tokenizer, and tool-calling validation.
@@ -398,6 +401,7 @@ let package = Package(
                 "FloeTools",
                 .product(name: "SMBClient", package: "SMBClient"),
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+                .product(name: "SWCompression", package: "SWCompression"),
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeWorkspace",

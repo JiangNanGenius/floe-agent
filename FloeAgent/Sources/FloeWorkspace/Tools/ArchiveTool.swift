@@ -7,6 +7,7 @@
 
 import Foundation
 import ZIPFoundation
+import SWCompression
 import FloeCore
 import FloeTools
 
@@ -55,15 +56,15 @@ public struct WorkspaceArchiveTool: AgentTool {
 
     public static let name = "workspace.archive"
     public static let toolDescription =
-        "Archive operations inside the workspace, one entry point for every common format. action=create packs one file or directory into a new archive at destination; action=extract unpacks into a new destination directory (gz/bz2/xz decompress to a single file at destination); action=list shows entries. Formats: zip and tar run natively; tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, gz, bz2 and xz run through the bundled CPython with the same limits (format parameter or file extension). Entry count and total size are capped, unsafe entry names are skipped, and existing destinations are never overwritten. 7z and rar are not available."
+        "Archive operations inside the workspace, one entry point for every common format. action=create packs one file or directory into a new archive at destination (zip, tar, tgz, tbz2, txz, or single-file gz/bz2/xz); action=extract unpacks (zip/tar/7z/tar.* always into a new destination DIRECTORY; gz/bz2/xz decompress into a single FILE at destination); action=list shows entries (zip/tar/7z/tar.*). Formats: zip, tar and 7z (read) run natively; tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, gz, bz2 and xz run through the bundled CPython with the same limits; rar is unavailable. Entry count and total size are capped, unsafe entry names are skipped, and existing destinations are never overwritten."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "action": {"type": "string", "enum": ["create", "extract", "list"]},
         "source": {"type": "string", "description": "Workspace-relative source: file/directory to pack (create) or archive to read (extract/list)"},
-        "destination": {"type": "string", "description": "Workspace-relative output archive or file (create) or output directory/file (extract); required for create and extract"},
-        "format": {"type": "string", "enum": ["zip", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz"], "description": "Archive format; defaults to the destination/source extension"}
+        "destination": {"type": "string", "description": "create: output archive path. extract: output DIRECTORY for zip/tar/7z/tar.*, output FILE for gz/bz2/xz. Required for create and extract"},
+        "format": {"type": "string", "enum": ["zip", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz", "7z"], "description": "Archive format; defaults to the destination/source extension"}
       },
       "required": ["action", "source"],
       "additionalProperties": false
@@ -101,8 +102,8 @@ public struct WorkspaceArchiveTool: AgentTool {
             throw WorkspaceToolError.invalidArguments("destination is required for create and extract")
         }
         if let format = args.format,
-           !["zip", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz"].contains(format) {
-            throw WorkspaceToolError.invalidArguments("format must be zip, tar, tgz, tbz2, txz, gz, bz2 or xz")
+           !["zip", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz", "7z"].contains(format) {
+            throw WorkspaceToolError.invalidArguments("format must be zip, tar, tgz, tbz2, txz, gz, bz2, xz or 7z")
         }
     }
 
@@ -120,10 +121,12 @@ public struct WorkspaceArchiveTool: AgentTool {
         case "gz": return "gz"
         case "bz2": return "bz2"
         case "xz": return "xz"
+        case "7z": return "7z"
+        case "rar": return "rar"
         default:
             throw WorkspaceToolError.invalidArguments(
                 "Cannot infer the archive format from \(reference); pass format explicitly " +
-                "(zip, tar, tgz, tbz2, txz, gz, bz2 or xz)."
+                "(zip, tar, tgz, tbz2, txz, gz, bz2, xz or 7z)."
             )
         }
     }
@@ -142,6 +145,22 @@ public struct WorkspaceArchiveTool: AgentTool {
             throw WorkspaceToolError.notFound(args.source)
         }
         let resolvedFormat = try format(for: args)
+        if resolvedFormat == "7z" {
+            guard args.action != "create" else {
+                throw WorkspaceToolError.invalidArguments("7z is extract/list only; create supports zip, tar and the compressed tar variants")
+            }
+            switch args.action {
+            case "extract":
+                return try extract7z(args, context: context, guarder: guarder, sourceURL: sourceURL)
+            default:
+                return try list7z(args, sourceURL: sourceURL)
+            }
+        }
+        if resolvedFormat == "rar" {
+            throw WorkspaceToolError.invalidArguments(
+                "rar is not available: the only maintained pure-Swift decoder dropped RAR, and unrar's license is incompatible. Re-pack as zip or 7z."
+            )
+        }
         if ["tgz", "tbz2", "txz", "gz", "bz2", "xz"].contains(resolvedFormat) {
             guard let compressedHandler else {
                 throw FloeError.invalidConfiguration(
@@ -150,13 +169,23 @@ public struct WorkspaceArchiveTool: AgentTool {
             }
             if resolvedFormat == "gz" || resolvedFormat == "bz2" || resolvedFormat == "xz",
                args.action == "list" {
-                throw WorkspaceToolError.invalidArguments("\(resolvedFormat) is a single-file compression format; list applies to zip/tar/tar.gz/tar.bz2/tar.xz")
+                throw WorkspaceToolError.invalidArguments("\(resolvedFormat) is a single-file compression format; list applies to zip/tar/7z/tar.gz/tar.bz2/tar.xz")
+            }
+            var destination = args.destination
+            // A trailing "/" means "put the decompressed file in this directory".
+            if ["gz", "bz2", "xz"].contains(resolvedFormat), args.action == "extract",
+               let explicit = destination, explicit.hasSuffix("/") {
+                var baseName = ((args.source as NSString).lastPathComponent as NSString).deletingPathExtension
+                if baseName.lowercased().hasSuffix(".tar") {
+                    baseName = String(baseName.dropLast(4))
+                }
+                destination = explicit + baseName
             }
             let summary = try await compressedHandler(ArchiveCompressedRequest(
                 action: args.action,
                 format: resolvedFormat,
                 source: args.source,
-                destination: args.destination,
+                destination: destination,
                 workspaceRoot: guarder.rootURL
             ))
             return WorkspaceToolSupport.output(summary)
@@ -336,6 +365,93 @@ public struct WorkspaceArchiveTool: AgentTool {
     }
 
     // MARK: - list
+
+    // MARK: - 7z extract / list (SWCompression, read-only)
+
+    private func extract7z(
+        _ args: Arguments,
+        context: ToolContext,
+        guarder: WorkspacePathGuard,
+        sourceURL: URL
+    ) throws -> ToolExecutionOutput {
+        let destination = args.destination!
+        try context.authorizeWorkspacePath(destination)
+        let destinationURL = try guarder.resolve(destination)
+        try guarder.assertWritable(destinationURL)
+        guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
+            throw WorkspaceToolError.alreadyExists(destination)
+        }
+        let data = try Data(contentsOf: sourceURL, options: [.mappedIfSafe])
+        let entries: [SevenZipEntry]
+        do {
+            entries = try SevenZipContainer.open(container: data)
+        } catch {
+            throw WorkspaceToolError.invalidArguments("source is not a readable 7z archive")
+        }
+        var extracted = 0
+        var skipped = 0
+        var totalBytes: UInt64 = 0
+        try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        for entry in entries where entry.info.type == .regular {
+            try context.cancellation.throwIfCancelled()
+            guard extracted < Self.maxEntries else {
+                throw WorkspaceToolError.tooLarge(limit: Self.maxEntries)
+            }
+            let name = entry.info.name
+            let components = name.split(separator: "/", omittingEmptySubsequences: true)
+            if let baseName = components.last, baseName.hasPrefix("._") {
+                continue
+            }
+            guard !name.hasPrefix("/"), !name.hasPrefix("~"),
+                  !components.contains(".."), !components.isEmpty,
+                  !name.contains("\\") else {
+                skipped += 1
+                continue
+            }
+            totalBytes += UInt64(entry.info.size ?? 0)
+            guard totalBytes <= UInt64(Self.maxTotalUncompressedBytes) else {
+                throw WorkspaceToolError.tooLarge(limit: Self.maxTotalUncompressedBytes)
+            }
+            let target = destinationURL.appendingPathComponent(name)
+            guard target.path.hasPrefix(destinationURL.path + "/") else {
+                skipped += 1
+                continue
+            }
+            try FileManager.default.createDirectory(
+                at: target.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            guard let contents = entry.data else {
+                skipped += 1
+                continue
+            }
+            try contents.write(to: target, options: [.atomic])
+            extracted += 1
+        }
+        return WorkspaceToolSupport.output(
+            "status=ok action=extract format=7z source=\(args.source) destination=\(destination) entries=\(extracted) skipped=\(skipped) uncompressedBytes=\(totalBytes)"
+        )
+    }
+
+    private func list7z(_ args: Arguments, sourceURL: URL) throws -> ToolExecutionOutput {
+        let data = try Data(contentsOf: sourceURL, options: [.mappedIfSafe])
+        let entries: [SevenZipEntry]
+        do {
+            entries = try SevenZipContainer.open(container: data)
+        } catch {
+            throw WorkspaceToolError.invalidArguments("source is not a readable 7z archive")
+        }
+        var lines = ["status=ok action=list format=7z source=\(args.source)"]
+        var count = 0
+        var truncated = false
+        for entry in entries {
+            if count >= Self.maxListedEntries { truncated = true; break }
+            lines.append("\(entry.info.type == .directory ? "dir" : "file")\t\(entry.info.size ?? 0)\t\(entry.info.name)")
+            count += 1
+        }
+        lines[0] += " entries=\(count) truncated=\(truncated)"
+        return WorkspaceToolSupport.output(lines.joined(separator: "\n"))
+    }
 
     // MARK: - zip list
 

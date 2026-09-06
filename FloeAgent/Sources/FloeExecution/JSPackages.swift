@@ -36,7 +36,8 @@ public enum JSPackages {
         JSPackage(name: "dayjs", globalName: "dayjs", resourceName: "dayjs.min"),
         JSPackage(name: "marked", globalName: "marked", resourceName: "marked.min"),
         JSPackage(name: "uuid", globalName: "uuid", resourceName: "uuid.min"),
-        JSPackage(name: "zod", globalName: "z", resourceName: "zod.min")
+        JSPackage(name: "zod", globalName: "z", resourceName: "zod.min"),
+        JSPackage(name: "pdf-lib", globalName: "PDFLib", resourceName: "pdf-lib.min")
     ]
 
     /// Loads a package's source from the app bundle.
@@ -52,6 +53,17 @@ public enum JSPackages {
     /// Each package's source is evaluated, and its global name is bound.
     #if canImport(JavaScriptCore)
     public static func inject(into context: JSContext) {
+        // JavaScriptCore has no event-loop timers. pdf-lib (and some other
+        // libraries) reference setTimeout in otherwise microtask-driven code
+        // paths, so provide a microtask-backed shim before any package runs.
+        context.evaluateScript("""
+            if (typeof setTimeout === 'undefined') {
+                var setTimeout = function(fn) { Promise.resolve().then(function(){ fn(); }); return 0; };
+            }
+            if (typeof clearTimeout === 'undefined') {
+                var clearTimeout = function() {};
+            }
+            """)
         for package in preInstalled {
             guard let source = source(for: package) else { continue }
             context.evaluateScript(source)

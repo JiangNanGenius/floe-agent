@@ -231,7 +231,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             "apple.home.list", "apple.watch.status", "apple.location.current",
             "apple.automation.list",
             "font.list", "font.install",
-            "memory.recall", "exec.localNumerical", "presentation.createInline",
+            "memory.recall", "exec.compatEvaluator", "presentation.createInline",
             "git.status", "git.diff", "git.log", "git.initialize", "git.stage",
             "git.commit", "git.createBranch", "git.switchBranch", "git.fetch",
             "git.pull", "github.repositories", "github.clone",

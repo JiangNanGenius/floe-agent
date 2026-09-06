@@ -917,7 +917,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
             "workspace.inspectFileMetadata", "workspace.createFile", "workspace.writeFile",
             "workspace.applyPatch",
             "image.ocr", "document.pdf.inspect", "document.pdf.render",
-            "exec.localPython", "exec.javascript", "exec.localNumerical",
+            "exec.localPython", "exec.javascript", "exec.compatEvaluator",
             "memory.recall", "git.status", "git.diff", "git.log"
     ]
 
