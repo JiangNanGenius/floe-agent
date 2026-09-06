@@ -759,7 +759,7 @@ struct ApprovalPolicyTests {
             "document.pdf.inspect", "document.pdf.render",
             "document.office.inspect", "document.office.updateText",
             "document.createWord", "document.createWorkbook", "presentation.createDeck",
-            "exec.localNumerical", "presentation.create"
+            "exec.localNumerical", "presentation.createInline"
         ] {
             let call = try ToolCall(
                 id: name,

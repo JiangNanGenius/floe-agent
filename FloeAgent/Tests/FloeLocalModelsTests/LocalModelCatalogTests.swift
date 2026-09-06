@@ -512,7 +512,7 @@ struct LocalModelCatalogTests {
             ToolSchemaDescriptor(name: "document.pdf.inspect", description: "Read PDF text"),
             ToolSchemaDescriptor(name: "document.pdf.render", description: "Render a scanned PDF page"),
             ToolSchemaDescriptor(name: "image.ocr", description: "OCR a rendered PDF page"),
-            ToolSchemaDescriptor(name: "presentation.create", description: "Create a chart"),
+            ToolSchemaDescriptor(name: "presentation.createInline", description: "Create a chart"),
             ToolSchemaDescriptor(name: "browser.click", description: "Click browser"),
             ToolSchemaDescriptor(name: "ssh.execute", description: "Run SSH")
         ]
@@ -534,7 +534,7 @@ struct LocalModelCatalogTests {
         #expect(build.text.contains("document.pdf.inspect"))
         #expect(build.text.contains("document.pdf.render"))
         #expect(build.text.contains("image.ocr"))
-        #expect(!build.text.contains("presentation.create"))
+        #expect(!build.text.contains("presentation.createInline"))
         #expect(!build.text.contains("browser.click"))
         #expect(!build.text.contains("- ssh.execute:"))
         #expect(build.text.count < 5_000)

@@ -10,7 +10,30 @@ import ZIPFoundation
 import FloeCore
 import FloeTools
 
-/// Creates, extracts and lists zip archives inside the workspace.
+/// One compressed-format archive request handled by the app-supplied bridge
+/// (the bundled CPython's tarfile/gzip/bz2/lzma), keeping workspace.archive
+/// the single entry point for every common format.
+public struct ArchiveCompressedRequest: Sendable {
+    public var action: String
+    /// tgz, tbz2, txz, gz, bz2 or xz.
+    public var format: String
+    public var source: String
+    public var destination: String?
+    public var workspaceRoot: URL
+
+    public init(action: String, format: String, source: String, destination: String?, workspaceRoot: URL) {
+        self.action = action
+        self.format = format
+        self.source = source
+        self.destination = destination
+        self.workspaceRoot = workspaceRoot
+    }
+}
+
+public typealias ArchiveCompressedHandler = @Sendable (ArchiveCompressedRequest) async throws -> String
+
+/// Creates, extracts and lists zip/tar archives inside the workspace, with
+/// compressed variants routed through the app-supplied bridge.
 public struct WorkspaceArchiveTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var action: String
@@ -32,15 +55,15 @@ public struct WorkspaceArchiveTool: AgentTool {
 
     public static let name = "workspace.archive"
     public static let toolDescription =
-        "Archive operations inside the workspace. action=create packs one file or directory into a new archive at destination; action=extract unpacks into a new destination directory (entry count and total size are capped, unsafe entry names are skipped); action=list shows entries. Formats: zip and tar (format parameter or file extension). For compressed variants (tar.gz/tar.bz2/tar.xz/gz/bz2/xz) and 7z/rar use exec.localPython, which bundles tarfile/gzip/bz2/lzma. Existing destinations are never overwritten."
+        "Archive operations inside the workspace, one entry point for every common format. action=create packs one file or directory into a new archive at destination; action=extract unpacks into a new destination directory (gz/bz2/xz decompress to a single file at destination); action=list shows entries. Formats: zip and tar run natively; tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, gz, bz2 and xz run through the bundled CPython with the same limits (format parameter or file extension). Entry count and total size are capped, unsafe entry names are skipped, and existing destinations are never overwritten. 7z and rar are not available."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "action": {"type": "string", "enum": ["create", "extract", "list"]},
         "source": {"type": "string", "description": "Workspace-relative source: file/directory to pack (create) or archive to read (extract/list)"},
-        "destination": {"type": "string", "description": "Workspace-relative output archive (create) or output directory (extract); required for create and extract"},
-        "format": {"type": "string", "enum": ["zip", "tar"], "description": "Archive format; defaults to the destination/source extension"}
+        "destination": {"type": "string", "description": "Workspace-relative output archive or file (create) or output directory/file (extract); required for create and extract"},
+        "format": {"type": "string", "enum": ["zip", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz"], "description": "Archive format; defaults to the destination/source extension"}
       },
       "required": ["action", "source"],
       "additionalProperties": false
@@ -55,8 +78,11 @@ public struct WorkspaceArchiveTool: AgentTool {
     private static let maxListedEntries = 500
 
     private let environment: WorkspaceToolEnvironment
-    public init(environment: WorkspaceToolEnvironment) {
+    private let compressedHandler: ArchiveCompressedHandler?
+
+    public init(environment: WorkspaceToolEnvironment, compressedHandler: ArchiveCompressedHandler? = nil) {
         self.environment = environment
+        self.compressedHandler = compressedHandler
     }
 
     public func validate(_ args: Arguments) throws {
@@ -74,8 +100,9 @@ public struct WorkspaceArchiveTool: AgentTool {
            args.destination?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
             throw WorkspaceToolError.invalidArguments("destination is required for create and extract")
         }
-        if let format = args.format, format != "zip", format != "tar" {
-            throw WorkspaceToolError.invalidArguments("format must be zip or tar")
+        if let format = args.format,
+           !["zip", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz"].contains(format) {
+            throw WorkspaceToolError.invalidArguments("format must be zip, tar, tgz, tbz2, txz, gz, bz2 or xz")
         }
     }
 
@@ -83,13 +110,20 @@ public struct WorkspaceArchiveTool: AgentTool {
     private func format(for args: Arguments) throws -> String {
         if let format = args.format { return format }
         let reference = args.action == "create" ? (args.destination ?? "") : args.source
+        let lower = reference.lowercased()
+        if lower.hasSuffix(".tar.gz") || lower.hasSuffix(".tgz") { return "tgz" }
+        if lower.hasSuffix(".tar.bz2") || lower.hasSuffix(".tbz2") { return "tbz2" }
+        if lower.hasSuffix(".tar.xz") || lower.hasSuffix(".txz") { return "txz" }
         switch (reference as NSString).pathExtension.lowercased() {
         case "tar": return "tar"
         case "zip": return "zip"
+        case "gz": return "gz"
+        case "bz2": return "bz2"
+        case "xz": return "xz"
         default:
             throw WorkspaceToolError.invalidArguments(
-                "Cannot infer the archive format from \(reference); pass format: zip or tar. " +
-                "Compressed variants (tar.gz/tar.bz2/tar.xz/gz/bz2/xz) are available through exec.localPython."
+                "Cannot infer the archive format from \(reference); pass format explicitly " +
+                "(zip, tar, tgz, tbz2, txz, gz, bz2 or xz)."
             )
         }
     }
@@ -107,7 +141,27 @@ public struct WorkspaceArchiveTool: AgentTool {
         guard FileManager.default.fileExists(atPath: sourceURL.path) else {
             throw WorkspaceToolError.notFound(args.source)
         }
-        switch (args.action, try format(for: args)) {
+        let resolvedFormat = try format(for: args)
+        if ["tgz", "tbz2", "txz", "gz", "bz2", "xz"].contains(resolvedFormat) {
+            guard let compressedHandler else {
+                throw FloeError.invalidConfiguration(
+                    "Compressed archive formats require the app-bundled Python bridge, which is unavailable in this context"
+                )
+            }
+            if resolvedFormat == "gz" || resolvedFormat == "bz2" || resolvedFormat == "xz",
+               args.action == "list" {
+                throw WorkspaceToolError.invalidArguments("\(resolvedFormat) is a single-file compression format; list applies to zip/tar/tar.gz/tar.bz2/tar.xz")
+            }
+            let summary = try await compressedHandler(ArchiveCompressedRequest(
+                action: args.action,
+                format: resolvedFormat,
+                source: args.source,
+                destination: args.destination,
+                workspaceRoot: guarder.rootURL
+            ))
+            return WorkspaceToolSupport.output(summary)
+        }
+        switch (args.action, resolvedFormat) {
         case ("create", "tar"):
             return try createTar(args, context: context, guarder: guarder, sourceURL: sourceURL)
         case ("extract", "tar"):

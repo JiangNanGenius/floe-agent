@@ -23,6 +23,7 @@ import FloeTools
 @discardableResult
 public func registerWorkspaceTools(
     rootProvider: @escaping @Sendable () -> URL?,
+    compressedArchiveHandler: ArchiveCompressedHandler? = nil,
     registry: ToolRunnerRegistry = .shared
 ) -> WorkspaceToolEnvironment {
     let environment = WorkspaceToolEnvironment(rootProvider: rootProvider)
@@ -57,7 +58,7 @@ public func registerWorkspaceTools(
     registry.register(WorkspaceDeleteFileTool(environment: environment))
     registry.register(WorkspaceCreateDirectoryTool(environment: environment))
     registry.register(WorkspaceCopyFileTool(environment: environment))
-    registry.register(WorkspaceArchiveTool(environment: environment))
+    registry.register(WorkspaceArchiveTool(environment: environment, compressedHandler: compressedArchiveHandler))
 
     return environment
 }

@@ -1,4 +1,4 @@
-// FloeDocuments — document.createDocument agent tool.
+// FloeDocuments — document.createMarkdown agent tool.
 //
 // Creates a document in the workspace. Markdown and plain-text documents are
 // written directly. Office creation is not advertised until a bundled,
@@ -22,7 +22,7 @@ public struct DocumentCreateTool: AgentTool {
         }
     }
 
-    public static let name = "document.createDocument"
+    public static let name = "document.createMarkdown"
     public static let toolDescription =
         "Create a Markdown (.md) document in the workspace. Prefer .md for notes, reports, and documents; use .txt only for content that must not contain Markdown formatting. This creates Markdown, not Word — use document.createWord for a .docx file."
     public static let parametersJSON = #"""
@@ -60,7 +60,7 @@ public struct DocumentCreateTool: AgentTool {
         }
         let ext = (name as NSString).pathExtension.lowercased()
         guard ext == "md" || ext == "markdown" || ext == "txt" else {
-            throw FloeError.validationFailed("document.createDocument supports only .md, .markdown, and .txt")
+            throw FloeError.validationFailed("document.createMarkdown supports only .md, .markdown, and .txt")
         }
     }
 

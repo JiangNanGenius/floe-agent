@@ -308,7 +308,10 @@ final class AppEnvironment: ObservableObject {
     ) {
         let credentialVault = self.credentialVault
         // Workspace file tools (T04/T05).
-        registerWorkspaceTools(rootProvider: WorkspaceCenter.toolRootProvider)
+        registerWorkspaceTools(
+            rootProvider: WorkspaceCenter.toolRootProvider,
+            compressedArchiveHandler: localPythonService.map(ArchiveCompressedBridge.makeHandler)
+        )
         // Native local Git and GitHub repository tools. Credentials are read
         // from the dedicated device-local Keychain store at execution time.
         registerGitTools(rootProvider: WorkspaceCenter.toolRootProvider)

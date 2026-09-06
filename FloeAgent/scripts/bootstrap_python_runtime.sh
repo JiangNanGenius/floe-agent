@@ -79,4 +79,8 @@ rm -f "FloeApp/Resources/python/lib/python313.zip"
 # module to be a separately embedded/signed framework with `.fwork` markers.
 scripts/package_python_extensions.sh
 
+# Bundle the pinned BeeWare iOS binary wheels (numpy, Pillow) the same way:
+# pure-Python into site-packages, every extension as a signed XCFramework.
+scripts/install_python_binary_packages.sh
+
 echo "Installed CPython 3.13-b10 runtime in Vendor/ and FloeApp/Resources/python"

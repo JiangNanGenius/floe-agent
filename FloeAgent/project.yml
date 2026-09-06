@@ -168,6 +168,56 @@ targets:
       - framework: Vendor/PythonExtensions/unicodedata.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/zlib.xcframework
+        # BEGIN embedded Python binary packages (generated)
+      - framework: Vendor/PythonExtensions/_multiarray_tests.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_multiarray_umath.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_operand_flag_tests.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_rational_tests.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_simd.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_struct_ufunc_tests.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_umath_tests.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_pocketfft_umath.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_umath_linalg.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/lapack_lite.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_bounded_integers.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_common.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_generator.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_mt19937.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_pcg64.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_philox.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_sfc64.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/bit_generator.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/mtrand.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_imaging.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_imagingft.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_imagingmath.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_imagingmorph.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_imagingtk.xcframework
+        embed: true
+        # END embedded Python binary packages
         embed: true
       - package: FloeAgentPackages
         product: FloeCore
@@ -219,8 +269,8 @@ targets:
         SWIFT_VERSION: "6.0"
         SWIFT_OBJC_BRIDGING_HEADER: FloeApp/Execution/FloeApp-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.4.92"
-        CURRENT_PROJECT_VERSION: "123"
+        MARKETING_VERSION: "1.4.93"
+        CURRENT_PROJECT_VERSION: "124"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -267,8 +317,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.92"
-        CURRENT_PROJECT_VERSION: "123"
+        MARKETING_VERSION: "1.4.93"
+        CURRENT_PROJECT_VERSION: "124"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -312,8 +362,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.92"
-        CURRENT_PROJECT_VERSION: "123"
+        MARKETING_VERSION: "1.4.93"
+        CURRENT_PROJECT_VERSION: "124"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -352,8 +402,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.92"
-        CURRENT_PROJECT_VERSION: "123"
+        MARKETING_VERSION: "1.4.93"
+        CURRENT_PROJECT_VERSION: "124"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
