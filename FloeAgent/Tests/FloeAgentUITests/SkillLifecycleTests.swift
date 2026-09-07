@@ -125,6 +125,22 @@ struct SkillLifecycleTests {
         #expect(!text.contains("HELLO"))
         #expect(text.contains("Replacement"))
         #expect(text.contains("中文"))
+        #expect(!text.contains("\u{2F42}"))
+
+        // A following native operation must reuse the verified bytes rather
+        // than make PDFKit regenerate the preceding text's Unicode mapping.
+        let second = Data(#"[{"action":"addText","page":1,"bounds":[0,0,300,60],"text":"Second native operation","fontSize":12}]"#.utf8)
+        let chained = try await PDFDocumentOperations.run(result.data,
+            operations: JSONDecoder().decode([PDFDocumentOperations.Operation].self, from: second), cancellation: CancellationToken())
+        let reopened = try #require(PDFDocument(data: chained.data))
+        #expect(reopened.string?.contains("中文") == true)
+        #expect(reopened.string?.contains("Second native operation") == true)
+
+        // The final-file guard must reject lost text, not merely accept a
+        // successfully reopened PDF or a visually equivalent glyph.
+        #expect(throws: (any Error).self) {
+            try PDFDocumentOperations.verifySavedText(["中文"], in: PDFDocument(data: pdfFixture())!)
+        }
     }
 
     @Test("On-device OCR adds searchable text to a raster-only PDF")

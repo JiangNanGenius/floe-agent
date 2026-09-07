@@ -71,3 +71,82 @@ These are automated observations, not physical iPad acceptance or a release.
   x86_64 link, while the native PDF/libarchive/pandas artifacts support arm64.
   The project explicitly targets arm64 devices and Apple Silicon Simulator;
   Intel Simulator support is not claimed. Both SDK gates retain real linking.
+
+## Verified release candidate / 已验证发布候选（2026-09-08）
+
+- Immutable app tag: `v1.4.98`, Build `129`, source
+  `4d2f455cff17970a123ea2641b3d78e80d886b3e`.
+- [CI 34128210921](https://github.com/JiangNanGenius/floe-agent/actions/runs/34128210921)
+  passed all required jobs: 107 app tests (zero failures/skips), 990 SwiftPM
+  tests, Linux build, and the stable App Store SDK Release link gate. Source
+  secret scanning, SBOM and license inventory also passed. The inventory
+  retains the pre-existing libgit2 license-classification warning.
+- The official catalog on GitHub `main` matches the verified local catalog.
+- Release workflow maintenance commit `868686c` adds the missing native Python
+  suite to the stable SDK test selection; it does not change tagged app code.
+  The initial release run was cancelled before uploading. The replacement
+  workflow checks out the immutable app tag and applies the full test gate.
+- [Main CI 34132482805](https://github.com/JiangNanGenius/floe-agent/actions/runs/34132482805)
+  also passed all required jobs after this workflow-only correction.
+- [Release 34132482577](https://github.com/JiangNanGenius/floe-agent/actions/runs/34132482577)
+  attempt 1 was stopped by one browser fixture's five-second load-wait timeout;
+  its subsequent screenshot/coordinate/input assertions passed. All PDF, RAR,
+  skill and native Python cases passed. The same runner logged exceptionally
+  slow WebKit startup (142 seconds for the tab lifecycle case), followed by a
+  simulator diagnostic collection timeout. This is evidence of the failure,
+  not proof of a production browser defect or a resolved simulator root cause.
+- The unchanged six-case browser suite passed five separate local invocations
+  (30 executed tests); no assertion or timeout was relaxed. Attempt 2 uses a
+  fresh cloud runner and repeats the complete release gates. No app source or
+  immutable tag was changed to retry this failure.
+- Attempt 2's `build-verify-release` job passed 990 SwiftPM tests and all 107
+  app regressions (zero failures/skips), including the unchanged browser case.
+  Device packaging, artifact verification, provenance and source/built-app
+  secret scans passed. The accepted-SDK device build also passed, but its app
+  suite caught a real PDF serialization regression: the final saved text was
+  `中⽂` (U+2F42 radical) instead of `中文` (U+6587). The intermediate document
+  had passed verification; PDFKit's subsequent serialization changed it.
+  106/107 stable-SDK tests passed. Upload and GitHub publication were blocked.
+- Candidate `v1.4.98` remains immutable and was never uploaded to TestFlight.
+  The replacement candidate is `v1.4.99` / Build `130`. Native PDF operations
+  now retain verified output bytes until an actual PDFKit mutation, and verify
+  saved/reopened page text at serialization boundaries. Whitespace may differ;
+  Unicode radicals are never compatibility-normalized into a false pass. The
+  original Chinese assertion remains, with chained-operation and lost-text
+  regression checks. Mixed workflows that cannot preserve text fail explicitly.
+- Upload receipt, Apple VALID and internal-group visibility for the replacement
+  remain unverified until their explicit evidence is recorded.
+
+## Physical iPad acceptance / 实体 iPad 验收清单
+
+These are pending manual checks, not simulator-derived passes. Test on the
+internal TestFlight build; retain the original input documents and record the
+build number, device/iPadOS version and diagnostic export for failures.
+
+这些项目尚未通过真机验收。请使用内部 TestFlight 构建，保留原始文件；出现
+问题时记录版本号、设备/iPadOS 版本，并导出诊断日志。
+
+- [ ] PDF: replace searchable text, copy/search the replacement and confirm
+      removed text is absent; check Chinese region layout, images, rotated
+      pages and nonstandard page bounds. Unsupported geometry must fail
+      explicitly instead of producing a misleading success.
+- [ ] PDF: annotate/fill forms/save/reopen; inspect bookmarks and metadata;
+      scan OCR/search/copy; verify redacted exports contain no recoverable
+      source text or attachments. Check signed/encrypted documents follow
+      the displayed confirmation/credential boundaries.
+- [ ] Python: cold-launch offline and run pandas CSV/groupby/merge/timezone
+      operations; confirm the manifest reports native execution and no
+      browser/remote fallback is silently invoked.
+- [ ] Archives: list/extract representative RAR4/RAR5 files; confirm damaged,
+      encrypted and multipart inputs produce explicit refusals and no partial
+      destination. Verify directory/file output selection is unambiguous.
+- [ ] Skills: fresh install, signed owner-repository update preview/apply,
+      rollback, offline use and an already-running task retaining its version;
+      custom imports must not replace the three reserved official skills.
+- [ ] VNC: real server click/drag produces a fresh image or bounded structured
+      observation; verify framebuffer coordinates, cancellation/button release,
+      reconnect and task continuation. Loopback tests do not accept real-server
+      input behavior.
+- [ ] Stability: prolonged large-document/Python work, background/foreground
+      transitions, memory pressure and diagnostic capture. Confirm existing PiP
+      behavior remains unchanged. Do not open external Beta until accepted.

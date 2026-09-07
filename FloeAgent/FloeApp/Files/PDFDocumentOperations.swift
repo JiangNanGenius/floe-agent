@@ -70,10 +70,18 @@ enum PDFDocumentOperations {
             throw invalid("Signed PDFs require an explicitly accepted rasterized unsigned copy; editing does not preserve signature validity")
         }
         var evidence: [String] = []
+        // PDFKit can rebuild a native PDF's ToUnicode map when serializing it
+        // again (some SDKs map CJK glyphs to look-alike radical code points).
+        // Preserve verified native bytes until an actual PDFKit mutation occurs.
+        var nativeSnapshot: Data? = input
         for op in operations {
             try cancellation.throwIfCancelled()
             guard (op.text?.utf8.count ?? 0) <= 16_000, (op.fieldName?.count ?? 0) <= 200,
                   (op.fontSize ?? 12).isFinite, (6...96).contains(op.fontSize ?? 12) else { throw invalid("Invalid PDF text or font size") }
+            switch op.action {
+            case .replaceRegion, .addText, .insertImage, .replaceImage, .removeImage: break
+            default: nativeSnapshot = nil
+            }
             switch op.action {
             case .replaceRegion, .addText, .insertImage, .replaceImage, .removeImage:
                 let p = try page(op.page, in: document)
@@ -107,7 +115,13 @@ enum PDFDocumentOperations {
                     overlay = UIGraphicsPDFRenderer(bounds: local).pdfData { r in r.beginPage(); image.draw(in: local) }
                     evidence.append("imageFit=stretch; image orientation normalized; maximumRasterDimension=4096")
                 }
-                guard let current = document.dataRepresentation() else { throw invalid("PDF serialization failed") }
+                let beforeWrite = nativeSnapshot == nil
+                    ? (0..<document.pageCount).map { document.page(at: $0)?.string ?? "" } : nil
+                guard let current = nativeSnapshot ?? document.dataRepresentation() else { throw invalid("PDF serialization failed") }
+                if let beforeWrite {
+                    guard let serialized = PDFDocument(data: current) else { throw invalid("PDF serialization failed to reopen") }
+                    try verifySavedText(beforeWrite, in: serialized)
+                }
                 let changed = try FloePDFiumBridge.replaceRegion(current, page: op.page!, bounds: [box.minX, box.minY, box.width, box.height].map { NSNumber(value: Double($0)) },
                     overlay: overlay, objectType: isText ? 1 : 3, expectedCount: count)
                 guard let updated = PDFDocument(data: changed), updated.pageCount == document.pageCount else { throw invalid("Native region output failed to reopen") }
@@ -117,6 +131,7 @@ enum PDFDocumentOperations {
                     guard normalize(actual).contains(normalize(text)) else { throw invalid("Region text/font verification failed") }
                 }
                 document = updated
+                nativeSnapshot = changed
                 evidence.append("nativeRegionRewrite=true; removedObjects=\(count); notSecureRedaction=true")
             case .reorderPages:
                 guard let order = op.pages, order.count == document.pageCount,
@@ -257,8 +272,12 @@ enum PDFDocumentOperations {
             evidence.append("applied=\(op.action.rawValue)")
         }
         try cancellation.throwIfCancelled()
-        guard let data = document.dataRepresentation(), data.count <= 64 * 1024 * 1024,
+        // Capture expected text before serialization: checking the in-memory
+        // document alone misses changes introduced by PDFKit's final write.
+        let expectedText = (0..<document.pageCount).map { document.page(at: $0)?.string ?? "" }
+        guard let data = nativeSnapshot ?? document.dataRepresentation(), data.count <= 64 * 1024 * 1024,
               let reopened = PDFDocument(data: data), reopened.pageCount == document.pageCount else { throw invalid("PDF save/reopen verification failed") }
+        try verifySavedText(expectedText, in: reopened)
         if operations.contains(where: { $0.action == .rasterRedact }) {
             let native = try JSONSerialization.jsonObject(with: FloePDFiumBridge.inspect(data)) as? [String: Any]
             guard native?["imageObjectsOnly"] as? Bool == true,
@@ -270,6 +289,18 @@ enum PDFDocumentOperations {
             evidence.append("verifiedImageOnly=true")
         }
         return Result(data: data, evidence: evidence)
+    }
+
+    static func verifySavedText(_ expected: [String], in saved: PDFDocument) throws {
+        guard saved.pageCount == expected.count else { throw invalid("PDF saved text page count changed") }
+        let compact: (String) -> String = { $0.components(separatedBy: .whitespacesAndNewlines).joined() }
+        for index in expected.indices {
+            // Ignore layout whitespace only, never compatibility-normalize
+            // radicals or other distinct Unicode characters into a false pass.
+            guard compact(saved.page(at: index)?.string ?? "") == compact(expected[index]) else {
+                throw invalid("PDF saved text differs from the verified document; output not saved")
+            }
+        }
     }
 
     private static func rasterCopy(_ source: PDFDocument, regions: [Region], ocr: Bool, languages: [String]?, cancellation: CancellationToken) throws -> PDFDocument {
