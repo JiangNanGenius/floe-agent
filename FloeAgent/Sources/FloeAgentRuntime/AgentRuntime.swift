@@ -387,7 +387,7 @@ public actor FloeAgentRuntime {
     private var streamText = ""
     private var responseReasoning = ""
     private var streamTextByteCount = 0
-    private var providerEventCount = 0
+    // Per-response byte protection, not a cumulative task/event budget.
     private var providerPayloadBytes = 0
     private var modelRequestStartedAt: Date?
     private var firstModelActivityAt: Date?
@@ -832,9 +832,8 @@ public actor FloeAgentRuntime {
         // A checkpoint is a committed tool-result boundary. Never carry a
         // cancelled provider stream's partial prose into the replay turn.
         streamText = ""
-        responseReasoning = ""
+        responseReasoning = checkpoint.pendingAssistantReasoning ?? ""
         streamTextByteCount = 0
-        providerEventCount = 0
         providerPayloadBytes = 0
         latestContextCompaction = checkpoint.contextCompaction
         toolStepCount = checkpoint.parentIterationCount ?? 0
@@ -994,7 +993,7 @@ public actor FloeAgentRuntime {
     private func runSingleModelTurn() async {
         let hasFreshSteer = !pendingSteers.isEmpty
         if hasFreshSteer, !streamText.isEmpty {
-            messages.append(ConversationMessage(role: "assistant", content: streamText))
+            messages.append(ConversationMessage(role: "assistant", content: streamText, reasoningContent: responseReasoning))
             await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
         }
         await consumeSteersAtStepBoundary()
@@ -1033,6 +1032,9 @@ public actor FloeAgentRuntime {
                 protection: protection
             )
             let wasForcedCompaction = forceCompactionOnNextTurn
+            if wasForcedCompaction || Double(ContextTokenEstimator().estimate(messages)) >= Double(compressionPolicy.budget.availableInputTokens) * compressionPolicy.budget.triggerRatio {
+                await publishLiveness(phase: .compacting, message: "Compacting model context; original messages and tool evidence remain saved", isRecoverable: true)
+            }
             do {
                 let prepared: PreparedContext
                 if forceCompactionOnNextTurn {
@@ -1127,7 +1129,7 @@ public actor FloeAgentRuntime {
         // Restore recently used groups without replaying a discovery call.
         let recentGroups = Set(executionLedger.entries.suffix(6).map { ToolDiscovery.group($0.toolName) })
         catalogDescriptors = catalogDescriptors.filter {
-            $0.name == "skill.read" || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
+            ["skill.search", "skill.read"].contains($0.name) || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
         }
         let statefulGroups: Set<String> = ["vnc", "executor", "terminal"]
         let pinned = Set(catalogDescriptors.filter { statefulGroups.contains(ToolDiscovery.group($0.name)) && recentGroups.contains(ToolDiscovery.group($0.name)) }.map(\.name))
@@ -1153,7 +1155,7 @@ public actor FloeAgentRuntime {
                     .imageData(mimeType: $0.mimeType, base64: $0.base64)
                 }
             }
-            return ProviderMessage(role: message.role, content: parts)
+            return ProviderMessage(role: message.role, content: parts, reasoningContent: message.reasoningContent)
         }
         // Refresh on every dispatch, including long-running and resumed tasks.
         // This is transient request context, never a durable historical fact.
@@ -1304,6 +1306,7 @@ public actor FloeAgentRuntime {
         pendingToolCalls.removeAll(keepingCapacity: true)
         responseReasoning = ""
 
+        providerPayloadBytes = 0
         modelRequestStartedAt = Date()
         firstModelActivityAt = nil
         providerAttemptNumber += 1
@@ -1471,13 +1474,14 @@ public actor FloeAgentRuntime {
             event = rawEvent
         }
 
-        providerEventCount += 1
         providerPayloadBytes += Self.payloadSize(of: event)
-        guard providerEventCount <= 20_000,
-              providerPayloadBytes <= 16 * 1_024 * 1_024 else {
+        // SSE fragmentation is provider-dependent: thousands of tiny deltas
+        // must not shorten a valid task. Only bound one response's allocation;
+        // every subsequent model dispatch starts a fresh byte allowance.
+        guard providerPayloadBytes <= max(16 * 1_024 * 1_024, configuration.model.limits.clientOutputSafetyBytes) else {
             await failRun(
-                message: "Provider stream exceeded the per-run event limit",
-                recoverable: false
+                message: "A single provider response exceeded the memory safety allowance; resume from the saved checkpoint",
+                recoverable: true
             )
             return
         }
@@ -1716,7 +1720,7 @@ public actor FloeAgentRuntime {
             return
         }
         if !streamText.isEmpty {
-            messages.append(ConversationMessage(role: "assistant", content: streamText))
+            messages.append(ConversationMessage(role: "assistant", content: streamText, reasoningContent: responseReasoning))
             await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
         }
         await consumeSteersAtStepBoundary()
@@ -1769,7 +1773,7 @@ public actor FloeAgentRuntime {
     /// blocker. Tool schemas stay enabled for this one repair turn.
     private func beginDeferredActionRepair() async {
         deferredActionRepairCount += 1
-        messages.append(ConversationMessage(role: "assistant", content: streamText))
+        messages.append(ConversationMessage(role: "assistant", content: streamText, reasoningContent: responseReasoning))
         await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
         await transition(to: .verifying)
         messages.append(ConversationMessage(
@@ -1787,7 +1791,7 @@ public actor FloeAgentRuntime {
         didVerifyFinalAnswer = true
         forcedStopReason = stopReason
         isFinalizingWithoutTools = true
-        messages.append(ConversationMessage(role: "assistant", content: streamText))
+        messages.append(ConversationMessage(role: "assistant", content: streamText, reasoningContent: responseReasoning))
         await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
         await transition(to: .verifying)
         messages.append(ConversationMessage(
@@ -2194,12 +2198,15 @@ public actor FloeAgentRuntime {
             if call.toolName == ToolDiscovery.name {
                 let query = (try? JSONSerialization.jsonObject(with: call.argumentsJSON)) as? [String: String]
                 let matches = ToolDiscovery.matches(query: query?["query"] ?? "", descriptors: discoverableDescriptors)
-                discoveredToolNames.formUnion(matches.map(\.name))
-                let names = matches.map(\.name)
+                let selected = ToolDiscovery.bounded(matches + discoverableDescriptors.filter { ["skill.read", "skill.search"].contains($0.name) && !matches.map(\.name).contains($0.name) }, priority: matches.map(\.name))
+                let names = selected.map(\.name)
+                discoveredToolNames.formUnion(names)
                 discoveryPriority = names + discoveryPriority.filter { !names.contains($0) }
+                let deferred = matches.filter { !names.contains($0.name) }.map(\.name)
                 let summary = matches.isEmpty
                     ? "No matching executable tool in this task's capability set. " + ToolDiscovery.index(discoverableDescriptors)
-                    : "Loaded for the next request:\n" + matches.map { $0.name + ": " + String($0.toolDescription.prefix(160)) }.joined(separator: "\n")
+                    : "Loaded for the next request:\n" + selected.map { $0.name + ": " + String($0.toolDescription.prefix(160)) }.joined(separator: "\n")
+                        + (deferred.isEmpty ? "" : "\nNot yet loaded (schema budget): \(deferred.joined(separator: ", ")). Search one exact name when needed, not the same broad query.")
                 let result = ToolResult(callID: call.id, status: .ok, outputSummary: summary, outputDigest: "")
                 await audit(toolCall: call, result: result, decision: "allow:tool-discovery")
                 resultsByID[call.id] = result
@@ -2870,7 +2877,7 @@ public actor FloeAgentRuntime {
         let isConfirmation = didVerifyFinalAnswer
             && streamText.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "CONFIRM"
         if !streamText.isEmpty, !isConfirmation {
-            messages.append(ConversationMessage(role: "assistant", content: streamText))
+            messages.append(ConversationMessage(role: "assistant", content: streamText, reasoningContent: responseReasoning))
         }
         await transition(to: .completed(AgentState.CompletionInfo(
             stopReason: stopReason,
@@ -2981,7 +2988,8 @@ public actor FloeAgentRuntime {
                 return $0.updatedAt < $1.updatedAt
             },
             providerDispatchEnvelope: latestProviderDispatchEnvelope,
-            providerDispatchRequest: latestProviderDispatchRequest
+            providerDispatchRequest: latestProviderDispatchRequest,
+            pendingAssistantReasoning: responseReasoning
         )
         let invariantViolations = HarnessInvariantRegistry.validateCheckpoint(checkpoint)
         guard invariantViolations.isEmpty else {
@@ -3103,7 +3111,8 @@ public actor FloeAgentRuntime {
                     return "imageURL:\(url.absoluteString)"
                 }
             }.joined(separator: "|")
-            return "\(message.role):\(parts)"
+            let reasoning = message.reasoningContent.map { "|reasoning:\(digest(Data($0.utf8)))" } ?? ""
+            return "\(message.role):\(parts)\(reasoning)"
         }.joined(separator: "\n")
         let schemaMaterial: String = request.toolSchemas.sorted {
             if $0.name != $1.name { return $0.name < $1.name }

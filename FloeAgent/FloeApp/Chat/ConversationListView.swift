@@ -116,12 +116,15 @@ struct ConversationListView: View {
                     Button {
                         router.openConversation(conversation.id)
                     } label: {
-                        ConversationRow(
+                        HStack {
+                            ConversationRow(
                             conversation: conversation,
                             fallbackTitle: String(localized: "chat.untitled"),
                             isSelected: horizontalSizeClass == .regular
                                 && router.selectedConversationID == conversation.id
                         )
+                            ConversationActivityBadge(conversationID: conversation.id, center: viewModel.center)
+                        }
                     }
                     .buttonStyle(.plain)
                     .accessibilityHint("chat.open.hint")

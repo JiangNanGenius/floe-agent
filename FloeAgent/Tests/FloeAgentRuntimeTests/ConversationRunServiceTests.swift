@@ -44,6 +44,12 @@ struct ConversationRunServiceTests {
             liveness: .init(phase: .failed, message: "checkpoint mismatch", isRecoverable: true)
         )
         #expect(recoveryFailed == "recoveryFailed")
+        #expect(ConversationRunService.presentationStateName(
+            state: .failed(.init(message: "failed", isRecoverable: false)), isReviewingApproval: true,
+            liveness: .init(phase: .persisting, message: "stale", isRecoverable: true)) == "failed")
+        #expect(ConversationRunService.presentationStateName(
+            state: streaming, isReviewingApproval: false,
+            liveness: .init(phase: .compacting, message: "compact", isRecoverable: true)) == "compacting")
     }
 
     private func makeStores() async throws -> (SQLiteConversationStore, SQLiteRunStore) {

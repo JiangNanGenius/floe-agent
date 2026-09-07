@@ -140,11 +140,41 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         self.database = database
     }
 
+    /// Rebuild compacted model context without deleting the original audit
+    /// timeline. Summary IDs are stable so later compactions can replace them.
+    public func applyingCompactions(_ messages: [ConversationMessage], conversationID: UUID) async throws -> [ConversationMessage] {
+        let rows = try await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT c.id, c.source_message_ids_json, c.summary
+                FROM context_compactions c JOIN runs r ON r.id = c.run_id
+                WHERE r.conversation_id = ? AND c.summary LIKE '[Manual context snapshot]%' ORDER BY c.created_at, c.rowid
+                """, arguments: [conversationID.uuidString]).map { row -> [String: String] in
+                    ["id": row["id"], "source_message_ids_json": row["source_message_ids_json"], "summary": row["summary"]]
+                }
+        }
+        var result = messages
+        for row in rows {
+            let idText = row["id"] ?? ""
+            let sourceJSON = row["source_message_ids_json"] ?? "[]"
+            let summary = row["summary"] ?? ""
+            guard let id = UUID(uuidString: idText),
+                  let sources = try? JSONDecoder().decode([UUID].self, from: Data(sourceJSON.utf8)),
+                  !sources.isEmpty, !summary.isEmpty else { continue }
+            let replaced = Set(sources)
+            result.removeAll { replaced.contains($0.id) || $0.id == id }
+            result.insert(ConversationMessage(id: id, role: "system", content: summary), at: 0)
+        }
+        return result
+    }
+
     public func saveCompaction(
         runID: UUID,
         record: ContextCompactionRecord,
         summary: String
     ) async throws {
+        guard summary.utf8.count <= 131_072 else {
+            throw FloeError.validationFailed("Compaction summary exceeds the durable record limit; history was not replaced")
+        }
         try await database.writer { db in
             try db.execute(sql: """
                 INSERT INTO context_compactions (
@@ -158,7 +188,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                     try Self.json(record.sourceMessageIDs),
                     record.sourceMessageIDs.first?.uuidString,
                     record.sourceMessageIDs.last?.uuidString,
-                    String(summary.prefix(24_000)),
+                    summary,
                     record.sourceDigest,
                     record.beforeEstimatedTokens,
                     record.afterEstimatedTokens,

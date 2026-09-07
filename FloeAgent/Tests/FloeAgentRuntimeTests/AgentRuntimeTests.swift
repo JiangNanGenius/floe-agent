@@ -284,6 +284,16 @@ struct AgentRuntimeTests {
 
     // MARK: Happy path
 
+    @Test("A valid finely fragmented stream is not a task budget")
+    func fragmentedLongStreamCompletes() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [Array(repeating: .textDelta(.init(text: "x")), count: 20_100)
+            + [.completed(.init(stopReason: .endTurn))]]
+        let runtime = makeRuntime(adapter: adapter)
+        try await runtime.start(goal: "Produce a long response")
+        #expect(await runtime.state.name == "completed")
+    }
+
     @Test("idle → preparing → streamingModel → completed on endTurn")
     func happyPath() async throws {
         let adapter = MockAdapter()

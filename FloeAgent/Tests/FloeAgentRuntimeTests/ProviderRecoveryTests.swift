@@ -11,6 +11,19 @@ import FloeTestSupport
 
 @Suite("FloeAgentRuntime.ProviderRecovery")
 struct ProviderRecoveryTests {
+    @Test("Dispatch snapshots round-trip every reasoning field without changing the request")
+    func reasoningSnapshotRoundTrip() throws {
+        let provider = TestFixtures.localhostProvider()
+        let request = ProviderStreamRequest(provider: provider, model: TestFixtures.testModel(providerID: provider.id),
+            messages: [], contentMessages: [.init(role: "assistant", content: [.text("answer")], reasoningContent: "historical reasoning")],
+            pendingAssistantReasoning: "tool-batch reasoning")
+        let snapshot = ProviderDispatchRequestSnapshot(request: request)
+        let restored = try JSONDecoder().decode(ProviderDispatchRequestSnapshot.self, from: JSONEncoder().encode(snapshot)).request()
+        #expect(restored.effectiveMessages == request.effectiveMessages)
+        #expect(restored.pendingAssistantReasoning == "tool-batch reasoning")
+        let message = ConversationMessage(role: "assistant", content: "answer", reasoningContent: "exact")
+        #expect(try JSONDecoder().decode(ConversationMessage.self, from: JSONEncoder().encode(message)) == message)
+    }
 
     @Test("cloud provider retry budget defaults to five reconnects")
     func defaultRetryBudgetIsFive() {

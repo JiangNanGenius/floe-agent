@@ -13,6 +13,16 @@ import FloePersistence
 
 @Suite("FloeApp.ThreadTimeline")
 struct ThreadTimelineTests {
+    @MainActor @Test("Sidebar attention states never masquerade as running or completed")
+    func sidebarAttentionStates() {
+        for state in ["failed", "recoveryFailed", "interrupted", "paused", "checkpointed", "blocked", "noProgress", "budgetLimited", "truncated", "waitingApproval", "waitingUser"] {
+            #expect(RunStateLocalizer.attentionSymbol(for: state) != nil)
+            #expect(!RunStateLocalizer.isLoading(stateName: state, hasError: false))
+        }
+        #expect(RunStateLocalizer.attentionSymbol(for: "completed") == nil)
+        #expect(RunStateLocalizer.isLoading(stateName: "compacting", hasError: false))
+        #expect(!RunStateLocalizer.isLoading(stateName: "compacting", hasError: true))
+    }
     @Test("Latest and live tool groups are visible without an extra tap")
     func latestToolGroupExpansionPolicy() {
         #expect(StepGroupDisclosurePolicy.initiallyExpanded(

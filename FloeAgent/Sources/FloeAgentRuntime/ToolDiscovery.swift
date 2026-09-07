@@ -7,7 +7,7 @@ enum ToolDiscovery {
     static let name = "tools.search"
     static var descriptor: ToolCatalog.Descriptor {
         .init(name: name,
-              toolDescription: "Discover installed tool groups by task, group or exact name. Matching tools become callable with their full parameter schemas on the next model request. Search before claiming a capability is missing. This only loads definitions; it does not run tools or grant permissions.",
+              toolDescription: "Load executable schemas by exact tool name or capability. For multi-step domain workflows first use skill.search then skill.read; reading a guide loads its available tools. This search only loads definitions, never executes tools or grants permissions. Prefer an exact name when a group is too large.",
               parametersJSON: #"{"type":"object","properties":{"query":{"type":"string","minLength":1}},"required":["query"],"additionalProperties":false}"#,
               riskLabels: [], isSideEffecting: false)
     }
@@ -15,13 +15,14 @@ enum ToolDiscovery {
     static func group(_ name: String) -> String { ToolCapabilityGroups.group(name) }
 
     static func matches(query: String, descriptors: [ToolCatalog.Descriptor]) -> [ToolCatalog.Descriptor] {
-        let query = query.lowercased()
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return [] }
         let synonyms: [String: [String]] = [
             "vnc": ["vnc", "远程桌面", "鼠标", "remote desktop"],
             "executor": ["ssh", "executor", "执行命令", "运行命令"],
             "hosts": ["主机", "server", "连接配置"],
             "terminal": ["终端", "terminal", "交互", "telnet", "串口"],
-            "python": ["python", "numpy", "pillow"],
+            "python": ["python", "numpy", "pillow", "pandas", "scipy", "matplotlib", "数据分析"],
             "pdf": ["pdf"],
             "office": ["office", "word", "excel", "表格", "工作簿", "文档"],
             "http": ["http", "接口", "api"],
@@ -38,7 +39,7 @@ enum ToolDiscovery {
         var groups = Set(synonyms.compactMap { group, terms in
             terms.contains(where: query.contains) ? group : nil
         })
-        let tokens = query.split(whereSeparator: { $0.isWhitespace || $0 == "," }).map(String.init)
+        let tokens = query.split(whereSeparator: { $0.isWhitespace || "，,;；/".contains($0) }).map(String.init)
         let exact = descriptors.filter { tokens.contains($0.name.lowercased()) }
         if !exact.isEmpty { return exact }
         for descriptor in descriptors {
@@ -50,10 +51,16 @@ enum ToolDiscovery {
         if groups.contains("vnc") { groups.formUnion(["executor", "hosts"]) }
         if groups.contains("executor") || groups.contains("terminal") { groups.insert("hosts") }
         if groups.isEmpty {
-            let ranked = descriptors.filter { descriptor in
-                tokens.contains { $0.count > 2 && descriptor.toolDescription.lowercased().contains($0) }
-            }.prefix(8)
-            groups.formUnion(ranked.map { group($0.name) })
+            // A word in one description does not justify loading every tool
+            // in that namespace. Rank individual matches, deterministically.
+            var ranked: [(descriptor: ToolCatalog.Descriptor, score: Int)] = []
+            for descriptor in descriptors {
+                let description = descriptor.toolDescription.lowercased()
+                let score = tokens.filter { $0.count > 2 && description.contains($0) }.count
+                if score > 0 { ranked.append((descriptor, score)) }
+            }
+            ranked.sort { $0.score == $1.score ? $0.descriptor.name < $1.descriptor.name : $0.score > $1.score }
+            return ranked.prefix(8).map { $0.descriptor }
         }
         return descriptors.filter { groups.contains(group($0.name)) }
     }
@@ -62,12 +69,12 @@ enum ToolDiscovery {
         let groups = Dictionary(grouping: descriptors, by: { group($0.name) })
         return "Tool discovery: full schemas are loaded only for relevant groups. Installed groups: "
             + groups.keys.sorted().map { "\($0) (\(groups[$0]!.count))" }.joined(separator: ", ")
-            + ". Use tools.search to load another group. Connection state does not remove installed capabilities. Load the user's requested route first. Memory housekeeping is not a prerequisite for using tools; continue the actual task after any relevant memory check."
+            + ". For domain workflows use skill.search then skill.read; for exact callable schemas use tools.search. Python execution is exec.localPython (python group), SSH Executor and interactive Terminal are separate. Connection state does not remove installed capabilities. Memory housekeeping is not a prerequisite; continue the actual task after any relevant memory check."
     }
 
     /// Discovery is a presentation budget, never an authority grant.
     static func bounded(_ descriptors: [ToolCatalog.Descriptor], priority: [String], pinned: Set<String> = [], maxTools: Int = 23, maxBytes: Int = 23_000) -> [ToolCatalog.Descriptor] {
-        let core: Set<String> = ["skill.read"]
+        let core: Set<String> = ["skill.search", "skill.read"]
         let ranks = Dictionary(priority.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
         let ordered = descriptors.sorted {
             let a = core.contains($0.name) || pinned.contains($0.name)

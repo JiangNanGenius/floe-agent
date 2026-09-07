@@ -30,6 +30,7 @@ jobs:
     runs-on: xcode-27
     permissions:
       contents: write
+      actions: read
       id-token: write
       attestations: write
     env:
@@ -73,10 +74,29 @@ jobs:
           scripts/gen_project.sh
           scripts/release_preflight.sh "$RELEASE_TAG"
 
-      - name: Resolve dependencies and run Swift tests
+      - name: Reuse successful trusted CI for this exact source commit
+        id: verified_ci
+        run: |
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          CI_RUN_ID="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SOURCE_SHA&status=success&event=push&per_page=10" --jq '.workflow_runs[0].id // empty')"
+          if [ -n "$CI_RUN_ID" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID/jobs?per_page=100" > "$RUNNER_TEMP/ci-jobs.json"
+            if jq -e '[.jobs[] | select(.name == "build-test" or .name == "appstore-sdk-compatibility" or .name == "spm-linux-build") | select(.conclusion == "success")] | length == 3' "$RUNNER_TEMP/ci-jobs.json" >/dev/null; then
+              gh run download "$CI_RUN_ID" --repo "$GITHUB_REPOSITORY" --name ci-artifacts --dir "$RUNNER_TEMP/ReusedCI"
+              test -d "$RUNNER_TEMP/ReusedCI/FloeAgent-AppRegressionTests.xcresult"
+              echo "run_id=$CI_RUN_ID" >> "$GITHUB_OUTPUT"
+              echo "Reusing exact-SHA CI $CI_RUN_ID; stable-SDK tests and binary checks still run."
+            fi
+          fi
+
+      - name: Resolve and verify pinned dependencies
         run: |
           swift package resolve
           scripts/pin_check.sh
+
+      - name: Run Swift tests when exact-source CI cannot be reused
+        if: steps.verified_ci.outputs.run_id == ''
+        run: |
           swift build
           LLAMA_FRAMEWORK="$(find .build/artifacts -path '*/macos-arm64_x86_64/llama.framework' ! -path '*/__MACOSX/*' -print -quit)"
           test -n "$LLAMA_FRAMEWORK"
@@ -114,6 +134,9 @@ jobs:
       - name: Verify Canvas, PiP, and timeline app regression contracts
         id: app_regression
         run: |
+          if [ -n "${{ steps.verified_ci.outputs.run_id }}" ]; then
+            ditto "$RUNNER_TEMP/ReusedCI/FloeAgent-AppRegressionTests.xcresult" "$RUNNER_TEMP/FloeAgent-AppRegressionTests.xcresult"
+          else
           xcodebuild \
             -skipPackagePluginValidation \
             -skipMacroValidation \
@@ -133,6 +156,7 @@ jobs:
             -only-testing:FloeAppTests/LocalPythonRuntimeTests \
             CODE_SIGNING_ALLOWED=NO \
             test
+          fi
           python3 scripts/verify_app_regression_xcresult.py \
             --result-bundle "$RUNNER_TEMP/FloeAgent-AppRegressionTests.xcresult" \
             --github-output "$GITHUB_OUTPUT" \

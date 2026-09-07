@@ -5,6 +5,13 @@ import FloeTools
 
 @Suite("Deferred tool discovery")
 struct ToolDiscoveryTests {
+    @Test("Description fallback does not activate unrelated tools in the same group")
+    func descriptionFallbackIsNarrow() {
+        let hit = ToolCatalog.Descriptor(name: "custom.one", toolDescription: "Use for quux processing", parametersJSON: "{}", riskLabels: [], isSideEffecting: false)
+        let available = [hit, descriptor("custom.two"), descriptor("custom.three")]
+        #expect(ToolDiscovery.matches(query: "quux", descriptors: available).map(\.name) == ["custom.one"])
+        #expect(ToolDiscovery.matches(query: "  ", descriptors: available).isEmpty)
+    }
     @Test("Executor and interactive Terminal are separate roles despite the SSH prefix")
     func executionRoles() {
         let available = ["ssh.execute", "ssh.taskStatus", "ssh.cancelTask", "ssh.shellOpen", "ssh.shellExchange", "ssh.shellClose", "ssh.listHosts", "exec.localPython"].map(descriptor)

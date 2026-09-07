@@ -34,6 +34,67 @@ public extension SkillManaging {
     func read(id: String?, runID: UUID) async throws -> [ManagedSkill] { try await read(id: id) }
 }
 
+/// Metadata discovery does not read/activate instructions or execute scripts.
+public struct SkillSearchTool: AgentTool {
+    public struct Arguments: Decodable, Sendable {
+        public var query: String
+        public init(query: String) { self.query = query }
+    }
+    public static let name = "skill.search"
+    public static let toolDescription = "Find installed workflow guides by task, domain or skill ID (English or Chinese). Prefer this for PDF, Office, network and multi-step domain workflows; then skill.read the returned ID before acting. For an exact executable function use tools.search. Search does not grant permissions, enable a disabled skill or execute scripts."
+    public static let parametersJSON = #"{"type":"object","properties":{"query":{"type":"string","minLength":1,"maxLength":512}},"required":["query"],"additionalProperties":false}"#
+    public static let riskLabels: Set<RiskLabel> = []
+    public static let isSideEffecting = false
+    public static let toolEffect: ToolEffect = .readOnly
+    private let manager: any SkillManaging
+    public init(manager: any SkillManaging) { self.manager = manager }
+    public func validate(_ args: Arguments) throws {
+        guard !args.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, args.query.count <= 512 else {
+            throw FloeError.validationFailed("Supply a nonempty skill search query of at most 512 characters")
+        }
+    }
+    public static func matches(query: String, rows: [ManagedSkill]) -> [ManagedSkill] {
+        let query = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+        let aliases: [String: [String]] = [
+            "floe-python": ["python", "pandas", "numpy", "pillow", "scipy", "matplotlib", "数据分析"],
+            "floe-pdf": ["pdf", "扫描文档", "ocr", "表单"],
+            "floe-office": ["office", "word", "excel", "docx", "xlsx", "表格", "工作簿", "文档"],
+            "floe-network": ["network", "网络", "http", "dns", "ping", "traceroute", "内网"],
+            "floe-remote": ["remote", "vnc", "ssh", "terminal", "executor", "远程", "终端"],
+            "floe-files-vcs": ["git", "文件", "archive", "rar", "zip", "归档", "解压"],
+            "floe-browser": ["browser", "网页", "浏览器"],
+            "floe-apple": ["apple", "邮件", "mail", "日历", "提醒"],
+            "floe-crypto": ["crypto", "加密", "签名", "哈希"]
+        ]
+        let tokens = query.split { $0.isWhitespace || $0.isPunctuation }.map(String.init)
+        var ranked: [(skill: ManagedSkill, score: Int)] = []
+        for row in rows {
+            let identity = (row.id + " " + row.name).lowercased()
+            let aliasScore = (aliases[row.id] ?? []).filter { query.contains($0) }.count * 10
+            let nameScore = tokens.filter { identity.contains($0) }.count
+            let score = query == row.id.lowercased() ? 100 : aliasScore + nameScore
+            if score > 0 { ranked.append((row, score)) }
+        }
+        ranked.sort { $0.score == $1.score ? $0.skill.id < $1.skill.id : $0.score > $1.score }
+        return ranked.prefix(8).map { $0.skill }
+    }
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
+        try context.cancellation.throwIfCancelled()
+        let rows = try await manager.read(id: nil, runID: context.runID)
+        let matches = Self.matches(query: args.query, rows: rows)
+        struct Response: Encodable {
+            let matches: [ManagedSkill]
+            let installedIDs: [String]
+            let nextAction: String
+        }
+        let data = try JSONEncoder().encode(Response(matches: matches,
+            installedIDs: matches.isEmpty ? rows.map(\.id).sorted() : [],
+            nextAction: matches.isEmpty ? "Choose an installed ID with skill.read, or tools.search for an executable capability; do not repeat the same search." : "Read the chosen enabled guide with skill.read(id:); disabled guides require a user settings change."))
+        return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self), fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(), maximumSummaryCharacters: 32_768)
+    }
+}
+
 public struct SkillReadTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var id: String?

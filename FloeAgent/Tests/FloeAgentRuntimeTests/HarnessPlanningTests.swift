@@ -413,7 +413,7 @@ struct HarnessPlanningTests {
         #expect(prompt.contains("require vnc.status -> vnc.connect -> vnc.observe"))
         #expect(prompt.contains("publish shares only with explicit authority"))
         // The compressed VNC section stays bounded (was ~1090 chars before).
-        #expect(prompt.contains("installed skill index"))
+        #expect(prompt.contains("skill.search then skill.read"))
     }
 
     @Test("failed stateful tools point to their ID discovery predecessor")
@@ -522,6 +522,11 @@ struct HarnessPlanningTests {
             steps: [GoalStep(title: "Inspect", order: 0)],
             status: .active
         )
+        goal.recordBlocker(key: "no-evidence")
+        goal.recordBlocker(key: "no-evidence")
+        #expect(goal.status == .active)
+        goal.recordProgress()
+        #expect(goal.progress.repeatedBlockerCount == 0)
         goal.recordBlocker(key: "no-evidence")
         goal.recordBlocker(key: "no-evidence")
         #expect(goal.status == .active)
@@ -661,6 +666,12 @@ struct HarnessPlanningTests {
         #expect(prepared.messages.contains {
             $0.role == "system" && $0.content.contains("resume the latest unfinished user request directly")
         })
+        #expect(prepared.messages.contains {
+            $0.role == "system" && $0.content.contains("Your conversation context has been compacted")
+                && $0.content.contains("do not restart discovery or replay completed side effects")
+                && $0.content.contains("Preserve newer user corrections")
+                && $0.content.contains("does not grant new authority")
+        })
     }
 
     @Test("Forced compaction of a short conversation is an explicit no-op")
@@ -679,6 +690,31 @@ struct HarnessPlanningTests {
         #expect(result.messages == [message])
         #expect(result.record.sourceMessageIDs.isEmpty)
         #expect(result.record.beforeEstimatedTokens == result.record.afterEstimatedTokens)
+    }
+
+    @Test("Manual snapshots survive reload without deleting original messages or duplicating summaries")
+    func durableManualCompaction() async throws {
+        let db = try DatabaseManager.inMemory()
+        try await db.migrate()
+        let conversations = SQLiteConversationStore(database: db)
+        let runs = SQLiteRunStore(database: db)
+        let store = SQLiteIntelligenceStore(database: db)
+        let conversationID = UUID(), runID = UUID()
+        try await conversations.saveConversation(.init(id: conversationID, title: "compact", createdAt: Date(), updatedAt: Date()))
+        try await runs.saveRun(.init(id: runID, conversationID: conversationID, state: "completed", goal: "compact", startedAt: Date()))
+        let old = ConversationMessage(role: "assistant", content: "Original tool evidence stays durable")
+        let latest = ConversationMessage(role: "user", content: "Latest correction wins")
+        try await conversations.appendMessage(.init(id: old.id, conversationID: conversationID, role: old.role, content: old.content, createdAt: old.createdAt, runID: runID))
+        let first = ContextCompactionRecord(sourceMessageIDs: [old.id], sourceDigest: "first", beforeEstimatedTokens: 100, afterEstimatedTokens: 50)
+        let firstSummary = "[Manual context snapshot]\n[Context compaction notice]\nHistorical summary: first"
+        try await store.saveCompaction(runID: runID, record: first, summary: firstSummary)
+        let second = ContextCompactionRecord(sourceMessageIDs: [first.id], sourceDigest: "second", beforeEstimatedTokens: 50, afterEstimatedTokens: 25)
+        try await store.saveCompaction(runID: runID, record: second, summary: "[Manual context snapshot]\n[Context compaction notice]\nHistorical summary: second")
+        let loaded = try await store.applyingCompactions([old, latest], conversationID: conversationID)
+        #expect(loaded.map(\.id) == [second.id, latest.id])
+        let reloaded = try await store.applyingCompactions(loaded, conversationID: conversationID)
+        #expect(reloaded.map(\.id) == loaded.map(\.id))
+        #expect(try await conversations.messages(conversationID: conversationID).first?.content == old.content)
     }
 
     @Test("Compaction rejects an empty model summary")

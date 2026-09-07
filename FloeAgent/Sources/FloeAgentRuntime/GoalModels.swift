@@ -45,19 +45,22 @@ public struct GoalEvidence: Sendable, Codable, Hashable, Identifiable {
     public var reference: String
     public var summary: String
     public var capturedAt: Date
+    public var fingerprint: String?
 
     public init(
         id: UUID = UUID(),
         kind: Kind,
         reference: String,
         summary: String,
-        capturedAt: Date = Date()
+        capturedAt: Date = Date(),
+        fingerprint: String? = nil
     ) {
         self.id = id
         self.kind = kind
         self.reference = reference
         self.summary = summary
         self.capturedAt = capturedAt
+        self.fingerprint = fingerprint
     }
 }
 
@@ -235,6 +238,14 @@ public struct ConversationGoal: Sendable, Codable, Hashable, Identifiable {
         if progress.repeatedBlockerCount >= 3 {
             status = .blocked
         }
+        updatedAt = Date()
+    }
+
+    /// Blockers must be consecutive. Genuine progress starts a new audit;
+    /// an old intermittent failure must not stop a healthy later cycle.
+    public mutating func recordProgress() {
+        progress.repeatedBlockerKey = nil
+        progress.repeatedBlockerCount = 0
         updatedAt = Date()
     }
 }

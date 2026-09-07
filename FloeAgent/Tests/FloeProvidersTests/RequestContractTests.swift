@@ -6,6 +6,40 @@ import Testing
 
 @Suite("FloeProviders.RequestContracts")
 struct RequestContractTests {
+    @Test("DeepSeek replays reasoning for every assistant history turn; other providers omit it")
+    func historyReasoningReplay() throws {
+        for endpoint in ["https://api.deepseek.com", "https://example.test/v1"] {
+            let provider = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+                baseURL: try #require(URL(string: endpoint)))
+            let model = ModelProfile(providerID: provider.id, remoteModelID: endpoint.contains("deepseek") ? "deepseek-v4-flash" : "text",
+                displayName: "Text", limits: .init(contextTokens: 4096, maxOutputTokens: 1024), capabilities: [.text, .tools])
+            let request = ProviderStreamRequest(provider: provider, model: model, messages: [],
+                contentMessages: [
+                    .init(role: "assistant", content: [.text("first")], reasoningContent: "first reasoning"),
+                    .init(role: "user", content: [.text("continue")]),
+                    .init(role: "assistant", content: [.text("second")], reasoningContent: "second reasoning")])
+            let body = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: request))
+            let messages = try #require(body["messages"] as? [[String: Any]])
+            if endpoint.contains("deepseek") {
+                #expect(messages[0]["reasoning_content"] as? String == "first reasoning")
+                #expect(messages[2]["reasoning_content"] as? String == "second reasoning")
+            } else {
+                #expect(messages.allSatisfy { $0["reasoning_content"] == nil })
+            }
+            #expect(messages[1]["reasoning_content"] == nil)
+            var legacy = request
+            legacy.contentMessages.append(.init(role: "assistant", content: [.text("old answer")]))
+            legacy.toolSchemas = [.init(name: "test_read", description: "Read", parametersJSON: "{}")]
+            let legacyBody = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: legacy))
+            let old = try #require((legacyBody["messages"] as? [[String: Any]])?.last)
+            #expect(old["reasoning_content"] == nil)
+            if endpoint.contains("deepseek") {
+                #expect(old["role"] as? String == "system")
+                #expect((old["content"] as? String)?.contains("protocol reasoning unavailable") == true)
+                #expect((old["content"] as? String)?.contains("old answer") == true)
+            } else { #expect(old["role"] as? String == "assistant") }
+        }
+    }
     @Test("Dispatch clock refresh is transient and preserves tool pairing and images")
     func dispatchClock() throws {
         let provider = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,

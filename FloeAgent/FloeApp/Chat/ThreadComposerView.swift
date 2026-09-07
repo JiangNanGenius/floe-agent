@@ -483,7 +483,7 @@ struct ThreadComposerView: View {
         case .compact:
             onManualCompact?()
             draft = ""
-            slashNotice = "已安排上下文压缩，将在下一次模型请求前执行。"
+            slashNotice = nil
         case .openSkills:
             draft = ""
             router.openMore(.skills)

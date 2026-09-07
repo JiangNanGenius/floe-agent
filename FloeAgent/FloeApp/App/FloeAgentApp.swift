@@ -696,10 +696,11 @@ struct RootView: View {
     }
 
     private func conversationSidebarRow(_ conversation: ConversationRecord) -> some View {
-        Label(
-            conversation.title.isEmpty ? String(localized: "chat.untitled") : conversation.title,
-            systemImage: "bubble.left"
-        )
+        HStack(spacing: 8) {
+            Label(conversation.title.isEmpty ? String(localized: "chat.untitled") : conversation.title, systemImage: "bubble.left")
+            Spacer(minLength: 0)
+            ConversationActivityBadge(conversationID: conversation.id, center: environment.conversationCenter)
+        }
         .lineLimit(1)
         .tag(SidebarSelection.workbench(.conversation(conversation.id)))
         .accessibilityIdentifier("sidebar.conversation.\(conversation.id.uuidString)")

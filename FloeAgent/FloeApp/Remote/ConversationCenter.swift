@@ -11,6 +11,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import CryptoKit
 import FloeCore
 import FloeModels
 import FloeAgentRuntime
@@ -189,11 +190,36 @@ final class ConversationCenter: ObservableObject {
     static let auxiliaryVisionReasoningDefaultsKey = "org.floeagent.auxiliaryVision.reasoningEnabled"
     private static let manualCompactionPrefix = "org.floeagent.context.manualCompaction."
 
-    func requestManualCompaction(conversationID: UUID) {
-        UserDefaults.standard.set(
-            true,
-            forKey: Self.manualCompactionPrefix + conversationID.uuidString
-        )
+    private var compactingConversations: Set<UUID> = []
+
+    func requestManualCompaction(conversationID: UUID, modelID: UUID?) async throws -> String {
+        guard !compactingConversations.contains(conversationID),
+              launchCount == 0,
+              !activeRuns.values.contains(where: { $0.conversationID == conversationID }) else {
+            throw FloeError.validationFailed("当前任务正在运行或压缩，请在任务空闲时执行 /compact。")
+        }
+        compactingConversations.insert(conversationID)
+        defer { compactingConversations.remove(conversationID) }
+        guard let run = try await environment.runStore.runs(conversationID: conversationID).first else {
+            return "当前没有需要压缩的历史。"
+        }
+        let raw = try await ConversationHistoryAssembler(store: environment.conversationStore).build(conversationID: conversationID)
+        let history = try await environment.intelligenceStore.applyingCompactions(raw, conversationID: conversationID)
+        let window = providerAndModel(modelID: modelID)?.1.limits.contextTokens ?? 32_768
+        let result = try await HybridContextEngine().compact(CompactionRequest(
+            context: ContextRequest(messages: history, budget: ContextBudget(contextWindowTokens: window)), force: true))
+        try Task.checkCancellation()
+        let current = try await ConversationHistoryAssembler(store: environment.conversationStore).build(conversationID: conversationID)
+        guard raw.map({ $0.role + ":" + $0.content }) == current.map({ $0.role + ":" + $0.content }),
+              !activeRuns.values.contains(where: { $0.conversationID == conversationID }) else {
+            throw FloeError.validationFailed("压缩期间历史发生变化，未应用旧摘要，请重试。")
+        }
+        guard !result.record.sourceMessageIDs.isEmpty,
+              let summary = result.messages.first(where: { $0.content.contains("Historical summary:") })?.content else {
+            return "历史较短，无需压缩；原始记录未改变。"
+        }
+        try await environment.intelligenceStore.saveCompaction(runID: run.id, record: result.record, summary: "[Manual context snapshot]\n" + summary)
+        return "上下文已压缩：约 \(result.record.beforeEstimatedTokens) → \(result.record.afterEstimatedTokens) tokens。完整会话与工具记录仍保留。"
     }
 
     private func consumeManualCompaction(conversationID: UUID) -> Bool {
@@ -201,6 +227,87 @@ final class ConversationCenter: ObservableObject {
         let requested = UserDefaults.standard.bool(forKey: key)
         if requested { UserDefaults.standard.removeObject(forKey: key) }
         return requested
+    }
+
+    /// JSON Lines keeps export memory bounded and preserves native event order.
+    /// It includes every persisted call/result, not only the UI's current page.
+    func exportStructuredConversation(conversationID: UUID) async throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("floe-task-\(UUID().uuidString).jsonl")
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: url)
+        var succeeded = false
+        defer {
+            try? handle.close()
+            if !succeeded { try? FileManager.default.removeItem(at: url) }
+        }
+        func scrub(_ value: Any) -> Any {
+            if let text = value as? String {
+                if (text.hasPrefix("{") || text.hasPrefix("[")),
+                   let nested = try? JSONSerialization.jsonObject(with: Data(text.utf8)) { return scrub(nested) }
+                return SecretRedactor.redact(text)
+            }
+            if let array = value as? [Any] { return array.map(scrub) }
+            if let object = value as? [String: Any] {
+                return object.reduce(into: [String: Any]()) { result, item in
+                    let key = item.key.lowercased().replacingOccurrences(of: "_", with: "").replacingOccurrences(of: "-", with: "")
+                    let secret = ["password", "passwd", "passphrase", "token", "accesstoken", "refreshtoken", "apikey", "authorization", "cookie", "setcookie", "clientsecret", "privatekey"].contains(key)
+                    result[item.key] = secret ? "[REDACTED]" : scrub(item.value)
+                }
+            }
+            return value
+        }
+        func write(_ object: [String: Any]) throws {
+            let data = try JSONSerialization.data(withJSONObject: scrub(object), options: [.sortedKeys])
+            try handle.write(contentsOf: data)
+            try handle.write(contentsOf: Data([10]))
+        }
+        let iso = ISO8601DateFormatter()
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try write(["type": "manifest", "format": "floe.task.jsonl", "version": 1,
+            "conversationID": conversationID.uuidString, "exportedAt": iso.string(from: Date()),
+            "scope": "All persisted messages and per-run structured events through recorded watermarks. Results retain stored summaries and artifact references; older unrecorded or truncated raw output cannot be reconstructed. Secrets are redacted; referenced artifact bytes are not embedded."])
+        let messages = try await environment.conversationStore.messages(conversationID: conversationID)
+        for message in messages {
+            try Task.checkCancellation()
+            try write(["type": "message", "id": message.id.uuidString, "role": message.role,
+                "content": message.content, "createdAt": iso.string(from: message.createdAt),
+                "runID": message.runID?.uuidString ?? "",
+                "parts": try JSONSerialization.jsonObject(with: encoder.encode(message.parts))])
+        }
+        let runs = try await environment.runStore.runs(conversationID: conversationID)
+        for run in runs.sorted(by: { $0.startedAt < $1.startedAt }) {
+            for usage in try await environment.runStore.usage(runID: run.id) {
+                try write(["type": "usage", "runID": run.id.uuidString,
+                    "record": try JSONSerialization.jsonObject(with: encoder.encode(usage))])
+            }
+            for error in try await environment.runStore.errors(runID: run.id) {
+                try write(["type": "error", "runID": run.id.uuidString,
+                    "record": try JSONSerialization.jsonObject(with: encoder.encode(error))])
+            }
+            let watermark = try await environment.runStore.recentEvents(runID: run.id, limit: 1).last?.sequence ?? 0
+            try write(["type": "run", "id": run.id.uuidString, "state": run.state, "goal": run.goal,
+                "startedAt": iso.string(from: run.startedAt), "provider": run.providerName ?? "",
+                "model": run.modelName ?? "", "eventWatermark": watermark])
+            var cursor = 0
+            while cursor < watermark {
+                try Task.checkCancellation()
+                let page = try await environment.runStore.events(runID: run.id, afterSequence: cursor, limit: 200)
+                    .filter { $0.sequence <= watermark }
+                guard !page.isEmpty else { throw FloeError.validationFailed("导出期间事件记录发生变化，请重试。") }
+                for event in page {
+                    let payload = (try? JSONSerialization.jsonObject(with: Data(event.payloadJSON.utf8))) ?? event.payloadJSON
+                    try write(["type": "event", "runID": run.id.uuidString, "id": event.id.uuidString,
+                        "sequence": event.sequence, "kind": event.kind.rawValue,
+                        "createdAt": iso.string(from: event.createdAt), "payload": payload])
+                }
+                cursor = page.last!.sequence
+            }
+        }
+        try write(["type": "exportComplete", "runCount": runs.count, "messageCount": messages.count])
+        try handle.synchronize()
+        succeeded = true
+        return url
     }
 
     /// Writes the launch-critical skip marker synchronously. Interactive
@@ -252,6 +359,7 @@ final class ConversationCenter: ObservableObject {
     @Published private(set) var conversations: [ConversationRecord] = []
     /// Live runs keyed by run ID, refreshed from snapshots.
     @Published private(set) var activeRuns: [UUID: RunRecord] = [:]
+    @Published private(set) var goalPresentationRevision = 0
     /// Outstanding human approvals across all live runs.
     @Published private(set) var pendingApprovals: [PendingApproval] = []
     /// Providers, refreshed lazily so the UI can gate the composer honestly.
@@ -582,6 +690,7 @@ final class ConversationCenter: ObservableObject {
         currentUserImages: [ConversationImagePart] = [],
         currentUserAttachments: [AttachmentRef] = []
     ) async -> ConversationRunService {
+        let conversationHistory = (try? await environment.intelligenceStore.applyingCompactions(conversationHistory, conversationID: conversationID)) ?? conversationHistory
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
         let canonicalWorkspaceID: UUID?
         if let workspaceID {
@@ -747,7 +856,7 @@ final class ConversationCenter: ObservableObject {
             workspaceRootURL: taskRootLease?.url,
             allowedWorkspacePaths: taskPolicy.filePaths,
             toolsEnabled: executionMode.toolsEnabled,
-            maxToolSteps: runSurface == .canvas ? 12 : Int.max / 4,
+            maxToolSteps: Int.max / 4,
             verifyFinalAnswer: environment.settingsCenter.verifyFinalAnswer,
             forceInitialCompaction: forceInitialCompaction,
             maxProviderRetries: runSurface == .canvas ? 1 : 5,
@@ -946,6 +1055,9 @@ final class ConversationCenter: ObservableObject {
         isGoalContinuation: Bool = false,
         startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationRun {
+        guard !compactingConversations.contains(conversationID) else {
+            throw FloeError.validationFailed("上下文正在压缩，请完成后再发送；输入内容未丢弃。")
+        }
         let ingress = SecretIngressScanner.scan(goal)
         let trimmed = ingress.sanitizedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -2235,17 +2347,30 @@ final class ConversationCenter: ObservableObject {
             return
         }
         let existingReferences = Set(goal.evidence.map(\.reference))
+        var knownFingerprints = Set(goal.evidence.compactMap(\.fingerprint))
+        let inputsByCallID = Dictionary(events.filter { $0.kind == .toolRequest }.compactMap { event -> (String, String)? in
+            let payload = Self.stringMap(from: event.payloadJSON)
+            guard let id = payload["id"] else { return nil }
+            return (id, payload["input"] ?? "")
+        }, uniquingKeysWith: { first, _ in first })
         var newEvidence: [GoalEvidence] = []
         for event in events where event.kind == .toolResult {
             let payload = Self.stringMap(from: event.payloadJSON)
             guard payload["status"] == "success" else { continue }
+            // Discovery is preparation, not proof that the goal advanced.
+            guard !["tools.search", "skill.search", "skill.read"].contains(payload["tool"] ?? "") else { continue }
             let reference = "run:\(completedRunID.uuidString):event:\(event.sequence)"
             guard !existingReferences.contains(reference) else { continue }
+            let summary = String((payload["summary"] ?? payload["tool"] ?? "Successful tool result").prefix(1_000))
+            let material = (payload["tool"] ?? "") + "|" + (inputsByCallID[payload["id"] ?? ""] ?? "") + "|" + (payload["outputDigest"].flatMap { $0.isEmpty ? nil : $0 } ?? payload["summary"] ?? "")
+            let fingerprint = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
+            guard knownFingerprints.insert(fingerprint).inserted else { continue }
             newEvidence.append(GoalEvidence(
                 kind: .toolResult,
                 reference: reference,
-                summary: String((payload["summary"] ?? payload["tool"] ?? "Successful tool result").prefix(1_000)),
-                capturedAt: event.createdAt
+                summary: summary,
+                capturedAt: event.createdAt,
+                fingerprint: fingerprint
             ))
         }
         goal.evidence.append(contentsOf: newEvidence)
@@ -2266,6 +2391,7 @@ final class ConversationCenter: ObservableObject {
                 goal.progress.repeatedBlockerCount = 3
             }
             if review.isValid && goal.status != .blocked {
+                goal.recordProgress()
                 for index in goal.steps.indices
                     where review.completedStepIDs.contains(goal.steps[index].id)
                         && goal.steps[index].status != .skipped {
@@ -2387,6 +2513,7 @@ final class ConversationCenter: ObservableObject {
                 )
                 return nil
             }
+            goalPresentationRevision &+= 1
             return expectedRevision + 1
         } catch {
             FloeLogger(category: .runtime).error(
@@ -2830,6 +2957,11 @@ final class ConversationCenter: ObservableObject {
         model: ModelProfile,
         startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationRun {
+        guard !compactingConversations.contains(record.conversationID) else {
+            throw FloeError.validationFailed("上下文正在压缩，请完成后再继续任务。")
+        }
+        beginLaunch()
+        defer { finishLaunch() }
         if runTasks[record.id] != nil {
             throw FloeError.validationFailed("This task is already resuming")
         }

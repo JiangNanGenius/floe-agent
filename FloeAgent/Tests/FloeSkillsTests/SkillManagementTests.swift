@@ -14,6 +14,15 @@ private actor ManagedSkillFixture: SkillManaging {
 
 @Suite("Skill management contracts")
 struct SkillManagementTests {
+    @Test func workflowSearchFindsCapabilitiesWithoutActivation() {
+        let rows = ["floe-python", "floe-office", "floe-network", "floe-pdf"].map {
+            ManagedSkill(id: $0, name: $0, version: "1.0.0", enabled: true, digest: "test")
+        }
+        #expect(SkillSearchTool.matches(query: "pandas 数据分析", rows: rows).first?.id == "floe-python")
+        #expect(SkillSearchTool.matches(query: "PDF、网络、Python", rows: rows).count == 3)
+        #expect(SkillSearchTool.matches(query: "nothing matches", rows: rows).isEmpty)
+        #expect(!SkillSearchTool.isSideEffecting)
+    }
     @Test func exactArgumentsAndNoTraversal() throws {
         let tool = SkillManageTool(manager: ManagedSkillFixture())
         let digest = String(repeating: "a", count: 64)

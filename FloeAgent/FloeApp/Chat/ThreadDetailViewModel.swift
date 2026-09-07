@@ -597,8 +597,26 @@ final class ThreadDetailViewModel: ObservableObject {
         await center.cancel(runID: runID)
     }
 
+    @Published private(set) var compactionStatus: String?
+    @Published private(set) var isCompacting = false
+
     func requestManualCompaction() {
-        center.requestManualCompaction(conversationID: conversationID)
+        guard !isCompacting else { return }
+        isCompacting = true
+        compactionStatus = "正在压缩上下文…"
+        Task {
+            defer { isCompacting = false }
+            do {
+                compactionStatus = try await center.requestManualCompaction(conversationID: conversationID, modelID: selectedModelID)
+            } catch {
+                compactionStatus = "压缩未完成：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func exportStructuredConversation() async -> URL? {
+        do { return try await center.exportStructuredConversation(conversationID: conversationID) }
+        catch { actionError = "导出未完成：\(error.localizedDescription)"; return nil }
     }
 
     func editPendingInput(_ input: PendingUserInput, content: String) async {
@@ -985,7 +1003,18 @@ final class ThreadDetailViewModel: ObservableObject {
                     self.hasProviderActivity = false
                 case .stateChanged(let state):
                     self.liveStateName = state.rawValue
+                    if state == .compacting { self.compactionStatus = "正在自动压缩上下文…" }
+                    else if self.compactionStatus == "正在自动压缩上下文…" {
+                        self.compactionStatus = "压缩检查结束，本次未替换历史。"
+                    }
                     self.isRunning = ![.completed, .cancelled, .failed, .interrupted].contains(state)
+                case .contextCompacted(let record):
+                    self.compactionStatus = "上下文已压缩：约 \(record.beforeEstimatedTokens) → \(record.afterEstimatedTokens) tokens。"
+                case .livenessChanged(let snapshot):
+                    if snapshot.phase == .compacting {
+                        self.compactionStatus = "正在自动压缩上下文…"
+                        self.liveStateName = "compacting"
+                    }
                 case .approvalReviewChanged(let snapshot):
                     self.approvalReviewSummary = snapshot.isEvaluating
                         ? nil

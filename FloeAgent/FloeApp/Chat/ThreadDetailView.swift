@@ -28,6 +28,8 @@ struct ThreadDetailView: View {
     @State private var showingUsageDetails = false
     @State private var selectedImportantFile: ImportantFileShortcut?
     @State private var showsReturnToLatest = false
+    @State private var structuredExport: TaskExportFile?
+    @State private var exporting = false
 
     init(conversationID: UUID, center: ConversationCenter) {
         _viewModel = StateObject(
@@ -46,15 +48,28 @@ struct ThreadDetailView: View {
                 Divider()
             }
             threadScroll
+            if let status = viewModel.compactionStatus {
+                HStack {
+                    if viewModel.isCompacting { ProgressView().controlSize(.small) }
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal).padding(.vertical, 8)
+                .accessibilityIdentifier("thread.compaction.status")
+                .transition(.opacity)
+            }
             if let error = viewModel.actionError {
                 errorBanner(error)
             }
             if viewModel.canContinue {
                 continuationBar
+                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
             }
             composer
         }
         .background(FloeTheme.readingSurface)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.compactionStatus)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.canContinue)
         .navigationTitle(viewModel.taskTitle.isEmpty ? String(localized: "thread.title") : viewModel.taskTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { stateToolbar }
@@ -63,6 +78,9 @@ struct ThreadDetailView: View {
             await viewModel.load()
         }
         .onDisappear { viewModel.stopLiveUpdates() }
+        .sheet(item: $structuredExport) { file in
+            TaskExportShareSheet(url: file.url)
+        }
         .sheet(item: $editingPendingInput) { input in
             PendingInputEditor(input: input) { text in
                 Task { await viewModel.editPendingInput(input, content: text) }
@@ -436,6 +454,15 @@ struct ThreadDetailView: View {
                 Button("直接设置 Goal", systemImage: "target") {
                     showingGoalBuilder = true
                 }
+                Button(exporting ? "正在导出…" : "导出完整任务（含工具结果）", systemImage: "doc.badge.gearshape") {
+                    exporting = true
+                    Task {
+                        defer { exporting = false }
+                        if let url = await viewModel.exportStructuredConversation() {
+                            structuredExport = TaskExportFile(url: url)
+                        }
+                    }
+                }.disabled(exporting)
                 if let exportText {
                     ShareLink(item: exportText) {
                         Label("导出对话（文本）", systemImage: "square.and.arrow.up")
@@ -992,5 +1019,17 @@ private struct MessageBubble: View {
             AssistantMessageView(text: message.content, isStreaming: false)
         }
     }
+}
+private struct TaskExportFile: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+private struct TaskExportShareSheet: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 #endif

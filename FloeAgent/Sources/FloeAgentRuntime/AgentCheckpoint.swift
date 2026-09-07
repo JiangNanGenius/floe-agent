@@ -141,6 +141,7 @@ public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
 
         public var role: String
         public var content: [Part]
+        public var reasoningContent: String? = nil
     }
 
     public struct Result: Sendable, Codable, Hashable {
@@ -174,7 +175,7 @@ public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
                     return .imageData(mimeType: mimeType, base64: base64)
                 case .imageURL(let url): return .imageURL(url)
                 }
-            })
+            }, reasoningContent: message.reasoningContent)
         }
         toolResults = request.toolResults.map { Result(callID: $0.callID, output: $0.output) }
         pendingToolCalls = request.pendingToolCalls
@@ -197,7 +198,7 @@ public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
                         return .imageData(mimeType: mimeType, base64: base64)
                     case .imageURL(let url): return .imageURL(url)
                     }
-                })
+                }, reasoningContent: message.reasoningContent)
             },
             toolResults: toolResults.map { (callID: $0.callID, output: $0.output) },
             pendingToolCalls: pendingToolCalls,
@@ -259,6 +260,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// older checkpoints decodable; legacy files use conservative rebuild and
     /// digest validation.
     public var providerDispatchRequest: ProviderDispatchRequestSnapshot?
+    /// Reasoning attached to a committed tool batch before its next dispatch.
+    public var pendingAssistantReasoning: String?
 
     /// Current checkpoint file format.
     public static let currentFormatVersion = 5
@@ -288,7 +291,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         executionLedgerEntries: [AgentExecutionLedgerEntry]? = nil,
         toolLifecycleEntries: [AgentToolLifecycleEntry]? = nil,
         providerDispatchEnvelope: ProviderDispatchEnvelope? = nil,
-        providerDispatchRequest: ProviderDispatchRequestSnapshot? = nil
+        providerDispatchRequest: ProviderDispatchRequestSnapshot? = nil,
+        pendingAssistantReasoning: String? = nil
     ) {
         self.formatVersion = formatVersion
         self.runID = runID
@@ -313,6 +317,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         self.toolLifecycleEntries = toolLifecycleEntries
         self.providerDispatchEnvelope = providerDispatchEnvelope
         self.providerDispatchRequest = providerDispatchRequest
+        self.pendingAssistantReasoning = pendingAssistantReasoning
     }
 
     public func encoded() throws -> Data {
@@ -343,22 +348,26 @@ public struct ConversationMessage: Sendable, Codable, Hashable, Identifiable {
     /// Bounded inline visual evidence belonging to this message. It is only
     /// sent when the selected model actually declares vision support.
     public var images: [ConversationImagePart]
+    /// Provider protocol continuity, not tool-state or authorization input.
+    public var reasoningContent: String?
 
     public init(
         id: UUID = UUID(),
         role: String,
         content: String,
         createdAt: Date = Date(),
-        images: [ConversationImagePart] = []
+        images: [ConversationImagePart] = [],
+        reasoningContent: String? = nil
     ) {
         self.id = id
         self.role = role
         self.content = content
         self.createdAt = createdAt
         self.images = images
+        self.reasoningContent = reasoningContent
     }
 
-    private enum CodingKeys: String, CodingKey { case id, role, content, createdAt, images }
+    private enum CodingKeys: String, CodingKey { case id, role, content, createdAt, images, reasoningContent }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -367,6 +376,7 @@ public struct ConversationMessage: Sendable, Codable, Hashable, Identifiable {
         content = try values.decode(String.self, forKey: .content)
         createdAt = try values.decode(Date.self, forKey: .createdAt)
         images = try values.decodeIfPresent([ConversationImagePart].self, forKey: .images) ?? []
+        reasoningContent = try values.decodeIfPresent(String.self, forKey: .reasoningContent)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -376,6 +386,7 @@ public struct ConversationMessage: Sendable, Codable, Hashable, Identifiable {
         try values.encode(content, forKey: .content)
         try values.encode(createdAt, forKey: .createdAt)
         if !images.isEmpty { try values.encode(images, forKey: .images) }
+        try values.encodeIfPresent(reasoningContent, forKey: .reasoningContent)
     }
 }
 

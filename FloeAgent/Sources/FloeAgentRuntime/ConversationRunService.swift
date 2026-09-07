@@ -113,6 +113,9 @@ public actor ConversationRunService {
     private var unpublishedAnswerText = ""
     private var answerPushTask: Task<Void, Never>?
     private var reasoningText = ""
+    // Protocol history must not reuse the bounded, multi-step UI preview.
+    // The runtime enforces its per-response byte ceiling before forwarding events.
+    private var protocolReasoningText = ""
     private var unflushedReasoningText = ""
     private var unpublishedReasoningText = ""
     private var reasoningPushTask: Task<Void, Never>?
@@ -348,15 +351,28 @@ public actor ConversationRunService {
         isReviewingApproval: Bool,
         liveness: AgentLivenessSnapshot
     ) -> String {
-        if isReviewingApproval { return "reviewingApproval" }
-        if case .failed(let failure) = state, failure.isRecoverable {
-            return "recoveryFailed"
+        if case .completed(let info) = state {
+            switch info.stopReason {
+            case .budgetLimited: return "budgetLimited"
+            case .noProgress: return "noProgress"
+            case .maxTokens: return "truncated"
+            case .cancelled: return "cancelled"
+            default: return "completed"
+            }
         }
+        if case .failed(let failure) = state {
+            return failure.isRecoverable ? "recoveryFailed" : "failed"
+        }
+        if isReviewingApproval { return "reviewingApproval" }
         switch liveness.phase {
         case .retrying:
             return "reconnecting"
         case .persisting:
             return "committingResults"
+        case .compacting:
+            return "compacting"
+        case .waitingForRecovery:
+            return "interrupted"
         default:
             return state.name
         }
@@ -505,6 +521,7 @@ public actor ConversationRunService {
     }
 
     private func handleProviderAttempt(_ snapshot: ProviderAttemptSnapshot) async {
+        if snapshot.status == .started { protocolReasoningText = "" }
         providerAttempt = snapshot
         eventChannel.yield(.providerAttemptChanged(snapshot))
         var payload: [String: String] = [
@@ -541,7 +558,8 @@ public actor ConversationRunService {
             role: "assistant",
             content: text,
             createdAt: Date(),
-            parts: [MessagePart(messageID: messageID, partIndex: 0, kind: .text, text: text)],
+            parts: [MessagePart(messageID: messageID, partIndex: 0, kind: .text, text: text),
+                    MessagePart(messageID: messageID, partIndex: 1, kind: .reasoning, text: protocolReasoningText)],
             runID: runID
         ), boundary: "assistantStep")
         guard persisted else { return }
@@ -753,6 +771,7 @@ public actor ConversationRunService {
             }
             scheduleRecoveryPoint()
         case .reasoningSummary(let summary):
+            protocolReasoningText += summary.text
             let remaining = max(0, streamedTextLimitBytes - reasoningText.utf8.count)
             if remaining > 0 {
                 let delta = Self.utf8Prefix(summary.text, maxBytes: remaining)
@@ -815,6 +834,7 @@ public actor ConversationRunService {
                 "id": result.callID,
                 "status": result.status.rawValue,
                 "summary": result.outputSummary,
+                "outputDigest": result.outputDigest,
                 "durationMs": String(durationMs)
             ]
             if !result.artifacts.isEmpty,
@@ -934,7 +954,8 @@ public actor ConversationRunService {
                     role: "assistant",
                     content: streamedText,
                     createdAt: Date(),
-                    parts: [MessagePart(messageID: messageID, partIndex: 0, kind: .text, text: streamedText)],
+                    parts: [MessagePart(messageID: messageID, partIndex: 0, kind: .text, text: streamedText),
+                            MessagePart(messageID: messageID, partIndex: 1, kind: .reasoning, text: protocolReasoningText)],
                     runID: runID
                 ), boundary: "finalAssistant", completionCritical: true)
                 if finalMessagePersisted {
@@ -1385,7 +1406,14 @@ public actor ConversationRunService {
         goal.status = .verifying
         if goal.progress.startedAt == nil { goal.progress.startedAt = Date() }
         goal.progress.cycleCount += 1
-        goal.progress.modelCallCount += 1
+        let runEvents = (try? await runStore.events(runID: runID)) ?? []
+        let dispatchedCalls = runEvents.filter { event in
+            guard event.kind == .status,
+                  let fields = try? JSONDecoder().decode([String: String].self, from: Data(event.payloadJSON.utf8)) else { return false }
+            return fields["kind"] == "providerAttempt" && fields["status"] == "started"
+        }.count
+        goal.progress.modelCallCount += dispatchedCalls
+        goal.progress.totalIterationCount += runEvents.filter { $0.kind == .toolRequest }.count
         goal.progress.lastCheckpointAt = Date()
         goal.updatedAt = Date()
         guard await saveGoalReliably(goal, expectedRevision: expectedRevision) else { return }
@@ -1627,7 +1655,7 @@ public actor ConversationRunService {
                 lines.append("VNC interaction policy: satisfy any user-requested prerequisite route, require vnc.status -> vnc.connect -> vnc.observe, prefer OCR recognizedText references over raw coordinates, perform one bounded action and verify the returned screenshot. inputDispatched=true is protocol delivery, never task success.")
             }
             lines.append(contentsOf: ToolWorkflowGuidance.contextLines(for: toolNames))
-            lines.append("Tool inventory rule: use tools.search and the supplied schemas for exact names. A deferred schema is not a missing capability. Never invent tools or infer permission from a guide. Use the installed skill index below, or skill.read without an id, then read the relevant guide before non-trivial domain work. Reading a guide loads its available tool definitions; execution remains permission-gated. Python and Executor are underlying execution capabilities, independent of guide enablement.")
+            lines.append("Discovery routing: for non-trivial PDF, Office, network or other domain workflows, first use skill.search then skill.read on the best installed guide. Reading loads its available executable definitions. For an exact tool or an underlying runtime use tools.search. A deferred schema is not a missing capability. Do not repeat a broad search: use the returned exact ID/name and distinguish loaded from deferred results. Never infer permission from a guide. Python (exec.localPython) and SSH Executor are underlying execution capabilities, independent of guide enablement; interactive Terminal is separate.")
         } else {
             lines.append("Available tools: none (native tool calling is disabled for this model)")
         }

@@ -10,6 +10,12 @@
 #     system SQLite omits GRDB's SQLITE_ENABLE_SNAPSHOT linker symbols.
 name: CI
 
+# Superseded branch checks may stop; release uploads have a separate,
+# non-cancelling concurrency group.
+concurrency:
+  group: floe-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -108,28 +114,8 @@ jobs:
       - name: Guardian real PTY lifecycle regressions
         run: python3 scripts/test_remote_shell.py
 
-      - name: xcodebuild iPhone Simulator
-        run: |
-          xcodebuild \
-            -skipPackagePluginValidation \
-            -skipMacroValidation \
-            -scheme FloeAgent \
-            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
-            -resultBundlePath FloeAgent-iPhone.xcresult \
-            CODE_SIGNING_ALLOWED=NO \
-            build
-
-      - name: xcodebuild iPad mini (A17 Pro) Simulator
-        run: |
-          xcodebuild \
-            -skipPackagePluginValidation \
-            -skipMacroValidation \
-            -scheme FloeAgent \
-            -destination 'platform=iOS Simulator,name=iPad mini (A17 Pro)' \
-            -resultBundlePath FloeAgent-iPad.xcresult \
-            CODE_SIGNING_ALLOWED=NO \
-            build
-
+      # `test` builds the universal iPhone/iPad app and its test host once.
+      # Two preceding build-only destinations compiled the identical target.
       - name: Canvas, PiP, and timeline app regression tests
         run: |
           xcodebuild \
@@ -152,9 +138,6 @@ jobs:
           python3 scripts/verify_app_regression_xcresult.py \
             --result-bundle FloeAgent-AppRegressionTests.xcresult
 
-      - name: SPM build (cross-platform targets)
-        run: swift build
-
       - name: SPM test (cross-platform targets)
         run: |
           # SwiftPM links the universal llama binary into the local-model test
@@ -171,6 +154,9 @@ jobs:
           # target-triple directory. Make the binary artifact discoverable to
           # dyld and mirror it beside every products directory SwiftPM created.
           export DYLD_FRAMEWORK_PATH="$(dirname "$LLAMA_FRAMEWORK")${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}"
+          # Materialize SwiftPM's product directories before staging the
+          # binary llama framework required by the test loaders.
+          swift build
           BIN_PATH="$(swift build --show-bin-path)"
           mkdir -p "$BIN_PATH/PackageFrameworks"
           cp -R "$LLAMA_FRAMEWORK" "$BIN_PATH/PackageFrameworks/"
@@ -210,8 +196,6 @@ jobs:
             FloeAgent/sbom.spdx.json
             FloeAgent/LICENSES-THIRD-PARTY.md
             FloeAgent/.gitleaks-report.json
-            FloeAgent/FloeAgent-iPhone.xcresult
-            FloeAgent/FloeAgent-iPad.xcresult
             FloeAgent/FloeAgent-AppRegressionTests.xcresult
           if-no-files-found: ignore
 
