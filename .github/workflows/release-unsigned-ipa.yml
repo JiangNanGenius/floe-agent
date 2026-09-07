@@ -324,6 +324,7 @@ jobs:
             -only-testing:FloeAppTests/BrowserProtocolTests \
             -only-testing:FloeAppTests/MailConnectorTests \
             -only-testing:FloeAppTests/SkillLifecycleTests \
+            -only-testing:FloeAppTests/LocalPythonRuntimeTests \
             CODE_SIGNING_ALLOWED=NO \
             test
           python3 scripts/verify_app_regression_xcresult.py \
