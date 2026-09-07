@@ -12,6 +12,7 @@ actual="$(shasum -a 256 "$stage/pandas.tar.gz" | awk '{print $1}')"
 test "$actual" = dca3734d6ab7c906e6730f0788b0a1dbb9f2467731f9711f77995c8e9d62d712
 tar -xzf "$stage/pandas.tar.gz" -C "$stage"
 cp "$repo_root/FloeAgent/scripts/test_native_pandas.py" "$stage/pandas-3.0.5/floe_pandas_smoke.py"
+python "$repo_root/FloeAgent/scripts/prepare_pandas_ios.py" "$stage/pandas-3.0.5"
 export CIBW_BUILD='cp313-ios_arm64_iphoneos cp313-ios_arm64_iphonesimulator'
 export CIBW_XBUILD_TOOLS_IOS='ninja cmake'
 # pip 26.2 separates isolated build constraints from runtime constraints.
