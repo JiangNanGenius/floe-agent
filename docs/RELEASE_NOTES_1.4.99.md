@@ -28,3 +28,15 @@
 
 Internal TestFlight only; no external beta. Upload receipt, Apple VALID, Floe QA visibility and physical iPad acceptance are separate gates. Existing PiP behavior is unchanged. PDF visual fidelity, offline pandas, large-file memory behavior and skill update/rollback require device acceptance.
 
+### 发布验证 / Delivery verification
+
+- 2026-09-07 18:53 UTC：CI 全绿，签名上传成功，Apple `VALID`，Floe QA 内部组可见；无外部组或已启用的公开链接。实体 iPad 验收仍待完成。
+- At 2026-09-07 18:53 UTC: CI green, signed upload accepted, Apple `VALID`, and visible to the internal Floe QA group; no external group or enabled public link. Physical iPad acceptance remains pending.
+- [CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/34145786241) · [发布流程 / Release](https://github.com/JiangNanGenius/floe-agent/actions/runs/34145786479) · [TestFlight 验证 / Verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/34153418092)
+
+> [!WARNING]
+> GitHub IPA 未签名，不能直接安装，也不是 App Store 上传包；请通过内部 TestFlight 安装签名版本。
+> The GitHub IPA is unsigned, cannot be installed directly, and is not the App Store upload package. Install the signed build through internal TestFlight.
+
+发布资产包含测试证据、SPDX SBOM、第三方许可证、密钥扫描报告和构建来源证明。
+Assets include test evidence, an SPDX SBOM, third-party licenses, secret-scan reports and build provenance.

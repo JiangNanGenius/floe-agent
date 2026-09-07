@@ -114,10 +114,50 @@ These are automated observations, not physical iPad acceptance or a release.
   Unicode radicals are never compatibility-normalized into a false pass. The
   original Chinese assertion remains, with chained-operation and lost-text
   regression checks. Mixed workflows that cannot preserve text fail explicitly.
-- Upload receipt, Apple VALID and internal-group visibility for the replacement
-  remain unverified until their explicit evidence is recorded.
+- Final replacement delivery evidence is recorded below; the earlier candidate
+  and its failures remain documented rather than being relabeled as passes.
 
 ## Physical iPad acceptance / 实体 iPad 验收清单
+
+### Replacement candidate evidence / 新候选验证证据
+
+- `v1.4.99` / Build `130`, immutable source
+  `ad3755763c07b5ce856d41a3ffe4dbc40e3132c9`.
+- Local PDF/RAR/skill regression: 15 tests passed, including unchanged exact
+  Chinese text checks, chained native edits and saved-text rejection. Official
+  signed packages, generated project, dependency pins and release preflight
+  passed; source secret scanning found no leaks.
+- [CI 34145786241](https://github.com/JiangNanGenius/floe-agent/actions/runs/34145786241)
+  passed every required job: 107 app tests (zero failures/skips), 990 SwiftPM
+  tests, Linux build, stable App Store SDK Release build and security scans.
+- [Release 34145786479](https://github.com/JiangNanGenius/floe-agent/actions/runs/34145786479)
+  passed its separate build/verification job: all 107 app tests, SwiftPM tests,
+  device packaging, artifact verification, provenance and source/built-app
+  secret scanning. The stable SDK also passed 107/107 app tests, zero failures
+  or skips, including the original exact Chinese-text regression.
+- Signed validation and upload succeeded on 2026-09-07 at 18:36:30 UTC;
+  delivery UUID `f653b2c8-f90d-4a7b-9c51-3027504e7425`. The release workflow
+  and bilingual [GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.4.99)
+  completed successfully. The GitHub IPA is unsigned and is not the signed
+  TestFlight package.
+- [Apple upload discovery 34153327863](https://github.com/JiangNanGenius/floe-agent/actions/runs/34153327863)
+  confirmed upload state `COMPLETE`, no errors/warnings, and build `VALID`.
+  Read-only workflow commit `277b849` added Apple's `buildUploads` query to
+  distinguish pre-build processing from an absent upload; YAML and all shell
+  blocks parsed, and its live read-only run passed. It changes no app source,
+  release tag or uploaded binary.
+- [TestFlight verification 34153418092](https://github.com/JiangNanGenius/floe-agent/actions/runs/34153418092)
+  passed at 2026-09-07 18:53:15 UTC: version `1.4.99`, build `130`, processing
+  `VALID`, exactly one internal group `Floe QA`
+  (`c09d3f5c-f5b3-485f-9ddb-98c61fa80ad1`), no unexpected/external group and
+  no enabled public link. Build ID `f653b2c8-f90d-4a7b-9c51-3027504e7425`.
+- 已完成：CI 全绿、签名上传、Apple VALID、Floe QA 内部组可见、中英双语
+  GitHub 更新记录。公开 Beta 未开启；下列实体 iPad 验收仍待完成。
+- Completed: green CI, signed upload, Apple VALID, internal Floe QA visibility
+  and bilingual GitHub notes. External Beta remains closed; physical iPad
+  acceptance below is still pending.
+
+### Pending device checks / 待完成真机检查
 
 These are pending manual checks, not simulator-derived passes. Test on the
 internal TestFlight build; retain the original input documents and record the
