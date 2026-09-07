@@ -90,7 +90,8 @@ public struct SSHShellOpenTool: AgentTool {
                 environment: environment,
                 term: args.term ?? "xterm-256color",
                 columns: args.cols ?? 80,
-                rows: args.rows ?? 24
+                rows: args.rows ?? 24,
+                cancellation: context.cancellation
             )
             var summary = "status=ok sessionID=\(opened.sessionID.uuidString) environment=\(environment.rawValue)"
             if !opened.output.isEmpty { summary += "\noutput:\n\(opened.output)" }

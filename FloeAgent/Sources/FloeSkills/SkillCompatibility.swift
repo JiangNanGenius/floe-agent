@@ -28,6 +28,7 @@ public enum SkillCompatibilityProblem: Equatable, Sendable {
     case unavailableCapability(SkillCapability)
     case unavailableTool(String)
     case javaScriptCoreUnavailable
+    case localPythonUnavailable
     case remoteHostRequired
 }
 
@@ -61,6 +62,8 @@ public enum SkillCompatibility {
             break
         case .javaScriptCore where !environment.supportsJavaScriptCore:
             problems.append(.javaScriptCoreUnavailable)
+        case .localPython where !environment.supportedCapabilities.contains(.localPython) || !environment.registeredTools.contains("exec.localPython"):
+            problems.append(.localPythonUnavailable)
         case .remote where !environment.hasRemoteExecutionHost:
             problems.append(.remoteHostRequired)
         default:

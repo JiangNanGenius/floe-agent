@@ -5,6 +5,29 @@ import FloeTools
 
 @Suite("Deferred tool discovery")
 struct ToolDiscoveryTests {
+    @Test("Executor and interactive Terminal are separate roles despite the SSH prefix")
+    func executionRoles() {
+        let available = ["ssh.execute", "ssh.taskStatus", "ssh.cancelTask", "ssh.shellOpen", "ssh.shellExchange", "ssh.shellClose", "ssh.listHosts", "exec.localPython"].map(descriptor)
+        let terminal = ToolDiscovery.matches(query: "terminal", descriptors: available).map(\.name)
+        #expect(terminal.contains("ssh.shellOpen"))
+        #expect(terminal.contains("ssh.listHosts"))
+        #expect(!terminal.contains("ssh.execute"))
+        let executor = ToolDiscovery.matches(query: "executor", descriptors: available).map(\.name)
+        #expect(executor.contains("ssh.cancelTask"))
+        #expect(!executor.contains("ssh.shellOpen"))
+        #expect(ToolDiscovery.matches(query: "python", descriptors: available).map(\.name) == ["exec.localPython"])
+    }
+
+    @Test("Exact lookup and bounded presentation keep requested tools and the skill reader")
+    func boundedSchemas() {
+        let available = (0..<80).map { descriptor("workspace.tool\($0)") } + [descriptor("skill.read")]
+        #expect(ToolDiscovery.matches(query: "workspace.tool79", descriptors: available).map(\.name) == ["workspace.tool79"])
+        let bounded = ToolDiscovery.bounded(available, priority: ["workspace.tool79"], maxTools: 4)
+        #expect(bounded.count == 4)
+        #expect(bounded.map(\.name).contains("skill.read"))
+        #expect(bounded.map(\.name).contains("workspace.tool79"))
+    }
+
     private func descriptor(_ name: String) -> ToolCatalog.Descriptor {
         .init(name: name, toolDescription: name, parametersJSON: #"{"type":"object","properties":{}}"#, riskLabels: [], isSideEffecting: false)
     }

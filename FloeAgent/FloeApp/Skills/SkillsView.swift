@@ -3,6 +3,7 @@ import SwiftUI
 import FloePersistence
 import FloeSecurity
 import FloeTools
+import FloeSkills
 
 struct SkillsView: View {
     @EnvironmentObject private var environment: AppEnvironment
@@ -11,6 +12,7 @@ struct SkillsView: View {
     @State private var showingCreator = false
     @State private var showingFinder = false
     @State private var pendingRemoval: PersistedSkill?
+    @State private var updatingSkill: PersistedSkill?
 
     init(center: SkillsCenter, mcpCenter: MCPSettingsCenter = .shared) {
         self.center = center
@@ -65,9 +67,13 @@ struct SkillsView: View {
                         }
                         Text(skill.skillMarkdown.split(separator: "\n").dropFirst(4).joined(separator: "\n"))
                             .font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                        Button("GitHub 更新 / Update", systemImage: "arrow.down.circle") { updatingSkill = skill }
+                            .buttonStyle(.borderless)
                     }
                     .swipeActions {
-                        Button("action.delete", role: .destructive) { pendingRemoval = skill }
+                        if !(skill.sourceURL ?? "").hasPrefix(DomainSkillLibrary.builtinSourceScheme) {
+                            Button("action.delete", role: .destructive) { pendingRemoval = skill }
+                        }
                     }
                 }
             }
@@ -86,6 +92,7 @@ struct SkillsView: View {
         .task { await center.load() }
         .sheet(isPresented: $showingCreator) { SkillCreatorSheet(center: center) }
         .sheet(isPresented: $showingFinder) { SkillFinderSheet(center: center) }
+        .sheet(item: $updatingSkill) { skill in SkillGitHubUpgradeSheet(center: center, skill: skill) }
         .sheet(item: $center.pendingInstallation) { pending in
             SkillInstallReviewSheet(center: center, pending: pending)
         }
@@ -98,6 +105,88 @@ struct SkillsView: View {
                 pendingRemoval = nil
             }
         }
+    }
+}
+
+private struct SkillGitHubUpgradeSheet: View {
+    @ObservedObject var center: SkillsCenter
+    let skill: PersistedSkill
+    @Environment(\.dismiss) private var dismiss
+    @State private var owner = ""
+    @State private var repository = ""
+    @State private var ref = "main"
+    @State private var path = "SKILL.md"
+    @State private var validationError: String?
+    @State private var confirmingRollback = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("GitHub 来源 / Source") {
+                    TextField("Owner", text: $owner)
+                    TextField("Repository", text: $repository)
+                    TextField("Branch / tag / commit", text: $ref)
+                    TextField("SKILL.md or package inventory JSON", text: $path)
+                    Text("使用现有 GitHub 连接器访问私有仓库。完整包入口需列出 files: {相对路径: SHA256}；不会自动下载 Markdown 链接。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("检查更新 / Check update") {
+                        do {
+                            let source = try GitHubSkillSource(owner: owner, repository: repository, ref: ref, path: path)
+                            validationError = nil
+                            Task { await center.checkGitHubUpgrade(skill: skill, source: source) }
+                        } catch { validationError = error.localizedDescription }
+                    }
+                }.textInputAutocapitalization(.never).autocorrectionDisabled()
+                if let candidate = center.pendingUpgrade {
+                    Section("审核变更 / Review changes") {
+                        LabeledContent("Commit", value: candidate.commit)
+                        LabeledContent("Version", value: candidate.snapshot.package.manifest.version)
+                        LabeledContent("新增权限 / New capabilities", value: candidate.addedCapabilities.sorted().joined(separator: ", "))
+                        LabeledContent("新增工具 / New tools", value: candidate.addedTools.sorted().joined(separator: ", "))
+                        LabeledContent("请求授权 / Requested grants", value: candidate.snapshot.package.manifest.capabilities.joined(separator: ", "))
+                        ForEach(candidate.changedFiles, id: \.self) { file in
+                            DisclosureGroup(file) {
+                                Text("Before").font(.caption.bold())
+                                Text(preview(candidate.installedSnapshot.files[file])).font(.caption.monospaced())
+                                Text("After").font(.caption.bold())
+                                Text(preview(candidate.snapshot.files[file])).font(.caption.monospaced())
+                            }
+                        }
+                        Button("批准并应用 / Approve and apply") {
+                            Task {
+                                await center.applyReviewedUpgrade()
+                                if center.errorMessage == nil { dismiss() }
+                            }
+                        }.disabled(candidate.changedFiles.isEmpty)
+                    }
+                }
+                Section("恢复 / Recovery") {
+                    Text(skill.sourceURL ?? "App / local").font(.caption).textSelection(.enabled)
+                    Button("回退上次更新 / Roll back", role: .destructive) { confirmingRollback = true }
+                }
+                if let error = validationError ?? center.errorMessage { Text(error).foregroundStyle(.red) }
+            }
+            .disabled(center.isWorking)
+            .overlay { if center.isWorking { ProgressView() } }
+            .navigationTitle(skill.name)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("action.cancel") { center.cancelUpgrade(); dismiss() }.disabled(center.isWorking) } }
+            .confirmationDialog("回退会恢复上次更新前的内容与授权 / Restore previous content and grants?", isPresented: $confirmingRollback) {
+                Button("回退 / Roll back", role: .destructive) { Task { await center.rollbackLatestUpgrade(skill: skill); if center.errorMessage == nil { dismiss() } } }
+            }
+            .interactiveDismissDisabled(center.isWorking)
+            .onAppear {
+                if let source = center.lastGitHubSource(skillID: skill.id) {
+                    owner = source.owner; repository = source.repository; ref = source.ref; path = source.path
+                }
+            }
+            .onDisappear { if !center.isWorking { center.cancelUpgrade() } }
+        }
+    }
+
+    private func preview(_ data: Data?) -> String {
+        guard let data else { return "(absent)" }
+        guard let text = String(data: data, encoding: .utf8) else { return "Binary resource: \(data.count) bytes" }
+        return text
     }
 }
 

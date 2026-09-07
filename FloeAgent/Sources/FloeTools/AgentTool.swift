@@ -115,9 +115,10 @@ public struct ToolExecutionOutput: Sendable {
         fullOutputSHA256: String,
         exitStatus: Int32? = nil,
         artifacts: [ToolArtifactReference] = [],
-        requiresUserAction: Bool = false
+        requiresUserAction: Bool = false,
+        maximumSummaryCharacters: Int = 4096
     ) {
-        self.summary = String(summary.prefix(4096))
+        self.summary = String(summary.prefix(min(262_144, max(0, maximumSummaryCharacters))))
         self.fullOutputSHA256 = fullOutputSHA256
         self.exitStatus = exitStatus
         self.artifacts = artifacts

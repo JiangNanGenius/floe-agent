@@ -635,7 +635,7 @@ final class ConversationCenter: ObservableObject {
             activePlan = nil
             activeGoal = nil
         } else {
-            skills = await environment.skillsCenter.runtimeSelection()
+            skills = await environment.skillsCenter.runtimeSelection(runID: runID)
             personalization = await runtimePersonalizationContext(
                 query: memoryQuery,
                 workspaceID: canonicalWorkspaceID,

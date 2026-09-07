@@ -16,11 +16,11 @@ struct CloudWorkspaceToolContractTests {
 
     @Test("bundled guardian implements the matching workspace endpoint")
     func bundledEndpoint() throws {
-        #expect(RemoteAgentPayload.version == "1.4.4")
+        #expect(RemoteAgentPayload.version == "1.4.5")
         let source = try RemoteAgentPayload.agentSource()
         #expect(source.contains("def list_workspaces():"))
         #expect(source.contains("/v1/workspaces"))
-        #expect(source.contains("VERSION = \"1.4.4\""))
+        #expect(source.contains("VERSION = \"1.4.5\""))
         // Interactive shell channel (ssh.shell.*, guardian 1.4.4+).
         #expect(source.contains("/v1/shell"))
         #expect(source.contains("interactive_shell"))

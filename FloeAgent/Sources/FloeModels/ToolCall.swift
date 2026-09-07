@@ -67,8 +67,10 @@ public struct ToolCall: Sendable, Codable, Identifiable, Hashable {
 public struct ToolResult: Sendable, Codable, Hashable {
     public var callID: String
     public var status: Status
-    /// Bounded human-readable summary, ≤ 4 KiB.
+    /// Ordinary results use 4096 characters; native skill reads may carry a
+    /// bounded complete document so JSON/scripts survive checkpoints intact.
     public var outputSummary: String
+    public let maximumSummaryCharacters: Int
     /// SHA256 hex digest of the full output. Full output lives in the audit
     /// store or is discarded per size policy; only the digest is kept here.
     public var outputDigest: String
@@ -97,11 +99,13 @@ public struct ToolResult: Sendable, Codable, Hashable {
         outputDigest: String,
         exitStatus: Int32? = nil,
         artifacts: [ToolArtifactReference] = [],
-        provenance: ToolResultProvenance? = nil
+        provenance: ToolResultProvenance? = nil,
+        maximumSummaryCharacters: Int = 4096
     ) {
         self.callID = callID
         self.status = status
-        self.outputSummary = String(outputSummary.prefix(4096))
+        self.maximumSummaryCharacters = min(max(0, maximumSummaryCharacters), 262_144)
+        self.outputSummary = String(outputSummary.prefix(self.maximumSummaryCharacters))
         self.outputDigest = outputDigest
         self.exitStatus = exitStatus
         self.artifacts = artifacts
@@ -109,14 +113,15 @@ public struct ToolResult: Sendable, Codable, Hashable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case callID, status, outputSummary, outputDigest, exitStatus, artifacts, provenance
+        case callID, status, outputSummary, outputDigest, exitStatus, artifacts, provenance, maximumSummaryCharacters
     }
 
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         callID = try values.decode(String.self, forKey: .callID)
         status = try values.decode(Status.self, forKey: .status)
-        outputSummary = String(try values.decode(String.self, forKey: .outputSummary).prefix(4096))
+        maximumSummaryCharacters = min(max(0, try values.decodeIfPresent(Int.self, forKey: .maximumSummaryCharacters) ?? 4096), 262_144)
+        outputSummary = String(try values.decode(String.self, forKey: .outputSummary).prefix(maximumSummaryCharacters))
         outputDigest = try values.decode(String.self, forKey: .outputDigest)
         exitStatus = try values.decodeIfPresent(Int32.self, forKey: .exitStatus)
         artifacts = try values.decodeIfPresent([ToolArtifactReference].self, forKey: .artifacts) ?? []
@@ -128,6 +133,7 @@ public struct ToolResult: Sendable, Codable, Hashable {
         try values.encode(callID, forKey: .callID)
         try values.encode(status, forKey: .status)
         try values.encode(outputSummary, forKey: .outputSummary)
+        if maximumSummaryCharacters != 4096 { try values.encode(maximumSummaryCharacters, forKey: .maximumSummaryCharacters) }
         try values.encode(outputDigest, forKey: .outputDigest)
         try values.encodeIfPresent(exitStatus, forKey: .exitStatus)
         if !artifacts.isEmpty { try values.encode(artifacts, forKey: .artifacts) }

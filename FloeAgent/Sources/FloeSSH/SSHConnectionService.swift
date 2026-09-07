@@ -519,7 +519,8 @@ public final class SSHSessionHandle: @unchecked Sendable {
 
     public func openPTY(term: String = "xterm-256color", columns: Int = 80, rows: Int = 24) async throws -> PTYSessionHandle {
         let (stream, continuation) = AsyncThrowingStream<Data, Error>.makeStream()
-        let control = PTYControl(client: targetClient)
+        // This PTY owns the connection opened for it, including jump hosts.
+        let control = PTYControl(clients: clients)
         let request = SSHChannelRequestEvent.PseudoTerminalRequest(
             wantReply: true,
             term: term,
@@ -540,9 +541,11 @@ public final class SSHSessionHandle: @unchecked Sendable {
                         }
                     }
                 }
+                await control.close()
                 continuation.finish()
             } catch {
                 await control.fail(error)
+                await control.close()
                 continuation.finish(throwing: error)
             }
         }
@@ -584,25 +587,32 @@ public struct PTYSessionHandle: Sendable {
 }
 
 private actor PTYControl {
-    private let client: SSHClientBox
+    private let clients: [SSHClientBox]
     private var writer: TTYWriterBox?
     private var task: Task<Void, Never>?
     private var waiters: [CheckedContinuation<TTYWriterBox, Error>] = []
     private var terminalError: Error?
 
-    init(client: SSHClient) { self.client = SSHClientBox(client) }
+    private var closed = false
+    init(clients: [SSHClient]) { self.clients = clients.map(SSHClientBox.init) }
 
     func install(_ writer: TTYWriterBox) {
+        guard !closed, terminalError == nil else { return }
         self.writer = writer
         let waiters = self.waiters
         self.waiters.removeAll()
         for waiter in waiters { waiter.resume(returning: writer) }
     }
 
-    func install(task: Task<Void, Never>) { self.task = task }
+    func install(task: Task<Void, Never>) {
+        guard !closed, terminalError == nil else { task.cancel(); return }
+        self.task = task
+    }
 
     func fail(_ error: Error) {
         terminalError = error
+        writer = nil
+        task = nil
         let waiters = self.waiters
         self.waiters.removeAll()
         for waiter in waiters { waiter.resume(throwing: error) }
@@ -617,13 +627,16 @@ private actor PTYControl {
     }
 
     func close() async {
+        guard !closed else { return }
+        closed = true
         task?.cancel()
-        await client.close()
+        fail(FloeError.cancelled)
+        for client in clients.reversed() { await client.close() }
     }
 
     private func readyWriter() async throws -> TTYWriterBox {
-        if let writer { return writer }
         if let terminalError { throw terminalError }
+        if let writer { return writer }
         return try await withCheckedThrowingContinuation { waiters.append($0) }
     }
 }

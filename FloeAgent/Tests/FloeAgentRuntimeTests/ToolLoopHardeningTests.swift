@@ -57,6 +57,33 @@ private final class LoopingAdapter: ProviderAdapter, @unchecked Sendable {
 @Suite("FloeAgentRuntime.ToolLoopHardening")
 struct ToolLoopHardeningTests {
 
+    @Test("A successful skill read activates exact executable tools on the next request")
+    func readActivatesTools() async throws {
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(try ToolCall(id: "read_guide", toolName: "skill.read", argumentsJSON: Data(#"{"id":"guide"}"#.utf8), scope: .local))],
+            [.completed(.init(stopReason: .endTurn))]
+        ]
+        let registry = ToolRunnerRegistry()
+        let read = ToolCatalog.Descriptor(name: "skill.read", toolDescription: "Read guide", parametersJSON: #"{"type":"object"}"#, riskLabels: [], isSideEffecting: false)
+        registry.register(AnyAgentTool(descriptor: read) { _, _ in
+            let json = try JSONSerialization.data(withJSONObject: [["id": "guide", "markdown": String(repeating: "instructions ", count: 600), "requiredToolNames": ["document.pdf.inspect", "invented.tool"]]])
+            return .init(summary: String(decoding: json, as: UTF8.self), fullOutputSHA256: "", maximumSummaryCharacters: 262_144)
+        })
+        let inspect = ToolCatalog.Descriptor(name: "document.pdf.inspect", toolDescription: "Inspect PDF", parametersJSON: #"{"type":"object"}"#, riskLabels: [], isSideEffecting: false)
+        registry.register(AnyAgentTool(descriptor: inspect) { _, _ in .init(summary: "ok", fullOutputSHA256: "") })
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(configuration: .init(provider: provider, model: TestFixtures.testModel(providerID: provider.id)),
+            adapter: adapter, policy: HumanApprovalPolicy(), executor: CatalogToolExecutor(runners: registry))
+        try await runtime.start(goal: "Read the guide")
+        let first = try #require(adapter.requests.first)
+        let second = try #require(adapter.requests.dropFirst().first)
+        #expect(!first.toolSchemas.contains { $0.name == "document.pdf.inspect" })
+        #expect(second.toolSchemas.contains { $0.name == "document.pdf.inspect" })
+        #expect(!second.toolSchemas.contains { $0.name == "invented.tool" })
+        #expect(second.toolResults.first?.output.count ?? 0 > 4096)
+    }
+
     @Test("provider tool descriptions include explicit prerequisite resolvers")
     func providerToolDescriptionsIncludePrerequisites() async throws {
         let adapter = MockAdapter()
@@ -834,8 +861,8 @@ struct ToolLoopHardeningTests {
         #expect(first.content.contains("Execution target: local"))
         #expect(first.content.contains("Current local date and time at run start:"))
         #expect(first.content.contains("Current time zone:"))
-        #expect(first.content.contains("Available tools:"))
-        #expect(first.content.contains("test.contextProbe"))
+        #expect(first.content.contains("Installed tool groups:"))
+        #expect(first.content.contains("tools.search"))
         // The user goal follows the system message.
         #expect(request.messages.count == 2)
         #expect(request.messages[1].role == "user")
@@ -918,7 +945,7 @@ struct ToolLoopHardeningTests {
         #expect(message.contains("prefer browser.observe DOM refs"))
         #expect(message.contains("screenshots/OCR are the fallback"))
         #expect(message.contains("fresh evidence"))
-        #expect(message.contains("skill.read id=floe.browser"))
+        #expect(message.contains("skill.read id=floe-browser"))
     }
 }
 

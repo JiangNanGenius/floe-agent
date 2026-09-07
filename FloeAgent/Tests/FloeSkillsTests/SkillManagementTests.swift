@@ -42,5 +42,11 @@ struct SkillManagementTests {
         #expect(try JSONDecoder().decode([ManagedSkill].self, from: Data(detail.summary.utf8)).first?.markdown == "body")
         #expect(!SkillReadTool.isSideEffecting)
         #expect(SkillManageTool.isSideEffecting)
+        let page = try await tool.execute(.init(id: "example", offset: 0, limit: 2), context: context)
+        let decoded = try JSONDecoder().decode([ManagedSkill].self, from: Data(page.summary.utf8))[0]
+        #expect(decoded.markdown == "bo")
+        #expect(decoded.nextOffset == 2)
+        let last = try await tool.execute(.init(id: "example", offset: 2, limit: 2), context: context)
+        #expect(try JSONDecoder().decode([ManagedSkill].self, from: Data(last.summary.utf8))[0].markdown == "dy")
     }
 }

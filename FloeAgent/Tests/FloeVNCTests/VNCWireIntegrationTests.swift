@@ -114,6 +114,12 @@ private final class RFBTestPeer: @unchecked Sendable {
 struct VNCWireIntegrationTests {
     @Test("Click sends press/release and returns reusable observation without another observe")
     func clickEvidence() async throws {
+        try await VNCTextRecognition.$recognize.withValue({ _ in [] }) {
+            try await exerciseClickEvidence()
+        }
+    }
+
+    private func exerciseClickEvidence() async throws {
         let peer = try RFBTestPeer()
         let port = try await peer.start()
         defer { peer.stop() }

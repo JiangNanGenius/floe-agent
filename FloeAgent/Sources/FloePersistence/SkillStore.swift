@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-public struct PersistedSkill: Sendable, Hashable, Identifiable {
+public struct PersistedSkill: Codable, Sendable, Hashable, Identifiable {
     public var id: String
     public var name: String
     public var version: String
@@ -37,11 +37,20 @@ public struct PersistedSkill: Sendable, Hashable, Identifiable {
     }
 }
 
+public struct PersistedSkillPermission: Codable, Sendable, Equatable {
+    public let capability: String
+    public let decision: String
+    public let scopeJSON: String
+    public let grantedAt: String?
+    public let expiresAt: String?
+}
+
 public actor SQLiteSkillStore {
     private let database: DatabaseManager
     public init(database: DatabaseManager) { self.database = database }
 
-    public func save(_ skill: PersistedSkill, grantCapabilities: [String] = []) async throws {
+    public func save(_ skill: PersistedSkill, grantCapabilities: [String] = [], replaceGrants: Bool = false,
+                     restoringPermissions: [PersistedSkillPermission]? = nil) async throws {
         try await database.writer { db in
             try db.execute(sql: """
                 INSERT INTO skills (
@@ -66,12 +75,32 @@ public actor SQLiteSkillStore {
                     skill.rewrittenDigest, skill.rewriteModelID, skill.compatibilityReportJSON,
                     Self.date(skill.createdAt), Self.date(skill.updatedAt)
                 ])
+            if replaceGrants { try db.execute(sql: "DELETE FROM skill_permissions WHERE skill_id = ?", arguments: [skill.id]) }
             for capability in grantCapabilities {
                 try db.execute(sql: """
                     INSERT INTO skill_permissions (skill_id, capability, decision, scope_json, granted_at, expires_at)
                     VALUES (?, ?, 'allow', '{}', ?, NULL)
                     ON CONFLICT(skill_id, capability) DO UPDATE SET decision='allow', granted_at=excluded.granted_at, expires_at=NULL
                     """, arguments: [skill.id, capability, Self.date(Date())])
+            }
+            if let restoringPermissions {
+                try db.execute(sql: "DELETE FROM skill_permissions WHERE skill_id = ?", arguments: [skill.id])
+                for permission in restoringPermissions {
+                    try db.execute(sql: """
+                        INSERT INTO skill_permissions (skill_id, capability, decision, scope_json, granted_at, expires_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """, arguments: [skill.id, permission.capability, permission.decision,
+                            permission.scopeJSON, permission.grantedAt, permission.expiresAt])
+                }
+            }
+        }
+    }
+
+    public func permissions(skillID: String) async throws -> [PersistedSkillPermission] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM skill_permissions WHERE skill_id = ? ORDER BY capability", arguments: [skillID]).map {
+                PersistedSkillPermission(capability: $0["capability"], decision: $0["decision"],
+                    scopeJSON: $0["scope_json"], grantedAt: $0["granted_at"], expiresAt: $0["expires_at"])
             }
         }
     }

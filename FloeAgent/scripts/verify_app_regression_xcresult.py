@@ -19,7 +19,7 @@ SUITE_MINIMUMS = {
     "ThreadTimelineTests": 18,
     "BrowserProtocolTests": 6,
     "MailConnectorTests": 5,
-    "SkillLifecycleTests": 1,
+    "SkillLifecycleTests": 4,
 }
 
 

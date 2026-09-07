@@ -183,7 +183,8 @@ public struct CatalogToolExecutor: ToolExecutor {
                 ),
                 outputDigest: output.fullOutputSHA256,
                 exitStatus: output.exitStatus,
-                artifacts: output.artifacts
+                artifacts: output.artifacts,
+                maximumSummaryCharacters: call.toolName == "skill.read" ? 262_144 : 4096
             )
         } catch let error as FloeError where error == .cancelled {
             return ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
@@ -463,6 +464,7 @@ public actor FloeAgentRuntime {
     private var providerLastEventWasReasoning = false
     private var providerLastProgressAt = Date()
     private var discoveredToolNames: Set<String> = []
+    private var discoveryPriority: [String] = []
     private var discoverableDescriptors: [ToolCatalog.Descriptor] = []
     private var providerAttemptStartedAt = Date()
     private var providerRetryRequested = false
@@ -789,6 +791,10 @@ public actor FloeAgentRuntime {
         latestProviderDispatchRequest = checkpoint.providerDispatchRequest
         if let snapshot = checkpoint.providerDispatchRequest {
             let restoredRequest = snapshot.request()
+            // Presentation hints only; the next preparation intersects them
+            // with current executable descriptors and current permission limits.
+            discoveryPriority = restoredRequest.toolSchemas.map(\.name).filter { $0 != ToolDiscovery.name }
+            discoveredToolNames = Set(discoveryPriority)
             guard restoredRequest.provider.id == configuration.provider.id,
                   restoredRequest.model.id == configuration.model.id else {
                 throw FloeError.validationFailed(
@@ -817,6 +823,11 @@ public actor FloeAgentRuntime {
             setToolLifecycle(call: call, phase: .resultCommitted)
         }
         repairInterruptedToolPairs()
+        for call in pendingToolCalls {
+            if let result = pendingToolResults.first(where: { $0.callID == call.id }) {
+                activateReadTools(toolCall: call, result: result)
+            }
+        }
         resumedFromCheckpoint = true
         // A checkpoint is a committed tool-result boundary. Never carry a
         // cancelled provider stream's partial prose into the replay turn.
@@ -1101,8 +1112,7 @@ public actor FloeAgentRuntime {
             catalogDescriptors.removeAll { auxiliaryVisionTools.contains($0.name) }
         }
         let effectiveAllowedNames: Set<String>? = {
-            if let configured = configuration.allowedToolNames { return configured }
-            return configuration.activeSkillIDs.isEmpty ? nil : []
+            configuration.allowedToolNames
         }()
         if let effectiveAllowedNames {
             catalogDescriptors.removeAll { !effectiveAllowedNames.contains($0.name) }
@@ -1112,12 +1122,17 @@ public actor FloeAgentRuntime {
         if discoveredToolNames.isEmpty {
             let initial = ToolDiscovery.matches(query: userTask, descriptors: catalogDescriptors)
             discoveredToolNames.formUnion(initial.map(\.name))
+            discoveryPriority = initial.map(\.name)
         }
         // Restore recently used groups without replaying a discovery call.
         let recentGroups = Set(executionLedger.entries.suffix(6).map { ToolDiscovery.group($0.toolName) })
         catalogDescriptors = catalogDescriptors.filter {
-            discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
+            $0.name == "skill.read" || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
         }
+        let statefulGroups: Set<String> = ["vnc", "executor", "terminal"]
+        let pinned = Set(catalogDescriptors.filter { statefulGroups.contains(ToolDiscovery.group($0.name)) && recentGroups.contains(ToolDiscovery.group($0.name)) }.map(\.name))
+        catalogDescriptors = ToolDiscovery.bounded(catalogDescriptors, priority: discoveryPriority, pinned: pinned)
+        discoveredToolNames = Set(catalogDescriptors.map(\.name))
         catalogDescriptors.append(ToolDiscovery.descriptor)
         // Prerequisite wording belongs to the current user turn. Do not let a
         // historical SSH-before-VNC request constrain a later, unrelated turn.
@@ -1813,12 +1828,7 @@ public actor FloeAgentRuntime {
                 decision: "deny:not-in-catalog"
             )
         }
-        let effectiveAllowedNames: Set<String>?
-        if let configured = configuration.allowedToolNames {
-            effectiveAllowedNames = configured
-        } else {
-            effectiveAllowedNames = configuration.activeSkillIDs.isEmpty ? nil : []
-        }
+        let effectiveAllowedNames = configuration.allowedToolNames
         if let effectiveAllowedNames, !effectiveAllowedNames.contains(call.toolName) {
             return .denied(
                 reason: "Tool '\(call.toolName)' is outside the active skill capability set",
@@ -2185,6 +2195,8 @@ public actor FloeAgentRuntime {
                 let query = (try? JSONSerialization.jsonObject(with: call.argumentsJSON)) as? [String: String]
                 let matches = ToolDiscovery.matches(query: query?["query"] ?? "", descriptors: discoverableDescriptors)
                 discoveredToolNames.formUnion(matches.map(\.name))
+                let names = matches.map(\.name)
+                discoveryPriority = names + discoveryPriority.filter { !names.contains($0) }
                 let summary = matches.isEmpty
                     ? "No matching executable tool in this task's capability set. " + ToolDiscovery.index(discoverableDescriptors)
                     : "Loaded for the next request:\n" + matches.map { $0.name + ": " + String($0.toolDescription.prefix(160)) }.joined(separator: "\n")
@@ -3151,7 +3163,22 @@ public actor FloeAgentRuntime {
 
     // MARK: Audit
 
+    private func activateReadTools(toolCall: ToolCall, result: ToolResult) {
+        // Parse only this exact native read tool's structured contract, never
+        // arbitrary reasoning, fenced code or other tools' summaries.
+        if toolCall.toolName == "skill.read", result.status == .ok,
+           let rows = try? JSONSerialization.jsonObject(with: Data(result.outputSummary.utf8)) as? [[String: Any]] {
+            let names = rows.flatMap { $0["requiredToolNames"] as? [String] ?? [] }
+            let selected = names.filter {
+                executor.descriptor(named: $0) != nil && (configuration.allowedToolNames?.contains($0) ?? true)
+            }
+            discoveredToolNames.formUnion(selected)
+            discoveryPriority = selected + discoveryPriority.filter { !selected.contains($0) }
+        }
+    }
+
     private func audit(toolCall: ToolCall, result: ToolResult, decision: String) async {
+        activateReadTools(toolCall: toolCall, result: result)
         guard let auditSink else { return }
         let entry = AuditEntry(
             sequence: 0, // recomputed by the chain actor

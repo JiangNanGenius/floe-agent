@@ -177,6 +177,7 @@ final class AppEnvironment: ObservableObject {
     /// True only for the emergency in-memory environment. Production
     /// actions remain unavailable because this state is not durable.
     let isEphemeral: Bool
+    private let shouldSeedBundledSkills: Bool
 
     private init(
         database: DatabaseManager,
@@ -187,8 +188,10 @@ final class AppEnvironment: ObservableObject {
         remoteSessionRegistry: any RemoteSessionRegistry,
         keychain: KeychainStore,
         catastrophicGate: CatastrophicActionGate,
-        isEphemeral: Bool = false
+        isEphemeral: Bool = false,
+        seedBundledSkills: Bool = true
     ) {
+        self.shouldSeedBundledSkills = seedBundledSkills
         self.database = database
         self.conversationStore = conversationStore
         self.runStore = runStore
@@ -351,11 +354,11 @@ final class AppEnvironment: ObservableObject {
                 )
                 return (shellID: opened.shellID, output: opened.output, alive: opened.alive)
             },
-            io: { hostID, shellID, input, waitMs, maxBytes in
+            io: { hostID, shellID, input, waitMs, maxBytes, cancellation in
                 let result = try await remoteAgentTasks.shellIO(
                     hostID: hostID, shellID: shellID, input: input,
                     waitMs: waitMs, maxBytes: maxBytes,
-                    cancellation: CancellationToken()
+                    cancellation: cancellation ?? CancellationToken()
                 )
                 return (output: result.output, alive: result.alive)
             },
@@ -423,7 +426,7 @@ final class AppEnvironment: ObservableObject {
         registerSkillTools(creator: LocalSkillCreator(center: skillsCenter), manager: LocalSkillCreator(center: skillsCenter))
         // Bundled domain skills: seed/upgrade in the background; failures are
         // logged inside the seeder and never block startup.
-        Task { await skillsCenter.seedBuiltinDomainSkills() }
+        if shouldSeedBundledSkills { Task { await skillsCenter.seedBuiltinDomainSkills() } }
         // Durable memory.
         registerMemoryTools(store: intelligenceStore) { [runStore] runID in
             try await runStore.run(id: runID)?.conversationID
@@ -773,7 +776,8 @@ final class AppEnvironment: ObservableObject {
             remoteSessionRegistry: SQLiteRemoteSessionRegistry(database: database),
             keychain: KeychainStore(service: "org.floeagent.ios.providers"),
             catastrophicGate: (try? CatastrophicActionGate.withBundledPatterns())
-                ?? .failClosed(reason: "Catastrophic-action rules are unavailable")
+                ?? .failClosed(reason: "Catastrophic-action rules are unavailable"),
+            seedBundledSkills: false
         )
     }
 }

@@ -26,6 +26,44 @@ final class SourceControlCenter: ObservableObject {
     var isGitHubConnected: Bool { account != nil }
     var isDeviceLoginPending: Bool { deviceAuthorization != nil }
 
+    /// Skill updates use the existing connector credential without exposing it
+    /// to the model, package, upgrade journal, or redirect destination.
+    func skillRepositoryData(owner: String, repository: String, ref: String, path: String?) async throws -> Data {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~"))
+        func encoded(_ value: String) -> String { value.addingPercentEncoding(withAllowedCharacters: allowed) ?? "" }
+        var components = URLComponents(string: "https://api.github.com")!
+        if let path {
+            components.percentEncodedPath = "/repos/\(encoded(owner))/\(encoded(repository))/contents/" + path.split(separator: "/").map { encoded(String($0)) }.joined(separator: "/")
+            components.queryItems = [URLQueryItem(name: "ref", value: ref)]
+        } else {
+            components.percentEncodedPath = "/repos/\(encoded(owner))/\(encoded(repository))/commits/\(encoded(ref))"
+        }
+        var request = URLRequest(url: components.url!)
+        request.timeoutInterval = 30
+        request.setValue(path == nil ? "application/vnd.github+json" : "application/vnd.github.raw+json", forHTTPHeaderField: "Accept")
+        request.setValue("FloeAgent", forHTTPHeaderField: "User-Agent")
+        if let token = try credentials.token() { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        let session = URLSession(configuration: .ephemeral, delegate: SkillGitHubNoRedirect(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        let (stream, response) = try await session.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw FloeError.syncUnavailable("GitHub skill source unavailable. Check the repository, ref, path and connector access.")
+        }
+        var result = Data()
+        for try await byte in stream {
+            guard result.count < 2_097_152 else { throw FloeError.validationFailed("GitHub skill file exceeds 2 MiB") }
+            result.append(byte)
+        }
+        return result
+    }
+
+    private final class SkillGitHubNoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+            completionHandler(nil)
+        }
+    }
+
     private var githubOAuthClientID: String? {
         guard let value = Bundle.main.object(
             forInfoDictionaryKey: "FLOEGitHubOAuthClientID"

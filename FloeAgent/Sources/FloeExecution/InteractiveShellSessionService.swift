@@ -31,12 +31,12 @@ public struct InteractiveShellExchange: Sendable {
 /// RemoteAgentTaskService; tests inject a fake).
 public struct GuardianShellClient: Sendable {
     public var open: @Sendable (_ hostID: UUID?, _ term: String, _ columns: Int, _ rows: Int) async throws -> (shellID: String, output: Data, alive: Bool)
-    public var io: @Sendable (_ hostID: UUID?, _ shellID: String, _ input: Data?, _ waitMs: Int, _ maxBytes: Int) async throws -> (output: Data, alive: Bool)
+    public var io: @Sendable (_ hostID: UUID?, _ shellID: String, _ input: Data?, _ waitMs: Int, _ maxBytes: Int, _ cancellation: CancellationToken?) async throws -> (output: Data, alive: Bool)
     public var close: @Sendable (_ hostID: UUID?, _ shellID: String) async throws -> Void
 
     public init(
         open: @escaping @Sendable (_ hostID: UUID?, _ term: String, _ columns: Int, _ rows: Int) async throws -> (shellID: String, output: Data, alive: Bool),
-        io: @escaping @Sendable (_ hostID: UUID?, _ shellID: String, _ input: Data?, _ waitMs: Int, _ maxBytes: Int) async throws -> (output: Data, alive: Bool),
+        io: @escaping @Sendable (_ hostID: UUID?, _ shellID: String, _ input: Data?, _ waitMs: Int, _ maxBytes: Int, _ cancellation: CancellationToken?) async throws -> (output: Data, alive: Bool),
         close: @escaping @Sendable (_ hostID: UUID?, _ shellID: String) async throws -> Void
     ) {
         self.open = open
@@ -66,6 +66,7 @@ public actor InteractiveShellSessionService {
     private static let sessionLifetime: TimeInterval = 30 * 60
 
     private var sessions: [UUID: Entry] = [:]
+    private var pendingOpens = 0
     private let directFactory: DirectPTYFactory
     private let defaultHostProvider: DefaultHostProvider
     private var guardian: GuardianShellClient?
@@ -92,8 +93,14 @@ public actor InteractiveShellSessionService {
         environment: InteractiveShellEnvironment,
         term: String,
         columns: Int,
-        rows: Int
+        rows: Int,
+        cancellation: CancellationToken? = nil
     ) async throws -> (sessionID: UUID, output: String) {
+        try cancellation?.throwIfCancelled()
+        try Task.checkCancellation()
+        guard sessions.count + pendingOpens < 16 else { throw FloeError.validationFailed("Close an existing Terminal session before opening another") }
+        pendingOpens += 1
+        defer { pendingOpens -= 1 }
         let id = UUID()
         switch environment {
         case .direct:
@@ -106,6 +113,8 @@ public actor InteractiveShellSessionService {
                 throw RemotePythonError.noHostConfigured
             }
             let pty = try await directFactory(resolvedID, term, columns, rows)
+            do { try cancellation?.throwIfCancelled(); try Task.checkCancellation() }
+            catch { await pty.close(); throw error }
             var entry = Entry(
                 runID: runID, environment: .direct, pty: pty,
                 guardianHostID: nil, guardianShellID: nil,
@@ -128,6 +137,8 @@ public actor InteractiveShellSessionService {
             sessions[id] = entry
             scheduleExpiry(id)
             let banner = await drainAfter(id, wait: 0.5, maxBytes: 65_536)
+            do { try cancellation?.throwIfCancelled(); try Task.checkCancellation() }
+            catch { await close(runID: runID, sessionID: id); throw error }
             return (id, banner)
 
         case .guardian:
@@ -136,11 +147,17 @@ public actor InteractiveShellSessionService {
                     "The Floe guardian shell channel is unavailable on this device; use executionMode=direct or redeploy with ssh.bootstrapFloeRemoteAgent"
                 )
             }
+            let resolvedID: UUID
+            if let hostID { resolvedID = hostID }
+            else if let fallback = try await defaultHostProvider() { resolvedID = fallback }
+            else { throw RemotePythonError.noHostConfigured }
             do {
-                let opened = try await guardian.open(hostID, term, columns, rows)
+                let opened = try await guardian.open(resolvedID, term, columns, rows)
+                do { try cancellation?.throwIfCancelled(); try Task.checkCancellation() }
+                catch { try? await guardian.close(resolvedID, opened.shellID); throw error }
                 sessions[id] = Entry(
                     runID: runID, environment: .guardian, pty: nil,
-                    guardianHostID: hostID, guardianShellID: opened.shellID,
+                    guardianHostID: resolvedID, guardianShellID: opened.shellID,
                     buffer: Data(), alive: opened.alive,
                     expiresAt: Date().addingTimeInterval(Self.sessionLifetime),
                     reader: nil
@@ -161,6 +178,7 @@ public actor InteractiveShellSessionService {
         maxBytes: Int,
         cancellation: CancellationToken?
     ) async throws -> InteractiveShellExchange {
+        try cancellation?.throwIfCancelled()
         guard let entry = sessions[sessionID], entry.runID == runID else {
             throw FloeError.notFound("Interactive shell session")
         }
@@ -201,7 +219,8 @@ public actor InteractiveShellSessionService {
                 throw FloeError.notFound("Interactive shell session")
             }
             do {
-                let result = try await guardian.io(entry.guardianHostID, shellID, input, boundedWait, boundedBytes)
+                let result = try await guardian.io(entry.guardianHostID, shellID, input, boundedWait, boundedBytes, cancellation)
+                try cancellation?.throwIfCancelled()
                 sessions[sessionID]?.alive = result.alive
                 sessions[sessionID]?.expiresAt = Date().addingTimeInterval(Self.sessionLifetime)
                 return InteractiveShellExchange(

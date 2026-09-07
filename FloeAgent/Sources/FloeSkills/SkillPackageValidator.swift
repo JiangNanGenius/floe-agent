@@ -279,11 +279,7 @@ public struct SkillPackageValidator: Sendable {
     }
 
     private func validateIdentifier(_ value: String) throws {
-        guard !value.isEmpty, value.count <= 64,
-              value.first?.isLetter == true,
-              value.allSatisfy({ $0.isLowercase || $0.isNumber || $0 == "-" }),
-              !value.hasSuffix("-"), !value.contains("--")
-        else { throw SkillValidationError.invalidIdentifier(value) }
+        try SkillIdentifier.validate(value)
     }
 
     private func validateToolName(_ value: String) throws {

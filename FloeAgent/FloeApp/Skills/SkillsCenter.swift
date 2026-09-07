@@ -29,10 +29,187 @@ final class SkillsCenter: ObservableObject {
     @Published private(set) var isWorking = false
     @Published var errorMessage: String?
     @Published var pendingInstallation: PendingInstallation?
+    @Published private(set) var pendingUpgrade: SkillUpgradeCandidate?
+    private var upgradeStagingRoot: URL?
+
+    private struct UpgradeJournal: Codable {
+        var oldSkill: PersistedSkill
+        var oldGrants: [String]
+        var oldPermissions: [PersistedSkillPermission]?
+        var newDigest: String
+        var source: GitHubSkillSource
+        var commit: String
+        var phase: String
+        var createdAt: Date
+    }
+
+    func checkGitHubUpgrade(skill: PersistedSkill, source: GitHubSkillSource) async {
+        await perform {
+            guard DomainSkillLibrary.all.first(where: { $0.id == skill.id })?.exposed != false else {
+                throw FloeError.validationFailed("System guides update only with the app")
+            }
+            self.cancelUpgrade()
+            let current = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest)
+            let staging = FileManager.default.temporaryDirectory.appendingPathComponent("floe-upgrade-\(UUID().uuidString)")
+            do {
+                let connector = self.environment.sourceControlCenter
+                let (commit, proposed) = try await GitHubSkillDownload.stage(source: source, at: staging, markdownBase: current,
+                    resolve: { source in
+                        let data = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: source.ref, path: nil)
+                        struct Commit: Decodable { let sha: String }
+                        return try JSONDecoder().decode(Commit.self, from: data).sha
+                    }, fetch: { source, commit, path in
+                        try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: commit, path: path)
+                    })
+                try await self.stageUpgradeForReview(SkillUpgradeCandidate(source: source, commit: commit, installed: current, proposed: proposed), at: staging)
+            } catch {
+                try? FileManager.default.removeItem(at: staging)
+                throw error
+            }
+        }
+    }
+
+    func stageUpgradeForReview(_ candidate: SkillUpgradeCandidate, at staging: URL) async throws {
+        guard DomainSkillLibrary.all.first(where: { $0.id == candidate.snapshot.package.manifest.id })?.exposed != false else {
+            throw FloeError.validationFailed("System guides update only with the app")
+        }
+        _ = try SkillContentSnapshot(root: staging, expectedDigest: candidate.snapshot.package.canonicalSHA256)
+        try await requireCompatibility(candidate.snapshot.package)
+        pendingUpgrade = candidate
+        upgradeStagingRoot = staging
+    }
+
+    func cancelUpgrade() {
+        pendingUpgrade = nil
+        if let root = upgradeStagingRoot { try? FileManager.default.removeItem(at: root) }
+        upgradeStagingRoot = nil
+    }
+
+    func lastGitHubSource(skillID: String) -> GitHubSkillSource? {
+        (try? upgradeJournals())?.filter { $0.1.oldSkill.id == skillID && $0.1.phase == "complete" }
+            .sorted { $0.1.createdAt > $1.1.createdAt }.first?.1.source
+    }
+
+    func applyReviewedUpgrade() async {
+        guard let candidate = pendingUpgrade, let staging = upgradeStagingRoot else { return }
+        await perform {
+            guard !self.packageMutationInProgress else { throw SkillUpgradeError.localConflict }
+            self.packageMutationInProgress = true
+            defer { self.packageMutationInProgress = false }
+            guard let current = try await self.environment.skillStore.all().first(where: { $0.id == candidate.snapshot.package.manifest.id }),
+                  current.rewrittenDigest == candidate.expectedInstalledDigest else { throw SkillUpgradeError.localConflict }
+            let currentSnapshot = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: current.rewrittenDigest)
+            _ = try SkillContentSnapshot(root: staging, expectedDigest: candidate.snapshot.package.canonicalSHA256)
+            let history = self.installationRoot.appendingPathComponent(".upgrade-history/\(UUID().uuidString)")
+            try Self.writeSnapshot(currentSnapshot, at: history.appendingPathComponent("previous"))
+            let grants = try await self.environment.skillStore.allowedCapabilities(skillID: current.id)
+            let permissions = try await self.environment.skillStore.permissions(skillID: current.id)
+            var journal = UpgradeJournal(oldSkill: current, oldGrants: grants.sorted(), oldPermissions: permissions, newDigest: candidate.snapshot.package.canonicalSHA256,
+                source: candidate.source, commit: candidate.commit, phase: "prepared", createdAt: Date())
+            try self.writeJournal(journal, at: history)
+            let sourceURL = URL(string: "https://github.com/\(candidate.source.owner)/\(candidate.source.repository)/blob/\(candidate.commit)/\(candidate.source.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)!)")!
+            do {
+                try await self.installCanonicalPackage(at: staging, sourceURL: sourceURL,
+                    sourceDigest: candidate.snapshot.package.canonicalSHA256, rewriteModelID: "github-reviewed-\(candidate.commit)",
+                    initialStatus: current.status, replaceExisting: true, callerHoldsMutationLock: true)
+                _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest)
+                journal.phase = "complete"
+                try self.writeJournal(journal, at: history)
+                self.cancelUpgrade()
+            } catch {
+                try await self.restoreUpgrade(journal, at: history)
+                throw error
+            }
+        }
+    }
+
+    func rollbackLatestUpgrade(skill: PersistedSkill) async {
+        await perform {
+            guard !self.packageMutationInProgress else { throw SkillUpgradeError.localConflict }
+            self.packageMutationInProgress = true
+            defer { self.packageMutationInProgress = false }
+            let journals = try self.upgradeJournals().filter { $0.1.oldSkill.id == skill.id && $0.1.phase == "complete" }.sorted { $0.1.createdAt > $1.1.createdAt }
+            guard let (path, journal) = journals.first, skill.rewrittenDigest == journal.newDigest,
+                  let current = try await self.environment.skillStore.all().first(where: { $0.id == skill.id }), current.rewrittenDigest == journal.newDigest
+            else { throw SkillUpgradeError.localConflict }
+            _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest)
+            try await self.restoreUpgrade(journal, at: path)
+        }
+    }
+
+    private func writeJournal(_ journal: UpgradeJournal, at root: URL) throws {
+        try JSONEncoder().encode(journal).write(to: root.appendingPathComponent("transaction.json"), options: .atomic)
+    }
+
+    private static func writeSnapshot(_ snapshot: SkillContentSnapshot, at root: URL) throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        for (path, bytes) in snapshot.files {
+            let target = root.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try bytes.write(to: target, options: .atomic)
+        }
+        _ = try SkillContentSnapshot(root: root, expectedDigest: snapshot.package.canonicalSHA256)
+    }
+
+    private func upgradeJournals() throws -> [(URL, UpgradeJournal)] {
+        let root = installationRoot.appendingPathComponent(".upgrade-history")
+        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
+        return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).compactMap { path in
+            let file = path.appendingPathComponent("transaction.json")
+            guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+            let journal = try JSONDecoder().decode(UpgradeJournal.self, from: Data(contentsOf: file))
+            try SkillIdentifier.validate(journal.oldSkill.id)
+            return (path, journal)
+        }
+    }
+
+    private func restoreUpgrade(_ journal: UpgradeJournal, at path: URL) async throws {
+        let previous = try SkillContentSnapshot(root: path.appendingPathComponent("previous"), expectedDigest: journal.oldSkill.rewrittenDigest)
+        var restoring = journal; restoring.phase = "rollingBack"
+        try writeJournal(restoring, at: path)
+        let destination = installationRoot.appendingPathComponent(journal.oldSkill.id)
+        let quarantine = path.appendingPathComponent("interrupted-\(UUID().uuidString)")
+        if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.moveItem(at: destination, to: quarantine) }
+        try Self.writeSnapshot(previous, at: destination)
+        try await environment.skillStore.save(journal.oldSkill, grantCapabilities: journal.oldGrants, replaceGrants: true,
+            restoringPermissions: journal.oldPermissions)
+        var restored = journal; restored.phase = "rolledBack"
+        try writeJournal(restored, at: path)
+    }
+
+    private func recoverUpgrades() async throws {
+        guard !packageMutationInProgress else { return }
+        packageMutationInProgress = true
+        defer { packageMutationInProgress = false }
+        for (path, journal) in try upgradeJournals() where journal.phase == "prepared" || journal.phase == "rollingBack" {
+            let row = try await environment.skillStore.all().first { $0.id == journal.oldSkill.id }
+            if journal.phase == "prepared", row?.rewrittenDigest == journal.newDigest,
+               (try? SkillContentSnapshot(root: installationRoot.appendingPathComponent(journal.oldSkill.id), expectedDigest: journal.newDigest)) != nil {
+                var completed = journal; completed.phase = "complete"
+                try writeJournal(completed, at: path)
+            } else { try await restoreUpgrade(journal, at: path) }
+        }
+    }
 
     private unowned let environment: AppEnvironment
     private let installationRoot: URL
     private var packageMutationInProgress = false
+    private var builtinSeedTask: Task<Void, Never>?
+    @Published private(set) var builtinSeedFailures: [String: String] = [:]
+
+    private func snapshot(for skill: PersistedSkill, runID: UUID?) throws -> SkillContentSnapshot {
+        guard let runID else { return try SkillContentSnapshot(root: installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest) }
+        let root = installationRoot.appendingPathComponent(".run-snapshots/\(runID.uuidString)/\(skill.id)")
+        let digestURL = root.appendingPathComponent("digest")
+        if FileManager.default.fileExists(atPath: digestURL.path) {
+            let digest = try String(contentsOf: digestURL, encoding: .utf8)
+            return try SkillContentSnapshot(root: root.appendingPathComponent("package"), expectedDigest: digest)
+        }
+        let snapshot = try SkillContentSnapshot(root: installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest)
+        try Self.writeSnapshot(snapshot, at: root.appendingPathComponent("package"))
+        try Data(snapshot.package.canonicalSHA256.utf8).write(to: digestURL, options: .atomic)
+        return snapshot
+    }
 
     var rewriteModels: [ModelProfile] { environment.conversationCenter.availableAgentModels }
     var defaultRewriteModelID: UUID? {
@@ -49,6 +226,7 @@ final class SkillsCenter: ObservableObject {
     }
 
     func load() async {
+        do { try await recoverUpgrades() } catch { errorMessage = error.localizedDescription }
         installed = (try? await environment.skillStore.all()) ?? []
     }
 
@@ -215,89 +393,51 @@ final class SkillsCenter: ObservableObject {
         }
     }
 
-    /// Resolves the enabled skills into the exact runtime authority for one
-    /// run. The provider schema and the executor both receive this same tool
-    /// ceiling; SKILL.md text never grants authority by itself.
-    func runtimeSelection() async -> RuntimeSelection {
+    /// Guides provide routing metadata; they never replace the conversation's
+    /// tool universe. Only verified script bytes can reuse installation review.
+    func runtimeSelection(runID: UUID? = nil) async -> RuntimeSelection {
+        await seedBuiltinDomainSkills()
         guard let skills = try? await environment.skillStore.all() else { return .none }
-        let enabled = skills.filter { $0.status == "enabled" }
+        let enabled = skills.filter { row in
+            row.status == "enabled" || DomainSkillLibrary.all.contains { $0.id == row.id && !$0.exposed }
+        }
         guard !enabled.isEmpty else { return .none }
 
-        let descriptors = Dictionary(
-            ToolCatalog.allDescriptors.map { ($0.name, $0) },
-            uniquingKeysWith: { _, newest in newest }
-        )
         var activeIDs: Set<String> = []
-        var allowedTools: Set<String> = []
-        var declaresToolBoundary = false
         var instructionBlocks: [String] = []
         var preapprovedPythonScriptSHA256: Set<String> = []
         var preapprovedPythonPackages: Set<String> = []
-        let decoder = JSONDecoder()
 
         for skill in enabled {
-            guard let manifestData = skill.manifestJSON.data(using: .utf8),
-                  let manifest = try? decoder.decode(SkillManifest.self, from: manifestData)
-            else { continue }
+            guard let snapshot = try? snapshot(for: skill, runID: runID) else { continue }
+            let manifest = snapshot.package.manifest
             let granted = (try? await environment.skillStore.allowedCapabilities(skillID: skill.id)) ?? []
             let effective = Set(manifest.capabilities).intersection(granted)
             activeIDs.insert(skill.id)
-            var skillInstructions = "## Skill: \(skill.name)\n\(skill.skillMarkdown)"
 
             if manifest.scriptRuntime == .localPython,
                effective.contains(SkillCapability.localPython.rawValue),
                manifest.tools.contains(LocalPythonTool.name) {
-                let packageRoot = installationRoot.appendingPathComponent(skill.id, isDirectory: true)
-                let scripts = (try? SkillPackageValidator().validate(packageAt: packageRoot))?.files
+                let scripts = snapshot.package.files
                     .filter { $0.relativePath.hasPrefix("scripts/") && $0.relativePath.hasSuffix(".py") }
-                    .sorted { $0.relativePath < $1.relativePath } ?? []
-                var scriptBlocks: [String] = []
+                    .sorted { $0.relativePath < $1.relativePath }
                 for script in scripts {
-                    let url = packageRoot.appendingPathComponent(script.relativePath)
-                    guard let data = try? Data(floeContentsOf: url),
-                          let source = String(data: data, encoding: .utf8) else { continue }
+                    guard let data = snapshot.files[script.relativePath] else { continue }
                     let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
                     preapprovedPythonScriptSHA256.insert(digest)
-                    scriptBlocks.append(
-                        "### Audited Python script: \(script.relativePath)\n```python\n\(source)\n```"
-                    )
                 }
-                if !scriptBlocks.isEmpty {
-                    let requirements = manifest.pythonPackages.map { requirement in
+                if !scripts.isEmpty {
+                    for requirement in manifest.pythonPackages {
                         preapprovedPythonPackages.insert(requirement.spec.lowercased())
-                        return "- \(requirement.spec): \(requirement.purpose) [\(requirement.capabilities.joined(separator: ", "))]"
                     }
-                    skillInstructions += """
-
-                    \n### Installed Python execution contract
-                    Run only the exact audited source below through exec.localPython. Put changing task data in inputJSON; do not rewrite the source. If dependencies are listed, pass the exact package specs, the declared purpose and capability list. These exact artifacts were reviewed at installation; changing source or dependency specs returns to normal approval.
-                    \(requirements.isEmpty ? "Dependencies: none" : "Dependencies:\n" + requirements.joined(separator: "\n"))
-
-                    \(scriptBlocks.joined(separator: "\n\n"))
-                    """
                 }
             }
-            instructionBlocks.append(skillInstructions)
-
-            // An instruction-only skill must not turn the complete agent
-            // catalog into an empty set. A tool ceiling exists only when at
-            // least one enabled manifest actually declares tools; revoked or
-            // incompatible declarations still correctly resolve to an empty
-            // ceiling and therefore grant nothing.
-            if !manifest.tools.isEmpty { declaresToolBoundary = true }
-
-            for name in manifest.tools {
-                guard let descriptor = descriptors[name] else { continue }
-                let required = Self.requiredCapabilities(for: descriptor)
-                guard required.isSubset(of: effective),
-                      !descriptor.isSideEffecting || !required.isEmpty else { continue }
-                allowedTools.insert(name)
-            }
+            instructionBlocks.append("- \(skill.id): \(snapshot.package.metadata.description) [version=\(manifest.version), digest=\(snapshot.package.canonicalSHA256)]. Read with skill.read before using this guide.")
         }
         guard !activeIDs.isEmpty else { return .none }
         return RuntimeSelection(
             skillIDs: activeIDs,
-            allowedToolNames: declaresToolBoundary ? allowedTools : nil,
+            allowedToolNames: nil,
             instructions: instructionBlocks.joined(separator: "\n\n"),
             preapprovedPythonScriptSHA256: preapprovedPythonScriptSHA256,
             preapprovedPythonPackages: preapprovedPythonPackages
@@ -333,11 +473,31 @@ final class SkillsCenter: ObservableObject {
         }
     }
 
-    func readSkills(id: String?) async throws -> [ManagedSkill] {
+    func readSkills(id: String?, runID: UUID? = nil) async throws -> [ManagedSkill] {
+        await seedBuiltinDomainSkills()
         if let id { try SkillManageTool.validateID(id) }
         let rows = try await environment.skillStore.all().filter { id == nil || $0.id == id }
         if id != nil, rows.isEmpty { throw SkillStoreConflict.changedOrMissing }
-        return rows.map { ManagedSkill(id: $0.id, name: $0.name, version: $0.version, enabled: $0.status == "enabled", digest: $0.rewrittenDigest, markdown: id == nil ? nil : $0.skillMarkdown) }
+        if id == nil {
+            return rows.map { row in
+                ManagedSkill(id: row.id, name: DomainSkillLibrary.all.first { $0.id == row.id }?.name ?? row.name,
+                    version: row.version, enabled: row.status == "enabled", digest: row.rewrittenDigest, markdown: nil)
+            }
+        }
+        let pythonManifest = id == "floe-python" ? await environment.localPythonProbe.runtimeManifest() : nil
+        return try rows.map { row in
+            let snapshot = try snapshot(for: row, runID: runID)
+            let manifest = snapshot.package.manifest
+            let builtin = DomainSkillLibrary.all.first { $0.id == row.id }
+            var markdown = String(decoding: snapshot.files["SKILL.md"] ?? Data(), as: UTF8.self)
+            if let pythonManifest { markdown += "\n## Current build runtime probe\n\(pythonManifest)\n" }
+            if id != nil {
+                for path in snapshot.files.keys.sorted() where path.hasPrefix("scripts/") && path.hasSuffix(".py") {
+                    markdown += "\n### Audited source: \(path)\nPass task data through inputJSON; run this source verbatim.\n```python\n\(String(decoding: snapshot.files[path]!, as: UTF8.self))\n```\n"
+                }
+            }
+            return ManagedSkill(id: row.id, name: builtin?.name ?? row.name, version: manifest.version, enabled: row.status == "enabled", digest: snapshot.package.canonicalSHA256, markdown: id == nil ? nil : markdown, requiredToolNames: id == nil ? nil : Array(Set(manifest.tools + (builtin?.toolNames ?? []))).sorted(), currentDigest: row.rewrittenDigest)
+        }
     }
 
     func manageSkill(_ request: SkillManageTool.Arguments) async throws -> String {
@@ -347,6 +507,9 @@ final class SkillsCenter: ObservableObject {
         defer { packageMutationInProgress = false }
         guard let skill = try await environment.skillStore.all().first(where: { $0.id == request.id }),
               skill.rewrittenDigest == request.expectedDigest else { throw SkillStoreConflict.changedOrMissing }
+        if let builtin = DomainSkillLibrary.all.first(where: { $0.id == skill.id }), !builtin.exposed {
+            throw FloeError.validationFailed("System guides are read-only and update only with the app")
+        }
         let packageURL = installationRoot.appendingPathComponent(skill.id, isDirectory: true)
         switch request.action {
         case .setEnabled:
@@ -405,8 +568,20 @@ final class SkillsCenter: ObservableObject {
     /// identical to the installed copy is skipped, user-edited copies are
     /// respected, upgrades preserve the user's enabled state and capability
     /// grants. Built-in skills only ever change with app updates — there is
-    /// no runtime or remote update channel.
+    /// hidden guides remain app-owned; reviewed GitHub/user sources are never overwritten.
     func seedBuiltinDomainSkills() async {
+        if let builtinSeedTask { await builtinSeedTask.value; return }
+        let task = Task { [weak self] in await self?.performBuiltinDomainSeed() }
+        let joining = Task { _ = await task.value }
+        builtinSeedTask = joining
+        await joining.value
+    }
+
+    private func performBuiltinDomainSeed() async {
+        do { try await recoverUpgrades() } catch {
+            builtinSeedFailures["upgrade-recovery"] = error.localizedDescription
+            return
+        }
         let defaults = UserDefaults.standard
         let seedKey = "floe.domainSkillSeeded"
         let seeded = defaults.dictionary(forKey: seedKey) as? [String: String] ?? [:]
@@ -415,12 +590,13 @@ final class SkillsCenter: ObservableObject {
         for definition in DomainSkillLibrary.all {
             do {
                 let temporary = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("floe-domain-skill-\(definition.id)", isDirectory: true)
+                    .appendingPathComponent("floe-domain-skill-\(definition.id)-\(UUID().uuidString)", isDirectory: true)
                 defer { try? FileManager.default.removeItem(at: temporary) }
                 try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
                 let markdown = """
                 ---
-                name: \(definition.name)
+                name: \(definition.id)
+                display_name: \(definition.name)
                 description: \(definition.description)
                 ---
 
@@ -433,7 +609,7 @@ final class SkillsCenter: ObservableObject {
                     "version": definition.version,
                     "capabilities": [String](),
                     "tools": [String](),
-                    "platforms": ["iOS"],
+                    "platforms": ["ios"],
                     "scriptRuntime": "none",
                     "pythonPackages": [[String: Any]]()
                 ]
@@ -443,6 +619,8 @@ final class SkillsCenter: ObservableObject {
 
                 let existing = try? await environment.skillStore.all().first { $0.id == definition.id }
                 if let existing {
+                    // App bundles never replace a GitHub/user-managed source.
+                    guard existing.sourceURL == DomainSkillLibrary.sourceURL(for: definition.id) else { continue }
                     let bundledIsNewer = Self.isVersion(definition.version, newerThan: existing.version)
                     let contentMatches = existing.rewrittenDigest == package.canonicalSHA256
                     if contentMatches {
@@ -455,6 +633,8 @@ final class SkillsCenter: ObservableObject {
                         updatedSeeds[definition.id] = existing.rewrittenDigest
                         continue
                     }
+                    // A local revision must be resolved explicitly, not overwritten.
+                    guard existing.rewrittenDigest == existing.sourceDigest else { continue }
                     // Upgrade: preserve the user's enabled state (and, through
                     // the store metadata, their capability grants).
                     try await installCanonicalPackage(
@@ -467,12 +647,13 @@ final class SkillsCenter: ObservableObject {
                     try await installCanonicalPackage(
                         at: temporary,
                         sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
-                        initialStatus: "disabled",
+                        initialStatus: "enabled",
                         replaceExisting: true
                     )
                 }
                 updatedSeeds[definition.id] = package.canonicalSHA256
             } catch {
+                builtinSeedFailures[definition.id] = error.localizedDescription
                 // A single broken seed must never block app startup.
                 FloeLogger(category: .app).error("seed domain skill \(definition.id) failed: \(error.localizedDescription)")
             }
@@ -509,11 +690,12 @@ final class SkillsCenter: ObservableObject {
         sourceDigest: String? = nil,
         rewriteModelID: String? = nil,
         initialStatus: String = "enabled",
-        replaceExisting: Bool = false
+        replaceExisting: Bool = false,
+        callerHoldsMutationLock: Bool = false
     ) async throws {
-        guard !packageMutationInProgress else { throw FloeError.validationFailed("Another skill change is in progress") }
+        guard callerHoldsMutationLock || !packageMutationInProgress else { throw FloeError.validationFailed("Another skill change is in progress") }
         packageMutationInProgress = true
-        defer { packageMutationInProgress = false }
+        defer { if !callerHoldsMutationLock { packageMutationInProgress = false } }
         let validator = SkillPackageValidator()
         let package = try validator.validate(packageAt: url)
         try await requireCompatibility(package)
@@ -558,7 +740,7 @@ final class SkillsCenter: ObservableObject {
         )
         let skill = PersistedSkill(
             id: package.manifest.id,
-            name: package.metadata.name,
+            name: DomainSkillLibrary.all.first(where: { $0.id == package.manifest.id })?.name ?? package.metadata.name,
             version: package.manifest.version,
             status: initialStatus,
             skillMarkdown: markdown,
@@ -701,14 +883,14 @@ final class SkillsCenter: ObservableObject {
             .workspaceRead, .workspaceWrite, .workspaceDelete, .network,
             .browserObserve, .browserInteract
         ]
-        if ToolCatalog.allDescriptors.contains(where: { $0.name == LocalPythonTool.name }) {
+        if case .available = await environment.localPythonProbe.probe() {
             supported.insert(.localPython)
         }
         if hasRemoteHost { supported.insert(.remoteExecution) }
         let environmentSnapshot = SkillRuntimeEnvironment(
             platform: .iOS,
             supportedCapabilities: supported,
-            registeredTools: Set(ToolCatalog.allDescriptors.map(\.name)),
+            registeredTools: Set(ToolCatalog.allDescriptors.map(\.name)).subtracting(supported.contains(.localPython) ? [] : [LocalPythonTool.name]),
             // JavaScriptCore availability is not an executable tool.
             supportsJavaScriptCore: false,
             hasRemoteExecutionHost: hasRemoteHost
@@ -720,6 +902,7 @@ final class SkillsCenter: ObservableObject {
     }
 
     private func perform(_ operation: @escaping () async throws -> Void) async {
+        guard !isWorking else { return }
         isWorking = true
         errorMessage = nil
         defer { isWorking = false }

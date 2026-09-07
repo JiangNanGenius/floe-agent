@@ -28,6 +28,15 @@ public typealias VNCConnectAction = @Sendable () async throws -> VNCSessionHandl
 public typealias VNCReconnectAction = @Sendable () async throws -> VNCSessionHandle?
 public typealias VNCDisconnectAction = @Sendable () async -> VNCToolConnectionStatus
 
+/// Task-scoped dependency seam: wire tests exercise real RFB and screenshots
+/// without starting Apple's unrelated OCR model compiler in a short-lived host.
+enum VNCTextRecognition {
+    @TaskLocal static var recognize: @Sendable (VNCFrameCapture) throws -> [VisualTextRegion] = { capture in
+        try VisualTextRecognizer.recognize(imageData: capture.data,
+            pixelWidth: capture.pixelWidth, pixelHeight: capture.pixelHeight)
+    }
+}
+
 /// Secret-free connection state shared by the model tools and the UI session
 /// coordinator. A status read never opens a socket; connect/reconnect are
 /// separate explicit operations so the model can reason about failures.
@@ -297,8 +306,9 @@ enum VNCToolSupport {
         _ handle: VNCSessionHandle, artifact: VNCCapturedArtifact
     ) async -> [String: Any] {
         let capture = artifact.capture
+        let recognize = VNCTextRecognition.recognize
         let recognition = await BoundedVisualTextRecognizer.shared.recognize {
-            try recognizeText(in: capture)
+            try recognize(capture)
         }
         let elements = recognition.elements
         let isCurrent = handle.session.currentFrameRevision == capture.revision

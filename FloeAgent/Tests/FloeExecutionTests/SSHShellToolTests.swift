@@ -24,7 +24,7 @@ struct SSHShellToolTests {
                 await recorder.log("open")
                 return (shellID: "shell-1", output: Data((outputs.first ?? "").utf8), alive: true)
             },
-            io: { _, shellID, input, _, _ in
+            io: { _, shellID, input, _, _, _ in
                 await recorder.log("io:\(shellID):\(input.map { String(decoding: $0, as: UTF8.self) } ?? "nil")")
                 let index = await recorder.ioCount - 1
                 let text = index + 1 < outputs.count ? outputs[index + 1] : ""
@@ -37,7 +37,7 @@ struct SSHShellToolTests {
         )
         let service = InteractiveShellSessionService(
             directFactory: { _, _, _, _ in throw RemotePythonError.noHostConfigured },
-            defaultHostProvider: { nil },
+            defaultHostProvider: { UUID(uuidString: "00000000-0000-0000-0000-000000000001") },
             guardian: guardian
         )
         return (service, recorder)
@@ -121,12 +121,12 @@ struct SSHShellToolTests {
     func oldGuardianError() async throws {
         let guardian = GuardianShellClient(
             open: { _, _, _, _ in throw FloeError.notFound("not_found") },
-            io: { _, _, _, _, _ in throw FloeError.notFound("not_found") },
+            io: { _, _, _, _, _, _ in throw FloeError.notFound("not_found") },
             close: { _, _ in }
         )
         let service = InteractiveShellSessionService(
             directFactory: { _, _, _, _ in throw RemotePythonError.noHostConfigured },
-            defaultHostProvider: { nil },
+            defaultHostProvider: { UUID(uuidString: "00000000-0000-0000-0000-000000000001") },
             guardian: guardian
         )
         let context = ToolContext(runID: UUID(), cancellation: CancellationToken())
@@ -134,5 +134,27 @@ struct SSHShellToolTests {
             .execute(.init(executionMode: "host"), context: context)
         #expect(opened.exitStatus == 2)
         #expect(opened.summary.contains("bootstrapFloeRemoteAgent"))
+    }
+
+    @Test("Cancellation during open closes the newly created guardian session")
+    func cancelDuringOpen() async throws {
+        let cancellation = CancellationToken()
+        let recorder = Recorder()
+        let guardian = GuardianShellClient(
+            open: { _, _, _, _ in
+                cancellation.cancel()
+                return (shellID: "late-shell", output: Data(), alive: true)
+            },
+            io: { _, _, _, _, _, _ in (Data(), false) },
+            close: { _, id in await recorder.log("close:\(id)") }
+        )
+        let service = InteractiveShellSessionService(
+            directFactory: { _, _, _, _ in throw RemotePythonError.noHostConfigured },
+            defaultHostProvider: { UUID() }, guardian: guardian)
+        await #expect(throws: (any Error).self) {
+            try await service.open(runID: UUID(), hostID: nil, environment: .guardian,
+                term: "xterm", columns: 80, rows: 24, cancellation: cancellation)
+        }
+        #expect(await recorder.entries == ["close:late-shell"])
     }
 }

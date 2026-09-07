@@ -46,6 +46,9 @@ jobs:
       - name: Guardian real subprocess cancellation regressions
         run: python3 scripts/test_remote_task_cancel.py
 
+      - name: Guardian real PTY lifecycle regressions
+        run: python3 scripts/test_remote_shell.py
+
       - name: xcodebuild iPhone Simulator
         run: |
           xcodebuild \

@@ -2,9 +2,95 @@ import Foundation
 import Testing
 @testable import FloeSkills
 import FloeTools
+import Crypto
 
 @Suite("FloeSkills package boundary", .serialized)
 struct SkillPackageTests {
+    @Test("GitHub package files are pinned to one commit and hash checked")
+    func immutableGitHubUpgrade() async throws {
+        let fixture = try SkillFixture()
+        try fixture.writeValidSkill()
+        let package = try SkillPackageValidator().validate(packageAt: fixture.root)
+        let installed = try SkillContentSnapshot(root: fixture.root, expectedDigest: package.canonicalSHA256)
+        let inventory = GitHubSkillInventory(files: installed.files.mapValues { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() })
+        let entry = try JSONEncoder().encode(inventory)
+        let source = try GitHubSkillSource(owner: "owner", repository: "repo", ref: "main", path: "skills/package.json")
+        let commit = String(repeating: "a", count: 40)
+        let (resolved, proposed) = try await GitHubSkillDownload.stage(source: source, at: fixture.base.appendingPathComponent("download"), resolve: { _ in commit }, fetch: { _, sha, path in
+            #expect(sha == commit)
+            if path == "skills/package.json" { return entry }
+            return try #require(installed.files[String(path.dropFirst("skills/".count))])
+        })
+        #expect(resolved == commit)
+        #expect(proposed.package.canonicalSHA256 == installed.package.canonicalSHA256)
+        let candidate = try SkillUpgradeCandidate(source: source, commit: commit, installed: installed, proposed: proposed)
+        #expect(candidate.changedFiles.isEmpty)
+        #expect(candidate.addedCapabilities.isEmpty)
+    }
+
+    @Test("GitHub traversal, mutable commit IDs and wrong file hashes fail closed")
+    func unsafeGitHubSource() async throws {
+        #expect(throws: SkillUpgradeError.invalidSource) { try GitHubSkillSource(owner: "o", repository: "r", ref: "main", path: "../secret") }
+        #expect(throws: SkillUpgradeError.invalidSource) { try GitHubSkillSource(owner: "o", repository: "r", ref: "main", path: "%2e%2e/secret") }
+        let fixture = try SkillFixture()
+        let source = try GitHubSkillSource(owner: "o", repository: "r", ref: "main", path: "package.json")
+        await #expect(throws: SkillUpgradeError.invalidCommit) {
+            try await GitHubSkillDownload.stage(source: source, at: fixture.base.appendingPathComponent("invalid"), resolve: { _ in "main" }, fetch: { _, _, _ in Data() })
+        }
+        let inventory = try JSONEncoder().encode(GitHubSkillInventory(files: ["SKILL.md": String(repeating: "0", count: 64), "floe.json": String(repeating: "0", count: 64)]))
+        await #expect(throws: SkillUpgradeError.hashMismatch("SKILL.md")) {
+            try await GitHubSkillDownload.stage(source: source, at: fixture.base.appendingPathComponent("invalid"), resolve: { _ in String(repeating: "a", count: 40) }, fetch: { _, _, path in path == "package.json" ? inventory : Data("bad".utf8) })
+        }
+    }
+
+    @Test("Markdown-only upgrade changes no runtime, package or permission declaration")
+    func markdownOnlyUpgrade() async throws {
+        let fixture = try SkillFixture()
+        try fixture.writeValidSkill()
+        let digest = try SkillPackageValidator().validate(packageAt: fixture.root).canonicalSHA256
+        let installed = try SkillContentSnapshot(root: fixture.root, expectedDigest: digest)
+        let markdown = installed.files["SKILL.md"]! + Data("\nUpdated instructions\n".utf8)
+        let source = try GitHubSkillSource(owner: "o", repository: "r", ref: "main", path: "SKILL.md")
+        let (commit, proposed) = try await GitHubSkillDownload.stage(source: source, at: fixture.base.appendingPathComponent("markdown"), markdownBase: installed,
+            resolve: { _ in String(repeating: "b", count: 40) }, fetch: { _, _, _ in markdown })
+        let candidate = try SkillUpgradeCandidate(source: source, commit: commit, installed: installed, proposed: proposed)
+        #expect(candidate.changedFiles == ["SKILL.md"])
+        #expect(proposed.package.manifest == installed.package.manifest)
+        #expect(candidate.addedTools.isEmpty)
+    }
+
+    @Test("Every bundled guide is installable and has a separate display name")
+    func bundledGuides() throws {
+        #expect(Set(BundledDomainSkills.all.map(\.id)).count == BundledDomainSkills.all.count)
+        for guide in BundledDomainSkills.all {
+            let fixture = try SkillFixture()
+            let markdown = "---\nname: \(guide.id)\ndescription: \(guide.description)\n---\n\n\(guide.markdown)"
+            let manifest: [String: Any] = ["schemaVersion": 1, "id": guide.id,
+                "version": guide.version, "capabilities": [], "tools": [],
+                "platforms": ["ios"], "scriptRuntime": "none"]
+            try Data(markdown.utf8).write(to: fixture.root.appendingPathComponent("SKILL.md"))
+            try JSONSerialization.data(withJSONObject: manifest).write(to: fixture.root.appendingPathComponent("floe.json"))
+            let package = try SkillPackageValidator().validate(packageAt: fixture.root)
+            #expect(package.manifest.id == guide.id)
+            #expect(!guide.name.isEmpty)
+            #expect(!guide.toolNames.contains("network.lanScan"))
+        }
+    }
+
+    @Test("A task snapshot retains approved bytes and rejects subsequent tampering")
+    func immutableSnapshot() throws {
+        let fixture = try SkillFixture()
+        try fixture.writeValidSkill()
+        let digest = try SkillPackageValidator().validate(packageAt: fixture.root).canonicalSHA256
+        let snapshot = try SkillContentSnapshot(root: fixture.root, expectedDigest: digest)
+        let original = snapshot.files["SKILL.md"]!
+        try (original + Data("\nChanged\n".utf8)).write(to: fixture.root.appendingPathComponent("SKILL.md"))
+        #expect(snapshot.files["SKILL.md"] == original)
+        #expect(throws: SkillValidationError.digestMismatch) {
+            try SkillContentSnapshot(root: fixture.root, expectedDigest: digest)
+        }
+    }
+
     @Test("Valid SKILL.md and floe.json produce a canonical package")
     func validPackage() throws {
         let fixture = try SkillFixture()

@@ -1618,17 +1618,16 @@ public actor ConversationRunService {
             lines.append(
                 toolNames.isEmpty
                     ? "Available tools: none registered"
-                    : "Available tools: \(toolNames.joined(separator: ", "))"
+                    : "Installed tool groups: \(Set(toolNames.map(ToolCapabilityGroups.group)).sorted().joined(separator: ", ")). Use tools.search for exact callable definitions; not all schemas are loaded at once."
             )
             if toolNames.contains("browser.observe") && toolNames.contains("browser.screenshot") {
-                lines.append("Browser interaction policy: prefer browser.observe DOM refs; screenshots/OCR are the fallback with fresh evidence. Full strategy: skill.read id=floe.browser.")
+                lines.append("Browser interaction policy: prefer browser.observe DOM refs; screenshots/OCR are the fallback with fresh evidence. Full strategy: skill.read id=floe-browser.")
             }
             if toolNames.contains("vnc.observe") && toolNames.contains("vnc.click") {
                 lines.append("VNC interaction policy: satisfy any user-requested prerequisite route, require vnc.status -> vnc.connect -> vnc.observe, prefer OCR recognizedText references over raw coordinates, perform one bounded action and verify the returned screenshot. inputDispatched=true is protocol delivery, never task success.")
             }
             lines.append(contentsOf: ToolWorkflowGuidance.contextLines(for: toolNames))
-            lines.append("Tool inventory rule: when asked what tools are available, use only the exact names above and their supplied schemas. Never invent, rename, or imply an unavailable tool; state capability limits directly.")
-            lines.append("Domain skill index: on-demand workflow guides are installed as disabled Floe skills; read one via skill.read before non-trivial work — floe.pdf, floe.office, floe.network, floe.python, floe.data-code, floe.browser, floe.files-vcs, floe.crypto, floe.apple. Before creating a skill that carries Python scripts, read floe.python for the execution contract.")
+            lines.append("Tool inventory rule: use tools.search and the supplied schemas for exact names. A deferred schema is not a missing capability. Never invent tools or infer permission from a guide. Use the installed skill index below, or skill.read without an id, then read the relevant guide before non-trivial domain work. Reading a guide loads its available tool definitions; execution remains permission-gated. Python and Executor are underlying execution capabilities, independent of guide enablement.")
         } else {
             lines.append("Available tools: none (native tool calling is disabled for this model)")
         }

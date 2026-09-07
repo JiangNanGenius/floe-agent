@@ -9,26 +9,41 @@ public struct ManagedSkill: Codable, Sendable, Equatable {
     public var version: String
     public var enabled: Bool
     public var digest: String
+    /// Latest installed revision for optimistic edits; `digest` remains the
+    /// running task's pinned execution revision.
+    public var currentDigest: String?
     public var markdown: String?
-    public init(id: String, name: String, version: String, enabled: Bool, digest: String, markdown: String? = nil) {
+    public var requiredToolNames: [String]?
+    public var nextOffset: Int?
+    public var totalCharacters: Int?
+    public init(id: String, name: String, version: String, enabled: Bool, digest: String, markdown: String? = nil, requiredToolNames: [String]? = nil, currentDigest: String? = nil) {
         self.id = id; self.name = name; self.version = version
         self.enabled = enabled; self.digest = digest; self.markdown = markdown
+        self.requiredToolNames = requiredToolNames
+        self.currentDigest = currentDigest
     }
 }
 
 public protocol SkillManaging: Sendable {
     func read(id: String?) async throws -> [ManagedSkill]
+    func read(id: String?, runID: UUID) async throws -> [ManagedSkill]
     func manage(_ request: SkillManageTool.Arguments) async throws -> String
+}
+
+public extension SkillManaging {
+    func read(id: String?, runID: UUID) async throws -> [ManagedSkill] { try await read(id: id) }
 }
 
 public struct SkillReadTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var id: String?
-        public init(id: String? = nil) { self.id = id }
+        public var offset: Int?
+        public var limit: Int?
+        public init(id: String? = nil, offset: Int? = nil, limit: Int? = nil) { self.id = id; self.offset = offset; self.limit = limit }
     }
     public static let name = "skill.read"
-    public static let toolDescription = "List installed skill metadata, or read one exact skill ID with its Markdown and current digest for editing. This does not execute skill instructions."
-    public static let parametersJSON = #"{"type":"object","properties":{"id":{"type":"string"}},"additionalProperties":false}"#
+    public static let toolDescription = "List installed skill metadata, or read one exact skill ID with pinned Markdown, audited scripts and digest. If nextOffset is present, keep reading that id and offset until complete before applying the instructions or running a script. Reading loads available tool schemas; it never executes scripts or grants permissions. Task snapshots keep the reviewed version across upgrades and recovery. For skill.manage use currentDigest (or the metadata list digest), not an older pinned execution digest."
+    public static let parametersJSON = #"{"type":"object","properties":{"id":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":32768}},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = []
     public static let isSideEffecting = false
     public static let toolEffect: ToolEffect = .readOnly
@@ -36,11 +51,24 @@ public struct SkillReadTool: AgentTool {
     public init(manager: any SkillManaging) { self.manager = manager }
     public func validate(_ args: Arguments) throws {
         if let id = args.id { try SkillManageTool.validateID(id) }
+        guard args.offset ?? 0 >= 0, (1...32_768).contains(args.limit ?? 32_768), args.id != nil || (args.offset == nil && args.limit == nil) else {
+            throw FloeError.validationFailed("Pagination requires an exact skill id, nonnegative offset and limit of 1–32768 characters")
+        }
     }
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try validate(args); try context.cancellation.throwIfCancelled()
-        let data = try JSONEncoder().encode(try await manager.read(id: args.id))
-        return skillOutput(String(decoding: data, as: UTF8.self))
+        var rows = try await manager.read(id: args.id, runID: context.runID)
+        for index in rows.indices {
+            guard let markdown = rows[index].markdown else { continue }
+            let total = markdown.count, offset = args.offset ?? 0, limit = args.limit ?? 32_768
+            guard offset <= total else { throw FloeError.validationFailed("Skill offset is beyond the document") }
+            rows[index].markdown = String(markdown.dropFirst(offset).prefix(limit))
+            rows[index].totalCharacters = total
+            rows[index].nextOffset = offset + limit < total ? offset + limit : nil
+        }
+        let data = try JSONEncoder().encode(rows)
+        guard data.count <= 262_144 else { throw FloeError.validationFailed("Skill response exceeds 256 KiB; select one smaller skill") }
+        return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self), fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(), maximumSummaryCharacters: 262_144)
     }
 }
 
@@ -66,9 +94,8 @@ public struct SkillManageTool: AgentTool {
     private let manager: any SkillManaging
     public init(manager: any SkillManaging) { self.manager = manager }
     public static func validateID(_ id: String) throws {
-        guard id.range(of: "^[a-z0-9][a-z0-9_-]{0,127}$", options: .regularExpression) != nil else {
-            throw FloeError.validationFailed("Invalid skill ID")
-        }
+        do { try SkillIdentifier.validate(id) }
+        catch { throw FloeError.validationFailed("Invalid skill ID") }
     }
     public func validate(_ args: Arguments) throws {
         try Self.validateID(args.id)

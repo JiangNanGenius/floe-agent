@@ -146,6 +146,7 @@ jobs:
       - name: Package the matching Floe remote agent
         run: |
           python3 scripts/test_remote_task_cancel.py
+          python3 scripts/test_remote_shell.py
           scripts/package_remote_agent.sh release-assets 1.4.3
 
       - name: Build unsigned device application

@@ -11,7 +11,7 @@ import subprocess, tempfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.4.4"
+VERSION = "1.4.5"
 ROOT = pathlib.Path(os.environ.get("FLOE_CLOUD_ROOT", "~/.floe/cloud-workspaces")).expanduser().resolve()
 STATE = pathlib.Path(os.environ.get("FLOE_STATE_ROOT", "~/.local/state/floe-agent")).expanduser().resolve()
 CONFIG = pathlib.Path(os.environ.get("FLOE_CONFIG_ROOT", "~/.config/floe-agent")).expanduser().resolve()
@@ -344,13 +344,44 @@ def launch_task(body, device_id):
     return record
 
 SHELLS = {}
+SHELLS_LOCK = threading.RLock()
 SHELL_MAX_AGE = 30 * 60
+SHELL_MAX_SESSIONS = 16
+SHELL_MAX_PER_DEVICE = 4
+
+def _shell_entry(shell_id, device_id):
+    with SHELLS_LOCK:
+        entry = SHELLS.get(shell_id)
+        if entry and entry["device_id"] != (device_id or "ssh-recovery"):
+            raise ValueError("shell belongs to another device")
+        return entry
+
+def _shell_reap(entry):
+    if entry["alive"]:
+        try:
+            pid, _ = os.waitpid(entry["pid"], os.WNOHANG)
+            if pid: entry["alive"] = False
+        except ChildProcessError:
+            entry["alive"] = False
+    return not entry["alive"]
+
+def shell_cleanup():
+    with SHELLS_LOCK:
+        expired = [(key, entry["device_id"]) for key, entry in SHELLS.items()
+                   if time.monotonic() - entry["created"] > SHELL_MAX_AGE]
+    for key, owner in expired:
+        shell_close(key, owner)
+
+def shell_maintainer():
+    while True:
+        time.sleep(10)
+        shell_cleanup()
 
 def _shell_drain(fd, wait, max_bytes):
     import select as _select
-    chunks, total, deadline = [], 0, time.time() + wait
+    chunks, total, deadline = [], 0, time.monotonic() + wait
     while total < max_bytes:
-        remaining = deadline - time.time()
+        remaining = deadline - time.monotonic()
         if remaining <= 0: break
         ready, _, _ = _select.select([fd], [], [], remaining)
         if not ready: break
@@ -360,52 +391,86 @@ def _shell_drain(fd, wait, max_bytes):
         chunks.append(chunk); total += len(chunk)
     return b"".join(chunks)
 
-def shell_open(body):
+def shell_open(body, device_id=None):
     import pty, fcntl, termios, struct
+    shell_cleanup()
+    owner = device_id or "ssh-recovery"
     term = re.sub(r"[^A-Za-z0-9._-]", "", str(body.get("term", "xterm-256color")))[:32] or "xterm-256color"
     cols = min(max(int(body.get("cols", 80)), 20), 500); rows = min(max(int(body.get("rows", 24)), 5), 200)
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.environ["TERM"] = term
-        shell = os.environ.get("SHELL") or "/bin/sh"
-        try: os.execvp(shell, [shell, "-i"])
-        except Exception: os._exit(127)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-    os.set_blocking(fd, False)
-    shell_id = str(uuid.uuid4())
-    SHELLS[shell_id] = {"pid": pid, "fd": fd, "created": time.time(), "alive": True}
-    data = _shell_drain(fd, 0.4, 65536)
+    with SHELLS_LOCK:
+        if len(SHELLS) >= SHELL_MAX_SESSIONS or sum(e["device_id"] == owner for e in SHELLS.values()) >= SHELL_MAX_PER_DEVICE:
+            raise ValueError("shell session limit reached; close an existing session")
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.environ["TERM"] = term
+            shell = os.environ.get("SHELL") or "/bin/sh"
+            try: os.execvp(shell, [shell, "-i"])
+            except Exception: os._exit(127)
+        shell_id = str(uuid.uuid4())
+        entry = {"pid": pid, "fd": fd, "created": time.monotonic(), "alive": True,
+                 "device_id": owner, "lock": threading.RLock(), "closed": False}
+        SHELLS[shell_id] = entry
+    try:
+        with entry["lock"]:
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+            os.set_blocking(fd, False)
+            data = _shell_drain(fd, 0.4, 65536)
+    except Exception:
+        shell_close(shell_id, owner)
+        raise
     return {"shell_id": shell_id, "alive": True, "data_base64": base64.b64encode(data).decode()}
 
-def shell_io(shell_id, body):
-    entry = SHELLS.get(shell_id)
+def shell_io(shell_id, body, device_id=None):
+    entry = _shell_entry(shell_id, device_id)
     if not entry: raise ValueError("shell not found")
-    if time.time() - entry["created"] > SHELL_MAX_AGE:
-        shell_close(shell_id); raise ValueError("shell expired")
+    if time.monotonic() - entry["created"] > SHELL_MAX_AGE:
+        shell_close(shell_id, device_id); raise ValueError("shell expired")
+    with entry["lock"]:
+        if entry["closed"]: raise ValueError("shell closed")
+        return _shell_exchange(shell_id, entry, body)
+
+def _shell_exchange(shell_id, entry, body):
     raw = body.get("input_base64") or ""
     if raw:
         data_in = base64.b64decode(raw, validate=True)
         if len(data_in) > 65536: raise ValueError("input too large")
-        if entry["alive"]: os.write(entry["fd"], data_in)
-    wait = min(max(float(body.get("wait_ms", 200)) / 1000.0, 0.05), 30)
+        if not entry["alive"]: raise ValueError("shell exited")
+        import select
+        offset, deadline = 0, time.monotonic() + 2
+        while offset < len(data_in):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([], [entry["fd"]], [], remaining)[1]:
+                raise ValueError(f"shell input timed out after {offset} of {len(data_in)} bytes; do not replay blindly")
+            try: offset += os.write(entry["fd"], data_in[offset:])
+            except BlockingIOError: continue
+    wait = min(max(float(body.get("wait_ms", 200)) / 1000.0, 0.05), 2)
     max_bytes = min(max(int(body.get("max_bytes", 65536)), 1), 262144)
     data = _shell_drain(entry["fd"], wait, max_bytes)
-    if entry["alive"]:
-        pid, _ = os.waitpid(entry["pid"], os.WNOHANG)
-        if pid == entry["pid"]: entry["alive"] = False
+    _shell_reap(entry)
     if not entry["alive"]:
         data += _shell_drain(entry["fd"], 0.1, max(0, max_bytes - len(data)))
     return {"shell_id": shell_id, "alive": entry["alive"], "data_base64": base64.b64encode(data).decode()}
 
-def shell_close(shell_id):
-    entry = SHELLS.pop(shell_id, None)
+def shell_close(shell_id, device_id=None):
+    entry = _shell_entry(shell_id, device_id)
     if not entry: return {"ok": True}
-    try: os.close(entry["fd"])
-    except OSError: pass
-    try: os.kill(entry["pid"], signal.SIGHUP)
-    except OSError: pass
-    try: os.waitpid(entry["pid"], 0)
-    except (OSError, ChildProcessError): pass
+    with entry["lock"]:
+        if entry["closed"]: return {"ok": True}
+        # Never signal a PID after reaping it: the OS may have reused it.
+        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGKILL):
+            if _shell_reap(entry): break
+            try: os.killpg(entry["pid"], sig)
+            except ProcessLookupError: pass
+            deadline = time.monotonic() + 0.3
+            while time.monotonic() < deadline and not _shell_reap(entry): time.sleep(0.01)
+        try: os.close(entry["fd"])
+        except OSError: pass
+        entry["closed"] = True
+        with SHELLS_LOCK:
+            SHELLS.pop(shell_id, None)
+        if entry["alive"]:
+            # A kernel-stalled child must not block the HTTP request thread.
+            threading.Thread(target=lambda: os.waitpid(entry["pid"], 0), daemon=True).start()
     return {"ok": True}
 
 class Handler(BaseHTTPRequestHandler):
@@ -474,11 +539,11 @@ class Handler(BaseHTTPRequestHandler):
         if not self._guard(): return
         try:
             body=self._body()
-            if self.path=="/v1/shell": return self._send(202,shell_open(body))
+            if self.path=="/v1/shell": return self._send(202,shell_open(body,self._device()))
             if self.path.startswith("/v1/shell/"):
                 pieces=self.path.strip("/").split("/")
-                if len(pieces)==4 and pieces[3]=="io": return self._send(200,shell_io(pieces[2],body))
-                if len(pieces)==4 and pieces[3]=="close": return self._send(200,shell_close(pieces[2]))
+                if len(pieces)==4 and pieces[3]=="io": return self._send(200,shell_io(pieces[2],body,self._device()))
+                if len(pieces)==4 and pieces[3]=="close": return self._send(200,shell_close(pieces[2],self._device()))
                 return self._send(404,{"error":"not_found"})
             if self.path=="/v1/tasks": return self._send(202,launch_task(body,self._device()))
             if self.path=="/v1/workspaces/create": return self._send(201,create_workspace(body,self._device()))
@@ -513,6 +578,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as error: self._send(400,{"error":str(error)})
 
 def serve():
+    threading.Thread(target=shell_maintainer,daemon=True).start()
     threading.Thread(target=certificate_maintainer,daemon=True).start()
     loopback=ThreadingHTTPServer(("127.0.0.1",PORT),Handler); ca,certificate,key=PKI/"ca.crt",PKI/"server.crt",PKI/"server.key"
     if ca.exists() and certificate.exists() and key.exists():

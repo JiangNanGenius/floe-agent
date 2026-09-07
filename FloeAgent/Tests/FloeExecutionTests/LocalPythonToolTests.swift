@@ -140,4 +140,18 @@ struct LocalPythonToolTests {
         #expect(await LocalPythonCapabilityProbe(service: nil).probe()
             == .unavailable(reason: "Bundled CPython runtime is not installed in this build"))
     }
+
+    @Test("runtime library manifest comes from an actual bounded import probe")
+    func runtimeLibraryManifest() async {
+        let service = LocalPythonService(version: "bundled") { request, _ in
+            #expect(request.script.contains("importlib.import_module"))
+            #expect(request.timeout == 10)
+            return .ok(resultJSON: nil, stdout: #"{"python":"3.13.7","libraries":{"numpy":{"available":true,"version":"2.5.2"},"PIL":{"available":false}}}"#,
+                stderr: "", truncated: false, stderrTruncated: false, durationMs: 1)
+        }
+        let manifest = await LocalPythonCapabilityProbe(service: service).runtimeManifest()
+        #expect(manifest.contains("3.13.7"))
+        #expect(manifest.contains("\"available\":false"))
+        #expect(await LocalPythonCapabilityProbe(service: nil).runtimeManifest().contains("unavailable"))
+    }
 }

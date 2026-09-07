@@ -20,6 +20,7 @@ struct LocalSkillCreator: SkillCreating, SkillManaging {
         try await center.createSkill(request)
     }
     func read(id: String?) async throws -> [ManagedSkill] { try await center.readSkills(id: id) }
+    func read(id: String?, runID: UUID) async throws -> [ManagedSkill] { try await center.readSkills(id: id, runID: runID) }
     func manage(_ request: SkillManageTool.Arguments) async throws -> String { try await center.manageSkill(request) }
 }
 #endif
