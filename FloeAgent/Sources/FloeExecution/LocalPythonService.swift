@@ -29,12 +29,12 @@ public actor LocalPythonService: ScriptExecutionService {
         let request = ScriptExecutionRequest(script: """
         import sys, json, importlib
         libraries = {}
-        for name in ('numpy', 'PIL'):
+        for name in ('numpy', 'PIL', 'pandas', 'scipy', 'matplotlib'):
             try:
                 module = importlib.import_module(name)
                 libraries[name] = {'available': True, 'version': getattr(module, '__version__', 'unknown')}
-            except ImportError:
-                libraries[name] = {'available': False}
+            except Exception as error:
+                libraries[name] = {'available': False, 'errorType': type(error).__name__}
         print(json.dumps({'python': sys.version.split()[0], 'libraries': libraries}, sort_keys=True))
         """, timeout: 10, maxOutputBytes: 4096)
         let result = await runner(request, nil)

@@ -70,8 +70,17 @@ public struct SkillUpgradeCandidate: Sendable {
     public let changedFiles: [String]
     public let addedCapabilities: Set<String>
     public let addedTools: Set<String>
+    public let releaseNotes: [String: String]
 
     public init(source: GitHubSkillSource, commit: String, installed: SkillContentSnapshot, proposed: SkillContentSnapshot) throws {
+        guard !OfficialSkillHub.skillIDs.contains(proposed.package.manifest.id) else { throw OfficialSkillHub.Failure.signature }
+        try self.init(verifiedSource: source, commit: commit, installed: installed, proposed: proposed)
+    }
+
+    /// Module-internal entry used only after OfficialSkillHub has verified the
+    /// signed catalog, package ZIP and canonical digest. App callers cannot
+    /// manufacture an official update merely by supplying an allowed URL.
+    init(verifiedSource source: GitHubSkillSource, commit: String, installed: SkillContentSnapshot, proposed: SkillContentSnapshot, releaseNotes: [String: String] = [:]) throws {
         guard commit.count == 40, commit.allSatisfy(\.isHexDigit) else { throw SkillUpgradeError.invalidCommit }
         guard installed.package.manifest.id == proposed.package.manifest.id else { throw SkillUpgradeError.identityChanged }
         if OfficialSkillHub.skillIDs.contains(proposed.package.manifest.id) {
@@ -87,6 +96,7 @@ public struct SkillUpgradeCandidate: Sendable {
             throw SkillUpgradeError.versionRegression
         }
         self.source = source; self.commit = commit.lowercased()
+        self.releaseNotes = releaseNotes
         expectedInstalledDigest = installed.package.canonicalSHA256
         snapshot = proposed
         installedSnapshot = installed

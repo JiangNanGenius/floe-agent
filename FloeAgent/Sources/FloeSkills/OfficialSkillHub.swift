@@ -98,9 +98,14 @@ public enum OfficialSkillHub {
         let zip = try await fetch(source, commit, package.path)
         guard zip.count == package.size, digest(zip) == package.sha256.lowercased() else { throw SkillUpgradeError.hashMismatch(package.path) }
         let proposed = try unpack(zip, at: root)
-        guard proposed.package.manifest.id == id, proposed.package.manifest.version == package.version,
-              proposed.package.canonicalSHA256 == package.contentDigest.lowercased() else { throw Failure.catalog }
-        return try SkillUpgradeCandidate(source: source, commit: commit, installed: installed, proposed: proposed)
+        do {
+            guard proposed.package.manifest.id == id, proposed.package.manifest.version == package.version,
+                  proposed.package.canonicalSHA256 == package.contentDigest.lowercased() else { throw Failure.catalog }
+            return try SkillUpgradeCandidate(verifiedSource: source, commit: commit, installed: installed, proposed: proposed, releaseNotes: package.releaseNotes)
+        } catch {
+            try? FileManager.default.removeItem(at: root)
+            throw error
+        }
     }
 
     /// Bounded in-memory extraction validates every entry before creating files.

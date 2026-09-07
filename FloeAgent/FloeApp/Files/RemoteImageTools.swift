@@ -11,6 +11,8 @@ import FloeModels
 import FloeProviders
 import FloeTools
 import FloeWorkspace
+import FloeSecurity
+import FloeSync
 
 /// Provider-backed semantic image understanding for text-only primary models.
 ///
@@ -477,7 +479,7 @@ struct PDFInspectTool: AgentTool {
 
     static let name = "document.pdf.inspect"
     static let toolDescription =
-        "Read a workspace PDF with native PDFKit. Returns page count, metadata, selected-page text, and optional query matches. Page numbers are 1-based. This built-in read does not require approval."
+        "Inspect a workspace PDF: SHA256 revision, native text/image object bounds and counts, signatures/attachments, annotations/form indices, selected-page text and optional query matches. Select up to 20 pages, 1-based. Object inventory is capped at 100 per selected page with explicit truncation; absence in truncated output is not proof of absence."
     static let parametersJSON = #"""
     {"type":"object","properties":{"path":{"type":"string"},"pages":{"type":"array","maxItems":20,"items":{"type":"integer","minimum":1}},"query":{"type":"string","maxLength":500}},"required":["path"],"additionalProperties":false}
     """#
@@ -493,11 +495,16 @@ struct PDFInspectTool: AgentTool {
     }
 
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        let document = try PDFToolSupport.open(args.path, context: context)
+        try validate(args)
+        let inputData = try PDFToolSupport.read(args.path, context: context)
+        guard let document = PDFDocument(data: inputData), !document.isLocked else { throw FloeError.validationFailed("PDF is locked or unsupported") }
         let requested = args.pages?.isEmpty == false
             ? args.pages!.map { $0 - 1 }
             : Array(0..<min(document.pageCount, 12))
-        var lines = ["pages=\(document.pageCount)"]
+        let digest = SHA256.hash(data: inputData).map { String(format: "%02x", $0) }.joined()
+        let native = try await Task.detached { try FloePDFiumBridge.inspect(inputData, pages: requested.map { NSNumber(value: $0 + 1) }) }.value
+        var lines = ["pages=\(document.pageCount)", "sha256=\(digest)",
+            "nativeInventory=\(String(decoding: native, as: UTF8.self))"]
         if let title = document.documentAttributes?[PDFDocumentAttribute.titleAttribute] as? String,
            !title.isEmpty { lines.append("title=\(title)") }
         let needle = args.query?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -507,7 +514,13 @@ struct PDFInspectTool: AgentTool {
             if let needle, !needle.isEmpty {
                 match = text.localizedCaseInsensitiveContains(needle) ? " match=true" : " match=false"
             } else { match = "" }
-            lines.append("--- page \(index + 1)\(match) ---\n\(String(text.prefix(12_000)))")
+            let annotations: [[String: Any]] = (document.page(at: index)?.annotations ?? []).prefix(100).enumerated().map { offset, a in
+                ["annotationIndex": offset, "type": a.type ?? "unknown", "contents": String((a.contents ?? "").prefix(500)),
+                 "fieldName": a.fieldName ?? "", "value": a.widgetStringValue ?? "", "readOnly": a.isReadOnly,
+                 "bounds": [a.bounds.minX, a.bounds.minY, a.bounds.width, a.bounds.height]]
+            }
+            let inventory = String(decoding: try JSONSerialization.data(withJSONObject: annotations), as: UTF8.self)
+            lines.append("--- page \(index + 1)\(match) ---\nannotations=\(inventory)\n\(String(text.prefix(12_000)))")
         }
         let summary = String(lines.joined(separator: "\n").prefix(64_000))
         return PDFToolSupport.output(summary, status: 0)
@@ -521,13 +534,14 @@ struct PDFRenderTool: AgentTool {
         /// 1-based multi-page spec like "1-3,5"; overrides page.
         var pages: String?
         var outputPath: String?
+        var format: String?
     }
 
     static let name = "document.pdf.render"
     static let toolDescription =
-        "Render 1-based PDF pages to bounded JPEGs in the task workspace for preview, browser testing, OCR, or image.inspect. Pass page for one page or pages like \"1-3,5\" for several (defaults to page 1). This built-in conversion does not require approval."
+        "Render 1-based PDF pages to bounded PNG or JPEG files in the task workspace for preview, OCR, or image.inspect. Pass page for one page or pages like \"1-3,5\" for several (defaults to page 1); format defaults to jpeg. Never overwrites files."
     static let parametersJSON = #"""
-    {"type":"object","properties":{"path":{"type":"string"},"page":{"type":"integer","minimum":1},"pages":{"type":"string","description":"1-based multi-page spec, e.g. \"1-3,5\""},"outputPath":{"type":"string","description":"Workspace-relative .jpg path (single page only); multi-page defaults to PDFRenders/page-N-*.jpg"}},"required":["path"],"additionalProperties":false}
+    {"type":"object","properties":{"path":{"type":"string"},"page":{"type":"integer","minimum":1},"pages":{"type":"string","description":"1-based multi-page spec, e.g. \"1-3,5\""},"format":{"type":"string","enum":["png","jpeg"]},"outputPath":{"type":"string","description":"New workspace-relative image path (single page only)"}},"required":["path"],"additionalProperties":false}
     """#
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     static let isSideEffecting = false
@@ -535,6 +549,7 @@ struct PDFRenderTool: AgentTool {
 
     func validate(_ args: Arguments) throws {
         try PDFToolSupport.validatePath(args.path)
+        guard ["png", "jpeg"].contains(args.format ?? "jpeg") else { throw FloeError.validationFailed("format must be png or jpeg") }
         if let page = args.page, page < 1 { throw FloeError.validationFailed("page must be 1 or greater") }
         if let outputPath = args.outputPath {
             try PDFToolSupport.validatePath(outputPath)
@@ -545,6 +560,7 @@ struct PDFRenderTool: AgentTool {
     }
 
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
         let document = try PDFToolSupport.open(args.path, context: context)
         let pageNumbers: [Int]
         if let spec = args.pages {
@@ -572,14 +588,14 @@ struct PDFRenderTool: AgentTool {
                 renderer.cgContext.scaleBy(x: scale, y: -scale)
                 page.draw(with: .mediaBox, to: renderer.cgContext)
             }
-            guard let data = image.jpegData(compressionQuality: 0.86) else {
+            guard let data = args.format == "png" ? image.pngData() : image.jpegData(compressionQuality: 0.86) else {
                 throw FloeError.internalError("PDF page could not be encoded")
             }
             let outputPath: String
             if let explicit = args.outputPath, pageNumbers.count == 1 {
                 outputPath = explicit
             } else {
-                outputPath = "PDFRenders/page-\(pageNumber)-\(UUID().uuidString).jpg"
+                outputPath = "PDFRenders/page-\(pageNumber)-\(UUID().uuidString).\(args.format == "png" ? "png" : "jpg")"
             }
             try PDFToolSupport.write(data, to: outputPath, context: context)
             rendered.append("\(outputPath) (\(data.count) bytes)")
@@ -623,22 +639,31 @@ struct PDFEditTool: AgentTool {
         var pageNumberStart: Int?
         /// Native content-stream replacement; unsupported layouts fail closed.
         var replaceText: [TextReplacement]?
-        /// PDF open/permission passwords (stored only in the output file).
-        var userPassword: String?
-        var ownerPassword: String?
+        /// Advanced edits require the digest from inspect to reject stale indices.
+        var expectedSHA256: String?
+        var operations: [PDFDocumentOperations.Operation]?
+        /// Executor-only Keychain references; plaintext is never a tool argument.
+        var userPasswordRef: String?
+        var ownerPasswordRef: String?
     }
 
     static let name = "document.pdf.edit"
     static let toolDescription =
-        "Create a new PDF with page removal/rotation, watermark, page numbers or password protection. replaceText performs exact case-sensitive native PDFium text-object content-stream edits before page operations, never a white cover. Currently requires an encodable existing font and replacement within the original text bounds; scans, nested/cross-object matches and overflowing replacements fail without saving. Signed PDFs are rejected for text editing. This is editing, not secure redaction. Always save to a new output and reopen/render to verify."
-    static let parametersJSON = #"""
+        "Edit a new PDF copy: native exact text replacement or bounded region reflow, images, pages, annotations, forms, bookmarks, metadata, watermark and credential-reference encryption. Advanced operations require expectedSHA256 from inspect. Exact replaceText requires an encodable existing font and fitting bounds; use replaceRegion with an explicit object count for reflow. OCR and image-only rasterRedact require explicit rasterization consent; flattening requires flattening consent. Ordinary edits reject signed PDFs; redaction creates a separate unsigned raster copy. Never overwrites. Read floe-pdf for operation limits, then reopen/render and verify searchable text and changed regions."
+    private static let baseParametersJSON = #"""
     {"type":"object","properties":{"inputPath":{"type":"string"},"outputPath":{"type":"string"},"removePages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}},"rotatePages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}},"rotationDegrees":{"type":"integer","enum":[0,90,180,270,-90,-180,-270]},"rotations":{"type":"array","maxItems":100,"items":{"type":"object","properties":{"page":{"type":"integer","minimum":1},"degrees":{"type":"integer","enum":[0,90,180,270,-90,-180,-270]}},"required":["page","degrees"],"additionalProperties":false}},"watermark":{"type":"string","maxLength":200},"watermarkFontSize":{"type":"number","minimum":8,"maximum":72},"watermarkOpacity":{"type":"number","minimum":0.05,"maximum":1},"watermarkPages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}},"watermarkPosition":{"type":"string","enum":["center","top","bottom","topLeft","topRight","bottomLeft","bottomRight"]},"pageNumbers":{"type":"boolean"},"pageNumberPosition":{"type":"string","enum":["top","bottom"]},"pageNumberStart":{"type":"integer","minimum":1,"maximum":10000},"replaceText":{"type":"array","maxItems":20,"items":{"type":"object","properties":{"find":{"type":"string","maxLength":500},"replace":{"type":"string","maxLength":500},"pages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}}},"required":["find","replace"],"additionalProperties":false}},"userPassword":{"type":"string","maxLength":200},"ownerPassword":{"type":"string","maxLength":200}},"required":["inputPath","outputPath"],"additionalProperties":false}
     """#
+    static let parametersJSON: String = PDFOperationSchema.add(to: baseParametersJSON)
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .mutating
 
     private static let allowedDegrees = [0, 90, 180, 270, -90, -180, -270]
+    private let credentialResolver: (@MainActor @Sendable (UUID) async throws -> Data)?
+
+    init(credentialResolver: (@MainActor @Sendable (UUID) async throws -> Data)? = nil) {
+        self.credentialResolver = credentialResolver
+    }
 
     func validate(_ args: Arguments) throws {
         try PDFToolSupport.validatePath(args.inputPath)
@@ -672,15 +697,40 @@ struct PDFEditTool: AgentTool {
                 throw FloeError.validationFailed("replaceText find must not be empty")
             }
         }
-        if args.userPassword != nil || args.ownerPassword != nil {
-            guard !(args.userPassword ?? "").isEmpty || !(args.ownerPassword ?? "").isEmpty else {
-                throw FloeError.validationFailed("passwords must not be empty when provided")
+        if let operations = args.operations {
+            guard (1...30).contains(operations.count), let digest = args.expectedSHA256,
+                  digest.count == 64, digest.allSatisfy({ $0.isHexDigit }) else {
+                throw FloeError.validationFailed("operations requires 1-30 actions and expectedSHA256 from document.pdf.inspect")
             }
+            if operations.contains(where: { [.rasterRedact, .searchableOCR].contains($0.action) }) {
+                guard operations.count == 1, (args.replaceText ?? []).isEmpty, (args.removePages ?? []).isEmpty,
+                      (args.rotatePages ?? []).isEmpty, (args.rotations ?? []).isEmpty, args.watermark == nil,
+                      args.pageNumbers != true, args.userPasswordRef == nil, args.ownerPasswordRef == nil else {
+                    throw FloeError.validationFailed("Raster workflows must be a separate edit; do not mix other operations into the verified output")
+                }
+            }
+        }
+        for ref in [args.userPasswordRef, args.ownerPasswordRef].compactMap({ $0 }) {
+            guard SecretIngressScanner.credentialID(from: ref) != nil else { throw FloeError.validationFailed("PDF passwords require a saved credential reference, not plaintext") }
         }
     }
 
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        let source = try PDFToolSupport.open(args.inputPath, context: context)
+        try validate(args)
+        let originalInput = try PDFToolSupport.read(args.inputPath, context: context)
+        guard let source = PDFDocument(data: originalInput), !source.isLocked else { throw FloeError.validationFailed("PDF is locked or unsupported") }
+        let inspection = try await Task.detached { try FloePDFiumBridge.inspect(originalInput) }.value
+        let nativeInfo = try JSONSerialization.jsonObject(with: inspection) as? [String: Any]
+        if (nativeInfo?["signatureCount"] as? Int ?? 0) > 0,
+           !(args.operations?.count == 1 && args.operations?.first?.action == .rasterRedact && args.operations?.first?.acceptRasterization == true) {
+            throw FloeError.validationFailed("Signed PDF editing invalidates signatures; only an explicitly authorized rasterized unsigned copy is supported")
+        }
+        let userPassword = try await password(args.userPasswordRef, context: context)
+        let ownerPassword = try await password(args.ownerPasswordRef, context: context)
+        if let expected = args.expectedSHA256 {
+            let current = SHA256.hash(data: originalInput).map { String(format: "%02x", $0) }.joined()
+            guard current == expected.lowercased() else { throw FloeError.validationFailed("PDF changed since inspection; inspect the current revision") }
+        }
         try context.authorizeWorkspacePath(args.outputPath)
         guard let outputRoot = context.workspaceRootURL else { throw FloeError.invalidConfiguration("No task workspace") }
         let outputURL = try WorkspacePathGuard(rootURL: outputRoot).resolve(args.outputPath)
@@ -692,20 +742,34 @@ struct PDFEditTool: AgentTool {
         }
         var replacedCount = 0
         if let rules = args.replaceText, !rules.isEmpty {
-            guard let root = context.workspaceRootURL else { throw FloeError.invalidConfiguration("No task workspace") }
-            let inputURL = try WorkspacePathGuard(rootURL: root).resolve(args.inputPath)
-            // Preserve the original signature/encryption state for native checks.
-            let original = try Data(contentsOf: inputURL)
             let operations: [[String: Any]] = rules.map { rule in
                 var value: [String: Any] = ["find": rule.find, "replace": rule.replace]
                 if let pages = rule.pages { value["pages"] = pages }
                 return value
             }
-            let result = try await PDFContentEditor.replace(in: original,
+            let result = try await PDFContentEditor.replace(in: originalInput,
                 rulesJSON: JSONSerialization.data(withJSONObject: operations), cancellation: context.cancellation)
             data = result.data
             replacedCount = result.replacements
             try context.cancellation.throwIfCancelled()
+        }
+        var operationEvidence: [String] = []
+        if let operations = args.operations {
+            // Native inspection must see signatures in the original bytes, not a PDFKit serialization.
+            var images: [String: Data] = [:]
+            for op in operations {
+                if let path = op.imagePath, images[path] == nil {
+                    guard images.count < 10 else { throw FloeError.validationFailed("At most 10 image inputs per edit") }
+                    let bytes = try PDFToolSupport.read(path, context: context)
+                    guard bytes.count <= 16 * 1024 * 1024, images.values.reduce(bytes.count, { $0 + $1.count }) <= 32 * 1024 * 1024 else {
+                        throw FloeError.validationFailed("Image inputs exceed the edit memory limit")
+                    }
+                    images[path] = bytes
+                }
+            }
+            let result = try await PDFDocumentOperations.run(replacedCount == 0 ? originalInput : data,
+                operations: operations, images: images, cancellation: context.cancellation)
+            data = result.data; operationEvidence = result.evidence
         }
         guard let document = PDFDocument(data: data) else { throw FloeError.validationFailed("Edited PDF could not be opened") }
         for pageNumber in Set(args.removePages ?? []).sorted(by: >) {
@@ -776,20 +840,17 @@ struct PDFEditTool: AgentTool {
                 page.addAnnotation(annotation)
             }
         }
-        let encrypted = args.userPassword != nil || args.ownerPassword != nil
+        let encrypted = userPassword != nil || ownerPassword != nil
         if encrypted {
             try context.authorizeWorkspacePath(args.outputPath)
-            guard let root = context.workspaceRootURL else {
-                throw FloeError.invalidConfiguration("No task workspace is available")
-            }
-            let url = try WorkspacePathGuard(rootURL: root).resolve(args.outputPath)
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             var options: [PDFDocumentWriteOption: Any] = [:]
-            if let user = args.userPassword, !user.isEmpty { options[.userPasswordOption] = user }
-            if let owner = args.ownerPassword, !owner.isEmpty { options[.ownerPasswordOption] = owner }
-            guard document.write(to: url, withOptions: options) else {
+            if let userPassword { options[.userPasswordOption] = userPassword }
+            if let ownerPassword { options[.ownerPasswordOption] = ownerPassword }
+            guard let protected = document.dataRepresentation(options: options), let verified = PDFDocument(data: protected),
+                  verified.unlock(withPassword: userPassword ?? ownerPassword ?? ""), verified.pageCount == document.pageCount else {
                 throw FloeError.internalError("Edited PDF could not be written")
             }
+            try PDFToolSupport.write(protected, to: args.outputPath, context: context)
         } else {
             guard let edited = document.dataRepresentation() else {
                 throw FloeError.internalError("Edited PDF could not be serialized")
@@ -800,7 +861,7 @@ struct PDFEditTool: AgentTool {
         if encrypted {
             // An encrypted PDF only reports its real page count after unlock.
             let raw = try PDFToolSupport.openEncrypted(args.outputPath, context: context)
-            let password = args.userPassword ?? args.ownerPassword ?? ""
+            let password = userPassword ?? ownerPassword ?? ""
             guard raw.unlock(withPassword: password) else {
                 throw FloeError.storageCorrupted("Saved encrypted PDF failed unlock verification")
             }
@@ -812,7 +873,20 @@ struct PDFEditTool: AgentTool {
         if !appliedRotations.isEmpty { summary += " rotated=\(appliedRotations.count)" }
         if replacedCount > 0 { summary += " replaceTextMatches=\(replacedCount) (native content-stream rewrite; not secure redaction)" }
         if encrypted { summary += " encrypted=true" }
+        if !operationEvidence.isEmpty { summary += "\n" + operationEvidence.joined(separator: "\n") }
         return PDFToolSupport.output(summary, status: 0)
+    }
+
+    private func password(_ reference: String?, context: ToolContext) async throws -> String? {
+        guard let reference else { return nil }
+        guard context.approvalGrantID != nil, let id = SecretIngressScanner.credentialID(from: reference), let credentialResolver else {
+            throw FloeError.validationFailed("Approved credential resolution is required for PDF protection")
+        }
+        let bytes = try await credentialResolver(id)
+        guard let secret = String(data: bytes, encoding: .utf8), !secret.isEmpty, secret.utf8.count <= 200 else {
+            throw FloeError.validationFailed("PDF credential must contain a bounded UTF-8 password")
+        }
+        return secret
     }
 }
 
@@ -975,7 +1049,7 @@ struct PDFFromImagesTool: AgentTool {
     }
 }
 
-private enum PDFToolSupport {
+enum PDFToolSupport {
     static func validatePath(_ path: String) throws {
         guard !path.isEmpty, !path.hasPrefix("/"), !path.hasPrefix("~"),
               !path.split(separator: "/").contains("..") else {
@@ -984,6 +1058,14 @@ private enum PDFToolSupport {
     }
 
     static func open(_ path: String, context: ToolContext) throws -> PDFDocument {
+        let data = try read(path, context: context)
+        guard let document = PDFDocument(data: data), !document.isLocked, document.pageCount > 0 else {
+            throw FloeError.validationFailed("Input is not an unlocked readable PDF")
+        }
+        return document
+    }
+
+    static func read(_ path: String, context: ToolContext) throws -> Data {
         try validatePath(path)
         guard let root = context.workspaceRootURL else {
             throw FloeError.invalidConfiguration("No task workspace is available")
@@ -991,10 +1073,10 @@ private enum PDFToolSupport {
         try context.authorizeWorkspacePath(path)
         let url = try WorkspacePathGuard(rootURL: root).resolve(path)
         let data = try Data(floeContentsOf: url, options: [.mappedIfSafe])
-        guard data.count <= 64 * 1_024 * 1_024, let document = PDFDocument(data: data), document.pageCount > 0 else {
+        guard data.count <= 64 * 1_024 * 1_024 else {
             throw FloeError.validationFailed("Input is not a bounded readable PDF")
         }
-        return document
+        return data
     }
 
     /// Opens a possibly encrypted PDF without requiring pages; callers unlock
@@ -1037,7 +1119,8 @@ private enum PDFToolSupport {
     /// Parses a 1-based page spec like "1-3,5,8-10" into sorted unique
     /// 1-based page numbers bounded by the document page count.
     static func pageNumbers(from spec: String, pageCount: Int) throws -> [Int] {
-        var numbers = Set<Int>()
+        var numbers = Set<Int>(), ordered: [Int] = []
+        func append(_ number: Int) { if numbers.insert(number).inserted { ordered.append(number) } }
         for part in spec.split(separator: ",") {
             let trimmed = part.trimmingCharacters(in: .whitespaces)
             if let dash = trimmed.firstIndex(of: "-") {
@@ -1049,18 +1132,17 @@ private enum PDFToolSupport {
                 guard upper - lower <= 500 else {
                     throw FloeError.validationFailed("Page range is too large: \(trimmed)")
                 }
-                for number in lower...upper { numbers.insert(number) }
+                for number in lower...upper { append(number) }
             } else if let number = Int(trimmed), number >= 1 {
-                numbers.insert(number)
+                append(number)
             } else {
                 throw FloeError.validationFailed("Invalid page spec: \(trimmed)")
             }
         }
-        let sorted = numbers.sorted()
-        guard let last = sorted.last, last <= pageCount else {
+        guard let last = numbers.max(), last <= pageCount else {
             throw FloeError.validationFailed("Page spec exceeds the document's \(pageCount) pages")
         }
-        return sorted
+        return ordered
     }
 
     static func write(_ data: Data, to path: String, context: ToolContext) throws {
@@ -1072,7 +1154,16 @@ private enum PDFToolSupport {
         let guarder = WorkspacePathGuard(rootURL: root)
         let url = try guarder.resolve(path)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try data.write(to: url, options: .atomic)
+        guard data.count <= 64 * 1024 * 1024, !FileManager.default.fileExists(atPath: url.path) else {
+            throw FloeError.validationFailed("Output exists or exceeds the file limit; choose a new output path")
+        }
+        let staged = url.deletingLastPathComponent().appendingPathComponent(".floe-pdf-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: staged) }
+        try data.write(to: staged, options: .withoutOverwriting)
+        try context.cancellation.throwIfCancelled()
+        _ = try guarder.resolve(path)
+        // moveItem refuses an existing destination, unlike atomic replacement.
+        try FileManager.default.moveItem(at: staged, to: url)
     }
 
     static func output(_ text: String, status: Int32) -> ToolExecutionOutput {
@@ -1091,7 +1182,17 @@ func registerRemoteImageTools(center: FilesCenter, registry: ToolRunnerRegistry 
     ToolCatalog.register(PDFRenderTool.self)
     registry.register(PDFRenderTool())
     ToolCatalog.register(PDFEditTool.self)
-    registry.register(PDFEditTool())
+    registry.register(PDFEditTool(credentialResolver: { [weak center] id in
+        guard let center else { throw FloeError.invalidConfiguration("Credential vault is unavailable") }
+        return try await center.environment.credentialVault.resolveForApprovedUse(CredentialHandle(id: id))
+    }))
+    ToolCatalog.register(PDFUnlockTool.self)
+    ToolCatalog.register(PDFExportTool.self)
+    registry.register(PDFExportTool())
+    registry.register(PDFUnlockTool(resolver: { [weak center] id in
+        guard let center else { throw FloeError.invalidConfiguration("Credential vault is unavailable") }
+        return try await center.environment.credentialVault.resolveForApprovedUse(CredentialHandle(id: id))
+    }))
     ToolCatalog.register(PDFMergeTool.self)
     registry.register(PDFMergeTool())
     ToolCatalog.register(PDFSplitTool.self)

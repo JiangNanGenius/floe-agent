@@ -211,6 +211,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     /// approve it. Mutating PDF calls only bypass review when they explicitly
     /// create a new output instead of overwriting their source.
     private static func isDeterministicallyExempt(_ action: ProposedAction) -> Bool {
+        if requiresPDFConsentReview(action) { return false }
         if action.isPreapprovedSkillPythonRequest { return true }
         let alwaysExempt: Set<String> = [
             "image.inspect", "image.ocr", "image.scanBarcode", "image.generate",
@@ -484,6 +485,9 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
         for action: ProposedAction,
         unavailableReason: String
     ) -> ApprovalDecision {
+        if Self.requiresPDFConsentReview(action) {
+            return .escalateToHuman(reason: "PDF rasterization or credential use requires explicit consent review")
+        }
         let risks = action.riskLabels
         let requiresReview: Set<String> = [
             "deletesFiles",
@@ -503,6 +507,14 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             scope: Self.scope(for: action.toolCall),
             expiresAt: nil
         )
+    }
+
+    private static func requiresPDFConsentReview(_ action: ProposedAction) -> Bool {
+        guard action.toolCall.toolName == "document.pdf.edit",
+              let object = try? JSONSerialization.jsonObject(with: action.toolCall.argumentsJSON) as? [String: Any] else { return false }
+        if object["userPasswordRef"] != nil || object["ownerPasswordRef"] != nil { return true }
+        let operations = object["operations"] as? [[String: Any]] ?? []
+        return operations.contains { ["rasterRedact", "flattenAnnotations", "searchableOCR"].contains($0["action"] as? String ?? "") }
     }
 
     private static func scope(for call: ToolCall) -> ApprovalScope {

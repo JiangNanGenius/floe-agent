@@ -25,6 +25,9 @@ struct OfficialSkillHubTests {
             #expect(snapshot.package.manifest.id == id)
             #expect(snapshot.package.manifest.version == package.version)
             #expect(zip.count == package.size)
+            #expect(throws: OfficialSkillHub.Failure.signature) {
+                try SkillUpgradeCandidate(source: OfficialSkillHub.source(), commit: String(repeating: "a", count: 40), installed: snapshot, proposed: snapshot)
+            }
         }
     }
 

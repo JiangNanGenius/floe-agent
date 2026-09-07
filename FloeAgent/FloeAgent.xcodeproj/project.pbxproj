@@ -65,6 +65,7 @@
 		2939AB869D58351E507444A9 /* _sha2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = CE19791AC2454F6739825F8F /* _sha2.xcframework */; };
 		293F87E7D63F9F4FE1674785 /* _bounded_integers.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9B83A57D75B2264625E7B8B6 /* _bounded_integers.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		2A13232B1933B91BD7195B9D /* ProviderListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43555513E313C954D2E39B3 /* ProviderListViewModel.swift */; };
+		2B2206D557B86B95224EAC76 /* PDFExportTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE5B8692C95AE635852BE44C /* PDFExportTool.swift */; };
 		2B4684696D47D57E69A5ABAF /* FilesSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 425DF63623F387B29E54E3DE /* FilesSettingsView.swift */; };
 		2B89EFA4B10C970A94C681FC /* Canvas3DDirectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 891BEBD07BB7F67542319E7C /* Canvas3DDirectorView.swift */; };
 		2BBF22D90B958D418033B3CB /* LibArchive.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F499370272EB0BEEEA44D795 /* LibArchive.xcframework */; };
@@ -111,6 +112,7 @@
 		485FA2BD9ACADB87C7D16913 /* ProviderEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 857283D5BF6E741DD727418D /* ProviderEditorViewModel.swift */; };
 		49817855F72A4B64D6622047 /* _rational_tests.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D080FF4A569CE32CE9D399DC /* _rational_tests.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		49D4CE5A1CDB89F7EC6BBFEE /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B8826D4AB351DBF9CFF40AD /* TerminalView.swift */; };
+		4A812D9D0082904ECFCB9984 /* RARFixtures.generated.swift in Sources */ = {isa = PBXBuildFile; fileRef = 018CC35BB4F14DEF5E4C0E48 /* RARFixtures.generated.swift */; };
 		4ADD4F72F382289B6D7101CB /* SSHSessionOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 605587D767C978B8023F0DE2 /* SSHSessionOwner.swift */; };
 		4C2AB5B8C64EC6493BF92520 /* ScreenShareCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A82429B0BF7E6E52C6B4A8C /* ScreenShareCenter.swift */; };
 		4C3164052094AEB9B4DAB81D /* _sfc64.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1078C97511E013940FBDC94D /* _sfc64.xcframework */; };
@@ -224,6 +226,7 @@
 		A07E797D244A170430DEF61B /* ConversationCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50D3F739AE81623062A9C5C9 /* ConversationCenter.swift */; };
 		A08697D5A61FF31F4367FE7D /* RemoteSessionCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4CD5173D18CDDB6549BBD7D /* RemoteSessionCenter.swift */; };
 		A0EFEF2762FAA6FF528D5710 /* WorkspaceFileType.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72AD5C6F2C0701FB9F8D5C2A /* WorkspaceFileType.swift */; };
+		A16EA4F8F7ABAAB3FF45E521 /* RARFixtures.LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 26DD1D961BA4287302C7C341 /* RARFixtures.LICENSE.txt */; };
 		A1730325CB40AA74E22D3C28 /* FloeSSH in Frameworks */ = {isa = PBXBuildFile; productRef = DEFB59A49152ED0F642C4865 /* FloeSSH */; };
 		A4AA152E1B8C7F33410DECF7 /* freetype.txt in Resources */ = {isa = PBXBuildFile; fileRef = 8722CB0A7C8D744F7FA39DD7 /* freetype.txt */; };
 		A5042A844696F85C4BE4D80D /* FloeTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */; };
@@ -292,12 +295,14 @@
 		CA0F31691897A12A961D8A4F /* ProviderServiceRole.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DFCAB0BEA5779876F42194A /* ProviderServiceRole.swift */; };
 		CA9BF8F68A6F0E40E85CDE9E /* binascii.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E25201278D78378B37FF1BBD /* binascii.xcframework */; };
 		CC3A849E9F7335BCB97424A1 /* _sqlite3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5F1F13207E326EE5DC28108D /* _sqlite3.xcframework */; };
+		CC44EFAFC16BB15E726B3333 /* PDFUnlockTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AA5FE75929315E529714A75 /* PDFUnlockTool.swift */; };
 		CCBED0E2E783C82F6A6D4CFA /* mmap.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = BBD2144374FF4E9AD173B157 /* mmap.xcframework */; };
 		CCBF6AC11B7FB893FB5A60A5 /* lapack_lite.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 176A2DE26290AB545E404ADE /* lapack_lite.xcframework */; };
 		CD5540C1DFBBDA6417E25427 /* binascii.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = E25201278D78378B37FF1BBD /* binascii.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		CEDE8D8AD83D823BBC4E1662 /* RemoteSessionSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F23BEA3A5A6B017F698D28 /* RemoteSessionSnapshot.swift */; };
 		D22B0A2A27F38C4AA93FC7E5 /* FloeVNC in Frameworks */ = {isa = PBXBuildFile; productRef = 8D67ACB7499F21D8B8B49FE4 /* FloeVNC */; };
 		D27117ADEB48A630EEF5C7E2 /* DiagnosticsAboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67421D0E0C3D4BF46F4ACE46 /* DiagnosticsAboutView.swift */; };
+		D280F700D57E336852039D32 /* PDFOperationSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = 802B105AE7DD5167CE7184CD /* PDFOperationSchema.swift */; };
 		D296A21FB23B0FC15D0B48FC /* _multiarray_tests.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 078A9B07F9036A73B3C64839 /* _multiarray_tests.xcframework */; };
 		D3D14D3164C5FCDC4A33A2BC /* array.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 397F1DC728D743D05F510489 /* array.xcframework */; };
 		D4DECF7BF638B994E512FBF1 /* _random.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 12C202262489FD354A0B595A /* _random.xcframework */; };
@@ -336,6 +341,7 @@
 		EFB8B154A44004A6D4A9366C /* RunStateLocalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E112A159AE387A7219A69172 /* RunStateLocalizer.swift */; };
 		EFBF97EFFC3734AFBAA2BDE6 /* PDFContentEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81D3E2674CC7FFB5E2064D20 /* PDFContentEditor.swift */; };
 		F0702B8CBA014A55B657E7C4 /* pdf-lib.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 566A108E33736D5DD705D005 /* pdf-lib.min.js */; };
+		F09E869AFA8CF58AA546E27F /* PDFDocumentOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FC238A09CB801EBB02AA39B /* PDFDocumentOperations.swift */; };
 		F2A94C7D54C7BB530508D94D /* _socket.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3CDEB34F9680F5C7DBC54628 /* _socket.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F2AAFBF6B82F2153828BC49E /* pyexpat.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 59EFDCF31C5526A1B589BE5B /* pyexpat.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F2FA4F2EDA410E215E8DA440 /* TerminalViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 531772E03835546E29F3B7DF /* TerminalViewModel.swift */; };
@@ -471,6 +477,7 @@
 
 /* Begin PBXFileReference section */
 		00969624B0A954308417634B /* FilesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesViewModel.swift; sourceTree = "<group>"; };
+		018CC35BB4F14DEF5E4C0E48 /* RARFixtures.generated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RARFixtures.generated.swift; sourceTree = "<group>"; };
 		03482FFDDB47C3482FD2326D /* DomainSkillLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainSkillLibrary.swift; sourceTree = "<group>"; };
 		05CD3FCDF6CC1F08B06B9119 /* DiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffView.swift; sourceTree = "<group>"; };
 		0666A055F3421665937B663C /* CredentialManageTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialManageTool.swift; sourceTree = "<group>"; };
@@ -511,6 +518,7 @@
 		219CD6341FB443743691F92D /* LocalPreviewServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPreviewServer.swift; sourceTree = "<group>"; };
 		224C3D6B873B21963949DAA8 /* SkillDreamService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillDreamService.swift; sourceTree = "<group>"; };
 		2525C5FCEB739465E40893FA /* libopenjpeg.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = libopenjpeg.txt; sourceTree = "<group>"; };
+		26DD1D961BA4287302C7C341 /* RARFixtures.LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = RARFixtures.LICENSE.txt; sourceTree = "<group>"; };
 		276A4BD225189F342404A19B /* PDFium.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = PDFium.xcframework; path = Vendor/PDFium/PDFium.xcframework; sourceTree = "<group>"; };
 		2795FA9C3C98A62982F843B2 /* RuntimeDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeDiagnostics.swift; sourceTree = "<group>"; };
 		27BD00E30D4F02142C2C3B51 /* FloeShare.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FloeShare.entitlements; sourceTree = "<group>"; };
@@ -611,10 +619,12 @@
 		760ECB0E6B01EA7AC99B8744 /* NetworkStatusMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkStatusMonitor.swift; sourceTree = "<group>"; };
 		7846CD1BBE3A01E9CFE5CDFE /* LocalSkillCreator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalSkillCreator.swift; sourceTree = "<group>"; };
 		7A23E7E08860487A8333BE4F /* HostListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListView.swift; sourceTree = "<group>"; };
+		7AA5FE75929315E529714A75 /* PDFUnlockTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFUnlockTool.swift; sourceTree = "<group>"; };
 		7DF58B5C692BB56DB9A379F4 /* VNCSessionOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VNCSessionOwner.swift; sourceTree = "<group>"; };
 		7EB83CE4E7FCE787665DFBBB /* uuid.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = uuid.min.js; sourceTree = "<group>"; };
 		7EC6304EFEA8100679656E2D /* Python.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Python.xcframework; path = Vendor/Python.xcframework; sourceTree = "<group>"; };
 		7F4320C0FA1D4880122D9B3B /* RemoteSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSettingsView.swift; sourceTree = "<group>"; };
+		802B105AE7DD5167CE7184CD /* PDFOperationSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFOperationSchema.swift; sourceTree = "<group>"; };
 		81D3E2674CC7FFB5E2064D20 /* PDFContentEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFContentEditor.swift; sourceTree = "<group>"; };
 		83D0EBB0361B5F388903EE7F /* SetupGuideLauncherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupGuideLauncherView.swift; sourceTree = "<group>"; };
 		84E9CA8571729543928880E3 /* M0DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M0DiagnosticsView.swift; sourceTree = "<group>"; };
@@ -636,6 +646,7 @@
 		8EEDB221C5E3501DEF3F7015 /* select.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = select.xcframework; path = Vendor/PythonExtensions/select.xcframework; sourceTree = "<group>"; };
 		8F6676BA85A2C0059B610493 /* FloeAgentUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FloeAgentUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8FBC9F374C911EA91D944FB0 /* MoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreView.swift; sourceTree = "<group>"; };
+		8FC238A09CB801EBB02AA39B /* PDFDocumentOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFDocumentOperations.swift; sourceTree = "<group>"; };
 		916ACA33CDE6532714E49272 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		926B95CD92D851FFE3BB0DFE /* python */ = {isa = PBXFileReference; lastKnownFileType = folder; name = python; path = FloeApp/Resources/python; sourceTree = SOURCE_ROOT; };
 		92736B2254C04D1A1D074845 /* lcms.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = lcms.txt; sourceTree = "<group>"; };
@@ -672,6 +683,7 @@
 		AC36D60C36B96A6BDBE81A41 /* HomeOverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeOverviewView.swift; sourceTree = "<group>"; };
 		ADE9E409B66EBC3967853B86 /* ModelPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPickerView.swift; sourceTree = "<group>"; };
 		AE529725CBA54629E95EA4F0 /* TaskChangesInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskChangesInspectorView.swift; sourceTree = "<group>"; };
+		AE5B8692C95AE635852BE44C /* PDFExportTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFExportTool.swift; sourceTree = "<group>"; };
 		AE6C97DCAC2474410B4480C7 /* BackgroundExecutionSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundExecutionSettingsView.swift; sourceTree = "<group>"; };
 		AE91B3167D376A273DCB756C /* _imaging.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _imaging.xcframework; path = Vendor/PythonExtensions/_imaging.xcframework; sourceTree = "<group>"; };
 		AF5DEFBAC3785BF0E5943413 /* libpng.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = libpng.txt; sourceTree = "<group>"; };
@@ -922,6 +934,8 @@
 				2C4FE642486885CDD514009A /* ImportantFileShortcutTests.swift */,
 				E01FD1096C0BE9486FA630A6 /* LocalPythonRuntimeTests.swift */,
 				93F493C62CCACF635880C8F7 /* MailConnectorTests.swift */,
+				018CC35BB4F14DEF5E4C0E48 /* RARFixtures.generated.swift */,
+				26DD1D961BA4287302C7C341 /* RARFixtures.LICENSE.txt */,
 				183A97BE093D68D231492DC7 /* RemoteImageInspectToolTests.swift */,
 				725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */,
 				3453A73FCC9986445D9D3949 /* SkillLifecycleTests.swift */,
@@ -946,6 +960,10 @@
 				69C64CCB64B5B7C45F45C253 /* ImageEditorView.swift */,
 				9D3F41AA3EFDF6F065F64FBB /* ImageEditorViewModel.swift */,
 				81D3E2674CC7FFB5E2064D20 /* PDFContentEditor.swift */,
+				8FC238A09CB801EBB02AA39B /* PDFDocumentOperations.swift */,
+				AE5B8692C95AE635852BE44C /* PDFExportTool.swift */,
+				802B105AE7DD5167CE7184CD /* PDFOperationSchema.swift */,
+				7AA5FE75929315E529714A75 /* PDFUnlockTool.swift */,
 				8B378CF37C409045418D9D24 /* QuickLookView.swift */,
 				98F7FF2A3CFA32D12C9C5B83 /* RARArchiveService.swift */,
 				2D2970DE592A16AFA08AE6A2 /* RemoteImageCreationView.swift */,
@@ -1549,6 +1567,7 @@
 			buildConfigurationList = 1AA8381BF42E3454786DEE17 /* Build configuration list for PBXNativeTarget "FloeAgentUITests" */;
 			buildPhases = (
 				65C93652756E9F10C414DC34 /* Sources */,
+				95D0C3F0851DBC91CDAFF9C1 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -1727,6 +1746,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		95D0C3F0851DBC91CDAFF9C1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A16EA4F8F7ABAAB3FF45E521 /* RARFixtures.LICENSE.txt in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -1824,6 +1851,10 @@
 				9F178F696416A4E7191F56FB /* OnboardingView.swift in Sources */,
 				5D9232A405C85062BDDB69D8 /* OnboardingViewModel.swift in Sources */,
 				EFBF97EFFC3734AFBAA2BDE6 /* PDFContentEditor.swift in Sources */,
+				F09E869AFA8CF58AA546E27F /* PDFDocumentOperations.swift in Sources */,
+				2B2206D557B86B95224EAC76 /* PDFExportTool.swift in Sources */,
+				D280F700D57E336852039D32 /* PDFOperationSchema.swift in Sources */,
+				CC44EFAFC16BB15E726B3333 /* PDFUnlockTool.swift in Sources */,
 				265F22EEB8BC48C7AF62FDCD /* PlatformBackgroundPolicy.swift in Sources */,
 				107D9B448A471CEDBE9E0FF6 /* PrivacySecurityView.swift in Sources */,
 				9D88F7400A99BF770F8A8DB4 /* ProviderEditorView.swift in Sources */,
@@ -1914,6 +1945,7 @@
 				5783D26BF683BAD283217A43 /* ImportantFileShortcutTests.swift in Sources */,
 				FEE62E3E419BA78474C58CBF /* LocalPythonRuntimeTests.swift in Sources */,
 				B3B2899A491FD31765C51A2C /* MailConnectorTests.swift in Sources */,
+				4A812D9D0082904ECFCB9984 /* RARFixtures.generated.swift in Sources */,
 				AD09F21466C778C43633A947 /* RemoteImageInspectToolTests.swift in Sources */,
 				CA014FF410250DD56A683A39 /* SkillLifecycleTests.swift in Sources */,
 				24D360EC17E29EC2F3B4E2AA /* ThreadTimelineTests.swift in Sources */,

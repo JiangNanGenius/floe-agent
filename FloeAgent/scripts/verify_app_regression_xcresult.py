@@ -19,7 +19,8 @@ SUITE_MINIMUMS = {
     "ThreadTimelineTests": 18,
     "BrowserProtocolTests": 6,
     "MailConnectorTests": 5,
-    "SkillLifecycleTests": 4,
+    "SkillLifecycleTests": 15,
+    "LocalPythonRuntimeTests": 1,
 }
 
 

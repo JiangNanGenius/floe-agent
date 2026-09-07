@@ -840,6 +840,17 @@ struct ApprovalPolicyTests {
         #expect(await backend.callCount() == 1)
     }
 
+    @Test("PDF rasterization and credential use cannot bypass consent review as routine diagnostics")
+    func pdfConsentReview() async throws {
+        let policy = AutomaticApprovalPolicy()
+        for json in [#"{"operations":[{"action":"rasterRedact","acceptRasterization":true}]}"#,
+                     #"{"userPasswordRef":"⟨credential:00000000-0000-0000-0000-000000000001⟩"}"#] {
+            let call = try ToolCall(id: "pdf", toolName: "document.pdf.edit", argumentsJSON: Data(json.utf8), scope: .local)
+            let action = ProposedAction(toolCall: call, riskLabels: ["readsFiles", "writesFiles"], userGoal: "测试文档工具", hostAndPathScope: .local)
+            #expect(!(try await policy.decide(action).permitsExecution))
+        }
+    }
+
     @Test("ModelApprovalPolicy fail-closed on backend error")
     func modelPolicyFailClosed() async throws {
         struct FailingBackend: ModelApprovalPolicy.DecisionBackend {

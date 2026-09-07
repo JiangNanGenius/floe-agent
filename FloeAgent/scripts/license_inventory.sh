@@ -60,6 +60,12 @@ for pin in sorted(pins, key=lambda p: p["identity"]):
 rows.extend([
     ("llama.cpp", "b10581", "MIT", "https://github.com/ggml-org/llama.cpp"),
     ("llama-ios-xcframework", "1.0.0", "MIT", "https://github.com/saitawngpha/llama-ios"),
+    ("PDFium", "chromium/8035", "BSD-3-Clause and bundled third-party notices", "https://pdfium.googlesource.com/pdfium/"),
+    ("pdfium-binaries", "chromium/8035", "MIT", "https://github.com/bblanchon/pdfium-binaries"),
+    ("libarchive", "3.8.9", "BSD-2-Clause and COPYING exceptions", "https://github.com/libarchive/libarchive"),
+    ("CPython / Python-Apple-support", "3.13-b10", "PSF-2.0 and bundled notices", "https://github.com/beeware/Python-Apple-support"),
+    ("NumPy iOS", "2.5.2.post1", "BSD-3-Clause", "https://anaconda.org/beeware/numpy"),
+    ("Pillow iOS", "11.0.0", "HPND and bundled notices", "https://anaconda.org/beeware/Pillow"),
 ])
 
 with open("LICENSES-THIRD-PARTY.md", "w") as out:

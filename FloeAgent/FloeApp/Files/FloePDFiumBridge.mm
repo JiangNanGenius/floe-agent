@@ -2,6 +2,7 @@
 #import <CPDFium/CPDFium.h>
 #include <mutex>
 #include <vector>
+#include <cmath>
 
 namespace {
 std::mutex engineMutex;
@@ -42,9 +43,160 @@ NSDictionary *fail(NSError **error, NSString *message) {
     if (error) *error = [NSError errorWithDomain:@"org.floeagent.pdfium" code:1 userInfo:@{NSLocalizedDescriptionKey:message}];
     return nil;
 }
+bool onlyType(FPDF_PAGEOBJECT object, int type, int depth = 0) {
+    int actual = FPDFPageObj_GetType(object);
+    if (actual == type) return true;
+    if (actual != FPDF_PAGEOBJ_FORM || depth >= 8) return false;
+    int count = FPDFFormObj_CountObjects(object);
+    if (count < 1 || count > 500) return false;
+    for (int i = 0; i < count; ++i)
+        if (!onlyType(FPDFFormObj_GetObject(object, i), type, depth + 1)) return false;
+    return true;
+}
 }
 
 @implementation FloePDFiumBridge
++ (NSData *)unlock:(NSData *)input password:(NSString *)password error:(NSError **)error {
+    std::lock_guard<std::mutex> lock(engineMutex);
+    std::call_once(initialized, [] { FPDF_InitLibrary(); });
+    auto bad = [&](NSString *message) -> NSData * { fail(error, message); return nil; };
+    if (!input.length || input.length > MaxBytes || !password.length || password.length > 200) return bad(@"PDF unlock limits exceeded");
+    Document doc{FPDF_LoadMemDocument64(input.bytes, input.length, password.UTF8String)};
+    if (!doc.value) return bad(@"PDF password was rejected or the document is unsupported");
+    if (FPDF_GetSignatureCount(doc.value) > 0) return bad(@"Signed PDF decryption may invalidate its signatures; this tool does not alter signed files");
+    if (!(FPDF_GetDocPermissions(doc.value) & (1 << 3))) return bad(@"PDF modification permissions require an owner credential");
+    Writer writer;
+    if (!FPDF_SaveAsCopy(doc.value, &writer, FPDF_REMOVE_SECURITY)) return bad(@"PDF decryption save failed");
+    Document reopened{FPDF_LoadMemDocument64(writer.bytes.bytes, writer.bytes.length, nullptr)};
+    if (!reopened.value || FPDF_GetPageCount(reopened.value) != FPDF_GetPageCount(doc.value)) return bad(@"Decrypted PDF failed reopen verification");
+    return writer.bytes;
+}
++ (NSData *)flatten:(NSData *)input error:(NSError **)error {
+    std::lock_guard<std::mutex> lock(engineMutex);
+    std::call_once(initialized, [] { FPDF_InitLibrary(); });
+    auto bad = [&](NSString *message) -> NSData * { fail(error, message); return nil; };
+    if (!input.length || input.length > MaxBytes) return bad(@"PDF flatten size limit");
+    Document doc{FPDF_LoadMemDocument64(input.bytes, input.length, nullptr)};
+    if (!doc.value || FPDF_GetSignatureCount(doc.value) > 0) return bad(@"Cannot flatten a locked, unsupported or signed PDF");
+    int count = FPDF_GetPageCount(doc.value);
+    if (count < 1 || count > 500) return bad(@"PDF flatten page limit");
+    for (int i = 0; i < count; ++i) {
+        Page page{FPDF_LoadPage(doc.value, i)};
+        if (!page.value || FPDFPage_Flatten(page.value, FLAT_NORMALDISPLAY) == FLATTEN_FAIL) return bad(@"Native annotation flattening failed");
+    }
+    Writer writer;
+    if (!FPDF_SaveAsCopy(doc.value, &writer, FPDF_NO_INCREMENTAL)) return bad(@"Flattened PDF save failed");
+    return writer.bytes;
+}
++ (NSData *)replaceRegion:(NSData *)input page:(NSInteger)number bounds:(NSArray<NSNumber *> *)bounds
+                   overlay:(NSData *)overlay objectType:(NSInteger)objectType expectedCount:(NSInteger)expectedCount error:(NSError **)error {
+    std::lock_guard<std::mutex> lock(engineMutex);
+    std::call_once(initialized, [] { FPDF_InitLibrary(); });
+    auto bad = [&](NSString *message) -> NSData * { fail(error, message); return nil; };
+    if (!input.length || input.length > MaxBytes || overlay.length > MaxBytes || bounds.count != 4 ||
+        (objectType != FPDF_PAGEOBJ_TEXT && objectType != FPDF_PAGEOBJ_IMAGE) || expectedCount < 0 || expectedCount > 500)
+        return bad(@"Invalid native PDF region operation");
+    Document doc{FPDF_LoadMemDocument64(input.bytes, input.length, nullptr)};
+    if (!doc.value || FPDF_GetSignatureCount(doc.value) > 0) return bad(@"PDF is locked, unsupported or signed");
+    if (number < 1 || number > FPDF_GetPageCount(doc.value)) return bad(@"Region page is outside the document");
+    Page page{FPDF_LoadPage(doc.value, (int)number - 1)};
+    if (!page.value || FPDFPage_GetRotation(page.value) != 0) return bad(@"Region operations require an unrotated readable page");
+    double x = bounds[0].doubleValue, y = bounds[1].doubleValue, w = bounds[2].doubleValue, h = bounds[3].doubleValue;
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h) || x < 0 || y < 0 || w <= 0 || h <= 0 ||
+        x + w > FPDF_GetPageWidthF(page.value) || y + h > FPDF_GetPageHeightF(page.value)) return bad(@"Invalid PDF region bounds");
+    std::vector<FPDF_PAGEOBJECT> selected;
+    int count = FPDFPage_CountObjects(page.value);
+    if (count > 50000) return bad(@"PDF object limit exceeded");
+    for (int i = 0; i < count; ++i) {
+        auto obj = FPDFPage_GetObject(page.value, i);
+        int type = FPDFPageObj_GetType(obj);
+        float l, b, r, t;
+        if (!FPDFPageObj_GetBounds(obj, &l, &b, &r, &t)) return bad(@"Cannot determine PDF object bounds");
+        if (r <= x || l >= x+w || t <= y || b >= y+h) continue;
+        if (expectedCount > 0 && type == FPDF_PAGEOBJ_FORM && !onlyType(obj, (int)objectType)) return bad(@"Mixed nested form content intersects the region; no partial removal was performed");
+        if (!onlyType(obj, (int)objectType) || expectedCount == 0) continue;
+        if (l < x || b < y || r > x+w || t > y+h) return bad(@"Region cuts through an existing object; enlarge the region or choose another operation");
+        selected.push_back(obj);
+    }
+    if (selected.size() != (size_t)expectedCount) return bad(@"Region object count changed; inspect the current PDF revision");
+    for (auto obj : selected) {
+        if (!FPDFPage_RemoveObject(page.value, obj)) return bad(@"Native object removal failed");
+        FPDFPageObj_Destroy(obj);
+    }
+    if (overlay.length) {
+        Document addition{FPDF_LoadMemDocument64(overlay.bytes, overlay.length, nullptr)};
+        if (!addition.value || FPDF_GetPageCount(addition.value) != 1) return bad(@"Region overlay must contain exactly one generated page");
+        if (objectType == FPDF_PAGEOBJ_IMAGE) {
+            Page sourcePage{FPDF_LoadPage(addition.value, 0)};
+            FPDF_PAGEOBJECT sourceImage = nullptr;
+            for (int i = 0; sourcePage.value && i < FPDFPage_CountObjects(sourcePage.value); ++i) {
+                auto candidate = FPDFPage_GetObject(sourcePage.value, i);
+                if (FPDFPageObj_GetType(candidate) == FPDF_PAGEOBJ_IMAGE) {
+                    if (sourceImage) return bad(@"Image overlay contains multiple images");
+                    sourceImage = candidate;
+                }
+            }
+            if (!sourceImage) return bad(@"Image overlay has no native image");
+            auto bitmap = FPDFImageObj_GetBitmap(sourceImage);
+            auto image = FPDFPageObj_NewImageObj(doc.value);
+            if (!bitmap || !image) { if (bitmap) FPDFBitmap_Destroy(bitmap); if (image) FPDFPageObj_Destroy(image); return bad(@"Cannot decode native image"); }
+            bool success = FPDFImageObj_SetBitmap(nullptr, 0, image, bitmap) && FPDFImageObj_SetMatrix(image, w, 0, 0, h, x, y);
+            FPDFBitmap_Destroy(bitmap);
+            if (!success) { FPDFPageObj_Destroy(image); return bad(@"Native image replacement failed"); }
+            FPDFPage_InsertObject(page.value, image);
+        } else {
+            auto xobject = FPDF_NewXObjectFromPage(doc.value, addition.value, 0);
+            if (!xobject) return bad(@"Native PDF region import failed");
+            auto form = FPDF_NewFormObjectFromXObject(xobject);
+            FPDF_CloseXObject(xobject);
+            if (!form) return bad(@"Native PDF region object creation failed");
+            FPDFPageObj_Transform(form, 1, 0, 0, 1, x, y);
+            FPDFPage_InsertObject(page.value, form);
+        }
+    }
+    if (!FPDFPage_GenerateContent(page.value)) return bad(@"Native region content regeneration failed");
+    Writer writer;
+    if (!FPDF_SaveAsCopy(doc.value, &writer, FPDF_NO_INCREMENTAL)) return bad(@"Native region save failed");
+    return writer.bytes;
+}
++ (NSData *)inspect:(NSData *)input error:(NSError **)error {
+    return [self inspect:input pages:nil error:error];
+}
++ (NSData *)inspect:(NSData *)input pages:(NSArray<NSNumber *> *)selection error:(NSError **)error {
+    std::lock_guard<std::mutex> lock(engineMutex);
+    std::call_once(initialized, [] { FPDF_InitLibrary(); });
+    if (!input.length || input.length > MaxBytes) { fail(error, @"PDF exceeds the inspection size limit"); return nil; }
+    Document doc{FPDF_LoadMemDocument64(input.bytes, input.length, nullptr)};
+    if (!doc.value) { fail(error, @"Native PDF inspection could not open this file"); return nil; }
+    int pageCount = FPDF_GetPageCount(doc.value);
+    if (pageCount < 1 || pageCount > 1000) { fail(error, @"PDF page count exceeds the inspection limit"); return nil; }
+    if (selection.count > 20) { fail(error, @"Select at most 20 PDF pages for inventory"); return nil; }
+    for (NSNumber *number in selection) {
+        if (number.integerValue < 1 || number.integerValue > pageCount) { fail(error, @"Inventory page outside document"); return nil; }
+    }
+    NSMutableArray *pages = [NSMutableArray array];
+    bool imageOnly = true;
+    for (int i = 0; i < pageCount; ++i) {
+        Page page{FPDF_LoadPage(doc.value, i)};
+        if (!page.value) { fail(error, @"Cannot inspect PDF page"); return nil; }
+        int count = FPDFPage_CountObjects(page.value);
+        if (count > 50000) { fail(error, @"PDF page object limit"); return nil; }
+        NSMutableArray *objects = [NSMutableArray array];
+        bool selected = selection ? [selection containsObject:@(i+1)] : i < 20;
+        for (int j = 0; j < count; ++j) {
+            auto object = FPDFPage_GetObject(page.value, j);
+            int type = FPDFPageObj_GetType(object);
+            imageOnly = imageOnly && type == FPDF_PAGEOBJ_IMAGE;
+            float l, b, r, t;
+            if (selected && j < 100 && FPDFPageObj_GetBounds(object, &l, &b, &r, &t))
+                [objects addObject:@{@"index":@(j), @"type":@(type), @"contentType":onlyType(object, FPDF_PAGEOBJ_TEXT) ? @"text" : onlyType(object, FPDF_PAGEOBJ_IMAGE) ? @"image" : @"mixedOrOther", @"bounds":@[@(l),@(b),@(r-l),@(t-b)]}];
+        }
+        if (selected) [pages addObject:@{@"page":@(i+1), @"objectCount":@(count), @"objectsTruncated":@(count > 100), @"objects":objects}];
+    }
+    return [NSJSONSerialization dataWithJSONObject:@{@"pages":pages, @"pageCount":@(pageCount),
+        @"signatureCount":@(FPDF_GetSignatureCount(doc.value)), @"attachmentCount":@(FPDFDoc_GetAttachmentCount(doc.value)),
+        @"imageObjectsOnly":@(imageOnly)} options:0 error:error];
+}
 + (NSDictionary<NSString *,id> *)rewrite:(NSData *)input operationsJSON:(NSData *)operations cancelled:(BOOL (^)(void))cancelled error:(NSError **)error {
     std::lock_guard<std::mutex> lock(engineMutex);
     std::call_once(initialized, [] { FPDF_InitLibrary(); });

@@ -150,6 +150,8 @@ private struct SkillGitHubUpgradeSheet: View {
                     Section("审核变更 / Review changes") {
                         LabeledContent("Commit", value: candidate.commit)
                         LabeledContent("Version", value: candidate.snapshot.package.manifest.version)
+                        if let chinese = candidate.releaseNotes["zh-Hans"] { Text(chinese).font(.callout) }
+                        if let english = candidate.releaseNotes["en"] { Text(english).font(.callout).foregroundStyle(.secondary) }
                         LabeledContent("新增权限 / New capabilities", value: candidate.addedCapabilities.sorted().joined(separator: ", "))
                         LabeledContent("新增工具 / New tools", value: candidate.addedTools.sorted().joined(separator: ", "))
                         LabeledContent("请求授权 / Requested grants", value: candidate.snapshot.package.manifest.capabilities.joined(separator: ", "))

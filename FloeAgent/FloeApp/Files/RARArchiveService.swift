@@ -34,7 +34,7 @@ enum RARArchiveService {
         defer { try? manager.removeItem(at: staging) }
         if request.action == "extract" { try manager.createDirectory(at: staging, withIntermediateDirectories: false) }
         let stagingGuard = WorkspacePathGuard(rootURL: staging)
-        var entries = 0, total: Int64 = 0, paths = Set<String>(), listing: [[String: Any]] = []
+        var entries = 0, total: Int64 = 0, declaredTotal: Int64 = 0, paths = Set<String>(), listing: [[String: Any]] = []
         var entry: OpaquePointer?
         while true {
             try request.cancellation.throwIfCancelled()
@@ -43,7 +43,8 @@ enum RARArchiveService {
             try checked(state)
             guard let entry, let pointer = archive_entry_pathname_utf8(entry),
                   let path = String(validatingCString: pointer), !path.isEmpty,
-                  !path.hasPrefix("/"), !path.hasPrefix("~"), !path.contains("\\"),
+                  !path.hasPrefix("/"), !path.hasPrefix("~"), !path.contains("\\"), !path.contains(":"),
+                  !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
                   !path.split(separator: "/").contains(".."),
                   archive_entry_symlink(entry) == nil, archive_entry_hardlink(entry) == nil,
                   archive_entry_is_encrypted(entry) == 0 else {
@@ -58,6 +59,8 @@ enum RARArchiveService {
             guard isDirectory || type == 0o100000 else { throw FloeError.validationFailed("RAR contains a non-regular entry") }
             let size = archive_entry_size(entry)
             guard size >= 0, size <= 256 * 1024 * 1024 else { throw FloeError.validationFailed("RAR size limit") }
+            declaredTotal += size
+            guard declaredTotal <= 256 * 1024 * 1024 else { throw FloeError.validationFailed("RAR aggregate size limit") }
             let target = try stagingGuard.resolve(path)
             if listing.count < 500 { listing.append(["path": path, "size": size, "directory": isDirectory]) }
             if request.action == "list" || isDirectory {
@@ -84,9 +87,12 @@ enum RARArchiveService {
         }
         try checked(archive_read_close(reader))
         try request.cancellation.throwIfCancelled()
-        if request.action == "extract", let destination { try manager.moveItem(at: staging, to: destination) }
+        if request.action == "extract", let destination, let relative = request.destination {
+            guard try guarder.resolve(relative) == destination else { throw FloeError.validationFailed("RAR destination changed during extraction") }
+            try manager.moveItem(at: staging, to: destination)
+        }
         let result: [String: Any] = ["status": "ok", "action": request.action, "format": "rar", "entries": entries,
-            "listedEntries": listing, "listingTruncated": entries > listing.count, "uncompressedBytes": total,
+            "listedEntries": listing, "listingTruncated": entries > listing.count, "writtenBytes": total, "declaredUncompressedBytes": declaredTotal,
             "destinationDir": request.destination as Any? ?? NSNull()]
         return String(decoding: try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]), as: UTF8.self)
     }
