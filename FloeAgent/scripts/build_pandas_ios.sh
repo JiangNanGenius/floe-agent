@@ -13,9 +13,11 @@ test "$actual" = dca3734d6ab7c906e6730f0788b0a1dbb9f2467731f9711f77995c8e9d62d71
 tar -xzf "$stage/pandas.tar.gz" -C "$stage"
 cp "$repo_root/FloeAgent/scripts/test_native_pandas.py" "$stage/pandas-3.0.5/floe_pandas_smoke.py"
 export CIBW_BUILD='cp313-ios_arm64_iphoneos cp313-ios_arm64_iphonesimulator'
+export CIBW_XBUILD_TOOLS_IOS='ninja cmake'
 # pip 26.2 separates isolated build constraints from runtime constraints.
 export CIBW_ENVIRONMENT_IOS="PIP_EXTRA_INDEX_URL=https://pypi.anaconda.org/beeware/simple LDFLAGS=\"\" PIP_BUILD_CONSTRAINT=\"$repo_root/FloeAgent/scripts/pandas-ios-constraints.txt\" PIP_CONSTRAINT=\"$repo_root/FloeAgent/scripts/pandas-ios-constraints.txt\""
-export CIBW_TEST_COMMAND='python {project}/floe_pandas_smoke.py'
+export CIBW_TEST_COMMAND='python -m floe_pandas_smoke'
+export CIBW_TEST_SOURCES='floe_pandas_smoke.py'
 export CIBW_TEST_EXTRAS=''
 export CIBW_BUILD_VERBOSITY=1
 python -m cibuildwheel --platform ios "$stage/pandas-3.0.5" --output-dir "$repo_root/pandas-wheelhouse"
