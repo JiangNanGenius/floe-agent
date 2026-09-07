@@ -697,6 +697,16 @@ final class ConversationCenter: ObservableObject {
             allowedToolNames = allowedToolNames.map { $0.intersection(nonWorkspace) }
                 ?? nonWorkspace
         }
+        if runSurface != .canvas {
+            // Canvas tools belong to canvas runs only. Offering them in
+            // ordinary chat wastes catalog space and invites off-context
+            // canvas mutations with no canvasID binding.
+            let nonCanvas = Set(availableDescriptors.lazy
+                .map(\.name)
+                .filter { !$0.hasPrefix("canvas.") })
+            allowedToolNames = allowedToolNames.map { $0.intersection(nonCanvas) }
+                ?? nonCanvas
+        }
         if provider.kind == .local {
             let offered = allowedToolNames
                 ?? Set(availableDescriptors.map(\.name))
