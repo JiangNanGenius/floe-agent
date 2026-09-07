@@ -21,4 +21,5 @@ export CIBW_TEST_COMMAND='python -m floe_pandas_smoke'
 export CIBW_TEST_SOURCES='floe_pandas_smoke.py'
 export CIBW_TEST_EXTRAS=''
 export CIBW_BUILD_VERBOSITY=1
-python -m cibuildwheel --platform ios "$stage/pandas-3.0.5" --output-dir "$repo_root/pandas-wheelhouse"
+cd "$stage/pandas-3.0.5"
+python -m cibuildwheel --platform ios . --output-dir "$repo_root/pandas-wheelhouse"
