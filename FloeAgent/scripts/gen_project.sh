@@ -16,6 +16,7 @@ xcodegen generate
 if ! git diff --quiet -- . ':(exclude)Package.resolved'; then
     echo "error: working tree dirty after xcodegen; commit project.yml changes" >&2
     git status --short
+    git diff -- project.yml FloeAgent.xcodeproj/project.pbxproj
     exit 1
 fi
 

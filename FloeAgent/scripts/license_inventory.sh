@@ -58,6 +58,7 @@ for pin in sorted(pins, key=lambda p: p["identity"]):
 # and redistribution wrapper explicit so an App Store build cannot silently
 # omit them from the license inventory.
 rows.extend([
+    ("RoyalVNCKit (Floe synchronized queue)", "92d4427c73817d8f849bb289ff190aa4b40c44ea + Floe patch", "MIT", "https://github.com/JiangNanGenius/floe-agent/tree/main/FloeAgent/ThirdParty/RoyalVNCKit"),
     ("llama.cpp", "b10581", "MIT", "https://github.com/ggml-org/llama.cpp"),
     ("llama-ios-xcframework", "1.0.0", "MIT", "https://github.com/saitawngpha/llama-ios"),
     ("PDFium", "chromium/8035", "BSD-3-Clause and bundled third-party notices", "https://pdfium.googlesource.com/pdfium/"),

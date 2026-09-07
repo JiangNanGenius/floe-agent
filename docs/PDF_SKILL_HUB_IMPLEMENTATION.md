@@ -52,3 +52,18 @@ Preserve existing PiP behavior and unrelated working-tree files.
   Proposed next app version is 1.4.98 / 129; no upload has occurred this round.
 
 These are automated observations, not physical iPad acceptance or a release.
+
+### Release-gate fixes / 发布门补充修复
+
+- CI `34124355789` passed 106 app regressions but the VNC wire test process
+  crashed with an array-bounds trap. Inspection found concurrent producer,
+  sender and handshake-clear access to upstream RoyalVNCKit's unsynchronized
+  queue. A standalone concurrent reproducer crashes the original queue;
+  the synchronized queue passes the same 40,000-operation workload under
+  Thread Sanitizer. All 17 VNC contract/queue/wire tests pass locally.
+- The pinned ~1 MiB RoyalVNCKit library slice and MIT license live under
+  `FloeAgent/ThirdParty/RoyalVNCKit`; this replaces, not duplicates, the remote
+  library dependency. Other package revisions are unchanged.
+- CI `34126920690` caught generated Python framework ordering drift before
+  building the app. Generation now sorts module names independently of
+  shell locale; this gate is retained, not bypassed.

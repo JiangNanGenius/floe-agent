@@ -39,6 +39,8 @@ targets:
       - path: FloeApp/Resources/LibArchiveLicenses
         type: folder
         buildPhase: resources
+      - path: ThirdParty/RoyalVNCKit/LICENSE
+        buildPhase: resources
     info:
       path: FloeApp/Resources/Info.plist
       properties:
@@ -209,43 +211,11 @@ targets:
         embed: true
       - framework: Vendor/PythonExtensions/zlib.xcframework
         # BEGIN embedded Python binary packages (generated)
-      - framework: Vendor/PythonExtensions/_multiarray_tests.xcframework
-        embed: true
-      - framework: Vendor/PythonExtensions/_multiarray_umath.xcframework
-        embed: true
-      - framework: Vendor/PythonExtensions/_operand_flag_tests.xcframework
-        embed: true
-      - framework: Vendor/PythonExtensions/_rational_tests.xcframework
-        embed: true
-      - framework: Vendor/PythonExtensions/_simd.xcframework
-        embed: true
-      - framework: Vendor/PythonExtensions/_struct_ufunc_tests.xcframework
-        embed: true
-      - framework: Vendor/PythonExtensions/_umath_tests.xcframework
-        embed: true
-      - framework: Vendor/PythonExtensions/_pocketfft_umath.xcframework
-        embed: true
-      - framework: Vendor/PythonExtensions/_umath_linalg.xcframework
-        embed: true
-      - framework: Vendor/PythonExtensions/lapack_lite.xcframework
-        embed: true
       - framework: Vendor/PythonExtensions/_bounded_integers.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/_common.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/_generator.xcframework
-        embed: true
-      - framework: Vendor/PythonExtensions/_mt19937.xcframework
-        embed: true
-      - framework: Vendor/PythonExtensions/_pcg64.xcframework
-        embed: true
-      - framework: Vendor/PythonExtensions/_philox.xcframework
-        embed: true
-      - framework: Vendor/PythonExtensions/_sfc64.xcframework
-        embed: true
-      - framework: Vendor/PythonExtensions/bit_generator.xcframework
-        embed: true
-      - framework: Vendor/PythonExtensions/mtrand.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/_imaging.xcframework
         embed: true
@@ -256,6 +226,38 @@ targets:
       - framework: Vendor/PythonExtensions/_imagingmorph.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/_imagingtk.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_mt19937.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_multiarray_tests.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_multiarray_umath.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_operand_flag_tests.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_pcg64.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_philox.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_pocketfft_umath.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_rational_tests.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_sfc64.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_simd.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_struct_ufunc_tests.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_umath_linalg.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_umath_tests.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/bit_generator.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/lapack_lite.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/mtrand.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/pandas__libs__cyutility.xcframework
         embed: true

@@ -47,11 +47,9 @@ let package = Package(
         // NOTE: dev plan pinned swift-crypto 4.1.0, but Citadel (main) caps
         // at <4.0.0. 3.15.1 is the newest 3.x. Deviation flagged.
         .package(url: "https://github.com/apple/swift-crypto.git", exact: "3.15.1"),
-        // NOTE: dev plan pinned "3.0.0" which does not exist; the highest
-        // tag (1.1.0) transitively depends on an unstable CryptoSwift pin,
-        // so a stable-version requirement cannot resolve. Revision pin of
-        // the 1.1.0 tag commit (deviation flagged in report).
-        .package(url: "https://github.com/royalapplications/royalvnc.git", revision: "92d4427c73817d8f849bb289ff190aa4b40c44ea"),
+        // Pinned upstream library slice with a synchronized input queue.
+        // Provenance and the minimal patch are tracked beside the source.
+        .package(path: "ThirdParty/RoyalVNCKit"),
         // ZIPFoundation supplies the bounded archive reader used for local,
         // value-only Office Open XML spreadsheet inspection.
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20"),
@@ -370,7 +368,7 @@ let package = Package(
                 "FloePersistence",
                 "FloeSecurity",
                 "FloeTools",
-                .product(name: "RoyalVNCKit", package: "royalvnc"),
+                .product(name: "RoyalVNCKit", package: "RoyalVNCKit"),
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeVNC",
@@ -560,7 +558,7 @@ let package = Package(
 
         .testTarget(
             name: "FloeVNCTests",
-            dependencies: ["FloeVNC", "FloeTools", "FloeCore"],
+            dependencies: ["FloeVNC", "FloeTools", "FloeCore", .product(name: "RoyalVNCKit", package: "RoyalVNCKit")],
             path: "Tests/FloeVNCTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

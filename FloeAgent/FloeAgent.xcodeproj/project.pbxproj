@@ -164,6 +164,7 @@
 		5BB820EF2110E8C73542D2C2 /* FloeExecution in Frameworks */ = {isa = PBXBuildFile; productRef = 59DBBD5C35D97EBB383798F6 /* FloeExecution */; };
 		5C200D5807BA7B433E39BBB9 /* FilesCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A3792AECF660ADFEA7D4B8 /* FilesCenter.swift */; };
 		5C43AAAD15BA2B49F67B71D4 /* CPythonLocalRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37342E477B47F8A9B76D15B6 /* CPythonLocalRuntime.swift */; };
+		5C92C52F4F767AD2C1E010F7 /* LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = EB5D488C40B3370A6968FC2A /* LICENSE */; };
 		5CAEB9CA0E2CAD0ED3CF5C2A /* BroadcastPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C474665A34C09CEF3EA600B /* BroadcastPickerView.swift */; };
 		5CD15BCACCCC188F7AADDB8D /* pandas__libs_tslibs_ccalendar.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 053F4DF024E53AF29632B10E /* pandas__libs_tslibs_ccalendar.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		5D9232A405C85062BDDB69D8 /* OnboardingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CB28627E88075511A391819 /* OnboardingViewModel.swift */; };
@@ -562,30 +563,30 @@
 				5BB16BB6CFB30F1E04FF60DB /* termios.xcframework in Embed Frameworks */,
 				1DEB2C1ECE52FB4594BAB549 /* unicodedata.xcframework in Embed Frameworks */,
 				EA16DBDD57899AC08A4E1310 /* zlib.xcframework in Embed Frameworks */,
-				3FF334176694033ADAA8D057 /* _multiarray_tests.xcframework in Embed Frameworks */,
-				17FD962AF3A10BB975AEC422 /* _multiarray_umath.xcframework in Embed Frameworks */,
-				7D6A8ED941F9DD27D5951701 /* _operand_flag_tests.xcframework in Embed Frameworks */,
-				49817855F72A4B64D6622047 /* _rational_tests.xcframework in Embed Frameworks */,
-				8E0BC24E5E805CDA91CD7360 /* _simd.xcframework in Embed Frameworks */,
-				C274EA9CDC12ED51AAA7181E /* _struct_ufunc_tests.xcframework in Embed Frameworks */,
-				C7F19669D3046BC3BFA891F8 /* _umath_tests.xcframework in Embed Frameworks */,
-				269EB71ABE6367FE65DD217B /* _pocketfft_umath.xcframework in Embed Frameworks */,
-				741FBF3F480C7EFA95245CD7 /* _umath_linalg.xcframework in Embed Frameworks */,
-				DD38734DF72C90DBA0FA7A1E /* lapack_lite.xcframework in Embed Frameworks */,
 				293F87E7D63F9F4FE1674785 /* _bounded_integers.xcframework in Embed Frameworks */,
 				6B7D96617158789027741BA7 /* _common.xcframework in Embed Frameworks */,
 				AD2B7510302B99C8EF3B6E85 /* _generator.xcframework in Embed Frameworks */,
-				2CC7C52CAEAD5EEE7E681D83 /* _mt19937.xcframework in Embed Frameworks */,
-				BE299593F762EB0243E748A2 /* _pcg64.xcframework in Embed Frameworks */,
-				90D96EA991CF736CBE0CDA39 /* _philox.xcframework in Embed Frameworks */,
-				43DD160B5685B1FDE3B0D8B5 /* _sfc64.xcframework in Embed Frameworks */,
-				3E75119AAAD2418AE6B76585 /* bit_generator.xcframework in Embed Frameworks */,
-				82B159D872E7531B37FCC99C /* mtrand.xcframework in Embed Frameworks */,
 				54DC86FCF262D0557116DE21 /* _imaging.xcframework in Embed Frameworks */,
 				EE5EC1D663E8FBEC866E7A96 /* _imagingft.xcframework in Embed Frameworks */,
 				6530F32A014A26638A62D91C /* _imagingmath.xcframework in Embed Frameworks */,
 				DAD71D8495F4365B9D5D3610 /* _imagingmorph.xcframework in Embed Frameworks */,
 				2C5B8D631FA0D9B73EB77DFB /* _imagingtk.xcframework in Embed Frameworks */,
+				2CC7C52CAEAD5EEE7E681D83 /* _mt19937.xcframework in Embed Frameworks */,
+				3FF334176694033ADAA8D057 /* _multiarray_tests.xcframework in Embed Frameworks */,
+				17FD962AF3A10BB975AEC422 /* _multiarray_umath.xcframework in Embed Frameworks */,
+				7D6A8ED941F9DD27D5951701 /* _operand_flag_tests.xcframework in Embed Frameworks */,
+				BE299593F762EB0243E748A2 /* _pcg64.xcframework in Embed Frameworks */,
+				90D96EA991CF736CBE0CDA39 /* _philox.xcframework in Embed Frameworks */,
+				269EB71ABE6367FE65DD217B /* _pocketfft_umath.xcframework in Embed Frameworks */,
+				49817855F72A4B64D6622047 /* _rational_tests.xcframework in Embed Frameworks */,
+				43DD160B5685B1FDE3B0D8B5 /* _sfc64.xcframework in Embed Frameworks */,
+				8E0BC24E5E805CDA91CD7360 /* _simd.xcframework in Embed Frameworks */,
+				C274EA9CDC12ED51AAA7181E /* _struct_ufunc_tests.xcframework in Embed Frameworks */,
+				741FBF3F480C7EFA95245CD7 /* _umath_linalg.xcframework in Embed Frameworks */,
+				C7F19669D3046BC3BFA891F8 /* _umath_tests.xcframework in Embed Frameworks */,
+				3E75119AAAD2418AE6B76585 /* bit_generator.xcframework in Embed Frameworks */,
+				DD38734DF72C90DBA0FA7A1E /* lapack_lite.xcframework in Embed Frameworks */,
+				82B159D872E7531B37FCC99C /* mtrand.xcframework in Embed Frameworks */,
 				766C8713ECB4CA8AD887B597 /* pandas__libs__cyutility.xcframework in Embed Frameworks */,
 				E10A86078685C6E6527103D6 /* pandas__libs_algos.xcframework in Embed Frameworks */,
 				5F735BD9B9C3A7B9896FBD30 /* pandas__libs_arrays.xcframework in Embed Frameworks */,
@@ -945,6 +946,7 @@
 		E9C72C2A24D117C574C0444C /* BrowserSessionCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserSessionCenter.swift; sourceTree = "<group>"; };
 		EA10AC479B03C7D998AC448B /* ThreadDetailViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadDetailViewModel.swift; sourceTree = "<group>"; };
 		EB400574B41454793B7461C2 /* iPadBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPadBackgroundPolicy.swift; sourceTree = "<group>"; };
+		EB5D488C40B3370A6968FC2A /* LICENSE */ = {isa = PBXFileReference; path = LICENSE; sourceTree = "<group>"; };
 		EBC215027D7DF2A3C8B1DE14 /* _generator.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _generator.xcframework; path = Vendor/PythonExtensions/_generator.xcframework; sourceTree = "<group>"; };
 		EBF4EA91353CD8A801DCA98A /* ErrorEventView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorEventView.swift; sourceTree = "<group>"; };
 		EBFC00F1FCA508F70838C348 /* _uuid.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _uuid.xcframework; path = Vendor/PythonExtensions/_uuid.xcframework; sourceTree = "<group>"; };
@@ -1057,30 +1059,30 @@
 				1E05D8457E28FCCBFB3AEC55 /* termios.xcframework in Frameworks */,
 				E9F6C67D9F1DF74AD899BE08 /* unicodedata.xcframework in Frameworks */,
 				89D986DE42E1C09CD2DB6309 /* zlib.xcframework in Frameworks */,
-				D296A21FB23B0FC15D0B48FC /* _multiarray_tests.xcframework in Frameworks */,
-				8F049EBFB8AE998D823001E4 /* _multiarray_umath.xcframework in Frameworks */,
-				704C53FCB539119929E7F94B /* _operand_flag_tests.xcframework in Frameworks */,
-				E58BE479508ABA2C732D3E25 /* _rational_tests.xcframework in Frameworks */,
-				FDE8953BD93201A943C8CCC4 /* _simd.xcframework in Frameworks */,
-				93FA80998EEEFE39B4DC4B80 /* _struct_ufunc_tests.xcframework in Frameworks */,
-				DD883FA306F63AB8FB9B5D26 /* _umath_tests.xcframework in Frameworks */,
-				FC130E74BF0A158FEE5DA36C /* _pocketfft_umath.xcframework in Frameworks */,
-				13B6CDA57CE91DB700AD8BD0 /* _umath_linalg.xcframework in Frameworks */,
-				CCBF6AC11B7FB893FB5A60A5 /* lapack_lite.xcframework in Frameworks */,
 				53ECC4DE41C67E62C0003C63 /* _bounded_integers.xcframework in Frameworks */,
 				105AC73175A8E056421FBECF /* _common.xcframework in Frameworks */,
 				E59E0F696C3776234800BF08 /* _generator.xcframework in Frameworks */,
-				EEB68AFF7BCD15C86059B496 /* _mt19937.xcframework in Frameworks */,
-				044422FCA30CEF5DE011D5DB /* _pcg64.xcframework in Frameworks */,
-				F3F547F1678C64C4C2F7EAF4 /* _philox.xcframework in Frameworks */,
-				4C3164052094AEB9B4DAB81D /* _sfc64.xcframework in Frameworks */,
-				C3D0912C27625AA81B6DA7D2 /* bit_generator.xcframework in Frameworks */,
-				6C8F45B8571FF3FD40EFF490 /* mtrand.xcframework in Frameworks */,
 				BD57F4933C196166CE0BD650 /* _imaging.xcframework in Frameworks */,
 				53BAF834CD561BC043B376D4 /* _imagingft.xcframework in Frameworks */,
 				3BAB66C9AAB283C5B8935E5B /* _imagingmath.xcframework in Frameworks */,
 				2F85B4ACAE9199A7CAEC5490 /* _imagingmorph.xcframework in Frameworks */,
 				B8C6577DCD079BA0FBE7EBCB /* _imagingtk.xcframework in Frameworks */,
+				EEB68AFF7BCD15C86059B496 /* _mt19937.xcframework in Frameworks */,
+				D296A21FB23B0FC15D0B48FC /* _multiarray_tests.xcframework in Frameworks */,
+				8F049EBFB8AE998D823001E4 /* _multiarray_umath.xcframework in Frameworks */,
+				704C53FCB539119929E7F94B /* _operand_flag_tests.xcframework in Frameworks */,
+				044422FCA30CEF5DE011D5DB /* _pcg64.xcframework in Frameworks */,
+				F3F547F1678C64C4C2F7EAF4 /* _philox.xcframework in Frameworks */,
+				FC130E74BF0A158FEE5DA36C /* _pocketfft_umath.xcframework in Frameworks */,
+				E58BE479508ABA2C732D3E25 /* _rational_tests.xcframework in Frameworks */,
+				4C3164052094AEB9B4DAB81D /* _sfc64.xcframework in Frameworks */,
+				FDE8953BD93201A943C8CCC4 /* _simd.xcframework in Frameworks */,
+				93FA80998EEEFE39B4DC4B80 /* _struct_ufunc_tests.xcframework in Frameworks */,
+				13B6CDA57CE91DB700AD8BD0 /* _umath_linalg.xcframework in Frameworks */,
+				DD883FA306F63AB8FB9B5D26 /* _umath_tests.xcframework in Frameworks */,
+				C3D0912C27625AA81B6DA7D2 /* bit_generator.xcframework in Frameworks */,
+				CCBF6AC11B7FB893FB5A60A5 /* lapack_lite.xcframework in Frameworks */,
+				6C8F45B8571FF3FD40EFF490 /* mtrand.xcframework in Frameworks */,
 				DB50F1F1A2CF3AA30E3CA297 /* pandas__libs__cyutility.xcframework in Frameworks */,
 				BF0F2E2F2B4C891C0D179306 /* pandas__libs_algos.xcframework in Frameworks */,
 				CACC526CA057A90BF71B28F5 /* pandas__libs_arrays.xcframework in Frameworks */,
@@ -1339,6 +1341,14 @@
 			path = App;
 			sourceTree = "<group>";
 		};
+		5DBB570906C287634081D825 /* RoyalVNCKit */ = {
+			isa = PBXGroup;
+			children = (
+				EB5D488C40B3370A6968FC2A /* LICENSE */,
+			);
+			path = RoyalVNCKit;
+			sourceTree = "<group>";
+		};
 		5F88DD1F13C82F2B405FA801 /* Settings */ = {
 			isa = PBXGroup;
 			children = (
@@ -1488,9 +1498,18 @@
 				0A6ACED6DF1FFB1737C49427 /* FloeWidgets */,
 				D38FE95FA512115C4664ECFE /* Packages */,
 				662EB09365DAD3DF8603C700 /* Tests */,
+				81D9D572716013B7E9483B58 /* ThirdParty */,
 				8A4A949589D4B5E4B2D18F79 /* Frameworks */,
 				D2F4766B4780E506300D05AC /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		81D9D572716013B7E9483B58 /* ThirdParty */ = {
+			isa = PBXGroup;
+			children = (
+				5DBB570906C287634081D825 /* RoyalVNCKit */,
+			);
+			path = ThirdParty;
 			sourceTree = "<group>";
 		};
 		8A4A949589D4B5E4B2D18F79 /* Frameworks */ = {
@@ -2005,6 +2024,7 @@
 			files = (
 				75B75F5F8C25D5B60B5E4541 /* Assets.xcassets in Resources */,
 				F9AE89670E3EE68F7DB18F74 /* InfoPlist.xcstrings in Resources */,
+				5C92C52F4F767AD2C1E010F7 /* LICENSE in Resources */,
 				8E7756561D6378946EAEB05B /* LibArchiveLicenses in Resources */,
 				EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */,
 				82A6523A97E32F6261F639AA /* PDFiumLicenses in Resources */,

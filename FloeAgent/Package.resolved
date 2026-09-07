@@ -1,5 +1,5 @@
 {
-  "originHash" : "82f27c1571ddf988cda33b590309a0bf4c11988da1f982702176c9e40bd923c9",
+  "originHash" : "63dc714e14cb607217d632de220382c200ee3f6186e3e564d556bac2565a149e",
   "pins" : [
     {
       "identity" : "bigint",
@@ -32,7 +32,6 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/royalapplications/CryptoSwift.git",
       "state" : {
-        "branch" : "foundationessentials",
         "revision" : "a59b4d91ebb22011656c830f874fe7152e183a57"
       }
     },
@@ -87,14 +86,6 @@
       "location" : "https://github.com/ml-explore/mlx-swift-lm.git",
       "state" : {
         "revision" : "bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57"
-      }
-    },
-    {
-      "identity" : "royalvnc",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/royalapplications/royalvnc.git",
-      "state" : {
-        "revision" : "92d4427c73817d8f849bb289ff190aa4b40c44ea"
       }
     },
     {

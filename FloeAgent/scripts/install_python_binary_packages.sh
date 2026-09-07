@@ -132,6 +132,7 @@ python3 scripts/install_pandas_pure_dependencies.py
 # builds embed exactly the same binary packages.
 python3 - "${project_yml_entries[@]}" <<'EOF'
 import sys
+modules = sorted(set(sys.argv[1:]))  # Locale-independent on every CI host.
 path = "project.yml"
 begin = "        # BEGIN embedded Python binary packages (generated)"
 end = "        # END embedded Python binary packages"
@@ -143,7 +144,7 @@ for line in lines:
     if line.strip() == begin.strip():
         inside = True
         out.append(begin)
-        for module in sys.argv[1:]:
+        for module in modules:
             out.append(f"      - framework: Vendor/PythonExtensions/{module}.xcframework")
             out.append("        embed: true")
         out.append(end)
@@ -158,7 +159,7 @@ if not emitted:
     # Insert after the last PythonExtensions embed entry.
     index = max(i for i, line in enumerate(out) if "Vendor/PythonExtensions/" in line)
     block = [begin]
-    for module in sys.argv[1:]:
+    for module in modules:
         block.append(f"      - framework: Vendor/PythonExtensions/{module}.xcframework")
         block.append("        embed: true")
     block.append(end)
