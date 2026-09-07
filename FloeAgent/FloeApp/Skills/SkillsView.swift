@@ -118,20 +118,29 @@ private struct SkillGitHubUpgradeSheet: View {
     @State private var path = "SKILL.md"
     @State private var validationError: String?
     @State private var confirmingRollback = false
+    private var isOfficial: Bool { OfficialSkillHub.skillIDs.contains(skill.id) }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("GitHub 来源 / Source") {
-                    TextField("Owner", text: $owner)
-                    TextField("Repository", text: $repository)
-                    TextField("Branch / tag / commit", text: $ref)
-                    TextField("SKILL.md or package inventory JSON", text: $path)
-                    Text("使用现有 GitHub 连接器访问私有仓库。完整包入口需列出 files: {相对路径: SHA256}；不会自动下载 Markdown 链接。")
-                        .font(.caption).foregroundStyle(.secondary)
+                    if isOfficial {
+                        LabeledContent("官方来源 / Official source", value: "JiangNanGenius/floe-agent")
+                        LabeledContent("目录 / Directory", value: "skill-hub/")
+                        LabeledContent("已安装 / Installed", value: skill.version)
+                        Text("仅从官方仓库获取签名 ZIP。检查来源、签名、内容和应用兼容性后，再审核并应用；不会覆盖运行中的版本。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        TextField("Owner", text: $owner)
+                        TextField("Repository", text: $repository)
+                        TextField("Branch / tag / commit", text: $ref)
+                        TextField("SKILL.md or package inventory JSON", text: $path)
+                        Text("使用现有 GitHub 连接器访问私有仓库。完整包入口需列出 files: {相对路径: SHA256}；不会自动下载 Markdown 链接。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Button("检查更新 / Check update") {
                         do {
-                            let source = try GitHubSkillSource(owner: owner, repository: repository, ref: ref, path: path)
+                            let source = try isOfficial ? OfficialSkillHub.source() : GitHubSkillSource(owner: owner, repository: repository, ref: ref, path: path)
                             validationError = nil
                             Task { await center.checkGitHubUpgrade(skill: skill, source: source) }
                         } catch { validationError = error.localizedDescription }

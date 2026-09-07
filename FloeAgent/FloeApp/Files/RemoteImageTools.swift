@@ -621,7 +621,7 @@ struct PDFEditTool: AgentTool {
         /// top or bottom (default bottom).
         var pageNumberPosition: String?
         var pageNumberStart: Int?
-        /// Annotation-layer text cover-and-replace (not a content-stream rewrite).
+        /// Native content-stream replacement; unsupported layouts fail closed.
         var replaceText: [TextReplacement]?
         /// PDF open/permission passwords (stored only in the output file).
         var userPassword: String?
@@ -630,7 +630,7 @@ struct PDFEditTool: AgentTool {
 
     static let name = "document.pdf.edit"
     static let toolDescription =
-        "Create a new PDF from a workspace PDF using native PDFKit. Supports: remove pages; rotate pages by 90-degree increments (rotations for per-page angles, or rotatePages+rotationDegrees for one shared angle); a visible text watermark with optional font size, opacity, position (center/top/bottom/corners) and watermarkPages; pageNumbers stamping; replaceText as an annotation-layer cover-and-replace (the original content stream is visually covered, never rewritten — verify with render); userPassword/ownerPassword encryption. Always writes outputPath and then reopens it to verify. For merging or page extraction use document.pdf.merge / document.pdf.split."
+        "Create a new PDF with page removal/rotation, watermark, page numbers or password protection. replaceText performs exact case-sensitive native PDFium text-object content-stream edits before page operations, never a white cover. Currently requires an encodable existing font and replacement within the original text bounds; scans, nested/cross-object matches and overflowing replacements fail without saving. Signed PDFs are rejected for text editing. This is editing, not secure redaction. Always save to a new output and reopen/render to verify."
     static let parametersJSON = #"""
     {"type":"object","properties":{"inputPath":{"type":"string"},"outputPath":{"type":"string"},"removePages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}},"rotatePages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}},"rotationDegrees":{"type":"integer","enum":[0,90,180,270,-90,-180,-270]},"rotations":{"type":"array","maxItems":100,"items":{"type":"object","properties":{"page":{"type":"integer","minimum":1},"degrees":{"type":"integer","enum":[0,90,180,270,-90,-180,-270]}},"required":["page","degrees"],"additionalProperties":false}},"watermark":{"type":"string","maxLength":200},"watermarkFontSize":{"type":"number","minimum":8,"maximum":72},"watermarkOpacity":{"type":"number","minimum":0.05,"maximum":1},"watermarkPages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}},"watermarkPosition":{"type":"string","enum":["center","top","bottom","topLeft","topRight","bottomLeft","bottomRight"]},"pageNumbers":{"type":"boolean"},"pageNumberPosition":{"type":"string","enum":["top","bottom"]},"pageNumberStart":{"type":"integer","minimum":1,"maximum":10000},"replaceText":{"type":"array","maxItems":20,"items":{"type":"object","properties":{"find":{"type":"string","maxLength":500},"replace":{"type":"string","maxLength":500},"pages":{"type":"array","maxItems":100,"items":{"type":"integer","minimum":1}}},"required":["find","replace"],"additionalProperties":false}},"userPassword":{"type":"string","maxLength":200},"ownerPassword":{"type":"string","maxLength":200}},"required":["inputPath","outputPath"],"additionalProperties":false}
     """#
@@ -681,9 +681,33 @@ struct PDFEditTool: AgentTool {
 
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let source = try PDFToolSupport.open(args.inputPath, context: context)
-        guard let data = source.dataRepresentation(), let document = PDFDocument(data: data) else {
+        try context.authorizeWorkspacePath(args.outputPath)
+        guard let outputRoot = context.workspaceRootURL else { throw FloeError.invalidConfiguration("No task workspace") }
+        let outputURL = try WorkspacePathGuard(rootURL: outputRoot).resolve(args.outputPath)
+        guard !FileManager.default.fileExists(atPath: outputURL.path) else {
+            throw FloeError.validationFailed("PDF output already exists; choose a new path to preserve the original")
+        }
+        guard var data = source.dataRepresentation() else {
             throw FloeError.validationFailed("PDF could not be copied for editing")
         }
+        var replacedCount = 0
+        if let rules = args.replaceText, !rules.isEmpty {
+            guard let root = context.workspaceRootURL else { throw FloeError.invalidConfiguration("No task workspace") }
+            let inputURL = try WorkspacePathGuard(rootURL: root).resolve(args.inputPath)
+            // Preserve the original signature/encryption state for native checks.
+            let original = try Data(contentsOf: inputURL)
+            let operations: [[String: Any]] = rules.map { rule in
+                var value: [String: Any] = ["find": rule.find, "replace": rule.replace]
+                if let pages = rule.pages { value["pages"] = pages }
+                return value
+            }
+            let result = try await PDFContentEditor.replace(in: original,
+                rulesJSON: JSONSerialization.data(withJSONObject: operations), cancellation: context.cancellation)
+            data = result.data
+            replacedCount = result.replacements
+            try context.cancellation.throwIfCancelled()
+        }
+        guard let document = PDFDocument(data: data) else { throw FloeError.validationFailed("Edited PDF could not be opened") }
         for pageNumber in Set(args.removePages ?? []).sorted(by: >) {
             let index = pageNumber - 1
             guard document.page(at: index) != nil else {
@@ -752,35 +776,6 @@ struct PDFEditTool: AgentTool {
                 page.addAnnotation(annotation)
             }
         }
-        var replacedCount = 0
-        for rule in args.replaceText ?? [] {
-            let allowedPages = rule.pages.map { Set($0) }
-            let matches = document.findString(rule.find, withOptions: .caseInsensitive)
-            for selection in matches.prefix(50) {
-                for page in selection.pages {
-                    guard let page = page as? PDFPage else { continue }
-                    let pageNumber = document.index(for: page) + 1
-                    if let allowedPages, !allowedPages.contains(pageNumber) { continue }
-                    let bounds = selection.bounds(for: page)
-                    guard !bounds.isNull, bounds.width > 1, bounds.height > 1 else { continue }
-                    let cover = PDFAnnotation(bounds: bounds, forType: .square, withProperties: nil)
-                    cover.color = .white
-                    cover.interiorColor = .white
-                    page.addAnnotation(cover)
-                    if !rule.replace.isEmpty {
-                        let label = PDFAnnotation(bounds: bounds, forType: .freeText, withProperties: nil)
-                        label.contents = rule.replace
-                        label.font = .systemFont(ofSize: max(6, bounds.height * 0.72))
-                        label.fontColor = .black
-                        label.color = .clear
-                        page.addAnnotation(label)
-                    }
-                    replacedCount += 1
-                    if replacedCount >= 200 { break }
-                }
-                if replacedCount >= 200 { break }
-            }
-        }
         let encrypted = args.userPassword != nil || args.ownerPassword != nil
         if encrypted {
             try context.authorizeWorkspacePath(args.outputPath)
@@ -815,7 +810,7 @@ struct PDFEditTool: AgentTool {
         }
         var summary = "Saved and reopened \(args.outputPath); pages=\(verifiedPageCount)"
         if !appliedRotations.isEmpty { summary += " rotated=\(appliedRotations.count)" }
-        if replacedCount > 0 { summary += " replaceTextMatches=\(replacedCount) (annotation-layer cover)" }
+        if replacedCount > 0 { summary += " replaceTextMatches=\(replacedCount) (native content-stream rewrite; not secure redaction)" }
         if encrypted { summary += " encrypted=true" }
         return PDFToolSupport.output(summary, status: 0)
     }

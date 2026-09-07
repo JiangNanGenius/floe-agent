@@ -10,23 +10,14 @@ enum ToolWorkflowGuidance {
         let names = Set(toolNames)
         var lines: [String] = []
 
-        if names.contains(where: { ToolCapabilityGroups.group($0) == "executor" }) {
-            lines.append("Executor substrate: ssh.execute runs in the REMOTE environment and returns a durable taskID when running. Poll ssh.taskStatus or cancel with ssh.cancelTask using that exact taskID; never rerun a command to recover its result. Executor is independent of the interactive Terminal toolkit and on-device Python.")
-        }
-        if names.contains(where: { ToolCapabilityGroups.group($0) == "terminal" }) {
-            lines.append("Terminal toolkit: ssh.shellOpen -> ssh.shellExchange -> ssh.shellClose uses a run-scoped sessionID for interactive input/output, not a durable taskID. TCP/Telnet and BLE serial reuse their exact open-session IDs until close. Use Executor for durable one-shot commands.")
-        }
-        if names.contains("ssh.listHosts") {
-            lines.append("Host configuration: resolve the host once with ssh.listHosts and reuse its exact hostID. ssh.inspectTarget probes; ssh.updateHost stores configuration and credential references without returning secrets. Bootstrap tools are explicit one-time deployments, not routine execution prerequisites. Publishing a remote share requires explicit sharing authority.")
-        }
-        if names.contains("remoteHosting.manage") {
-            lines.append("Remote hosting reuses shareIDs from inspect/manage; publish only after explicit sharing authority.")
+        if names.contains(where: { ["executor", "terminal", "hosts", "vnc"].contains(ToolCapabilityGroups.group($0)) || $0.hasPrefix("cloudWorkspace.") || $0.hasPrefix("remoteHosting.") }) {
+            lines.append("Remote workflow: skill.read id=floe-remote; discover only the needed subgroup. Executor taskID and Terminal sessionID are distinct. Reuse returned IDs, honor the user's prerequisite order, never replay dispatched side effects, and publish shares only with explicit authority.")
         }
         if names.contains("browser.navigate") && names.contains("browser.observe") {
             lines.append("Browser workflow: reuse the tabID/documentID from browser.navigate and fresh element refs from browser.observe for one action, then observe again. Full DOM-first strategy: skill.read id=floe-browser.")
         }
         if names.contains("vnc.observe") {
-            lines.append("VNC is a strict state machine: vnc.status -> vnc.connect -> vnc.observe -> one input with post-action evidence -> next input. partialSuccess means input may already have executed: never replay it; inputDispatched is not success. Never call observe or input while disconnected, never ask for a password when a secure credential reference can be stored, and honor any user-specified prerequisite route first.")
+            lines.append("VNC requires a connected session and fresh evidence before input. partialSuccess may already have dispatched input: use post-action evidence, never replay it. Credentials remain secure references. Full lifecycle: floe-remote.")
         }
         if names.contains("canvas.getState") {
             lines.append("Canvas workflow: reuse the latest canvasID/revision/node IDs from canvas.getState; apply returned deltas without re-inspecting unless a revision conflict occurs. Details: skill.read id=floe-data-code.")
@@ -45,9 +36,6 @@ enum ToolWorkflowGuidance {
         }
         if names.contains("font.list") && names.contains("font.remove") {
             lines.append("Font workflow: font.list returns the digest id required by font.remove; never derive it from a filename.")
-        }
-        if names.contains(where: { $0.hasPrefix("cloudWorkspace.") }) {
-            lines.append("Cloud-workspace workflow: reuse the exact hostID/workspaceID already shown under Workspace links (cloudWorkspace.catalog/create provides one when absent). Do not treat the local Cloud marker as remote file content.")
         }
         return lines
     }

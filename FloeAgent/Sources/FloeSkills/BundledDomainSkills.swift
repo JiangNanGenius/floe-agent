@@ -17,12 +17,18 @@ public enum BundledDomainSkills {
         public let exposed: Bool
         public let markdown: String
 
+        /// Broad remote workflows discover subgroups, rather than loading the
+        /// whole remote catalog merely by reading this guide.
+        public var automaticallyLoadedToolNames: [String] {
+            id == "floe-remote" ? [] : toolNames
+        }
+
         /// Exact tool references are checked against the executable catalog.
         public var toolNames: [String] {
             let pattern = #"(?<![A-Za-z0-9_.-])[a-z][A-Za-z0-9]*(?:\.[a-zA-Z][A-Za-z0-9]*)+(?![A-Za-z0-9_.-])"#
             let regex = try! NSRegularExpression(pattern: pattern)
             let ns = markdown as NSString
-            let allowedRoots = ["document", "font", "network", "web", "exec", "ssh", "canvas", "image", "apple", "mail", "browser", "workspace", "crypto", "credential"]
+            let allowedRoots = ["document", "font", "network", "web", "exec", "ssh", "canvas", "image", "apple", "mail", "browser", "workspace", "crypto", "credential", "vnc", "remote", "remoteHosting", "cloudWorkspace", "bluetooth"]
             return Set(regex.matches(in: markdown, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range) }.filter { allowedRoots.contains(String($0.split(separator: ".")[0])) }).sorted()
         }
     }
@@ -31,67 +37,45 @@ public enum BundledDomainSkills {
 
     public static func sourceURL(for id: String) -> String { builtinSourceScheme + id }
 
-    public static let all: [Definition] = [
+    public static let all: [Definition] = officialDefinitions + [
         // MARK: Exposed to the hub (office / pdf / network)
-        Definition(
-            id: "floe-pdf",
-            name: "PDF Workbench",
-            description: "Closed-loop PDF workflow: inspect, render, merge, split, edit, fill forms, verify.",
-            version: "1.0.0",
-            exposed: true,
-            markdown: """
-            ## PDF workbench
-            Follow this closed loop for PDF tasks:
-            1. **Inspect first**: `document.pdf.inspect` for page count, metadata, text, and query matches before planning any edit.
-            2. **Render only relevant pages** with `document.pdf.render` (single page or a spec like "1-3,5") when visual evidence is needed.
-            3. **Compose**: `document.pdf.merge` (2-10 PDFs in order), `document.pdf.split` (extract pages "1-3,5,8-10"), `document.pdf.fromImages` (one image per page).
-            4. **Edit** with `document.pdf.edit`: page removal, per-page 90-degree rotations (`rotations`), positioned watermarks (`watermarkPosition`/`watermarkPages`), page numbers, and `userPassword`/`ownerPassword` encryption. Its `replaceText` is an **annotation-layer cover-and-replace**: the original content stream is visually covered, never rewritten — original text may remain searchable, selectable and recoverable; this is NOT secure redaction, and fonts may differ. True content-stream rewriting is not available (PDFKit boundary); never claim it.
-            5. **Forms**: `document.pdf.fillForm` lists AcroForm fields (name + type) and fills text/checkbox/dropdown/radio/option-list fields with per-type validation. Unknown fields and invalid options are reported, never silently applied.
-            6. **Save to a new output** unless the user explicitly asked for overwrite, then reopen the saved file with `document.pdf.inspect` and render the changed pages to verify.
-            """
-        ),
-        Definition(
-            id: "floe-office",
-            name: "Office Documents",
-            description: "Word, workbook and Markdown creation/inspection/editing with the right tool for each job.",
-            version: "1.0.0",
-            exposed: true,
-            markdown: """
-            ## Office document workflow
-            - **Word (.docx)**: `document.createWord` generates a real OOXML document; `document.office.inspect` returns stable field IDs; `document.office.updateText` edits those fields (use only explicit IDs from inspect; never guess).
-            - **Workbook (.xlsx)**: `document.createWorkbook` builds a spreadsheet from sheet JSON. To **read** cell values quickly use `document.readSheet` (read-only TSV). To **edit** use `document.office.inspect` first — it returns the editable field/formula IDs that `document.office.updateText` consumes. Do not treat readSheet output as editable IDs.
-            - **Markdown**: `document.createMarkdown` writes .md/.markdown/.txt only (for .docx use createWord).
-            - **Fonts**: before `font.remove`, call `font.list` and reuse the exact digest id — never derive it from a filename.
-            - Always reopen/inspect the saved artifact to verify, and save to a new file unless overwrite was explicitly requested.
-            """
-        ),
-        Definition(
-            id: "floe-network",
-            name: "Network Diagnostics",
-            description: "Ping, traceroute, DNS, LAN scan and raw HTTP with the right boundary versus web.fetch.",
-            version: "1.0.0",
-            exposed: true,
-            markdown: """
-            ## Network diagnostics workflow
-            - `network.ping`, `network.traceroute`, `network.dnsLookup` diagnose reachability on the **local device** by default; pass a paired `hostID` only when the user wants the probe run from that remote host.
-            - `network.scanLAN` enumerates the local network — run it only when the user asked for discovery or a LAN diagnostic.
-            - `network.http` issues raw HTTP with method/headers/body control subject to network policy. When the goal is **reading a web page as content**, use `web.fetch` instead (returns readable markdown). Use `network.download` to save an authorized URL to a workspace file.
-            - Credential URLs and cloud metadata endpoints are blocked; never try to bypass those blocks or exfiltrate instance metadata.
-            """
-        ),
         // MARK: Hidden built-ins
+        Definition(
+            id: "floe-remote",
+            name: "Remote Operations",
+            description: "VNC, Executor, interactive Terminal, host configuration and remote workspace lifecycle. Load only the subgroup needed for the current task.",
+            version: "1.0.0",
+            exposed: false,
+            markdown: """
+            ## Remote operations
+            This is a workflow guide, not an execution runtime or permission grant.
+            Discover the relevant subgroup with tools.search; do not activate all remote tools at once.
+            ### Host configuration
+            Resolve a host once with `ssh.listHosts` and reuse its exact hostID. `ssh.inspectTarget` probes; `ssh.updateHost` stores configuration and secure credential references. Bootstrap/deploy requires explicit authority, not a routine prerequisite.
+            ### Executor substrate
+            `ssh.execute` runs remotely and may return a durable taskID. Reuse it with `ssh.taskStatus` or `ssh.cancelTask`; never rerun a command to recover its result. Executor is independent of this guide, Terminal sessions and on-device Python.
+            ### Interactive Terminal
+            `ssh.shellOpen` → `ssh.shellExchange` → `ssh.shellClose` uses a run-scoped sessionID, never a taskID. `remote.connection.open`, `remote.connection.exchange`, `remote.connection.close` and BLE serial sessions likewise reuse their exact session IDs. Use Executor for durable one-shot commands.
+            ### VNC
+            `vnc.status` → `vnc.connect` → `vnc.observe` → one input with post-action evidence. `vnc.click`, `vnc.drag`, `vnc.typeText`, `vnc.typeCredential`, `vnc.keyPress` and `vnc.scroll` require a connected session and current evidence. `vnc.disconnect` closes it.
+            Honor the user's prerequisite route first, including authorized SSH repair when requested. Never repeat an unchanged failed call. partialSuccess/inputDispatched means input may already have executed: inspect evidence, never replay the input merely because screenshot capture failed. Reuse credential references; do not request or expose secret values.
+            ### Cloud workspaces and sharing
+            Reuse the exact hostID/workspaceID in Workspace links; `cloudWorkspace.catalog` or `cloudWorkspace.create` resolves missing IDs. A local Cloud marker is not remote file content.
+            `remoteHosting.inspect` and `remoteHosting.manage` reuse shareIDs. Publishing requires explicit sharing authority; list before changing/stopping an existing share.
+            """
+        ),
         Definition(
             id: "floe-python",
             name: "Local Python Runtime",
             description: "The bundled CPython substrate: usage rules, bundled libraries, and the contract every script-carrying skill executes under.",
-            version: "1.0.0",
+            version: "1.1.0",
             exposed: false,
             markdown: """
             ## Local Python (exec.localPython)
             ### Using the runtime
             - The appended runtime probe is authoritative for this build's Python and native library versions. Standard-library extensions include asyncio, json, csv, sqlite3, zipfile, tarfile, gzip, bz2, lzma, hashlib, hmac, secrets, xml.etree, mmap, zoneinfo and statistics. Desktop shell modules (curses, readline, grp, pwd, syslog, multiprocessing) do not exist on iOS.
             - numpy and Pillow (import as PIL) are bundled natively in supported builds. Use the runtime probe to confirm availability; do not infer installed versions from old memory or route working native libraries to WebAssembly.
-            - pandas, scipy and matplotlib have no compatible iOS build upstream: use the browser-based **Pyodide WebAssembly** route (workspace HTML + public-HTTPS Pyodide, JSON in/out). Never claim a native install when code ran in WebAssembly.
+            - For pandas, scipy and matplotlib, consult the runtime probe: if a package is not bundled in this build, use the explicitly identified **Pyodide WebAssembly** route (workspace HTML + public-HTTPS Pyodide, JSON in/out) or an authorized remote host. Never claim a native install when code ran in WebAssembly; a build pipeline or downloaded wheel is not proof of runtime availability.
             - Extra pure-Python packages install through the managed review path (`packages`/`pipCommand` + `packagePurpose`, exact `name==version`, py3-none-any wheels only). Never invoke pip/ensurepip/subprocess inside `script`.
             ### The substrate contract for script-carrying skills
             Skills may ship `scripts/*.py` executed through this runtime. The contract:
@@ -152,13 +136,13 @@ public enum BundledDomainSkills {
             id: "floe-files-vcs",
             name: "Files & Version Control",
             description: "Workspace file discipline, safe-write checks, archive formats and the minimal Git sequence.",
-            version: "1.0.0",
+            version: "1.1.0",
             exposed: false,
             markdown: """
             ## Files & version control
             - **Safe writes**: `workspace.writeFile`/`workspace.applyPatch` validate `expectedSHA256`/`expectedMtime` when the file existed; read before overwrite and never bypass a mismatch — re-read and recompute instead.
             - **Read→modify→verify**: after writes, reopen with `workspace.readFile` or `workspace.searchFiles` to confirm; keep paths workspace-relative (no absolute, no `..`).
-            - **Archives** (`workspace.archive`): zip/tar/7z natively; tgz/tbz2/txz and single-file gz/bz2/xz through the bundled CPython bridge. Extract of zip/tar/7z/tar.* outputs a **directory**; gz/bz2/xz outputs a **single file** (a trailing "/" destination places it inside). 7z is extract/list only; **rar is unavailable** (decoder licensing) — ask for zip/7z instead.
+            - **Archives** (`workspace.archive`): native ZIP/TAR/7z, plus the app's native RAR/RAR5 reader. Compressed TAR and gz/bz2/xz use CPython. Use `destinationDir` for container extraction, `destinationFile` for archive creation or single-file decompression, neither for listing. RAR/7z are read-only; encrypted/multipart/unsupported RAR variants fail explicitly. Old ambiguous destination calls must be replanned. Existing outputs are never overwritten.
             - **Git** (workspace): ordered minimal sequence status → diff → stage → commit → (pull/push with explicit approval). No stash/tag/rebase/cherry-pick — do not fabricate them through other tools.
             """
         ),

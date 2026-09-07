@@ -12,6 +12,7 @@ import FloeWorkspace
 enum ArchiveCompressedBridge {
     static func makeHandler(service: LocalPythonService) -> ArchiveCompressedHandler {
         { request in
+            if request.format == "rar" { return try await RARArchiveService.run(request) }
             let args: [String: Any] = [
                 "action": request.action,
                 "format": request.format,
@@ -23,7 +24,7 @@ enum ArchiveCompressedBridge {
             let script = Self.script.replacingOccurrences(of: "__ARGS_JSON__", with: argsJSON)
             let outcome = await service.run(
                 ScriptExecutionRequest(script: script, timeout: 30, maxOutputBytes: 64 * 1024),
-                cancellation: nil
+                cancellation: request.cancellation
             )
             switch outcome {
             case .ok(_, let stdout, let stderr, _, _, _):

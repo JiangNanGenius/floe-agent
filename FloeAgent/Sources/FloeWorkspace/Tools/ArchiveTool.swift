@@ -21,13 +21,15 @@ public struct ArchiveCompressedRequest: Sendable {
     public var source: String
     public var destination: String?
     public var workspaceRoot: URL
+    public var cancellation: CancellationToken
 
-    public init(action: String, format: String, source: String, destination: String?, workspaceRoot: URL) {
+    public init(action: String, format: String, source: String, destination: String?, workspaceRoot: URL, cancellation: CancellationToken = CancellationToken()) {
         self.action = action
         self.format = format
         self.source = source
         self.destination = destination
         self.workspaceRoot = workspaceRoot
+        self.cancellation = cancellation
     }
 }
 
@@ -39,16 +41,20 @@ public struct WorkspaceArchiveTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var action: String
         public var source: String
-        public var destination: String?
+        public var destinationDir: String?
+        public var destinationFile: String?
+        /// Internal resolved path; not a model parameter or legacy alias.
+        fileprivate var destination: String? { destinationDir ?? destinationFile }
         /// zip or tar; defaults to the destination/source extension.
         public var format: String?
         /// Present when the call is routed to a host scope; always rejected.
         public var scope: String?
 
-        public init(action: String, source: String, destination: String? = nil, format: String? = nil, scope: String? = nil) {
+        public init(action: String, source: String, destinationDir: String? = nil, destinationFile: String? = nil, format: String? = nil, scope: String? = nil) {
             self.action = action
             self.source = source
-            self.destination = destination
+            self.destinationDir = destinationDir
+            self.destinationFile = destinationFile
             self.format = format
             self.scope = scope
         }
@@ -56,15 +62,16 @@ public struct WorkspaceArchiveTool: AgentTool {
 
     public static let name = "workspace.archive"
     public static let toolDescription =
-        "Archive operations inside the workspace, one entry point for every common format. action=create packs one file or directory into a new archive at destination (zip, tar, tgz, tbz2, txz, or single-file gz/bz2/xz); action=extract unpacks (zip/tar/7z/tar.* always into a new destination DIRECTORY; gz/bz2/xz decompress into a single FILE at destination); action=list shows entries (zip/tar/7z/tar.*). Formats: zip, tar and 7z (read) run natively; tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, gz, bz2 and xz run through the bundled CPython with the same limits; rar is unavailable. Entry count and total size are capped, unsafe entry names are skipped, and existing destinations are never overwritten."
+        "Archive operations inside the workspace. create writes a new archive to destinationFile. extract writes zip/tar/7z/rar/tar.* entries into a new destinationDir, or decompresses gz/bz2/xz into destinationFile. Pass exactly the matching field; list accepts neither. ZIP/TAR/7z are native; RAR/RAR5 list/extract uses the app's signed native decoder and rejects encrypted, multipart or unsupported variants. Compressed TAR and single-file compression use CPython. Entry/size limits apply, existing outputs are never overwritten. Old destination calls must be replanned, not replayed."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "action": {"type": "string", "enum": ["create", "extract", "list"]},
         "source": {"type": "string", "description": "Workspace-relative source: file/directory to pack (create) or archive to read (extract/list)"},
-        "destination": {"type": "string", "description": "create: output archive path. extract: output DIRECTORY for zip/tar/7z/tar.*, output FILE for gz/bz2/xz. Required for create and extract"},
-        "format": {"type": "string", "enum": ["zip", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz", "7z"], "description": "Archive format; defaults to the destination/source extension"}
+        "destinationDir": {"type": "string", "description": "New output directory, only for extracting zip/tar/7z/tar.* containers"},
+        "destinationFile": {"type": "string", "description": "New output file, for create or extracting single-file gz/bz2/xz"},
+        "format": {"type": "string", "enum": ["zip", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz", "7z", "rar"], "description": "Archive format; defaults to the destination/source extension"}
       },
       "required": ["action", "source"],
       "additionalProperties": false
@@ -90,7 +97,10 @@ public struct WorkspaceArchiveTool: AgentTool {
         guard ["create", "extract", "list"].contains(args.action) else {
             throw WorkspaceToolError.invalidArguments("action must be create, extract or list")
         }
-        for path in [args.source, args.destination].compactMap({ $0 }) {
+        guard args.destinationDir == nil || args.destinationFile == nil else {
+            throw WorkspaceToolError.invalidArguments("Pass only destinationDir or destinationFile, never both")
+        }
+        for path in [args.source, args.destinationDir, args.destinationFile].compactMap({ $0 }) {
             let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, !trimmed.hasPrefix("/"), !trimmed.hasPrefix("~"),
                   !trimmed.split(separator: "/").contains("..") else {
@@ -99,11 +109,26 @@ public struct WorkspaceArchiveTool: AgentTool {
         }
         if args.action != "list",
            args.destination?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
-            throw WorkspaceToolError.invalidArguments("destination is required for create and extract")
+            throw WorkspaceToolError.invalidArguments("Use destinationDir for container extraction or destinationFile for create/single-file decompression; replan old destination calls")
         }
         if let format = args.format,
-           !["zip", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz", "7z"].contains(format) {
+           !["zip", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz", "7z", "rar"].contains(format) {
             throw WorkspaceToolError.invalidArguments("format must be zip, tar, tgz, tbz2, txz, gz, bz2, xz or 7z")
+        }
+        let resolved = try format(for: args)
+        guard !(args.action == "create" && ["rar", "7z"].contains(resolved)) else {
+            throw WorkspaceToolError.invalidArguments("RAR and 7z are list/extract only")
+        }
+        if args.action == "list" {
+            guard args.destination == nil else { throw WorkspaceToolError.invalidArguments("list does not accept an output destination") }
+        } else {
+            let writesFile = args.action == "create" || ["gz", "bz2", "xz"].contains(resolved)
+            guard writesFile ? args.destinationFile != nil : args.destinationDir != nil else {
+                throw WorkspaceToolError.invalidArguments(writesFile ? "This operation requires destinationFile" : "Container extraction requires destinationDir")
+            }
+            if writesFile, args.destinationFile?.hasSuffix("/") == true {
+                throw WorkspaceToolError.invalidArguments("destinationFile must name a file, not a directory")
+            }
         }
     }
 
@@ -133,11 +158,13 @@ public struct WorkspaceArchiveTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        try validate(args)
         try WorkspaceToolSupport.rejectHostScope(context.scope)
         if let scope = args.scope, scope != "local" {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
         try context.authorizeWorkspacePath(args.source)
+        if let destination = args.destination { try context.authorizeWorkspacePath(destination) }
         let service = try environment.makeService(context: context)
         let guarder = service.guardResolver
         let sourceURL = try guarder.resolve(args.source)
@@ -157,9 +184,10 @@ public struct WorkspaceArchiveTool: AgentTool {
             }
         }
         if resolvedFormat == "rar" {
-            throw WorkspaceToolError.invalidArguments(
-                "rar is not available: the only maintained pure-Swift decoder dropped RAR, and unrar's license is incompatible. Re-pack as zip or 7z."
-            )
+            guard let compressedHandler else { throw WorkspaceToolError.invalidArguments("RAR requires the app's signed native archive decoder") }
+            let summary = try await compressedHandler(ArchiveCompressedRequest(action: args.action, format: "rar",
+                source: args.source, destination: args.destination, workspaceRoot: guarder.rootURL, cancellation: context.cancellation))
+            return WorkspaceToolSupport.output(summary)
         }
         if ["tgz", "tbz2", "txz", "gz", "bz2", "xz"].contains(resolvedFormat) {
             guard let compressedHandler else {
@@ -171,22 +199,14 @@ public struct WorkspaceArchiveTool: AgentTool {
                args.action == "list" {
                 throw WorkspaceToolError.invalidArguments("\(resolvedFormat) is a single-file compression format; list applies to zip/tar/7z/tar.gz/tar.bz2/tar.xz")
             }
-            var destination = args.destination
-            // A trailing "/" means "put the decompressed file in this directory".
-            if ["gz", "bz2", "xz"].contains(resolvedFormat), args.action == "extract",
-               let explicit = destination, explicit.hasSuffix("/") {
-                var baseName = ((args.source as NSString).lastPathComponent as NSString).deletingPathExtension
-                if baseName.lowercased().hasSuffix(".tar") {
-                    baseName = String(baseName.dropLast(4))
-                }
-                destination = explicit + baseName
-            }
+            let destination = args.destination
             let summary = try await compressedHandler(ArchiveCompressedRequest(
                 action: args.action,
                 format: resolvedFormat,
                 source: args.source,
                 destination: destination,
-                workspaceRoot: guarder.rootURL
+                workspaceRoot: guarder.rootURL,
+                cancellation: context.cancellation
             ))
             return WorkspaceToolSupport.output(summary)
         }

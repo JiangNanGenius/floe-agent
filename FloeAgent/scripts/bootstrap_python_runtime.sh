@@ -83,4 +83,8 @@ scripts/package_python_extensions.sh
 # pure-Python into site-packages, every extension as a signed XCFramework.
 scripts/install_python_binary_packages.sh
 
+# Native PDF content editing is independent of Python and signed into the app.
+python3 scripts/bootstrap_pdfium.py
+python3 scripts/bootstrap_libarchive.py
+
 echo "Installed CPython 3.13-b10 runtime in Vendor/ and FloeApp/Resources/python"

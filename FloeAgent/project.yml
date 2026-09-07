@@ -93,6 +93,12 @@ targets:
         com.apple.security.application-groups:
           - group.org.floeagent.ios
     dependencies:
+      - framework: Vendor/PDFium/PDFium.xcframework
+        embed: true
+      - framework: Vendor/LibArchive/LibArchive.xcframework
+        embed: false
+      - sdk: libz.tbd
+      - sdk: libc++.tbd
       - framework: Vendor/Python.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/_asyncio.xcframework

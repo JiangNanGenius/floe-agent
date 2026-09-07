@@ -1,0 +1,1 @@
+{"description":"Closed-loop PDF workflow: inspect, render, merge, split, edit, fill forms, verify.","minimumAppVersion":"1.4.98","name":"PDF Workbench","releaseNotes":{"en":"Use native content-stream text edits; reject unsupported layouts instead of visual covering.","zh-Hans":"使用原生内容流文字编辑；不支持的布局明确拒绝，不再视觉覆盖。"}}

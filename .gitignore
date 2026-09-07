@@ -30,6 +30,11 @@ playground.xcworkspace
 # .swiftpm
 
 .build/
+FloeAgent/Vendor/PDFium/
+FloeAgent/FloeApp/Resources/PDFiumLicenses/
+FloeAgent/Vendor/LibArchive/
+FloeAgent/FloeApp/Resources/LibArchiveLicenses/
+pandas-wheelhouse/
 
 # Local AI assistant workspace state
 .workbuddy/

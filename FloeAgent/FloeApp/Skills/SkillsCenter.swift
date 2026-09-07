@@ -53,15 +53,25 @@ final class SkillsCenter: ObservableObject {
             let staging = FileManager.default.temporaryDirectory.appendingPathComponent("floe-upgrade-\(UUID().uuidString)")
             do {
                 let connector = self.environment.sourceControlCenter
-                let (commit, proposed) = try await GitHubSkillDownload.stage(source: source, at: staging, markdownBase: current,
-                    resolve: { source in
+                let resolve: GitHubSkillDownload.ResolveCommit = { source in
                         let data = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: source.ref, path: nil)
                         struct Commit: Decodable { let sha: String }
                         return try JSONDecoder().decode(Commit.self, from: data).sha
-                    }, fetch: { source, commit, path in
+                    }
+                let fetch: GitHubSkillDownload.FetchFile = { source, commit, path in
                         try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: commit, path: path)
-                    })
-                try await self.stageUpgradeForReview(SkillUpgradeCandidate(source: source, commit: commit, installed: current, proposed: proposed), at: staging)
+                    }
+                let candidate: SkillUpgradeCandidate
+                if OfficialSkillHub.skillIDs.contains(skill.id) {
+                    try OfficialSkillHub.validateSource(source)
+                    candidate = try await OfficialSkillHub.stage(id: skill.id,
+                        appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
+                        installed: current, at: staging, trustedKeys: OfficialSkillHub.trustedKeys, resolve: resolve, fetch: fetch)
+                } else {
+                    let (commit, proposed) = try await GitHubSkillDownload.stage(source: source, at: staging, markdownBase: current, resolve: resolve, fetch: fetch)
+                    candidate = try SkillUpgradeCandidate(source: source, commit: commit, installed: current, proposed: proposed)
+                }
+                try await self.stageUpgradeForReview(candidate, at: staging)
             } catch {
                 try? FileManager.default.removeItem(at: staging)
                 throw error
@@ -496,7 +506,7 @@ final class SkillsCenter: ObservableObject {
                     markdown += "\n### Audited source: \(path)\nPass task data through inputJSON; run this source verbatim.\n```python\n\(String(decoding: snapshot.files[path]!, as: UTF8.self))\n```\n"
                 }
             }
-            return ManagedSkill(id: row.id, name: builtin?.name ?? row.name, version: manifest.version, enabled: row.status == "enabled", digest: snapshot.package.canonicalSHA256, markdown: id == nil ? nil : markdown, requiredToolNames: id == nil ? nil : Array(Set(manifest.tools + (builtin?.toolNames ?? []))).sorted(), currentDigest: row.rewrittenDigest)
+            return ManagedSkill(id: row.id, name: builtin?.name ?? row.name, version: manifest.version, enabled: row.status == "enabled", digest: snapshot.package.canonicalSHA256, markdown: id == nil ? nil : markdown, requiredToolNames: id == nil ? nil : Array(Set(manifest.tools + (builtin?.automaticallyLoadedToolNames ?? []))).sorted(), currentDigest: row.rewrittenDigest)
         }
     }
 

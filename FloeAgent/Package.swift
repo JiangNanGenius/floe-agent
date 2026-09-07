@@ -217,6 +217,7 @@ let package = Package(
             name: "FloeSkills",
             dependencies: [
                 "FloeTools",
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeSkills",
@@ -495,7 +496,7 @@ let package = Package(
 
         .testTarget(
             name: "FloeSkillsTests",
-            dependencies: ["FloeSkills", "FloeTools"],
+            dependencies: ["FloeSkills", "FloeTools", .product(name: "ZIPFoundation", package: "ZIPFoundation"), .product(name: "Crypto", package: "swift-crypto")],
             path: "Tests/FloeSkillsTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

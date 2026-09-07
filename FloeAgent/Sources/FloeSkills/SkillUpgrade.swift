@@ -74,6 +74,13 @@ public struct SkillUpgradeCandidate: Sendable {
     public init(source: GitHubSkillSource, commit: String, installed: SkillContentSnapshot, proposed: SkillContentSnapshot) throws {
         guard commit.count == 40, commit.allSatisfy(\.isHexDigit) else { throw SkillUpgradeError.invalidCommit }
         guard installed.package.manifest.id == proposed.package.manifest.id else { throw SkillUpgradeError.identityChanged }
+        if OfficialSkillHub.skillIDs.contains(proposed.package.manifest.id) {
+            try OfficialSkillHub.validateSource(source)
+            if installed.package.manifest.version == proposed.package.manifest.version,
+               installed.package.canonicalSHA256 != proposed.package.canonicalSHA256 {
+                throw OfficialSkillHub.Failure.immutableVersion
+            }
+        }
         let oldVersion = installed.package.manifest.version.split(separator: ".").compactMap { Int($0) }
         let newVersion = proposed.package.manifest.version.split(separator: ".").compactMap { Int($0) }
         if let difference = zip(oldVersion, newVersion).first(where: { $0.0 != $0.1 }), difference.1 < difference.0 {

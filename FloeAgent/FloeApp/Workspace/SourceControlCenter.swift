@@ -50,8 +50,10 @@ final class SourceControlCenter: ObservableObject {
             throw FloeError.syncUnavailable("GitHub skill source unavailable. Check the repository, ref, path and connector access.")
         }
         var result = Data()
+        let maximumBytes = path?.hasPrefix("skill-hub/packages/") == true ? 8_388_608 : 2_097_152
         for try await byte in stream {
-            guard result.count < 2_097_152 else { throw FloeError.validationFailed("GitHub skill file exceeds 2 MiB") }
+            try Task.checkCancellation()
+            guard result.count < maximumBytes else { throw FloeError.validationFailed("GitHub skill download exceeds its size limit") }
             result.append(byte)
         }
         return result

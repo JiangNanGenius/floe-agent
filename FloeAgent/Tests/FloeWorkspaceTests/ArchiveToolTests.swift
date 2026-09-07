@@ -50,7 +50,7 @@ struct ArchiveToolTests {
         let tool = WorkspaceArchiveTool(environment: f.environment)
 
         let created = try await tool.execute(
-            .init(action: "create", source: "project", destination: "pack.zip"),
+            .init(action: "create", source: "project", destinationFile: "pack.zip"),
             context: f.context
         )
         #expect(created.summary.contains("entries=2"))
@@ -61,7 +61,7 @@ struct ArchiveToolTests {
         #expect(listed.summary.contains("project/nested/b.md"))
 
         let extracted = try await tool.execute(
-            .init(action: "extract", source: "pack.zip", destination: "unpacked"),
+            .init(action: "extract", source: "pack.zip", destinationDir: "unpacked"),
             context: f.context
         )
         #expect(extracted.summary.contains("entries=2"), "summary was: \(extracted.summary)")
@@ -75,13 +75,13 @@ struct ArchiveToolTests {
         try f.write("note.txt", "hello")
         let tool = WorkspaceArchiveTool(environment: f.environment)
         let first = try await tool.execute(
-            .init(action: "create", source: "note.txt", destination: "note.zip"),
+            .init(action: "create", source: "note.txt", destinationFile: "note.zip"),
             context: f.context
         )
         #expect(first.summary.contains("entries=1"))
         await #expect(throws: WorkspaceToolError.self) {
             _ = try await tool.execute(
-                .init(action: "create", source: "note.txt", destination: "note.zip"),
+                .init(action: "create", source: "note.txt", destinationFile: "note.zip"),
                 context: f.context
             )
         }
@@ -108,7 +108,7 @@ struct ArchiveToolTests {
 
         let tool = WorkspaceArchiveTool(environment: f.environment)
         let output = try await tool.execute(
-            .init(action: "extract", source: "hostile.zip", destination: "out"),
+            .init(action: "extract", source: "hostile.zip", destinationDir: "out"),
             context: f.context
         )
         #expect(output.summary.contains("entries=1"))
@@ -126,13 +126,28 @@ struct ArchiveToolTests {
             try tool.validate(.init(action: "delete", source: "a.zip"))
         }
         #expect(throws: WorkspaceToolError.self) {
-            try tool.validate(.init(action: "create", source: "/etc/passwd", destination: "x.zip"))
+            try tool.validate(.init(action: "create", source: "/etc/passwd", destinationFile: "x.zip"))
         }
         #expect(throws: WorkspaceToolError.self) {
             try tool.validate(.init(action: "extract", source: "a.zip"))
         }
         #expect(throws: WorkspaceToolError.self) {
-            try tool.validate(.init(action: "create", source: "a", destination: "x.tar", format: "rar"))
+            try tool.validate(.init(action: "create", source: "a", destinationFile: "x.tar", format: "rar"))
+        }
+        #expect(throws: WorkspaceToolError.self) {
+            try tool.validate(.init(action: "extract", source: "a.zip", destinationFile: "wrong"))
+        }
+        #expect(throws: WorkspaceToolError.self) {
+            try tool.validate(.init(action: "extract", source: "a.gz", destinationDir: "wrong"))
+        }
+        #expect(throws: WorkspaceToolError.self) {
+            try tool.validate(.init(action: "extract", source: "a.zip", destinationDir: "out", destinationFile: "both"))
+        }
+        #expect(throws: WorkspaceToolError.self) {
+            try tool.validate(.init(action: "list", source: "a.zip", destinationDir: "unused"))
+        }
+        #expect(throws: WorkspaceToolError.self) {
+            try tool.validate(.init(action: "extract", source: "a.gz", destinationFile: "directory/"))
         }
     }
 
@@ -144,7 +159,7 @@ struct ArchiveToolTests {
         let tool = WorkspaceArchiveTool(environment: f.environment)
 
         let created = try await tool.execute(
-            .init(action: "create", source: "bundle", destination: "pack.tar"),
+            .init(action: "create", source: "bundle", destinationFile: "pack.tar"),
             context: f.context
         )
         #expect(created.summary.contains("format=tar"))
@@ -156,7 +171,7 @@ struct ArchiveToolTests {
         #expect(listed.summary.contains("bundle/deep/two.md"))
 
         let extracted = try await tool.execute(
-            .init(action: "extract", source: "pack.tar", destination: "untarred"),
+            .init(action: "extract", source: "pack.tar", destinationDir: "untarred"),
             context: f.context
         )
         #expect(extracted.summary.contains("entries=2"))
@@ -180,7 +195,7 @@ struct ArchiveToolTests {
         let listed = try await tool.execute(.init(action: "list", source: "sys.tar"), context: f.context)
         #expect(listed.summary.contains("fromsys/a.txt"))
         let extracted = try await tool.execute(
-            .init(action: "extract", source: "sys.tar", destination: "sysout"),
+            .init(action: "extract", source: "sys.tar", destinationDir: "sysout"),
             context: f.context
         )
         #expect(extracted.summary.contains("entries=2"))
@@ -193,7 +208,7 @@ struct ArchiveToolTests {
         try f.write("mine/x.txt", "mine-content")
         let tool = WorkspaceArchiveTool(environment: f.environment)
         _ = try await tool.execute(
-            .init(action: "create", source: "mine", destination: "mine.tar"),
+            .init(action: "create", source: "mine", destinationFile: "mine.tar"),
             context: f.context
         )
         let process = Process()
@@ -222,7 +237,7 @@ struct ArchiveToolTests {
         #expect(listed.summary.contains("docs/a.txt"))
 
         let extracted = try await tool.execute(
-            .init(action: "extract", source: "sample.7z", destination: "out7z"),
+            .init(action: "extract", source: "sample.7z", destinationDir: "out7z"),
             context: f.context
         )
         #expect(extracted.summary.contains("entries=2"))
@@ -232,13 +247,13 @@ struct ArchiveToolTests {
         // 7z creation is honestly unavailable.
         await #expect(throws: WorkspaceToolError.self) {
             _ = try await tool.execute(
-                .init(action: "create", source: "out7z", destination: "x.7z"),
+                .init(action: "create", source: "out7z", destinationFile: "x.7z"),
                 context: f.context
             )
         }
         // rar reports an honest, actionable boundary.
         await #expect(throws: WorkspaceToolError.self) {
-            _ = try await tool.execute(.init(action: "extract", source: "sample.7z", destination: "y", format: "rar"), context: f.context)
+            _ = try await tool.execute(.init(action: "extract", source: "sample.7z", destinationDir: "y", format: "rar"), context: f.context)
         }
     }
 
@@ -252,7 +267,7 @@ struct ArchiveToolTests {
 
         let tool = WorkspaceArchiveTool(environment: f.environment)
         let output = try await tool.execute(
-            .init(action: "extract", source: "evil.tar", destination: "safe"),
+            .init(action: "extract", source: "evil.tar", destinationDir: "safe"),
             context: f.context
         )
         #expect(output.summary.contains("entries=1"))

@@ -1,13 +1,62 @@
 #if canImport(UIKit)
 import Foundation
 import Testing
+import UIKit
+import PDFKit
 import FloeSkills
 import FloePersistence
 import FloeTools
+import FloeWorkspace
 @testable import FloeApp
 
 @Suite("FloeApp.SkillLifecycle", .serialized)
 struct SkillLifecycleTests {
+    @Test("Native RAR5 extraction verifies bytes and never overwrites output")
+    func nativeRARExtraction() async throws {
+        // BSD libarchive 3.8.9 test_read_format_rar5_stored.rar fixture.
+        let bytes = try #require(Data(base64Encoded: "UmFyIRoHAQAzkrXlCgEFBgAFAQGAgAA4MAZjLAIDC50ABJ0ApIMCtEOglYAAAQ5oZWxsb3dvcmxkLnR4dAoDE34Oq1tW6Q4aaGVsbG8gbGliYXJjaGl2ZSB0ZXN0IHN1aXRlIQodd1ZRAwUEAA=="))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("rar-test-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try bytes.write(to: root.appendingPathComponent("input.rar"))
+        let request = ArchiveCompressedRequest(action: "extract", format: "rar", source: "input.rar", destination: "out", workspaceRoot: root)
+        let result = try await RARArchiveService.run(request)
+        #expect(result.contains("\"status\":\"ok\""))
+        #expect(try String(contentsOf: root.appendingPathComponent("out/helloworld.txt"), encoding: .utf8) == "hello libarchive test suite!\n")
+        await #expect(throws: (any Error).self) { try await RARArchiveService.run(request) }
+        try bytes.dropLast(20).write(to: root.appendingPathComponent("broken.rar"))
+        await #expect(throws: (any Error).self) {
+            try await RARArchiveService.run(.init(action: "extract", format: "rar", source: "broken.rar", destination: "broken", workspaceRoot: root))
+        }
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("broken").path))
+    }
+
+    @Test("Native PDF text replacement removes the old text instead of covering it")
+    @MainActor func nativePDFContentReplacement() async throws {
+        let renderer = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 300, height: 200))
+        let input = renderer.pdfData { context in
+            context.beginPage()
+            ("Hello" as NSString).draw(at: CGPoint(x: 30, y: 40), withAttributes: [.font: UIFont.systemFont(ofSize: 18)])
+        }
+        let result = try await PDFContentEditor.replace(in: input,
+            rulesJSON: Data(#"[{"find":"Hello","replace":"He"}]"#.utf8), cancellation: CancellationToken())
+        let document = try #require(PDFDocument(data: result.data))
+        #expect(result.replacements == 1)
+        #expect(document.string?.contains("He") == true)
+        #expect(document.string?.contains("Hello") == false)
+        #expect(document.page(at: 0)?.annotations.isEmpty == true)
+        let cancelled = CancellationToken()
+        cancelled.cancel()
+        await #expect(throws: (any Error).self) {
+            try await PDFContentEditor.replace(in: input,
+                rulesJSON: Data(#"[{"find":"Hello","replace":"He"}]"#.utf8), cancellation: cancelled)
+        }
+        await #expect(throws: (any Error).self) {
+            try await PDFContentEditor.replace(in: input,
+                rulesJSON: Data(#"[{"find":"Missing","replace":"He"}]"#.utf8), cancellation: CancellationToken())
+        }
+    }
+
     @Test(arguments: ["prepared", "rollingBack"]) @MainActor func interruptedUpgradeRestoresFilesBeforeServingSkills(phase: String) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("skill-recover-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }

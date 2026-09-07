@@ -277,7 +277,7 @@ jobs:
 
       - name: Rebuild the exact tag with the accepted App Store SDK
         run: |
-          brew install xcodegen
+          brew install xcodegen cmake
           xcodebuild -downloadComponent MetalToolchain
           scripts/bootstrap_python_runtime.sh
           scripts/gen_project.sh
