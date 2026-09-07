@@ -7,6 +7,12 @@
 # The generated .xcodeproj is git-ignored.
 
 name: FloeAgent
+settings:
+  base:
+    # All shipped native runtime slices target arm64 devices and Apple Silicon
+    # Simulator. Do not request a nonexistent x86_64 PDF/pandas/libarchive slice
+    # when Release uses a generic Simulator destination.
+    ARCHS: arm64
 options:
   bundleIdPrefix: org.floeagent
   deploymentTarget:

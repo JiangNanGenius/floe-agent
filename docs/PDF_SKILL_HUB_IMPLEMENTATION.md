@@ -67,3 +67,7 @@ These are automated observations, not physical iPad acceptance or a release.
 - CI `34126920690` caught generated Python framework ordering drift before
   building the app. Generation now sorts module names independently of
   shell locale; this gate is retained, not bypassed.
+- The App Store SDK compatibility job exposed an unintended generic Simulator
+  x86_64 link, while the native PDF/libarchive/pandas artifacts support arm64.
+  The project explicitly targets arm64 devices and Apple Silicon Simulator;
+  Intel Simulator support is not claimed. Both SDK gates retain real linking.
