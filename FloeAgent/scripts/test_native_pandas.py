@@ -4,7 +4,7 @@ import json
 import sys
 import pandas as pd
 
-assert sys.platform != "emscripten", "WebAssembly is not native acceptance"
+assert sys.platform == "ios", "Acceptance must execute inside native iOS CPython"
 frame = pd.read_csv(io.StringIO("team,value\na,1\na,2\nb,4\n"))
 assert frame.groupby("team")["value"].sum().to_dict() == {"a": 3, "b": 4}
 assert frame.loc[frame["value"] > 1, "value"].tolist() == [2, 4]

@@ -28,9 +28,13 @@ on:
 jobs:
   build-native-pandas:
     if: github.event_name == 'workflow_dispatch' && inputs.build_native_pandas
-    runs-on: xcode-27
+    # CPython's upstream testbed still uses UIApplicationDelegate rather than
+    # UIScene. Build/test this dependency with the compatible stable SDK;
+    # the shipping Floe app and its native pandas smoke test still use Xcode 27.
+    runs-on: macos-26
+    timeout-minutes: 35
     env:
-      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -142,6 +146,7 @@ jobs:
             -only-testing:FloeAppTests/BrowserProtocolTests \
             -only-testing:FloeAppTests/MailConnectorTests \
             -only-testing:FloeAppTests/SkillLifecycleTests \
+            -only-testing:FloeAppTests/LocalPythonRuntimeTests \
             CODE_SIGNING_ALLOWED=NO \
             test
           python3 scripts/verify_app_regression_xcresult.py \
