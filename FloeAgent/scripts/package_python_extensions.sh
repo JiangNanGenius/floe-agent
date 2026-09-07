@@ -16,6 +16,8 @@ output_root="Vendor/PythonExtensions"
 # binary wheels are still rejected; this list is fixed at build time.
 modules=(
     _asyncio _bisect _blake2 _bz2 _csv _ctypes _datetime _decimal _elementtree
+    _contextvars _queue _multibytecodec _codecs_cn _codecs_hk _codecs_iso2022
+    _codecs_jp _codecs_kr _codecs_tw _sha1 _dbm _lsprof cmath
     _hashlib _heapq _json _lzma _md5 _opcode _pickle _random _sha2 _sha3
     _socket _sqlite3 _ssl _statistics _struct _uuid _zoneinfo array binascii
     fcntl math mmap pyexpat resource select termios unicodedata zlib

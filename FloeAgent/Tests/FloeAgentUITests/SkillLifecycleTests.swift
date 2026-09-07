@@ -353,7 +353,14 @@ struct SkillLifecycleTests {
         try await environment.database.migrate()
         let center = SkillsCenter(environment: environment, installationRoot: root)
         let pdf = try #require(try await center.readSkills(id: "floe-pdf").first)
+        #expect(pdf.digest == BundledDomainSkills.officialPackageDigests["floe-pdf"])
         #expect(pdf.requiredToolNames?.contains("document.pdf.inspect") == true)
+        await #expect(throws: (any Error).self) {
+            try await center.manageSkill(.init(action: .update, id: pdf.id, expectedDigest: pdf.digest, instructions: "Unsigned replacement"))
+        }
+        await #expect(throws: (any Error).self) {
+            try await center.createSkill(.init(name: "floe-pdf", description: "Reserved identity", instructions: "Unsigned replacement"))
+        }
         #expect(center.builtinSeedFailures.isEmpty)
         let catalogNames = Set(ToolCatalog.allDescriptors.map(\.name))
         for guide in BundledDomainSkills.all {

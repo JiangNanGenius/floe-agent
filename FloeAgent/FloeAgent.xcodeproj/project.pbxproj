@@ -9,22 +9,29 @@
 /* Begin PBXBuildFile section */
 		00AE47667869A7ECB9677A9C /* _json.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 65606508E8DAFCEA8327E106 /* _json.xcframework */; };
 		00D36F86084F1651934DAB00 /* BrowserSessionCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9C72C2A24D117C574C0444C /* BrowserSessionCenter.swift */; };
-		02AFC3CCC68343020BFCA063 /* libpng.txt in Resources */ = {isa = PBXBuildFile; fileRef = AF5DEFBAC3785BF0E5943413 /* libpng.txt */; };
+		021FA2D79454D7EC8307FF66 /* pandas__libs_indexing.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F371D84FEA80046AB585DB30 /* pandas__libs_indexing.xcframework */; };
 		044422FCA30CEF5DE011D5DB /* _pcg64.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 09D8BBB2201A8E538ED03C9B /* _pcg64.xcframework */; };
 		049E8BCE4058423CD444FC1A /* _opcode.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DFAFEA945AD87107AD86523A /* _opcode.xcframework */; };
 		0508FA44AF2D75EF015ADA06 /* _sha3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 855EFD5014DCA004E8103D32 /* _sha3.xcframework */; };
+		061821C1F7D4A03DB59A26C4 /* _sha1.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7C35CB7DEF065BEA95D23CB4 /* _sha1.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		0661A7AD44F6F98E8B035DBE /* pandas__libs_groupby.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 2BDE734639F0CBA2467FA02A /* pandas__libs_groupby.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		0698EEE9614E076C9AFEED3A /* FeedbackReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 533B35B37CF7B7268AEB05B9 /* FeedbackReportView.swift */; };
 		075390C32FF78D04726E9561 /* MemoryDreamService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16D569760F69C04D0B6C33D1 /* MemoryDreamService.swift */; };
 		07BF0D2F6B4B3DE0CA9F6303 /* fcntl.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EE446478DBD5263458338578 /* fcntl.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		07D75CCBF1B9602AD64F5709 /* pandas__libs_tslibs_ccalendar.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 053F4DF024E53AF29632B10E /* pandas__libs_tslibs_ccalendar.xcframework */; };
 		086E743FC13CE9DA2BD91D05 /* _csv.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F056190E229F36B3FC87CD73 /* _csv.xcframework */; };
 		089D513D837438C091ED08A0 /* FloeSkills in Frameworks */ = {isa = PBXBuildFile; productRef = 5B057579F6C5787F1EF9F172 /* FloeSkills */; };
 		08CF2008E624ABD269C22C9F /* ImageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69C64CCB64B5B7C45F45C253 /* ImageEditorView.swift */; };
 		08F47781D4B996B2696C8989 /* HomeLaunchpadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2633E84AC1785E404DEC82A /* HomeLaunchpadView.swift */; };
+		09D32302D5EB9204F8E9467B /* pandas__libs_index.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F59B5D886E094D81CE9B9DF0 /* pandas__libs_index.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		0AC7F5DF35FB488442B73FBA /* _multibytecodec.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4946D26E8EA2D8E70FF337DB /* _multibytecodec.xcframework */; };
 		0C29254C1162DC79D7A0659E /* FloeCore in Frameworks */ = {isa = PBXBuildFile; productRef = B251CF833FCCC7B1B7EEAEE7 /* FloeCore */; };
 		0D61B284A930FFB5055E0D1E /* OfficeDocumentEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D196A6882F00C663F4186CF1 /* OfficeDocumentEditorView.swift */; };
 		0DB52308023E1468A623C1C7 /* M0DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84E9CA8571729543928880E3 /* M0DiagnosticsView.swift */; };
+		0E2A83735F5A1A9DC7059292 /* pandas__libs_byteswap.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 474C47D4C0CB047A83CB38F7 /* pandas__libs_byteswap.xcframework */; };
 		0F1C7B7F861DC76B9B119C05 /* AuxiliarySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6856FC02F7D3AA8406FFAE9D /* AuxiliarySettingsView.swift */; };
 		0F303F4875B02B64A9475FBC /* TaskInspectorViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC3A70A09C1A7E292DB36A43 /* TaskInspectorViews.swift */; };
+		0F40A6575FA02BA1D3091D6E /* pandas__libs_indexing.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F371D84FEA80046AB585DB30 /* pandas__libs_indexing.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		0FC797D1A81F3651D0D3BFBF /* DocumentPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6361867E119C80F4DB74A23 /* DocumentPickerView.swift */; };
 		100AA7E13F179C31AD5A127A /* _elementtree.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C962FC08AA34E0D75F5600E4 /* _elementtree.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1025E15EE1084740B1DB0D0A /* ApprovalCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B2CC51635FB2F20F5C41CA1 /* ApprovalCardView.swift */; };
@@ -41,15 +48,22 @@
 		17803F69FD25F626A646267F /* MailSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A1D2F99E9E151908419336F /* MailSettingsView.swift */; };
 		17C3C71EDCDEDB585CA63FF8 /* SettingsActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B115F54C03CD39CDBDCABC /* SettingsActions.swift */; };
 		17FD962AF3A10BB975AEC422 /* _multiarray_umath.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 67584DFEB3C8240E56927B4E /* _multiarray_umath.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		181FE29F9FB53577DB0BF9A8 /* _codecs_tw.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B34EFFB9B7D542730D69B86E /* _codecs_tw.xcframework */; };
+		18DDCDA4799155547B29CFBF /* pandas__libs_tslibs_nattype.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D60F63746F389D3AC1409E9A /* pandas__libs_tslibs_nattype.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		1A4BF2A73C745DDF82CE720B /* _codecs_jp.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 0C0EB0E2170C0184EF6D463A /* _codecs_jp.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1A6FCCA07D564C59EC82DBBF /* HostEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34D4C7AAC317C256EEB4AFAD /* HostEditorViewModel.swift */; };
 		1AA6526911DD256899CB8CDA /* RemoteImageTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DBCBE0360D88F15438CA23F /* RemoteImageTools.swift */; };
 		1AF3FEAB736D464A0AE0957B /* UsageStatisticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97B9B3602FD264F0C21CE627 /* UsageStatisticsView.swift */; };
 		1B6E5DD2A72D963852E4358B /* _sqlite3.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5F1F13207E326EE5DC28108D /* _sqlite3.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1BDE99A924FBC27B74F7940A /* MemoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3319E3323937D58167E59374 /* MemoryView.swift */; };
 		1BE8EAF7BEFC52CFA4846703 /* SkillDreamService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 224C3D6B873B21963949DAA8 /* SkillDreamService.swift */; };
+		1BFB86E5498B5928EA67A105 /* pandas__libs_tslibs_conversion.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5E1C6CDF2484A37A543FEFD5 /* pandas__libs_tslibs_conversion.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		1D722ACF9ED7E3EE1478A17C /* pandas__libs_sas.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F7B7525CD06B1C15E36EC0FF /* pandas__libs_sas.xcframework */; };
 		1DAE6DE83A3980067040AF3F /* FloeLocalModels in Frameworks */ = {isa = PBXBuildFile; productRef = A0ED3E17200948E8978373F2 /* FloeLocalModels */; };
 		1DEB2C1ECE52FB4594BAB549 /* unicodedata.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4953B9D281B1637B7BE2E2C7 /* unicodedata.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1E05D8457E28FCCBFB3AEC55 /* termios.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3C2891331FDB42F816478E56 /* termios.xcframework */; };
+		1E91E2AB9058241938BF0D6A /* _dbm.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6A0E5089889969429F874CF6 /* _dbm.xcframework */; };
+		1F2F8E843A2CFA8EC42B1AEA /* pandas__libs_hashtable.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7C7B72A5E39B57AC2C0495F8 /* pandas__libs_hashtable.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		200FF4205A0D8FB439E16371 /* BrowserProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 734621A9EFCDFAC074872173 /* BrowserProtocolTests.swift */; };
 		2204AB734CAA9BD927FB3F95 /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A23E7E08860487A8333BE4F /* HostListView.swift */; };
 		231450C31B4BABA097EDE191 /* PDFium.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 276A4BD225189F342404A19B /* PDFium.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -60,12 +74,12 @@
 		2552449B3F6DFD39F032C0FF /* _bz2.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 2012AC9C3BB8EE122046B60B /* _bz2.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		265F22EEB8BC48C7AF62FDCD /* PlatformBackgroundPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EF97C2442DD744CEB320A0 /* PlatformBackgroundPolicy.swift */; };
 		269EB71ABE6367FE65DD217B /* _pocketfft_umath.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D372C348BD51D78EBE7C9E3A /* _pocketfft_umath.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		277061F33FE3B7A243779350 /* lcms.txt in Resources */ = {isa = PBXBuildFile; fileRef = 92736B2254C04D1A1D074845 /* lcms.txt */; };
 		27855675D9ACDFE95B27B41E /* AppleCapabilitiesSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C8A30D0D7D561C3E9BE4EC0 /* AppleCapabilitiesSettingsView.swift */; };
 		2939AB869D58351E507444A9 /* _sha2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = CE19791AC2454F6739825F8F /* _sha2.xcframework */; };
 		293F87E7D63F9F4FE1674785 /* _bounded_integers.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9B83A57D75B2264625E7B8B6 /* _bounded_integers.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		2A13232B1933B91BD7195B9D /* ProviderListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43555513E313C954D2E39B3 /* ProviderListViewModel.swift */; };
 		2B2206D557B86B95224EAC76 /* PDFExportTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE5B8692C95AE635852BE44C /* PDFExportTool.swift */; };
+		2B28AD0DF65EBCBC434FE9A7 /* _codecs_iso2022.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 769843681E5F1AF7817CA413 /* _codecs_iso2022.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		2B4684696D47D57E69A5ABAF /* FilesSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 425DF63623F387B29E54E3DE /* FilesSettingsView.swift */; };
 		2B89EFA4B10C970A94C681FC /* Canvas3DDirectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 891BEBD07BB7F67542319E7C /* Canvas3DDirectorView.swift */; };
 		2BBF22D90B958D418033B3CB /* LibArchive.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F499370272EB0BEEEA44D795 /* LibArchive.xcframework */; };
@@ -75,22 +89,29 @@
 		2EB4F0026F6D3C7036234EB2 /* NetworkStatusMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 760ECB0E6B01EA7AC99B8744 /* NetworkStatusMonitor.swift */; };
 		2F85B4ACAE9199A7CAEC5490 /* _imagingmorph.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A4999F0E9E0D0A321084F08D /* _imagingmorph.xcframework */; };
 		2FFE13E6D27462B4E600BCFA /* ConversationSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37ADB29366F2D423D0507E05 /* ConversationSearchView.swift */; };
-		304162B9D1E99A15544E071C /* llvm-libc.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2AE8E661E2E4A243A4C190A6 /* llvm-libc.txt */; };
+		30EECC8CBB688887DC731E91 /* pandas__libs_pandas_datetime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5B5E8E25AC8A39F499A6A9BA /* pandas__libs_pandas_datetime.xcframework */; };
 		30F0B2510C03DF07A93756F1 /* MoreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FBC9F374C911EA91D944FB0 /* MoreView.swift */; };
 		31A880D7E77E4D90E1CA89EF /* WorkspaceCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAE9694DEA1FE25E7468F008 /* WorkspaceCenter.swift */; };
 		32180DBBC109A9CEFC4C00A5 /* AgentPermissionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 105C43DC4C517D5A6A445B8B /* AgentPermissionsView.swift */; };
 		330DA84EDC7F8F28C0127FE1 /* ToolCallCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3135923FB83C439E60E432C /* ToolCallCardView.swift */; };
 		3324AFAEF977E427D066CD85 /* iPhoneBackgroundPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 699FBAE02E34D628B5FC48B7 /* iPhoneBackgroundPolicy.swift */; };
+		334E0BFF59A403F642B20241 /* pandas__libs_tslibs_timedeltas.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4CD49501E4174D08D4F1932D /* pandas__libs_tslibs_timedeltas.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		33744B55369D187E0173FB77 /* FloePersistence in Frameworks */ = {isa = PBXBuildFile; productRef = B1B02F2500B5B465399C11B7 /* FloePersistence */; };
 		338C444A5850EEA55FE92B63 /* HomeOverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC36D60C36B96A6BDBE81A41 /* HomeOverviewView.swift */; };
 		34485AB274BA660CE72C46D6 /* TaskScheduleSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D008574B5C037321A6B5540 /* TaskScheduleSheet.swift */; };
 		3579C243C8D17340786C7E1D /* WorkspacePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5E373AD5E7E721591E5441B /* WorkspacePickerView.swift */; };
 		362B576847A7496F5CF46F95 /* _bz2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2012AC9C3BB8EE122046B60B /* _bz2.xcframework */; };
+		387FBEF01A308524B273A103 /* pandas__libs_tslibs_nattype.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D60F63746F389D3AC1409E9A /* pandas__libs_tslibs_nattype.xcframework */; };
 		38D12FDA70DBDEB3E3F91853 /* select.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 8EEDB221C5E3501DEF3F7015 /* select.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		39115D1FF0C2180535C94DCC /* FilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 940DE18872CD21D45A855A30 /* FilesView.swift */; };
+		3A66AAE493907FEC14A90D2E /* pandas__libs_ops_dispatch.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FDE6184DDEE178979F87645A /* pandas__libs_ops_dispatch.xcframework */; };
+		3AFBC6A59C80A54479D28946 /* pandas__libs_tslibs_tzconversion.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 454525682D752CA18BC08BD3 /* pandas__libs_tslibs_tzconversion.xcframework */; };
+		3B691AA2CEF2D86129EC2585 /* pandas__libs_pandas_parser.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FF649704B99081AF2F7E2480 /* pandas__libs_pandas_parser.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		3B82CBF4D3CB235A375369A6 /* _ssl.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3C217266DBB6D6A0C5EA9075 /* _ssl.xcframework */; };
 		3B9C61151DBDF65A67B112C4 /* FileInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B411EDF873B55072F23B97F0 /* FileInspectorView.swift */; };
 		3BAB66C9AAB283C5B8935E5B /* _imagingmath.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B422A60C05CB3F770F6A231E /* _imagingmath.xcframework */; };
+		3C427B04FD2EC41D57C365E2 /* pandas__libs_window_indexers.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D7D84CFDF374A66CA39CA98D /* pandas__libs_window_indexers.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		3C5D5B5B247346DA80ADEBBC /* pandas__libs_tslibs_conversion.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5E1C6CDF2484A37A543FEFD5 /* pandas__libs_tslibs_conversion.xcframework */; };
 		3E12A428AD0DAA60E165CFC9 /* FloeCore in Frameworks */ = {isa = PBXBuildFile; productRef = 8E2F73A86D327C850ABE8BA2 /* FloeCore */; };
 		3E75119AAAD2418AE6B76585 /* bit_generator.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 74012AF12E05312093931759 /* bit_generator.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		3EB1DA185D2C21819A18515F /* FloeWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = D60E0C3869A0B7A80FC9EE97 /* FloeWidgets.swift */; };
@@ -104,12 +125,14 @@
 		43C527CE147ACB5ABE71DF71 /* _random.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 12C202262489FD354A0B595A /* _random.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		43DD160B5685B1FDE3B0D8B5 /* _sfc64.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1078C97511E013940FBDC94D /* _sfc64.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		4439885B5FEC7EBB773C2D97 /* BrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B79C8C2B8701925AEC218168 /* BrowserView.swift */; };
+		44549AE8F5937ED7F55B253B /* pandas__libs_internals.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 457B6D9F38AB0AB104676855 /* pandas__libs_internals.xcframework */; };
 		448125A55DDC627D8D972046 /* HomeChatSeparationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D9BCACE744F05C27341A43 /* HomeChatSeparationTests.swift */; };
-		44B119F927FBD2D9567F17E8 /* simdutf.txt in Resources */ = {isa = PBXBuildFile; fileRef = C51573C636923E96F86FFBBD /* simdutf.txt */; };
 		44F125A88372998BD75A01C9 /* uuid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 7EB83CE4E7FCE787665DFBBB /* uuid.min.js */; };
 		460E577E2CEF8945AA055F27 /* _md5.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 538FB08A4DD774D6AEFCF28F /* _md5.xcframework */; };
 		4707D8E92893B0ED9C62F8F9 /* FloeCore in Frameworks */ = {isa = PBXBuildFile; productRef = 8C092D204147366710DA8E8D /* FloeCore */; };
+		4737AA1E27662463EC52AFA1 /* pandas__libs_tslibs_strptime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 423993211ECCF8FDA58FA75B /* pandas__libs_tslibs_strptime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		485FA2BD9ACADB87C7D16913 /* ProviderEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 857283D5BF6E741DD727418D /* ProviderEditorViewModel.swift */; };
+		490B2C9B0F94DF995DFD38A1 /* _codecs_hk.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D759D5F275E2F39C7C03E74F /* _codecs_hk.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		49817855F72A4B64D6622047 /* _rational_tests.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D080FF4A569CE32CE9D399DC /* _rational_tests.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		49D4CE5A1CDB89F7EC6BBFEE /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B8826D4AB351DBF9CFF40AD /* TerminalView.swift */; };
 		4A812D9D0082904ECFCB9984 /* RARFixtures.generated.swift in Sources */ = {isa = PBXBuildFile; fileRef = 018CC35BB4F14DEF5E4C0E48 /* RARFixtures.generated.swift */; };
@@ -117,10 +140,14 @@
 		4C2AB5B8C64EC6493BF92520 /* ScreenShareCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A82429B0BF7E6E52C6B4A8C /* ScreenShareCenter.swift */; };
 		4C3164052094AEB9B4DAB81D /* _sfc64.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1078C97511E013940FBDC94D /* _sfc64.xcframework */; };
 		4C337AC9C80DE98A41054F60 /* BackgroundRunCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D916CCF8A7BB2EDB41913DD /* BackgroundRunCoordinator.swift */; };
-		4EE69DE2B23519E380EA9793 /* fast_float.txt in Resources */ = {isa = PBXBuildFile; fileRef = 1EF75CA5FA0A8AB032E41637 /* fast_float.txt */; };
+		4EEFA3CD704D9B31D968EF08 /* pandas__libs_tslibs_vectorized.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4D024B3D67773355FF600C6D /* pandas__libs_tslibs_vectorized.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		4F3EF265CBE408F15A161E09 /* pandas__libs_json.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D2FB7E738598EFBE86199CAA /* pandas__libs_json.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		4FCDF1DDA235217013082223 /* pandas__libs_tslibs_timezones.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 913DBAF67EC6EB066626FEB4 /* pandas__libs_tslibs_timezones.xcframework */; };
+		506CDFCC048706B248694DED /* pandas__libs_parsers.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F54DB2628B40757C8BB129CA /* pandas__libs_parsers.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		50BD5CED8F06FC57DAFB3DED /* _heapq.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 0C8D36E30CA45FCB1EA234B4 /* _heapq.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		50D04ECF856C858F6A84FEAB /* _asyncio.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 28E0216FA93D4EE0E28FC155 /* _asyncio.xcframework */; };
 		51013E3CE31A8318EDF57DA7 /* CanvasSavedImageBatchCommitPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E8EBFAB4ED3E3A0AC4E178A /* CanvasSavedImageBatchCommitPlanner.swift */; };
+		51277E317713B043EF7FA65F /* pandas__libs_tslibs_np_datetime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5E34F31E16DFEC4CB4FAE639 /* pandas__libs_tslibs_np_datetime.xcframework */; };
 		51FC0B9E3FDE98C725F6BA0E /* ConversationListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66624FE4F8480041F7602716 /* ConversationListViewModel.swift */; };
 		53B0B28D58E300B08FE02EF0 /* GeneralSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E788D879DCEB044587CF121 /* GeneralSettingsView.swift */; };
 		53BAF834CD561BC043B376D4 /* _imagingft.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F5ECABBE2BD25105411AD392 /* _imagingft.xcframework */; };
@@ -129,6 +156,7 @@
 		54DC86FCF262D0557116DE21 /* _imaging.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AE91B3167D376A273DCB756C /* _imaging.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		557E5740D65A080E412BDBA3 /* FloeSecurity in Frameworks */ = {isa = PBXBuildFile; productRef = 87B8E278FC454AFE6AF6C9E9 /* FloeSecurity */; };
 		5783D26BF683BAD283217A43 /* ImportantFileShortcutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C4FE642486885CDD514009A /* ImportantFileShortcutTests.swift */; };
+		58D18406B9BED399837BAE37 /* pandas__libs_tslibs_offsets.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 74A3D870B4F77241BEEA52E6 /* pandas__libs_tslibs_offsets.xcframework */; };
 		59878DE003DC7D51B58A1669 /* ProviderListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4A0E75544F5FA28387CB77B /* ProviderListView.swift */; };
 		5AE108D9A18E2DF3B4591CDA /* lodash.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 981B8A91A33287F0FDC3129C /* lodash.min.js */; };
 		5B7645F8BEC4BA09E98FA7CA /* FloeWorkspace in Frameworks */ = {isa = PBXBuildFile; productRef = 88998EEAC884C7033D8C41A8 /* FloeWorkspace */; };
@@ -137,43 +165,61 @@
 		5C200D5807BA7B433E39BBB9 /* FilesCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A3792AECF660ADFEA7D4B8 /* FilesCenter.swift */; };
 		5C43AAAD15BA2B49F67B71D4 /* CPythonLocalRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37342E477B47F8A9B76D15B6 /* CPythonLocalRuntime.swift */; };
 		5CAEB9CA0E2CAD0ED3CF5C2A /* BroadcastPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C474665A34C09CEF3EA600B /* BroadcastPickerView.swift */; };
+		5CD15BCACCCC188F7AADDB8D /* pandas__libs_tslibs_ccalendar.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 053F4DF024E53AF29632B10E /* pandas__libs_tslibs_ccalendar.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		5D9232A405C85062BDDB69D8 /* OnboardingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CB28627E88075511A391819 /* OnboardingViewModel.swift */; };
 		5E947BB83381A4621C72C7F6 /* HomeChatVoiceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E280242F651031E86A80A21 /* HomeChatVoiceUITests.swift */; };
 		5EA814A1C794BD7B9937E81F /* _elementtree.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C962FC08AA34E0D75F5600E4 /* _elementtree.xcframework */; };
+		5EC927DA176A4AC49EDACEFB /* pandas__libs_tslibs_base.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1DD0388E916D7E0F76DFC992 /* pandas__libs_tslibs_base.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		5F735BD9B9C3A7B9896FBD30 /* pandas__libs_arrays.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C4933430B71290D5D6717191 /* pandas__libs_arrays.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		5F7840F49827B094F2E4E771 /* CanvasAgentTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63EB5024B1FD6F3B9E73BBBF /* CanvasAgentTools.swift */; };
 		6011EEEE797CCCCBAFE79990 /* Python.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7EC6304EFEA8100679656E2D /* Python.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6045112F9A180B4BE2084A67 /* SyncSettingsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E47EC0D4490B49AD44060DE /* SyncSettingsUITests.swift */; };
 		60E0C3F854C4FA5869FA041D /* SyncSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38EF13B22EE01FC77116294D /* SyncSettingsView.swift */; };
+		614FA71218ADDCA73DF938F3 /* pandas__libs_hashtable.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C7B72A5E39B57AC2C0495F8 /* pandas__libs_hashtable.xcframework */; };
+		62739F41A3576A254985C282 /* pandas__libs_window_aggregations.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4005923C1682BD260619B12B /* pandas__libs_window_aggregations.xcframework */; };
 		62D36041B800B1494EAD83D2 /* SourceControlCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC62543B8E16BD9E21CD6C00 /* SourceControlCenter.swift */; };
 		6351CFE8FFBB071B71F5A3D2 /* FloeMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 94B845AC13D8F637547A4AB0 /* FloeMarkdown */; };
-		6363E02F6A18A9C0F2BF0D8C /* libjpeg_turbo.ijg in Resources */ = {isa = PBXBuildFile; fileRef = 2FB0ACBFA019889153592018 /* libjpeg_turbo.ijg */; };
 		640A6E1C865CD29BBC93B547 /* DomainSkillLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03482FFDDB47C3482FD2326D /* DomainSkillLibrary.swift */; };
+		649393985A777B33DFD9F18A /* pandas__libs_reshape.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 82CCECA26179BEA9F020C01A /* pandas__libs_reshape.xcframework */; };
 		64C796E307C77E2774D2761F /* BrowserTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B80FCD68F0A3B45FD2E6F5E /* BrowserTools.swift */; };
 		6530F32A014A26638A62D91C /* _imagingmath.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B422A60C05CB3F770F6A231E /* _imagingmath.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6557760A3B71DB9B473F461E /* _ssl.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3C217266DBB6D6A0C5EA9075 /* _ssl.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		661CA51EDEEDD000187330F0 /* CanvasTouchInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71638AA6E6859511D4AF6124 /* CanvasTouchInteractionTests.swift */; };
+		6631922EFC570774B5A03AA0 /* pandas__libs_json.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2FB7E738598EFBE86199CAA /* pandas__libs_json.xcframework */; };
 		671CC44587B45BA2A401FD33 /* ThreadEventView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BACF0650EC6E172999FEB4EC /* ThreadEventView.swift */; };
 		6746445A87576F1AE979702A /* SkillsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583BB494E657BD1BC7481C75 /* SkillsView.swift */; };
 		67E0B11F77FD1726248D939B /* ArchiveCompressedBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F760D84DCB71D5B59F7EAB6A /* ArchiveCompressedBridge.swift */; };
+		69CF14FB274EE7CF1A75355B /* pandas__libs_tslib.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B32CD3F6C61FCE56B91D237E /* pandas__libs_tslib.xcframework */; };
 		69DBF632867883EE636A76C1 /* select.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8EEDB221C5E3501DEF3F7015 /* select.xcframework */; };
 		6A87718ACF4469761EF2A023 /* _pickle.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 69539A226361C83F15C72B91 /* _pickle.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6B0D3A07EB93CDB1FF10B326 /* FloeSync in Frameworks */ = {isa = PBXBuildFile; productRef = CB9AC1549FA61B1132625EA1 /* FloeSync */; };
 		6B7D96617158789027741BA7 /* _common.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DCF2579C6FC7C3307B6747CA /* _common.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6C8F45B8571FF3FD40EFF490 /* mtrand.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9B923E6C40B9B0CB6BE969E7 /* mtrand.xcframework */; };
+		6C8F6009C3D4D9F3F0051EFA /* _codecs_tw.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B34EFFB9B7D542730D69B86E /* _codecs_tw.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6CC9C3F3F49E9B42F280C04F /* FeedbackUploadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 515EFE93A7878B464ECA3848 /* FeedbackUploadService.swift */; };
+		6D83BA7D46587647E3075CB7 /* pandas__libs_parsers.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F54DB2628B40757C8BB129CA /* pandas__libs_parsers.xcframework */; };
+		6D8FE713EAEEE8B03C51798E /* pandas__libs_tslibs_timestamps.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0EC05C4A2D3FF390E3DBFCB0 /* pandas__libs_tslibs_timestamps.xcframework */; };
 		6E0CE7E31A041E1ED1440133 /* math.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB881F2DC155C2D3A5681681 /* math.xcframework */; };
+		6E3F12597AECF29A35D51CB3 /* pandas__libs_testing.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1AA60BB315BB5872C44504C2 /* pandas__libs_testing.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6E438B5B53DA64FF688B9F37 /* _bisect.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 11A3C519D44D0DD95F0EA208 /* _bisect.xcframework */; };
 		6EFA9ED6557018D9EC2EFFC6 /* FileTreeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86BFC8770B049F008476B6C8 /* FileTreeViewModel.swift */; };
+		6EFE06F5EE84FD76D6026BBA /* pandas__libs_writers.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D4EF135B3FD6EDA02B8BC3F0 /* pandas__libs_writers.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		6FC89A1BACBA33278669A2C9 /* CameraPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D8FAEF1503644BD831B03F7 /* CameraPickerView.swift */; };
 		700E0E333832B9669753A226 /* FloePDFiumBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 0F445AF25FACF2975FCE8934 /* FloePDFiumBridge.mm */; };
 		7019692CCE4AC0CD840E1152 /* RichArtifactView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ADAB596B28C48F18A0D1196 /* RichArtifactView.swift */; };
+		702783ECBD4DCFFA7CF6DE20 /* pandas__libs_interval.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7943E3FC34DEEEC17075E889 /* pandas__libs_interval.xcframework */; };
 		704C53FCB539119929E7F94B /* _operand_flag_tests.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C4778F6E6793ACD2D5FB6C14 /* _operand_flag_tests.xcframework */; };
 		70B0244D522DFFA14861A337 /* FloeScreenShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E388FA201B460E867D612C38 /* FloeScreenShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		70F286B37F24BC80A411B04F /* _lsprof.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 47008301B5CA511920D10074 /* _lsprof.xcframework */; };
 		7101B340769CDF8AEBEB0171 /* fcntl.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EE446478DBD5263458338578 /* fcntl.xcframework */; };
+		726BA3555884AFF278377CF9 /* pandas__libs_tslibs_dtypes.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1453302FBF5B4F00ABFE7DEE /* pandas__libs_tslibs_dtypes.xcframework */; };
 		72F687318496A3451661FD31 /* dayjs.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 5A836CC647019173A92D3490 /* dayjs.min.js */; };
+		7333837AB0C376A58AF42971 /* pandas__libs_testing.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1AA60BB315BB5872C44504C2 /* pandas__libs_testing.xcframework */; };
 		741FBF3F480C7EFA95245CD7 /* _umath_linalg.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A43266DA115E8EF12805D945 /* _umath_linalg.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		749B0AF6593B5DD681D9D95D /* pandas__libs_ops.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 0759DE46F499DE82B08079EC /* pandas__libs_ops.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		7578741B058DEF9D48EA4BC4 /* _zoneinfo.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 16AE359A986EE7EC10118E7B /* _zoneinfo.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		75B75F5F8C25D5B60B5E4541 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 37BB930D0175C1FF7EE714EE /* Assets.xcassets */; };
+		766C8713ECB4CA8AD887B597 /* pandas__libs__cyutility.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 705BF3479430A93FD0851E2D /* pandas__libs__cyutility.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		787BD004FDBDE668FCB85A2A /* _uuid.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EBFC00F1FCA508F70838C348 /* _uuid.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		79513D3F13F2694F56459286 /* FloeModels in Frameworks */ = {isa = PBXBuildFile; productRef = 6D3CC5A66BC37258D46FDF3D /* FloeModels */; };
 		7AF822628DBEFE38ACA05194 /* _bisect.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 11A3C519D44D0DD95F0EA208 /* _bisect.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -183,25 +229,41 @@
 		7C8518294F67702219A7CA5D /* TaskChangesInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE529725CBA54629E95EA4F0 /* TaskChangesInspectorView.swift */; };
 		7C9BBE2BC1FD0E734C478463 /* _md5.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 538FB08A4DD774D6AEFCF28F /* _md5.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		7D6A8ED941F9DD27D5951701 /* _operand_flag_tests.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C4778F6E6793ACD2D5FB6C14 /* _operand_flag_tests.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		7DA918A5D7CBDA3026E6ECDD /* pandas__libs_tslibs_period.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F912D5604B202108A44A81E6 /* pandas__libs_tslibs_period.xcframework */; };
 		7E68D5161A58FBD3F6C55FAF /* ErrorEventView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBF4EA91353CD8A801DCA98A /* ErrorEventView.swift */; };
+		7F54F4420A67698290900546 /* _codecs_iso2022.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 769843681E5F1AF7817CA413 /* _codecs_iso2022.xcframework */; };
+		806E5265E2839E269CCF4C22 /* pandas__libs_properties.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A3378D2005DD1D0F55D2457D /* pandas__libs_properties.xcframework */; };
+		814615040C1CA653C594FFE1 /* pandas__libs_missing.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C8F1C7614F842F707C441F28 /* pandas__libs_missing.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		81AA78A136F5D44304A37AFA /* pandas__libs_hashing.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C5FA6C8D76FA4EDFFA80276B /* pandas__libs_hashing.xcframework */; };
 		8246227426A04558FB1837BF /* libc++.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = B2C7F4E1D9EC1405A1792A0A /* libc++.tbd */; };
+		82A6523A97E32F6261F639AA /* PDFiumLicenses in Resources */ = {isa = PBXBuildFile; fileRef = A837399A8DE937C9827D4EFA /* PDFiumLicenses */; };
 		82B159D872E7531B37FCC99C /* mtrand.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9B923E6C40B9B0CB6BE969E7 /* mtrand.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		8399E542A2376064EE1A7512 /* pandas__libs_tslibs_parsing.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C4886B517D6E5FDE87CE473A /* pandas__libs_tslibs_parsing.xcframework */; };
+		83A18AFCF4F83B0A88809804 /* pandas__libs_pandas_parser.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FF649704B99081AF2F7E2480 /* pandas__libs_pandas_parser.xcframework */; };
+		865C66A3A51EDF18E78ECFE7 /* _lsprof.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 47008301B5CA511920D10074 /* _lsprof.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		8668DA22595206B2929FF350 /* pandas__libs_join.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9F5F7936DBA1DE84D33B0E8D /* pandas__libs_join.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		86B3B6255EE780A3692A46C8 /* WorkspaceIDEView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5E18D2CD25230D158008D8A /* WorkspaceIDEView.swift */; };
 		878398C628C1FBE1C8F9311E /* _statistics.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A94DC3B96DA97D1E17F6B887 /* _statistics.xcframework */; };
+		87AFCC752E0DF0191D12E736 /* _codecs_hk.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D759D5F275E2F39C7C03E74F /* _codecs_hk.xcframework */; };
+		8881F92055BBAB8B2451C973 /* pandas__libs_sparse.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 87012024D0AFCF4EB416D0E3 /* pandas__libs_sparse.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		88B730D8D33C92B2D1F5A906 /* StepGroupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE1EE021FED26EBFA80248B6 /* StepGroupView.swift */; };
 		88FFC05F3E4E386E7C26E5D9 /* _hashlib.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 8B3180D417C752DEF2005250 /* _hashlib.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		89B023C074580181D49D192A /* ModelPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADE9E409B66EBC3967853B86 /* ModelPickerView.swift */; };
 		89D986DE42E1C09CD2DB6309 /* zlib.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 71091AA54C5E2F667D6469A6 /* zlib.xcframework */; };
+		8A5FBFFF464A8A9E1D02A598 /* pandas__libs_tslibs_dtypes.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1453302FBF5B4F00ABFE7DEE /* pandas__libs_tslibs_dtypes.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		8BDBF9D426DD621EA4ECB830 /* FloeGit in Frameworks */ = {isa = PBXBuildFile; productRef = E6A81719803BDDE4E13451F3 /* FloeGit */; };
+		8D61411A5B776C8E0AA26D73 /* pandas__libs_writers.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D4EF135B3FD6EDA02B8BC3F0 /* pandas__libs_writers.xcframework */; };
 		8D7C4CF1B8FC0F1CCEF94B1D /* pyexpat.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 59EFDCF31C5526A1B589BE5B /* pyexpat.xcframework */; };
 		8E0BC24E5E805CDA91CD7360 /* _simd.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 57DF4046AFC20EF6F331D170 /* _simd.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		8E749F7AF911C4CA056C33C9 /* libopenjpeg.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2525C5FCEB739465E40893FA /* libopenjpeg.txt */; };
+		8E7756561D6378946EAEB05B /* LibArchiveLicenses in Resources */ = {isa = PBXBuildFile; fileRef = 213BDC1E4C8F7172D210CA91 /* LibArchiveLicenses */; };
 		8F049EBFB8AE998D823001E4 /* _multiarray_umath.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 67584DFEB3C8240E56927B4E /* _multiarray_umath.xcframework */; };
 		8F40177268113AACE1405851 /* AppDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF5F8AFB4D253F079EA5CF84 /* AppDestination.swift */; };
+		908A5CBB3085CA1C92CC3A46 /* pandas__libs_ops.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0759DE46F499DE82B08079EC /* pandas__libs_ops.xcframework */; };
 		90C63942E9AF35955B3FA0B9 /* CreativeAssetIngestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4286D5E31D703FF58F11B57 /* CreativeAssetIngestionService.swift */; };
 		90D87EC430B2EDFD947DE7DB /* array.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 397F1DC728D743D05F510489 /* array.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		90D96EA991CF736CBE0CDA39 /* _philox.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 51AC2F5A4C03ECDAA0FD1C3D /* _philox.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		912A144E85A4C312537582FC /* SetupGuideUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */; };
+		917D73FC29D40DE3C690A434 /* cmath.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 04588885DF3B30D110854AAB /* cmath.xcframework */; };
 		93987026B1D74DCF68D275A1 /* _socket.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3CDEB34F9680F5C7DBC54628 /* _socket.xcframework */; };
 		93AE4E65731A89CBCF346E33 /* math.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BB881F2DC155C2D3A5681681 /* math.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		93EC91B1C5DF8EEC49FB6914 /* _struct.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B7B559ED19BFCC88432C6828 /* _struct.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -211,9 +273,9 @@
 		9484845FCE5ED5231B66713F /* DataManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC74E9DDD5C02BD49675B239 /* DataManagementView.swift */; };
 		97D3E78758C847D8E6B7F1BB /* RARArchiveService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98F7FF2A3CFA32D12C9C5B83 /* RARArchiveService.swift */; };
 		98BD8CC5877E2714FF8979F3 /* _lzma.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = CB9397357FA8DE45F2E2112C /* _lzma.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		9932D9C05CE68E26BE063A03 /* _contextvars.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 46C5D94B0311C71146C0A52C /* _contextvars.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		993A04071E9FB880BC5727C3 /* _uuid.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EBFC00F1FCA508F70838C348 /* _uuid.xcframework */; };
 		99C54A5F72057E2F5DE439BD /* UserMessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30E546884B42CDF2BB96931B /* UserMessageBubble.swift */; };
-		99CC80996FF624EC627D009F /* agg23.txt in Resources */ = {isa = PBXBuildFile; fileRef = 69A08A6E96ACECA8251AEB40 /* agg23.txt */; };
 		9A14F4703ACB1ABC85E9FB46 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A7AA9D321701A98A3C0B09E /* ShareViewController.swift */; };
 		9AE3503A129EA99DA6997C67 /* python in Resources */ = {isa = PBXBuildFile; fileRef = 926B95CD92D851FFE3BB0DFE /* python */; };
 		9B0C36D962598923D5B259A1 /* zod.min.js in Resources */ = {isa = PBXBuildFile; fileRef = D93429C0B86DDBE47C24DFF2 /* zod.min.js */; };
@@ -221,6 +283,8 @@
 		9C448CA84007AF195349A9C1 /* RemoteImageCreationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D2970DE592A16AFA08AE6A2 /* RemoteImageCreationView.swift */; };
 		9CBCAF14A029D5BAF1B3ADCA /* MarkdownRendererView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 680DDD4B4A4B0E26F99D2209 /* MarkdownRendererView.swift */; };
 		9D88F7400A99BF770F8A8DB4 /* ProviderEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB97B6031201DC2B9654F686 /* ProviderEditorView.swift */; };
+		9DFE07FCD5B35D30B226DDFE /* pandas__libs_missing.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C8F1C7614F842F707C441F28 /* pandas__libs_missing.xcframework */; };
+		9EBA6EE31AFF90B6B71400C8 /* _codecs_cn.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 40BAFE31EE72FD82F859328D /* _codecs_cn.xcframework */; };
 		9F178F696416A4E7191F56FB /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C1C39FA1A8D05FF5A1E63EE /* OnboardingView.swift */; };
 		9FF83450C60A97AEFB3FC5D0 /* _sha3.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 855EFD5014DCA004E8103D32 /* _sha3.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A07E797D244A170430DEF61B /* ConversationCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50D3F739AE81623062A9C5C9 /* ConversationCenter.swift */; };
@@ -228,12 +292,17 @@
 		A0EFEF2762FAA6FF528D5710 /* WorkspaceFileType.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72AD5C6F2C0701FB9F8D5C2A /* WorkspaceFileType.swift */; };
 		A16EA4F8F7ABAAB3FF45E521 /* RARFixtures.LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 26DD1D961BA4287302C7C341 /* RARFixtures.LICENSE.txt */; };
 		A1730325CB40AA74E22D3C28 /* FloeSSH in Frameworks */ = {isa = PBXBuildFile; productRef = DEFB59A49152ED0F642C4865 /* FloeSSH */; };
-		A4AA152E1B8C7F33410DECF7 /* freetype.txt in Resources */ = {isa = PBXBuildFile; fileRef = 8722CB0A7C8D744F7FA39DD7 /* freetype.txt */; };
+		A18BA1E1A87CC3940DFB4511 /* pandas__libs_tslibs_vectorized.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4D024B3D67773355FF600C6D /* pandas__libs_tslibs_vectorized.xcframework */; };
+		A2569988835F69EC8662FC58 /* pandas__libs_groupby.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2BDE734639F0CBA2467FA02A /* pandas__libs_groupby.xcframework */; };
 		A5042A844696F85C4BE4D80D /* FloeTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */; };
 		A5C100B39388D49632E01BAF /* FloeCPythonBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = A011E3F62CC6B0819659AC99 /* FloeCPythonBridge.m */; };
 		A5FEE395C7135D52DF0FF81F /* _csv.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F056190E229F36B3FC87CD73 /* _csv.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A6C15214795012140B3AC46D /* CrashAndFeedbackRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C249A312D3F94BF9CBA98F76 /* CrashAndFeedbackRegressionTests.swift */; };
+		A6D87AEAF17E29AFBE84784D /* _dbm.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 6A0E5089889969429F874CF6 /* _dbm.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A6F758931339A9ED0EFC4947 /* pandas__libs_tslib.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B32CD3F6C61FCE56B91D237E /* pandas__libs_tslib.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A778949A4707059C79A4E425 /* mmap.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BBD2144374FF4E9AD173B157 /* mmap.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A87756F725A536CC9A367D09 /* _queue.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 6388FC90DDE87F9FF1B56161 /* _queue.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AA54218F4AB9D8E87385CECB /* _codecs_kr.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1B58E0C473AABBF23BEBD6E0 /* _codecs_kr.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AB3605779C6F0C4864D85CE2 /* VNCViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BA323DAAD3913411F1D5340 /* VNCViewModel.swift */; };
 		AB7BCBD6DC7FD37ADEF2C945 /* RuntimeDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2795FA9C3C98A62982F843B2 /* RuntimeDiagnostics.swift */; };
 		ABAF2700584FE5E93C50DA1B /* FloeImages in Frameworks */ = {isa = PBXBuildFile; productRef = EBF97B079841247A01DFCE52 /* FloeImages */; };
@@ -246,6 +315,7 @@
 		B030CB108442D9B3CEA7F61B /* HostEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 085605503DC285FC91B0449B /* HostEditorView.swift */; };
 		B122E4C91387683F2EDBC728 /* FileTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42E25ED52EAD56B5234BCA43 /* FileTreeView.swift */; };
 		B1706C324EE51831A0FE5EE9 /* _decimal.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1D3E9503EC3EC7259F7C06C8 /* _decimal.xcframework */; };
+		B1B06E1939BD8DE2C3B2A3BD /* pandas__libs_lib.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 74A2B0388E1F0CF642F226A5 /* pandas__libs_lib.xcframework */; };
 		B2196F0D1CCA995A3F4F8C0D /* FloeTools in Frameworks */ = {isa = PBXBuildFile; productRef = 8E8F4CD97A741A8F515EC80E /* FloeTools */; };
 		B2561307059E6C4776EC8B06 /* CredentialManageTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0666A055F3421665937B663C /* CredentialManageTool.swift */; };
 		B2EFAC62B0DD7A4420F4B579 /* _asyncio.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 28E0216FA93D4EE0E28FC155 /* _asyncio.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -253,23 +323,30 @@
 		B33934D6A8A4190628D89B73 /* WorkspaceCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C71624FFDB9B76CB148DA3CE /* WorkspaceCanvasView.swift */; };
 		B3B2899A491FD31765C51A2C /* MailConnectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93F493C62CCACF635880C8F7 /* MailConnectorTests.swift */; };
 		B45AF4990B10532F1D1CD4CE /* _blake2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 620E189ED0BE974C6B1EA3DB /* _blake2.xcframework */; };
+		B55C732E6DFC10F5E1184B58 /* pandas__libs_lib.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 74A2B0388E1F0CF642F226A5 /* pandas__libs_lib.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B81C50AA905334687754F195 /* Python.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7EC6304EFEA8100679656E2D /* Python.xcframework */; };
 		B850872108F008D942A08193 /* BrowserModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D499B038C15DC8EA198B669A /* BrowserModels.swift */; };
 		B8558423FFAEBC3CBA0916FA /* VoiceInputControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18C94A3850D88CA96343408E /* VoiceInputControllerTests.swift */; };
 		B8C6577DCD079BA0FBE7EBCB /* _imagingtk.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3CA6D19DD3F9D91C5F985652 /* _imagingtk.xcframework */; };
 		B93C7FCE8F74476DCA7A1536 /* _struct.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B7B559ED19BFCC88432C6828 /* _struct.xcframework */; };
-		BABE485CEAA6327ED133D361 /* pdfium.txt in Resources */ = {isa = PBXBuildFile; fileRef = 59A170D8871EA9EEB6DBE9DD /* pdfium.txt */; };
+		B9A78891A9ADAF23CE9CF7BA /* pandas__libs_internals.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 457B6D9F38AB0AB104676855 /* pandas__libs_internals.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		BA1F6AD29BC06472FCBE46A6 /* pandas__libs_window_aggregations.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4005923C1682BD260619B12B /* pandas__libs_window_aggregations.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		BAFCFD696F2EA6A8D174FBBD /* M0DiagnosticsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 397DA23AB1A49D66682CE2D2 /* M0DiagnosticsModel.swift */; };
+		BB11F4D470FAB2CA863D6084 /* pandas__libs_tslibs_parsing.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C4886B517D6E5FDE87CE473A /* pandas__libs_tslibs_parsing.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		BB65D78F600C5B315CFCD069 /* _json.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 65606508E8DAFCEA8327E106 /* _json.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		BBDDB8AF6699F17D99D910BA /* ModelEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9ED88DC18A9D3D6ABA16DE7E /* ModelEditorView.swift */; };
 		BC0396AA62344AA301555007 /* PDFium.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 276A4BD225189F342404A19B /* PDFium.xcframework */; };
 		BD05424A3DC9EEFFC7A42878 /* SourceControlView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BED50B2B524010095D18E24 /* SourceControlView.swift */; };
 		BD180E6F18D1B24DA6B15D12 /* QuickLookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B378CF37C409045418D9D24 /* QuickLookView.swift */; };
 		BD57F4933C196166CE0BD650 /* _imaging.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = AE91B3167D376A273DCB756C /* _imaging.xcframework */; };
+		BDA1E6D0F8438717CAC15C45 /* pandas__libs_tslibs_tzconversion.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 454525682D752CA18BC08BD3 /* pandas__libs_tslibs_tzconversion.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		BE299593F762EB0243E748A2 /* _pcg64.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 09D8BBB2201A8E538ED03C9B /* _pcg64.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		BE534C8C1F5C827155E0256E /* HomeLaunchpadViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3B3B3E433B5BD9B6C5B1835 /* HomeLaunchpadViewModel.swift */; };
 		BEE09DF321378355A79E26BC /* DeviceFontStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D140791C6A26A79F8AB52F7 /* DeviceFontStore.swift */; };
+		BF0F2E2F2B4C891C0D179306 /* pandas__libs_algos.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 851B608241012C320B20D3FE /* pandas__libs_algos.xcframework */; };
+		BF5BC698063F29786AAA2C71 /* pandas__libs_tslibs_strptime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 423993211ECCF8FDA58FA75B /* pandas__libs_tslibs_strptime.xcframework */; };
 		BF6E2087DAC07E6A4A903720 /* ScreenShareGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAB44464D488A732056E8D96 /* ScreenShareGuideView.swift */; };
+		C02374219B82440A6E03C03F /* _sha1.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C35CB7DEF065BEA95D23CB4 /* _sha1.xcframework */; };
 		C02543AA0E027F8278133ECB /* _decimal.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1D3E9503EC3EC7259F7C06C8 /* _decimal.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C05674B6B497CF027A4FCBEF /* GitHubSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5043AD7DE6FDAD5AD4A95D1A /* GitHubSettingsView.swift */; };
 		C0644D9C266B374CE223488D /* VNCSessionOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DF58B5C692BB56DB9A379F4 /* VNCSessionOwner.swift */; };
@@ -278,6 +355,7 @@
 		C289286498042D0530D1590B /* FloeProviders in Frameworks */ = {isa = PBXBuildFile; productRef = B6555425212C5867CBB75D36 /* FloeProviders */; };
 		C2A979185D804135CE278ADA /* FloeSyncCore in Frameworks */ = {isa = PBXBuildFile; productRef = 42F46C3ACBB2BE695D007080 /* FloeSyncCore */; };
 		C3D0912C27625AA81B6DA7D2 /* bit_generator.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 74012AF12E05312093931759 /* bit_generator.xcframework */; };
+		C445C408875C00830EEC5993 /* pandas__libs_join.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9F5F7936DBA1DE84D33B0E8D /* pandas__libs_join.xcframework */; };
 		C5BCA4D53959F1B96E82F8B1 /* ExecutionEnvironmentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C801E16B941B45C62C279A9 /* ExecutionEnvironmentView.swift */; };
 		C5EDFDCD3E6C6D784D9F4ECC /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6AFF9D3E17B2962EAE99225 /* AppEnvironment.swift */; };
 		C5EF7D89863A823AEC36B81F /* FloeAgentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */; };
@@ -288,40 +366,57 @@
 		C7DCF8C350C6328A24F07225 /* LocalSkillCreator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7846CD1BBE3A01E9CFE5CDFE /* LocalSkillCreator.swift */; };
 		C7F19669D3046BC3BFA891F8 /* _umath_tests.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 73253EE4682F46D548AE1671 /* _umath_tests.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C7F85CE15D1A3A53A80ED1CF /* DraftTaskPermissionsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15EA4020964BCD69B527952F /* DraftTaskPermissionsSheet.swift */; };
+		C80922506A2FC0E9A722512F /* _codecs_cn.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 40BAFE31EE72FD82F859328D /* _codecs_cn.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C87A716B9A54B29B695F1F66 /* HostKeyTrustSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52EAF0302B89FA6FFFD6A697 /* HostKeyTrustSheet.swift */; };
 		C8CC648407E148C3FEFE0B18 /* _sha2.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = CE19791AC2454F6739825F8F /* _sha2.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C8EB11021CF07BD709D09AA5 /* VoiceInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DCEDA85D7E0A5B195344E38 /* VoiceInput.swift */; };
+		C95E8949638D06F7520165B6 /* pandas__libs_index.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F59B5D886E094D81CE9B9DF0 /* pandas__libs_index.xcframework */; };
+		C98A251CE57EB691EED1405D /* _multibytecodec.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4946D26E8EA2D8E70FF337DB /* _multibytecodec.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		CA014FF410250DD56A683A39 /* SkillLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3453A73FCC9986445D9D3949 /* SkillLifecycleTests.swift */; };
 		CA0F31691897A12A961D8A4F /* ProviderServiceRole.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DFCAB0BEA5779876F42194A /* ProviderServiceRole.swift */; };
 		CA9BF8F68A6F0E40E85CDE9E /* binascii.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E25201278D78378B37FF1BBD /* binascii.xcframework */; };
+		CACC526CA057A90BF71B28F5 /* pandas__libs_arrays.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C4933430B71290D5D6717191 /* pandas__libs_arrays.xcframework */; };
+		CAE63F5744AF0BB4C645C3F0 /* pandas__libs_properties.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A3378D2005DD1D0F55D2457D /* pandas__libs_properties.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		CB853D9A7EFA7AD992621BC4 /* pandas__libs_sparse.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 87012024D0AFCF4EB416D0E3 /* pandas__libs_sparse.xcframework */; };
 		CC3A849E9F7335BCB97424A1 /* _sqlite3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5F1F13207E326EE5DC28108D /* _sqlite3.xcframework */; };
 		CC44EFAFC16BB15E726B3333 /* PDFUnlockTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AA5FE75929315E529714A75 /* PDFUnlockTool.swift */; };
 		CCBED0E2E783C82F6A6D4CFA /* mmap.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = BBD2144374FF4E9AD173B157 /* mmap.xcframework */; };
 		CCBF6AC11B7FB893FB5A60A5 /* lapack_lite.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 176A2DE26290AB545E404ADE /* lapack_lite.xcframework */; };
 		CD5540C1DFBBDA6417E25427 /* binascii.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = E25201278D78378B37FF1BBD /* binascii.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		CD6A7E5B11E0E3CB9A32061C /* _contextvars.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 46C5D94B0311C71146C0A52C /* _contextvars.xcframework */; };
+		CEB9C5AFF1E17132712C5FC8 /* _codecs_jp.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0C0EB0E2170C0184EF6D463A /* _codecs_jp.xcframework */; };
 		CEDE8D8AD83D823BBC4E1662 /* RemoteSessionSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F23BEA3A5A6B017F698D28 /* RemoteSessionSnapshot.swift */; };
+		CEFB2B4D39543148513CE9F4 /* cmath.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 04588885DF3B30D110854AAB /* cmath.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D22B0A2A27F38C4AA93FC7E5 /* FloeVNC in Frameworks */ = {isa = PBXBuildFile; productRef = 8D67ACB7499F21D8B8B49FE4 /* FloeVNC */; };
 		D27117ADEB48A630EEF5C7E2 /* DiagnosticsAboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67421D0E0C3D4BF46F4ACE46 /* DiagnosticsAboutView.swift */; };
 		D280F700D57E336852039D32 /* PDFOperationSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = 802B105AE7DD5167CE7184CD /* PDFOperationSchema.swift */; };
 		D296A21FB23B0FC15D0B48FC /* _multiarray_tests.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 078A9B07F9036A73B3C64839 /* _multiarray_tests.xcframework */; };
 		D3D14D3164C5FCDC4A33A2BC /* array.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 397F1DC728D743D05F510489 /* array.xcframework */; };
 		D4DECF7BF638B994E512FBF1 /* _random.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 12C202262489FD354A0B595A /* _random.xcframework */; };
+		D8713A74AF51E2A5C7DA28E0 /* pandas__libs_reshape.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 82CCECA26179BEA9F020C01A /* pandas__libs_reshape.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		D8A553B231A0983D6DEB62BA /* pandas__libs_byteswap.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 474C47D4C0CB047A83CB38F7 /* pandas__libs_byteswap.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		D8C233E39D92D670E0B03EC3 /* pandas__libs_tslibs_base.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1DD0388E916D7E0F76DFC992 /* pandas__libs_tslibs_base.xcframework */; };
+		D9D35CE28869C9611427EF52 /* _queue.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6388FC90DDE87F9FF1B56161 /* _queue.xcframework */; };
+		DAC729F1D31E8EB8411E4426 /* _codecs_kr.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1B58E0C473AABBF23BEBD6E0 /* _codecs_kr.xcframework */; };
 		DAD71D8495F4365B9D5D3610 /* _imagingmorph.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A4999F0E9E0D0A321084F08D /* _imagingmorph.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		DB06F892715FBF0E79450A9C /* icu.txt in Resources */ = {isa = PBXBuildFile; fileRef = A243B5B2666C48BC4BC7AF51 /* icu.txt */; };
+		DB50F1F1A2CF3AA30E3CA297 /* pandas__libs__cyutility.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 705BF3479430A93FD0851E2D /* pandas__libs__cyutility.xcframework */; };
 		DC760A389374ABA5F93E0DAB /* RemoteImageUnavailableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B536F4DA6282AE9A983C8498 /* RemoteImageUnavailableView.swift */; };
 		DD38734DF72C90DBA0FA7A1E /* lapack_lite.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 176A2DE26290AB545E404ADE /* lapack_lite.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		DD883FA306F63AB8FB9B5D26 /* _umath_tests.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 73253EE4682F46D548AE1671 /* _umath_tests.xcframework */; };
 		DDC35030D6BFC2C296FFB4D2 /* SettingsRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50BA473C0A70CA3815EF338B /* SettingsRootView.swift */; };
+		DECA492E992BBEDBE6178CE2 /* pandas__libs_sas.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F7B7525CD06B1C15E36EC0FF /* pandas__libs_sas.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		DED99885DA007AF7130DA1F2 /* pandas__libs_tslibs_timestamps.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 0EC05C4A2D3FF390E3DBFCB0 /* pandas__libs_tslibs_timestamps.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		DF328431A01C3722680442AB /* VNCView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B7FE946AC097054C1CB5A16 /* VNCView.swift */; };
 		DFA28E00B18DDBC56D222CC1 /* SettingsCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0766D5622BEA31E66BE2CBE /* SettingsCenter.swift */; };
+		E10A86078685C6E6527103D6 /* pandas__libs_algos.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 851B608241012C320B20D3FE /* pandas__libs_algos.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		E2667D676B12957E2787BD59 /* FilesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00969624B0A954308417634B /* FilesViewModel.swift */; };
 		E2A306D0563A8BB30FA8E380 /* LocalPreviewServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 219CD6341FB443743691F92D /* LocalPreviewServer.swift */; };
 		E2D2BDB4FA66151CCC91F7D0 /* ThreadTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8B270D611B66EBCE12B3968 /* ThreadTimeline.swift */; };
-		E3FB8EDE8B8FD0B92DEEB6C8 /* abseil.txt in Resources */ = {isa = PBXBuildFile; fileRef = 484813CF745B2DF43AE81596 /* abseil.txt */; };
 		E40E39F14DBED467D850E91A /* FloeAgentRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = EF4C9E5ED2F18E4E1CB8A527 /* FloeAgentRuntime */; };
 		E58278A541E8E87A31634F6D /* FeedbackTokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F154C825E0923E5172D956C7 /* FeedbackTokenStore.swift */; };
 		E58BE479508ABA2C732D3E25 /* _rational_tests.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D080FF4A569CE32CE9D399DC /* _rational_tests.xcframework */; };
 		E59E0F696C3776234800BF08 /* _generator.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EBC215027D7DF2A3C8B1DE14 /* _generator.xcframework */; };
+		E6105A0FE81E537BF3500635 /* pandas__libs_tslibs_np_datetime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5E34F31E16DFEC4CB4FAE639 /* pandas__libs_tslibs_np_datetime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		E617FB6AC1EB2366C4F9A4CE /* ReasoningBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F88E75D475229D4424D2FC1 /* ReasoningBlockView.swift */; };
 		E835F7180E59CE5B63D9A4A8 /* CodeBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42CD1B5E050E9A7C4092CBB5 /* CodeBlockView.swift */; };
 		E848083DD6CD8D1D0C33B8EE /* ThreadComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0878619F1F1230D0EC1AF2D /* ThreadComposerView.swift */; };
@@ -331,35 +426,44 @@
 		EA16DBDD57899AC08A4E1310 /* zlib.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 71091AA54C5E2F667D6469A6 /* zlib.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		EA75F07AFCF7BF5BF8A40F9E /* ThreadDetailViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA10AC479B03C7D998AC448B /* ThreadDetailViewModel.swift */; };
 		EA98E269C0CE320D34AA903F /* _ctypes.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DCC42125AA4BA415183B6A85 /* _ctypes.xcframework */; };
+		EAA3281D370B9D36A3001B1E /* pandas__libs_hashing.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C5FA6C8D76FA4EDFFA80276B /* pandas__libs_hashing.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = A6797B7DAA890D6378153058 /* Localizable.xcstrings */; };
 		EC895B8CCE64F446C1797162 /* VoiceInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6980E6E2001E2C4508A503A /* VoiceInputController.swift */; };
+		ECF3FA8C0A20811D9B7698DB /* pandas__libs_interval.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7943E3FC34DEEEC17075E889 /* pandas__libs_interval.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		ED9E967E7858D92A307B24F6 /* AuxiliaryModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE522C8BF30B54FAD939C53C /* AuxiliaryModelsView.swift */; };
+		EDE80185BBE56770B525E973 /* pandas__libs_tslibs_fields.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 251662A9C6AD6E96E2C40543 /* pandas__libs_tslibs_fields.xcframework */; };
 		EE5EC1D663E8FBEC866E7A96 /* _imagingft.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F5ECABBE2BD25105411AD392 /* _imagingft.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		EEAF07E93D7D0C103F0EA346 /* pandas__libs_tslibs_timedeltas.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4CD49501E4174D08D4F1932D /* pandas__libs_tslibs_timedeltas.xcframework */; };
 		EEB68AFF7BCD15C86059B496 /* _mt19937.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 28F517BE646F9BAC96B3F919 /* _mt19937.xcframework */; };
 		EF38B4329039226E8A757EE4 /* HostListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104F2ACE88D931C8C54A6787 /* HostListViewModel.swift */; };
-		EF7E1A9BB02E86BB2982E51E /* zlib.txt in Resources */ = {isa = PBXBuildFile; fileRef = B6E7FB84C8CC10AF9104B621 /* zlib.txt */; };
 		EFB8B154A44004A6D4A9366C /* RunStateLocalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E112A159AE387A7219A69172 /* RunStateLocalizer.swift */; };
 		EFBF97EFFC3734AFBAA2BDE6 /* PDFContentEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81D3E2674CC7FFB5E2064D20 /* PDFContentEditor.swift */; };
 		F0702B8CBA014A55B657E7C4 /* pdf-lib.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 566A108E33736D5DD705D005 /* pdf-lib.min.js */; };
 		F09E869AFA8CF58AA546E27F /* PDFDocumentOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FC238A09CB801EBB02AA39B /* PDFDocumentOperations.swift */; };
+		F1F4FEA5795C0509165D8A62 /* pandas__libs_ops_dispatch.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FDE6184DDEE178979F87645A /* pandas__libs_ops_dispatch.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F2A94C7D54C7BB530508D94D /* _socket.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3CDEB34F9680F5C7DBC54628 /* _socket.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F2AAFBF6B82F2153828BC49E /* pyexpat.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 59EFDCF31C5526A1B589BE5B /* pyexpat.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F2FA4F2EDA410E215E8DA440 /* TerminalViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 531772E03835546E29F3B7DF /* TerminalViewModel.swift */; };
-		F35308B971E278665CE02022 /* libjpeg_turbo.md in Resources */ = {isa = PBXBuildFile; fileRef = 33EEAA15425FEBABADB61E66 /* libjpeg_turbo.md */; };
 		F39A0A18A023F65041E2E333 /* resource.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5F3B002E69704278C46E0A12 /* resource.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		F3D24D104FBAE0BFA9859E17 /* pandas__libs_tslibs_fields.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 251662A9C6AD6E96E2C40543 /* pandas__libs_tslibs_fields.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F3F547F1678C64C4C2F7EAF4 /* _philox.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 51AC2F5A4C03ECDAA0FD1C3D /* _philox.xcframework */; };
 		F444F9DCEFD14D81F09899AF /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC0B76B524CD1FC5833106AE /* SpeechService.swift */; };
+		F596996B4E07126E4DBCEF65 /* pandas__libs_tslibs_timezones.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 913DBAF67EC6EB066626FEB4 /* pandas__libs_tslibs_timezones.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F6784CC2BD16D0D850C7B22B /* _lzma.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = CB9397357FA8DE45F2E2112C /* _lzma.xcframework */; };
 		F699556D1AC6F3CE795CD7C3 /* BackgroundExecutionSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE6C97DCAC2474410B4480C7 /* BackgroundExecutionSettingsView.swift */; };
+		F82E48692303DF4C244E90D1 /* pandas__libs_pandas_datetime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5B5E8E25AC8A39F499A6A9BA /* pandas__libs_pandas_datetime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		F8DBE0266A9870E3784913D7 /* CreativeAssetIngestionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4C045D240779DF5FC64D438 /* CreativeAssetIngestionTests.swift */; };
 		F97E858A6A5915882FA5E428 /* RemoteSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F4320C0FA1D4880122D9B3B /* RemoteSettingsView.swift */; };
 		F9AE89670E3EE68F7DB18F74 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 2E443E03594FBC95E4EB48E2 /* InfoPlist.xcstrings */; };
+		F9C5C70EED6308C06945D286 /* pandas__libs_tslibs_period.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F912D5604B202108A44A81E6 /* pandas__libs_tslibs_period.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		FAA2BBDBE71E38BA0E378507 /* _opcode.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DFAFEA945AD87107AD86523A /* _opcode.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB1C4A8680542AC717BEC26B /* pandas__libs_window_indexers.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D7D84CFDF374A66CA39CA98D /* pandas__libs_window_indexers.xcframework */; };
 		FB6996DA07A08B986A011ED7 /* VoiceInputLive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58FD2460881B6EAAD9966732 /* VoiceInputLive.swift */; };
 		FBA76463B171719B586A0436 /* FloeShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95A8E32A62F993F42084705E /* FloeShortcuts.swift */; };
 		FBF28B8E8847F0265F9E7C47 /* SetupGuideLauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83D0EBB0361B5F388903EE7F /* SetupGuideLauncherView.swift */; };
 		FC130E74BF0A158FEE5DA36C /* _pocketfft_umath.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D372C348BD51D78EBE7C9E3A /* _pocketfft_umath.xcframework */; };
 		FCC65E363F3009B85F3A5908 /* BrowserURLPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC33B8AF239E339094A7D999 /* BrowserURLPolicy.swift */; };
+		FD2AE9AE385E46202D9D55B1 /* pandas__libs_tslibs_offsets.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 74A3D870B4F77241BEEA52E6 /* pandas__libs_tslibs_offsets.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		FDE8953BD93201A943C8CCC4 /* _simd.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 57DF4046AFC20EF6F331D170 /* _simd.xcframework */; };
 		FEE62E3E419BA78474C58CBF /* LocalPythonRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01FD1096C0BE9486FA630A6 /* LocalPythonRuntimeTests.swift */; };
 /* End PBXBuildFile section */
@@ -409,6 +513,19 @@
 				231450C31B4BABA097EDE191 /* PDFium.xcframework in Embed Frameworks */,
 				6011EEEE797CCCCBAFE79990 /* Python.xcframework in Embed Frameworks */,
 				B2EFAC62B0DD7A4420F4B579 /* _asyncio.xcframework in Embed Frameworks */,
+				9932D9C05CE68E26BE063A03 /* _contextvars.xcframework in Embed Frameworks */,
+				A87756F725A536CC9A367D09 /* _queue.xcframework in Embed Frameworks */,
+				C98A251CE57EB691EED1405D /* _multibytecodec.xcframework in Embed Frameworks */,
+				C80922506A2FC0E9A722512F /* _codecs_cn.xcframework in Embed Frameworks */,
+				490B2C9B0F94DF995DFD38A1 /* _codecs_hk.xcframework in Embed Frameworks */,
+				2B28AD0DF65EBCBC434FE9A7 /* _codecs_iso2022.xcframework in Embed Frameworks */,
+				1A4BF2A73C745DDF82CE720B /* _codecs_jp.xcframework in Embed Frameworks */,
+				AA54218F4AB9D8E87385CECB /* _codecs_kr.xcframework in Embed Frameworks */,
+				6C8F6009C3D4D9F3F0051EFA /* _codecs_tw.xcframework in Embed Frameworks */,
+				061821C1F7D4A03DB59A26C4 /* _sha1.xcframework in Embed Frameworks */,
+				A6D87AEAF17E29AFBE84784D /* _dbm.xcframework in Embed Frameworks */,
+				865C66A3A51EDF18E78ECFE7 /* _lsprof.xcframework in Embed Frameworks */,
+				CEFB2B4D39543148513CE9F4 /* cmath.xcframework in Embed Frameworks */,
 				7AF822628DBEFE38ACA05194 /* _bisect.xcframework in Embed Frameworks */,
 				9BA95E066F40EBCDFE552224 /* _blake2.xcframework in Embed Frameworks */,
 				2552449B3F6DFD39F032C0FF /* _bz2.xcframework in Embed Frameworks */,
@@ -469,6 +586,51 @@
 				6530F32A014A26638A62D91C /* _imagingmath.xcframework in Embed Frameworks */,
 				DAD71D8495F4365B9D5D3610 /* _imagingmorph.xcframework in Embed Frameworks */,
 				2C5B8D631FA0D9B73EB77DFB /* _imagingtk.xcframework in Embed Frameworks */,
+				766C8713ECB4CA8AD887B597 /* pandas__libs__cyutility.xcframework in Embed Frameworks */,
+				E10A86078685C6E6527103D6 /* pandas__libs_algos.xcframework in Embed Frameworks */,
+				5F735BD9B9C3A7B9896FBD30 /* pandas__libs_arrays.xcframework in Embed Frameworks */,
+				D8A553B231A0983D6DEB62BA /* pandas__libs_byteswap.xcframework in Embed Frameworks */,
+				0661A7AD44F6F98E8B035DBE /* pandas__libs_groupby.xcframework in Embed Frameworks */,
+				EAA3281D370B9D36A3001B1E /* pandas__libs_hashing.xcframework in Embed Frameworks */,
+				1F2F8E843A2CFA8EC42B1AEA /* pandas__libs_hashtable.xcframework in Embed Frameworks */,
+				09D32302D5EB9204F8E9467B /* pandas__libs_index.xcframework in Embed Frameworks */,
+				0F40A6575FA02BA1D3091D6E /* pandas__libs_indexing.xcframework in Embed Frameworks */,
+				B9A78891A9ADAF23CE9CF7BA /* pandas__libs_internals.xcframework in Embed Frameworks */,
+				ECF3FA8C0A20811D9B7698DB /* pandas__libs_interval.xcframework in Embed Frameworks */,
+				8668DA22595206B2929FF350 /* pandas__libs_join.xcframework in Embed Frameworks */,
+				4F3EF265CBE408F15A161E09 /* pandas__libs_json.xcframework in Embed Frameworks */,
+				B55C732E6DFC10F5E1184B58 /* pandas__libs_lib.xcframework in Embed Frameworks */,
+				814615040C1CA653C594FFE1 /* pandas__libs_missing.xcframework in Embed Frameworks */,
+				749B0AF6593B5DD681D9D95D /* pandas__libs_ops.xcframework in Embed Frameworks */,
+				F1F4FEA5795C0509165D8A62 /* pandas__libs_ops_dispatch.xcframework in Embed Frameworks */,
+				F82E48692303DF4C244E90D1 /* pandas__libs_pandas_datetime.xcframework in Embed Frameworks */,
+				3B691AA2CEF2D86129EC2585 /* pandas__libs_pandas_parser.xcframework in Embed Frameworks */,
+				506CDFCC048706B248694DED /* pandas__libs_parsers.xcframework in Embed Frameworks */,
+				CAE63F5744AF0BB4C645C3F0 /* pandas__libs_properties.xcframework in Embed Frameworks */,
+				D8713A74AF51E2A5C7DA28E0 /* pandas__libs_reshape.xcframework in Embed Frameworks */,
+				DECA492E992BBEDBE6178CE2 /* pandas__libs_sas.xcframework in Embed Frameworks */,
+				8881F92055BBAB8B2451C973 /* pandas__libs_sparse.xcframework in Embed Frameworks */,
+				6E3F12597AECF29A35D51CB3 /* pandas__libs_testing.xcframework in Embed Frameworks */,
+				A6F758931339A9ED0EFC4947 /* pandas__libs_tslib.xcframework in Embed Frameworks */,
+				5EC927DA176A4AC49EDACEFB /* pandas__libs_tslibs_base.xcframework in Embed Frameworks */,
+				5CD15BCACCCC188F7AADDB8D /* pandas__libs_tslibs_ccalendar.xcframework in Embed Frameworks */,
+				1BFB86E5498B5928EA67A105 /* pandas__libs_tslibs_conversion.xcframework in Embed Frameworks */,
+				8A5FBFFF464A8A9E1D02A598 /* pandas__libs_tslibs_dtypes.xcframework in Embed Frameworks */,
+				F3D24D104FBAE0BFA9859E17 /* pandas__libs_tslibs_fields.xcframework in Embed Frameworks */,
+				18DDCDA4799155547B29CFBF /* pandas__libs_tslibs_nattype.xcframework in Embed Frameworks */,
+				E6105A0FE81E537BF3500635 /* pandas__libs_tslibs_np_datetime.xcframework in Embed Frameworks */,
+				FD2AE9AE385E46202D9D55B1 /* pandas__libs_tslibs_offsets.xcframework in Embed Frameworks */,
+				BB11F4D470FAB2CA863D6084 /* pandas__libs_tslibs_parsing.xcframework in Embed Frameworks */,
+				F9C5C70EED6308C06945D286 /* pandas__libs_tslibs_period.xcframework in Embed Frameworks */,
+				4737AA1E27662463EC52AFA1 /* pandas__libs_tslibs_strptime.xcframework in Embed Frameworks */,
+				334E0BFF59A403F642B20241 /* pandas__libs_tslibs_timedeltas.xcframework in Embed Frameworks */,
+				DED99885DA007AF7130DA1F2 /* pandas__libs_tslibs_timestamps.xcframework in Embed Frameworks */,
+				F596996B4E07126E4DBCEF65 /* pandas__libs_tslibs_timezones.xcframework in Embed Frameworks */,
+				BDA1E6D0F8438717CAC15C45 /* pandas__libs_tslibs_tzconversion.xcframework in Embed Frameworks */,
+				4EEFA3CD704D9B31D968EF08 /* pandas__libs_tslibs_vectorized.xcframework in Embed Frameworks */,
+				BA1F6AD29BC06472FCBE46A6 /* pandas__libs_window_aggregations.xcframework in Embed Frameworks */,
+				3C427B04FD2EC41D57C365E2 /* pandas__libs_window_indexers.xcframework in Embed Frameworks */,
+				6EFE06F5EE84FD76D6026BBA /* pandas__libs_writers.xcframework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -479,23 +641,28 @@
 		00969624B0A954308417634B /* FilesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesViewModel.swift; sourceTree = "<group>"; };
 		018CC35BB4F14DEF5E4C0E48 /* RARFixtures.generated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RARFixtures.generated.swift; sourceTree = "<group>"; };
 		03482FFDDB47C3482FD2326D /* DomainSkillLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainSkillLibrary.swift; sourceTree = "<group>"; };
+		04588885DF3B30D110854AAB /* cmath.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = cmath.xcframework; path = Vendor/PythonExtensions/cmath.xcframework; sourceTree = "<group>"; };
+		053F4DF024E53AF29632B10E /* pandas__libs_tslibs_ccalendar.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_ccalendar.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_ccalendar.xcframework; sourceTree = "<group>"; };
 		05CD3FCDF6CC1F08B06B9119 /* DiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffView.swift; sourceTree = "<group>"; };
 		0666A055F3421665937B663C /* CredentialManageTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialManageTool.swift; sourceTree = "<group>"; };
+		0759DE46F499DE82B08079EC /* pandas__libs_ops.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_ops.xcframework; path = Vendor/PythonExtensions/pandas__libs_ops.xcframework; sourceTree = "<group>"; };
 		078A9B07F9036A73B3C64839 /* _multiarray_tests.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _multiarray_tests.xcframework; path = Vendor/PythonExtensions/_multiarray_tests.xcframework; sourceTree = "<group>"; };
 		085605503DC285FC91B0449B /* HostEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorView.swift; sourceTree = "<group>"; };
 		09D8BBB2201A8E538ED03C9B /* _pcg64.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _pcg64.xcframework; path = Vendor/PythonExtensions/_pcg64.xcframework; sourceTree = "<group>"; };
 		0ADAB596B28C48F18A0D1196 /* RichArtifactView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichArtifactView.swift; sourceTree = "<group>"; };
 		0B2D5DED5D4B408F395DC2A4 /* FloeApp-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "FloeApp-Bridging-Header.h"; sourceTree = "<group>"; };
 		0B303CF6C9E42EF5BD06E96A /* FloeWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FloeWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		0C0EB0E2170C0184EF6D463A /* _codecs_jp.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _codecs_jp.xcframework; path = Vendor/PythonExtensions/_codecs_jp.xcframework; sourceTree = "<group>"; };
 		0C8D36E30CA45FCB1EA234B4 /* _heapq.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _heapq.xcframework; path = Vendor/PythonExtensions/_heapq.xcframework; sourceTree = "<group>"; };
 		0DFCAB0BEA5779876F42194A /* ProviderServiceRole.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderServiceRole.swift; sourceTree = "<group>"; };
+		0EC05C4A2D3FF390E3DBFCB0 /* pandas__libs_tslibs_timestamps.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_timestamps.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_timestamps.xcframework; sourceTree = "<group>"; };
 		0F445AF25FACF2975FCE8934 /* FloePDFiumBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = FloePDFiumBridge.mm; sourceTree = "<group>"; };
 		104F2ACE88D931C8C54A6787 /* HostListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListViewModel.swift; sourceTree = "<group>"; };
 		105C43DC4C517D5A6A445B8B /* AgentPermissionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentPermissionsView.swift; sourceTree = "<group>"; };
 		1078C97511E013940FBDC94D /* _sfc64.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _sfc64.xcframework; path = Vendor/PythonExtensions/_sfc64.xcframework; sourceTree = "<group>"; };
-		10C25343131466A6D4B8371F /* LICENSE */ = {isa = PBXFileReference; path = LICENSE; sourceTree = "<group>"; };
 		11A3C519D44D0DD95F0EA208 /* _bisect.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _bisect.xcframework; path = Vendor/PythonExtensions/_bisect.xcframework; sourceTree = "<group>"; };
 		12C202262489FD354A0B595A /* _random.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _random.xcframework; path = Vendor/PythonExtensions/_random.xcframework; sourceTree = "<group>"; };
+		1453302FBF5B4F00ABFE7DEE /* pandas__libs_tslibs_dtypes.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_dtypes.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_dtypes.xcframework; sourceTree = "<group>"; };
 		14B115F54C03CD39CDBDCABC /* SettingsActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsActions.swift; sourceTree = "<group>"; };
 		15EA4020964BCD69B527952F /* DraftTaskPermissionsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DraftTaskPermissionsSheet.swift; sourceTree = "<group>"; };
 		16AE359A986EE7EC10118E7B /* _zoneinfo.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _zoneinfo.xcframework; path = Vendor/PythonExtensions/_zoneinfo.xcframework; sourceTree = "<group>"; };
@@ -505,19 +672,22 @@
 		183A97BE093D68D231492DC7 /* RemoteImageInspectToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageInspectToolTests.swift; sourceTree = "<group>"; };
 		18A3792AECF660ADFEA7D4B8 /* FilesCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesCenter.swift; sourceTree = "<group>"; };
 		18C94A3850D88CA96343408E /* VoiceInputControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputControllerTests.swift; sourceTree = "<group>"; };
+		1AA60BB315BB5872C44504C2 /* pandas__libs_testing.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_testing.xcframework; path = Vendor/PythonExtensions/pandas__libs_testing.xcframework; sourceTree = "<group>"; };
 		1B3181E829C356459CFA9723 /* _datetime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _datetime.xcframework; path = Vendor/PythonExtensions/_datetime.xcframework; sourceTree = "<group>"; };
 		1B4E7317E7E655E86990C5D1 /* AppleSystemTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSystemTools.swift; sourceTree = "<group>"; };
+		1B58E0C473AABBF23BEBD6E0 /* _codecs_kr.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _codecs_kr.xcframework; path = Vendor/PythonExtensions/_codecs_kr.xcframework; sourceTree = "<group>"; };
 		1B80FCD68F0A3B45FD2E6F5E /* BrowserTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserTools.swift; sourceTree = "<group>"; };
 		1BED50B2B524010095D18E24 /* SourceControlView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceControlView.swift; sourceTree = "<group>"; };
 		1C801E16B941B45C62C279A9 /* ExecutionEnvironmentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionEnvironmentView.swift; sourceTree = "<group>"; };
 		1D3E9503EC3EC7259F7C06C8 /* _decimal.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _decimal.xcframework; path = Vendor/PythonExtensions/_decimal.xcframework; sourceTree = "<group>"; };
 		1DCEDA85D7E0A5B195344E38 /* VoiceInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInput.swift; sourceTree = "<group>"; };
-		1EF75CA5FA0A8AB032E41637 /* fast_float.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = fast_float.txt; sourceTree = "<group>"; };
+		1DD0388E916D7E0F76DFC992 /* pandas__libs_tslibs_base.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_base.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_base.xcframework; sourceTree = "<group>"; };
 		2012AC9C3BB8EE122046B60B /* _bz2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _bz2.xcframework; path = Vendor/PythonExtensions/_bz2.xcframework; sourceTree = "<group>"; };
 		20554886B0FDA45513A6ECF9 /* FloeAppTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FloeAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		213BDC1E4C8F7172D210CA91 /* LibArchiveLicenses */ = {isa = PBXFileReference; lastKnownFileType = folder; name = LibArchiveLicenses; path = FloeApp/Resources/LibArchiveLicenses; sourceTree = SOURCE_ROOT; };
 		219CD6341FB443743691F92D /* LocalPreviewServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPreviewServer.swift; sourceTree = "<group>"; };
 		224C3D6B873B21963949DAA8 /* SkillDreamService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillDreamService.swift; sourceTree = "<group>"; };
-		2525C5FCEB739465E40893FA /* libopenjpeg.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = libopenjpeg.txt; sourceTree = "<group>"; };
+		251662A9C6AD6E96E2C40543 /* pandas__libs_tslibs_fields.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_fields.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_fields.xcframework; sourceTree = "<group>"; };
 		26DD1D961BA4287302C7C341 /* RARFixtures.LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = RARFixtures.LICENSE.txt; sourceTree = "<group>"; };
 		276A4BD225189F342404A19B /* PDFium.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = PDFium.xcframework; path = Vendor/PDFium/PDFium.xcframework; sourceTree = "<group>"; };
 		2795FA9C3C98A62982F843B2 /* RuntimeDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeDiagnostics.swift; sourceTree = "<group>"; };
@@ -525,7 +695,7 @@
 		28E0216FA93D4EE0E28FC155 /* _asyncio.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _asyncio.xcframework; path = Vendor/PythonExtensions/_asyncio.xcframework; sourceTree = "<group>"; };
 		28F517BE646F9BAC96B3F919 /* _mt19937.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _mt19937.xcframework; path = Vendor/PythonExtensions/_mt19937.xcframework; sourceTree = "<group>"; };
 		2A7AA9D321701A98A3C0B09E /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
-		2AE8E661E2E4A243A4C190A6 /* llvm-libc.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "llvm-libc.txt"; sourceTree = "<group>"; };
+		2BDE734639F0CBA2467FA02A /* pandas__libs_groupby.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_groupby.xcframework; path = Vendor/PythonExtensions/pandas__libs_groupby.xcframework; sourceTree = "<group>"; };
 		2C4FE642486885CDD514009A /* ImportantFileShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportantFileShortcutTests.swift; sourceTree = "<group>"; };
 		2CB28627E88075511A391819 /* OnboardingViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViewModel.swift; sourceTree = "<group>"; };
 		2D008574B5C037321A6B5540 /* TaskScheduleSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskScheduleSheet.swift; sourceTree = "<group>"; };
@@ -533,11 +703,9 @@
 		2DBCBE0360D88F15438CA23F /* RemoteImageTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageTools.swift; sourceTree = "<group>"; };
 		2E443E03594FBC95E4EB48E2 /* InfoPlist.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = InfoPlist.xcstrings; sourceTree = "<group>"; };
 		2E47EC0D4490B49AD44060DE /* SyncSettingsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSettingsUITests.swift; sourceTree = "<group>"; };
-		2FB0ACBFA019889153592018 /* libjpeg_turbo.ijg */ = {isa = PBXFileReference; path = libjpeg_turbo.ijg; sourceTree = "<group>"; };
 		30E546884B42CDF2BB96931B /* UserMessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMessageBubble.swift; sourceTree = "<group>"; };
 		31D98DFED3D114A699F77361 /* AssistantMessageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantMessageView.swift; sourceTree = "<group>"; };
 		3319E3323937D58167E59374 /* MemoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryView.swift; sourceTree = "<group>"; };
-		33EEAA15425FEBABADB61E66 /* libjpeg_turbo.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = libjpeg_turbo.md; sourceTree = "<group>"; };
 		3453A73FCC9986445D9D3949 /* SkillLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillLifecycleTests.swift; sourceTree = "<group>"; };
 		34D4C7AAC317C256EEB4AFAD /* HostEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorViewModel.swift; sourceTree = "<group>"; };
 		35BE65ADB5F2AA44F63AFCDB /* marked.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = marked.min.js; sourceTree = "<group>"; };
@@ -558,15 +726,25 @@
 		3F4735140291FC5F3FC031CE /* WebSearchSettingsCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchSettingsCenter.swift; sourceTree = "<group>"; };
 		3F57D9EC0C0AD4C8EF1EF1EF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		3F914921E8AD3146396600E5 /* FloePDFiumBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FloePDFiumBridge.h; sourceTree = "<group>"; };
+		4005923C1682BD260619B12B /* pandas__libs_window_aggregations.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_window_aggregations.xcframework; path = Vendor/PythonExtensions/pandas__libs_window_aggregations.xcframework; sourceTree = "<group>"; };
+		40BAFE31EE72FD82F859328D /* _codecs_cn.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _codecs_cn.xcframework; path = Vendor/PythonExtensions/_codecs_cn.xcframework; sourceTree = "<group>"; };
+		423993211ECCF8FDA58FA75B /* pandas__libs_tslibs_strptime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_strptime.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_strptime.xcframework; sourceTree = "<group>"; };
 		425DF63623F387B29E54E3DE /* FilesSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesSettingsView.swift; sourceTree = "<group>"; };
 		42CD1B5E050E9A7C4092CBB5 /* CodeBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeBlockView.swift; sourceTree = "<group>"; };
 		42E25ED52EAD56B5234BCA43 /* FileTreeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTreeView.swift; sourceTree = "<group>"; };
 		436B2C5C853B7C60DCEF2059 /* ApprovalModelBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalModelBackend.swift; sourceTree = "<group>"; };
+		454525682D752CA18BC08BD3 /* pandas__libs_tslibs_tzconversion.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_tzconversion.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_tzconversion.xcframework; sourceTree = "<group>"; };
+		457B6D9F38AB0AB104676855 /* pandas__libs_internals.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_internals.xcframework; path = Vendor/PythonExtensions/pandas__libs_internals.xcframework; sourceTree = "<group>"; };
 		4591C06F1D70A373B8D8BD05 /* _struct_ufunc_tests.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _struct_ufunc_tests.xcframework; path = Vendor/PythonExtensions/_struct_ufunc_tests.xcframework; sourceTree = "<group>"; };
-		484813CF745B2DF43AE81596 /* abseil.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = abseil.txt; sourceTree = "<group>"; };
+		46C5D94B0311C71146C0A52C /* _contextvars.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _contextvars.xcframework; path = Vendor/PythonExtensions/_contextvars.xcframework; sourceTree = "<group>"; };
+		47008301B5CA511920D10074 /* _lsprof.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _lsprof.xcframework; path = Vendor/PythonExtensions/_lsprof.xcframework; sourceTree = "<group>"; };
+		474C47D4C0CB047A83CB38F7 /* pandas__libs_byteswap.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_byteswap.xcframework; path = Vendor/PythonExtensions/pandas__libs_byteswap.xcframework; sourceTree = "<group>"; };
+		4946D26E8EA2D8E70FF337DB /* _multibytecodec.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _multibytecodec.xcframework; path = Vendor/PythonExtensions/_multibytecodec.xcframework; sourceTree = "<group>"; };
 		4953B9D281B1637B7BE2E2C7 /* unicodedata.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = unicodedata.xcframework; path = Vendor/PythonExtensions/unicodedata.xcframework; sourceTree = "<group>"; };
 		4B364052541A17BBD46A6C70 /* FloeAgent */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeAgent; path = .; sourceTree = SOURCE_ROOT; };
 		4C7A649C2A6EC1875B18948E /* SkillsCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsCenter.swift; sourceTree = "<group>"; };
+		4CD49501E4174D08D4F1932D /* pandas__libs_tslibs_timedeltas.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_timedeltas.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_timedeltas.xcframework; sourceTree = "<group>"; };
+		4D024B3D67773355FF600C6D /* pandas__libs_tslibs_vectorized.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_vectorized.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_vectorized.xcframework; sourceTree = "<group>"; };
 		5043AD7DE6FDAD5AD4A95D1A /* GitHubSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubSettingsView.swift; sourceTree = "<group>"; };
 		50BA473C0A70CA3815EF338B /* SettingsRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsRootView.swift; sourceTree = "<group>"; };
 		50D3F739AE81623062A9C5C9 /* ConversationCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationCenter.swift; sourceTree = "<group>"; };
@@ -579,18 +757,20 @@
 		538FB08A4DD774D6AEFCF28F /* _md5.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _md5.xcframework; path = Vendor/PythonExtensions/_md5.xcframework; sourceTree = "<group>"; };
 		566A108E33736D5DD705D005 /* pdf-lib.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "pdf-lib.min.js"; sourceTree = "<group>"; };
 		57DF4046AFC20EF6F331D170 /* _simd.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _simd.xcframework; path = Vendor/PythonExtensions/_simd.xcframework; sourceTree = "<group>"; };
-		582F33C46D769E8DF9A8D4D9 /* COPYING */ = {isa = PBXFileReference; path = COPYING; sourceTree = "<group>"; };
 		583BB494E657BD1BC7481C75 /* SkillsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsView.swift; sourceTree = "<group>"; };
 		58FD2460881B6EAAD9966732 /* VoiceInputLive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputLive.swift; sourceTree = "<group>"; };
-		59A170D8871EA9EEB6DBE9DD /* pdfium.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = pdfium.txt; sourceTree = "<group>"; };
 		59EFDCF31C5526A1B589BE5B /* pyexpat.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pyexpat.xcframework; path = Vendor/PythonExtensions/pyexpat.xcframework; sourceTree = "<group>"; };
 		5A1D2F99E9E151908419336F /* MailSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailSettingsView.swift; sourceTree = "<group>"; };
 		5A836CC647019173A92D3490 /* dayjs.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = dayjs.min.js; sourceTree = "<group>"; };
+		5B5E8E25AC8A39F499A6A9BA /* pandas__libs_pandas_datetime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_pandas_datetime.xcframework; path = Vendor/PythonExtensions/pandas__libs_pandas_datetime.xcframework; sourceTree = "<group>"; };
 		5BA323DAAD3913411F1D5340 /* VNCViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VNCViewModel.swift; sourceTree = "<group>"; };
+		5E1C6CDF2484A37A543FEFD5 /* pandas__libs_tslibs_conversion.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_conversion.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_conversion.xcframework; sourceTree = "<group>"; };
+		5E34F31E16DFEC4CB4FAE639 /* pandas__libs_tslibs_np_datetime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_np_datetime.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_np_datetime.xcframework; sourceTree = "<group>"; };
 		5F1F13207E326EE5DC28108D /* _sqlite3.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _sqlite3.xcframework; path = Vendor/PythonExtensions/_sqlite3.xcframework; sourceTree = "<group>"; };
 		5F3B002E69704278C46E0A12 /* resource.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = resource.xcframework; path = Vendor/PythonExtensions/resource.xcframework; sourceTree = "<group>"; };
 		605587D767C978B8023F0DE2 /* SSHSessionOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHSessionOwner.swift; sourceTree = "<group>"; };
 		620E189ED0BE974C6B1EA3DB /* _blake2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _blake2.xcframework; path = Vendor/PythonExtensions/_blake2.xcframework; sourceTree = "<group>"; };
+		6388FC90DDE87F9FF1B56161 /* _queue.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _queue.xcframework; path = Vendor/PythonExtensions/_queue.xcframework; sourceTree = "<group>"; };
 		63EB5024B1FD6F3B9E73BBBF /* CanvasAgentTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasAgentTools.swift; sourceTree = "<group>"; };
 		65606508E8DAFCEA8327E106 /* _json.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _json.xcframework; path = Vendor/PythonExtensions/_json.xcframework; sourceTree = "<group>"; };
 		66624FE4F8480041F7602716 /* ConversationListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationListViewModel.swift; sourceTree = "<group>"; };
@@ -601,13 +781,14 @@
 		6856FC02F7D3AA8406FFAE9D /* AuxiliarySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxiliarySettingsView.swift; sourceTree = "<group>"; };
 		69539A226361C83F15C72B91 /* _pickle.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _pickle.xcframework; path = Vendor/PythonExtensions/_pickle.xcframework; sourceTree = "<group>"; };
 		699FBAE02E34D628B5FC48B7 /* iPhoneBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPhoneBackgroundPolicy.swift; sourceTree = "<group>"; };
-		69A08A6E96ACECA8251AEB40 /* agg23.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = agg23.txt; sourceTree = "<group>"; };
 		69C64CCB64B5B7C45F45C253 /* ImageEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageEditorView.swift; sourceTree = "<group>"; };
+		6A0E5089889969429F874CF6 /* _dbm.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _dbm.xcframework; path = Vendor/PythonExtensions/_dbm.xcframework; sourceTree = "<group>"; };
 		6B429A0789887E0740567D60 /* MoreViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreViewModel.swift; sourceTree = "<group>"; };
 		6C1C39FA1A8D05FF5A1E63EE /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		6E280242F651031E86A80A21 /* HomeChatVoiceUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeChatVoiceUITests.swift; sourceTree = "<group>"; };
 		6E4B5351714B8B79EF8E8055 /* Floe.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Floe.entitlements; sourceTree = "<group>"; };
 		6E788D879DCEB044587CF121 /* GeneralSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsView.swift; sourceTree = "<group>"; };
+		705BF3479430A93FD0851E2D /* pandas__libs__cyutility.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs__cyutility.xcframework; path = Vendor/PythonExtensions/pandas__libs__cyutility.xcframework; sourceTree = "<group>"; };
 		71091AA54C5E2F667D6469A6 /* zlib.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = zlib.xcframework; path = Vendor/PythonExtensions/zlib.xcframework; sourceTree = "<group>"; };
 		71638AA6E6859511D4AF6124 /* CanvasTouchInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasTouchInteractionTests.swift; sourceTree = "<group>"; };
 		725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupGuideUITests.swift; sourceTree = "<group>"; };
@@ -615,23 +796,31 @@
 		73253EE4682F46D548AE1671 /* _umath_tests.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _umath_tests.xcframework; path = Vendor/PythonExtensions/_umath_tests.xcframework; sourceTree = "<group>"; };
 		734621A9EFCDFAC074872173 /* BrowserProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserProtocolTests.swift; sourceTree = "<group>"; };
 		74012AF12E05312093931759 /* bit_generator.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = bit_generator.xcframework; path = Vendor/PythonExtensions/bit_generator.xcframework; sourceTree = "<group>"; };
+		74A2B0388E1F0CF642F226A5 /* pandas__libs_lib.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_lib.xcframework; path = Vendor/PythonExtensions/pandas__libs_lib.xcframework; sourceTree = "<group>"; };
+		74A3D870B4F77241BEEA52E6 /* pandas__libs_tslibs_offsets.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_offsets.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_offsets.xcframework; sourceTree = "<group>"; };
 		75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeTheme.swift; sourceTree = "<group>"; };
 		760ECB0E6B01EA7AC99B8744 /* NetworkStatusMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkStatusMonitor.swift; sourceTree = "<group>"; };
+		769843681E5F1AF7817CA413 /* _codecs_iso2022.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _codecs_iso2022.xcframework; path = Vendor/PythonExtensions/_codecs_iso2022.xcframework; sourceTree = "<group>"; };
 		7846CD1BBE3A01E9CFE5CDFE /* LocalSkillCreator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalSkillCreator.swift; sourceTree = "<group>"; };
+		7943E3FC34DEEEC17075E889 /* pandas__libs_interval.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_interval.xcframework; path = Vendor/PythonExtensions/pandas__libs_interval.xcframework; sourceTree = "<group>"; };
 		7A23E7E08860487A8333BE4F /* HostListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListView.swift; sourceTree = "<group>"; };
 		7AA5FE75929315E529714A75 /* PDFUnlockTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFUnlockTool.swift; sourceTree = "<group>"; };
+		7C35CB7DEF065BEA95D23CB4 /* _sha1.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _sha1.xcframework; path = Vendor/PythonExtensions/_sha1.xcframework; sourceTree = "<group>"; };
+		7C7B72A5E39B57AC2C0495F8 /* pandas__libs_hashtable.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_hashtable.xcframework; path = Vendor/PythonExtensions/pandas__libs_hashtable.xcframework; sourceTree = "<group>"; };
 		7DF58B5C692BB56DB9A379F4 /* VNCSessionOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VNCSessionOwner.swift; sourceTree = "<group>"; };
 		7EB83CE4E7FCE787665DFBBB /* uuid.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = uuid.min.js; sourceTree = "<group>"; };
 		7EC6304EFEA8100679656E2D /* Python.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Python.xcframework; path = Vendor/Python.xcframework; sourceTree = "<group>"; };
 		7F4320C0FA1D4880122D9B3B /* RemoteSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSettingsView.swift; sourceTree = "<group>"; };
 		802B105AE7DD5167CE7184CD /* PDFOperationSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFOperationSchema.swift; sourceTree = "<group>"; };
 		81D3E2674CC7FFB5E2064D20 /* PDFContentEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFContentEditor.swift; sourceTree = "<group>"; };
+		82CCECA26179BEA9F020C01A /* pandas__libs_reshape.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_reshape.xcframework; path = Vendor/PythonExtensions/pandas__libs_reshape.xcframework; sourceTree = "<group>"; };
 		83D0EBB0361B5F388903EE7F /* SetupGuideLauncherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupGuideLauncherView.swift; sourceTree = "<group>"; };
 		84E9CA8571729543928880E3 /* M0DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M0DiagnosticsView.swift; sourceTree = "<group>"; };
+		851B608241012C320B20D3FE /* pandas__libs_algos.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_algos.xcframework; path = Vendor/PythonExtensions/pandas__libs_algos.xcframework; sourceTree = "<group>"; };
 		855EFD5014DCA004E8103D32 /* _sha3.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _sha3.xcframework; path = Vendor/PythonExtensions/_sha3.xcframework; sourceTree = "<group>"; };
 		857283D5BF6E741DD727418D /* ProviderEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderEditorViewModel.swift; sourceTree = "<group>"; };
 		86BFC8770B049F008476B6C8 /* FileTreeViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTreeViewModel.swift; sourceTree = "<group>"; };
-		8722CB0A7C8D744F7FA39DD7 /* freetype.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = freetype.txt; sourceTree = "<group>"; };
+		87012024D0AFCF4EB416D0E3 /* pandas__libs_sparse.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_sparse.xcframework; path = Vendor/PythonExtensions/pandas__libs_sparse.xcframework; sourceTree = "<group>"; };
 		87F23BEA3A5A6B017F698D28 /* RemoteSessionSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionSnapshot.swift; sourceTree = "<group>"; };
 		891BEBD07BB7F67542319E7C /* Canvas3DDirectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Canvas3DDirectorView.swift; sourceTree = "<group>"; };
 		8A82429B0BF7E6E52C6B4A8C /* ScreenShareCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenShareCenter.swift; sourceTree = "<group>"; };
@@ -647,9 +836,9 @@
 		8F6676BA85A2C0059B610493 /* FloeAgentUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FloeAgentUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8FBC9F374C911EA91D944FB0 /* MoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreView.swift; sourceTree = "<group>"; };
 		8FC238A09CB801EBB02AA39B /* PDFDocumentOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFDocumentOperations.swift; sourceTree = "<group>"; };
+		913DBAF67EC6EB066626FEB4 /* pandas__libs_tslibs_timezones.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_timezones.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_timezones.xcframework; sourceTree = "<group>"; };
 		916ACA33CDE6532714E49272 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		926B95CD92D851FFE3BB0DFE /* python */ = {isa = PBXFileReference; lastKnownFileType = folder; name = python; path = FloeApp/Resources/python; sourceTree = SOURCE_ROOT; };
-		92736B2254C04D1A1D074845 /* lcms.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = lcms.txt; sourceTree = "<group>"; };
 		93F493C62CCACF635880C8F7 /* MailConnectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailConnectorTests.swift; sourceTree = "<group>"; };
 		940DE18872CD21D45A855A30 /* FilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesView.swift; sourceTree = "<group>"; };
 		95A8E32A62F993F42084705E /* FloeShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeShortcuts.swift; sourceTree = "<group>"; };
@@ -663,11 +852,12 @@
 		9D3F41AA3EFDF6F065F64FBB /* ImageEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageEditorViewModel.swift; sourceTree = "<group>"; };
 		9D8FAEF1503644BD831B03F7 /* CameraPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPickerView.swift; sourceTree = "<group>"; };
 		9ED88DC18A9D3D6ABA16DE7E /* ModelEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelEditorView.swift; sourceTree = "<group>"; };
+		9F5F7936DBA1DE84D33B0E8D /* pandas__libs_join.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_join.xcframework; path = Vendor/PythonExtensions/pandas__libs_join.xcframework; sourceTree = "<group>"; };
 		9F88E75D475229D4424D2FC1 /* ReasoningBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReasoningBlockView.swift; sourceTree = "<group>"; };
 		A011E3F62CC6B0819659AC99 /* FloeCPythonBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = FloeCPythonBridge.m; sourceTree = "<group>"; };
 		A18EF17B949C9C5817F9DCE9 /* PrivacySecurityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacySecurityView.swift; sourceTree = "<group>"; };
-		A243B5B2666C48BC4BC7AF51 /* icu.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = icu.txt; sourceTree = "<group>"; };
 		A2633E84AC1785E404DEC82A /* HomeLaunchpadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeLaunchpadView.swift; sourceTree = "<group>"; };
+		A3378D2005DD1D0F55D2457D /* pandas__libs_properties.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_properties.xcframework; path = Vendor/PythonExtensions/pandas__libs_properties.xcframework; sourceTree = "<group>"; };
 		A421102C6F73CB0DCC678535 /* FilePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewView.swift; sourceTree = "<group>"; };
 		A43266DA115E8EF12805D945 /* _umath_linalg.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _umath_linalg.xcframework; path = Vendor/PythonExtensions/_umath_linalg.xcframework; sourceTree = "<group>"; };
 		A4999F0E9E0D0A321084F08D /* _imagingmorph.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _imagingmorph.xcframework; path = Vendor/PythonExtensions/_imagingmorph.xcframework; sourceTree = "<group>"; };
@@ -677,6 +867,7 @@
 		A6797B7DAA890D6378153058 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		A6AFF9D3E17B2962EAE99225 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
 		A7705977F9297EBCC83FC679 /* FloeScreenShare.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FloeScreenShare.entitlements; sourceTree = "<group>"; };
+		A837399A8DE937C9827D4EFA /* PDFiumLicenses */ = {isa = PBXFileReference; lastKnownFileType = folder; name = PDFiumLicenses; path = FloeApp/Resources/PDFiumLicenses; sourceTree = SOURCE_ROOT; };
 		A94DC3B96DA97D1E17F6B887 /* _statistics.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _statistics.xcframework; path = Vendor/PythonExtensions/_statistics.xcframework; sourceTree = "<group>"; };
 		A9882EA32564305D017F2566 /* TextFileEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextFileEditorView.swift; sourceTree = "<group>"; };
 		A9A791AA53691DDDBA9E92CB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -686,15 +877,15 @@
 		AE5B8692C95AE635852BE44C /* PDFExportTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFExportTool.swift; sourceTree = "<group>"; };
 		AE6C97DCAC2474410B4480C7 /* BackgroundExecutionSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundExecutionSettingsView.swift; sourceTree = "<group>"; };
 		AE91B3167D376A273DCB756C /* _imaging.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _imaging.xcframework; path = Vendor/PythonExtensions/_imaging.xcframework; sourceTree = "<group>"; };
-		AF5DEFBAC3785BF0E5943413 /* libpng.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = libpng.txt; sourceTree = "<group>"; };
 		B0766D5622BEA31E66BE2CBE /* SettingsCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsCenter.swift; sourceTree = "<group>"; };
 		B2C7F4E1D9EC1405A1792A0A /* libc++.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = "libc++.tbd"; path = "usr/lib/libc++.tbd"; sourceTree = SDKROOT; };
 		B3135923FB83C439E60E432C /* ToolCallCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolCallCardView.swift; sourceTree = "<group>"; };
+		B32CD3F6C61FCE56B91D237E /* pandas__libs_tslib.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslib.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslib.xcframework; sourceTree = "<group>"; };
+		B34EFFB9B7D542730D69B86E /* _codecs_tw.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _codecs_tw.xcframework; path = Vendor/PythonExtensions/_codecs_tw.xcframework; sourceTree = "<group>"; };
 		B411EDF873B55072F23B97F0 /* FileInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileInspectorView.swift; sourceTree = "<group>"; };
 		B422A60C05CB3F770F6A231E /* _imagingmath.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _imagingmath.xcframework; path = Vendor/PythonExtensions/_imagingmath.xcframework; sourceTree = "<group>"; };
 		B536F4DA6282AE9A983C8498 /* RemoteImageUnavailableView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageUnavailableView.swift; sourceTree = "<group>"; };
 		B5E373AD5E7E721591E5441B /* WorkspacePickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspacePickerView.swift; sourceTree = "<group>"; };
-		B6E7FB84C8CC10AF9104B621 /* zlib.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = zlib.txt; sourceTree = "<group>"; };
 		B79C8C2B8701925AEC218168 /* BrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserView.swift; sourceTree = "<group>"; };
 		B7B559ED19BFCC88432C6828 /* _struct.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _struct.xcframework; path = Vendor/PythonExtensions/_struct.xcframework; sourceTree = "<group>"; };
 		B7CA2C01CEE850FC7B6F1D6A /* ProvidersSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProvidersSettingsView.swift; sourceTree = "<group>"; };
@@ -707,9 +898,12 @@
 		C3B3B3E433B5BD9B6C5B1835 /* HomeLaunchpadViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeLaunchpadViewModel.swift; sourceTree = "<group>"; };
 		C43555513E313C954D2E39B3 /* ProviderListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderListViewModel.swift; sourceTree = "<group>"; };
 		C4778F6E6793ACD2D5FB6C14 /* _operand_flag_tests.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _operand_flag_tests.xcframework; path = Vendor/PythonExtensions/_operand_flag_tests.xcframework; sourceTree = "<group>"; };
+		C4886B517D6E5FDE87CE473A /* pandas__libs_tslibs_parsing.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_parsing.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_parsing.xcframework; sourceTree = "<group>"; };
+		C4933430B71290D5D6717191 /* pandas__libs_arrays.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_arrays.xcframework; path = Vendor/PythonExtensions/pandas__libs_arrays.xcframework; sourceTree = "<group>"; };
 		C4CD5173D18CDDB6549BBD7D /* RemoteSessionCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionCenter.swift; sourceTree = "<group>"; };
-		C51573C636923E96F86FFBBD /* simdutf.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = simdutf.txt; sourceTree = "<group>"; };
+		C5FA6C8D76FA4EDFFA80276B /* pandas__libs_hashing.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_hashing.xcframework; path = Vendor/PythonExtensions/pandas__libs_hashing.xcframework; sourceTree = "<group>"; };
 		C71624FFDB9B76CB148DA3CE /* WorkspaceCanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceCanvasView.swift; sourceTree = "<group>"; };
+		C8F1C7614F842F707C441F28 /* pandas__libs_missing.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_missing.xcframework; path = Vendor/PythonExtensions/pandas__libs_missing.xcframework; sourceTree = "<group>"; };
 		C962FC08AA34E0D75F5600E4 /* _elementtree.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _elementtree.xcframework; path = Vendor/PythonExtensions/_elementtree.xcframework; sourceTree = "<group>"; };
 		CB4807D41A6BD7259F8D0356 /* DiagnosticsExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsExporter.swift; sourceTree = "<group>"; };
 		CB9397357FA8DE45F2E2112C /* _lzma.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _lzma.xcframework; path = Vendor/PythonExtensions/_lzma.xcframework; sourceTree = "<group>"; };
@@ -719,13 +913,18 @@
 		CF5F8AFB4D253F079EA5CF84 /* AppDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDestination.swift; sourceTree = "<group>"; };
 		D080FF4A569CE32CE9D399DC /* _rational_tests.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _rational_tests.xcframework; path = Vendor/PythonExtensions/_rational_tests.xcframework; sourceTree = "<group>"; };
 		D196A6882F00C663F4186CF1 /* OfficeDocumentEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeDocumentEditorView.swift; sourceTree = "<group>"; };
+		D2FB7E738598EFBE86199CAA /* pandas__libs_json.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_json.xcframework; path = Vendor/PythonExtensions/pandas__libs_json.xcframework; sourceTree = "<group>"; };
 		D3239F632B3D2E2DF7F9BBA8 /* LocalModelsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelsSettingsView.swift; sourceTree = "<group>"; };
 		D372C348BD51D78EBE7C9E3A /* _pocketfft_umath.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _pocketfft_umath.xcframework; path = Vendor/PythonExtensions/_pocketfft_umath.xcframework; sourceTree = "<group>"; };
 		D4286D5E31D703FF58F11B57 /* CreativeAssetIngestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreativeAssetIngestionService.swift; sourceTree = "<group>"; };
 		D469D627A123A3676681A3F3 /* SidebarCollapseGesture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarCollapseGesture.swift; sourceTree = "<group>"; };
 		D499B038C15DC8EA198B669A /* BrowserModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserModels.swift; sourceTree = "<group>"; };
+		D4EF135B3FD6EDA02B8BC3F0 /* pandas__libs_writers.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_writers.xcframework; path = Vendor/PythonExtensions/pandas__libs_writers.xcframework; sourceTree = "<group>"; };
 		D60E0C3869A0B7A80FC9EE97 /* FloeWidgets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeWidgets.swift; sourceTree = "<group>"; };
+		D60F63746F389D3AC1409E9A /* pandas__libs_tslibs_nattype.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_nattype.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_nattype.xcframework; sourceTree = "<group>"; };
 		D6980E6E2001E2C4508A503A /* VoiceInputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputController.swift; sourceTree = "<group>"; };
+		D759D5F275E2F39C7C03E74F /* _codecs_hk.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _codecs_hk.xcframework; path = Vendor/PythonExtensions/_codecs_hk.xcframework; sourceTree = "<group>"; };
+		D7D84CFDF374A66CA39CA98D /* pandas__libs_window_indexers.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_window_indexers.xcframework; path = Vendor/PythonExtensions/pandas__libs_window_indexers.xcframework; sourceTree = "<group>"; };
 		D93429C0B86DDBE47C24DFF2 /* zod.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = zod.min.js; sourceTree = "<group>"; };
 		DA165A2C7BD607DB6F26AD7B /* ConversationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationListView.swift; sourceTree = "<group>"; };
 		DAE9694DEA1FE25E7468F008 /* WorkspaceCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceCenter.swift; sourceTree = "<group>"; };
@@ -755,16 +954,23 @@
 		F0878619F1F1230D0EC1AF2D /* ThreadComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadComposerView.swift; sourceTree = "<group>"; };
 		F154C825E0923E5172D956C7 /* FeedbackTokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedbackTokenStore.swift; sourceTree = "<group>"; };
 		F2C540C2E6BB473445CBC494 /* FloeWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FloeWidgets.entitlements; sourceTree = "<group>"; };
+		F371D84FEA80046AB585DB30 /* pandas__libs_indexing.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_indexing.xcframework; path = Vendor/PythonExtensions/pandas__libs_indexing.xcframework; sourceTree = "<group>"; };
 		F499370272EB0BEEEA44D795 /* LibArchive.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = LibArchive.xcframework; path = Vendor/LibArchive/LibArchive.xcframework; sourceTree = "<group>"; };
+		F54DB2628B40757C8BB129CA /* pandas__libs_parsers.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_parsers.xcframework; path = Vendor/PythonExtensions/pandas__libs_parsers.xcframework; sourceTree = "<group>"; };
+		F59B5D886E094D81CE9B9DF0 /* pandas__libs_index.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_index.xcframework; path = Vendor/PythonExtensions/pandas__libs_index.xcframework; sourceTree = "<group>"; };
 		F5E18D2CD25230D158008D8A /* WorkspaceIDEView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceIDEView.swift; sourceTree = "<group>"; };
 		F5ECABBE2BD25105411AD392 /* _imagingft.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _imagingft.xcframework; path = Vendor/PythonExtensions/_imagingft.xcframework; sourceTree = "<group>"; };
 		F760D84DCB71D5B59F7EAB6A /* ArchiveCompressedBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveCompressedBridge.swift; sourceTree = "<group>"; };
+		F7B7525CD06B1C15E36EC0FF /* pandas__libs_sas.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_sas.xcframework; path = Vendor/PythonExtensions/pandas__libs_sas.xcframework; sourceTree = "<group>"; };
 		F8B270D611B66EBCE12B3968 /* ThreadTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadTimeline.swift; sourceTree = "<group>"; };
+		F912D5604B202108A44A81E6 /* pandas__libs_tslibs_period.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_period.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_period.xcframework; sourceTree = "<group>"; };
 		FAB44464D488A732056E8D96 /* ScreenShareGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenShareGuideView.swift; sourceTree = "<group>"; };
 		FBD2CBE0215EF9478D86E581 /* BackgroundVideoService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundVideoService.swift; sourceTree = "<group>"; };
 		FC00A178D3BFF39807097F6A /* FloeCPythonBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FloeCPythonBridge.h; sourceTree = "<group>"; };
 		FC62543B8E16BD9E21CD6C00 /* SourceControlCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceControlCenter.swift; sourceTree = "<group>"; };
+		FDE6184DDEE178979F87645A /* pandas__libs_ops_dispatch.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_ops_dispatch.xcframework; path = Vendor/PythonExtensions/pandas__libs_ops_dispatch.xcframework; sourceTree = "<group>"; };
 		FF07847A2353D846B363915C /* ThreadTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadTimelineTests.swift; sourceTree = "<group>"; };
+		FF649704B99081AF2F7E2480 /* pandas__libs_pandas_parser.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_pandas_parser.xcframework; path = Vendor/PythonExtensions/pandas__libs_pandas_parser.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -802,6 +1008,19 @@
 				8246227426A04558FB1837BF /* libc++.tbd in Frameworks */,
 				B81C50AA905334687754F195 /* Python.xcframework in Frameworks */,
 				50D04ECF856C858F6A84FEAB /* _asyncio.xcframework in Frameworks */,
+				CD6A7E5B11E0E3CB9A32061C /* _contextvars.xcframework in Frameworks */,
+				D9D35CE28869C9611427EF52 /* _queue.xcframework in Frameworks */,
+				0AC7F5DF35FB488442B73FBA /* _multibytecodec.xcframework in Frameworks */,
+				9EBA6EE31AFF90B6B71400C8 /* _codecs_cn.xcframework in Frameworks */,
+				87AFCC752E0DF0191D12E736 /* _codecs_hk.xcframework in Frameworks */,
+				7F54F4420A67698290900546 /* _codecs_iso2022.xcframework in Frameworks */,
+				CEB9C5AFF1E17132712C5FC8 /* _codecs_jp.xcframework in Frameworks */,
+				DAC729F1D31E8EB8411E4426 /* _codecs_kr.xcframework in Frameworks */,
+				181FE29F9FB53577DB0BF9A8 /* _codecs_tw.xcframework in Frameworks */,
+				C02374219B82440A6E03C03F /* _sha1.xcframework in Frameworks */,
+				1E91E2AB9058241938BF0D6A /* _dbm.xcframework in Frameworks */,
+				70F286B37F24BC80A411B04F /* _lsprof.xcframework in Frameworks */,
+				917D73FC29D40DE3C690A434 /* cmath.xcframework in Frameworks */,
 				6E438B5B53DA64FF688B9F37 /* _bisect.xcframework in Frameworks */,
 				B45AF4990B10532F1D1CD4CE /* _blake2.xcframework in Frameworks */,
 				362B576847A7496F5CF46F95 /* _bz2.xcframework in Frameworks */,
@@ -862,6 +1081,51 @@
 				3BAB66C9AAB283C5B8935E5B /* _imagingmath.xcframework in Frameworks */,
 				2F85B4ACAE9199A7CAEC5490 /* _imagingmorph.xcframework in Frameworks */,
 				B8C6577DCD079BA0FBE7EBCB /* _imagingtk.xcframework in Frameworks */,
+				DB50F1F1A2CF3AA30E3CA297 /* pandas__libs__cyutility.xcframework in Frameworks */,
+				BF0F2E2F2B4C891C0D179306 /* pandas__libs_algos.xcframework in Frameworks */,
+				CACC526CA057A90BF71B28F5 /* pandas__libs_arrays.xcframework in Frameworks */,
+				0E2A83735F5A1A9DC7059292 /* pandas__libs_byteswap.xcframework in Frameworks */,
+				A2569988835F69EC8662FC58 /* pandas__libs_groupby.xcframework in Frameworks */,
+				81AA78A136F5D44304A37AFA /* pandas__libs_hashing.xcframework in Frameworks */,
+				614FA71218ADDCA73DF938F3 /* pandas__libs_hashtable.xcframework in Frameworks */,
+				C95E8949638D06F7520165B6 /* pandas__libs_index.xcframework in Frameworks */,
+				021FA2D79454D7EC8307FF66 /* pandas__libs_indexing.xcframework in Frameworks */,
+				44549AE8F5937ED7F55B253B /* pandas__libs_internals.xcframework in Frameworks */,
+				702783ECBD4DCFFA7CF6DE20 /* pandas__libs_interval.xcframework in Frameworks */,
+				C445C408875C00830EEC5993 /* pandas__libs_join.xcframework in Frameworks */,
+				6631922EFC570774B5A03AA0 /* pandas__libs_json.xcframework in Frameworks */,
+				B1B06E1939BD8DE2C3B2A3BD /* pandas__libs_lib.xcframework in Frameworks */,
+				9DFE07FCD5B35D30B226DDFE /* pandas__libs_missing.xcframework in Frameworks */,
+				908A5CBB3085CA1C92CC3A46 /* pandas__libs_ops.xcframework in Frameworks */,
+				3A66AAE493907FEC14A90D2E /* pandas__libs_ops_dispatch.xcframework in Frameworks */,
+				30EECC8CBB688887DC731E91 /* pandas__libs_pandas_datetime.xcframework in Frameworks */,
+				83A18AFCF4F83B0A88809804 /* pandas__libs_pandas_parser.xcframework in Frameworks */,
+				6D83BA7D46587647E3075CB7 /* pandas__libs_parsers.xcframework in Frameworks */,
+				806E5265E2839E269CCF4C22 /* pandas__libs_properties.xcframework in Frameworks */,
+				649393985A777B33DFD9F18A /* pandas__libs_reshape.xcframework in Frameworks */,
+				1D722ACF9ED7E3EE1478A17C /* pandas__libs_sas.xcframework in Frameworks */,
+				CB853D9A7EFA7AD992621BC4 /* pandas__libs_sparse.xcframework in Frameworks */,
+				7333837AB0C376A58AF42971 /* pandas__libs_testing.xcframework in Frameworks */,
+				69CF14FB274EE7CF1A75355B /* pandas__libs_tslib.xcframework in Frameworks */,
+				D8C233E39D92D670E0B03EC3 /* pandas__libs_tslibs_base.xcframework in Frameworks */,
+				07D75CCBF1B9602AD64F5709 /* pandas__libs_tslibs_ccalendar.xcframework in Frameworks */,
+				3C5D5B5B247346DA80ADEBBC /* pandas__libs_tslibs_conversion.xcframework in Frameworks */,
+				726BA3555884AFF278377CF9 /* pandas__libs_tslibs_dtypes.xcframework in Frameworks */,
+				EDE80185BBE56770B525E973 /* pandas__libs_tslibs_fields.xcframework in Frameworks */,
+				387FBEF01A308524B273A103 /* pandas__libs_tslibs_nattype.xcframework in Frameworks */,
+				51277E317713B043EF7FA65F /* pandas__libs_tslibs_np_datetime.xcframework in Frameworks */,
+				58D18406B9BED399837BAE37 /* pandas__libs_tslibs_offsets.xcframework in Frameworks */,
+				8399E542A2376064EE1A7512 /* pandas__libs_tslibs_parsing.xcframework in Frameworks */,
+				7DA918A5D7CBDA3026E6ECDD /* pandas__libs_tslibs_period.xcframework in Frameworks */,
+				BF5BC698063F29786AAA2C71 /* pandas__libs_tslibs_strptime.xcframework in Frameworks */,
+				EEAF07E93D7D0C103F0EA346 /* pandas__libs_tslibs_timedeltas.xcframework in Frameworks */,
+				6D8FE713EAEEE8B03C51798E /* pandas__libs_tslibs_timestamps.xcframework in Frameworks */,
+				4FCDF1DDA235217013082223 /* pandas__libs_tslibs_timezones.xcframework in Frameworks */,
+				3AFBC6A59C80A54479D28946 /* pandas__libs_tslibs_tzconversion.xcframework in Frameworks */,
+				A18BA1E1A87CC3940DFB4511 /* pandas__libs_tslibs_vectorized.xcframework in Frameworks */,
+				62739F41A3576A254985C282 /* pandas__libs_window_aggregations.xcframework in Frameworks */,
+				FB1C4A8680542AC717BEC26B /* pandas__libs_window_indexers.xcframework in Frameworks */,
+				8D61411A5B776C8E0AA26D73 /* pandas__libs_writers.xcframework in Frameworks */,
 				4707D8E92893B0ED9C62F8F9 /* FloeCore in Frameworks */,
 				79513D3F13F2694F56459286 /* FloeModels in Frameworks */,
 				C289286498042D0530D1590B /* FloeProviders in Frameworks */,
@@ -1237,10 +1501,18 @@
 				620E189ED0BE974C6B1EA3DB /* _blake2.xcframework */,
 				9B83A57D75B2264625E7B8B6 /* _bounded_integers.xcframework */,
 				2012AC9C3BB8EE122046B60B /* _bz2.xcframework */,
+				40BAFE31EE72FD82F859328D /* _codecs_cn.xcframework */,
+				D759D5F275E2F39C7C03E74F /* _codecs_hk.xcframework */,
+				769843681E5F1AF7817CA413 /* _codecs_iso2022.xcframework */,
+				0C0EB0E2170C0184EF6D463A /* _codecs_jp.xcframework */,
+				1B58E0C473AABBF23BEBD6E0 /* _codecs_kr.xcframework */,
+				B34EFFB9B7D542730D69B86E /* _codecs_tw.xcframework */,
 				DCF2579C6FC7C3307B6747CA /* _common.xcframework */,
+				46C5D94B0311C71146C0A52C /* _contextvars.xcframework */,
 				F056190E229F36B3FC87CD73 /* _csv.xcframework */,
 				DCC42125AA4BA415183B6A85 /* _ctypes.xcframework */,
 				1B3181E829C356459CFA9723 /* _datetime.xcframework */,
+				6A0E5089889969429F874CF6 /* _dbm.xcframework */,
 				1D3E9503EC3EC7259F7C06C8 /* _decimal.xcframework */,
 				C962FC08AA34E0D75F5600E4 /* _elementtree.xcframework */,
 				EBC215027D7DF2A3C8B1DE14 /* _generator.xcframework */,
@@ -1252,20 +1524,24 @@
 				A4999F0E9E0D0A321084F08D /* _imagingmorph.xcframework */,
 				3CA6D19DD3F9D91C5F985652 /* _imagingtk.xcframework */,
 				65606508E8DAFCEA8327E106 /* _json.xcframework */,
+				47008301B5CA511920D10074 /* _lsprof.xcframework */,
 				CB9397357FA8DE45F2E2112C /* _lzma.xcframework */,
 				538FB08A4DD774D6AEFCF28F /* _md5.xcframework */,
 				28F517BE646F9BAC96B3F919 /* _mt19937.xcframework */,
 				078A9B07F9036A73B3C64839 /* _multiarray_tests.xcframework */,
 				67584DFEB3C8240E56927B4E /* _multiarray_umath.xcframework */,
+				4946D26E8EA2D8E70FF337DB /* _multibytecodec.xcframework */,
 				DFAFEA945AD87107AD86523A /* _opcode.xcframework */,
 				C4778F6E6793ACD2D5FB6C14 /* _operand_flag_tests.xcframework */,
 				09D8BBB2201A8E538ED03C9B /* _pcg64.xcframework */,
 				51AC2F5A4C03ECDAA0FD1C3D /* _philox.xcframework */,
 				69539A226361C83F15C72B91 /* _pickle.xcframework */,
 				D372C348BD51D78EBE7C9E3A /* _pocketfft_umath.xcframework */,
+				6388FC90DDE87F9FF1B56161 /* _queue.xcframework */,
 				12C202262489FD354A0B595A /* _random.xcframework */,
 				D080FF4A569CE32CE9D399DC /* _rational_tests.xcframework */,
 				1078C97511E013940FBDC94D /* _sfc64.xcframework */,
+				7C35CB7DEF065BEA95D23CB4 /* _sha1.xcframework */,
 				CE19791AC2454F6739825F8F /* _sha2.xcframework */,
 				855EFD5014DCA004E8103D32 /* _sha3.xcframework */,
 				57DF4046AFC20EF6F331D170 /* _simd.xcframework */,
@@ -1282,6 +1558,7 @@
 				397F1DC728D743D05F510489 /* array.xcframework */,
 				E25201278D78378B37FF1BBD /* binascii.xcframework */,
 				74012AF12E05312093931759 /* bit_generator.xcframework */,
+				04588885DF3B30D110854AAB /* cmath.xcframework */,
 				EE446478DBD5263458338578 /* fcntl.xcframework */,
 				176A2DE26290AB545E404ADE /* lapack_lite.xcframework */,
 				F499370272EB0BEEEA44D795 /* LibArchive.xcframework */,
@@ -1290,6 +1567,51 @@
 				BB881F2DC155C2D3A5681681 /* math.xcframework */,
 				BBD2144374FF4E9AD173B157 /* mmap.xcframework */,
 				9B923E6C40B9B0CB6BE969E7 /* mtrand.xcframework */,
+				705BF3479430A93FD0851E2D /* pandas__libs__cyutility.xcframework */,
+				851B608241012C320B20D3FE /* pandas__libs_algos.xcframework */,
+				C4933430B71290D5D6717191 /* pandas__libs_arrays.xcframework */,
+				474C47D4C0CB047A83CB38F7 /* pandas__libs_byteswap.xcframework */,
+				2BDE734639F0CBA2467FA02A /* pandas__libs_groupby.xcframework */,
+				C5FA6C8D76FA4EDFFA80276B /* pandas__libs_hashing.xcframework */,
+				7C7B72A5E39B57AC2C0495F8 /* pandas__libs_hashtable.xcframework */,
+				F59B5D886E094D81CE9B9DF0 /* pandas__libs_index.xcframework */,
+				F371D84FEA80046AB585DB30 /* pandas__libs_indexing.xcframework */,
+				457B6D9F38AB0AB104676855 /* pandas__libs_internals.xcframework */,
+				7943E3FC34DEEEC17075E889 /* pandas__libs_interval.xcframework */,
+				9F5F7936DBA1DE84D33B0E8D /* pandas__libs_join.xcframework */,
+				D2FB7E738598EFBE86199CAA /* pandas__libs_json.xcframework */,
+				74A2B0388E1F0CF642F226A5 /* pandas__libs_lib.xcframework */,
+				C8F1C7614F842F707C441F28 /* pandas__libs_missing.xcframework */,
+				FDE6184DDEE178979F87645A /* pandas__libs_ops_dispatch.xcframework */,
+				0759DE46F499DE82B08079EC /* pandas__libs_ops.xcframework */,
+				5B5E8E25AC8A39F499A6A9BA /* pandas__libs_pandas_datetime.xcframework */,
+				FF649704B99081AF2F7E2480 /* pandas__libs_pandas_parser.xcframework */,
+				F54DB2628B40757C8BB129CA /* pandas__libs_parsers.xcframework */,
+				A3378D2005DD1D0F55D2457D /* pandas__libs_properties.xcframework */,
+				82CCECA26179BEA9F020C01A /* pandas__libs_reshape.xcframework */,
+				F7B7525CD06B1C15E36EC0FF /* pandas__libs_sas.xcframework */,
+				87012024D0AFCF4EB416D0E3 /* pandas__libs_sparse.xcframework */,
+				1AA60BB315BB5872C44504C2 /* pandas__libs_testing.xcframework */,
+				B32CD3F6C61FCE56B91D237E /* pandas__libs_tslib.xcframework */,
+				1DD0388E916D7E0F76DFC992 /* pandas__libs_tslibs_base.xcframework */,
+				053F4DF024E53AF29632B10E /* pandas__libs_tslibs_ccalendar.xcframework */,
+				5E1C6CDF2484A37A543FEFD5 /* pandas__libs_tslibs_conversion.xcframework */,
+				1453302FBF5B4F00ABFE7DEE /* pandas__libs_tslibs_dtypes.xcframework */,
+				251662A9C6AD6E96E2C40543 /* pandas__libs_tslibs_fields.xcframework */,
+				D60F63746F389D3AC1409E9A /* pandas__libs_tslibs_nattype.xcframework */,
+				5E34F31E16DFEC4CB4FAE639 /* pandas__libs_tslibs_np_datetime.xcframework */,
+				74A3D870B4F77241BEEA52E6 /* pandas__libs_tslibs_offsets.xcframework */,
+				C4886B517D6E5FDE87CE473A /* pandas__libs_tslibs_parsing.xcframework */,
+				F912D5604B202108A44A81E6 /* pandas__libs_tslibs_period.xcframework */,
+				423993211ECCF8FDA58FA75B /* pandas__libs_tslibs_strptime.xcframework */,
+				4CD49501E4174D08D4F1932D /* pandas__libs_tslibs_timedeltas.xcframework */,
+				0EC05C4A2D3FF390E3DBFCB0 /* pandas__libs_tslibs_timestamps.xcframework */,
+				913DBAF67EC6EB066626FEB4 /* pandas__libs_tslibs_timezones.xcframework */,
+				454525682D752CA18BC08BD3 /* pandas__libs_tslibs_tzconversion.xcframework */,
+				4D024B3D67773355FF600C6D /* pandas__libs_tslibs_vectorized.xcframework */,
+				4005923C1682BD260619B12B /* pandas__libs_window_aggregations.xcframework */,
+				D7D84CFDF374A66CA39CA98D /* pandas__libs_window_indexers.xcframework */,
+				D4EF135B3FD6EDA02B8BC3F0 /* pandas__libs_writers.xcframework */,
 				276A4BD225189F342404A19B /* PDFium.xcframework */,
 				59EFDCF31C5526A1B589BE5B /* pyexpat.xcframework */,
 				7EC6304EFEA8100679656E2D /* Python.xcframework */,
@@ -1302,42 +1624,12 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
-		8C592DB6EC192B6E5426BB89 /* licenses */ = {
-			isa = PBXGroup;
-			children = (
-				484813CF745B2DF43AE81596 /* abseil.txt */,
-				69A08A6E96ACECA8251AEB40 /* agg23.txt */,
-				1EF75CA5FA0A8AB032E41637 /* fast_float.txt */,
-				8722CB0A7C8D744F7FA39DD7 /* freetype.txt */,
-				A243B5B2666C48BC4BC7AF51 /* icu.txt */,
-				92736B2254C04D1A1D074845 /* lcms.txt */,
-				2FB0ACBFA019889153592018 /* libjpeg_turbo.ijg */,
-				33EEAA15425FEBABADB61E66 /* libjpeg_turbo.md */,
-				2525C5FCEB739465E40893FA /* libopenjpeg.txt */,
-				AF5DEFBAC3785BF0E5943413 /* libpng.txt */,
-				2AE8E661E2E4A243A4C190A6 /* llvm-libc.txt */,
-				59A170D8871EA9EEB6DBE9DD /* pdfium.txt */,
-				C51573C636923E96F86FFBBD /* simdutf.txt */,
-				B6E7FB84C8CC10AF9104B621 /* zlib.txt */,
-			);
-			path = licenses;
-			sourceTree = "<group>";
-		};
 		A7725C96F3E3FE085FF8C7FE /* Shortcuts */ = {
 			isa = PBXGroup;
 			children = (
 				95A8E32A62F993F42084705E /* FloeShortcuts.swift */,
 			);
 			path = Shortcuts;
-			sourceTree = "<group>";
-		};
-		AD3596FE36C7ACB9F64A7180 /* PDFiumLicenses */ = {
-			isa = PBXGroup;
-			children = (
-				10C25343131466A6D4B8371F /* LICENSE */,
-				8C592DB6EC192B6E5426BB89 /* licenses */,
-			);
-			path = PDFiumLicenses;
 			sourceTree = "<group>";
 		};
 		B6AD6399851AAAD8A47979D5 /* VNC */ = {
@@ -1452,11 +1744,11 @@
 				37BB930D0175C1FF7EE714EE /* Assets.xcassets */,
 				916ACA33CDE6532714E49272 /* Info.plist */,
 				2E443E03594FBC95E4EB48E2 /* InfoPlist.xcstrings */,
+				213BDC1E4C8F7172D210CA91 /* LibArchiveLicenses */,
 				A6797B7DAA890D6378153058 /* Localizable.xcstrings */,
+				A837399A8DE937C9827D4EFA /* PDFiumLicenses */,
 				926B95CD92D851FFE3BB0DFE /* python */,
 				EB3F3DF9DADE5E378FE9D27A /* js-packages */,
-				F4F02DB6E4909C48DADEEB80 /* LibArchiveLicenses */,
-				AD3596FE36C7ACB9F64A7180 /* PDFiumLicenses */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -1491,14 +1783,6 @@
 				D93429C0B86DDBE47C24DFF2 /* zod.min.js */,
 			);
 			path = "js-packages";
-			sourceTree = "<group>";
-		};
-		F4F02DB6E4909C48DADEEB80 /* LibArchiveLicenses */ = {
-			isa = PBXGroup;
-			children = (
-				582F33C46D769E8DF9A8D4D9 /* COPYING */,
-			);
-			path = LibArchiveLicenses;
 			sourceTree = "<group>";
 		};
 		F9736247E976C4B2AE821D94 /* Entitlements */ = {
@@ -1721,27 +2005,15 @@
 			files = (
 				75B75F5F8C25D5B60B5E4541 /* Assets.xcassets in Resources */,
 				F9AE89670E3EE68F7DB18F74 /* InfoPlist.xcstrings in Resources */,
+				8E7756561D6378946EAEB05B /* LibArchiveLicenses in Resources */,
 				EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */,
-				E3FB8EDE8B8FD0B92DEEB6C8 /* abseil.txt in Resources */,
-				99CC80996FF624EC627D009F /* agg23.txt in Resources */,
+				82A6523A97E32F6261F639AA /* PDFiumLicenses in Resources */,
 				72F687318496A3451661FD31 /* dayjs.min.js in Resources */,
-				4EE69DE2B23519E380EA9793 /* fast_float.txt in Resources */,
-				A4AA152E1B8C7F33410DECF7 /* freetype.txt in Resources */,
-				DB06F892715FBF0E79450A9C /* icu.txt in Resources */,
-				277061F33FE3B7A243779350 /* lcms.txt in Resources */,
-				6363E02F6A18A9C0F2BF0D8C /* libjpeg_turbo.ijg in Resources */,
-				F35308B971E278665CE02022 /* libjpeg_turbo.md in Resources */,
-				8E749F7AF911C4CA056C33C9 /* libopenjpeg.txt in Resources */,
-				02AFC3CCC68343020BFCA063 /* libpng.txt in Resources */,
-				304162B9D1E99A15544E071C /* llvm-libc.txt in Resources */,
 				5AE108D9A18E2DF3B4591CDA /* lodash.min.js in Resources */,
 				C6CD25F689A569EBCC25BDF6 /* marked.min.js in Resources */,
 				F0702B8CBA014A55B657E7C4 /* pdf-lib.min.js in Resources */,
-				BABE485CEAA6327ED133D361 /* pdfium.txt in Resources */,
 				9AE3503A129EA99DA6997C67 /* python in Resources */,
-				44B119F927FBD2D9567F17E8 /* simdutf.txt in Resources */,
 				44F125A88372998BD75A01C9 /* uuid.min.js in Resources */,
-				EF7E1A9BB02E86BB2982E51E /* zlib.txt in Resources */,
 				9B0C36D962598923D5B259A1 /* zod.min.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -2026,7 +2298,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 128;
+				CURRENT_PROJECT_VERSION = 129;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				FLOE_GITHUB_OAUTH_CLIENT_ID = Ov23litEyLPjXVLEDzWW;
@@ -2044,7 +2316,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4.97;
+				MARKETING_VERSION = 1.4.98;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios;
 				PRODUCT_MODULE_NAME = FloeApp;
 				PRODUCT_NAME = "Floe Agent";
@@ -2062,7 +2334,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 128;
+				CURRENT_PROJECT_VERSION = 129;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2073,7 +2345,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.97;
+				MARKETING_VERSION = 1.4.98;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -2145,7 +2417,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 128;
+				CURRENT_PROJECT_VERSION = 129;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2156,7 +2428,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.97;
+				MARKETING_VERSION = 1.4.98;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";
@@ -2191,7 +2463,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
-				CURRENT_PROJECT_VERSION = 128;
+				CURRENT_PROJECT_VERSION = 129;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2202,7 +2474,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.97;
+				MARKETING_VERSION = 1.4.98;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -2301,7 +2573,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 128;
+				CURRENT_PROJECT_VERSION = 129;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2312,7 +2584,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.97;
+				MARKETING_VERSION = 1.4.98;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -2330,7 +2602,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 128;
+				CURRENT_PROJECT_VERSION = 129;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				FLOE_GITHUB_OAUTH_CLIENT_ID = Ov23litEyLPjXVLEDzWW;
@@ -2348,7 +2620,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4.97;
+				MARKETING_VERSION = 1.4.98;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios;
 				PRODUCT_MODULE_NAME = FloeApp;
 				PRODUCT_NAME = "Floe Agent";
@@ -2367,7 +2639,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 128;
+				CURRENT_PROJECT_VERSION = 129;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2378,7 +2650,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.97;
+				MARKETING_VERSION = 1.4.98;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -2413,7 +2685,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
-				CURRENT_PROJECT_VERSION = 128;
+				CURRENT_PROJECT_VERSION = 129;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2424,7 +2696,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.97;
+				MARKETING_VERSION = 1.4.98;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";

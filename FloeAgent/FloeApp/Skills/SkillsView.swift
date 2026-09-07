@@ -25,7 +25,7 @@ struct SkillsView: View {
     private var visibleInstalled: [PersistedSkill] {
         let exposed = Set(DomainSkillLibrary.all.filter(\.exposed).map(\.id))
         return center.installed.filter { skill in
-            guard (skill.sourceURL ?? "").hasPrefix(DomainSkillLibrary.builtinSourceScheme) else { return true }
+            guard DomainSkillLibrary.all.contains(where: { $0.id == skill.id }) else { return true }
             return exposed.contains(skill.id)
         }
     }
@@ -71,7 +71,7 @@ struct SkillsView: View {
                             .buttonStyle(.borderless)
                     }
                     .swipeActions {
-                        if !(skill.sourceURL ?? "").hasPrefix(DomainSkillLibrary.builtinSourceScheme) {
+                        if !DomainSkillLibrary.all.contains(where: { $0.id == skill.id }) {
                             Button("action.delete", role: .destructive) { pendingRemoval = skill }
                         }
                     }

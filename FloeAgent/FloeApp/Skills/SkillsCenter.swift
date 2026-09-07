@@ -121,7 +121,7 @@ final class SkillsCenter: ObservableObject {
             do {
                 try await self.installCanonicalPackage(at: staging, sourceURL: sourceURL,
                     sourceDigest: candidate.snapshot.package.canonicalSHA256, rewriteModelID: "github-reviewed-\(candidate.commit)",
-                    initialStatus: current.status, replaceExisting: true, callerHoldsMutationLock: true)
+                    initialStatus: current.status, replaceExisting: true, callerHoldsMutationLock: true, verifiedUpgrade: candidate)
                 _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest)
                 journal.phase = "complete"
                 try self.writeJournal(journal, at: history)
@@ -255,6 +255,9 @@ final class SkillsCenter: ObservableObject {
         enabled: Bool = true
     ) async throws -> CreatedSkill {
         let id = try Self.identifier(request.name)
+        guard !DomainSkillLibrary.all.contains(where: { $0.id == id }) else {
+            throw FloeError.validationFailed("Built-in skill IDs are reserved; choose a new name for a custom skill")
+        }
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent("floe-skill-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: temporary) }
@@ -468,6 +471,7 @@ final class SkillsCenter: ObservableObject {
     func curate(now: Date = Date()) async {
         let installed = (try? await environment.skillStore.all()) ?? []
         let stale = installed.filter { skill in
+            guard !DomainSkillLibrary.all.contains(where: { $0.id == skill.id }) else { return false }
             guard skill.sourceURL?.hasPrefix("floe-creator") == true else { return false }
             guard skill.status == "enabled" else { return false }
             return now.timeIntervalSince(skill.updatedAt) > 90 * 24 * 60 * 60
@@ -528,7 +532,7 @@ final class SkillsCenter: ObservableObject {
             // Built-in domain skills are part of the app; they can be left
             // disabled but never removed (a removed built-in would be
             // re-seeded on the next launch anyway).
-            guard !(skill.sourceURL ?? "").hasPrefix(DomainSkillLibrary.builtinSourceScheme) else {
+            guard !OfficialSkillHub.skillIDs.contains(skill.id), !(skill.sourceURL ?? "").hasPrefix(DomainSkillLibrary.builtinSourceScheme) else {
                 throw FloeError.validationFailed("Built-in skill \(skill.id) cannot be removed; leave it disabled instead")
             }
             // Keep a recoverable package outside the active store. If the DB
@@ -546,6 +550,9 @@ final class SkillsCenter: ObservableObject {
             await load()
             return "status=removed id=\(skill.id) recoverablePackage=\(exists ? backup.path : "none")"
         case .update:
+            guard !OfficialSkillHub.skillIDs.contains(skill.id) else {
+                throw FloeError.validationFailed("Official skills update only through reviewed signed GitHub packages; create a custom skill with a different ID for local instructions")
+            }
             let validator = SkillPackageValidator()
             let original = try validator.validate(packageAt: packageURL)
             guard original.canonicalSHA256 == request.expectedDigest else { throw SkillStoreConflict.changedOrMissing }
@@ -625,10 +632,26 @@ final class SkillsCenter: ObservableObject {
                 ]
                 let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
                 try manifestData.write(to: temporary.appendingPathComponent("floe.json"), options: .atomic)
+                if let exactFiles = BundledDomainSkills.officialSeedFiles[definition.id] {
+                    for (path, data) in exactFiles {
+                        let destination = temporary.appendingPathComponent(path)
+                        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                        try data.write(to: destination, options: .atomic)
+                    }
+                }
                 let package = try validator.validate(packageAt: temporary)
+                if OfficialSkillHub.skillIDs.contains(definition.id) {
+                    guard package.canonicalSHA256 == BundledDomainSkills.officialPackageDigests[definition.id] else {
+                        throw FloeError.validationFailed("Bundled official seed differs from the signed GitHub package")
+                    }
+                }
 
                 let existing = try? await environment.skillStore.all().first { $0.id == definition.id }
                 if let existing {
+                    // Initial installation is bundled/offline. Subsequent
+                    // official updates must come through the signed GitHub
+                    // path, never a local rewrite or app-launch reseed.
+                    if OfficialSkillHub.skillIDs.contains(definition.id) { continue }
                     // App bundles never replace a GitHub/user-managed source.
                     guard existing.sourceURL == DomainSkillLibrary.sourceURL(for: definition.id) else { continue }
                     let bundledIsNewer = Self.isVersion(definition.version, newerThan: existing.version)
@@ -651,14 +674,16 @@ final class SkillsCenter: ObservableObject {
                         at: temporary,
                         sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
                         initialStatus: existing.status,
-                        replaceExisting: true
+                        replaceExisting: true,
+                        bundledSeed: true
                     )
                 } else {
                     try await installCanonicalPackage(
                         at: temporary,
                         sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
                         initialStatus: "enabled",
-                        replaceExisting: true
+                        replaceExisting: true,
+                        bundledSeed: true
                     )
                 }
                 updatedSeeds[definition.id] = package.canonicalSHA256
@@ -701,13 +726,23 @@ final class SkillsCenter: ObservableObject {
         rewriteModelID: String? = nil,
         initialStatus: String = "enabled",
         replaceExisting: Bool = false,
-        callerHoldsMutationLock: Bool = false
+        callerHoldsMutationLock: Bool = false,
+        bundledSeed: Bool = false,
+        verifiedUpgrade: SkillUpgradeCandidate? = nil
     ) async throws {
         guard callerHoldsMutationLock || !packageMutationInProgress else { throw FloeError.validationFailed("Another skill change is in progress") }
         packageMutationInProgress = true
         defer { if !callerHoldsMutationLock { packageMutationInProgress = false } }
         let validator = SkillPackageValidator()
         let package = try validator.validate(packageAt: url)
+        if DomainSkillLibrary.all.contains(where: { $0.id == package.manifest.id }), !bundledSeed {
+            guard OfficialSkillHub.skillIDs.contains(package.manifest.id),
+                  let verifiedUpgrade,
+                  verifiedUpgrade.snapshot.package.manifest.id == package.manifest.id,
+                  verifiedUpgrade.snapshot.package.canonicalSHA256 == package.canonicalSHA256 else {
+                throw FloeError.validationFailed("Reserved skill IDs require a verified official GitHub update")
+            }
+        }
         try await requireCompatibility(package)
         var pythonAuditDigest: String?
         if !package.manifest.pythonPackages.isEmpty {

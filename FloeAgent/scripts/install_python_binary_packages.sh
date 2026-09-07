@@ -1,6 +1,6 @@
 #!/bin/bash
-# Bundle pinned, BeeWare-published CPython 3.13 iOS binary wheels (numpy,
-# Pillow) into the app: pure-Python trees go to the bundled site-packages,
+# Bundle pinned CPython 3.13 iOS binary wheels (BeeWare numpy/Pillow and Floe
+# pandas) into the app: pure-Python trees go to the bundled site-packages,
 # every .so becomes a separately embedded XCFramework with .fwork markers,
 # exactly like the standard-library extensions (package_python_extensions.sh).
 # Runtime download of native code stays impossible; this list is fixed at
@@ -18,6 +18,7 @@ mkdir -p "$cache_root" "$site_packages" "$output_root"
 packages=(
     "numpy|2.5.2.post1|d451e3281b8e2709bb85c6857c83b3c1797f930971b6bbff7f57469d3958e16e|154285250704dd82f8a5b53633eebe381f6eb56d232780291ac180e12a7ea0b1"
     "Pillow|11.0.0|42543f517e0f888102db194ae34e903786c82bbb062854e7694d227a2044b984|6c7d4fbfb2a3b7b823f8cb8a5af5d91570d597a4385ea11ad0e29ea316e197ff"
+    "pandas|3.0.5|99ac5c6c541a0e24b0b6637e9405e9ae682ea4b188316a090d643edd6bedd92d|d0a9dc857c9d9d38e78d305a3385f51dc04366daf15fda2f17a3a0927d55bd67"
 )
 
 download_wheel() {
@@ -26,8 +27,12 @@ download_wheel() {
     name="$(python3 -c "print('$package'.lower())")"
     local file="$cache_root/$package-$version-$arch.whl"
     if [ ! -f "$file" ]; then
+        local url="https://api.anaconda.org/download/beeware/$package/$version/$name-$version-cp313-cp313-ios_13_0_arm64_$arch.whl"
+        if [ "$package" = pandas ]; then
+            url="https://github.com/JiangNanGenius/floe-agent/releases/download/runtime-pandas-3.0.5-cp313/pandas-3.0.5-cp313-cp313-ios_17_0_arm64_$arch.whl"
+        fi
         curl --fail --location --retry 3 --output "$file" \
-            "https://api.anaconda.org/download/beeware/$package/$version/$name-$version-cp313-cp313-ios_13_0_arm64_$arch.whl"
+            "$url"
     fi
     local actual
     actual="$(shasum -a 256 "$file" | awk '{print $1}')"
@@ -39,12 +44,12 @@ download_wheel() {
 }
 
 make_framework() {
-    local module="$1" source="$2" destination="$3" supported_platform="$4"
+    local module="$1" source="$2" destination="$3" supported_platform="$4" minimum_os="$5"
     local identifier_module="${module#_}"
     identifier_module="${identifier_module//_/-}"
     mkdir -p "$destination"
     cp "$source" "$destination/$module"
-    install_name_tool -id "@rpath/$module.framework/$module" "$destination/$module" 2>/dev/null || true
+    install_name_tool -id "@rpath/$module.framework/$module" "$destination/$module"
     /usr/libexec/PlistBuddy -c "Add :CFBundleDevelopmentRegion string en" "$destination/Info.plist" >/dev/null
     /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string $module" "$destination/Info.plist"
     /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string org.python.extension.$identifier_module" "$destination/Info.plist"
@@ -55,7 +60,7 @@ make_framework() {
     /usr/libexec/PlistBuddy -c "Add :CFBundleSupportedPlatforms array" "$destination/Info.plist"
     /usr/libexec/PlistBuddy -c "Add :CFBundleSupportedPlatforms:0 string $supported_platform" "$destination/Info.plist"
     /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 3.13" "$destination/Info.plist"
-    /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string 13.0" "$destination/Info.plist"
+    /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string $minimum_os" "$destination/Info.plist"
 }
 
 project_yml_entries=()
@@ -91,22 +96,36 @@ for spec in "${packages[@]}"; do
             echo "error: simulator counterpart missing for $module ($package)" >&2
             exit 1
         fi
-        work_dir="$output_root/.work-binpkg-$module"
+        framework_module="$module"
+        minimum_os=13.0
+        if [ "$package" = pandas ]; then
+            framework_module="${package_dir//\//_}_$module"
+            minimum_os=17.0
+        fi
+        work_dir="$output_root/.work-binpkg-$framework_module"
         rm -rf "$work_dir"
-        make_framework "$module" "$stage/device/$so_rel" "$work_dir/device/$module.framework" "iPhoneOS"
-        make_framework "$module" "$sim_so" "$work_dir/simulator/$module.framework" "iPhoneSimulator"
+        make_framework "$framework_module" "$stage/device/$so_rel" "$work_dir/device/$framework_module.framework" "iPhoneOS" "$minimum_os"
+        make_framework "$framework_module" "$sim_so" "$work_dir/simulator/$framework_module.framework" "iPhoneSimulator" "$minimum_os"
+        printf 'python/lib/python3.13/site-packages/%s/%s.cpython-313-iphoneos.fwork' "$package_dir" "$module" > "$work_dir/device/$framework_module.framework/$framework_module.origin"
+        printf 'python/lib/python3.13/site-packages/%s/%s.cpython-313-iphonesimulator.fwork' "$package_dir" "$module" > "$work_dir/simulator/$framework_module.framework/$framework_module.origin"
+        # Generated targets are owned by this fixed, SHA-pinned package list.
+        if [ -d "$output_root/$framework_module.xcframework" ]; then
+            rm -rf "$output_root/$framework_module.xcframework"
+        fi
         xcodebuild -create-xcframework \
-            -framework "$work_dir/device/$module.framework" \
-            -framework "$work_dir/simulator/$module.framework" \
-            -output "$output_root/$module.xcframework" >/dev/null
+            -framework "$work_dir/device/$framework_module.framework" \
+            -framework "$work_dir/simulator/$framework_module.framework" \
+            -output "$output_root/$framework_module.xcframework" >/dev/null
         rm -rf "$work_dir"
-        printf 'Frameworks/%s.framework/%s' "$module" "$module" \
+        printf 'Frameworks/%s.framework/%s' "$framework_module" "$framework_module" \
             > "$site_packages/$package_dir/$module.cpython-313-iphoneos.fwork"
-        printf 'Frameworks/%s.framework/%s' "$module" "$module" \
+        printf 'Frameworks/%s.framework/%s' "$framework_module" "$framework_module" \
             > "$site_packages/$package_dir/$module.cpython-313-iphonesimulator.fwork"
-        project_yml_entries+=("$module")
+        project_yml_entries+=("$framework_module")
     done < <(cd "$stage/device" && find . -name "*.cpython-313-iphoneos.so" | sed 's|^\./||' | sort)
 done
+
+python3 scripts/install_pandas_pure_dependencies.py
 
 # Keep project.yml's embed list in sync with the packaged frameworks. The
 # block between the markers is regenerated on every run, so CI and local

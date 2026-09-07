@@ -58,6 +58,14 @@ rsync -a --delete \
     --exclude 'venv/' \
     "$stdlib_source/" "$stdlib_target/"
 
+# sysconfig is the exception to the otherwise shared Python source tree.
+# Keep every pinned target's build variables; sysconfig selects its own ABI
+# at runtime. Copying only the device stdlib breaks pandas on Simulator.
+for config in "$extract_dir"/Python.xcframework/*/platform-config/*/_sysconfigdata__ios_*.py; do
+    test -f "$config"
+    cp "$config" "$stdlib_target/"
+done
+
 # Bundle the pinned pure-Python pip implementation so the app can offer a
 # managed installer without spawning processes. The tool constrains installs
 # to platform-independent wheels and routes every request through package
@@ -79,7 +87,7 @@ rm -f "FloeApp/Resources/python/lib/python313.zip"
 # module to be a separately embedded/signed framework with `.fwork` markers.
 scripts/package_python_extensions.sh
 
-# Bundle the pinned BeeWare iOS binary wheels (numpy, Pillow) the same way:
+# Bundle pinned iOS binary wheels (numpy, Pillow, pandas) the same way:
 # pure-Python into site-packages, every extension as a signed XCFramework.
 scripts/install_python_binary_packages.sh
 

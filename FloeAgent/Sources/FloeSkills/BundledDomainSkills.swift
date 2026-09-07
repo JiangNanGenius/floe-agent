@@ -68,14 +68,14 @@ public enum BundledDomainSkills {
             id: "floe-python",
             name: "Local Python Runtime",
             description: "The bundled CPython substrate: usage rules, bundled libraries, and the contract every script-carrying skill executes under.",
-            version: "1.1.0",
+            version: "1.2.0",
             exposed: false,
             markdown: """
             ## Local Python (exec.localPython)
             ### Using the runtime
             - The appended runtime probe is authoritative for this build's Python and native library versions. Standard-library extensions include asyncio, json, csv, sqlite3, zipfile, tarfile, gzip, bz2, lzma, hashlib, hmac, secrets, xml.etree, mmap, zoneinfo and statistics. Desktop shell modules (curses, readline, grp, pwd, syslog, multiprocessing) do not exist on iOS.
-            - numpy and Pillow (import as PIL) are bundled natively in supported builds. Use the runtime probe to confirm availability; do not infer installed versions from old memory or route working native libraries to WebAssembly.
-            - For pandas, scipy and matplotlib, consult the runtime probe: if a package is not bundled in this build, use the explicitly identified **Pyodide WebAssembly** route (workspace HTML + public-HTTPS Pyodide, JSON in/out) or an authorized remote host. Never claim a native install when code ran in WebAssembly; a build pipeline or downloaded wheel is not proof of runtime availability.
+            - numpy, Pillow (import as PIL), and pandas are bundled natively in supported builds. Use the runtime probe to confirm availability; do not infer installed versions from old memory or route working native libraries to WebAssembly. Native pandas supports CSV/JSON, filtering, grouping, joins, missing values and timezone processing offline; optional file-format dependencies must still be checked separately.
+            - For scipy and matplotlib, consult the runtime probe: if a package is not bundled in this build, use the explicitly identified **Pyodide WebAssembly** route (workspace HTML + public-HTTPS Pyodide, JSON in/out) or an authorized remote host. Never claim a native install when code ran in WebAssembly; a build pipeline or downloaded wheel is not proof of runtime availability.
             - Extra pure-Python packages install through the managed review path (`packages`/`pipCommand` + `packagePurpose`, exact `name==version`, py3-none-any wheels only). Never invoke pip/ensurepip/subprocess inside `script`.
             ### The substrate contract for script-carrying skills
             Skills may ship `scripts/*.py` executed through this runtime. The contract:

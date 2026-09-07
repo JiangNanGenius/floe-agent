@@ -20,7 +20,7 @@ SUITE_MINIMUMS = {
     "BrowserProtocolTests": 6,
     "MailConnectorTests": 5,
     "SkillLifecycleTests": 15,
-    "LocalPythonRuntimeTests": 1,
+    "LocalPythonRuntimeTests": 2,
 }
 
 

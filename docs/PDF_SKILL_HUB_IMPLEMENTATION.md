@@ -27,8 +27,8 @@ Preserve existing PiP behavior and unrelated working-tree files.
 ## Checkpoint / 实施检查点（2026-09-07）
 
 - Official catalog/ZIP signing was exercised in GitHub run `34119781836`;
-  signature, ZIP and update-proof tests pass. PDF 1.2.0 source awaits its next
-  signed publication; no unsigned fallback is permitted.
+  signature, ZIP and update-proof tests pass. PDF 1.2.0 signed publication
+  completed in run `34124265988`; no unsigned fallback is permitted.
 - Hidden remote subgroup guide and Harness planning regressions: 31 passed.
 - Native PDF/RAR and existing skill lifecycle: 15 simulator tests passed;
   bundled CPython baseline: 1 passed. Inspection-selection and single-input
@@ -41,10 +41,13 @@ Preserve existing PiP behavior and unrelated working-tree files.
 - RAR4/RAR5 compressed fixtures, bad/truncated/encrypted/multipart/link
   rejection and atomic cleanup have simulator evidence. RAR creation and
   encrypted/multipart decoding remain explicitly unsupported.
-- pandas device/simulator wheel compilation succeeded. Upstream testbed
-  failed before Python startup because Xcode 27 requires UIScene. A stable
-  SDK dependency-test run is underway; actual Floe native pandas import,
-  signing and physical offline verification remain open.
+- pandas device/simulator wheels and native upstream testbed passed in
+  `34123915397`; immutable runtime assets are pinned by SHA256. Actual Floe
+  CPython pandas 3.0.5 CSV/filter/groupby/merge/missing/timezone/JSON tests
+  passed on iPad Simulator, together with the stdlib smoke test (2 tests).
+  This exposed and fixed missing `_contextvars`/other stdlib extensions and
+  Simulator sysconfig files. App signing and physical offline verification
+  remain separate open gates.
 - App Store Connect discovery `34123583872` reports 1.4.97 / 128 VALID.
   Proposed next app version is 1.4.98 / 129; no upload has occurred this round.
 

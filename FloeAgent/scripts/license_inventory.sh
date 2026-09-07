@@ -66,6 +66,10 @@ rows.extend([
     ("CPython / Python-Apple-support", "3.13-b10", "PSF-2.0 and bundled notices", "https://github.com/beeware/Python-Apple-support"),
     ("NumPy iOS", "2.5.2.post1", "BSD-3-Clause", "https://anaconda.org/beeware/numpy"),
     ("Pillow iOS", "11.0.0", "HPND and bundled notices", "https://anaconda.org/beeware/Pillow"),
+    ("pandas iOS", "3.0.5", "BSD-3-Clause and bundled notices", "https://github.com/JiangNanGenius/floe-agent/releases/tag/runtime-pandas-3.0.5-cp313"),
+    ("python-dateutil", "2.9.0.post0", "Apache-2.0 OR BSD-3-Clause", "https://pypi.org/project/python-dateutil/2.9.0.post0/"),
+    ("six", "1.17.0", "MIT", "https://pypi.org/project/six/1.17.0/"),
+    ("tzdata", "2026.3", "Apache-2.0", "https://pypi.org/project/tzdata/2026.3/"),
 ])
 
 with open("LICENSES-THIRD-PARTY.md", "w") as out:

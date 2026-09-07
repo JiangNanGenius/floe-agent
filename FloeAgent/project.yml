@@ -28,7 +28,15 @@ targets:
       - path: FloeApp
         excludes:
           - Resources/python
+          - Resources/PDFiumLicenses
+          - Resources/LibArchiveLicenses
       - path: FloeApp/Resources/python
+        type: folder
+        buildPhase: resources
+      - path: FloeApp/Resources/PDFiumLicenses
+        type: folder
+        buildPhase: resources
+      - path: FloeApp/Resources/LibArchiveLicenses
         type: folder
         buildPhase: resources
     info:
@@ -102,6 +110,32 @@ targets:
       - framework: Vendor/Python.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/_asyncio.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_contextvars.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_queue.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_multibytecodec.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_codecs_cn.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_codecs_hk.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_codecs_iso2022.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_codecs_jp.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_codecs_kr.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_codecs_tw.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_sha1.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_dbm.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/_lsprof.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/cmath.xcframework
         embed: true
       - framework: Vendor/PythonExtensions/_bisect.xcframework
         embed: true
@@ -223,6 +257,96 @@ targets:
         embed: true
       - framework: Vendor/PythonExtensions/_imagingtk.xcframework
         embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs__cyutility.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_algos.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_arrays.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_byteswap.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_groupby.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_hashing.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_hashtable.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_index.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_indexing.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_internals.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_interval.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_join.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_json.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_lib.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_missing.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_ops.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_ops_dispatch.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_pandas_datetime.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_pandas_parser.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_parsers.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_properties.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_reshape.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_sas.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_sparse.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_testing.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslib.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_base.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_ccalendar.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_conversion.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_dtypes.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_fields.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_nattype.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_np_datetime.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_offsets.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_parsing.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_period.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_strptime.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_timedeltas.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_timestamps.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_timezones.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_tzconversion.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_tslibs_vectorized.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_window_aggregations.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_window_indexers.xcframework
+        embed: true
+      - framework: Vendor/PythonExtensions/pandas__libs_writers.xcframework
+        embed: true
         # END embedded Python binary packages
         embed: true
       - package: FloeAgentPackages
@@ -275,8 +399,8 @@ targets:
         SWIFT_VERSION: "6.0"
         SWIFT_OBJC_BRIDGING_HEADER: FloeApp/Execution/FloeApp-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.4.97"
-        CURRENT_PROJECT_VERSION: "128"
+        MARKETING_VERSION: "1.4.98"
+        CURRENT_PROJECT_VERSION: "129"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -323,8 +447,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.97"
-        CURRENT_PROJECT_VERSION: "128"
+        MARKETING_VERSION: "1.4.98"
+        CURRENT_PROJECT_VERSION: "129"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -368,8 +492,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.97"
-        CURRENT_PROJECT_VERSION: "128"
+        MARKETING_VERSION: "1.4.98"
+        CURRENT_PROJECT_VERSION: "129"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -408,8 +532,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.4.97"
-        CURRENT_PROJECT_VERSION: "128"
+        MARKETING_VERSION: "1.4.98"
+        CURRENT_PROJECT_VERSION: "129"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
