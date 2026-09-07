@@ -1,0 +1,3 @@
+# Match the native NumPy ABI already bundled in Floe; don't select a newer
+# source-only PyPI build while cross-compiling pandas for iOS.
+numpy==2.5.2.post1

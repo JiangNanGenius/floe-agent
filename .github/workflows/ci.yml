@@ -37,6 +37,7 @@ jobs:
         with:
           python-version: '3.13'
       - run: python -m pip install cibuildwheel==4.2.1
+      - run: brew install ninja cmake
       - run: bash FloeAgent/scripts/build_pandas_ios.sh
       - uses: actions/upload-artifact@v4
         with:
