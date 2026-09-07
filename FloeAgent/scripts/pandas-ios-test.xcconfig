@@ -1,0 +1,3 @@
+// The upstream CPython testbed defaults to iOS 13, below Xcode 27's SDK range.
+// Override the test app target, not the framework ABI or test assertions.
+IPHONEOS_DEPLOYMENT_TARGET = 17.0

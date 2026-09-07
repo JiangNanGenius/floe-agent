@@ -16,7 +16,7 @@ python "$repo_root/FloeAgent/scripts/prepare_pandas_ios.py" "$stage/pandas-3.0.5
 export CIBW_BUILD='cp313-ios_arm64_iphoneos cp313-ios_arm64_iphonesimulator'
 export CIBW_XBUILD_TOOLS_IOS='ninja cmake'
 # pip 26.2 separates isolated build constraints from runtime constraints.
-export CIBW_ENVIRONMENT_IOS="PIP_EXTRA_INDEX_URL=https://pypi.anaconda.org/beeware/simple LDFLAGS=\"\" PIP_BUILD_CONSTRAINT=\"$repo_root/FloeAgent/scripts/pandas-ios-constraints.txt\" PIP_CONSTRAINT=\"$repo_root/FloeAgent/scripts/pandas-ios-constraints.txt\""
+export CIBW_ENVIRONMENT_IOS="PIP_EXTRA_INDEX_URL=https://pypi.anaconda.org/beeware/simple LDFLAGS=\"\" IPHONEOS_DEPLOYMENT_TARGET=17.0 XCODE_XCCONFIG_FILE=\"$repo_root/FloeAgent/scripts/pandas-ios-test.xcconfig\" PIP_BUILD_CONSTRAINT=\"$repo_root/FloeAgent/scripts/pandas-ios-constraints.txt\" PIP_CONSTRAINT=\"$repo_root/FloeAgent/scripts/pandas-ios-constraints.txt\""
 export CIBW_TEST_COMMAND='python -m floe_pandas_smoke'
 export CIBW_TEST_SOURCES='floe_pandas_smoke.py'
 export CIBW_TEST_EXTRAS=''
