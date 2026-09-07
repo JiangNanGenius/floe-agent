@@ -167,6 +167,17 @@ jobs:
             > "$RUNNER_TEMP/apps.json"
           app_id="$(jq -r '.data[0].id // empty' "$RUNNER_TEMP/apps.json")"
           test -n "$app_id"
+          # A successful transport receipt can precede /v1/builds visibility.
+          # Query Apple's upload-processing record without fetching asset URLs,
+          # credentials or upload operations. This is read-only diagnostics.
+          api_get "/v1/apps/$app_id/buildUploads" \
+            --data-urlencode "filter[cfBundleVersion]=$build_number" \
+            --data-urlencode 'limit=20' \
+            --data-urlencode 'sort=-uploadedDate' \
+            --data-urlencode 'fields[buildUploads]=cfBundleShortVersionString,cfBundleVersion,createdDate,uploadedDate,state,build' \
+            > "$RUNNER_TEMP/build-uploads.json"
+          jq -c '.data[] | {uploadID:.id,version:.attributes.cfBundleShortVersionString,build:.attributes.cfBundleVersion,created:.attributes.createdDate,uploaded:.attributes.uploadedDate,state:.attributes.state,buildID:.relationships.build.data.id}' \
+            "$RUNNER_TEMP/build-uploads.json"
           # Read the actual latest uploads before choosing a new build number.
           api_get /v1/builds \
             --data-urlencode "filter[app]=$app_id" \
