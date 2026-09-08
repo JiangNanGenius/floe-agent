@@ -316,7 +316,7 @@ public actor FloeAgentRuntime {
             forceInitialCompaction: Bool = false,
             maxProviderRetries: Int = 5,
             unchangedToolOutcomeLimit: Int = 3,
-            providerFirstEventTimeout: TimeInterval = 30,
+            providerFirstEventTimeout: TimeInterval = 120,
             providerStreamIdleTimeout: TimeInterval = 45,
             providerReasoningIdleTimeout: TimeInterval = 180,
             providerRetryBaseDelay: TimeInterval = 1,
@@ -462,6 +462,8 @@ public actor FloeAgentRuntime {
     private var providerAttemptNumber = 0
     private var providerReceivedFirstEvent = false
     private var providerLastEventWasReasoning = false
+    private var providerLastEventWasToolArguments = false
+    private var providerToolProgressPublishedAt: Date?
     private var providerLastProgressAt = Date()
     private var discoveredToolNames: Set<String> = []
     private var discoveryPriority: [String] = []
@@ -1312,6 +1314,8 @@ public actor FloeAgentRuntime {
         providerAttemptNumber += 1
         providerReceivedFirstEvent = false
         providerLastEventWasReasoning = false
+        providerLastEventWasToolArguments = false
+        providerToolProgressPublishedAt = nil
         providerAttemptStartedAt = modelRequestStartedAt ?? Date()
         providerLastProgressAt = providerAttemptStartedAt
         await publishProviderAttempt(
@@ -1325,7 +1329,12 @@ public actor FloeAgentRuntime {
             isRecoverable: true
         )
         startProviderWatchdog(attempt: providerAttemptNumber)
-        let stream = adapter.stream(request: request, credentials: credentials)
+        var dispatchRequest = request
+        let attempt = providerAttemptNumber
+        dispatchRequest.onToolArgumentsProgress = { [weak self] in
+            await self?.handleToolArgumentsProgress(attempt: attempt)
+        }
+        let stream = adapter.stream(request: dispatchRequest, credentials: credentials)
         streamTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -1422,12 +1431,31 @@ public actor FloeAgentRuntime {
         return .imageData(mimeType: artifact.mimeType, base64: data.base64EncodedString())
     }
 
+    private func handleToolArgumentsProgress(attempt: Int) async {
+        guard attempt == providerAttemptNumber, !providerRetryRequested,
+              case .streamingModel = state else { return }
+        providerLastProgressAt = Date()
+        providerLastEventWasReasoning = false
+        providerLastEventWasToolArguments = true
+        if firstModelActivityAt == nil { firstModelActivityAt = providerLastProgressAt }
+        if !providerReceivedFirstEvent {
+            providerReceivedFirstEvent = true
+            await publishProviderAttempt(status: .firstEvent, reason: "Model is preparing tool arguments", error: nil)
+        }
+        if providerToolProgressPublishedAt == nil
+            || providerLastProgressAt.timeIntervalSince(providerToolProgressPublishedAt ?? .distantPast) >= 1 {
+            providerToolProgressPublishedAt = providerLastProgressAt
+            await publishLiveness(phase: .streaming, message: "Model is preparing tool arguments", isRecoverable: true)
+        }
+    }
+
     private func handleStreamEvent(_ rawEvent: AgentEvent) async {
         // Never mutate after leaving streamingModel (cancel race safety).
         guard case .streamingModel(var info) = state else { return }
 
         let observedAt = Date()
         providerLastProgressAt = observedAt
+        providerLastEventWasToolArguments = false
         providerLastEventWasReasoning = {
             if case .reasoningSummary = rawEvent { return true }
             return false
@@ -2784,7 +2812,7 @@ public actor FloeAgentRuntime {
         reasoningIdleTimeout: TimeInterval
     ) -> TimeInterval {
         guard providerReceivedFirstEvent else { return firstTimeout }
-        return providerLastEventWasReasoning ? reasoningIdleTimeout : idleTimeout
+        return (providerLastEventWasReasoning || providerLastEventWasToolArguments) ? reasoningIdleTimeout : idleTimeout
     }
 
     private func providerWatchdogFired(
@@ -2797,12 +2825,12 @@ public actor FloeAgentRuntime {
               case .streamingModel = state,
               !providerRetryRequested else { return false }
         let timeout = providerReceivedFirstEvent
-            ? (providerLastEventWasReasoning ? reasoningIdleTimeout : idleTimeout)
+            ? ((providerLastEventWasReasoning || providerLastEventWasToolArguments) ? reasoningIdleTimeout : idleTimeout)
             : firstTimeout
         let elapsed = Date().timeIntervalSince(providerLastProgressAt)
         guard timeout > 0, elapsed >= timeout else { return true }
         let message = providerReceivedFirstEvent
-            ? "Cloud model stream stalled: no \(providerLastEventWasReasoning ? "reasoning progress" : "event") for \(Self.durationDescription(timeout))"
+            ? "Cloud model stream stalled: no \(providerLastEventWasReasoning ? "reasoning progress" : (providerLastEventWasToolArguments ? "tool argument progress" : "event")) for \(Self.durationDescription(timeout))"
             : "Cloud model stream stalled: no first event within \(Self.durationDescription(timeout))"
         let error = AgentEvent.NormalizedError(kind: .network, providerMessage: message)
         await emit(.error(error))

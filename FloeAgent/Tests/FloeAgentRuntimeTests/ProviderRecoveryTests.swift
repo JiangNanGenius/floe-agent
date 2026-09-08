@@ -151,6 +151,21 @@ struct ProviderRecoveryTests {
         #expect(finalTexts.last == "final after reconnect")
     }
 
+    @Test("Tool argument fragments keep an attempt alive without dispatching partial calls")
+    func argumentProgressPreventsFalseTimeout() async throws {
+        let adapter = ArgumentProgressAdapter()
+        let executor = MockExecutor()
+        var config = configuration(maxProviderRetries: 0, firstEventTimeout: 0.2)
+        config.providerStreamIdleTimeout = 0.2
+        config.providerReasoningIdleTimeout = 0.2
+        let runtime = FloeAgentRuntime(configuration: config, adapter: adapter,
+            policy: HumanApprovalPolicy(), executor: executor, checkpointStore: MockCheckpointStore())
+        try await runtime.start(goal: "prepare a long text tool argument")
+        #expect(await runtime.liveness().phase == .completed)
+        #expect(await runtime.providerAttempt()?.attempt == 1)
+        #expect(executor.executedCalls.isEmpty)
+    }
+
     @Test("a missing first event triggers the watchdog and reconnects")
     func missingFirstEventReconnects() async throws {
         let adapter = NeverEndingFirstAttemptAdapter()
@@ -203,5 +218,25 @@ private final class NeverEndingFirstAttemptAdapter: ProviderAdapter, @unchecked 
         }
     }
 
+    func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
+}
+
+private struct ArgumentProgressAdapter: ProviderAdapter {
+    let protocolKind: ModelProtocol = .openAIChatCompletions
+    func stream(request: ProviderStreamRequest, credentials: ProviderCredentials) -> AsyncThrowingStream<AgentEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                for _ in 0..<30 {
+                    if Task.isCancelled { continuation.finish(); return }
+                    await request.onToolArgumentsProgress?()
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+                continuation.yield(.textDelta(.init(text: "finished preparation")))
+                continuation.yield(.completed(.init(stopReason: .endTurn)))
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
     func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
 }

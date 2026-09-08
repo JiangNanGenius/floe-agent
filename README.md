@@ -26,7 +26,7 @@ Floe Agent turns a model conversation into a durable task. Each message continue
 
 ## Current upgrade — in development
 
-This round covers editing correctness and everyday workflows: the plugin marketplace, task selection from a long-press menu, all-workspace management, inline PDF reading, iPhone canvas support, and live execution feedback. Word, Excel, and PowerPoint share the Office tool group; PDF stays separate. The advanced Office engine is still undergoing qualification and has not been integrated.
+This round covers editing correctness and everyday workflows: the plugin marketplace, task selection from a long-press menu, all-workspace management, inline PDF reading, iPhone canvas support, live execution feedback, long-reasoning reading, and reliable long-text tool calls. Word, Excel, and PowerPoint share the Office tool group; PDF stays separate. The advanced Office engine is still undergoing qualification and has not been integrated.
 
 See the [upgrade scope, verification status, and interaction screenshots](docs/WORKFLOW_UPGRADE.md). These changes describe the development branch; TestFlight availability is verified separately.
 

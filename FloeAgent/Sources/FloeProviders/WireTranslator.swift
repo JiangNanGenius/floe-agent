@@ -10,8 +10,8 @@ import FloeModels
 /// Maps provider wire events onto the unified `AgentEvent` stream.
 public enum WireTranslator {
 
-    /// Creates a `ToolCall` from wire-level parts, enforcing the 64 KiB
-    /// argument cap. Malformed or rejected arguments surface as
+    /// Creates a `ToolCall` from wire-level parts, enforcing its bounded
+    /// tool-specific argument cap. Malformed or rejected arguments surface as
     /// `.error(.malformed)` instead of a tool request.
     private static func makeToolCall(id: String, name: String, argumentsJSON: String) -> AgentEvent {
         // Anthropic sends zero input_json deltas for `{}` arguments;
@@ -73,6 +73,8 @@ public enum WireTranslator {
 
     public static func translate(_ event: OpenAIResponsesStreamEvent) -> [AgentEvent] {
         switch event {
+        case .functionCallArgumentsDelta:
+            return [] // Liveness is reported by the adapter; never execute partial JSON.
         case .outputTextDelta(let delta):
             return [.textDelta(AgentEvent.TextDelta(text: delta))]
         case .reasoningSummaryTextDelta(let delta):

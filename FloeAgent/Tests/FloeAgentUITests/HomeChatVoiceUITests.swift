@@ -213,6 +213,48 @@ final class HomeChatVoiceIPhoneUITests: XCTestCase {
         app = nil
     }
 
+    func testExpandedLongReasoningRemainsInteractive() throws {
+        app.terminate()
+        app.launchArguments += ["--ui-test-long-reasoning"]
+        app.launch()
+        let expand = app.buttons["reasoning.expand"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 8))
+        let folded = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        folded.name = "iphone-long-reasoning-folded"
+        folded.lifetime = .keepAlways
+        add(folded)
+        expand.tap()
+        let reader = app.scrollViews["reasoning.reader"].firstMatch
+        XCTAssertTrue(reader.waitForExistence(timeout: 8))
+        XCTAssertLessThan(reader.frame.height, 500)
+        let latest = app.buttons["reasoning.latest"].firstMatch
+        XCTAssertTrue(latest.waitForExistence(timeout: 5))
+        latest.tap()
+        let end = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "原文结束标记")).firstMatch
+        XCTAssertTrue(end.waitForExistence(timeout: 5))
+        app.buttons["reasoning.fixture.append"].tap()
+        XCTAssertTrue(app.buttons["reasoning.fixture.append"].label.contains("1"))
+        latest.tap()
+        let appended = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "追加结束标记1")).firstMatch
+        XCTAssertTrue(appended.waitForExistence(timeout: 5))
+        let expanded = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        expanded.name = "iphone-long-reasoning-expanded-updating"
+        expanded.lifetime = .keepAlways
+        add(expanded)
+        app.buttons["reasoning.fullscreen"].tap()
+        let done = app.buttons["reasoning.fullscreen.done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 5))
+        let full = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        full.name = "iphone-long-reasoning-fullscreen"
+        full.lifetime = .keepAlways
+        add(full)
+        done.tap()
+        expand.tap()
+        XCTAssertFalse(app.buttons["reasoning.fullscreen"].exists)
+        expand.tap()
+        XCTAssertTrue(app.buttons["reasoning.fullscreen"].waitForExistence(timeout: 5))
+    }
+
     func testCanvasCreationRemainsVisibleInPortraitAndLandscape() throws {
         XCUIDevice.shared.orientation = .portrait
         defer { XCUIDevice.shared.orientation = .portrait }

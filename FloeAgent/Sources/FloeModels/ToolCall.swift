@@ -16,6 +16,17 @@ public enum ToolScope: Sendable, Codable, Hashable {
 /// Maximum size of validated tool arguments, in bytes.
 public let toolArgumentsMaxBytes = 65_536 // 64 KiB
 
+/// Text-file mutations accept a bounded long document; all other tools retain
+/// the smaller default. Underscore aliases cover compatible provider wire names.
+public func toolArgumentsByteLimit(for toolName: String) -> Int {
+    switch toolName {
+    case "workspace.createFile", "workspace.writeFile", "workspace.applyPatch",
+         "workspace_createFile", "workspace_writeFile", "workspace_applyPatch":
+        return 1_048_576
+    default: return toolArgumentsMaxBytes
+    }
+}
+
 /// A model-requested invocation of a compiled, catalog-registered tool.
 /// Model-provided code is never executed; only catalog entries can run.
 public struct ToolCall: Sendable, Codable, Identifiable, Hashable {
@@ -24,16 +35,17 @@ public struct ToolCall: Sendable, Codable, Identifiable, Hashable {
     public var id: String
     /// Must exist in `ToolCatalog` at execution time.
     public var toolName: String
-    /// Validated JSON arguments, size-limited to 64 KiB.
+    /// Validated JSON arguments with a tool-specific byte ceiling.
     public var argumentsJSON: Data
     public var scope: ToolScope
     /// Deduplication key: sha256(runID ‖ callID).
     public var idempotencyKey: String
 
     public init(id: String, toolName: String, argumentsJSON: Data, scope: ToolScope) throws {
-        guard argumentsJSON.count <= toolArgumentsMaxBytes else {
+        let maximumBytes = toolArgumentsByteLimit(for: toolName)
+        guard argumentsJSON.count <= maximumBytes else {
             throw FloeError.validationFailed(
-                "Tool arguments exceed \(toolArgumentsMaxBytes) bytes"
+                "Tool arguments exceed \(maximumBytes) bytes"
             )
         }
         let decoded: Any

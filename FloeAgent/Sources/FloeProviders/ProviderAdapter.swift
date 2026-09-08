@@ -87,6 +87,9 @@ public struct ProviderStreamRequest: Sendable {
     /// Tools offered to the model, as wire-neutral schema descriptors.
     public var toolSchemas: [ToolSchemaDescriptor]
     public var reasoningPolicy: ProviderReasoningPolicy
+    /// Transient liveness only. Partial arguments are never dispatched,
+    /// persisted as a tool call, or exposed as model text.
+    public var onToolArgumentsProgress: (@Sendable () async -> Void)?
 
     public init(
         provider: ProviderProfile,
@@ -97,7 +100,8 @@ public struct ProviderStreamRequest: Sendable {
         pendingToolCalls: [ToolCall] = [],
         pendingAssistantReasoning: String? = nil,
         toolSchemas: [ToolSchemaDescriptor] = [],
-        reasoningPolicy: ProviderReasoningPolicy = .modelDefault
+        reasoningPolicy: ProviderReasoningPolicy = .modelDefault,
+        onToolArgumentsProgress: (@Sendable () async -> Void)? = nil
     ) {
         self.provider = provider
         self.model = model
@@ -108,6 +112,7 @@ public struct ProviderStreamRequest: Sendable {
         self.pendingAssistantReasoning = pendingAssistantReasoning
         self.toolSchemas = toolSchemas
         self.reasoningPolicy = reasoningPolicy
+        self.onToolArgumentsProgress = onToolArgumentsProgress
     }
 
     public var effectiveMessages: [ProviderMessage] {
@@ -217,6 +222,27 @@ enum BoundedHTTP {
     }
 }
 
+/// Flush complete SSE lines immediately, including short first events. A
+/// size-only 1 KiB buffer can hide valid events until the watchdog expires.
+struct SSEByteFramer: Sendable {
+    private var parser = SSEParser()
+    private var buffer: [UInt8] = []
+
+    mutating func feed(_ byte: UInt8) -> [SSEEvent] {
+        buffer.append(byte)
+        guard buffer.count >= 1024 || byte == 10 || byte == 13 else { return [] }
+        let events = parser.feed(buffer)
+        buffer.removeAll(keepingCapacity: true)
+        return events
+    }
+
+    mutating func finish() throws -> [SSEEvent] {
+        let events = parser.feed(buffer)
+        buffer.removeAll(keepingCapacity: true)
+        return events + (try parser.finish())
+    }
+}
+
 /// Feeds an HTTP byte stream through `SSEParser` and emits decoded SSE
 /// events. Cancellation of the consuming task cancels the URLSession task.
 struct SSEBytePump: Sendable {
@@ -225,9 +251,9 @@ struct SSEBytePump: Sendable {
     func events() -> AsyncThrowingStream<SSEEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
-                var parser = SSEParser()
                 do {
                     #if os(Linux)
+                    var parser = SSEParser()
                     // FoundationNetworking does not expose URLSession.bytes(for:).
                     // Linux is a build/test target, not an app runtime, so use a
                     // bounded-lifetime buffered fallback to keep wire parsing and
@@ -265,26 +291,12 @@ struct SSEBytePump: Sendable {
                         continuation.finish()
                         return
                     }
-                    var buffer: [UInt8] = []
-                    buffer.reserveCapacity(4096)
+                    var framer = SSEByteFramer()
                     for try await byte in bytes {
                         try Task.checkCancellation()
-                        buffer.append(byte)
-                        if buffer.count >= 1024 {
-                            for event in parser.feed(buffer) {
-                                continuation.yield(event)
-                            }
-                            buffer.removeAll(keepingCapacity: true)
-                        }
+                        for event in framer.feed(byte) { continuation.yield(event) }
                     }
-                    if !buffer.isEmpty {
-                        for event in parser.feed(buffer) {
-                            continuation.yield(event)
-                        }
-                    }
-                    for event in try parser.finish() {
-                        continuation.yield(event)
-                    }
+                    for event in try framer.finish() { continuation.yield(event) }
                     continuation.finish()
                     #endif
                 } catch is CancellationError {
@@ -357,6 +369,9 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
                         guard sseEvent.data != "[DONE]" else { continue }
                         do {
                             let wireEvent = try decoder.decode(ResponsesStreamEvent.self, from: Data(sseEvent.data.utf8))
+                            if case .functionCallArgumentsDelta(let delta) = wireEvent, !delta.isEmpty {
+                                await request.onToolArgumentsProgress?()
+                            }
                             for event in WireTranslator.translate(wireEvent) {
                                 continuation.yield(event)
                             }
@@ -390,7 +405,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
     ) throws -> URLRequest {
         let url = request.provider.baseURL.appendingPathComponent("responses")
         var urlRequest = URLRequest(url: url)
-        urlRequest.timeoutInterval = 45
+        urlRequest.timeoutInterval = 180
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
@@ -499,6 +514,11 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                         guard sseEvent.data != "[DONE]" else { continue }
                         do {
                             let chunk = try decoder.decode(ChatChunk.self, from: Data(sseEvent.data.utf8))
+                            if chunk.choices.contains(where: { choice in
+                                (choice.delta.toolCalls ?? []).contains { !($0.function?.arguments ?? "").isEmpty }
+                            }) {
+                                await request.onToolArgumentsProgress?()
+                            }
                             for event in WireTranslator.translate(chunk, aggregator: &aggregator) {
                                 if case .toolRequest(var call) = event {
                                     call.toolName = canonicalToolName(call.toolName, for: request)
@@ -546,7 +566,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
     ) throws -> URLRequest {
         let url = request.provider.baseURL.appendingPathComponent("chat/completions")
         var urlRequest = URLRequest(url: url)
-        urlRequest.timeoutInterval = 45
+        urlRequest.timeoutInterval = 180
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
@@ -708,6 +728,9 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
                         }
                         do {
                             let wireEvent = try decoder.decode(AnthropicStreamEvent.self, from: Data(sseEvent.data.utf8))
+                            if case .inputJSONDelta(_, let partialJSON) = wireEvent, !partialJSON.isEmpty {
+                                await request.onToolArgumentsProgress?()
+                            }
                             for event in WireTranslator.translate(wireEvent, aggregator: &aggregator) {
                                 continuation.yield(event)
                             }
@@ -741,7 +764,7 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
     ) throws -> URLRequest {
         let url = request.provider.baseURL.appendingPathComponent("v1/messages")
         var urlRequest = URLRequest(url: url)
-        urlRequest.timeoutInterval = 45
+        urlRequest.timeoutInterval = 180
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")

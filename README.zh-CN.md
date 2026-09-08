@@ -26,7 +26,7 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## 本轮升级（开发中）
 
-这一轮围绕完整编辑能力和日常工作流程展开：插件市场、长按多选任务、全部工作区管理、右侧 PDF 阅读、iPhone 画布，以及持续更新的执行状态。Word、Excel、PowerPoint 统一归入 Office，PDF 独立；高级 Office 引擎仍在资格验证，尚未完成集成。
+这一轮围绕完整编辑能力和日常工作流程展开：插件市场、长按多选任务、全部工作区管理、右侧 PDF 阅读、iPhone 画布，以及持续更新的执行状态、长思考阅读和长文写入可靠性。Word、Excel、PowerPoint 统一归入 Office，PDF 独立；高级 Office 引擎仍在资格验证，尚未完成集成。
 
 [查看更新范围、验证状态与操作截图](docs/WORKFLOW_UPGRADE.md)。这里描述的是当前开发分支，TestFlight 可用性另行确认。
 

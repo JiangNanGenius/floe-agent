@@ -218,6 +218,7 @@ public struct FunctionCallItem: Sendable, Codable, Hashable {
 public enum ResponsesStreamEvent: Sendable, Hashable {
     case outputTextDelta(delta: String)
     case reasoningSummaryTextDelta(delta: String)
+    case functionCallArgumentsDelta(delta: String)
     case outputItemDoneFunctionCall(FunctionCallItem)
     case completed(usage: Usage?)
     case incomplete
@@ -284,6 +285,8 @@ extension ResponsesStreamEvent: Codable {
             self = .outputTextDelta(delta: try container.decode(String.self, forKey: .delta))
         case "response.reasoning_summary_text.delta":
             self = .reasoningSummaryTextDelta(delta: try container.decode(String.self, forKey: .delta))
+        case "response.function_call_arguments.delta":
+            self = .functionCallArgumentsDelta(delta: try container.decode(String.self, forKey: .delta))
         case "response.output_item.done":
             let item = try container.decode(FunctionCallItem.self, forKey: .item)
             self = .outputItemDoneFunctionCall(item)
@@ -311,6 +314,9 @@ extension ResponsesStreamEvent: Codable {
             try container.encode(delta, forKey: .delta)
         case .reasoningSummaryTextDelta(let delta):
             try container.encode("response.reasoning_summary_text.delta", forKey: .type)
+            try container.encode(delta, forKey: .delta)
+        case .functionCallArgumentsDelta(let delta):
+            try container.encode("response.function_call_arguments.delta", forKey: .type)
             try container.encode(delta, forKey: .delta)
         case .outputItemDoneFunctionCall(let item):
             try container.encode("response.output_item.done", forKey: .type)

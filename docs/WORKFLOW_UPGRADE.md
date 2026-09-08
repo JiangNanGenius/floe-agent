@@ -17,6 +17,7 @@ Status: in development on `codex/office-workflow-upgrade`, based on Floe Agent 1
 | All workspaces | Active/archived private and project workspaces; isolated browsing and remote connection registry; existing search/edit/move/export/batch deletion; bounded remote previews | Cross-workspace aggregate file search, space accounting, full remote reconnect validation |
 | Canvas editing | Generation task first in creation menus; existing SVG/HTML/Markdown node refinement with bounded source and revision checks; single undo and visible save errors | Real-model repeated editing, partial selections, final layout fidelity |
 | iPhone canvas | Compact navigation, viewport-based creation, size-change centering, compact actions, scrollable touch controls and bounded panels; opening a canvas independent of image-model setup | Further landscape overlay spacing, full keyboard and physical-device interaction matrix |
+| Very long text | Expanded reasoning uses a bounded inline reader, stable lazy text fragments, off-main preparation, coalesced updates and optional fullscreen; original text remains intact. Tool-argument progress prevents false idle detection; text-file arguments accept up to 1 MiB | Real-device traces and live-provider long writes; long composer input and Markdown-answer parsing/layout remain separate follow-ups |
 | Live state | Snapshot revision race/coalescing fixes, visible conversation/canvas reconciliation, protection of interactive canvas drafts | Long-running concurrent tasks, reconnect and background/foreground device matrix |
 | Picture in Picture | Stage, elapsed time, last activity; reported token speed or explicitly labeled character speed while streaming; fixed percentage removed | Physical-device long-tool, disconnect, multi-task and audio/PiP checks |
 | Motion and composer | Stable insertion-only text block animation, subtle tool transitions, reduced-motion support, consistent microphone/send/stop controls | Dynamic Type, VoiceOver, keyboard, high-volume streaming and device polish |
@@ -40,6 +41,7 @@ PDF reuses PDFKit and the existing pdf-lib tool path. File browsing, import/expo
 
 - Source `535902c`: [full CI passed](https://github.com/JiangNanGenius/floe-agent/actions/runs/34210137026), with 999 SwiftPM test executions, 111 app regression tests, Linux build and the App Store SDK compatibility build. This evidence applies to that source revision.
 - Source `0f2c7ec`: [full CI passed](https://github.com/JiangNanGenius/floe-agent/actions/runs/34213618033), including the later cleanup, plugin lifecycle and contextual selection changes. Subsequent iPhone and documentation edits still need their own validation.
+- Source `6c79dd8`: [full CI passed](https://github.com/JiangNanGenius/floe-agent/actions/runs/34219181630), including iPhone canvas changes, app regressions, SwiftPM tests, Linux compilation and App Store SDK compatibility. The subsequent long-text changes require their own CI result.
 - Latest local checks: 32 app regression tests across canvas contracts, touch geometry and plugin lifecycle passed; iPhone portrait/landscape canvas and iPad PDF round-trip navigation UI tests passed. The new local-only CloudKit SwiftPM test could not run locally because the Metal compiler is missing; cloud CI installs that toolchain.
 - Subsequent focused checks: durable cleanup/ownership, independent network registries, plugin uninstall/reinstall, long-press batch selection, workspace-manager navigation and canvas contracts. Latest source requires its own CI result.
 - iPad simulator screenshots below use test data. iPhone portrait/landscape creation and editing also passed the focused UI test; captures were visually inspected. Physical-device verification remains open.
@@ -75,6 +77,7 @@ The two focused iPad UI tests passed on 2026-09-08. They open the test conversat
 Use the `FloeAgent` scheme with a configured iOS simulator and the full Xcode developer directory. The UI tests create synthetic local task/PDF fixtures; they do not require personal documents or model credentials. Run these test selectors on the corresponding device:
 
 - iPhone: `FloeAgentUITests/HomeChatVoiceIPhoneUITests/testCanvasCreationRemainsVisibleInPortraitAndLandscape`
+- iPhone: `FloeAgentUITests/HomeChatVoiceIPhoneUITests/testExpandedLongReasoningRemainsInteractive`
 - iPad: `FloeAgentUITests/HomeChatVoiceIPadUITests/testPluginMarketplaceAndBatchEntry`
 - iPad: `FloeAgentUITests/HomeChatVoiceIPadUITests/testWorkspacePDFInlineAndFullscreen`
 
@@ -91,3 +94,25 @@ The focused test passed with new SVG nodes inside the visible viewport and the e
 <img src="images/workflow-upgrade/iphone-canvas-create-menu-landscape.png" width="680" alt="iPhone landscape canvas creation menu">
 <img src="images/workflow-upgrade/iphone-canvas-svg-editor-landscape.png" width="680" alt="iPhone landscape SVG source editor with reachable completion action">
 <img src="images/workflow-upgrade/iphone-canvas-landscape.png" width="680" alt="Rendered SVG in landscape; remaining crowded overlay spacing is visible">
+
+## Long-text responsiveness / 长文响应
+
+The reported reproduction is specifically smooth while reasoning is folded and severely slow once it expands. Previously expansion put the entire transcript into one selectable SwiftUI `Text` and animated its full height. The new long-reasoning path prepares stable fragments away from the main actor, coalesces updates, and lays out only the fragments around a bounded reading viewport. Fullscreen reading, beginning/end navigation and full-text copying remain available; storage, model context and generation limits are unchanged.
+
+Stress coverage includes tens of thousands of Chinese characters with no line breaks, emoji/composed Unicode, continuous additions while expanded, collapse/reopen and fullscreen. Verify exact reconstruction and the final marker, not just a responsive spinner. The broader long-input and Markdown-answer paths still need their own profiling and fixes; this change does not certify all long-text performance.
+
+### Long file-writing requests and stream timeouts
+
+The reported 30-second first-event and 45-second idle failures expose a separate transport/runtime path. Complete short SSE events now leave the receive buffer at line boundaries. Chat Completions, Responses and Anthropic adapters report actual partial tool-argument progress through an attempt-scoped callback, without dispatching incomplete JSON or placing partial arguments into the transcript. The watchdog remains active for silent streams; stale-attempt callbacks are ignored. Tool-argument preparation uses the reasoning idle allowance, the default first-event allowance is 120 seconds, and HTTP request inactivity is bounded at 180 seconds.
+
+Workspace create/write/patch arguments accept up to 1 MiB, including JSON overhead; other tools retain the 64 KiB default. The file service still enforces path ownership, revision checks and its write ceiling. This permits tens of thousands of Chinese characters in one text write without removing general tool limits. Actual provider buffering, output limits and mobile-network failures still require live validation.
+
+The 27-test local timeline/long-text regression suite passed on 2026-09-08. It verifies lossless Unicode reconstruction, coalesced updates, short SSE delivery, bounded long arguments and partial-call rejection. A simulated stream with continuing argument fragments outlasts the configured watchdog deadlines and completes on its first attempt; an otherwise identical silent stream fails. These accelerated tests exercise runtime behavior, not a real mobile-network request.
+
+### Long reasoning: simulator captures
+
+These synthetic stress captures exercise the actual reasoning disclosure/reader component with tens of thousands of characters. They are not a live Kimi session or physical-device frame-rate measurement. The iPhone UI test passed on 2026-09-08, checking the original end marker, appended end marker, fullscreen controls and collapse/reopen.
+
+<img src="images/workflow-upgrade/iphone-long-reasoning-folded.png" width="280" alt="Large synthetic reasoning transcript while folded">
+<img src="images/workflow-upgrade/iphone-long-reasoning-expanded-updating.png" width="280" alt="Expanded long reasoning remains interactive after appended content">
+<img src="images/workflow-upgrade/iphone-long-reasoning-fullscreen.png" width="280" alt="Fullscreen long reasoning with beginning and latest navigation">

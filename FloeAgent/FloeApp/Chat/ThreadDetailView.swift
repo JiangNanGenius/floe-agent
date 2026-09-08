@@ -324,7 +324,7 @@ struct ThreadDetailView: View {
                 proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
                 showsReturnToLatest = false
             }
-            .onChange(of: [viewModel.liveStreamedText.count, viewModel.liveReasoningText.count,
+            .onChange(of: [viewModel.liveStreamedText.utf8.count, viewModel.liveReasoningText.utf8.count,
                            viewModel.events.count, viewModel.messages.count,
                            viewModel.isRunning ? 1 : 0]) { _, _ in
                 // Follow only when the user has not intentionally scrolled

@@ -59,7 +59,18 @@ struct FloeAgentApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            Group {
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--ui-test-long-reasoning"),
+                   ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                    LongReasoningTestHarness()
+                } else {
+                    RootView()
+                }
+                #else
+                RootView()
+                #endif
+            }
                 .environmentObject(environment)
                 .environmentObject(router)
                 .environmentObject(environment.voiceInput)

@@ -9,10 +9,107 @@ import Foundation
 import Testing
 @testable import FloeApp
 import FloeModels
+import FloeCore
 import FloePersistence
+@testable import FloeProviders
+import FloeAgentRuntime
+import FloeSecurity
+import FloeTools
 
 @Suite("FloeApp.ThreadTimeline")
 struct ThreadTimelineTests {
+    @Test("A live argument stream outlasts watchdog deadlines; a silent stream still fails")
+    func argumentStreamWatchdog() async throws {
+        for reportsProgress in [true, false] {
+            let provider = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+                baseURL: try #require(URL(string: "https://example.invalid/v1")))
+            let model = ModelProfile(providerID: provider.id, remoteModelID: "test", displayName: "Test",
+                limits: .init(contextTokens: 4096, maxOutputTokens: 1024), capabilities: [.text, .tools])
+            let runtime = FloeAgentRuntime(configuration: .init(provider: provider, model: model,
+                maxProviderRetries: 0, providerFirstEventTimeout: 0.2, providerStreamIdleTimeout: 0.2,
+                providerReasoningIdleTimeout: 0.2),
+                adapter: LongArgumentTestAdapter(reportsProgress: reportsProgress), policy: HumanApprovalPolicy(),
+                executor: NoPartialToolExecutor())
+            try await runtime.start(goal: "Long argument liveness")
+            #expect(await runtime.liveness().phase == (reportsProgress ? .completed : .failed))
+            #expect(await runtime.providerAttempt()?.attempt == 1)
+        }
+    }
+
+    @Test("Short SSE events are delivered before more bytes or EOF arrive")
+    func smallSSEEventDoesNotWaitForKilobyte() throws {
+        for ending in ["\n\n", "\r\n\r\n", "\r\r"] {
+            var framer = SSEByteFramer()
+            var events: [SSEEvent] = []
+            for byte in ("data: first" + ending).utf8 { events += framer.feed(byte) }
+            #expect(events.map(\.data) == ["first"])
+            #expect(try framer.finish().isEmpty)
+        }
+    }
+
+    @Test("Long text writes retain complete arguments while other tools keep their limit")
+    func longTextToolArguments() throws {
+        let source = String(repeating: "长文中文👨‍👩‍👧‍👦", count: 10_000)
+        let data = try JSONSerialization.data(withJSONObject: ["path": "novel.txt", "content": source])
+        for name in ["workspace.writeFile", "workspace_createFile", "workspace.applyPatch"] {
+            let call = try ToolCall(id: "large", toolName: name, argumentsJSON: data, scope: .local)
+            let decoded = try JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: String]
+            #expect(decoded?["content"] == source)
+        }
+        #expect(throws: (any Error).self) {
+            _ = try ToolCall(id: "bounded", toolName: "network.http", argumentsJSON: data, scope: .local)
+        }
+        #expect(throws: (any Error).self) {
+            _ = try ToolCall(id: "oversized", toolName: "workspace.writeFile", argumentsJSON: Data(repeating: 32, count: 1_048_577), scope: .local)
+        }
+    }
+
+    @Test("Responses argument fragments are activity, not executable tool calls")
+    func argumentDeltasRemainPartial() throws {
+        let data = Data(#"{"type":"response.function_call_arguments.delta","delta":"partial document"}"#.utf8)
+        let event = try JSONDecoder().decode(ResponsesStreamEvent.self, from: data)
+        #expect(event == .functionCallArgumentsDelta(delta: "partial document"))
+        #expect(WireTranslator.translate(event).isEmpty)
+        #expect(try JSONDecoder().decode(ResponsesStreamEvent.self, from: JSONEncoder().encode(event)) == event)
+    }
+
+    @Test("Long reasoning retains all Unicode and bounds each layout fragment")
+    func longReasoningChunksPreserveText() {
+        for source in ["", String(repeating: "中文无换行", count: 20_000),
+                       String(repeating: "👨‍👩‍👧‍👦é🇨🇳\n", count: 12_000)] {
+            let chunks = ReasoningTextChunk.split(source)
+            #expect(chunks.map(\.text).joined() == source)
+            #expect(chunks.map(\.id) == Array(chunks.indices))
+            #expect(chunks.allSatisfy { $0.text.count <= ReasoningTextChunk.maximumCharacters })
+        }
+    }
+
+    @MainActor @Test("Long reasoning layout coalesces bursts and survives collapse/reopen")
+    func longReasoningCoalescing() async throws {
+        let layout = ReasoningTextLayout()
+        let prefix = String(repeating: "原始思考文字。", count: 8_000)
+        layout.submit(prefix)
+        for index in 0..<100 { layout.submit(prefix + "更新\(index)") }
+        let expected = prefix + "更新99"
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while layout.chunks.map(\.text).joined() != expected, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(layout.chunks.map(\.text).joined() == expected)
+        let first = layout.chunks.first
+        layout.submit(expected + "更多内容")
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(layout.chunks.first == first)
+        layout.stop()
+        layout.submit("重新展开的新内容")
+        let reopenDeadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while layout.chunks.map(\.text).joined() != "重新展开的新内容", ContinuousClock.now < reopenDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(layout.chunks.map(\.text).joined() == "重新展开的新内容")
+        layout.stop()
+    }
+
     @MainActor @Test("A visible session recovers a durable change without a navigation refresh")
     func recoversMissedNotification() async throws {
         let environment = AppEnvironment.preview()
@@ -699,6 +796,35 @@ struct ThreadTimelineTests {
             #expect(firstAnswerIndex < guidanceIndex)
             #expect(guidanceIndex < finalAnswerIndex)
         }
+    }
+}
+private struct LongArgumentTestAdapter: ProviderAdapter {
+    let reportsProgress: Bool
+    let protocolKind: ModelProtocol = .openAIChatCompletions
+    func stream(request: ProviderStreamRequest, credentials: ProviderCredentials) -> AsyncThrowingStream<AgentEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                for _ in 0..<30 {
+                    if Task.isCancelled { continuation.finish(); return }
+                    if reportsProgress { await request.onToolArgumentsProgress?() }
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+                continuation.yield(.textDelta(.init(text: "finished preparation")))
+                continuation.yield(.completed(.init(stopReason: .endTurn)))
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+    func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
+}
+
+private struct NoPartialToolExecutor: ToolExecutor {
+    var allDescriptors: [ToolCatalog.Descriptor] { [] }
+    func descriptor(named name: String) -> ToolCatalog.Descriptor? { nil }
+    func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
+        Issue.record("Partial tool arguments must never reach execution")
+        return ToolResult(callID: call.id, status: .denied, outputSummary: "Unexpected call", outputDigest: "")
     }
 }
 #endif

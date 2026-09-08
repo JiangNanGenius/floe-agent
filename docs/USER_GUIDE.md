@@ -221,3 +221,7 @@ Open **Settings → Data Management** to inspect Floe's total footprint, install
 Task history is device-local. Configuration sync includes provider/model profiles and non-secret host profiles, while provider API keys use iCloud Keychain. **Sync saved credentials** is off by default and requires device authentication. When enabled, only credentials explicitly promoted to the vault can sync; task/workspace temporary credentials never do. A descriptor may arrive before its Keychain item, in which case the UI shows **Waiting for secret** instead of claiming synchronization completed.
 
 **Settings → Files → Browse and Manage Files** provides quick access to project workspaces and private workspaces from active or archived conversations. Browsing does not switch the current conversation workspace. Reuse directory search, preview, edit, move, export, and batch deletion. Deleting a private task cleans up its own files while shared projects remain; pending local cleanup can be retried in the manager.
+
+## Long reasoning (development branch)
+
+Expanded long reasoning uses its own scrolling reading area with beginning/latest navigation and fullscreen reading. Copy retains the complete transcript. Partial tool-argument generation counts as activity; execution still waits for complete, validated arguments.
