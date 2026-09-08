@@ -57,3 +57,16 @@ jobs:
             ${{ runner.temp }}/floe-office-engine/qualification.json
             ${{ runner.temp }}/floe-office-engine/qualification-logs
           if-no-files-found: warn
+      - name: Package reusable native engine and editor resources
+        if: success() && inputs.build_engine
+        env:
+          FLOE_OFFICE_BUILD_ROOT: ${{ runner.temp }}/floe-office-engine
+        run: python3 FloeAgent/scripts/package_office_engine.py
+      - name: Preserve reusable engine
+        if: success() && inputs.build_engine
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-engine-ios-arm64
+          path: ${{ runner.temp }}/floe-office-engine/office-engine-ios-arm64.tar.gz
+          compression-level: 0
+          if-no-files-found: error
