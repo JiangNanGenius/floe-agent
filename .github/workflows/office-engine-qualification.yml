@@ -1,0 +1,46 @@
+name: Offline Office Engine Qualification
+on:
+  workflow_dispatch:
+    inputs:
+      build_engine:
+        description: Build pinned native engine after preflight (does not publish an app)
+        type: boolean
+        default: false
+  push:
+    branches: ['codex/office-workflow-upgrade']
+    paths:
+      - '.github/workflows/office-engine-qualification.yml'
+      - 'FloeAgent/scripts/qualify_office_engine.sh'
+      - 'FloeAgent/ThirdParty/Collabora/engine.lock.json'
+permissions:
+  contents: read
+concurrency:
+  group: office-engine-qualification
+  cancel-in-progress: false
+jobs:
+  qualify:
+    runs-on: xcode-27
+    timeout-minutes: 360
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      FLOE_OFFICE_BUILD_ROOT: ${{ runner.temp }}/floe-office-engine
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare build tools
+        run: brew install autoconf automake libtool pkg-config
+      - name: Check or build engine
+        env:
+          BUILD_ENGINE: ${{ inputs.build_engine || false }}
+        run: |
+          if [ "$BUILD_ENGINE" = true ]; then
+            FloeAgent/scripts/qualify_office_engine.sh --build
+          else
+            FloeAgent/scripts/qualify_office_engine.sh --check
+          fi
+      - name: Preserve qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-engine-qualification
+          path: ${{ runner.temp }}/floe-office-engine/qualification.json
+          if-no-files-found: warn

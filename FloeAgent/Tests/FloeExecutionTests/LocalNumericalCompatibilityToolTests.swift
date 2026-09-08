@@ -6,6 +6,22 @@ import FloeTools
 
 @Suite("FloeExecution local numerical compatibility")
 struct LocalNumericalCompatibilityToolTests {
+    @Test("Stata clear resets variables including injected input, without leaving the evaluator")
+    func clearVariables() async throws {
+        let tool = LocalNumericalCompatibilityTool()
+        let context = ToolContext(runID: UUID(), cancellation: CancellationToken())
+        let valid = try await tool.execute(.init(dialect: .stataCompatible,
+            script: "clear\ngen x = c(2,4,6)\nsummarize x"), context: context)
+        #expect(valid.exitStatus == 0)
+        #expect(valid.summary.contains("[3, 4, 2, 2, 6]"))
+        for script in ["gen x = 9\nclear\ndisplay x", "clear\ndisplay input"] {
+            let cleared = try await tool.execute(.init(dialect: .stataCompatible,
+                script: script, inputJSON: "5"), context: context)
+            #expect(cleared.exitStatus == 2)
+            #expect(cleared.summary.contains("unknown:"))
+        }
+    }
+
     @Test("MATLAB-compatible matrices and statistics run locally")
     func matlabMatrices() async throws {
         let tool = LocalNumericalCompatibilityTool()

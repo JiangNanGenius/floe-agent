@@ -17,6 +17,8 @@ struct OfficeDocumentEditorView: View {
     @State private var loadError: String?
     @State private var isSaving = false
     @State private var saveNotice: String?
+    @State private var saveError: String?
+    @State private var confirmingDiscard = false
 
     var body: some View {
         Group {
@@ -73,7 +75,9 @@ struct OfficeDocumentEditorView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button("office.editor.close") { dismiss() }
+                Button("office.editor.close") {
+                    if changedValues.isEmpty { dismiss() } else { confirmingDiscard = true }
+                }.disabled(isSaving)
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button {
@@ -83,6 +87,13 @@ struct OfficeDocumentEditorView: View {
                 }
                 .disabled(isSaving || changedValues.isEmpty || snapshot == nil)
             }
+        }
+        .alert("未能保存", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
+            Button("继续编辑", role: .cancel) { saveError = nil }
+        } message: { Text(saveError ?? "") }
+        .confirmationDialog("放弃未保存的修改？", isPresented: $confirmingDiscard, titleVisibility: .visible) {
+            Button("放弃修改", role: .destructive) { dismiss() }
+            Button("继续编辑", role: .cancel) {}
         }
         .interactiveDismissDisabled(isSaving || !changedValues.isEmpty)
         .task(id: relativePath) { await load() }
@@ -155,8 +166,9 @@ struct OfficeDocumentEditorView: View {
         defer { isSaving = false }
         do {
             let url = try localURL()
+            let revision = snapshot?.sha256
             let updated = try await Task.detached {
-                try OfficeDocumentService.update(sourceURL: url, updates: updates)
+                try OfficeDocumentService.update(sourceURL: url, updates: updates, expectedSHA256: revision)
             }.value
             snapshot = updated
             original = Dictionary(uniqueKeysWithValues: updated.fields.map { ($0.id, $0.text) })
@@ -164,7 +176,7 @@ struct OfficeDocumentEditorView: View {
             saveNotice = String(localized: "office.editor.saved")
             onSaved?()
         } catch {
-            loadError = error.localizedDescription
+            saveError = error.localizedDescription
         }
     }
 }

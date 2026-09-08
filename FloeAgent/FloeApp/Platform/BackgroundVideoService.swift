@@ -1331,7 +1331,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
                     .foregroundColor: UIColor.white
                 ]
             )
-            let liveLabel = "任务持续运行中" as NSString
+            let liveLabel = "任务状态" as NSString
             liveLabel.draw(
                 at: CGPoint(x: 440, y: 58),
                 withAttributes: [
@@ -1348,43 +1348,15 @@ final class BackgroundVideoService: NSObject, ObservableObject {
                 ]
             )
             (progress as NSString).draw(
-                in: CGRect(x: 52, y: 184, width: 536, height: 38),
+                in: CGRect(x: 52, y: 184, width: 536, height: 132),
                 withAttributes: [
                     .font: UIFont.systemFont(ofSize: 21, weight: .medium),
                     .foregroundColor: UIColor(red: 0.72, green: 0.78, blue: 0.88, alpha: 1)
                 ]
             )
 
-            let track = CGRect(x: 52, y: 252, width: 536, height: 12)
-            UIColor.white.withAlphaComponent(0.12).setFill()
-            UIBezierPath(roundedRect: track, cornerRadius: 6).fill()
-            let percent = Self.progressPercent(in: progress)
-            let fillWidth = max(16, track.width * CGFloat(percent) / 100)
-            UIColor.systemBlue.setFill()
-            UIBezierPath(
-                roundedRect: CGRect(x: track.minX, y: track.minY, width: fillWidth, height: track.height),
-                cornerRadius: 6
-            ).fill()
-            let detail = percent > 0 ? "进度 \(percent)%" : "正在同步最新状态"
-            (detail as NSString).draw(
-                at: CGPoint(x: 52, y: 282),
-                withAttributes: [
-                    .font: UIFont.monospacedDigitSystemFont(ofSize: 17, weight: .medium),
-                    .foregroundColor: UIColor.lightGray
-                ]
-            )
-        }
-    }
 
-    private static func progressPercent(in text: String) -> Int {
-        guard let expression = try? NSRegularExpression(pattern: #"(\d{1,3})\s*%"#),
-              let match = expression.firstMatch(
-                in: text,
-                range: NSRange(text.startIndex..<text.endIndex, in: text)
-              ),
-              let range = Range(match.range(at: 1), in: text),
-              let value = Int(text[range]) else { return 0 }
-        return min(100, max(0, value))
+        }
     }
 
     private func enqueueProgressFrame(

@@ -173,6 +173,42 @@ final class FileTreeViewModel: ObservableObject {
         await loadRoot()
     }
 
+    func move(_ node: FileTreeNode, to path: String) async throws {
+        guard !center.isCloudWorkspacePath(node.relativePath), !center.isNetworkWorkspacePath(node.relativePath),
+              !center.isCloudWorkspacePath(path), !center.isNetworkWorkspacePath(path) else {
+            throw CocoaError(.featureUnsupported)
+        }
+        try center.move(from: node.relativePath, to: path)
+        await loadRoot()
+    }
+
+    func exportURL(_ node: FileTreeNode) throws -> URL {
+        guard !node.isDirectory, !center.isCloudWorkspacePath(node.relativePath),
+              !center.isNetworkWorkspacePath(node.relativePath), let service = center.fileService else {
+            throw CocoaError(.featureUnsupported)
+        }
+        let url = try service.guardResolver.resolve(node.relativePath)
+        try service.guardResolver.assertReadableSize(url)
+        return url
+    }
+
+    func deleteBatch(_ paths: Set<String>) async -> [String: String] {
+        // Selecting a folder already includes its descendants. Avoid reporting
+        // their successful recursive removal as separate missing-file errors.
+        let roots = paths.filter { path in !paths.contains { other in path.hasPrefix(other + "/") } }.sorted()
+        var failures: [String: String] = [:]
+        for path in roots {
+            do {
+                guard !center.isCloudWorkspacePath(path), !center.isNetworkWorkspacePath(path) else {
+                    throw CocoaError(.featureUnsupported)
+                }
+                try center.delete(relativePath: path, recursive: true)
+            } catch { failures[path] = error.localizedDescription }
+        }
+        await loadRoot()
+        return failures
+    }
+
     // MARK: - Search
 
     /// Debounced search: waits 300 ms after the last keystroke.

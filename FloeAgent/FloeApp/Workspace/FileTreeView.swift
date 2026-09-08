@@ -25,6 +25,13 @@ struct FileTreeView: View {
     @State private var renameName = ""
     @State private var pendingDelete: FileTreeNode?
     @State private var operationError: String?
+    @State private var selecting = false
+    @State private var selection: Set<String> = []
+    @State private var deletingBatch = false
+    @State private var busy = false
+    @State private var movingNode: FileTreeNode?
+    @State private var destinationPath = ""
+    @State private var exportedURL: URL?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,6 +39,44 @@ struct FileTreeView: View {
             Divider()
             content
         }
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button(selecting ? "完成选择" : "选择", systemImage: "checklist") {
+                    selecting.toggle(); selection.removeAll()
+                }
+                if selecting {
+                    Button("全选") { selection = Set(viewModel.visibleNodes.map { $0.node.relativePath }) }
+                    Button("删除 \(selection.count) 项", systemImage: "trash", role: .destructive) { deletingBatch = true }
+                        .disabled(selection.isEmpty)
+                }
+                Button("刷新", systemImage: "arrow.clockwise") { Task { await viewModel.loadRoot() } }
+            }
+        }
+        .disabled(busy)
+        .overlay { if busy { ProgressView() } }
+        .onChange(of: viewModel.query) { _, _ in selection.removeAll(); selecting = false }
+        .sheet(item: $exportedURL) { url in FileTreeShareSheet(url: url) }
+        .confirmationDialog("删除所选文件？", isPresented: $deletingBatch, titleVisibility: .visible) {
+            Button("删除", role: .destructive) {
+                Task {
+                    busy = true
+                    let failures = await viewModel.deleteBatch(selection)
+                    selection = Set(failures.keys)
+                    operationError = failures.isEmpty ? nil : failures.sorted(by: { $0.key < $1.key }).map { "\($0.key): \($0.value)" }.joined(separator: "\n")
+                    busy = false
+                }
+            }
+        } message: { Text("文件夹包含其中全部内容，此操作不可撤销。") }
+        .alert("移动文件", isPresented: Binding(get: { movingNode != nil }, set: { if !$0 { movingNode = nil } })) {
+            TextField("目标路径（包含文件名）", text: $destinationPath)
+            Button("移动") {
+                guard let node = movingNode else { return }
+                let destination = destinationPath
+                movingNode = nil
+                Task { do { try await viewModel.move(node, to: destination) } catch { operationError = error.localizedDescription } }
+            }
+            Button("action.cancel", role: .cancel) { movingNode = nil }
+        } message: { Text("输入当前工作区内的目标路径。") }
         .alert("新建文件夹", isPresented: $showingNewFolder) {
             TextField("文件夹名称", text: $newFolderName)
             Button("创建") { Task { await createFolder() } }
@@ -114,14 +159,22 @@ struct FileTreeView: View {
         List {
             ForEach(viewModel.visibleNodes) { visible in
                 let node = visible.node
-                FileTreeRow(
-                    node: node,
-                    depth: visible.depth,
-                    isExpanded: viewModel.expandedDirectoryPaths.contains(node.relativePath)
-                ) {
-                    if node.isDirectory {
-                        Task { await viewModel.toggleDirectory(node) }
-                    } else { onSelectFile(node.relativePath) }
+                HStack(spacing: 8) {
+                    if selecting {
+                        Image(systemName: selection.contains(node.relativePath) ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(selection.contains(node.relativePath) ? Color.accentColor : .secondary)
+                    }
+                    FileTreeRow(
+                        node: node,
+                        depth: visible.depth,
+                        isExpanded: viewModel.expandedDirectoryPaths.contains(node.relativePath)
+                    ) {
+                        if selecting {
+                            if !selection.insert(node.relativePath).inserted { selection.remove(node.relativePath) }
+                        } else if node.isDirectory {
+                            Task { await viewModel.toggleDirectory(node) }
+                        } else { onSelectFile(node.relativePath) }
+                    }
                 }
                 .contextMenu { rowMenu(for: node) }
             }
@@ -146,6 +199,12 @@ struct FileTreeView: View {
             showingRename = true
         } label: {
             Label("重命名", systemImage: "pencil")
+        }
+        Button("移动", systemImage: "folder") { movingNode = node; destinationPath = node.relativePath }
+        if !node.isDirectory {
+            Button("导出", systemImage: "square.and.arrow.up") {
+                do { exportedURL = try viewModel.exportURL(node) } catch { operationError = error.localizedDescription }
+            }
         }
         Button(role: .destructive) {
             pendingDelete = node
@@ -266,5 +325,12 @@ private struct FileTreeRow: View {
         .accessibilityLabel(node.name)
         .accessibilityAddTraits(node.isDirectory ? [] : .isButton)
     }
+}
+private struct FileTreeShareSheet: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 #endif

@@ -25,6 +25,7 @@ struct StepGroupView: View {
     let hasError: Bool
     let pendingApprovals: [PendingApproval]
     let onResolveApproval: (PendingApproval, ApprovalDecision) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isExpanded: Bool
 
     init(
@@ -83,6 +84,7 @@ struct StepGroupView: View {
                                 toolRequestStatus: requestStatus(for: event),
                                 toolRequestResultPayloadJSON: matchingResult(for: event)?.payloadJSON
                             )
+                            .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 6)))
                             if event.kind == .toolRequest,
                                let pending = pendingApproval(for: event) {
                                 ApprovalCardView(approval: pending) { decision in
@@ -94,6 +96,7 @@ struct StepGroupView: View {
                     }
                 }
                 .padding(.leading, 8)
+                .animation(isLive && !reduceMotion ? .easeOut(duration: 0.18) : nil, value: events.count)
             }
         } label: {
             HStack {
@@ -107,17 +110,17 @@ struct StepGroupView: View {
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
             }
             .contentShape(Rectangle())
-            .onTapGesture { withAnimation(.snappy) { isExpanded.toggle() } }
+            .onTapGesture { withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) { isExpanded.toggle() } }
         }
         .padding(.vertical, 2)
         .onChange(of: pendingApprovals.map(\.id)) { _, approvalIDs in
             if !approvalIDs.isEmpty {
-                withAnimation(.snappy) { isExpanded = true }
+                withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) { isExpanded = true }
             }
         }
         .onChange(of: events.map(\.id)) { _, _ in
             if isLatest || isLive || hasError {
-                withAnimation(.snappy) { isExpanded = true }
+                withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) { isExpanded = true }
             }
         }
     }

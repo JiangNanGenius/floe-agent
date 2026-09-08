@@ -1655,12 +1655,12 @@ public actor ConversationRunService {
                 lines.append("VNC interaction policy: satisfy any user-requested prerequisite route, require vnc.status -> vnc.connect -> vnc.observe, prefer OCR recognizedText references over raw coordinates, perform one bounded action and verify the returned screenshot. inputDispatched=true is protocol delivery, never task success.")
             }
             lines.append(contentsOf: ToolWorkflowGuidance.contextLines(for: toolNames))
-            lines.append("Discovery routing: for non-trivial PDF, Office, network or other domain workflows, first use skill.search then skill.read on the best installed guide. Reading loads its available executable definitions. For an exact tool or an underlying runtime use tools.search. A deferred schema is not a missing capability. Do not repeat a broad search: use the returned exact ID/name and distinguish loaded from deferred results. Never infer permission from a guide. Python (exec.localPython) and SSH Executor are underlying execution capabilities, independent of guide enablement; interactive Terminal is separate.")
+            lines.append("Discovery routing: use skill.search then skill.read when domain workflow guidance is needed or a tool error requires clarification. Exact tool calls do not require reading a guide; use tools.search directly. Compiled tools are available to any authorized official, custom or imported skill. Reading a guide can load its available executable definitions. A deferred schema is not a missing capability. Do not repeat a broad search: use the returned exact ID/name and distinguish loaded from deferred results. Never infer permission from a guide. Python (exec.localPython) and SSH Executor are underlying execution capabilities, independent of guide enablement; interactive Terminal is separate.")
         } else {
             lines.append("Available tools: none (native tool calling is disabled for this model)")
         }
         if let skills = context?.skillInstructions, !skills.isEmpty {
-            lines.append("# Active skills")
+            lines.append("# Available workflow guides (not an inventory of executable tool groups)")
             lines.append(skills)
         }
         if let memory = context?.memoryContext, !memory.isEmpty {

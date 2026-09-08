@@ -572,9 +572,11 @@ struct ThreadComposerView: View {
                 dictationPrefix = draft
                 voiceInput.requestStart()
             } label: {
-                Image(systemName: "microphone.circle")
-                    .font(.title2)
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(FloeTheme.primary)
+                    .frame(width: 34, height: 34)
+                    .background(FloeTheme.primary.opacity(0.09), in: Circle())
             }
             .buttonStyle(.plain)
             .disabled(voiceInput.state == .requestingPermission
@@ -590,9 +592,11 @@ struct ThreadComposerView: View {
                 Button(role: .destructive) {
                     onStop()
                 } label: {
-                    Image(systemName: "stop.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(FloeTheme.destructive)
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 34, height: 34)
+                        .background(FloeTheme.destructive, in: Circle())
                 }
                 .buttonStyle(.plain)
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
@@ -607,8 +611,11 @@ struct ThreadComposerView: View {
                         .controlSize(.small)
                 } else {
                     Image(systemName: sendSystemImage)
-                        .font(.title2)
-                        .foregroundStyle(canSend ? FloeTheme.primary : Color.secondary)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(canSend ? Color.white : Color.secondary)
+                        .frame(width: 34, height: 34)
+                        .background(canSend ? FloeTheme.primary : Color.secondary.opacity(0.12), in: Circle())
+                        .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                 }
             }
             .buttonStyle(.plain)
@@ -741,9 +748,9 @@ struct ThreadComposerView: View {
 
     private var sendSystemImage: String {
         guard isRunning, let mode = runningInputMode?.wrappedValue else {
-            return "arrow.up.circle.fill"
+            return "arrow.up"
         }
-        return mode == .queue ? "text.badge.plus" : "arrow.triangle.turn.up.right.diamond.fill"
+        return mode == .queue ? "text.badge.plus" : "arrow.turn.up.right"
     }
 
     private var sendAccessibilityLabel: String {

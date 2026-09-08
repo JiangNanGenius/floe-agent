@@ -287,6 +287,7 @@ struct ThreadDetailView: View {
                     }
                     .padding()
                 }
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
                 .onScrollGeometryChange(for: Bool.self) { geometry in
                     let distance = geometry.contentSize.height
                         - geometry.contentOffset.y
@@ -318,12 +319,17 @@ struct ThreadDetailView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
-            .onChange(of: viewModel.liveStreamedText.count) { _, _ in
+            .onChange(of: viewModel.hasLoaded) { _, loaded in
+                guard loaded else { return }
+                proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
+                showsReturnToLatest = false
+            }
+            .onChange(of: [viewModel.liveStreamedText.count, viewModel.liveReasoningText.count,
+                           viewModel.events.count, viewModel.messages.count,
+                           viewModel.isRunning ? 1 : 0]) { _, _ in
                 // Follow only when the user has not intentionally scrolled
                 // away to inspect earlier reasoning or tool output.
-                guard !showsReturnToLatest,
-                      viewModel.showsLiveTail,
-                      !viewModel.liveStreamedText.isEmpty else { return }
+                guard viewModel.hasLoaded, !showsReturnToLatest else { return }
                 proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
             }
         }

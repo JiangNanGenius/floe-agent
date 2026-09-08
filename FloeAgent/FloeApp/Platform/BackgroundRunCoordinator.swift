@@ -93,6 +93,25 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         let sendsTerminalNotification: Bool
         var stage: String = "正在运行"
         var progress: Int64 = 5
+        var stageStartedAt = Date()
+        var lastActivityAt = Date()
+        var outputWindowStartedAt = Date()
+        var outputCharacters = 0
+        var reportedTokensPerSecond: Double?
+        var isGenerating = false
+
+        func presentation(now: Date = Date()) -> String {
+            let elapsed = max(0, Int(now.timeIntervalSince(stageStartedAt)))
+            let idle = max(0, Int(now.timeIntervalSince(lastActivityAt)))
+            let speed: String
+            if isGenerating, let rate = reportedTokensPerSecond, rate.isFinite, rate >= 0, idle < 5 {
+                speed = String(format: " · %.1f tokens/s", rate)
+            } else if isGenerating, outputCharacters > 0, idle < 5 {
+                speed = String(format: " · %.1f 字符/秒", Double(outputCharacters) / max(1, now.timeIntervalSince(outputWindowStartedAt)))
+            } else { speed = "" }
+            let activity = idle < 3 ? "刚收到活动" : "距上次活动 \(idle) 秒"
+            return "\(stage)\n本阶段 \(elapsed) 秒\(speed)\n\(activity)"
+        }
     }
     private var activeRuns: [UUID: ActiveRun] = [:]
     private var lastSkippedContinuedUpdateAt: Date = .distantPast
@@ -291,7 +310,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             surfacedRunID = candidate.key
             environment.backgroundVideoService.setRunContext(
                 title: candidate.value.title,
-                progress: "\(candidate.value.stage) · \(candidate.value.progress)%",
+                progress: candidate.value.presentation(),
                 automaticallyStartsFromInline: true
             )
         }
@@ -483,9 +502,32 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     /// Pushes a progress stage update to the active background surface (the
     /// continued task's Live Activity subtitle, and the PiP progress video).
-    func didUpdateProgress(runID: UUID, stage: String, progress: Int64) {
+    /// Only actual runtime/provider events advance activity. Rendering a PiP
+    /// frame never implies that a tool or the remote model made progress.
+    func didReceiveActivity(runID: UUID, at date: Date = Date(), characters: Int = 0, tokensPerSecond: Double? = nil) {
         guard var active = activeRuns[runID] else { return }
+        active.lastActivityAt = max(active.lastActivityAt, date)
+        if characters > 0 {
+            if date.timeIntervalSince(active.outputWindowStartedAt) > 5 {
+                active.outputWindowStartedAt = date
+                active.outputCharacters = 0
+            }
+            active.outputCharacters += characters
+        }
+        if let tokensPerSecond { active.reportedTokensPerSecond = tokensPerSecond }
+        activeRuns[runID] = active
+    }
+
+    func didUpdateProgress(runID: UUID, stage: String, progress: Int64, isGenerating: Bool = false) {
+        guard var active = activeRuns[runID] else { return }
+        if active.stage != stage {
+            active.stageStartedAt = Date()
+            active.outputWindowStartedAt = Date()
+            active.outputCharacters = 0
+            active.reportedTokensPerSecond = nil
+        }
         active.stage = stage
+        active.isGenerating = isGenerating
         active.progress = progress
         activeRuns[runID] = active
         if #available(iOS 26.0, *),
@@ -494,7 +536,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             updateContinuedTask(title: "Floe Agent", stage: stage, progress: progress)
         }
         if surfacedRunID == runID {
-            environment.backgroundVideoService.update(progress: stage)
+            environment.backgroundVideoService.update(progress: active.presentation())
         }
     }
 
@@ -688,7 +730,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         surfacedRunID = runID
         environment.backgroundVideoService.update(
             title: run.title,
-            progress: "\(run.stage) · \(run.progress)%"
+            progress: run.presentation()
         )
         if isAppInBackground {
             startPiPCarousel()
@@ -722,10 +764,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     ? "\((cursor % candidates.count) + 1)/\(candidates.count) · " : ""
                 self.environment.backgroundVideoService.update(
                     title: item.1.title,
-                    progress: "\(prefix)\(item.1.stage) · \(item.1.progress)%"
+                    progress: "\(prefix)\(item.1.presentation())"
                 )
                 cursor += 1
-                try? await Task.sleep(for: .seconds(candidates.count > 1 ? 4 : 12))
+                try? await Task.sleep(for: .seconds(candidates.count > 1 ? 4 : 1))
             }
         }
     }
@@ -976,7 +1018,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         surfacedRunID = runID
         environment.backgroundVideoService.setRunContext(
             title: run.title,
-            progress: "\(run.stage) · \(run.progress)%",
+            progress: run.presentation(),
             automaticallyStartsFromInline:
                 environment.settingsCenter.backgroundExecution == .pictureInPicture
         )

@@ -58,7 +58,7 @@ enum MoreDestination: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .setupGuide: "more.setup_guide"
         case .providers: "more.providers"
         case .auxiliaryModels: "more.auxiliary_models"
-        case .skills: "skills.title"
+        case .skills: "plugins.title"
         case .memory: "memory.title"
         case .settings: "more.settings"
         case .diagnostics: "more.diagnostics"

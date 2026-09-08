@@ -89,11 +89,12 @@ public struct OfficeUpdateTextTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var path: String
         public var updates: [String: String]
+        public var expectedSHA256: String? = nil
     }
     public static let name = "document.office.updateText"
     public static let toolDescription =
-        "Update exact fields in an existing workspace Office file after document.office.inspect. Unknown or stale IDs fail closed. Floe preserves unchanged themes, layouts, images and relationships, writes atomically, then reopens the package to verify it."
-    public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative .docx, .pptx or .xlsx path"},"updates":{"type":"object","description":"Map exact inspect field IDs to replacement text or formulas beginning with =","maxProperties":500,"additionalProperties":{"type":"string","maxLength":100000}}},"required":["path","updates"],"additionalProperties":false}"#
+        "Update exact fields in an existing workspace Office file after document.office.inspect. Pass expectedSHA256 from inspect to reject stale edits. Unknown field IDs fail closed. Floe preserves unchanged themes, layouts, images and relationships, writes atomically, then reopens the package to verify it."
+    public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative .docx, .pptx or .xlsx path"},"expectedSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$","description":"sha256 returned by inspect; prevents overwriting a newer revision"},"updates":{"type":"object","description":"Map exact inspect field IDs to replacement text or formulas beginning with =","maxProperties":500,"additionalProperties":{"type":"string","maxLength":100000}}},"required":["path","updates"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
     private let rootProvider: @Sendable () -> URL?
@@ -109,7 +110,7 @@ public struct OfficeUpdateTextTool: AgentTool {
         try context.cancellation.throwIfCancelled()
         do {
             let url = try OfficeToolSupport.resolve(args.path, context: context, fallback: rootProvider, mustExist: true)
-            let result = try OfficeDocumentService.update(sourceURL: url, updates: args.updates)
+            let result = try OfficeDocumentService.update(sourceURL: url, updates: args.updates, expectedSHA256: args.expectedSHA256)
             return OfficeToolSupport.output("updated=\(args.path) fields=\(args.updates.count) verifiedFields=\(result.fields.count)")
         } catch {
             return OfficeToolSupport.output("status=error error=\(error.localizedDescription)", exitStatus: 2)

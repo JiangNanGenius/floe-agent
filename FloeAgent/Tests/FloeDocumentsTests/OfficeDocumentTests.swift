@@ -68,6 +68,25 @@ struct OfficeDocumentTests {
         #expect(try read(rewritten, path: "word/styles.xml") == stylesBefore)
     }
 
+    @Test("stale Office revision cannot overwrite another editor's saved content")
+    func rejectsStaleRevision() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("revision.docx")
+        try OfficeDocumentBuilder.createWord(at: url, title: "Original", paragraphs: ["Keep"])
+        let first = try OfficeDocumentService.inspect(url: url)
+        let field = try #require(first.fields.first)
+        let second = try OfficeDocumentService.update(sourceURL: url, updates: [field.id: "Manual edit"], expectedSHA256: first.sha256)
+        let bytes = try Data(contentsOf: url)
+        #expect(throws: OfficeDocumentError.self) {
+            try OfficeDocumentService.update(sourceURL: url, updates: [field.id: "Stale model edit"], expectedSHA256: first.sha256)
+        }
+        #expect(try Data(contentsOf: url) == bytes)
+        #expect(second.sha256 != first.sha256)
+        let cleared = try OfficeDocumentService.update(sourceURL: url, updates: [field.id: ""], expectedSHA256: second.sha256)
+        #expect(!cleared.fields.contains(where: { $0.text == "Manual edit" }))
+    }
+
     @Test("compiled Office tools create, inspect and update within task scope")
     func toolRoundTrip() async throws {
         let root = try temporaryRoot()

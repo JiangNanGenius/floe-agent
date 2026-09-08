@@ -7,7 +7,7 @@ enum ToolDiscovery {
     static let name = "tools.search"
     static var descriptor: ToolCatalog.Descriptor {
         .init(name: name,
-              toolDescription: "Load executable schemas by exact tool name or capability. For multi-step domain workflows first use skill.search then skill.read; reading a guide loads its available tools. This search only loads definitions, never executes tools or grants permissions. Prefer an exact name when a group is too large.",
+              toolDescription: "Load executable schemas by exact tool name or capability. Use skill.search/skill.read when workflow guidance is needed; exact tool calls do not require reading a guide. This search only loads definitions, never executes tools or grants permissions. Prefer an exact name when a group is too large.",
               parametersJSON: #"{"type":"object","properties":{"query":{"type":"string","minLength":1}},"required":["query"],"additionalProperties":false}"#,
               riskLabels: [], isSideEffecting: false)
     }
@@ -24,7 +24,7 @@ enum ToolDiscovery {
             "terminal": ["终端", "terminal", "交互", "telnet", "串口"],
             "python": ["python", "numpy", "pillow", "pandas", "scipy", "matplotlib", "数据分析"],
             "pdf": ["pdf"],
-            "office": ["office", "word", "excel", "表格", "工作簿", "文档"],
+            "office": ["office", "word", "excel", "powerpoint", "ppt", "幻灯片", "演示文稿", "表格", "工作簿", "文档"],
             "http": ["http", "接口", "api"],
             "network": ["network", "网络", "ping", "dns", "http", "端口", "traceroute"],
             "workspace": ["workspace", "文件", "编辑", "file", "html", "代码"],
@@ -69,7 +69,7 @@ enum ToolDiscovery {
         let groups = Dictionary(grouping: descriptors, by: { group($0.name) })
         return "Tool discovery: full schemas are loaded only for relevant groups. Installed groups: "
             + groups.keys.sorted().map { "\($0) (\(groups[$0]!.count))" }.joined(separator: ", ")
-            + ". For domain workflows use skill.search then skill.read; for exact callable schemas use tools.search. Python execution is exec.localPython (python group), SSH Executor and interactive Terminal are separate. Connection state does not remove installed capabilities. Memory housekeeping is not a prerequisite; continue the actual task after any relevant memory check."
+            + ". These groups are installed; schemas load on first relevant tools.search, and deferred does not mean unavailable. Guides are optional workflow help via skill.search/skill.read; exact callable schemas use tools.search. Python execution is exec.localPython (python group), SSH Executor and interactive Terminal are separate. Connection state does not remove installed capabilities. Memory housekeeping is not a prerequisite; continue the actual task after any relevant memory check."
     }
 
     /// Discovery is a presentation budget, never an authority grant.

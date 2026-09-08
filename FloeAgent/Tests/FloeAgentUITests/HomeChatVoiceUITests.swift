@@ -55,6 +55,45 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["sidebar.more.providers"].exists)
     }
 
+    func testPluginMarketplaceAndBatchEntry() throws {
+        XCUIDevice.shared.orientation = .portrait
+        let plugins = app.staticTexts["sidebar.skills"]
+        XCTAssertTrue(plugins.waitForExistence(timeout: 8))
+        plugins.tap()
+        XCTAssertTrue(app.staticTexts["plugins.card.floe-pdf"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.segmentedControls.firstMatch.exists)
+        let marketplace = XCTAttachment(screenshot: app.screenshot())
+        marketplace.name = "Plugin marketplace"
+        marketplace.lifetime = .keepAlways
+        add(marketplace)
+        let batch = app.buttons["sidebar.batch"]
+        XCTAssertTrue(batch.exists)
+        batch.tap()
+        XCTAssertTrue(app.navigationBars["批量管理"].waitForExistence(timeout: 5))
+        let management = XCTAttachment(screenshot: app.screenshot())
+        management.name = "Batch task management"
+        management.lifetime = .keepAlways
+        add(management)
+    }
+
+    func testSettingsOpensAllWorkspaces() throws {
+        XCUIDevice.shared.orientation = .portrait
+        let settings = app.buttons["sidebar.settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 8))
+        settings.tap()
+        let files = app.descendants(matching: .any).matching(identifier: "settings.section.files").firstMatch
+        XCTAssertTrue(files.waitForExistence(timeout: 5))
+        files.tap()
+        let manage = app.buttons["settings.files.manage"]
+        XCTAssertTrue(manage.waitForExistence(timeout: 5))
+        manage.tap()
+        XCTAssertTrue(app.navigationBars["所有工作区"].waitForExistence(timeout: 5))
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "All workspace files"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     /// The Home composer is directly usable as a task-start surface.
     func testHomeStartsTaskDirectly() throws {
         let input = app.textFields["composer.input"]

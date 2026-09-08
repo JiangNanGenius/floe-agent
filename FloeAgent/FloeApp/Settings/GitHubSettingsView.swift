@@ -20,6 +20,7 @@ struct GitHubSettingsView: View {
                         Label(account.login, systemImage: "checkmark.seal.fill")
                             .foregroundStyle(FloeTheme.success)
                     }
+                    .fixedSize(horizontal: false, vertical: true)
                     Button("断开连接", role: .destructive) {
                         do { try center.disconnect() }
                         catch { center.errorMessage = error.localizedDescription }

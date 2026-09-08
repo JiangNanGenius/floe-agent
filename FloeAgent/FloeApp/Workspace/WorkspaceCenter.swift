@@ -98,6 +98,9 @@ final class WorkspaceCenter: ObservableObject {
 
     let environment: AppEnvironment
     private let store: any WorkspaceStore
+    /// Settings browsing owns its own security scopes and never rebinds the
+    /// active conversation's legacy tool root or process-wide mount registry.
+    private let publishesSharedState: Bool
 
     /// File service for the current workspace root, built on open.
     private(set) var fileService: WorkspaceFileService?
@@ -121,9 +124,19 @@ final class WorkspaceCenter: ObservableObject {
     private static let cloudLinksFileName = ".floe-cloud-workspaces.json"
     private static let networkMountsDirectoryName = "NetworkWorkspaceMounts"
 
-    init(environment: AppEnvironment) {
+    init(environment: AppEnvironment, publishesSharedState: Bool = true) {
+        self.publishesSharedState = publishesSharedState
         self.environment = environment
         self.store = SQLiteWorkspaceStore(database: environment.database)
+    }
+
+    deinit {
+        // An isolated settings browser may be dismissed with a document still
+        // open. Balance only its own scopes; the conversation owns registries.
+        if !publishesSharedState {
+            if currentRootUsesSecurityScope { currentRootURL?.stopAccessingSecurityScopedResource() }
+            currentMountScopeURLs.forEach { $0.stopAccessingSecurityScopedResource() }
+        }
     }
 
     // MARK: - Listing & creation
@@ -269,7 +282,7 @@ final class WorkspaceCenter: ObservableObject {
         var opened = record
         opened.lastOpenedAt = Date()
         currentWorkspace = opened
-        Self.sharedRootOverride = url
+        if publishesSharedState { Self.sharedRootOverride = url }
 
         try await store.touchLastOpened(id: id)
         guard generation == openGeneration else { return }
@@ -288,7 +301,7 @@ final class WorkspaceCenter: ObservableObject {
         if currentRootUsesSecurityScope, let url = currentRootURL {
             url.stopAccessingSecurityScopedResource()
         }
-        if let root = currentRootURL {
+        if publishesSharedState, let root = currentRootURL {
             WorkspaceMountRegistry.shared.unregister(rootURL: root)
             Task { await NetworkWorkspaceMountRegistry.shared.unregister(rootURL: root) }
         }
@@ -303,7 +316,7 @@ final class WorkspaceCenter: ObservableObject {
         currentWorkspace = nil
         recentFiles = []
         instructionsBody = nil
-        Self.sharedRootOverride = nil
+        if publishesSharedState { Self.sharedRootOverride = nil }
     }
 
     /// Resolves a workspace root bookmark, refreshing it in the store when
@@ -423,7 +436,7 @@ final class WorkspaceCenter: ObservableObject {
         await activateNetworkMounts(for: record, rootURL: root)
         fileService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root, mounts: mounts))
         currentWorkspace = record
-        Self.sharedRootOverride = root
+        if publishesSharedState { Self.sharedRootOverride = root }
         await reloadRecentFiles()
         await loadInstructions()
         actionError = nil
@@ -944,6 +957,7 @@ final class WorkspaceCenter: ObservableObject {
                 $0.name.localizedStandardCompare($1.name) == .orderedAscending
             }
         }
+        guard publishesSharedState else { return }
         await NetworkWorkspaceMountRegistry.shared.register(
             rootURL: rootURL,
             mounts: mounts,
@@ -994,7 +1008,7 @@ final class WorkspaceCenter: ObservableObject {
                 withIntermediateDirectories: true
             )
         }
-        WorkspaceMountRegistry.shared.register(rootURL: rootURL, mounts: mounts)
+        if publishesSharedState { WorkspaceMountRegistry.shared.register(rootURL: rootURL, mounts: mounts) }
         return (mounts, scopes)
     }
 

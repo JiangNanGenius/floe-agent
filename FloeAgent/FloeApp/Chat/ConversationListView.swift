@@ -21,6 +21,8 @@ struct ConversationListView: View {
     @State private var selectedIDs: Set<UUID> = []
     @State private var editMode: EditMode = .inactive
     @State private var presentsArchive = false
+    @State private var presentsBatch = false
+    @State private var confirmsBatchDelete = false
 
     init(center: ConversationCenter) {
         _viewModel = StateObject(wrappedValue: ConversationListViewModel(center: center))
@@ -51,6 +53,16 @@ struct ConversationListView: View {
             ThreadDetailView(conversationID: conversationID, center: viewModel.center)
         }
         .environment(\.editMode, $editMode)
+        .sheet(isPresented: $presentsBatch) { ConversationBatchManagementView(center: viewModel.center) }
+        .alert("操作失败", isPresented: Binding(get: { viewModel.actionError != nil }, set: { if !$0 { viewModel.actionError = nil } })) {
+            Button("好", role: .cancel) { viewModel.actionError = nil }
+        } message: { Text(viewModel.actionError ?? "") }
+        .confirmationDialog("删除所选任务？", isPresented: $confirmsBatchDelete, titleVisibility: .visible) {
+            Button("删除", role: .destructive) {
+                let ids = selectedIDs
+                Task { await viewModel.delete(ids: ids); selectedIDs.formIntersection(Set(viewModel.conversations.map(\.id))) }
+            }
+        } message: { Text("任务及其私有工作区将被删除，共享项目文件保留。此操作不可撤销。") }
         .sheet(isPresented: $presentsArchive) {
             NavigationStack { ArchivedConversationsView(center: viewModel.center) }
         }
@@ -114,7 +126,9 @@ struct ConversationListView: View {
             } else {
                 ForEach(viewModel.filteredConversations) { conversation in
                     Button {
-                        router.openConversation(conversation.id)
+                        if editMode.isEditing {
+                            if !selectedIDs.insert(conversation.id).inserted { selectedIDs.remove(conversation.id) }
+                        } else { router.openConversation(conversation.id) }
                     } label: {
                         HStack {
                             ConversationRow(
@@ -127,6 +141,7 @@ struct ConversationListView: View {
                         }
                     }
                     .buttonStyle(.plain)
+                    .tag(conversation.id)
                     .accessibilityHint("chat.open.hint")
                     .accessibilityIdentifier("chat.row.\(conversation.id.uuidString)")
                     .swipeActions(edge: .leading, allowsFullSwipe: true) {
@@ -156,7 +171,9 @@ struct ConversationListView: View {
             }
             .accessibilityLabel("归档区")
         }
-        ToolbarItem(placement: .primaryAction) { EditButton() }
+        ToolbarItem(placement: .primaryAction) {
+            Button("批量管理", systemImage: "checklist") { presentsBatch = true }
+        }
         ToolbarItem(placement: .primaryAction) {
             Button {
                 createAndOpen()
@@ -179,10 +196,7 @@ struct ConversationListView: View {
             }
             ToolbarItem(placement: .bottomBar) {
                 Button("删除所选", role: .destructive) {
-                    let ids = selectedIDs
-                    selectedIDs.removeAll()
-                    editMode = .inactive
-                    Task { await viewModel.delete(ids: ids) }
+                    confirmsBatchDelete = true
                 }
             }
         }

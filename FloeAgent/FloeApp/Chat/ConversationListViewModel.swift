@@ -8,6 +8,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import Combine
 import FloePersistence
 
 /// View model for the conversation list (Chat tab root).
@@ -20,9 +21,14 @@ final class ConversationListViewModel: ObservableObject {
     @Published var searchText = ""
 
     let center: ConversationCenter
+    private var centerChanges: AnyCancellable?
+    @Published var actionError: String?
 
     init(center: ConversationCenter) {
         self.center = center
+        centerChanges = center.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     /// Conversations in recency order, straight from the center.
@@ -65,25 +71,25 @@ final class ConversationListViewModel: ObservableObject {
         // list, not the center's unfiltered backing array.
         let visible = filteredConversations
         let targets = offsets.compactMap { visible.indices.contains($0) ? visible[$0] : nil }
-        for conversation in targets {
-            try? await center.deleteConversation(id: conversation.id)
+        await delete(ids: Set(targets.map(\.id)))
+    }
+
+    func archive(_ conversation: ConversationRecord) async { await archive(ids: [conversation.id]) }
+    func delete(_ conversation: ConversationRecord) async { await delete(ids: [conversation.id]) }
+
+    func archive(ids: Set<UUID>) async { await perform(ids: ids, deleting: false) }
+    func delete(ids: Set<UUID>) async { await perform(ids: ids, deleting: true) }
+
+    private func perform(ids: Set<UUID>, deleting: Bool) async {
+        actionError = nil
+        var failures: [String] = []
+        for id in ids.sorted(by: { $0.uuidString < $1.uuidString }) {
+            do {
+                if deleting { try await center.deleteConversation(id: id) }
+                else { try await center.archiveConversation(id: id) }
+            } catch { failures.append(error.localizedDescription) }
         }
-    }
-
-    func archive(_ conversation: ConversationRecord) async {
-        try? await center.archiveConversation(id: conversation.id)
-    }
-
-    func archive(ids: Set<UUID>) async {
-        for id in ids { try? await center.archiveConversation(id: id) }
-    }
-
-    func delete(_ conversation: ConversationRecord) async {
-        try? await center.deleteConversation(id: conversation.id)
-    }
-
-    func delete(ids: Set<UUID>) async {
-        for id in ids { try? await center.deleteConversation(id: id) }
+        if !failures.isEmpty { actionError = failures.joined(separator: "\n") }
     }
 
     /// Display title: the stored title, falling back to the latest run's

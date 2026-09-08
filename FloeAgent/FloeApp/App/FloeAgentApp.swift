@@ -185,6 +185,7 @@ struct RootView: View {
     @SceneStorage("floe.windowSceneIdentity") private var sceneID = UUID().uuidString
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var expandedWorkspaceIDs: Set<UUID> = []
+    @State private var showingBatchManagement = false
     @State private var renamingConversation: ConversationRecord?
     @State private var deletingConversation: ConversationRecord?
     @State private var deletingWorkspace: WorkspaceRecord?
@@ -296,6 +297,9 @@ struct RootView: View {
             // NavigationLinks appear enabled while their taps are dropped.
             SettingsRootView()
                 .presentationSizing(.page)
+        }
+        .sheet(isPresented: $showingBatchManagement) {
+            ConversationBatchManagementView(center: environment.conversationCenter)
         }
         .sheet(item: $renamingConversation) { conversation in
             TaskRenameSheet(conversation: conversation) { title in
@@ -592,7 +596,7 @@ struct RootView: View {
                     Label("创意模式", systemImage: "rectangle.and.pencil.and.ellipsis")
                         .tag(SidebarSelection.more(.creative))
                         .accessibilityIdentifier("sidebar.creative")
-                    Label("skills.title", systemImage: "puzzlepiece.extension")
+                    Label("plugins.title", systemImage: "puzzlepiece.extension")
                         .tag(SidebarSelection.more(.skills))
                         .accessibilityIdentifier("sidebar.skills")
                 }
@@ -658,6 +662,10 @@ struct RootView: View {
             HStack(spacing: 8) {
                 Label("账户", systemImage: "person.crop.circle")
                 Spacer()
+                Button("批量管理", systemImage: "checklist") { showingBatchManagement = true }
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityIdentifier("sidebar.batch")
                 Button {
                     router.presentedSettings = true
                 } label: {

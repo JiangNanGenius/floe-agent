@@ -12,6 +12,60 @@ import CryptoKit
 
 @Suite("FloeApp.SkillLifecycle", .serialized)
 struct SkillLifecycleTests {
+    @Test("Workspace manager keeps the task root unchanged and reports batch failures")
+    @MainActor func isolatedWorkspaceManagement() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let first = try await environment.conversationCenter.createConversation(title: "Active task")
+        let second = try await environment.conversationCenter.createConversation(title: "Managed task")
+        let primary = environment.workspaceCenter
+        let browser = WorkspaceCenter(environment: environment, publishesSharedState: false)
+        try await primary.openTaskWorkspace(conversationID: first.id)
+        let activeRoot = try #require(primary.currentRootURL)
+        try await browser.openTaskWorkspace(conversationID: second.id)
+        let managedRoot = try #require(browser.currentRootURL)
+        defer {
+            browser.closeCurrentWorkspace()
+            primary.closeCurrentWorkspace()
+            try? FileManager.default.removeItem(at: activeRoot)
+            try? FileManager.default.removeItem(at: managedRoot)
+        }
+        #expect(WorkspaceCenter.toolRootProvider() == activeRoot)
+        try Data("keep".utf8).write(to: activeRoot.appendingPathComponent("keep.txt"))
+        try Data("move".utf8).write(to: managedRoot.appendingPathComponent("move.txt"))
+        try browser.createDirectory(relativePath: "folder")
+        let tree = FileTreeViewModel(center: browser)
+        try await tree.move(.init(relativePath: "move.txt", name: "move.txt", isDirectory: false, size: 4), to: "folder/moved.txt")
+        #expect(FileManager.default.fileExists(atPath: managedRoot.appendingPathComponent("folder/moved.txt").path))
+        let failures = await tree.deleteBatch(["folder", "folder/moved.txt", "../outside"])
+        #expect(Set(failures.keys) == ["../outside"])
+        #expect(!FileManager.default.fileExists(atPath: managedRoot.appendingPathComponent("folder").path))
+        #expect(try String(contentsOf: activeRoot.appendingPathComponent("keep.txt"), encoding: .utf8) == "keep")
+        browser.closeCurrentWorkspace()
+        #expect(WorkspaceCenter.toolRootProvider() == activeRoot)
+    }
+
+    @Test("Inline PDF session reloads modified documents and surfaces corrupt content")
+    @MainActor func inlinePDFReload() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("pdf-reader-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("reader.pdf")
+        try pdfFixture().write(to: url)
+        let session = PDFReadingSession()
+        await session.load(url)
+        #expect(session.document?.pageCount == 1)
+        #expect(session.error == nil)
+        let replacement = try #require(PDFDocument(data: pdfFixture()))
+        replacement.insert(try #require(PDFDocument(data: pdfFixture())?.page(at: 0)), at: 1)
+        try #require(replacement.dataRepresentation()).write(to: url, options: .atomic)
+        await session.load(url)
+        #expect(session.document?.pageCount == 2)
+        try Data("not a PDF".utf8).write(to: url, options: .atomic)
+        await session.load(url)
+        #expect(session.error != nil)
+    }
+
     @Test("PDF export preserves real text and PNG output without overwriting")
     @MainActor func pdfExports() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("pdf-export-\(UUID())")

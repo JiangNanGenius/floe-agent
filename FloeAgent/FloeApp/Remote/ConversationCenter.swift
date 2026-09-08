@@ -388,6 +388,7 @@ final class ConversationCenter: ObservableObject {
     /// Snapshot polling tasks keyed by run ID.
     private var snapshotTasks: [UUID: Task<Void, Never>] = [:]
     private var sessionRevisions: [UUID: Int] = [:]
+    private var sessionReconciliationTasks: [UUID: Task<Void, Never>] = [:]
     private var sessionContinuations: [UUID: [UUID: AsyncStream<ConversationSessionSnapshot>.Continuation]] = [:]
     private var pendingSessionPublishes: [UUID: Task<Void, Never>] = [:]
     /// Reuses immutable historical event pages across live projections. A run
@@ -483,6 +484,9 @@ final class ConversationCenter: ObservableObject {
     }
 
     func sessionSnapshot(conversationID: UUID) async throws -> ConversationSessionSnapshot {
+        // Capture before the first suspension. A newer event must never label
+        // an older set of database reads with its revision.
+        let revision = sessionRevisions[conversationID, default: 0]
         guard let conversation = try await environment.conversationStore.conversation(id: conversationID) else {
             throw FloeError.notFound("conversation \(conversationID.uuidString)")
         }
@@ -532,7 +536,7 @@ final class ConversationCenter: ObservableObject {
             for try await (runID, loaded) in group { events[runID] = loaded }
         }
         let snapshot = ConversationSessionSnapshot(
-            revision: sessionRevisions[conversationID, default: 0],
+            revision: revision,
             conversation: conversation,
             messages: messages,
             earlierMessageCursor: messagePage.earlierCursor,
@@ -545,7 +549,9 @@ final class ConversationCenter: ObservableObject {
             taskPolicy: taskPolicy,
             pendingInputs: try await environment.runningInputStore.pending(conversationID: conversationID)
         )
-        sessionSnapshotCache[conversationID] = snapshot
+        if revision >= (sessionSnapshotCache[conversationID]?.revision ?? -1) {
+            sessionSnapshotCache[conversationID] = snapshot
+        }
         return snapshot
     }
 
@@ -559,6 +565,18 @@ final class ConversationCenter: ObservableObject {
                     if self?.sessionContinuations[conversationID]?.isEmpty != false {
                         self?.sessionContinuations[conversationID] = nil
                         self?.sessionSnapshotCache[conversationID] = nil
+                        self?.sessionReconciliationTasks.removeValue(forKey: conversationID)?.cancel()
+                    }
+                }
+            }
+            if sessionReconciliationTasks[conversationID] == nil {
+                sessionReconciliationTasks[conversationID] = Task { @MainActor [weak self] in
+                    while !Task.isCancelled {
+                        do { try await Task.sleep(for: .seconds(2)) } catch { break }
+                        guard let self else { return }
+                        // Read-only recovery for a dropped/coalesced notification.
+                        // Never restarts the provider or repeats a tool call.
+                        self.publishSession(conversationID)
                     }
                 }
             }
@@ -579,13 +597,20 @@ final class ConversationCenter: ObservableObject {
             // keeping UI latency below a frame pair.
             try? await Task.sleep(for: .milliseconds(40))
             guard let self, !Task.isCancelled else { return }
-            let snapshot = try? await self.sessionSnapshot(conversationID: conversationID)
+            // If a mutation lands while the database is being read, drain
+            // the newer revision before releasing the coalescing task. Without
+            // this loop that mutation had no pending publisher of its own.
+            while !Task.isCancelled {
+                let requestedRevision = self.sessionRevisions[conversationID, default: 0]
+                if let snapshot = try? await self.sessionSnapshot(conversationID: conversationID) {
+                    let subscribers = Array(self.sessionContinuations[conversationID, default: [:]].values)
+                    subscribers.forEach { $0.yield(snapshot) }
+                }
+                guard self.sessionRevisions[conversationID, default: 0] != requestedRevision,
+                      !self.sessionContinuations[conversationID, default: [:]].isEmpty else { break }
+                do { try await Task.sleep(for: .milliseconds(40)) } catch { break }
+            }
             self.pendingSessionPublishes[conversationID] = nil
-            guard let snapshot else { return }
-            let subscribers = Array(
-                self.sessionContinuations[conversationID, default: [:]].values
-            )
-            subscribers.forEach { $0.yield(snapshot) }
         }
     }
 
@@ -3324,14 +3349,14 @@ final class ConversationCenter: ObservableObject {
 
     /// Canvas has independent routes so changing the helper LLM cannot
     /// silently change how a drawing is interpreted or generated.
-    func canvasAssistantProviderAndModel() -> (ProviderProfile, ModelProfile)? {
+    func canvasAssistantProviderAndModel(requiresTools: Bool = true) -> (ProviderProfile, ModelProfile)? {
         let preferredID = modelPreferences.canvasAgentModelID
             ?? modelPreferences.defaultAgentModelID
         guard let model = preferredID.flatMap({ id in
             enabledAgentModels.first(where: {
-                $0.id == id && $0.capabilities.contains(.tools)
+                $0.id == id && (!requiresTools || $0.capabilities.contains(.tools))
             })
-        }) ?? enabledAgentModels.first(where: { $0.capabilities.contains(.tools) }),
+        }) ?? enabledAgentModels.first(where: { !requiresTools || $0.capabilities.contains(.tools) }),
               let provider = providers.first(where: { $0.id == model.providerID })
         else { return nil }
         return (provider, model)
@@ -3787,8 +3812,10 @@ final class ConversationCenter: ObservableObject {
                     self.apply(snapshot)
                     self.publishSession(snapshot.conversationID)
                     if snapshot.isTerminal { break }
-                case .answerDelta, .reasoningDelta, .usageChanged:
-                    break
+                case .answerDelta(let text), .reasoningDelta(let text):
+                    self.environment.backgroundRunCoordinator.didReceiveActivity(runID: runID, characters: text.text.count)
+                case .usageChanged(let usage):
+                    self.environment.backgroundRunCoordinator.didReceiveActivity(runID: runID, tokensPerSecond: usage.tokensPerSecond)
                 }
             }
             self?.snapshotTasks[runID] = nil
@@ -3829,10 +3856,14 @@ final class ConversationCenter: ObservableObject {
         case "checkpointed": (snapshot.checkpointReason ?? "任务已暂停", 70)
         default: ("正在运行", 20)
         }
+        environment.backgroundRunCoordinator.didReceiveActivity(
+            runID: snapshot.runID, at: snapshot.liveness.lastProgressAt
+        )
         environment.backgroundRunCoordinator.didUpdateProgress(
             runID: snapshot.runID,
             stage: progress.stage,
-            progress: progress.value
+            progress: progress.value,
+            isGenerating: snapshot.stateName == "streamingModel"
         )
         if let waiting = snapshot.pendingApproval {
             let descriptor = ToolCatalog.descriptor(named: waiting.toolCall.toolName)

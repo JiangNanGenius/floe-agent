@@ -9,6 +9,8 @@ struct SkillsView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @ObservedObject var center: SkillsCenter
     @ObservedObject private var mcpCenter: MCPSettingsCenter
+    @State private var showingInstalled = false
+    @State private var searchText = ""
     @State private var showingCreator = false
     @State private var showingFinder = false
     @State private var pendingRemoval: PersistedSkill?
@@ -25,13 +27,54 @@ struct SkillsView: View {
     private var visibleInstalled: [PersistedSkill] {
         let exposed = Set(DomainSkillLibrary.all.filter(\.exposed).map(\.id))
         return center.installed.filter { skill in
+            guard searchText.isEmpty || skill.name.localizedStandardContains(searchText) else { return false }
             guard DomainSkillLibrary.all.contains(where: { $0.id == skill.id }) else { return true }
             return exposed.contains(skill.id)
         }
     }
 
+    private func pluginSummary(_ definition: DomainSkillLibrary.Definition) -> String {
+        switch definition.id {
+        case "floe-office": String(localized: "plugins.office.summary")
+        case "floe-pdf": String(localized: "plugins.pdf.summary")
+        case "floe-network": String(localized: "plugins.network.summary")
+        default: definition.description
+        }
+    }
+
     var body: some View {
         List {
+            Picker("plugins.title", selection: $showingInstalled) {
+                Text("plugins.discover").tag(false)
+                Text("plugins.installed").tag(true)
+            }.pickerStyle(.segmented)
+            if !showingInstalled {
+                Section("plugins.official") {
+                    ForEach(DomainSkillLibrary.all.filter { $0.exposed && (searchText.isEmpty || $0.name.localizedStandardContains(searchText) || $0.description.localizedStandardContains(searchText)) }, id: \.id) { definition in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text(definition.name).font(.headline).accessibilityIdentifier("plugins.card.\(definition.id)")
+                                Spacer()
+                                Text("v\(definition.version)").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text(pluginSummary(definition)).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
+                            if let installed = center.installed.first(where: { $0.id == definition.id }) {
+                                if installed.status == "enabled" {
+                                    Label("plugins.ready", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary)
+                                } else {
+                                    Button("plugins.enable") { Task { await center.setEnabled(true, skill: installed) } }
+                                }
+                            } else {
+                                Text("plugins.unavailable").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }.padding(.vertical, 4)
+                    }
+                }
+                Section {
+                    Button("plugins.import", systemImage: "square.and.arrow.down") { showingFinder = true }
+                    Button("skills.creator", systemImage: "plus") { showingCreator = true }
+                }
+            }
             Section("connectors.title") {
                 NavigationLink {
                     ConnectorsView(sourceControl: environment.sourceControlCenter, mcpCenter: mcpCenter)
@@ -49,30 +92,33 @@ struct SkillsView: View {
                 }
                 .accessibilityIdentifier("skills.connectors")
             }
-            if visibleInstalled.isEmpty {
-                ContentUnavailableView("skills.empty", systemImage: "puzzlepiece.extension")
-            } else {
-                ForEach(visibleInstalled) { skill in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(skill.name).font(.headline)
-                                Text("v\(skill.version)").font(.caption).foregroundStyle(.secondary)
+            if showingInstalled {
+                if visibleInstalled.isEmpty {
+                    ContentUnavailableView("skills.empty", systemImage: "puzzlepiece.extension")
+                } else {
+                    ForEach(visibleInstalled) { skill in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(skill.name).font(.headline)
+                                    Text("v\(skill.version)").font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Toggle("skills.enabled", isOn: Binding(
+                                    get: { skill.status == "enabled" },
+                                    set: { value in Task { await center.setEnabled(value, skill: skill) } }
+                                )).labelsHidden()
                             }
-                            Spacer()
-                            Toggle("skills.enabled", isOn: Binding(
-                                get: { skill.status == "enabled" },
-                                set: { value in Task { await center.setEnabled(value, skill: skill) } }
-                            )).labelsHidden()
+                            if let definition = DomainSkillLibrary.all.first(where: { $0.id == skill.id }) {
+                                Text(pluginSummary(definition)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                            Button("skills.update", systemImage: "arrow.down.circle") { updatingSkill = skill }
+                                .buttonStyle(.borderless)
                         }
-                        Text(skill.skillMarkdown.split(separator: "\n").dropFirst(4).joined(separator: "\n"))
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(3)
-                        Button("GitHub 更新 / Update", systemImage: "arrow.down.circle") { updatingSkill = skill }
-                            .buttonStyle(.borderless)
-                    }
-                    .swipeActions {
-                        if !DomainSkillLibrary.all.contains(where: { $0.id == skill.id }) {
-                            Button("action.delete", role: .destructive) { pendingRemoval = skill }
+                        .swipeActions {
+                            if !DomainSkillLibrary.all.contains(where: { $0.id == skill.id }) {
+                                Button("action.delete", role: .destructive) { pendingRemoval = skill }
+                            }
                         }
                     }
                 }
@@ -82,7 +128,8 @@ struct SkillsView: View {
             }
         }
         .overlay { if center.isWorking { ProgressView().controlSize(.large) } }
-        .navigationTitle("skills.title")
+        .navigationTitle("plugins.title")
+        .searchable(text: $searchText, prompt: "plugins.search")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button("skills.finder", systemImage: "magnifyingglass") { showingFinder = true }
@@ -123,38 +170,36 @@ private struct SkillGitHubUpgradeSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("GitHub 来源 / Source") {
-                    if isOfficial {
-                        LabeledContent("官方来源 / Official source", value: "JiangNanGenius/floe-agent")
-                        LabeledContent("目录 / Directory", value: "skill-hub/")
-                        LabeledContent("已安装 / Installed", value: skill.version)
-                        Text("仅从官方仓库获取签名 ZIP。检查来源、签名、内容和应用兼容性后，再审核并应用；不会覆盖运行中的版本。")
-                            .font(.caption).foregroundStyle(.secondary)
+                Section {
+                    LabeledContent("skills.update.installed", value: "v\(skill.version)")
+                    if let candidate = center.pendingUpgrade {
+                        LabeledContent("skills.update.available", value: "v\(candidate.snapshot.package.manifest.version)")
+                        Button("skills.update.now") {
+                            Task {
+                                await center.applyReviewedUpgrade()
+                                if center.errorMessage == nil { dismiss() }
+                            }
+                        }.disabled(candidate.changedFiles.isEmpty)
                     } else {
+                        Button("skills.update.check") { checkForUpdate() }
+                    }
+                }
+                DisclosureGroup("skills.update.details") {
+                    if !isOfficial {
                         TextField("Owner", text: $owner)
                         TextField("Repository", text: $repository)
                         TextField("Branch / tag / commit", text: $ref)
                         TextField("SKILL.md or package inventory JSON", text: $path)
-                        Text("使用现有 GitHub 连接器访问私有仓库。完整包入口需列出 files: {相对路径: SHA256}；不会自动下载 Markdown 链接。")
-                            .font(.caption).foregroundStyle(.secondary)
+                        Button("skills.update.check") { checkForUpdate() }
                     }
-                    Button("检查更新 / Check update") {
-                        do {
-                            let source = try isOfficial ? OfficialSkillHub.source() : GitHubSkillSource(owner: owner, repository: repository, ref: ref, path: path)
-                            validationError = nil
-                            Task { await center.checkGitHubUpgrade(skill: skill, source: source) }
-                        } catch { validationError = error.localizedDescription }
-                    }
-                }.textInputAutocapitalization(.never).autocorrectionDisabled()
-                if let candidate = center.pendingUpgrade {
-                    Section("审核变更 / Review changes") {
+                    Text(skill.sourceURL ?? "App / local").font(.caption).textSelection(.enabled)
+                    if let candidate = center.pendingUpgrade {
                         LabeledContent("Commit", value: candidate.commit)
-                        LabeledContent("Version", value: candidate.snapshot.package.manifest.version)
-                        if let chinese = candidate.releaseNotes["zh-Hans"] { Text(chinese).font(.callout) }
-                        if let english = candidate.releaseNotes["en"] { Text(english).font(.callout).foregroundStyle(.secondary) }
+                        if let notes = candidate.releaseNotes[Locale.current.language.languageCode?.identifier == "zh" ? "zh-Hans" : "en"] {
+                            Text(notes).font(.callout)
+                        }
                         LabeledContent("新增权限 / New capabilities", value: candidate.addedCapabilities.sorted().joined(separator: ", "))
                         LabeledContent("新增工具 / New tools", value: candidate.addedTools.sorted().joined(separator: ", "))
-                        LabeledContent("请求授权 / Requested grants", value: candidate.snapshot.package.manifest.capabilities.joined(separator: ", "))
                         ForEach(candidate.changedFiles, id: \.self) { file in
                             DisclosureGroup(file) {
                                 Text("Before").font(.caption.bold())
@@ -163,18 +208,9 @@ private struct SkillGitHubUpgradeSheet: View {
                                 Text(preview(candidate.snapshot.files[file])).font(.caption.monospaced())
                             }
                         }
-                        Button("批准并应用 / Approve and apply") {
-                            Task {
-                                await center.applyReviewedUpgrade()
-                                if center.errorMessage == nil { dismiss() }
-                            }
-                        }.disabled(candidate.changedFiles.isEmpty)
                     }
-                }
-                Section("恢复 / Recovery") {
-                    Text(skill.sourceURL ?? "App / local").font(.caption).textSelection(.enabled)
-                    Button("回退上次更新 / Roll back", role: .destructive) { confirmingRollback = true }
-                }
+                    Button("skills.update.rollback", role: .destructive) { confirmingRollback = true }
+                }.textInputAutocapitalization(.never).autocorrectionDisabled()
                 if let error = validationError ?? center.errorMessage { Text(error).foregroundStyle(.red) }
             }
             .disabled(center.isWorking)
@@ -189,9 +225,18 @@ private struct SkillGitHubUpgradeSheet: View {
                 if let source = center.lastGitHubSource(skillID: skill.id) {
                     owner = source.owner; repository = source.repository; ref = source.ref; path = source.path
                 }
+                if isOfficial || !owner.isEmpty { checkForUpdate() }
             }
             .onDisappear { if !center.isWorking { center.cancelUpgrade() } }
         }
+    }
+
+    private func checkForUpdate() {
+        do {
+            let source = try isOfficial ? OfficialSkillHub.source() : GitHubSkillSource(owner: owner, repository: repository, ref: ref, path: path)
+            validationError = nil
+            Task { await center.checkGitHubUpgrade(skill: skill, source: source) }
+        } catch { validationError = error.localizedDescription }
     }
 
     private func preview(_ data: Data?) -> String {

@@ -77,6 +77,7 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var hasProviderActivity = false
     /// Persisted messages of the conversation (user goals, final answers).
     @Published private(set) var messages: [PersistedMessage] = []
+    @Published private(set) var hasLoaded = false
     /// Composer draft text.
     @Published var draft: String = ""
     @Published var selectedModelID: UUID?
@@ -325,6 +326,7 @@ final class ThreadDetailViewModel: ObservableObject {
     /// Loads persisted state, then subscribes to the selected run's bounded
     /// push stream while it is non-terminal.
     func load() async {
+        defer { hasLoaded = true }
         actionError = nil
         var stage = "centerReload"
         do {
@@ -873,6 +875,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 guard !Task.isCancelled, snapshot.revision >= self.sessionRevision else { continue }
                 self.sessionRevision = snapshot.revision
                 let previousRunID = self.selectedRunID
+                let wasFollowingLatest = self.selectedRunID == self.runs.first?.id
                 self.taskTitle = snapshot.conversation.title
                 let known = Dictionary(uniqueKeysWithValues: self.messages.map { ($0.id, $0) })
                 let merged = known.merging(
@@ -887,7 +890,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 }
                 self.runs = snapshot.runs
                 self.eventsByRun.merge(snapshot.eventsByRun) { _, newest in newest }
-                if self.selectedRunID.flatMap({ id in
+                if wasFollowingLatest || self.selectedRunID.flatMap({ id in
                     snapshot.runs.first(where: { $0.id == id })
                 }) == nil {
                     self.selectedRunID = snapshot.runs.first?.id
@@ -905,6 +908,9 @@ final class ThreadDetailViewModel: ObservableObject {
                 } ?? false
                 if previousRunID != self.selectedRunID || serviceBecameAvailable {
                     self.startLiveUpdates()
+                } else if self.observedServiceRunID == nil, let run = self.selectedRun {
+                    self.liveStateName = run.state
+                    self.isRunning = !RunStateLocalizer.isTerminal(run.state)
                 }
             }
         }

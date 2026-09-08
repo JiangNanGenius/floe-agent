@@ -530,7 +530,7 @@ private struct CanvasNodeClipboard: Codable {
 }
 
 private enum CanvasNodeCreationSection: String, CaseIterable, Identifiable {
-    case basic, media, creation
+    case creation, basic, media
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -4624,6 +4624,7 @@ struct WorkspaceCanvasView: View {
               let node = document.nodes.first(where: { $0.id == nodeID }) else {
             throw FloeError.notFound(String(localized: "canvas.node_ai.node_missing"))
         }
+        let expectedRevision = store.project.revision
         let references = document.nodes.filter { referenceNodeIDs.contains($0.id) }
         let patch = try await CanvasNodeRefinementService.refine(
             node: node,
@@ -4631,6 +4632,11 @@ struct WorkspaceCanvasView: View {
             instruction: instruction,
             center: environment.conversationCenter
         )
+        try Task.checkCancellation()
+        guard store.selectedDocument?.id == document.id,
+              store.project.revision == expectedRevision else {
+            throw FloeError.validationFailed("画布已发生变化，请根据最新内容重试。")
+        }
         var metadata: [String: String?] = [:]
         var replacementText: String?
         if node.kind == .generationTask {
@@ -4681,6 +4687,7 @@ struct WorkspaceCanvasView: View {
             nodeID: nodeID, text: replacementText,
             metadata: metadata, summary: visibleSummary
         )
+        if let error = store.saveError { throw FloeError.validationFailed(error) }
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         return visibleSummary
     }
@@ -7655,9 +7662,13 @@ private enum CanvasNodeRefinementService {
         instruction: String,
         center: ConversationCenter
     ) async throws -> CanvasNodeRefinementPatch {
-        guard let (provider, model) = center.canvasAssistantProviderAndModel() else {
+        guard let (provider, model) = center.canvasAssistantProviderAndModel(requiresTools: false) else {
             throw FloeError.invalidConfiguration(String(localized: "canvas.node_ai.no_model"))
         }
+        guard node.text.utf8.count <= 96 * 1_024 else {
+            throw FloeError.validationFailed("节点内容过大，请在文件编辑器中分段修改。")
+        }
+        let format = node.metadata["builtinPlugin"] ?? node.kind.rawValue
         var referenceLines = references.prefix(8).map { reference in
             let body = reference.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return "- \(reference.kind.rawValue): \(body.prefix(1_200))"
@@ -7696,13 +7707,16 @@ private enum CanvasNodeRefinementService {
                 You edit exactly one canvas node. You have no tools and must not start any task.
                 Return one strict JSON object with optional fields text, prompt, aspectRatio,
                 resolution, quality, count, durationSeconds, summary. \(generationFields)
+                Content format is \(format). For SVG/HTML, text must contain complete valid markup,
+                preserving its coordinate system, element IDs, styling and untouched content.
+                Never replace markup with prose or Markdown fences. For Markdown preserve Markdown.
                 Preserve useful detail from the current node. summary must be a short user-facing
                 description of what changed, never hidden chain-of-thought.
                 """),
                 (role: "user", content: """
                 Node kind: \(node.kind.rawValue)
                 Current node content:
-                \(node.text.prefix(8_000))
+                \(node.text)
 
                 Current task configuration:
                 \(metadata.isEmpty ? "none" : metadata)
@@ -7725,7 +7739,7 @@ private enum CanvasNodeRefinementService {
         ) {
             switch event {
             case .textDelta(let delta):
-                guard output.utf8.count + delta.text.utf8.count <= 32 * 1_024 else {
+                guard output.utf8.count + delta.text.utf8.count <= 128 * 1_024 else {
                     throw FloeError.validationFailed(String(localized: "canvas.node_ai.response_too_large"))
                 }
                 output += delta.text

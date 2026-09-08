@@ -227,3 +227,34 @@ struct JavaScriptEngineTests {
         #expect(resultJSON == nil)
     }
 }
+
+#if canImport(JavaScriptCore)
+import JavaScriptCore
+
+@Suite("FloeExecution.BundledJavaScriptPackages")
+struct BundledJavaScriptPackageTests {
+    @Test("All production packages load together, UUID has secure entropy, and PDF remains usable")
+    func allPackages() throws {
+        let context = try #require(JSContext())
+        var errors: [String] = []
+        context.exceptionHandler = { _, value in errors.append(value?.toString() ?? "unknown") }
+        let directory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("FloeApp/Resources/js-packages")
+        var loaded = 0
+        JSPackages.inject(into: context) { package in
+            let source = try? String(contentsOf: directory.appendingPathComponent(package.resourceName + ".js"), encoding: .utf8)
+            if source != nil { loaded += 1 }
+            return source
+        }
+        #expect(loaded == JSPackages.preInstalled.count)
+        #expect(errors.isEmpty, "Package injection failed: \(errors)")
+        #expect(context.evaluateScript("uuid.validate(uuid.v4()) && uuid.version(uuid.v4()) === 4")?.toBool() == true)
+        #expect(context.evaluateScript("typeof PDFLib.PDFDocument.load === 'function'")?.toBool() == true)
+        context.evaluateScript("var pdfCreated = false; PDFLib.PDFDocument.create().then(function(doc) { doc.addPage(); return doc.save(); }).then(function(bytes) { pdfCreated = bytes.length > 0; });")
+        #expect(context.evaluateScript("pdfCreated")?.toBool() == true)
+        #expect(context.evaluateScript("typeof require === 'undefined' && typeof exports === 'undefined'")?.toBool() == true)
+        #expect(errors.isEmpty)
+    }
+}
+#endif

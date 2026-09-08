@@ -13,6 +13,36 @@ import FloePersistence
 
 @Suite("FloeApp.ThreadTimeline")
 struct ThreadTimelineTests {
+    @MainActor @Test("A visible session recovers a durable change without a navigation refresh")
+    func recoversMissedNotification() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let center = environment.conversationCenter
+        let conversation = try await center.createConversation(title: "Before")
+        let stream = center.sessionEvents(conversationID: conversation.id)
+        var observedTitle = ""
+        let consumer = Task { @MainActor in
+            for await snapshot in stream {
+                observedTitle = snapshot.conversation.title
+                if Task.isCancelled { break }
+            }
+        }
+        defer { consumer.cancel() }
+        let initialDeadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while observedTitle != "Before", ContinuousClock.now < initialDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(observedTitle == "Before")
+        // Deliberately bypass the center publisher, as a missed notification
+        // or a different scene/store writer would do.
+        try await environment.conversationStore.renameConversation(id: conversation.id, title: "After")
+        let deadline = ContinuousClock.now.advanced(by: .seconds(6))
+        while observedTitle != "After", ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(observedTitle == "After")
+    }
+
     @MainActor @Test("Sidebar attention states never masquerade as running or completed")
     func sidebarAttentionStates() {
         for state in ["failed", "recoveryFailed", "interrupted", "paused", "checkpointed", "blocked", "noProgress", "budgetLimited", "truncated", "waitingApproval", "waitingUser"] {

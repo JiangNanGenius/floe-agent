@@ -1,6 +1,7 @@
 // FloeDocuments — bounded native Office Open XML inspection and editing.
 
 import Foundation
+import Crypto
 import ZIPFoundation
 import FloeCore
 
@@ -36,17 +37,20 @@ public struct OfficeDocumentSnapshot: Codable, Sendable, Equatable {
     public var fields: [OfficeEditableField]
     public var packageEntries: Int
     public var packageBytes: Int64
+    public var sha256: String?
 
     public init(
         kind: OfficeDocumentKind,
         fields: [OfficeEditableField],
         packageEntries: Int,
-        packageBytes: Int64
+        packageBytes: Int64,
+        sha256: String? = nil
     ) {
         self.kind = kind
         self.fields = fields
         self.packageEntries = packageEntries
         self.packageBytes = packageBytes
+        self.sha256 = sha256
     }
 }
 
@@ -60,6 +64,8 @@ public enum OfficeDocumentError: LocalizedError, Sendable {
     case invalidXML(String)
     case unknownField(String)
     case emptyDocument
+    case revisionConflict
+    case verificationFailed
 
     public var errorDescription: String? {
         switch self {
@@ -71,6 +77,8 @@ public enum OfficeDocumentError: LocalizedError, Sendable {
         case .missingEntry(let path): "Office package is missing \(path)"
         case .invalidXML(let path): "Office package contains invalid XML in \(path)"
         case .unknownField(let field): "Office edit refers to an unknown field: \(field)"
+        case .revisionConflict: "Office document changed since it was read. Reload before saving."
+        case .verificationFailed: "Office edits did not survive reopening; the original file was preserved."
         case .emptyDocument: "Office document has no editable text or cells"
         }
     }
@@ -80,6 +88,7 @@ public enum OfficeDocumentError: LocalizedError, Sendable {
 /// It rewrites only selected XML members and streams every other archive member
 /// unchanged into a new atomic package, preserving themes, media and relations.
 public enum OfficeDocumentService {
+    private static let updateLock = NSLock()
     private static let maximumArchiveBytes: Int64 = 128 * 1_024 * 1_024
     private static let maximumEntries = 4_096
     private static let maximumMemberBytes: UInt32 = 64 * 1_024 * 1_024
@@ -95,6 +104,7 @@ public enum OfficeDocumentService {
         guard Int64(values.fileSize ?? 0) <= maximumArchiveBytes else {
             throw OfficeDocumentError.packageTooLarge
         }
+        let sourceDigest = try digest(url)
         let package = try OfficeArchive(url: url, maximumEntries: maximumEntries)
         var fields: [OfficeEditableField] = []
         switch kind {
@@ -162,11 +172,13 @@ public enum OfficeDocumentService {
         if fields.count > maximumFields {
             fields = Array(fields.prefix(maximumFields))
         }
+        guard try digest(url) == sourceDigest else { throw OfficeDocumentError.revisionConflict }
         return OfficeDocumentSnapshot(
             kind: kind,
             fields: fields,
             packageEntries: package.paths.count,
-            packageBytes: Int64(values.fileSize ?? 0)
+            packageBytes: Int64(values.fileSize ?? 0),
+            sha256: sourceDigest
         )
     }
 
@@ -176,9 +188,15 @@ public enum OfficeDocumentService {
     public static func update(
         sourceURL: URL,
         outputURL: URL? = nil,
-        updates: [String: String]
+        updates: [String: String],
+        expectedSHA256: String? = nil
     ) throws -> OfficeDocumentSnapshot {
+        updateLock.lock()
+        defer { updateLock.unlock() }
         let current = try inspect(url: sourceURL)
+        if let expectedSHA256, current.sha256 != expectedSHA256.lowercased() {
+            throw OfficeDocumentError.revisionConflict
+        }
         let known = Set(current.fields.map(\.id))
         if let unknown = updates.keys.first(where: { !known.contains($0) }) {
             throw OfficeDocumentError.unknownField(unknown)
@@ -209,10 +227,28 @@ public enum OfficeDocumentService {
             to: destination,
             replacements: rewritten,
             maximumMemberBytes: maximumMemberBytes,
-            maximumTotalBytes: 256 * 1_024 * 1_024
+            maximumTotalBytes: 256 * 1_024 * 1_024,
+            verify: { staged in
+                let reopened = try inspect(url: staged)
+                let fields = Dictionary(uniqueKeysWithValues: reopened.fields.map { ($0.id, $0.text) })
+                guard updates.allSatisfy({ (fields[$0.key] ?? "") == $0.value }) else {
+                    throw OfficeDocumentError.verificationFailed
+                }
+                guard try digest(sourceURL) == current.sha256 else {
+                    throw OfficeDocumentError.revisionConflict
+                }
+            }
         )
         return try inspect(url: destination)
     }
+    private static func digest(_ url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hash = SHA256()
+        while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty { hash.update(data: chunk) }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
 }
 
 private struct OfficeArchive {
@@ -260,12 +296,13 @@ private struct OfficeArchive {
         to destination: URL,
         replacements: [String: Data],
         maximumMemberBytes: UInt32,
-        maximumTotalBytes: Int
+        maximumTotalBytes: Int,
+        verify: (URL) throws -> Void
     ) throws {
         let manager = FileManager.default
         try manager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         let temporary = destination.deletingLastPathComponent()
-            .appendingPathComponent(".floe-office-\(UUID().uuidString).tmp")
+            .appendingPathComponent(".floe-office-\(UUID().uuidString).\(destination.pathExtension)")
         defer { try? manager.removeItem(at: temporary) }
         let output = try Archive(url: temporary, accessMode: .create)
         var total = 0
@@ -284,6 +321,7 @@ private struct OfficeArchive {
             guard total <= maximumTotalBytes else { throw OfficeDocumentError.packageTooLarge }
             try output.addFloeEntry(path: entry.path, data: bytes)
         }
+        try verify(temporary)
         if manager.fileExists(atPath: destination.path) {
             _ = try manager.replaceItemAt(destination, withItemAt: temporary)
         } else {

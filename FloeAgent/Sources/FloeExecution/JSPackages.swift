@@ -10,6 +10,7 @@ import Foundation
 
 #if canImport(JavaScriptCore)
 import JavaScriptCore
+import Security
 #endif
 
 /// A pre-installed JS package: name, global variable it exposes, and the
@@ -52,7 +53,33 @@ public enum JSPackages {
     /// Injects all pre-installed packages into a JSContext.
     /// Each package's source is evaluated, and its global name is bound.
     #if canImport(JavaScriptCore)
-    public static func inject(into context: JSContext) {
+    public static func inject(
+        into context: JSContext,
+        sourceProvider: (JSPackage) -> String? = { source(for: $0) }
+    ) {
+        // UUID's browser build needs secure entropy, not Node's module system.
+        // Expose only a bounded byte source; no native objects cross the bridge.
+        let randomBytes: @convention(block) (Int) -> [UInt8]? = { count in
+            guard (0...65_536).contains(count) else { return nil }
+            var bytes = [UInt8](repeating: 0, count: count)
+            guard count > 0 else { return bytes }
+            let status = bytes.withUnsafeMutableBytes {
+                SecRandomCopyBytes(kSecRandomDefault, count, $0.baseAddress!)
+            }
+            return status == errSecSuccess ? bytes : nil
+        }
+        context.setObject(randomBytes, forKeyedSubscript: "__floeRandomBytes" as NSString)
+        context.evaluateScript("""
+            var crypto = { getRandomValues: function(array) {
+                if (!(array instanceof Uint8Array) || array.length > 65536) {
+                    throw new TypeError('Expected a Uint8Array of at most 65536 bytes');
+                }
+                var bytes = __floeRandomBytes(array.length);
+                if (!bytes) throw new Error('Secure randomness unavailable');
+                array.set(bytes);
+                return array;
+            }};
+            """)
         // JavaScriptCore has no event-loop timers. pdf-lib (and some other
         // libraries) reference setTimeout in otherwise microtask-driven code
         // paths, so provide a microtask-backed shim before any package runs.
@@ -65,7 +92,7 @@ public enum JSPackages {
             }
             """)
         for package in preInstalled {
-            guard let source = source(for: package) else { continue }
+            guard let source = sourceProvider(package) else { continue }
             context.evaluateScript(source)
         }
     }

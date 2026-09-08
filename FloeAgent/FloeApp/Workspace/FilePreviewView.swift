@@ -29,6 +29,7 @@ struct FilePreviewView: View {
     var allowsIDEExpansion = true
 
     @State private var content: FileContent?
+    @State private var pdfURL: URL?
     @State private var loadError: String?
     @State private var isIDEPresented = false
     @State private var isOfficeEditorPresented = false
@@ -43,9 +44,16 @@ struct FilePreviewView: View {
                 } description: {
                     Text(loadError)
                 }
+            } else if let pdfURL {
+                InlinePDFReader(url: pdfURL, validateRead: {
+                    guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
+                    let resolved = try service.guardResolver.resolve(relativePath)
+                    guard resolved.standardizedFileURL == pdfURL.standardizedFileURL else { throw CocoaError(.fileReadNoPermission) }
+                    try service.guardResolver.assertReadableSize(resolved)
+                }).id(pdfURL)
             } else if let content {
                 contentView(content)
-            } else if !isTextual {
+            } else if !isTextual && (!isPDF || center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath)) {
                 binaryPlaceholder
             } else {
                 ProgressView("inspector.preview.loading")
@@ -76,7 +84,7 @@ struct FilePreviewView: View {
                 }
             }
         }
-        .alert("无法预览网页", isPresented: Binding(
+        .alert("无法预览文件", isPresented: Binding(
             get: { previewError != nil },
             set: { if !$0 { previewError = nil } }
         )) { Button("好", role: .cancel) {} } message: {
@@ -86,6 +94,10 @@ struct FilePreviewView: View {
 
     private var fileName: String {
         (relativePath as NSString).lastPathComponent
+    }
+
+    private var isPDF: Bool {
+        (relativePath as NSString).pathExtension.lowercased() == "pdf"
     }
 
     private var isMarkdown: Bool {
@@ -231,6 +243,7 @@ struct FilePreviewView: View {
     private func load() async {
         loadError = nil
         content = nil
+        pdfURL = nil
         if center.fileService == nil, let conversationID {
             do {
                 try await center.openTaskWorkspace(conversationID: conversationID)
@@ -241,6 +254,16 @@ struct FilePreviewView: View {
         }
         guard center.fileService != nil else {
             loadError = String(localized: "inspector.no_workspace")
+            return
+        }
+        if isPDF, !center.isCloudWorkspacePath(relativePath), !center.isNetworkWorkspacePath(relativePath),
+           let service = center.fileService {
+            do {
+                let url = try service.guardResolver.resolve(relativePath)
+                try service.guardResolver.assertReadableSize(url)
+                pdfURL = url
+                await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
+            } catch { loadError = error.localizedDescription }
             return
         }
         guard isTextual else {
@@ -261,8 +284,12 @@ struct FilePreviewView: View {
     }
 
     private func presentQuickLook() {
-        guard let root = center.currentRootURL else { return }
-        quickLookURL = root.appendingPathComponent(relativePath)
+        do {
+            guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
+            let url = try service.guardResolver.resolve(relativePath)
+            try service.guardResolver.assertReadableSize(url)
+            quickLookURL = url
+        } catch { previewError = error.localizedDescription }
     }
 
     private func startWebPreview() {

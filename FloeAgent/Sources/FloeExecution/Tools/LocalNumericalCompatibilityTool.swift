@@ -27,7 +27,7 @@ public struct LocalNumericalCompatibilityTool: AgentTool {
 
     public static let name = "exec.compatEvaluator"
     public static let toolDescription =
-        "Run bounded numerical and statistical code locally with common R, Stata-compatible, or MATLAB/Octave-compatible syntax. This is Floe's own compatibility evaluator, not GNU R, proprietary Stata, GNU Octave, or MathWorks MATLAB. It supports scalar/vector/matrix assignment and arithmetic; descriptive statistics, quantiles, covariance/correlation and simple OLS regression; and c, seq, matrix, zeros, ones, eye, linspace and common math functions. Stata-compatible commands include generate/scalar, display, summarize, correlate and one-predictor regress. summarize returns [n, mean, sample_sd, min, max]; regress returns [intercept, slope, r_squared, n]. Matrix literals use commas and semicolons, for example [1,2;3,4]. It has no file, network, package, process, dynamic-code, or native-extension access. Use configured SSH/cloud execution with a licensed Stata installation when full Stata or PyStata compatibility is required."
+        "Run bounded numerical and statistical code locally with common R, Stata-compatible, or MATLAB/Octave-compatible syntax. This is Floe's own compatibility evaluator, not GNU R, proprietary Stata, GNU Octave, or MathWorks MATLAB. It supports scalar/vector/matrix assignment and arithmetic; descriptive statistics, quantiles, covariance/correlation and simple OLS regression; and c, seq, matrix, zeros, ones, eye, linspace and common math functions. Stata-compatible commands include clear (resets variables in this invocation), generate/scalar, display, summarize, correlate and one-predictor regress. summarize returns [n, mean, sample_sd, min, max]; regress returns [intercept, slope, r_squared, n]. Matrix literals use commas and semicolons, for example [1,2;3,4]. It has no file, network, package, process, dynamic-code, or native-extension access. Use configured SSH/cloud execution with a licensed Stata installation when full Stata or PyStata compatibility is required."
     public static let parametersJSON = #"{"type":"object","properties":{"dialect":{"type":"string","enum":["r","stataCompatible","matlabCompatible"]},"script":{"type":"string","description":"Visible numerical/statistical source, max 64 KiB"},"inputJSON":{"type":"string","description":"Optional JSON number or rectangular numeric array exposed as input"}},"required":["dialect","script"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.executesLocalCode]
     public static let isSideEffecting = true
@@ -65,6 +65,12 @@ public struct LocalNumericalCompatibilityTool: AgentTool {
             var budget = NumericalBudget()
             for statement in statements {
                 try context.cancellation.throwIfCancelled()
+                if args.dialect == .stataCompatible,
+                   statement.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "clear" {
+                    variables.removeAll()
+                    lines.append("cleared")
+                    continue
+                }
                 let (name, expression) = NumericalProgram.assignment(in: statement)
                 var parser = try NumericalParser(source: expression, variables: variables, budget: budget)
                 let value = try parser.parse()

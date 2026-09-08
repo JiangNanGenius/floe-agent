@@ -50,6 +50,7 @@
 		17FD962AF3A10BB975AEC422 /* _multiarray_umath.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 67584DFEB3C8240E56927B4E /* _multiarray_umath.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		181FE29F9FB53577DB0BF9A8 /* _codecs_tw.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B34EFFB9B7D542730D69B86E /* _codecs_tw.xcframework */; };
 		18DDCDA4799155547B29CFBF /* pandas__libs_tslibs_nattype.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D60F63746F389D3AC1409E9A /* pandas__libs_tslibs_nattype.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		1A3518834841B087FC3D0694 /* ConversationBatchManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4D444391A1A5C38A59A2C54 /* ConversationBatchManagementView.swift */; };
 		1A4BF2A73C745DDF82CE720B /* _codecs_jp.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 0C0EB0E2170C0184EF6D463A /* _codecs_jp.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1A6FCCA07D564C59EC82DBBF /* HostEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34D4C7AAC317C256EEB4AFAD /* HostEditorViewModel.swift */; };
 		1AA6526911DD256899CB8CDA /* RemoteImageTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DBCBE0360D88F15438CA23F /* RemoteImageTools.swift */; };
@@ -87,6 +88,7 @@
 		2CC7C52CAEAD5EEE7E681D83 /* _mt19937.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 28F517BE646F9BAC96B3F919 /* _mt19937.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		2D1426A11BF0547700CA8D5D /* iPadBackgroundPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB400574B41454793B7461C2 /* iPadBackgroundPolicy.swift */; };
 		2EB4F0026F6D3C7036234EB2 /* NetworkStatusMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 760ECB0E6B01EA7AC99B8744 /* NetworkStatusMonitor.swift */; };
+		2F33FCB87D1BFBB9E410B89B /* AllWorkspacesFilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E7484DF188E2D750D6F5E1D /* AllWorkspacesFilesView.swift */; };
 		2F85B4ACAE9199A7CAEC5490 /* _imagingmorph.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A4999F0E9E0D0A321084F08D /* _imagingmorph.xcframework */; };
 		2FFE13E6D27462B4E600BCFA /* ConversationSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37ADB29366F2D423D0507E05 /* ConversationSearchView.swift */; };
 		30EECC8CBB688887DC731E91 /* pandas__libs_pandas_datetime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5B5E8E25AC8A39F499A6A9BA /* pandas__libs_pandas_datetime.xcframework */; };
@@ -397,6 +399,7 @@
 		D8713A74AF51E2A5C7DA28E0 /* pandas__libs_reshape.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 82CCECA26179BEA9F020C01A /* pandas__libs_reshape.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D8A553B231A0983D6DEB62BA /* pandas__libs_byteswap.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 474C47D4C0CB047A83CB38F7 /* pandas__libs_byteswap.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D8C233E39D92D670E0B03EC3 /* pandas__libs_tslibs_base.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1DD0388E916D7E0F76DFC992 /* pandas__libs_tslibs_base.xcframework */; };
+		D940A535577FE25640F5F5E5 /* InlinePDFReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50D138AAA4EB06E0A19CE9B5 /* InlinePDFReader.swift */; };
 		D9D35CE28869C9611427EF52 /* _queue.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6388FC90DDE87F9FF1B56161 /* _queue.xcframework */; };
 		DAC729F1D31E8EB8411E4426 /* _codecs_kr.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1B58E0C473AABBF23BEBD6E0 /* _codecs_kr.xcframework */; };
 		DAD71D8495F4365B9D5D3610 /* _imagingmorph.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A4999F0E9E0D0A321084F08D /* _imagingmorph.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -748,6 +751,7 @@
 		4D024B3D67773355FF600C6D /* pandas__libs_tslibs_vectorized.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_vectorized.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_vectorized.xcframework; sourceTree = "<group>"; };
 		5043AD7DE6FDAD5AD4A95D1A /* GitHubSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubSettingsView.swift; sourceTree = "<group>"; };
 		50BA473C0A70CA3815EF338B /* SettingsRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsRootView.swift; sourceTree = "<group>"; };
+		50D138AAA4EB06E0A19CE9B5 /* InlinePDFReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlinePDFReader.swift; sourceTree = "<group>"; };
 		50D3F739AE81623062A9C5C9 /* ConversationCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationCenter.swift; sourceTree = "<group>"; };
 		515EFE93A7878B464ECA3848 /* FeedbackUploadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedbackUploadService.swift; sourceTree = "<group>"; };
 		51AC2F5A4C03ECDAA0FD1C3D /* _philox.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _philox.xcframework; path = Vendor/PythonExtensions/_philox.xcframework; sourceTree = "<group>"; };
@@ -852,6 +856,7 @@
 		9B923E6C40B9B0CB6BE969E7 /* mtrand.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = mtrand.xcframework; path = Vendor/PythonExtensions/mtrand.xcframework; sourceTree = "<group>"; };
 		9D3F41AA3EFDF6F065F64FBB /* ImageEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageEditorViewModel.swift; sourceTree = "<group>"; };
 		9D8FAEF1503644BD831B03F7 /* CameraPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPickerView.swift; sourceTree = "<group>"; };
+		9E7484DF188E2D750D6F5E1D /* AllWorkspacesFilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AllWorkspacesFilesView.swift; sourceTree = "<group>"; };
 		9ED88DC18A9D3D6ABA16DE7E /* ModelEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelEditorView.swift; sourceTree = "<group>"; };
 		9F5F7936DBA1DE84D33B0E8D /* pandas__libs_join.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_join.xcframework; path = Vendor/PythonExtensions/pandas__libs_join.xcframework; sourceTree = "<group>"; };
 		9F88E75D475229D4424D2FC1 /* ReasoningBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReasoningBlockView.swift; sourceTree = "<group>"; };
@@ -943,6 +948,7 @@
 		E25201278D78378B37FF1BBD /* binascii.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = binascii.xcframework; path = Vendor/PythonExtensions/binascii.xcframework; sourceTree = "<group>"; };
 		E388FA201B460E867D612C38 /* FloeScreenShare.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FloeScreenShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		E3EF97C2442DD744CEB320A0 /* PlatformBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformBackgroundPolicy.swift; sourceTree = "<group>"; };
+		E4D444391A1A5C38A59A2C54 /* ConversationBatchManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationBatchManagementView.swift; sourceTree = "<group>"; };
 		E9C72C2A24D117C574C0444C /* BrowserSessionCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserSessionCenter.swift; sourceTree = "<group>"; };
 		EA10AC479B03C7D998AC448B /* ThreadDetailViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadDetailViewModel.swift; sourceTree = "<group>"; };
 		EB400574B41454793B7461C2 /* iPadBackgroundPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iPadBackgroundPolicy.swift; sourceTree = "<group>"; };
@@ -1251,6 +1257,7 @@
 				A421102C6F73CB0DCC678535 /* FilePreviewView.swift */,
 				42E25ED52EAD56B5234BCA43 /* FileTreeView.swift */,
 				86BFC8770B049F008476B6C8 /* FileTreeViewModel.swift */,
+				50D138AAA4EB06E0A19CE9B5 /* InlinePDFReader.swift */,
 				D196A6882F00C663F4186CF1 /* OfficeDocumentEditorView.swift */,
 				FC62543B8E16BD9E21CD6C00 /* SourceControlCenter.swift */,
 				1BED50B2B524010095D18E24 /* SourceControlView.swift */,
@@ -1353,6 +1360,7 @@
 			isa = PBXGroup;
 			children = (
 				105C43DC4C517D5A6A445B8B /* AgentPermissionsView.swift */,
+				9E7484DF188E2D750D6F5E1D /* AllWorkspacesFilesView.swift */,
 				3C8A30D0D7D561C3E9BE4EC0 /* AppleCapabilitiesSettingsView.swift */,
 				6856FC02F7D3AA8406FFAE9D /* AuxiliarySettingsView.swift */,
 				AE6C97DCAC2474410B4480C7 /* BackgroundExecutionSettingsView.swift */,
@@ -1469,6 +1477,7 @@
 			children = (
 				8B2CC51635FB2F20F5C41CA1 /* ApprovalCardView.swift */,
 				31D98DFED3D114A699F77361 /* AssistantMessageView.swift */,
+				E4D444391A1A5C38A59A2C54 /* ConversationBatchManagementView.swift */,
 				DA165A2C7BD607DB6F26AD7B /* ConversationListView.swift */,
 				66624FE4F8480041F7602716 /* ConversationListViewModel.swift */,
 				37ADB29366F2D423D0507E05 /* ConversationSearchView.swift */,
@@ -2054,6 +2063,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				32180DBBC109A9CEFC4C00A5 /* AgentPermissionsView.swift in Sources */,
+				2F33FCB87D1BFBB9E410B89B /* AllWorkspacesFilesView.swift in Sources */,
 				8F40177268113AACE1405851 /* AppDestination.swift in Sources */,
 				C5EDFDCD3E6C6D784D9F4ECC /* AppEnvironment.swift in Sources */,
 				7B44A496EC3A28601170695B /* AppRouter.swift in Sources */,
@@ -2080,6 +2090,7 @@
 				5F7840F49827B094F2E4E771 /* CanvasAgentTools.swift in Sources */,
 				51013E3CE31A8318EDF57DA7 /* CanvasSavedImageBatchCommitPlanner.swift in Sources */,
 				E835F7180E59CE5B63D9A4A8 /* CodeBlockView.swift in Sources */,
+				1A3518834841B087FC3D0694 /* ConversationBatchManagementView.swift in Sources */,
 				A07E797D244A170430DEF61B /* ConversationCenter.swift in Sources */,
 				B30C1248DF0B9FE004549E3F /* ConversationListView.swift in Sources */,
 				51FC0B9E3FDE98C725F6BA0E /* ConversationListViewModel.swift in Sources */,
@@ -2124,6 +2135,7 @@
 				EF38B4329039226E8A757EE4 /* HostListViewModel.swift in Sources */,
 				08CF2008E624ABD269C22C9F /* ImageEditorView.swift in Sources */,
 				4144F3019B808B95513380EF /* ImageEditorViewModel.swift in Sources */,
+				D940A535577FE25640F5F5E5 /* InlinePDFReader.swift in Sources */,
 				C0D555524FD4416C3D594C9D /* LocalModelsSettingsView.swift in Sources */,
 				E2A306D0563A8BB30FA8E380 /* LocalPreviewServer.swift in Sources */,
 				C7DCF8C350C6328A24F07225 /* LocalSkillCreator.swift in Sources */,

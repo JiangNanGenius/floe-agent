@@ -19,14 +19,14 @@ struct FilesSettingsView: View {
         Form {
             Section {
                 NavigationLink {
-                    FilesView(center: center.environment.filesCenter)
+                    AllWorkspacesFilesView(environment: center.environment)
                 } label: {
                     Label("浏览与管理文件", systemImage: "folder")
-                }
+                }.accessibilityIdentifier("settings.files.manage")
             } header: {
                 Text("文件管理")
             } footer: {
-                Text("打开、预览、编辑和移除最近文件；空间统计、归档与缓存清理仍集中在“数据管理”。")
+                Text("按项目或聊天查找所有工作区，浏览、预览和管理其中的文件，包含已归档聊天。")
             }
 
             Section("settings.files.workspaces") {
