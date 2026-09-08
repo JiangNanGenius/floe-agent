@@ -16,6 +16,7 @@ HOST = DEFAULT_LOCK.parent / "FloeOfficeNative"
 NAME = "FloeOfficeNative"
 EXCLUDED_SOURCES = {"main.m", "AppDelegate.mm", "SceneDelegate.mm",
     "DocumentBrowserViewController.mm", "TemplateCollectionViewController.mm", "TemplateSectionHeaderView.m"}
+SYSTEM_FRAMEWORKS = ('UIKit', 'Foundation', 'CoreFoundation', 'CoreGraphics', 'CoreText', 'Security')
 
 
 def framework_project(project, host_directory):
@@ -67,6 +68,11 @@ def framework_project(project, host_directory):
             MACH_O_TYPE='mh_dylib', DEFINES_MODULE='YES', CLANG_ENABLE_MODULES='YES',
             SKIP_INSTALL='NO', INSTALL_PATH='$(LOCAL_LIBRARY_DIR)/Frameworks',
             DYLIB_INSTALL_NAME_BASE='@rpath', APPLICATION_EXTENSION_API_ONLY='NO')
+        # A framework does not inherit the application product's implicit UIKit
+        # linkage. Static engine archives also require their own Apple symbols.
+        flags = settings['OTHER_LDFLAGS']
+        for framework in SYSTEM_FRAMEWORKS:
+            flags.extend(['-framework', framework])
     return project
 
 
@@ -129,6 +135,8 @@ def build_host(root, output, *, build=True):
             raise ValueError('Framework omitted a required engine resource: ' + required)
     report['runtimeResourceSHA256'] = {str(path.relative_to(resources)): digest(path)
         for path in sorted(resources.rglob('*')) if path.is_file()}
+    report['runtimeResourceDirectories'] = [str(path.relative_to(resources))
+        for path in sorted(resources.rglob('*')) if path.is_dir()]
     report['stage'] = 'host-packaged'
     save()
     sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()

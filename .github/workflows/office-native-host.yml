@@ -36,7 +36,7 @@ jobs:
           python3 FloeAgent/scripts/repair_office_embedding_bundle.py \
             "$RUNNER_TEMP/complete-office-inputs/office-engine-ios-arm64.tar.gz" \
             "$RUNNER_TEMP/office-native-bundle"
-      - name: Build Floe runtime and document host with complete native frontend
+      - name: Build Floe native framework with explicit Apple dependencies
         run: |
           python3 FloeAgent/scripts/build_office_native_host.py \
             "$RUNNER_TEMP/office-native-bundle" "$RUNNER_TEMP/office-native-host"

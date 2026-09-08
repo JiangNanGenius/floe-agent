@@ -2,7 +2,7 @@
 import copy
 from pathlib import Path
 import unittest
-from build_office_native_host import EXCLUDED_SOURCES, framework_project
+from build_office_native_host import EXCLUDED_SOURCES, SYSTEM_FRAMEWORKS, framework_project
 
 
 class NativeHostProjectTests(unittest.TestCase):
@@ -40,7 +40,8 @@ class NativeHostProjectTests(unittest.TestCase):
         prepared = framework_project(self.project(), Path('/host'))['objects']
         self.assertEqual(prepared['resources']['files'], ['resource-' + name for name in ['rc', 'program', 'share', 'cool.html', 'bundle.js']])
         settings = prepared['release']['buildSettings']
-        self.assertEqual(settings['OTHER_LDFLAGS'], ['-filelist', 'complete.list'])
+        self.assertEqual(settings['OTHER_LDFLAGS'], ['-filelist', 'complete.list']
+            + [flag for name in SYSTEM_FRAMEWORKS for flag in ['-framework', name]])
         self.assertEqual(settings['HEADER_SEARCH_PATHS'], ['qualified/engine'])
         self.assertNotIn('CODE_SIGN_ENTITLEMENTS', settings)
         self.assertEqual(settings['MACH_O_TYPE'], 'mh_dylib')
