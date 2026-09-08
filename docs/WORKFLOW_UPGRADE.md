@@ -1,6 +1,6 @@
 # Editing and workflow upgrade / 编辑与工作流升级
 
-Status: in development on `codex/office-workflow-upgrade`, based on Floe Agent 1.5.0 (131). This is not a release announcement. 更新范围覆盖完整编辑能力、插件与文件管理、画布和任务反馈；尚未完成全部验收。
+Status: release candidate 1.5.3 (134), immutable source `5f9eeec8d80c6af74816391c49e0248757c8f239`. [Release verification](RELEASE_VERIFICATION_1.5.3.md) tracks installation availability separately. 更新范围覆盖完整编辑能力、插件与文件管理、画布和任务反馈；本轮大计划尚未完成全部验收。
 
 [English guide](USER_GUIDE.md) · [中文使用指南](USER_GUIDE.zh-CN.md) · [Architecture](ARCHITECTURE_OVERVIEW.md)
 
@@ -8,8 +8,8 @@ Status: in development on `codex/office-workflow-upgrade`, based on Floe Agent 1
 
 | Area | Implemented in this branch | Still required |
 | --- | --- | --- |
-| File conversion | Offline path-based Markdown, DOCX, HTML, RTF and text conversion; separate PDF conversion; local/embedded images, source preservation and bounded status replies | Final round-trip and pagination verification; complex Word layout and scanned-PDF OCR remain explicit limits |
-| Office: Word, Excel, PowerPoint | Existing local creation/basic editing; content digest, stale-write rejection, staged save and reopened-field verification | Qualified offline engine, full formatting/layout/backgrounds, charts, embedded attachments, formula recalculation, object positioning, masters and advanced presentation editing; cross-client round trips |
+| File conversion | Offline path-based Markdown, DOCX, HTML, RTF and text conversion; separate PDF conversion; local/embedded images, source preservation and bounded status replies | Device verification; complex Word layout and scanned-PDF OCR remain explicit limits. Local round trips and the 48,122-character/42-page integrity test passed |
+| Office: Word, Excel, PowerPoint | Word/workbook creation and exact existing-text/cell updates; existing PowerPoint slide/note text updates; content digest, stale-write rejection, staged save and reopened-field verification | Qualified offline engine, PowerPoint creation, full formatting/layout/backgrounds, charts, embedded attachments, formula recalculation, object positioning, masters and advanced presentation editing; cross-client round trips |
 | PDF, separate tool group | Inline reader, shared fullscreen reading session, changed-file reload, password/error handling; corrected JavaScript package loading for forms | Complete editing matrix, large files, real-device fullscreen/reading-position verification |
 | Plugin marketplace | Discover/Installed; official installation, persistent uninstall/reinstall, enablement, import and connector entries; version/update controls; verified catalog and expanded-permission review | Broader catalog coverage and live installation/update connectivity matrix |
 | Task navigation | Initial bottom positioning, live follow while at bottom, explicit historical-run selection retained | Long-history, search, keyboard and device lifecycle matrix |
@@ -40,13 +40,16 @@ PDF reuses PDFKit and the existing pdf-lib tool path. File browsing, import/expo
 
 ## Verification evidence / 验证记录
 
+- Release source `5f9eeec`: [full CI passed](https://github.com/JiangNanGenius/floe-agent/actions/runs/34233559888), with 1,007 SwiftPM test executions, 122/122 app regressions, Linux and App Store SDK builds, secret scan and 152-dependency license inventory. This includes the new converters and corrected signed plugin catalog. Apple upload and tester visibility are tracked separately.
+
 - Source `535902c`: [full CI passed](https://github.com/JiangNanGenius/floe-agent/actions/runs/34210137026), with 999 SwiftPM test executions, 111 app regression tests, Linux build and the App Store SDK compatibility build. This evidence applies to that source revision.
-- Source `0f2c7ec`: [full CI passed](https://github.com/JiangNanGenius/floe-agent/actions/runs/34213618033), including the later cleanup, plugin lifecycle and contextual selection changes. Subsequent iPhone and documentation edits still need their own validation.
-- Source `6c79dd8`: [full CI passed](https://github.com/JiangNanGenius/floe-agent/actions/runs/34219181630), including iPhone canvas changes, app regressions, SwiftPM tests, Linux compilation and App Store SDK compatibility. The subsequent long-text changes require their own CI result.
-- Latest local checks: 32 app regression tests across canvas contracts, touch geometry and plugin lifecycle passed; iPhone portrait/landscape canvas and iPad PDF round-trip navigation UI tests passed. The new local-only CloudKit SwiftPM test could not run locally because the Metal compiler is missing; cloud CI installs that toolchain.
-- Subsequent focused checks: durable cleanup/ownership, independent network registries, plugin uninstall/reinstall, long-press batch selection, workspace-manager navigation and canvas contracts. Latest source requires its own CI result.
+- Source `0f2c7ec`: [full CI passed](https://github.com/JiangNanGenius/floe-agent/actions/runs/34213618033), including the later cleanup, plugin lifecycle and contextual selection changes. Later edits are covered by the release-source CI result above.
+- Source `6c79dd8`: [full CI passed](https://github.com/JiangNanGenius/floe-agent/actions/runs/34219181630), including iPhone canvas changes, app regressions, SwiftPM tests, Linux compilation and App Store SDK compatibility. Later long-text changes are covered by the release-source CI result above.
+- Source `0eaebfe`: [full CI passed](https://github.com/JiangNanGenius/floe-agent/actions/runs/34222601257), including the long-reasoning reader and streaming activity changes.
+- Earlier local checks: 32 app regression tests across canvas contracts, touch geometry and plugin lifecycle passed; iPhone portrait/landscape canvas and iPad PDF round-trip navigation UI tests passed. A local-only CloudKit SwiftPM check was blocked locally by a missing Metal compiler; the current full cloud CI result above is the release gate.
+- Subsequent focused checks: durable cleanup/ownership, independent network registries, plugin uninstall/reinstall, long-press batch selection, workspace-manager navigation and canvas contracts. These changes are covered by the release-source CI result above.
 - iPad simulator screenshots below use test data. iPhone portrait/landscape creation and editing also passed the focused UI test; captures were visually inspected. Physical-device verification remains open.
-- [Current Office qualification run](https://github.com/JiangNanGenius/floe-agent/actions/runs/34212234638): ongoing at the time of this update; no native embedding or advanced editing pass is claimed.
+- [Office qualification run](https://github.com/JiangNanGenius/floe-agent/actions/runs/34212234638): stopped at the disk reserve before app integration. Native embedding and advanced editing remain unfinished.
 
 ## Screenshots / 操作截图
 

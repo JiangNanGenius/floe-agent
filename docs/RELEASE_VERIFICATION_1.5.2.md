@@ -13,7 +13,7 @@ Source: `5acdb0fee97a3459d70a1ac03f1b9c6ab0c47233`; immutable tag `v1.5.2`.
 
 ## Cloud release gates
 
-- [Full CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/34231451506): failed.
+- [Full CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/34231451506): cancelled after the release test failure and superseded by 1.5.3; its Linux job passed.
 - [Release build, SDK checks, signing and upload](https://github.com/JiangNanGenius/floe-agent/actions/runs/34231451543): failed.
 - Apple processing: not reached; build stopped before upload.
 - Floe QA internal tester visibility: unavailable for this build.
