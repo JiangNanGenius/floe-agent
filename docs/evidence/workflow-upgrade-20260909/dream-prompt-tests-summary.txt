@@ -1,0 +1,24 @@
+Memory/Skill dream input audit — 2026-09-09
+
+SwiftPM: 11 tests in 2 suites passed.
+Command: DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test --package-path FloeAgent --enable-swift-testing --jobs 2 --filter 'DreamPromptInputTests|MemoryDreamTests'
+Log: /tmp/floe-dream-prompt-tests.log
+Six new functional input/citation tests plus five existing memory-review tests.
+
+App integration: 1 test passed, with simulator app build, on final source.
+Test: FloeAppTests/CrashAndFeedbackRegressionTests/memoryDreamPromptIncludesPriorMemoryAudit()
+Result: /tmp/floe-dream-audit-app-final.xcresult
+Log: /tmp/floe-dream-audit-app-final.log
+An earlier filter without trailing () selected zero tests; that run counts only
+as a successful build, not as test evidence. The corrected filter executed one
+test. Repeated executions of this same test are not counted as additional tests.
+
+Checks: bounded auxiliary excerpts including huge combining-character input;
+JSON source/role separation; accurate per-user-message citation; assistant,
+unknown-ID, omitted-middle, joined-boundary, duplicate and oversized citation
+rejection; existing disposition/sensitivity/evidence-hash persistence gates;
+actual app prompt assembly keeps prior memory IDs and update-conflict guidance.
+
+Limits: no real model extraction, semantic fact verification, complete memory
+conflict recall, device performance profile, or entire end-to-end dream service
+cadence/persistence verification. Normal active user task input is unaffected.
