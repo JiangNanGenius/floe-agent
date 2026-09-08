@@ -696,6 +696,7 @@ final class AppEnvironment: ObservableObject {
             await settingsCenter.loadLaunchPreferences()
             await configurationSync.setCredentialStore(credentialStore)
             await credentialVault.drainDeletionQueue()
+            _ = await workspaceCenter.retryPendingLocalCleanup()
             // Replays offline cloud deletion tombstones. The endpoint is
             // idempotent, so launch-time retry is safe after crashes too.
             Task { [cloudWorkspaceCleanupQueue] in

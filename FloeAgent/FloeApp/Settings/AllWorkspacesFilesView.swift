@@ -8,6 +8,8 @@ struct AllWorkspacesFilesView: View {
     @State private var conversations: [UUID: ConversationRecord] = [:]
     @State private var query = ""
     @State private var filter = 0
+    @State private var pendingCleanupCount = 0
+    @State private var retryingCleanup = false
 
     init(environment: AppEnvironment) {
         _center = StateObject(wrappedValue: WorkspaceCenter(environment: environment, publishesSharedState: false))
@@ -42,6 +44,19 @@ struct AllWorkspacesFilesView: View {
                 Text("聊天").tag(2)
                 Text("已归档").tag(3)
             }.pickerStyle(.segmented)
+            if pendingCleanupCount > 0 {
+                Section {
+                    Text("\(pendingCleanupCount) 个已删除任务的文件尚未清理")
+                    Button("重试清理") {
+                        Task {
+                            retryingCleanup = true
+                            _ = await center.retryPendingLocalCleanup()
+                            await load()
+                            retryingCleanup = false
+                        }
+                    }.disabled(retryingCleanup)
+                }
+            }
             if let error = center.actionError { Text(error).foregroundStyle(.red) }
             ForEach(visible) { workspace in
                 NavigationLink {
@@ -69,6 +84,7 @@ struct AllWorkspacesFilesView: View {
     private func load() async {
         await center.reload()
         do {
+            pendingCleanupCount = try await SQLiteWorkspaceStore(database: center.environment.database).pendingLocalCleanup().count
             let all = try await center.environment.conversationStore.conversations(includeArchived: true)
             conversations = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
         } catch { center.actionError = error.localizedDescription }

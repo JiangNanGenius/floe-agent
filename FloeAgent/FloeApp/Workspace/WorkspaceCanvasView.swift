@@ -1374,6 +1374,9 @@ private final class CanvasDocumentStore: ObservableObject {
     }
 
     func reloadExternalChange() {
+        // A drag or pen stroke owns an in-memory draft until its commit.
+        // Reconciliation must not replace that draft halfway through a gesture.
+        guard !interactiveMutationRecorded else { return }
         do {
             let incoming = try CanvasProjectFileWriter.shared.project(
                 canvasID: project.id,
@@ -3228,13 +3231,16 @@ struct WorkspaceCanvasView: View {
             restoreViewport()
             await store.synchronizeFromCloud(environment.canvasCloudAssetService)
             while !Task.isCancelled {
+                // Notifications are the fast path; disk revision reconciliation
+                // recovers a missed callback without requiring a canvas switch.
+                store.reloadExternalChange()
                 let canvasID = store.project.id
                 if let jobs = try? await MediaGenerationJobStore(database: environment.database)
                     .jobs(canvasID: canvasID) {
                     canvasJobs = jobs
                     store.applyMediaJobs(jobs)
                 }
-                try? await Task.sleep(for: .seconds(5))
+                do { try await Task.sleep(for: .seconds(2)) } catch { break }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .floeCanvasProjectDidChange)) { note in

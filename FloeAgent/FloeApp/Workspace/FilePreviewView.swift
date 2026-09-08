@@ -28,6 +28,7 @@ struct FilePreviewView: View {
     /// Disabled when the preview is already hosted inside WorkspaceIDEView.
     var allowsIDEExpansion = true
 
+    @StateObject private var remotePreview = RemoteFilePreviewCopy()
     @State private var content: FileContent?
     @State private var pdfURL: URL?
     @State private var loadError: String?
@@ -46,6 +47,7 @@ struct FilePreviewView: View {
                 }
             } else if let pdfURL {
                 InlinePDFReader(url: pdfURL, validateRead: {
+                    if remotePreview.url == pdfURL { return }
                     guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
                     let resolved = try service.guardResolver.resolve(relativePath)
                     guard resolved.standardizedFileURL == pdfURL.standardizedFileURL else { throw CocoaError(.fileReadNoPermission) }
@@ -53,7 +55,7 @@ struct FilePreviewView: View {
                 }).id(pdfURL)
             } else if let content {
                 contentView(content)
-            } else if !isTextual && (!isPDF || center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath)) {
+            } else if !isTextual && !isPDF {
                 binaryPlaceholder
             } else {
                 ProgressView("inspector.preview.loading")
@@ -244,6 +246,7 @@ struct FilePreviewView: View {
         loadError = nil
         content = nil
         pdfURL = nil
+        remotePreview.clear()
         if center.fileService == nil, let conversationID {
             do {
                 try await center.openTaskWorkspace(conversationID: conversationID)
@@ -256,12 +259,17 @@ struct FilePreviewView: View {
             loadError = String(localized: "inspector.no_workspace")
             return
         }
-        if isPDF, !center.isCloudWorkspacePath(relativePath), !center.isNetworkWorkspacePath(relativePath),
-           let service = center.fileService {
+        if isPDF, let service = center.fileService {
             do {
-                let url = try service.guardResolver.resolve(relativePath)
-                try service.guardResolver.assertReadableSize(url)
-                pdfURL = url
+                if center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) {
+                    let bytes = try await center.readRemotePreview(relativePath: relativePath)
+                    try Task.checkCancellation()
+                    pdfURL = try remotePreview.store(bytes, fileName: fileName)
+                } else {
+                    let url = try service.guardResolver.resolve(relativePath)
+                    try service.guardResolver.assertReadableSize(url)
+                    pdfURL = url
+                }
                 await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
             } catch { loadError = error.localizedDescription }
             return
@@ -284,12 +292,21 @@ struct FilePreviewView: View {
     }
 
     private func presentQuickLook() {
-        do {
-            guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
-            let url = try service.guardResolver.resolve(relativePath)
-            try service.guardResolver.assertReadableSize(url)
-            quickLookURL = url
-        } catch { previewError = error.localizedDescription }
+        Task {
+            do {
+                if let pdfURL { quickLookURL = pdfURL; return }
+                if center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) {
+                    let bytes = try await center.readRemotePreview(relativePath: relativePath)
+                    quickLookURL = try remotePreview.store(bytes, fileName: fileName)
+                } else {
+                    guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
+                    let url = try service.guardResolver.resolve(relativePath)
+                    try service.guardResolver.assertReadableSize(url)
+                    quickLookURL = url
+                }
+            } catch is CancellationError {
+            } catch { previewError = error.localizedDescription }
+        }
     }
 
     private func startWebPreview() {
@@ -307,6 +324,32 @@ struct FilePreviewView: View {
             }
         }
     }
+}
+
+/// Lives through fullscreen/sheet presentation; never removes files merely
+/// because SwiftUI temporarily hides the parent view.
+final class RemoteFilePreviewCopy: ObservableObject {
+    private var directory: URL?
+    private(set) var url: URL?
+
+    func store(_ bytes: Data, fileName: String) throws -> URL {
+        clear()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("floe-preview-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        directory = root
+        let target = root.appendingPathComponent((fileName as NSString).lastPathComponent)
+        try bytes.write(to: target, options: .atomic)
+        url = target
+        return target
+    }
+
+    func clear() {
+        if let directory { try? FileManager.default.removeItem(at: directory) }
+        directory = nil
+        url = nil
+    }
+
+    deinit { if let directory { try? FileManager.default.removeItem(at: directory) } }
 }
 
 extension URL: @retroactive Identifiable {

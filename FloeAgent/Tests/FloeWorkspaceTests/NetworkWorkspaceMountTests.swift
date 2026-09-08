@@ -4,6 +4,23 @@ import Testing
 
 @Suite("FloeWorkspace.NetworkMounts", .serialized)
 struct NetworkWorkspaceMountTests {
+    @Test("Independent workspace browsers cannot replace or unregister task mount routes")
+    func isolatedRegistries() async throws {
+        let root = URL(fileURLWithPath: "/tmp/workspace-route-fixture")
+        let taskRegistry = NetworkWorkspaceMountRegistry()
+        let browserRegistry = NetworkWorkspaceMountRegistry()
+        let taskMount = NetworkWorkspaceMount(workspaceID: UUID(), name: "Files", transport: .webDAV,
+            endpoint: try #require(URL(string: "https://task.example.test/")), username: "", credentialRef: nil)
+        let browserMount = NetworkWorkspaceMount(workspaceID: UUID(), name: "Files", transport: .webDAV,
+            endpoint: try #require(URL(string: "https://browser.example.test/")), username: "", credentialRef: nil)
+        await taskRegistry.register(rootURL: root, mounts: [taskMount], credentialResolver: { _ in Data() })
+        await browserRegistry.register(rootURL: root, mounts: [browserMount], credentialResolver: { _ in Data() })
+        #expect(try await taskRegistry.route(rootURL: root, virtualPath: "Network/Files/doc.pdf")?.mount.id == taskMount.id)
+        #expect(try await browserRegistry.route(rootURL: root, virtualPath: "Network/Files/doc.pdf")?.mount.id == browserMount.id)
+        await browserRegistry.unregister(rootURL: root)
+        #expect(try await taskRegistry.route(rootURL: root, virtualPath: "Network/Files/doc.pdf")?.mount.id == taskMount.id)
+    }
+
     @Test("WebDAV adapter lists, reads and conditionally writes without persisting a secret")
     func webDAVOperations() async throws {
         let endpoint = try #require(URL(string: "https://dav.example.test/root/"))

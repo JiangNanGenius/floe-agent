@@ -32,6 +32,46 @@ final class SkillsCenter: ObservableObject {
     @Published private(set) var pendingUpgrade: SkillUpgradeCandidate?
     private var upgradeStagingRoot: URL?
 
+    @Published private(set) var catalogPackages: [String: OfficialSkillHub.Package] = [:]
+    @Published private(set) var isCheckingCatalog = false
+    @Published private(set) var catalogError: String?
+    private var lastCatalogCheck: Date?
+
+    /// Discovery reads only the signed catalog. Archives are staged only when
+    /// the user opens an update, using the existing reviewed installation path.
+    func refreshOfficialCatalog(force: Bool = false) async {
+        guard !isCheckingCatalog,
+              force || lastCatalogCheck.map({ Date().timeIntervalSince($0) > 3600 }) != false else { return }
+        isCheckingCatalog = true
+        defer { isCheckingCatalog = false }
+        do {
+            let source = try OfficialSkillHub.source()
+            let connector = environment.sourceControlCenter
+            let commitData = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: source.ref, path: nil)
+            struct Commit: Decodable { let sha: String }
+            let commit = try JSONDecoder().decode(Commit.self, from: commitData).sha
+            guard commit.count == 40, commit.allSatisfy(\.isHexDigit) else { throw SkillUpgradeError.invalidCommit }
+            let catalog = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: commit, path: OfficialSkillHub.catalogPath)
+            let signature = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: commit, path: "skill-hub/catalog.sig")
+            var verified: [String: OfficialSkillHub.Package] = [:]
+            for id in OfficialSkillHub.skillIDs {
+                verified[id] = try OfficialSkillHub.verifiedPackage(catalog: catalog, signature: signature, id: id,
+                    appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
+                    trustedKeys: OfficialSkillHub.trustedKeys)
+            }
+            catalogPackages = verified
+            lastCatalogCheck = Date()
+            catalogError = nil
+        } catch is CancellationError {
+        } catch { catalogError = "暂时无法检查更新，已安装的插件仍可使用。" }
+    }
+
+    func availableVersion(for skill: PersistedSkill) -> String? {
+        guard let version = catalogPackages[skill.id]?.version,
+              version.compare(skill.version, options: .numeric) == .orderedDescending else { return nil }
+        return version
+    }
+
     private struct UpgradeJournal: Codable {
         var oldSkill: PersistedSkill
         var oldGrants: [String]

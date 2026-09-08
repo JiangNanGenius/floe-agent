@@ -12,6 +12,43 @@ import CryptoKit
 
 @Suite("FloeApp.SkillLifecycle", .serialized)
 struct SkillLifecycleTests {
+    @Test("Task deletion retains failed cleanup and replays without touching a symlink target")
+    @MainActor func durablePrivateCleanup() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let conversation = try await environment.conversationCenter.createConversation(title: "Delete safely")
+        let center = environment.workspaceCenter
+        try await center.openTaskWorkspace(conversationID: conversation.id)
+        let root = try #require(center.currentRootURL)
+        let workspaceID = try #require(center.currentWorkspace?.id)
+        center.closeCurrentWorkspace()
+        let saved = root.deletingLastPathComponent().appendingPathComponent("saved-\(UUID())")
+        let outside = FileManager.default.temporaryDirectory.appendingPathComponent("keep-\(UUID())")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: outside.appendingPathComponent("keep.txt"))
+        try FileManager.default.moveItem(at: root, to: saved)
+        try FileManager.default.createSymbolicLink(at: root, withDestinationURL: outside)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: saved)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        await #expect(throws: (any Error).self) {
+            try await environment.conversationCenter.deleteConversation(id: conversation.id)
+        }
+        let store = SQLiteWorkspaceStore(database: environment.database)
+        #expect(try await environment.conversationStore.conversation(id: conversation.id) == nil)
+        #expect(!environment.conversationCenter.conversations.contains(where: { $0.id == conversation.id }))
+        #expect(try await store.pendingLocalCleanup().contains(where: { $0.workspaceID == workspaceID }))
+        #expect(try String(contentsOf: outside.appendingPathComponent("keep.txt"), encoding: .utf8) == "keep")
+        try FileManager.default.removeItem(at: root)
+        try FileManager.default.moveItem(at: saved, to: root)
+        #expect(await center.retryPendingLocalCleanup().isEmpty)
+        #expect(try await store.pendingLocalCleanup().isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: root.path))
+        #expect(try await store.workspace(id: workspaceID) == nil)
+    }
+
     @Test("Workspace manager keeps the task root unchanged and reports batch failures")
     @MainActor func isolatedWorkspaceManagement() async throws {
         let environment = AppEnvironment.preview()

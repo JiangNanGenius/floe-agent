@@ -107,6 +107,29 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
         self.database = database
     }
 
+    public struct PendingCleanup: Sendable {
+        public let workspaceID: UUID
+        public let relativePath: String
+    }
+
+    public func pendingLocalCleanup() async throws -> [PendingCleanup] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: "SELECT workspace_id, relative_path FROM local_workspace_cleanup ORDER BY workspace_id")
+                .map { row in
+                    guard let id = UUID(uuidString: row["workspace_id"]) else {
+                        throw FloeError.validationFailed("Invalid workspace cleanup identifier")
+                    }
+                    return PendingCleanup(workspaceID: id, relativePath: row["relative_path"])
+                }
+        }
+    }
+
+    public func finishLocalCleanup(workspaceID: UUID) async throws {
+        try await database.writer { db in
+            try db.execute(sql: "DELETE FROM local_workspace_cleanup WHERE workspace_id = ?", arguments: [workspaceID.uuidString])
+        }
+    }
+
     // MARK: Workspaces
 
     public func workspaces() async throws -> [WorkspaceRecord] {

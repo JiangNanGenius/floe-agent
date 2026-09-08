@@ -147,6 +147,8 @@ public enum WorkspaceMountAdapterFactory {
 public actor NetworkWorkspaceMountRegistry {
     public static let shared = NetworkWorkspaceMountRegistry()
 
+    public init() {}
+
     public struct Route: Sendable {
         public let mount: NetworkWorkspaceMount
         public let relativePath: String

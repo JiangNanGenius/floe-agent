@@ -55,11 +55,13 @@ struct SkillsView: View {
                             HStack {
                                 Text(definition.name).font(.headline).accessibilityIdentifier("plugins.card.\(definition.id)")
                                 Spacer()
-                                Text("v\(definition.version)").font(.caption).foregroundStyle(.secondary)
+                                Text("v\(center.catalogPackages[definition.id]?.version ?? definition.version)").font(.caption).foregroundStyle(.secondary)
                             }
                             Text(pluginSummary(definition)).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
                             if let installed = center.installed.first(where: { $0.id == definition.id }) {
-                                if installed.status == "enabled" {
+                                if let version = center.availableVersion(for: installed) {
+                                    Button("更新至 v\(version)") { updatingSkill = installed }
+                                } else if installed.status == "enabled" {
                                     Label("plugins.ready", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary)
                                 } else {
                                     Button("plugins.enable") { Task { await center.setEnabled(true, skill: installed) } }
@@ -112,8 +114,13 @@ struct SkillsView: View {
                             if let definition = DomainSkillLibrary.all.first(where: { $0.id == skill.id }) {
                                 Text(pluginSummary(definition)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                             }
-                            Button("skills.update", systemImage: "arrow.down.circle") { updatingSkill = skill }
-                                .buttonStyle(.borderless)
+                            Button {
+                                updatingSkill = skill
+                            } label: {
+                                if let version = center.availableVersion(for: skill) {
+                                    Label("更新至 v\(version)", systemImage: "arrow.down.circle")
+                                } else { Label("skills.update", systemImage: "arrow.down.circle") }
+                            }.buttonStyle(.borderless)
                         }
                         .swipeActions {
                             if !DomainSkillLibrary.all.contains(where: { $0.id == skill.id }) {
@@ -122,6 +129,9 @@ struct SkillsView: View {
                         }
                     }
                 }
+            }
+            if let error = center.catalogError {
+                Text(error).foregroundStyle(.secondary).font(.footnote)
             }
             if let error = center.errorMessage {
                 Text(error).foregroundStyle(.red).font(.footnote)
@@ -136,7 +146,8 @@ struct SkillsView: View {
                 Button("skills.creator", systemImage: "plus") { showingCreator = true }
             }
         }
-        .task { await center.load() }
+        .task { await center.load(); await center.refreshOfficialCatalog() }
+        .refreshable { await center.load(); await center.refreshOfficialCatalog(force: true) }
         .sheet(isPresented: $showingCreator) { SkillCreatorSheet(center: center) }
         .sheet(isPresented: $showingFinder) { SkillFinderSheet(center: center) }
         .sheet(item: $updatingSkill) { skill in SkillGitHubUpgradeSheet(center: center, skill: skill) }
@@ -174,6 +185,13 @@ private struct SkillGitHubUpgradeSheet: View {
                     LabeledContent("skills.update.installed", value: "v\(skill.version)")
                     if let candidate = center.pendingUpgrade {
                         LabeledContent("skills.update.available", value: "v\(candidate.snapshot.package.manifest.version)")
+                        if !candidate.addedCapabilities.isEmpty || !candidate.addedTools.isEmpty {
+                            Label("本次更新需要新增访问权限，请在详情中查看。", systemImage: "hand.raised")
+                                .font(.callout)
+                        }
+                        if candidate.changedFiles.isEmpty {
+                            Label("已是最新版本", systemImage: "checkmark.circle").foregroundStyle(.secondary)
+                        }
                         Button("skills.update.now") {
                             Task {
                                 await center.applyReviewedUpgrade()

@@ -2719,18 +2719,18 @@ final class ConversationCenter: ObservableObject {
         conversations.removeAll { $0.id == id }
         do {
             let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
-            let ownedWorkspaceID = try? await workspaceStore.workspaceID(conversationID: id)
+            let ownedWorkspaceID = try await workspaceStore.workspaceID(conversationID: id)
             let ownedWorkspace: WorkspaceRecord? = if let ownedWorkspaceID {
-                try? await workspaceStore.workspace(id: ownedWorkspaceID)
+                try await workspaceStore.workspace(id: ownedWorkspaceID)
             } else { nil }
-            let cloudTombstones: [CloudWorkspaceCleanupTombstone] = if let ownedWorkspaceID {
+            let cloudTombstones: [CloudWorkspaceCleanupTombstone] = if ownedWorkspace?.kind == .privateTask, let ownedWorkspaceID {
                 await environment.workspaceCenter.cloudCleanupTombstones(workspaceID: ownedWorkspaceID)
             } else { [] }
             try await environment.cloudWorkspaceCleanupQueue.enqueue(cloudTombstones)
             await waitForLaunches()
             try await stopRunsAndDelete(conversationIDs: [id])
             if ownedWorkspace?.kind == .privateTask, let ownedWorkspaceID {
-                try? await environment.workspaceCenter.deleteWorkspace(id: ownedWorkspaceID)
+                try await environment.workspaceCenter.deleteWorkspace(id: ownedWorkspaceID)
             }
             await environment.credentialVault.drainDeletionQueue()
             _ = await environment.cloudWorkspaceCleanupQueue.drain()
@@ -2738,11 +2738,16 @@ final class ConversationCenter: ObservableObject {
             await reload()
             await environment.workspaceCenter.reload()
         } catch {
+            // A cleanup failure can occur after the task transaction committed.
+            // Reload durable state instead of resurrecting a deleted row in UI.
             if let removedConversation,
+               (try? await environment.conversationStore.conversation(id: id)) != nil,
                !conversations.contains(where: { $0.id == id }) {
                 conversations.append(removedConversation)
                 conversations.sort { $0.updatedAt > $1.updatedAt }
             }
+            await reload()
+            await environment.workspaceCenter.reload()
             throw error
         }
     }
@@ -2856,13 +2861,18 @@ final class ConversationCenter: ObservableObject {
         }
         try await environment.cloudWorkspaceCleanupQueue.enqueue(cloudTombstones)
         try await stopRunsAndDelete(conversationIDs: ids)
+        var cleanupFailures = 0
         for workspaceID in privateWorkspaceIDs {
-            try? await environment.workspaceCenter.deleteWorkspace(id: workspaceID)
+            do { try await environment.workspaceCenter.deleteWorkspace(id: workspaceID) }
+            catch { cleanupFailures += 1 }
         }
         await environment.credentialVault.drainDeletionQueue()
         _ = await environment.cloudWorkspaceCleanupQueue.drain()
         await environment.workspaceCenter.reload()
         await reload()
+        if cleanupFailures > 0 {
+            throw FloeError.validationFailed("任务已删除，\(cleanupFailures) 个私有工作区尚未清理，将在下次启动时重试。")
+        }
         return (records.count, runCount)
     }
 

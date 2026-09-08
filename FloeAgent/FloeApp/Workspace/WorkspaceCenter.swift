@@ -101,6 +101,7 @@ final class WorkspaceCenter: ObservableObject {
     /// Settings browsing owns its own security scopes and never rebinds the
     /// active conversation's legacy tool root or process-wide mount registry.
     private let publishesSharedState: Bool
+    private let networkRegistry: NetworkWorkspaceMountRegistry
 
     /// File service for the current workspace root, built on open.
     private(set) var fileService: WorkspaceFileService?
@@ -126,6 +127,7 @@ final class WorkspaceCenter: ObservableObject {
 
     init(environment: AppEnvironment, publishesSharedState: Bool = true) {
         self.publishesSharedState = publishesSharedState
+        self.networkRegistry = publishesSharedState ? .shared : NetworkWorkspaceMountRegistry()
         self.environment = environment
         self.store = SQLiteWorkspaceStore(database: environment.database)
     }
@@ -206,6 +208,9 @@ final class WorkspaceCenter: ObservableObject {
     /// touched; app-owned private task directories are removed with the record.
     func deleteWorkspace(id: UUID) async throws {
         let deleting = try await store.workspace(id: id)
+        if deleting?.kind == .privateTask, !(try await store.conversations(workspaceID: id)).isEmpty {
+            throw FloeError.validationFailed("请先删除或移出这个工作区中的任务")
+        }
         if currentWorkspace?.id == id {
             closeCurrentWorkspace()
         }
@@ -217,31 +222,71 @@ final class WorkspaceCenter: ObservableObject {
         if let deleting, deleting.kind == .privateTask {
             try removePrivateWorkspaceDirectory(deleting)
         }
-        if let mountsURL = try? mountsStoreURL(workspaceID: id),
-           FileManager.default.fileExists(atPath: mountsURL.path) {
-            try? FileManager.default.removeItem(at: mountsURL)
-        }
-        if let networkURL = try? networkMountsStoreURL(workspaceID: id),
-           FileManager.default.fileExists(atPath: networkURL.path) {
-            try? FileManager.default.removeItem(at: networkURL)
-        }
+        try removeWorkspaceMountRecords(id: id)
+        try await SQLiteWorkspaceStore(database: environment.database).finishLocalCleanup(workspaceID: id)
         await environment.credentialVault.drainDeletionQueue()
         await reload()
     }
 
+    /// Called on launch and after task deletion. Pending rows survive failure;
+    /// ownership is checked again so replay never removes an active workspace.
+    func retryPendingLocalCleanup() async -> [UUID: String] {
+        var failures: [UUID: String] = [:]
+        let cleanupStore = SQLiteWorkspaceStore(database: environment.database)
+        do {
+            for pending in try await cleanupStore.pendingLocalCleanup() {
+                do {
+                    guard try await store.conversations(workspaceID: pending.workspaceID).isEmpty else { continue }
+                    let records = try await store.workspaces()
+                    guard !records.contains(where: {
+                        $0.id != pending.workspaceID && $0.internalRelativePath == pending.relativePath
+                    }) else { continue }
+                    if let record = try await store.workspace(id: pending.workspaceID) {
+                        guard record.kind == .privateTask,
+                              record.internalRelativePath == pending.relativePath else {
+                            throw FloeError.validationFailed("Workspace cleanup ownership changed")
+                        }
+                        try await deleteWorkspace(id: pending.workspaceID)
+                    } else {
+                        try removePrivateWorkspaceDirectory(relative: pending.relativePath)
+                        try removeWorkspaceMountRecords(id: pending.workspaceID)
+                        try await cleanupStore.finishLocalCleanup(workspaceID: pending.workspaceID)
+                    }
+                } catch { failures[pending.workspaceID] = error.localizedDescription }
+            }
+        } catch { actionError = error.localizedDescription }
+        if !failures.isEmpty { actionError = "部分任务文件尚未清理，将在下次启动时重试。" }
+        return failures
+    }
+
+    private func removeWorkspaceMountRecords(id: UUID) throws {
+        for url in [try mountsStoreURL(workspaceID: id), try networkMountsStoreURL(workspaceID: id)] {
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+
     private func removePrivateWorkspaceDirectory(_ record: WorkspaceRecord) throws {
         guard record.kind == .privateTask, let relative = record.internalRelativePath else { return }
+        try removePrivateWorkspaceDirectory(relative: relative)
+    }
+
+    private func removePrivateWorkspaceDirectory(relative: String) throws {
+        let components = relative.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count == 2, components[0] == "PrivateTasks", UUID(uuidString: String(components[1])) != nil else {
+            throw FloeError.validationFailed("Invalid private workspace path")
+        }
         let support = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
+            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
         )
         let managedRoot = support.appendingPathComponent("FloeAgent", isDirectory: true)
-            .standardizedFileURL
-        let target = managedRoot.appendingPathComponent(relative, isDirectory: true)
-            .standardizedFileURL
-        guard target.path.hasPrefix(managedRoot.path + "/") else {
+            .resolvingSymlinksInPath().appendingPathComponent("PrivateTasks", isDirectory: true).standardizedFileURL
+        guard managedRoot.resolvingSymlinksInPath() == managedRoot else {
+            throw FloeError.validationFailed("Invalid private workspace root")
+        }
+        let target = managedRoot.appendingPathComponent(String(components[1]), isDirectory: true)
+        guard target.resolvingSymlinksInPath().deletingLastPathComponent() == managedRoot else {
             throw FloeError.validationFailed("Invalid private workspace path")
         }
         if FileManager.default.fileExists(atPath: target.path) {
@@ -301,9 +346,9 @@ final class WorkspaceCenter: ObservableObject {
         if currentRootUsesSecurityScope, let url = currentRootURL {
             url.stopAccessingSecurityScopedResource()
         }
-        if publishesSharedState, let root = currentRootURL {
-            WorkspaceMountRegistry.shared.unregister(rootURL: root)
-            Task { await NetworkWorkspaceMountRegistry.shared.unregister(rootURL: root) }
+        if let root = currentRootURL {
+            if publishesSharedState { WorkspaceMountRegistry.shared.unregister(rootURL: root) }
+            Task { [networkRegistry] in await networkRegistry.unregister(rootURL: root) }
         }
         currentMountScopeURLs.forEach { $0.stopAccessingSecurityScopedResource() }
         currentMountScopeURLs = []
@@ -583,7 +628,7 @@ final class WorkspaceCenter: ObservableObject {
             )
         }
         if let root = currentRootURL,
-           let route = try await NetworkWorkspaceMountRegistry.shared.route(rootURL: root, virtualPath: normalized) {
+           let route = try await networkRegistry.route(rootURL: root, virtualPath: normalized) {
             let entries = try await route.adapter.list(path: route.relativePath).prefix(200).map {
                 FileNode(
                     name: $0.name,
@@ -636,7 +681,7 @@ final class WorkspaceCenter: ObservableObject {
     /// the task directory.
     func readFile(relativePath: String) async throws -> FileContent {
         if let root = currentRootURL,
-           let route = try await NetworkWorkspaceMountRegistry.shared.route(rootURL: root, virtualPath: normalizedInspectorPath(relativePath)) {
+           let route = try await networkRegistry.route(rootURL: root, virtualPath: normalizedInspectorPath(relativePath)) {
             let bytes = try await route.adapter.read(path: route.relativePath, offset: 0, limit: WorkspaceFileService.readChunkBytes + 1)
             let truncated = bytes.count > WorkspaceFileService.readChunkBytes
             let visible = truncated ? bytes.prefix(WorkspaceFileService.readChunkBytes) : bytes[...]
@@ -672,6 +717,35 @@ final class WorkspaceCenter: ObservableObject {
             throw FloeError.validationFailed("No workspace is open")
         }
         return try service.readFile(relativePath, byteOffset: 0)
+    }
+
+    /// Reads remote binary previews without decoding PDF/Office bytes as text.
+    /// The caller owns the short-lived local preview copy.
+    func readRemotePreview(relativePath: String) async throws -> Data {
+        let limit = 32 * 1024 * 1024
+        let owner = currentWorkspace?.id
+        let bytes: Data
+        if let root = currentRootURL,
+           let route = try await networkRegistry.route(rootURL: root, virtualPath: normalizedInspectorPath(relativePath)) {
+            let metadata = try await route.adapter.metadata(path: route.relativePath)
+            guard !metadata.isDirectory, metadata.byteCount <= limit else { throw CocoaError(.fileReadTooLarge) }
+            bytes = try await route.adapter.read(path: route.relativePath, offset: 0, limit: limit + 1)
+            guard bytes.count == metadata.byteCount else { throw CocoaError(.fileReadCorruptFile) }
+        } else if let route = cloudRoute(for: relativePath) {
+            let response = try await environment.cloudWorkspaceService.request(
+                hostID: route.link.hostID, port: route.link.daemonPort,
+                method: "GET", endpoint: "v1/files/read", queryPath: route.remotePath
+            )
+            guard response.count <= (limit * 4 / 3 + 4096),
+                  let decoded = Data(base64Encoded: try JSONDecoder().decode(RemoteFileResponse.self, from: response).dataBase64) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            bytes = decoded
+        } else { throw CocoaError(.fileReadNoPermission) }
+        try Task.checkCancellation()
+        guard owner == currentWorkspace?.id else { throw CancellationError() }
+        guard bytes.count <= limit else { throw CocoaError(.fileReadTooLarge) }
+        return bytes
     }
 
     func isCloudWorkspacePath(_ relativePath: String) -> Bool {
@@ -729,7 +803,7 @@ final class WorkspaceCenter: ObservableObject {
         do {
             try savePersistedNetworkMounts(mounts, workspaceID: workspace.id)
             await activateNetworkMounts(for: workspace, rootURL: root)
-            guard let route = try await NetworkWorkspaceMountRegistry.shared.route(rootURL: root, virtualPath: mount.virtualRoot) else {
+            guard let route = try await networkRegistry.route(rootURL: root, virtualPath: mount.virtualRoot) else {
                 throw FloeError.validationFailed("Network mount registration failed")
             }
             _ = try await route.adapter.list(path: "")
@@ -957,8 +1031,7 @@ final class WorkspaceCenter: ObservableObject {
                 $0.name.localizedStandardCompare($1.name) == .orderedAscending
             }
         }
-        guard publishesSharedState else { return }
-        await NetworkWorkspaceMountRegistry.shared.register(
+        await networkRegistry.register(
             rootURL: rootURL,
             mounts: mounts,
             credentialResolver: { [vault = environment.credentialVault] id in
