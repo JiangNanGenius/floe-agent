@@ -35,12 +35,16 @@ if [[ ! -e "$source_dir" ]]; then
   git -C "$source_dir" checkout --detach FETCH_HEAD
 fi
 [[ "$(git -C "$source_dir" rev-parse HEAD)" == "$commit" ]] || { echo 'Source commit mismatch' >&2; exit 3; }
-git -C "$source_dir" diff --quiet
 git -C "$source_dir" diff --cached --quiet
 python3 - "$lock_file" "$source_dir" <<'PYPATCH'
 import hashlib,json,os,subprocess,sys
 lock=json.load(open(sys.argv[1])); patch=os.path.join(os.path.dirname(sys.argv[1]),lock['sourcePatch'])
 if hashlib.sha256(open(patch,'rb').read()).hexdigest()!=lock['sourcePatchSHA256']: raise SystemExit('Source overlay hash mismatch')
+# A stopped build may already carry exactly our verified overlay.
+applied=subprocess.run(['git','apply','--reverse','--check',patch],cwd=sys.argv[2],capture_output=True).returncode==0
+if applied:
+ subprocess.run(['git','apply','--reverse',patch],cwd=sys.argv[2],check=True)
+subprocess.run(['git','diff','--exit-code'],cwd=sys.argv[2],check=True,stdout=subprocess.DEVNULL)
 subprocess.run(['git','apply','--check',patch],cwd=sys.argv[2],check=True)
 subprocess.run(['git','apply',patch],cwd=sys.argv[2],check=True)
 PYPATCH

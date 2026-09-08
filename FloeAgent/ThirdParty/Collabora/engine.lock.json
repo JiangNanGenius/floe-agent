@@ -9,7 +9,8 @@
     "--with-distro=CPiOS",
     "--disable-debug",
     "--disable-dbgutil",
-    "--with-lang=en-US"
+    "--disable-symbols",
+    "--with-lang=en-US zh-CN zh-TW"
   ],
   "acceptance": [
     "native static engine build",
