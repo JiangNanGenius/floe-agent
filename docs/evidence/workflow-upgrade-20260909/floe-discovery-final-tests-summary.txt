@@ -1,0 +1,13 @@
+✔ Test "Chinese skill discovery loads the available lifecycle without unrelated tools" passed after 0.020 seconds.
+✔ Test "Chinese mail discovery selects only available mail runners" passed after 0.020 seconds.
+✔ Test "Executor and interactive Terminal are separate roles despite the SSH prefix" passed after 0.020 seconds.
+✔ Test "The executable registry is authoritative; static-only declarations stay hidden" passed after 0.020 seconds.
+✔ Test "Description fallback does not activate unrelated tools in the same group" passed after 0.020 seconds.
+✔ Test directoryDistinguishesOwnershipFromWorkflowGuidance() passed after 0.020 seconds.
+✔ Test "VNC discovery loads the whole lifecycle and SSH, not unrelated groups" passed after 0.020 seconds.
+✔ Test "Discovery never invents or restores tools outside the supplied ceiling" passed after 0.022 seconds.
+✔ Test "Exact lookup and bounded presentation keep requested tools and the skill reader" passed after 0.022 seconds.
+✔ Test directoryPagingDoesNotLoadOrTruncateToSchemaBudget() passed after 0.026 seconds.
+✔ Test batchExactAndCapabilityQueriesDoNotMaskEachOther() passed after 0.030 seconds.
+✔ Suite "Deferred tool discovery" passed after 0.030 seconds.
+✔ Test run with 11 tests in 1 suite passed after 0.032 seconds.

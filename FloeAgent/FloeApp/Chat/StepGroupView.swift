@@ -84,7 +84,7 @@ struct StepGroupView: View {
                                 toolRequestStatus: requestStatus(for: event),
                                 toolRequestResultPayloadJSON: matchingResult(for: event)?.payloadJSON
                             )
-                            .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 6)))
+                            .transition(!isLive ? .identity : (reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 6))))
                             if event.kind == .toolRequest,
                                let pending = pendingApproval(for: event) {
                                 ApprovalCardView(approval: pending) { decision in
@@ -96,7 +96,7 @@ struct StepGroupView: View {
                     }
                 }
                 .padding(.leading, 8)
-                .animation(isLive && !reduceMotion ? .easeOut(duration: 0.18) : nil, value: events.count)
+                .animation(isLive && !reduceMotion ? .easeOut(duration: 0.20) : nil, value: events.count)
             }
         } label: {
             HStack {

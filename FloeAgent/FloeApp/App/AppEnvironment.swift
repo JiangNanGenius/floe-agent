@@ -741,6 +741,24 @@ final class AppEnvironment: ObservableObject {
                 }
                 try bytes.write(to: lease.url.appendingPathComponent("预览验收.pdf"), options: .atomic)
             }
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains("--ui-test-material-fixture") {
+                let url = FileManager.default.temporaryDirectory.appendingPathComponent("素材缩略图验收.png")
+                defer { try? FileManager.default.removeItem(at: url) }
+                let image = UIGraphicsImageRenderer(size: CGSize(width: 640, height: 400)).image { context in
+                    UIColor.systemTeal.setFill()
+                    context.fill(CGRect(x: 0, y: 0, width: 640, height: 400))
+                    UIColor.systemYellow.setFill()
+                    context.cgContext.fillEllipse(in: CGRect(x: 240, y: 40, width: 160, height: 160))
+                    ("FLOE MATERIAL" as NSString).draw(at: CGPoint(x: 150, y: 260),
+                        withAttributes: [.font: UIFont.boldSystemFont(ofSize: 32), .foregroundColor: UIColor.white])
+                }
+                if let data = image.pngData() {
+                    try data.write(to: url, options: .atomic)
+                    _ = try await CreativeAssetIngestionService(assetStore: creativeAssetStore).importLocalFile(url)
+                }
+                UserDefaults.standard.set(false, forKey: "canvas.materials.posterLayout")
+            }
             if ProcessInfo.processInfo.arguments.contains("--ui-test-reset-onboarding") {
                 ConversationCenter.persistOnboardingSkippedMarker(false)
                 for provider in try await configurationStore.providers() {

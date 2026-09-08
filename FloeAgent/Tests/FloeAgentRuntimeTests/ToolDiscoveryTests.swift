@@ -5,6 +5,51 @@ import FloeTools
 
 @Suite("Deferred tool discovery")
 struct ToolDiscoveryTests {
+    @Test func directoryDistinguishesOwnershipFromWorkflowGuidance() throws {
+        let owned = ToolCatalog.Descriptor(name: "custom.report", toolDescription: "Report", parametersJSON: "{}",
+            riskLabels: [], isSideEffecting: false, ownerSkillID: "report-plugin")
+        let output = try ToolDiscovery.list(arguments: Data("{}".utf8),
+            descriptors: [owned, descriptor("workspace.readFile")], loaded: [owned.name],
+            relatedSkills: ["workspace.readFile": ["floe-files", "floe-office"]])
+        let object = try #require(JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any])
+        let entries = try #require(object["tools"] as? [[String: Any]])
+        let report = try #require(entries.first { $0["name"] as? String == owned.name })
+        #expect(report["ownerSkillID"] as? String == "report-plugin")
+        #expect(report["schemaLoaded"] as? Bool == true)
+        let file = try #require(entries.first { $0["name"] as? String == "workspace.readFile" })
+        #expect(file["ownerSkillID"] == nil)
+        #expect(file["relatedSkillIDs"] as? [String] == ["floe-files", "floe-office"])
+    }
+
+    @Test func batchExactAndCapabilityQueriesDoNotMaskEachOther() throws {
+        let queries = try JSONDecoder().decode(DiscoveryQueries.self,
+            from: Data(#"{"queries":["workspace.readFile","pdf","workspace.readFile"]}"#.utf8)).validated()
+        let found = ToolDiscovery.matches(queries: queries,
+            descriptors: [descriptor("workspace.readFile"), descriptor("pdf.inspect"), descriptor("network.ping")])
+        #expect(found.map(\.name) == ["workspace.readFile", "pdf.inspect"])
+        #expect(throws: (any Error).self) {
+            try JSONDecoder().decode(DiscoveryQueries.self, from: Data(#"{"query":"pdf","queries":["pdf"]}"#.utf8)).validated()
+        }
+        #expect(throws: (any Error).self) { try DiscoveryQueries(queries: [" "]).validated() }
+    }
+
+    @Test func directoryPagingDoesNotLoadOrTruncateToSchemaBudget() throws {
+        let descriptors = (0..<240).map { descriptor(String(format: "custom.tool%03d", $0)) }
+        var cursor: String? = nil
+        var names: [String] = []
+        repeat {
+            var arguments: [String: Any] = ["limit": 37]
+            if let cursor { arguments["afterName"] = cursor }
+            let output = try ToolDiscovery.list(arguments: JSONSerialization.data(withJSONObject: arguments), descriptors: descriptors, loaded: [])
+            let result = try #require(JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any])
+            let entries = try #require(result["tools"] as? [[String: Any]])
+            #expect(result["total"] as? Int == 240)
+            #expect(entries.allSatisfy { $0["schemaLoaded"] as? Bool == false })
+            names += entries.compactMap { $0["name"] as? String }
+            cursor = result["nextAfterName"] as? String
+        } while cursor != nil
+        #expect(names == descriptors.map(\.name))
+    }
     @Test("Description fallback does not activate unrelated tools in the same group")
     func descriptionFallbackIsNarrow() {
         let hit = ToolCatalog.Descriptor(name: "custom.one", toolDescription: "Use for quux processing", parametersJSON: "{}", riskLabels: [], isSideEffecting: false)

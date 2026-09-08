@@ -18,6 +18,8 @@ public enum ToolCatalog {
         public var effect: ToolEffect
         public var requiresHostScope: Bool
         public var prerequisites: [ToolPrerequisite]
+        /// Set by a trusted registering adapter, never inferred from names.
+        public var ownerSkillID: String?
 
         public init(
             name: String,
@@ -27,9 +29,11 @@ public enum ToolCatalog {
             isSideEffecting: Bool,
             effect: ToolEffect? = nil,
             requiresHostScope: Bool? = nil,
-            prerequisites: [ToolPrerequisite] = []
+            prerequisites: [ToolPrerequisite] = [],
+            ownerSkillID: String? = nil
         ) {
             self.name = name
+            self.ownerSkillID = ownerSkillID
             self.toolDescription = toolDescription ?? name
             self.parametersJSON = Self.validatedSchema(parametersJSON, toolName: name)
             self.riskLabels = riskLabels

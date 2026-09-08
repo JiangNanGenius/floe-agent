@@ -1,0 +1,15 @@
+	/tmp/floe-workflow-ui-20260909.xcresult
+Ignoring --strip-bitcode because --sign was not passed
+Ignoring --strip-bitcode because --sign was not passed
+Ignoring --strip-bitcode because --sign was not passed
+Test Case '-[FloeAgentUITests.HomeChatVoiceIPadUITests testPluginMarketplaceAndBatchEntry]' passed (128.304 seconds).
+Test Case '-[FloeAgentUITests.HomeChatVoiceIPadUITests testWorkspacePDFInlineAndFullscreen]' passed (114.320 seconds).
+Test Suite 'HomeChatVoiceIPadUITests' passed at 2026-09-09 05:44:42.394.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 242.624 (242.644) seconds
+Test Suite 'FloeAgentUITests.xctest' passed at 2026-09-09 05:44:42.403.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 242.624 (242.663) seconds
+Test Suite 'Selected tests' passed at 2026-09-09 05:44:42.425.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 242.624 (242.731) seconds
+Test session results, code coverage, and logs:
+	/tmp/floe-workflow-ui-20260909.xcresult
+** TEST SUCCEEDED **

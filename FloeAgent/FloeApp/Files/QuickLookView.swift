@@ -16,17 +16,26 @@ struct QuickLookView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> QLPreviewController {
         let controller = QLPreviewController()
         controller.dataSource = context.coordinator
+        controller.delegate = context.coordinator
         return controller
     }
 
-    func updateUIViewController(_ uiViewController: QLPreviewController, context: Context) {}
+    func updateUIViewController(_ uiViewController: QLPreviewController, context: Context) {
+        guard context.coordinator.url != url else { return }
+        context.coordinator.url = url
+        uiViewController.reloadData()
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(url: url)
     }
 
-    final class Coordinator: NSObject, QLPreviewControllerDataSource {
-        let url: URL
+    final class Coordinator: NSObject, QLPreviewControllerDataSource, QLPreviewControllerDelegate {
+        var url: URL
+
+        nonisolated func previewController(_ controller: QLPreviewController, editingModeFor previewItem: QLPreviewItem) -> QLPreviewItemEditingMode {
+            .disabled
+        }
 
         init(url: URL) {
             self.url = url

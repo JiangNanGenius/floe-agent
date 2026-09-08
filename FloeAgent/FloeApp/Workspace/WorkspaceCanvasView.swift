@@ -238,6 +238,7 @@ struct CreativeModeHubView: View {
                 }
                 .buttonStyle(.plain)
                 .frame(minHeight: FloeTheme.minimumTarget)
+                .accessibilityIdentifier("canvas.home.materials")
             } header: {
                 Text("快速开始")
             } footer: {
@@ -8813,6 +8814,11 @@ private struct SharedCanvasAgentConversation: View {
     @ViewBuilder
     private func timelineRow(_ item: ThreadTimelineItem) -> some View {
         switch item {
+        case .earlierEvents(let runID):
+            Button("查看更早的工具记录", systemImage: "clock.arrow.circlepath") {
+                Task { await viewModel.loadEarlierEvents(runID: runID) }
+            }
+            .disabled(viewModel.loadingEventRunIDs.contains(runID))
         case .userMessage(let message):
             messageBubble(title: "你", text: displayContent(message), isUser: true)
         case .assistantMessage(let text, _):
@@ -10279,11 +10285,79 @@ private final class CanvasMaterialLibraryStore: ObservableObject {
     }
 }
 
+@MainActor
+private final class CanvasMaterialThumbnailCache {
+    static let shared = CanvasMaterialThumbnailCache()
+    let data = NSCache<NSString, NSData>()
+    private init() {
+        data.countLimit = 100
+        data.totalCostLimit = 16 * 1_024 * 1_024
+    }
+}
+
+private struct CanvasMaterialThumbnail: View {
+    let url: URL
+    let version: String
+    let kind: CanvasNodeKind
+    let placeholder: String
+    @State private var thumbnail: UIImage?
+    @State private var loading = true
+    private var key: String { url.absoluteString + "#" + version }
+
+    var body: some View {
+        ZStack {
+            if let thumbnail {
+                Image(uiImage: thumbnail).resizable().scaledToFit()
+            } else if loading, kind == .image || kind == .video {
+                ProgressView()
+            } else {
+                Image(systemName: placeholder).font(.title2).foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityLabel(thumbnail == nil ? "素材预览暂不可用" : "素材缩略图")
+        .accessibilityIdentifier(thumbnail == nil ? "canvas.material.thumbnail.pending" : "canvas.material.thumbnail.ready")
+        .task(id: key) {
+            let requestedKey = key
+            thumbnail = nil
+            loading = true
+            defer { loading = false }
+            if let cached = CanvasMaterialThumbnailCache.shared.data.object(forKey: requestedKey as NSString) {
+                thumbnail = UIImage(data: cached as Data)
+                return
+            }
+            guard kind == .image || kind == .video else { return }
+            let isVideo = kind == .video
+            let task = Task.detached(priority: .utility) { () -> Data? in
+                guard !Task.isCancelled, FileManager.default.fileExists(atPath: url.path) else { return nil }
+                if isVideo {
+                    let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+                    generator.appliesPreferredTrackTransform = true
+                    generator.maximumSize = CGSize(width: 320, height: 320)
+                    guard let result = try? await generator.image(at: .zero), !Task.isCancelled else { return nil }
+                    return UIImage(cgImage: result.image).jpegData(compressionQuality: 0.8)
+                }
+                guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+                      let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                        kCGImageSourceCreateThumbnailFromImageAlways: true,
+                        kCGImageSourceCreateThumbnailWithTransform: true,
+                        kCGImageSourceThumbnailMaxPixelSize: 320
+                      ] as CFDictionary), !Task.isCancelled else { return nil }
+                return UIImage(cgImage: image).jpegData(compressionQuality: 0.8)
+            }
+            let bytes = await withTaskCancellationHandler(operation: { await task.value }, onCancel: { task.cancel() })
+            guard !Task.isCancelled, requestedKey == key, let bytes else { return }
+            CanvasMaterialThumbnailCache.shared.data.setObject(bytes as NSData, forKey: requestedKey as NSString, cost: bytes.count)
+            thumbnail = UIImage(data: bytes)
+        }
+    }
+}
+
 private struct CanvasMaterialLibraryView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @StateObject private var store = CanvasMaterialLibraryStore()
     @State private var search = ""
+    @AppStorage("canvas.materials.posterLayout") private var posterLayout = false
     @State private var selection = Set<UUID>()
     @State private var importsFiles = false
     @State private var editingItem: CanvasMaterialLibraryStore.Item?
@@ -10321,17 +10395,20 @@ private struct CanvasMaterialLibraryView: View {
     }
 
     var body: some View {
-        List(selection: $selection) {
+        ScrollView {
+            LazyVGrid(columns: posterLayout ? [GridItem(.adaptive(minimum: 140), spacing: 12)] : [GridItem(.flexible())], spacing: 12) {
             ForEach(filtered) { item in
                 Button {
                     if let onChoose { onChoose(item.reference, item.kind) }
                     else if selection.contains(item.id) { selection.remove(item.id) }
                     else { selection.insert(item.id) }
                 } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: icon(for: item.kind))
-                            .font(.title2).foregroundStyle(FloeTheme.primary)
-                            .frame(width: 42, height: 42)
+                    let layout = posterLayout ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 12))
+                    layout {
+                        CanvasMaterialThumbnail(url: item.url, version: "\(item.updatedAt.timeIntervalSince1970)-\(item.byteCount)", kind: item.kind, placeholder: icon(for: item.kind))
+                            .frame(width: posterLayout ? nil : 48, height: posterLayout ? 130 : 48)
+                            .frame(maxWidth: posterLayout ? .infinity : nil)
+                            .clipped()
                             .background(FloeTheme.primary.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
                         VStack(alignment: .leading, spacing: 3) {
                             Text(item.name).foregroundStyle(.primary).lineLimit(1)
@@ -10342,7 +10419,7 @@ private struct CanvasMaterialLibraryView: View {
                                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                             }
                         }
-                        Spacer()
+                        if !posterLayout { Spacer() }
                         if selection.contains(item.id) { Image(systemName: "checkmark.circle.fill") }
                     }
                 }
@@ -10362,6 +10439,8 @@ private struct CanvasMaterialLibraryView: View {
                     }
                 }
             }
+            }
+            .padding(.horizontal)
         }
         .overlay {
             if filtered.isEmpty {
@@ -10373,6 +10452,10 @@ private struct CanvasMaterialLibraryView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { Button("完成") { dismiss() } }
             ToolbarItemGroup(placement: .topBarTrailing) {
+                Button(posterLayout ? "列表" : "海报墙", systemImage: posterLayout ? "list.bullet" : "square.grid.2x2") {
+                    posterLayout.toggle()
+                }
+                .accessibilityIdentifier("canvas.materials.layout")
                 if !selection.isEmpty {
                     Button("删除", role: .destructive) {
                         let ids = selection

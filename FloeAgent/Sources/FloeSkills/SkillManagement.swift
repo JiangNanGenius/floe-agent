@@ -36,22 +36,17 @@ public extension SkillManaging {
 
 /// Metadata discovery does not read/activate instructions or execute scripts.
 public struct SkillSearchTool: AgentTool {
-    public struct Arguments: Decodable, Sendable {
-        public var query: String
-        public init(query: String) { self.query = query }
-    }
+    public typealias Arguments = DiscoveryQueries
     public static let name = "skill.search"
     public static let toolDescription = "Find installed workflow guides by task, domain or skill ID (English or Chinese). Prefer this for PDF, Office, network and multi-step domain workflows; then skill.read the returned ID before acting. For an exact executable function use tools.search. Search does not grant permissions, enable a disabled skill or execute scripts."
-    public static let parametersJSON = #"{"type":"object","properties":{"query":{"type":"string","minLength":1,"maxLength":512}},"required":["query"],"additionalProperties":false}"#
+    public static let parametersJSON = DiscoveryQueries.parametersJSON
     public static let riskLabels: Set<RiskLabel> = []
     public static let isSideEffecting = false
     public static let toolEffect: ToolEffect = .readOnly
     private let manager: any SkillManaging
     public init(manager: any SkillManaging) { self.manager = manager }
     public func validate(_ args: Arguments) throws {
-        guard !args.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, args.query.count <= 512 else {
-            throw FloeError.validationFailed("Supply a nonempty skill search query of at most 512 characters")
-        }
+        _ = try args.validated()
     }
     public static func matches(query: String, rows: [ManagedSkill]) -> [ManagedSkill] {
         let query = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
@@ -82,13 +77,20 @@ public struct SkillSearchTool: AgentTool {
         try validate(args)
         try context.cancellation.throwIfCancelled()
         let rows = try await manager.read(id: nil, runID: context.runID)
-        let matches = Self.matches(query: args.query, rows: rows)
+        let queries = try args.validated()
+        let queryMatches = queries.map { query in
+            QueryMatch(query: query, skillIDs: Self.matches(query: query, rows: rows).map(\.id))
+        }
+        let matchedIDs = Set(queryMatches.flatMap(\.skillIDs))
+        let matches = rows.filter { matchedIDs.contains($0.id) }.sorted { $0.id < $1.id }
+        struct QueryMatch: Encodable { let query: String; let skillIDs: [String] }
         struct Response: Encodable {
             let matches: [ManagedSkill]
+            let queryMatches: [QueryMatch]
             let installedIDs: [String]
             let nextAction: String
         }
-        let data = try JSONEncoder().encode(Response(matches: matches,
+        let data = try JSONEncoder().encode(Response(matches: matches, queryMatches: queryMatches,
             installedIDs: matches.isEmpty ? rows.map(\.id).sorted() : [],
             nextAction: matches.isEmpty ? "Choose an installed ID with skill.read, or tools.search for an executable capability; do not repeat the same search." : "Read the chosen enabled guide with skill.read(id:); disabled guides require a user settings change."))
         return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self), fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(), maximumSummaryCharacters: 32_768)

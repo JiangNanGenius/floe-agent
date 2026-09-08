@@ -1,5 +1,7 @@
 # Editing and workflow upgrade / 编辑与工作流升级
 
+本轮新增需求与逐项验收以 [完整升级执行台账](WORKFLOW_UPGRADE_IMPLEMENTATION.md) 为准：完整 Office 用户前端，右侧只读／全屏编辑，以及工具目录、跨轮目标、底部跟随和历史按需加载。下表为既有版本状态，不代表新台账已完成。
+
 Status: **1.5.3 (134) is available in the Floe QA internal TestFlight group**, with Apple `VALID` and group visibility verified on 2026-09-09 (Australia/Sydney). Immutable release source: `5f9eeec8d80c6af74816391c49e0248757c8f239`. See the [release verification](RELEASE_VERIFICATION_1.5.3.md). 更新范围覆盖完整编辑能力、插件与文件管理、画布和任务反馈；本轮大计划尚未完成全部验收。
 
 [English guide](USER_GUIDE.md) · [中文使用指南](USER_GUIDE.zh-CN.md) · [Architecture](ARCHITECTURE_OVERVIEW.md)

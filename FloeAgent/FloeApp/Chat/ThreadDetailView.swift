@@ -15,6 +15,13 @@ import FloeModels
 import FloePersistence
 import FloeSecurity
 import FloeAgentRuntime
+import FloeCore
+
+private struct ThreadScrollMetrics: Equatable {
+    let offset: Double
+    let height: Double
+    let bottomDistance: Double
+}
 
 /// The canonical thread: messages + run events for one conversation.
 struct ThreadDetailView: View {
@@ -28,6 +35,8 @@ struct ThreadDetailView: View {
     @State private var showingUsageDetails = false
     @State private var selectedImportantFile: ImportantFileShortcut?
     @State private var showsReturnToLatest = false
+    @State private var latestFollow = LatestMessageFollowState()
+    @State private var isUserScrolling = false
     @State private var structuredExport: TaskExportFile?
     @State private var exporting = false
 
@@ -259,7 +268,8 @@ struct ThreadDetailView: View {
                         }
                         .buttonStyle(.bordered)
                         .frame(maxWidth: .infinity)
-                        .accessibilityHint("每次加载更早的一百条消息")
+                        .disabled(viewModel.loadingEarlierMessages)
+                        .accessibilityHint("每次加载更早的三十条消息")
                     }
                     // The unified timeline: user goal → run events in stored
                     // sequence → live tail → approvals → terminal last.
@@ -288,19 +298,31 @@ struct ThreadDetailView: View {
                     .padding()
                 }
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
-                .onScrollGeometryChange(for: Bool.self) { geometry in
-                    let distance = geometry.contentSize.height
-                        - geometry.contentOffset.y
-                        - geometry.containerSize.height
-                    return distance > 180
-                } action: { _, isAwayFromLatest in
-                    withAnimation(.easeOut(duration: 0.16)) {
-                        showsReturnToLatest = isAwayFromLatest
+                .onScrollPhaseChange { _, phase in
+                    isUserScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
+                    if phase == .idle, latestFollow.followsLatest {
+                        proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
+                    }
+                }
+                .onScrollGeometryChange(for: ThreadScrollMetrics.self) { geometry in
+                    ThreadScrollMetrics(offset: geometry.contentOffset.y,
+                        height: geometry.contentSize.height,
+                        bottomDistance: geometry.contentSize.height + geometry.contentInsets.bottom
+                            - geometry.contentOffset.y - geometry.containerSize.height)
+                } action: { old, new in
+                    latestFollow.observe(offset: new.offset, bottomDistance: new.bottomDistance,
+                                         userScrolling: isUserScrolling)
+                    showsReturnToLatest = latestFollow.isAwayFromLatest && !latestFollow.followsLatest
+                    // Observe layout too: an image or tool card can grow without
+                    // adding an event or increasing the streamed text length.
+                    if old.height != new.height, latestFollow.followsLatest, !isUserScrolling {
+                        proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
                     }
                 }
 
                 if showsReturnToLatest {
                     Button {
+                        latestFollow.returnToLatest()
                         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.24)) {
                             proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
                         }
@@ -321,6 +343,7 @@ struct ThreadDetailView: View {
             }
             .onChange(of: viewModel.hasLoaded) { _, loaded in
                 guard loaded else { return }
+                latestFollow.returnToLatest()
                 proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
                 showsReturnToLatest = false
             }
@@ -329,7 +352,7 @@ struct ThreadDetailView: View {
                            viewModel.isRunning ? 1 : 0]) { _, _ in
                 // Follow only when the user has not intentionally scrolled
                 // away to inspect earlier reasoning or tool output.
-                guard viewModel.hasLoaded, !showsReturnToLatest else { return }
+                guard viewModel.hasLoaded, latestFollow.followsLatest, !isUserScrolling else { return }
                 proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
             }
         }
@@ -339,6 +362,12 @@ struct ThreadDetailView: View {
     @ViewBuilder
     private func timelineRow(_ item: ThreadTimelineItem) -> some View {
         switch item {
+        case .earlierEvents(let runID):
+            Button("查看更早的工具记录", systemImage: "clock.arrow.circlepath") {
+                Task { await viewModel.loadEarlierEvents(runID: runID) }
+            }
+            .disabled(viewModel.loadingEventRunIDs.contains(runID))
+            .accessibilityIdentifier("thread.events.earlier.\(runID.uuidString)")
         case .userMessage(let message):
             MessageBubble(message: message)
 
@@ -361,7 +390,7 @@ struct ThreadDetailView: View {
             StepGroupView(
                 events: events,
                 isLatest: isLatest,
-                isLive: viewModel.isRunning,
+                isLive: viewModel.isRunning && events.contains { $0.runID == viewModel.selectedRunID },
                 hasError: viewModel.events.contains { $0.kind == .error },
                 pendingApprovals: viewModel.pendingApprovals
             ) { approval, decision in

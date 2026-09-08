@@ -3,9 +3,12 @@
 Only `JiangNanGenius/floe-agent/skill-hub` may update the three reserved official
 IDs: `floe-pdf`, `floe-office`, `floe-network`. Other guides remain app-owned.
 三个官方 ID 仅从本目录更新；其他系统指南随 App 发布。
-Fresh installs may seed the bundled official copies offline. Once installed,
-these IDs cannot be edited, replaced by file imports, or upgraded by app-launch
-reseeding. They accept only reviewed signed GitHub updates or explicit rollback.
+Fresh installs seed the bundled official copies offline. App upgrades also
+advance older, unmodified official installs to the app-bundled version, preserving
+disabled state and explicit uninstall choices. Newer installed versions are never
+downgraded. Running tasks retain their pinned snapshots. These reserved IDs cannot
+be edited or replaced by file imports; online updates still require the reviewed
+signed catalog, and explicit rollback remains a separate action.
 Custom instructions must use a distinct nonreserved skill ID.
 
 `sources/` is the source of truth. Each skill has `SKILL.md`, `floe.json`, and

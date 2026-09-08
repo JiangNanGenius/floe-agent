@@ -491,7 +491,7 @@ final class ConversationCenter: ObservableObject {
             throw FloeError.notFound("conversation \(conversationID.uuidString)")
         }
         let messagePage = try await environment.conversationStore.messagePage(
-            conversationID: conversationID, before: nil, limit: 100
+            conversationID: conversationID, before: nil, limit: 20
         )
         let messages = messagePage.messages
         let runs = try await environment.runStore.recentRuns(
@@ -512,7 +512,7 @@ final class ConversationCenter: ObservableObject {
         )
         var events: [UUID: [RunEventRecord]] = [:]
         try await withThrowingTaskGroup(of: (UUID, [RunEventRecord]).self) { group in
-            for runID in visibleRunIDs {
+            for runID in visibleRunIDs.intersection(mutableRunIDs) {
                 if !mutableRunIDs.contains(runID), let cached = cachedEvents[runID] {
                     events[runID] = cached
                 } else {
@@ -524,11 +524,11 @@ final class ConversationCenter: ObservableObject {
                                 afterSequence: watermark,
                                 limit: 1_000
                             )
-                            return (runID, Array((cached + additions).suffix(1_000)))
+                            return (runID, Array((cached + additions).suffix(51)))
                         }
                         return (
                             runID,
-                            try await runStore.recentEvents(runID: runID, limit: 1_000)
+                            try await runStore.recentEvents(runID: runID, limit: 51)
                         )
                     }
                 }
@@ -875,6 +875,7 @@ final class ConversationCenter: ObservableObject {
             model: model,
             conversationMode: executionMode.conversationMode,
             activeSkillIDs: skills.skillIDs,
+            relatedSkillIDsByTool: skills.relatedSkillIDsByTool,
             allowedToolNames: allowedToolNames,
             preapprovedPythonScriptSHA256: skills.preapprovedPythonScriptSHA256,
             preapprovedPythonPackages: skills.preapprovedPythonPackages,

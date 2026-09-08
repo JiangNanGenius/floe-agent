@@ -1,18 +1,67 @@
 import Foundation
 import FloeTools
+import FloeCore
 
 /// Provider-independent deferred schemas. Search uses only executable tools
 /// already inside this run's permission/skill ceiling.
 enum ToolDiscovery {
     static let name = "tools.search"
+    static let listName = "tools.list"
+    static var listDescriptor: ToolCatalog.Descriptor {
+        .init(name: listName,
+              toolDescription: "List the complete executable tool directory within this task's permission ceiling without loading schemas or executing tools. Follow nextAfterName until absent. Filter by group if desired. schemaLoaded=false means discoverable, not missing; use tools.search with an exact name or queries array to load definitions.",
+              parametersJSON: #"{"type":"object","properties":{"afterName":{"type":"string"},"group":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}},"additionalProperties":false}"#,
+              riskLabels: [], isSideEffecting: false)
+    }
+
+    struct ListArguments: Decodable {
+        var afterName: String?
+        var group: String?
+        var limit: Int?
+    }
+
+    static func list(arguments: Data, descriptors: [ToolCatalog.Descriptor], loaded: Set<String>, relatedSkills: [String: [String]] = [:]) throws -> String {
+        let args = try JSONDecoder().decode(ListArguments.self, from: arguments)
+        guard (1...100).contains(args.limit ?? 30) else {
+            throw FloeError.validationFailed("Tool list limit must be 1–100")
+        }
+        let rows = descriptors.filter { args.group == nil || group($0.name) == args.group }
+            .sorted { $0.name < $1.name }
+        let remaining = rows.filter { args.afterName == nil || $0.name > args.afterName! }
+        let page = Array(remaining.prefix(args.limit ?? 30))
+        struct Entry: Encodable {
+            let name: String
+            let description: String
+            let group: String
+            let schemaLoaded: Bool
+            let ownerSkillID: String?
+            let relatedSkillIDs: [String]
+        }
+        struct Response: Encodable {
+            let tools: [Entry]
+            let total: Int
+            let nextAfterName: String?
+        }
+        let response = Response(tools: page.map {
+            Entry(name: $0.name, description: String($0.toolDescription.prefix(240)),
+                  group: group($0.name), schemaLoaded: loaded.contains($0.name),
+                  ownerSkillID: $0.ownerSkillID, relatedSkillIDs: relatedSkills[$0.name, default: []])
+        }, total: rows.count, nextAfterName: remaining.count > page.count ? page.last?.name : nil)
+        return String(decoding: try JSONEncoder().encode(response), as: UTF8.self)
+    }
     static var descriptor: ToolCatalog.Descriptor {
         .init(name: name,
               toolDescription: "Load executable schemas by exact tool name or capability. Use skill.search/skill.read when workflow guidance is needed; exact tool calls do not require reading a guide. This search only loads definitions, never executes tools or grants permissions. Prefer an exact name when a group is too large.",
-              parametersJSON: #"{"type":"object","properties":{"query":{"type":"string","minLength":1}},"required":["query"],"additionalProperties":false}"#,
+              parametersJSON: DiscoveryQueries.parametersJSON,
               riskLabels: [], isSideEffecting: false)
     }
 
     static func group(_ name: String) -> String { ToolCapabilityGroups.group(name) }
+
+    static func matches(queries: [String], descriptors: [ToolCatalog.Descriptor]) -> [ToolCatalog.Descriptor] {
+        var seen = Set<String>()
+        return queries.flatMap { matches(query: $0, descriptors: descriptors) }.filter { seen.insert($0.name).inserted }
+    }
 
     static func matches(query: String, descriptors: [ToolCatalog.Descriptor]) -> [ToolCatalog.Descriptor] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -67,14 +116,14 @@ enum ToolDiscovery {
 
     static func index(_ descriptors: [ToolCatalog.Descriptor]) -> String {
         let groups = Dictionary(grouping: descriptors, by: { group($0.name) })
-        return "Tool discovery: full schemas are loaded only for relevant groups. Installed groups: "
+        return "Use tools.list to enumerate all executable tool metadata and skill.list to enumerate installed guides. Tool discovery: full schemas are loaded only for relevant groups. Installed groups: "
             + groups.keys.sorted().map { "\($0) (\(groups[$0]!.count))" }.joined(separator: ", ")
             + ". These groups are installed; schemas load on first relevant tools.search, and deferred does not mean unavailable. Guides are optional workflow help via skill.search/skill.read; exact callable schemas use tools.search. Python execution is exec.localPython (python group), SSH Executor and interactive Terminal are separate. Connection state does not remove installed capabilities. Memory housekeeping is not a prerequisite; continue the actual task after any relevant memory check."
     }
 
     /// Discovery is a presentation budget, never an authority grant.
     static func bounded(_ descriptors: [ToolCatalog.Descriptor], priority: [String], pinned: Set<String> = [], maxTools: Int = 23, maxBytes: Int = 23_000) -> [ToolCatalog.Descriptor] {
-        let core: Set<String> = ["skill.search", "skill.read"]
+        let core: Set<String> = ["skill.search", "skill.read", "skill.list"]
         let ranks = Dictionary(priority.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
         let ordered = descriptors.sorted {
             let a = core.contains($0.name) || pinned.contains($0.name)

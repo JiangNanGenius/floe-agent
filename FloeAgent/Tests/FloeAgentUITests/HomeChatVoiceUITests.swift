@@ -84,6 +84,34 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
         add(management)
     }
 
+    func testMaterialThumbnailsInBothLayouts() throws {
+        app.terminate()
+        app.launchArguments += ["--ui-test-material-fixture"]
+        app.launch()
+        let creative = app.descendants(matching: .any).matching(identifier: "sidebar.creative").firstMatch
+        XCTAssertTrue(creative.waitForExistence(timeout: 8))
+        creative.tap()
+        let materials = app.buttons["canvas.home.materials"]
+        XCTAssertTrue(materials.waitForExistence(timeout: 8))
+        materials.tap()
+        let thumbnail = app.descendants(matching: .any).matching(identifier: "canvas.material.thumbnail.ready").firstMatch
+        XCTAssertTrue(thumbnail.waitForExistence(timeout: 10))
+        // SwiftUI exposes the labelled thumbnail through its containing
+        // button, so compare row/card height, not the thumbnail's width.
+        let listHeight = thumbnail.frame.height
+        let list = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        list.name = "ipad-material-thumbnails-list"
+        list.lifetime = .keepAlways
+        add(list)
+        app.buttons["canvas.materials.layout"].tap()
+        XCTAssertTrue(thumbnail.waitForExistence(timeout: 5))
+        let grid = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        grid.name = "ipad-material-thumbnails-wall"
+        grid.lifetime = .keepAlways
+        add(grid)
+        XCTAssertGreaterThan(thumbnail.frame.height, listHeight)
+    }
+
     func testSettingsOpensAllWorkspaces() throws {
         XCUIDevice.shared.orientation = .portrait
         let settings = app.buttons["sidebar.settings"]

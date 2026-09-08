@@ -18,6 +18,8 @@ public func registerSkillTools(
     ToolCatalog.register(SkillCreateTool.self)
     registry.register(SkillCreateTool(creator: creator))
     if let manager {
+        ToolCatalog.register(SkillListTool.self)
+        registry.register(SkillListTool(manager: manager))
         ToolCatalog.register(SkillSearchTool.self)
         ToolCatalog.register(SkillReadTool.self)
         ToolCatalog.register(SkillManageTool.self)

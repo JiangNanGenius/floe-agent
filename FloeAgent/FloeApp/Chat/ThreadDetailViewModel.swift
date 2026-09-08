@@ -78,6 +78,9 @@ final class ThreadDetailViewModel: ObservableObject {
     /// Persisted messages of the conversation (user goals, final answers).
     @Published private(set) var messages: [PersistedMessage] = []
     @Published private(set) var hasLoaded = false
+    @Published private(set) var earlierEventRunIDs = Set<UUID>()
+    @Published private(set) var loadingEventRunIDs = Set<UUID>()
+    @Published private(set) var loadingEarlierMessages = false
     /// Composer draft text.
     @Published var draft: String = ""
     @Published var selectedModelID: UUID?
@@ -351,7 +354,7 @@ final class ThreadDetailViewModel: ObservableObject {
             center.environment.browserCenter.bind(to: conversationID)
             selectedProjectID = center.environment.workspaceCenter.projectWorkspaceID(for: conversationID)
             stage = "runList"
-            runs = try await center.environment.runStore.runs(conversationID: conversationID)
+            runs = try await center.environment.runStore.recentRuns(conversationID: conversationID, limit: 30)
             if !didRestoreConversationModel {
                 let previousModelID = runs.first?.modelID
                 selectedModelID = center.providerAndModel(modelID: previousModelID) != nil
@@ -361,7 +364,7 @@ final class ThreadDetailViewModel: ObservableObject {
             }
             stage = "messageList"
             let page = try await center.environment.conversationStore.messagePage(
-                conversationID: conversationID, before: nil, limit: 100
+                conversationID: conversationID, before: nil, limit: 20
             )
             messages = page.messages
             earlierMessageCursor = page.earlierCursor
@@ -414,53 +417,74 @@ final class ThreadDetailViewModel: ObservableObject {
             return
         }
         async let selectedEvents = center.environment.runStore.recentEvents(
-            runID: runID, limit: 1_000
+            runID: runID, limit: 51
         )
         async let selectedUsage = center.environment.runStore.usage(runID: runID)
         let (loadedEvents, loadedUsage) = try await (selectedEvents, selectedUsage)
-        events = loadedEvents
-        eventsByRun[runID] = loadedEvents
+        let existing = eventsByRun[runID, default: []]
+        let merged = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+            .merging(Dictionary(loadedEvents.suffix(50).map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })) { _, new in new }
+        events = merged.values.sorted { $0.sequence < $1.sequence }
+        eventsByRun[runID] = events
+        if existing.isEmpty {
+            if loadedEvents.count > 50 { earlierEventRunIDs.insert(runID) }
+            else { earlierEventRunIDs.remove(runID) }
+        }
         usageByRun[runID] = loadedUsage
         // Historical failures already live in this run's ordered timeline.
         // Never resurrect one as a new composer error when it is selected.
         actionError = nil
     }
 
-    /// Hydrates every run represented by the visible message window. The
-    /// conversation projection renders runs, messages and events together;
-    /// loading only the selected run caused older tool calls to disappear
-    /// even though their messages remained on screen.
+    /// Resolve headers only for the visible message window. Tool bodies stay
+    /// lazy, including when the user pages beyond the recent run directory.
     private func hydrateVisibleRunDetails() async throws {
         var visibleRunIDs = Set(messages.compactMap(\.runID))
         if let selectedRunID { visibleRunIDs.insert(selectedRunID) }
-        let missing = visibleRunIDs.filter { eventsByRun[$0] == nil || usageByRun[$0] == nil }
-        guard !missing.isEmpty else { return }
-
-        try await withThrowingTaskGroup(
-            of: (UUID, [RunEventRecord], [RunUsageRecord]).self
-        ) { group in
-            for runID in missing {
-                group.addTask { [center] in
-                    async let events = center.environment.runStore.recentEvents(
-                        runID: runID, limit: 1_000
-                    )
-                    async let usage = center.environment.runStore.usage(runID: runID)
-                    return try await (runID, events, usage)
-                }
-            }
-            for try await (runID, loadedEvents, loadedUsage) in group {
-                eventsByRun[runID] = loadedEvents
-                usageByRun[runID] = loadedUsage
+        let known = Set(runs.map(\.id))
+        for id in visibleRunIDs.subtracting(known) {
+            if let header = try await center.environment.runStore.run(id: id), header.conversationID == conversationID {
+                mergeRunHeaders([header])
             }
         }
-        events = selectedRunID.flatMap { eventsByRun[$0] } ?? []
+        // Historical messages are immediately readable; fetch their tool
+        // chains only when requested, not for every run in the page.
+        earlierEventRunIDs.formUnion(visibleRunIDs.filter { eventsByRun[$0] == nil })
+    }
+
+    private func mergeRunHeaders(_ incoming: [RunRecord]) {
+        var headers = Dictionary(uniqueKeysWithValues: runs.map { ($0.id, $0) })
+        for header in incoming { headers[header.id] = header }
+        runs = headers.values.sorted { ($0.startedAt, $0.id.uuidString) > ($1.startedAt, $1.id.uuidString) }
+    }
+
+    func loadEarlierEvents(runID: UUID) async {
+        guard loadingEventRunIDs.insert(runID).inserted else { return }
+        defer { loadingEventRunIDs.remove(runID) }
+        do {
+            let current = eventsByRun[runID, default: []]
+            let page: [RunEventRecord]
+            if let first = current.first {
+                page = try await center.environment.runStore.earlierEvents(runID: runID, beforeSequence: first.sequence, limit: 51)
+            } else {
+                page = try await center.environment.runStore.recentEvents(runID: runID, limit: 51)
+            }
+            let latest = eventsByRun[runID, default: []]
+            let known = Set(latest.map(\.id))
+            eventsByRun[runID] = (page.suffix(50).filter { !known.contains($0.id) } + latest).sorted { $0.sequence < $1.sequence }
+            if page.count > 50 { earlierEventRunIDs.insert(runID) }
+            else { earlierEventRunIDs.remove(runID) }
+            if selectedRunID == runID { events = eventsByRun[runID, default: []] }
+        } catch { actionError = presentableError(error, stage: "olderEvents") }
     }
 
     func loadEarlierMessages() async {
-        guard hasEarlierMessages, let earlierMessageCursor else { return }
+        guard !loadingEarlierMessages, hasEarlierMessages, let earlierMessageCursor else { return }
+        loadingEarlierMessages = true
+        defer { loadingEarlierMessages = false }
         do {
             let page = try await center.environment.conversationStore.messagePage(
-                conversationID: conversationID, before: earlierMessageCursor, limit: 100
+                conversationID: conversationID, before: earlierMessageCursor, limit: 30
             )
             let knownIDs = Set(messages.map(\.id))
             messages = page.messages.filter { !knownIDs.contains($0.id) } + messages
@@ -488,7 +512,8 @@ final class ThreadDetailViewModel: ObservableObject {
             isRunning: showsLiveTail,
             liveStreamedText: liveStreamedText,
             liveReasoningText: liveReasoningText,
-            pendingApprovals: pendingApprovals
+            pendingApprovals: pendingApprovals,
+            earlierEventRunIDs: earlierEventRunIDs
         )
     }
 
@@ -554,7 +579,7 @@ final class ThreadDetailViewModel: ObservableObject {
             // The atomic launch returns a durable run identity immediately.
             // Subscribe before awaiting the provider loop so the UI no longer
             // waits for the first token or races a very fast completion.
-            runs = try await center.environment.runStore.runs(conversationID: conversationID)
+            mergeRunHeaders(try await center.environment.runStore.recentRuns(conversationID: conversationID, limit: 30))
             selectedRunID = started.runID
             try await loadSelectedRunDetails()
             startLiveUpdates()
@@ -667,7 +692,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 runID: runID,
                 startOrigin: .explicitUserAction
             )
-            runs = try await center.environment.runStore.runs(conversationID: conversationID)
+            mergeRunHeaders(try await center.environment.runStore.recentRuns(conversationID: conversationID, limit: 30))
             selectedRunID = started.runID
             try await loadSelectedRunDetails()
             startLiveUpdates()
@@ -888,14 +913,22 @@ final class ThreadDetailViewModel: ObservableObject {
                     self.earlierMessageCursor = snapshot.earlierMessageCursor
                     self.hasEarlierMessages = snapshot.hasEarlierMessages
                 }
-                self.runs = snapshot.runs
-                self.eventsByRun.merge(snapshot.eventsByRun) { _, newest in newest }
+                self.mergeRunHeaders(snapshot.runs)
+                for (runID, incoming) in snapshot.eventsByRun {
+                    let existing = self.eventsByRun[runID, default: []]
+                    if existing.isEmpty, incoming.count > 50 { self.earlierEventRunIDs.insert(runID) }
+                    let tail = incoming.suffix(50)
+                    let updated = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+                        .merging(Dictionary(tail.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })) { _, new in new }
+                    self.eventsByRun[runID] = updated.values.sorted { $0.sequence < $1.sequence }
+                }
+                self.earlierEventRunIDs.formUnion(self.messages.compactMap(\.runID).filter { self.eventsByRun[$0] == nil })
                 if wasFollowingLatest || self.selectedRunID.flatMap({ id in
-                    snapshot.runs.first(where: { $0.id == id })
+                    self.runs.first(where: { $0.id == id })
                 }) == nil {
                     self.selectedRunID = snapshot.runs.first?.id
                 }
-                self.events = self.selectedRunID.flatMap { snapshot.eventsByRun[$0] } ?? []
+                self.events = self.selectedRunID.flatMap { self.eventsByRun[$0] } ?? []
                 self.latestPlan = snapshot.latestPlan
                 // Keep Plan mode in sync when a plan becomes ready or still
                 // awaits input, so reopening never drops the active mode.
@@ -1071,7 +1104,7 @@ final class ThreadDetailViewModel: ObservableObject {
         // "thinking" state merely because historical runs were not prefetched.
         guard !Task.isCancelled else { return }
         if let page = try? await center.environment.conversationStore.messagePage(
-            conversationID: conversationID, before: nil, limit: 100
+            conversationID: conversationID, before: nil, limit: 20
         ) {
             let known = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
             let merged = known.merging(
@@ -1085,8 +1118,10 @@ final class ThreadDetailViewModel: ObservableObject {
                 hasEarlierMessages = page.hasEarlier
             }
         }
-        runs = (try? await center.environment.runStore
-            .recentRuns(conversationID: conversationID, limit: 160)) ?? runs
+        if let latestRuns = try? await center.environment.runStore
+            .recentRuns(conversationID: conversationID, limit: 30) {
+            mergeRunHeaders(latestRuns)
+        }
         // Refresh only the selected run. Other run details remain lazy and are
         // loaded by `selectRun`, so completion remains bounded on long tasks.
         try? await loadSelectedRunDetails()

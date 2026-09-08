@@ -693,6 +693,24 @@ struct ThreadTimelineTests {
         })
     }
 
+    @Test("Historical tool chains stay collapsed while their older-page entry remains available")
+    func historicalToolChainsRemainLazy() {
+        let conversationID = UUID()
+        let previous = makeRun(state: "completed", conversationID: conversationID)
+        let current = makeRun(state: "running", conversationID: conversationID)
+        let event = makeEvent(runID: previous.id, sequence: 51, kind: .reasoning, payload: ["text": "Historical reasoning"])
+        let items = ThreadTimelineBuilder.buildConversation(
+            messages: [], runs: [previous, current], eventsByRun: [previous.id: [event]],
+            liveRunID: current.id, isRunning: true, liveStreamedText: "", liveReasoningText: "",
+            pendingApprovals: [], earlierEventRunIDs: [previous.id])
+        #expect(items.contains { if case .earlierEvents(let id) = $0 { return id == previous.id }; return false })
+        let groups = items.compactMap { item -> Bool? in
+            if case .stepGroup(let events, let isLatest) = item, events.first?.runID == previous.id { return isLatest }
+            return nil
+        }
+        #expect(groups == [false])
+    }
+
     @Test("A suspended run keeps its pending approval card actionable")
     func suspendedRunKeepsApprovalCard() throws {
         let conversationID = UUID()

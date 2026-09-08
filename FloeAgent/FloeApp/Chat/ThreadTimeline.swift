@@ -31,6 +31,7 @@ import FloeAgentRuntime
 
 /// One row of the unified thread timeline.
 enum ThreadTimelineItem: Identifiable, Hashable {
+    case earlierEvents(runID: UUID)
     /// The goal message that started the selected run.
     case userMessage(PersistedMessage)
     /// The final assistant answer of the selected run (from an
@@ -57,6 +58,8 @@ enum ThreadTimelineItem: Identifiable, Hashable {
 
     var id: String {
         switch self {
+        case .earlierEvents(let runID):
+            return "earlier-events.\(runID.uuidString)"
         case .userMessage(let message):
             return "user.\(message.id.uuidString)"
         case .assistantMessage(_, let idSuffix):
@@ -92,13 +95,17 @@ enum ThreadTimelineBuilder {
         isRunning: Bool,
         liveStreamedText: String,
         liveReasoningText: String,
-        pendingApprovals: [PendingApproval]
+        pendingApprovals: [PendingApproval],
+        earlierEventRunIDs: Set<UUID> = []
     ) -> [ThreadTimelineItem] {
         let sortedRuns = runs.sorted { $0.startedAt < $1.startedAt }
         var result: [ThreadTimelineItem] = []
         for run in sortedRuns {
             let isLive = run.id == liveRunID && isRunning
-            result += build(
+            if earlierEventRunIDs.contains(run.id) {
+                result.append(.earlierEvents(runID: run.id))
+            }
+            let runItems = build(
                 messages: messages,
                 events: eventsByRun[run.id, default: []],
                 run: run,
@@ -110,6 +117,12 @@ enum ThreadTimelineBuilder {
                 // the timeline until the runtime consumes the answer.
                 pendingApprovals: pendingApprovals.filter { $0.runID == run.id }
             )
+            result += runItems.map { item in
+                if run.id != liveRunID, case .stepGroup(let events, _) = item {
+                    return .stepGroup(events: events, isLatest: false)
+                }
+                return item
+            }
         }
         let represented = Set(sortedRuns.map(\.id))
         let taskLevel = messages.filter {

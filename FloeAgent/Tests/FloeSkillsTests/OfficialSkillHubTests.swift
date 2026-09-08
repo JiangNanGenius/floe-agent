@@ -6,6 +6,21 @@ import ZIPFoundation
 
 @Suite("Official signed Skill Hub")
 struct OfficialSkillHubTests {
+    @Test func appBundleAdvancesOnlyUnmodifiedOfficialInstalls() {
+        func allows(_ source: String?, _ installed: String = "1.0.0", _ bundle: String = "1.3.0", _ digest: String = "same") -> Bool {
+            OfficialSkillHub.acceptsBundledUpgrade(id: "floe-pdf", sourceURL: source,
+                installedVersion: installed, bundledVersion: bundle,
+                sourceDigest: "same", installedDigest: digest)
+        }
+        #expect(allows("floe-builtin://floe-pdf"))
+        #expect(allows("https://github.com/JiangNanGenius/floe-agent/blob/abc/skill-hub/catalog.json"))
+        #expect(!allows("https://github.com/other/floe-agent/blob/abc/skill-hub/catalog.json"))
+        #expect(!allows("floe-creator://local/floe-pdf"))
+        #expect(!allows(nil))
+        #expect(!allows("floe-builtin://floe-pdf", "1.3.0", "1.3.0"))
+        #expect(!allows("floe-builtin://floe-pdf", "2.0.0"))
+        #expect(!allows("floe-builtin://floe-pdf", "1.0.0", "1.3.0", "user-edit"))
+    }
     private var repository: URL {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     }

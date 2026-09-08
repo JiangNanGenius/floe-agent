@@ -536,6 +536,38 @@ struct SkillLifecycleTests {
         #expect(try Data(contentsOf: backups[0].appendingPathComponent("floe.json")) == manifest)
     }
 
+    @Test("Application upgrade replaces an older bundled plugin while retaining disabled state")
+    @MainActor func olderBundledPluginUpgradesWithoutEnabling() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bundled-upgrade-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let center = SkillsCenter(environment: environment, installationRoot: root)
+        _ = try await center.readSkills(id: "floe-pdf")
+        var old = try #require(try await environment.skillStore.all().first { $0.id == "floe-pdf" })
+        let latestVersion = old.version
+        let latestDigest = old.rewrittenDigest
+        let manifestURL = root.appendingPathComponent("floe-pdf/floe.json")
+        var manifest = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
+        manifest["version"] = "1.0.0"
+        let bytes = try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
+        try bytes.write(to: manifestURL)
+        let package = try SkillPackageValidator().validate(packageAt: root.appendingPathComponent("floe-pdf"))
+        old.version = "1.0.0"
+        old.status = "disabled"
+        old.manifestJSON = String(decoding: bytes, as: UTF8.self)
+        old.rewrittenDigest = package.canonicalSHA256
+        old.sourceDigest = package.canonicalSHA256
+        try await environment.skillStore.save(old)
+        let reopened = SkillsCenter(environment: environment, installationRoot: root)
+        _ = try await reopened.readSkills(id: "floe-pdf")
+        let upgraded = try #require(try await environment.skillStore.all().first { $0.id == "floe-pdf" })
+        #expect(upgraded.version == latestVersion)
+        #expect(upgraded.rewrittenDigest == latestDigest)
+        #expect(upgraded.status == "disabled")
+        #expect(reopened.builtinSeedFailures.isEmpty)
+    }
+
     @Test("Removing an official plugin survives reseeding and can be explicitly reinstalled")
     @MainActor func officialRemovalAndReinstall() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("skill-market-\(UUID())")

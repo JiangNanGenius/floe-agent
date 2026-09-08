@@ -30,6 +30,8 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 [查看更新范围、验证状态与操作截图](docs/WORKFLOW_UPGRADE.md)。这里描述的是当前开发分支，TestFlight 可用性另行确认。
 
+[完整实施与验收清单](docs/WORKFLOW_UPGRADE_IMPLEMENTATION.md)明确 Office 前端目标：真实文档页面、电子表格网格和幻灯片对象，右侧只读，进入全屏才能编辑。工具与 Skill 目录、多查询搜索、内置插件升级和聊天历史分页同步实施。[本轮测试证据与截图](docs/evidence/workflow-upgrade-20260909/README.md)分别记录已验证流程和待验收内容。
+
 ## 为什么使用 Floe Agent
 
 - **自带模型。** 用户自行连接兼容服务商，并可分别设置 Agent、识图、生图和图片编辑模型。

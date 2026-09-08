@@ -1,0 +1,47 @@
+✔ Test listAndDetailAreStructuredAndReadOnly() passed after 0.007 seconds.
+✔ Test workflowSearchFindsCapabilitiesWithoutActivation() passed after 0.008 seconds.
+✔ Test appBundleAdvancesOnlyUnmodifiedOfficialInstalls() passed after 0.008 seconds.
+✔ Test "Remote guide discovers subgroups without activating all tools" passed after 0.008 seconds.
+✔ Test explicitListNeverReturnsInstructionsOrMutates() passed after 0.009 seconds.
+✔ Test "Unknown keys, changed catalog, unsupported app and foreign source fail closed" passed after 0.010 seconds.
+✔ Test noGrantCannotMutate() passed after 0.010 seconds.
+✔ Test "Unsafe and case-colliding ZIP entries never materialize files" passed after 0.010 seconds.
+✔ Test exactArgumentsAndNoTraversal() passed after 0.010 seconds.
+✔ Suite "Skill management contracts" passed after 0.011 seconds.
+✔ Test "Real published ZIPs match signed catalog and installable package digests" passed after 0.024 seconds.
+✔ Suite "Official signed Skill Hub" passed after 0.024 seconds.
+✔ Test run with 10 tests in 2 suites passed after 0.024 seconds.
+✔ Test "v1/v2 core tables survive the v3 migration" passed after 0.223 seconds.
+✔ Test "Migration preserves v3 and reaches the current schema" passed after 0.226 seconds.
+✔ Test "Checkpoint upserts by run and reads back body" passed after 0.230 seconds.
+✔ Test "Run events append with monotonic per-run sequence" passed after 0.237 seconds.
+✔ Test "Remote session lifecycle: upsert, active filter, state update, remove" passed after 0.245 seconds.
+✔ Test "Recent message window returns the newest page in chronological order" passed after 0.245 seconds.
+✔ Test "Conversation + message + parts round-trip in order" passed after 0.380 seconds.
+✔ Test "Usage and structured errors round-trip" passed after 0.388 seconds.
+✔ Test "Timeline migrations install keyset indexes" passed after 0.397 seconds.
+✔ Test "Attachment round-trip preserves security-scoped bookmark bytes" passed after 0.404 seconds.
+✔ Test "v3 creates the new thread/session tables" passed after 0.404 seconds.
+✔ Test "Deleting a conversation cascades messages, parts and attachments" passed after 0.420 seconds.
+✔ Test "Message cursor pages do not repeat or omit equal-timestamp rows" passed after 0.436 seconds.
+✔ Test "Recent run and event windows are newest-first bounded queries" passed after 3.125 seconds.
+✔ Test "Ten-thousand-message page stays bounded and batch-hydrates parts" passed after 5.528 seconds.
+✔ Suite "FloePersistence.V3AgentDaily" passed after 5.528 seconds.
+✔ Test run with 15 tests in 1 suite passed after 5.528 seconds.
+✔ Test upwardReadingStopsAndManualBottomRestores() passed after 0.001 seconds.
+✔ Test returnButtonRestoresIntentBeforeScrollLayoutCompletes() passed after 0.001 seconds.
+✔ Test contentGrowthCannotTurnOffFollow() passed after 0.001 seconds.
+✔ Suite LatestMessageFollowStateTests passed after 0.001 seconds.
+✔ Test run with 3 tests in 1 suite passed after 0.001 seconds.
+✔ Test "The executable registry is authoritative; static-only declarations stay hidden" passed after 0.001 seconds.
+✔ Test "Chinese mail discovery selects only available mail runners" passed after 0.001 seconds.
+✔ Test "Description fallback does not activate unrelated tools in the same group" passed after 0.001 seconds.
+✔ Test "VNC discovery loads the whole lifecycle and SSH, not unrelated groups" passed after 0.001 seconds.
+✔ Test "Discovery never invents or restores tools outside the supplied ceiling" passed after 0.001 seconds.
+✔ Test "Chinese skill discovery loads the available lifecycle without unrelated tools" passed after 0.001 seconds.
+✔ Test "Executor and interactive Terminal are separate roles despite the SSH prefix" passed after 0.001 seconds.
+✔ Test "Exact lookup and bounded presentation keep requested tools and the skill reader" passed after 0.001 seconds.
+✔ Test batchExactAndCapabilityQueriesDoNotMaskEachOther() passed after 0.002 seconds.
+✔ Test directoryPagingDoesNotLoadOrTruncateToSchemaBudget() passed after 0.007 seconds.
+✔ Suite "Deferred tool discovery" passed after 0.007 seconds.
+✔ Test run with 10 tests in 1 suite passed after 0.007 seconds.

@@ -18,6 +18,7 @@ final class SkillsCenter: ObservableObject {
         var instructions: String?
         var preapprovedPythonScriptSHA256: Set<String>
         var preapprovedPythonPackages: Set<String>
+        var relatedSkillIDsByTool: [String: [String]] = [:]
 
         static let none = RuntimeSelection(
             skillIDs: [], allowedToolNames: nil, instructions: nil,
@@ -458,6 +459,7 @@ final class SkillsCenter: ObservableObject {
         guard !enabled.isEmpty else { return .none }
 
         var activeIDs: Set<String> = []
+        var relatedSkillIDsByTool: [String: [String]] = [:]
         var instructionBlocks: [String] = []
         var preapprovedPythonScriptSHA256: Set<String> = []
         var preapprovedPythonPackages: Set<String> = []
@@ -468,6 +470,8 @@ final class SkillsCenter: ObservableObject {
             let granted = (try? await environment.skillStore.allowedCapabilities(skillID: skill.id)) ?? []
             let effective = Set(manifest.capabilities).intersection(granted)
             activeIDs.insert(skill.id)
+            let references = Set(manifest.tools + (DomainSkillLibrary.all.first { $0.id == skill.id }?.toolNames ?? []))
+            for name in references { relatedSkillIDsByTool[name, default: []].append(skill.id) }
 
             if manifest.scriptRuntime == .localPython,
                effective.contains(SkillCapability.localPython.rawValue),
@@ -494,7 +498,8 @@ final class SkillsCenter: ObservableObject {
             allowedToolNames: nil,
             instructions: instructionBlocks.joined(separator: "\n\n"),
             preapprovedPythonScriptSHA256: preapprovedPythonScriptSHA256,
-            preapprovedPythonPackages: preapprovedPythonPackages
+            preapprovedPythonPackages: preapprovedPythonPackages,
+            relatedSkillIDsByTool: relatedSkillIDsByTool.mapValues { $0.sorted() }
         )
     }
 
@@ -698,10 +703,19 @@ final class SkillsCenter: ObservableObject {
 
                 let existing = try? await environment.skillStore.all().first { $0.id == definition.id }
                 if let existing {
-                    // Initial installation is bundled/offline. Subsequent
-                    // official updates must come through the signed GitHub
-                    // path, never a local rewrite or app-launch reseed.
-                    if OfficialSkillHub.skillIDs.contains(definition.id) { continue }
+                    if OfficialSkillHub.skillIDs.contains(definition.id) {
+                        guard OfficialSkillHub.acceptsBundledUpgrade(id: definition.id,
+                            sourceURL: existing.sourceURL, installedVersion: existing.version,
+                            bundledVersion: definition.version, sourceDigest: existing.sourceDigest,
+                            installedDigest: existing.rewrittenDigest),
+                              (try? SkillContentSnapshot(root: installationRoot.appendingPathComponent(existing.id),
+                                  expectedDigest: existing.rewrittenDigest)) != nil else { continue }
+                        try await installCanonicalPackage(at: temporary,
+                            sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
+                            initialStatus: existing.status, replaceExisting: true, bundledSeed: true)
+                        updatedSeeds[definition.id] = package.canonicalSHA256
+                        continue
+                    }
                     // App bundles never replace a GitHub/user-managed source.
                     guard existing.sourceURL == DomainSkillLibrary.sourceURL(for: definition.id) else { continue }
                     let bundledIsNewer = Self.isVersion(definition.version, newerThan: existing.version)

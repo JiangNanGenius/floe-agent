@@ -1,0 +1,9 @@
+✔ Test "descriptor is side-effecting network + file write" passed after 0.002 seconds.
+✔ Test errorResponseNeverReplacesDestination() passed after 0.016 seconds.
+✔ Test "execution without a task workspace fails honestly" passed after 0.022 seconds.
+✔ Test "LAN diagnostic targets validate without DNS" passed after 0.022 seconds.
+✔ Test "destination must be a safe workspace-relative path" passed after 0.025 seconds.
+✔ Test "registration wires catalog and runner" passed after 0.028 seconds.
+✔ Test "metadata endpoints and credential URLs are rejected" passed after 0.033 seconds.
+✔ Suite "FloeExecution.URLDownload" passed after 0.034 seconds.
+✔ Test run with 7 tests in 1 suite passed after 0.034 seconds.

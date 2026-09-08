@@ -355,6 +355,17 @@ struct V3AgentDailyTests {
         #expect(events.count == 1_000)
         #expect(events.first?.sequence == 501)
         #expect(events.last?.sequence == 1_500)
+        var before = 1_501
+        var restored: [Int] = []
+        while true {
+            let page = try await runStore.earlierEvents(runID: runID, beforeSequence: before, limit: 50)
+            guard let first = page.first else { break }
+            #expect(page.count <= 50)
+            #expect(page.allSatisfy { $0.sequence < before })
+            restored = page.map(\.sequence) + restored
+            before = first.sequence
+        }
+        #expect(restored == Array(1...1_500))
         let resumed = try await runStore.events(
             runID: runID, afterSequence: 1_490, limit: 6
         )

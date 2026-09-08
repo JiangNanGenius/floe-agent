@@ -14,6 +14,19 @@ private actor ManagedSkillFixture: SkillManaging {
 
 @Suite("Skill management contracts")
 struct SkillManagementTests {
+    @Test func explicitListNeverReturnsInstructionsOrMutates() async throws {
+        let manager = ManagedSkillFixture()
+        let tool = SkillListTool(manager: manager)
+        let output = try await tool.execute(.init(limit: 1), context: ToolContext(runID: UUID(), cancellation: CancellationToken()))
+        let object = try #require(JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any])
+        let rows = try #require(object["skills"] as? [[String: Any]])
+        #expect(rows.count == 1)
+        #expect(rows.first?["markdown"] == nil)
+        #expect(object["total"] as? Int == 1)
+        #expect(await manager.mutations == 0)
+        let empty = try await tool.execute(.init(afterID: "example"), context: ToolContext(runID: UUID(), cancellation: CancellationToken()))
+        #expect(empty.summary.contains("\"skills\":[]"))
+    }
     @Test func workflowSearchFindsCapabilitiesWithoutActivation() {
         let rows = ["floe-python", "floe-office", "floe-network", "floe-pdf"].map {
             ManagedSkill(id: $0, name: $0, version: "1.0.0", enabled: true, digest: "test")

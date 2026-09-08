@@ -184,7 +184,7 @@ public struct CatalogToolExecutor: ToolExecutor {
                 outputDigest: output.fullOutputSHA256,
                 exitStatus: output.exitStatus,
                 artifacts: output.artifacts,
-                maximumSummaryCharacters: call.toolName == "skill.read" ? 262_144 : 4096
+                maximumSummaryCharacters: ["skill.read", "skill.list", "skill.search"].contains(call.toolName) ? 262_144 : 4096
             )
         } catch let error as FloeError where error == .cancelled {
             return ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
@@ -249,6 +249,7 @@ public actor FloeAgentRuntime {
         public var conversationMode: ConversationMode
         /// Installed instruction skills selected for this activation.
         public var activeSkillIDs: Set<String>
+        public var relatedSkillIDsByTool: [String: [String]]
         /// Tool ceiling after skill declarations, device compatibility and
         /// user grants are intersected. `nil` preserves legacy no-skill runs.
         public var allowedToolNames: Set<String>?
@@ -304,6 +305,7 @@ public actor FloeAgentRuntime {
             model: ModelProfile,
             conversationMode: ConversationMode = .chat,
             activeSkillIDs: Set<String> = [],
+            relatedSkillIDsByTool: [String: [String]] = [:],
             allowedToolNames: Set<String>? = nil,
             preapprovedPythonScriptSHA256: Set<String> = [],
             preapprovedPythonPackages: Set<String> = [],
@@ -328,6 +330,7 @@ public actor FloeAgentRuntime {
             self.model = model
             self.conversationMode = conversationMode
             self.activeSkillIDs = activeSkillIDs
+            self.relatedSkillIDsByTool = relatedSkillIDsByTool
             self.allowedToolNames = allowedToolNames
             self.preapprovedPythonScriptSHA256 = preapprovedPythonScriptSHA256
             self.preapprovedPythonPackages = preapprovedPythonPackages
@@ -1131,13 +1134,14 @@ public actor FloeAgentRuntime {
         // Restore recently used groups without replaying a discovery call.
         let recentGroups = Set(executionLedger.entries.suffix(6).map { ToolDiscovery.group($0.toolName) })
         catalogDescriptors = catalogDescriptors.filter {
-            ["skill.search", "skill.read"].contains($0.name) || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
+            ["skill.search", "skill.read", "skill.list"].contains($0.name) || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
         }
         let statefulGroups: Set<String> = ["vnc", "executor", "terminal"]
         let pinned = Set(catalogDescriptors.filter { statefulGroups.contains(ToolDiscovery.group($0.name)) && recentGroups.contains(ToolDiscovery.group($0.name)) }.map(\.name))
         catalogDescriptors = ToolDiscovery.bounded(catalogDescriptors, priority: discoveryPriority, pinned: pinned)
         discoveredToolNames = Set(catalogDescriptors.map(\.name))
         catalogDescriptors.append(ToolDiscovery.descriptor)
+        catalogDescriptors.append(ToolDiscovery.listDescriptor)
         // Prerequisite wording belongs to the current user turn. Do not let a
         // historical SSH-before-VNC request constrain a later, unrelated turn.
         let statefulRouteGoal = messages.last(where: { $0.role == "user" })?.content ?? ""
@@ -2223,19 +2227,49 @@ public actor FloeAgentRuntime {
         // Phase 1 — resolve serially (approval escalation blocks).
         for call in calls {
             if resultsByID[call.id] != nil { continue }
+            if call.toolName == ToolDiscovery.listName {
+                let result: ToolResult
+                do {
+                    let output = try ToolDiscovery.list(arguments: call.argumentsJSON,
+                        descriptors: discoverableDescriptors + [ToolDiscovery.descriptor, ToolDiscovery.listDescriptor],
+                        loaded: discoveredToolNames.union([ToolDiscovery.name, ToolDiscovery.listName]),
+                        relatedSkills: configuration.relatedSkillIDsByTool)
+                    result = ToolResult(callID: call.id, status: .ok, outputSummary: output, outputDigest: "", maximumSummaryCharacters: 262_144)
+                } catch {
+                    result = ToolResult(callID: call.id, status: .failed, outputSummary: "Invalid list: \(error)", outputDigest: "")
+                }
+                await audit(toolCall: call, result: result, decision: "tool-directory")
+                resultsByID[call.id] = result
+                continue
+            }
             if call.toolName == ToolDiscovery.name {
-                let query = (try? JSONSerialization.jsonObject(with: call.argumentsJSON)) as? [String: String]
-                let matches = ToolDiscovery.matches(query: query?["query"] ?? "", descriptors: discoverableDescriptors)
+                let queries: [String]
+                do {
+                    queries = try JSONDecoder().decode(DiscoveryQueries.self, from: call.argumentsJSON).validated()
+                } catch {
+                    let result = ToolResult(callID: call.id, status: .failed, outputSummary: "Invalid search: \(error)", outputDigest: "")
+                    await audit(toolCall: call, result: result, decision: "deny:invalid-discovery")
+                    resultsByID[call.id] = result
+                    continue
+                }
+                let matches = ToolDiscovery.matches(queries: queries, descriptors: discoverableDescriptors)
                 let selected = ToolDiscovery.bounded(matches + discoverableDescriptors.filter { ["skill.read", "skill.search"].contains($0.name) && !matches.map(\.name).contains($0.name) }, priority: matches.map(\.name))
                 let names = selected.map(\.name)
                 discoveredToolNames.formUnion(names)
                 discoveryPriority = names + discoveryPriority.filter { !names.contains($0) }
                 let deferred = matches.filter { !names.contains($0.name) }.map(\.name)
-                let summary = matches.isEmpty
+                let matchedSummary = matches.isEmpty
                     ? "No matching executable tool in this task's capability set. " + ToolDiscovery.index(discoverableDescriptors)
-                    : "Loaded for the next request:\n" + selected.map { $0.name + ": " + String($0.toolDescription.prefix(160)) }.joined(separator: "\n")
+                    : "Loaded for the next request:\n" + selected.map { descriptor in
+                        descriptor.name + ": " + String(descriptor.toolDescription.prefix(160))
+                            + " [ownerSkillID=" + (descriptor.ownerSkillID ?? "none (underlying registered capability)")
+                            + "; relatedSkillIDs=" + configuration.relatedSkillIDsByTool[descriptor.name, default: []].joined(separator: ",") + "]"
+                    }.joined(separator: "\n")
                         + (deferred.isEmpty ? "" : "\nNot yet loaded (schema budget): \(deferred.joined(separator: ", ")). Search one exact name when needed, not the same broad query.")
-                let result = ToolResult(callID: call.id, status: .ok, outputSummary: summary, outputDigest: "")
+                let querySummary = queries.map { query in
+                    query + " => " + ToolDiscovery.matches(query: query, descriptors: discoverableDescriptors).map(\.name).joined(separator: ", ")
+                }.joined(separator: "\n")
+                let result = ToolResult(callID: call.id, status: .ok, outputSummary: querySummary + "\n" + matchedSummary, outputDigest: "", maximumSummaryCharacters: 262_144)
                 await audit(toolCall: call, result: result, decision: "allow:tool-discovery")
                 resultsByID[call.id] = result
                 continue

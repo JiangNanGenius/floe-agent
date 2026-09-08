@@ -61,6 +61,8 @@ struct ToolCallCardView: View {
         HStack(spacing: 8) {
             Image(systemName: statusIcon)
                 .foregroundStyle(statusColor)
+                .contentTransition(.symbolEffect(.replace))
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: status)
                 .accessibilityHidden(true)
             Text(name)
                 .font(FloeTheme.Typography.metadata.weight(.semibold))

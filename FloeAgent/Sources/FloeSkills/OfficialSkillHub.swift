@@ -8,6 +8,22 @@ public enum OfficialSkillHub {
     public static let repository = "floe-agent"
     public static let catalogPath = "skill-hub/catalog.json"
     public static let skillIDs: Set<String> = ["floe-pdf", "floe-office", "floe-network"]
+    /// App-signed bundles may advance an unmodified official install offline.
+    /// This does not authorize imports, downgrades, or same-version rewrites.
+    public static func acceptsBundledUpgrade(id: String, sourceURL: String?,
+                                             installedVersion: String, bundledVersion: String,
+                                             sourceDigest: String?, installedDigest: String) -> Bool {
+        guard skillIDs.contains(id), sourceDigest == installedDigest,
+              let installed = try? version(installedVersion),
+              let bundled = try? version(bundledVersion), installed.lexicographicallyPrecedes(bundled) else { return false }
+        if sourceURL == BundledDomainSkills.sourceURL(for: id) { return true }
+        guard let sourceURL, let url = URL(string: sourceURL), url.scheme == "https",
+              url.host == "github.com", url.user == nil, url.password == nil,
+              url.query == nil, url.fragment == nil, url.port == nil else { return false }
+        let parts = url.path.split(separator: "/").map(String.init)
+        return parts.count == 6 && parts[0] == owner && parts[1] == repository
+            && parts[2] == "blob" && parts[4] == "skill-hub" && parts[5] == "catalog.json"
+    }
     public static func source() throws -> GitHubSkillSource {
         try GitHubSkillSource(owner: owner, repository: repository, ref: "main", path: catalogPath)
     }

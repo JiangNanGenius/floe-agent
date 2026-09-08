@@ -159,8 +159,16 @@ public struct HTTPRequestService: Sendable {
         } catch {
             throw HTTPRequestError.requestFailed(error.localizedDescription)
         }
+        return try Self.commitDownload(temporary: temporary, response: response, maxBytes: maxBytes, destination: destination)
+    }
+
+    static func commitDownload(temporary: URL, response: URLResponse, maxBytes: Int, destination: URL) throws -> DownloadResult {
         let http = response as? HTTPURLResponse
         let statusCode = http?.statusCode ?? 0
+        guard (200...299).contains(statusCode) else {
+            try? FileManager.default.removeItem(at: temporary)
+            throw HTTPRequestError.requestFailed("download returned HTTP \(statusCode); no destination file was created")
+        }
         let contentType = http?.value(forHTTPHeaderField: "Content-Type") ?? ""
         let size = (try? FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber)?
             .int64Value ?? 0

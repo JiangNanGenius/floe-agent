@@ -1,0 +1,74 @@
+Test Suite 'Selected tests' started at 2026-09-09 05:53:12.435.
+Test Suite 'FloeAppTests.xctest' started at 2026-09-09 05:53:12.479.
+Test Suite 'FloeAppTests.xctest' passed at 2026-09-09 05:53:12.480.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' passed at 2026-09-09 05:53:12.484.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.049) seconds
+✔ Test "Remote reference import rejects local and private destinations" passed after 0.114 seconds.
+✔ Test "Reference import failures are actionable" passed after 0.016 seconds.
+✔ Suite "FloeApp.CreativeAssetIngestion" passed after 0.136 seconds.
+✔ Test "Long PDF conversion preserves pagination, final content and distinct Unicode aliases" passed after 22.914 seconds.
+✔ Test "Offline document conversions preserve Chinese, formatting, tables and source bytes" passed after 30.886 seconds.
+✔ Test "Conversion embeds local images and refuses missing, remote or escaping assets" passed after 26.866 seconds.
+✔ Test "Task deletion retains failed cleanup and replays without touching a symlink target" passed after 0.727 seconds.
+✔ Test "Workspace manager keeps the task root unchanged and reports batch failures" passed after 0.098 seconds.
+✔ Test "Inline PDF session reloads modified documents and surfaces corrupt content" passed after 0.200 seconds.
+✔ Test "PDF export preserves real text and PNG output without overwriting" passed after 0.087 seconds.
+✔ Test "Encrypted PDF unlock uses approved credential references and preserves its source" passed after 0.104 seconds.
+✔ Test "Native PDF annotation, form, metadata and page workflows round-trip" passed after 0.149 seconds.
+✔ Test "Raster redaction requires consent and removes original text and annotations" passed after 0.034 seconds.
+✔ Test "Region replacement reflows searchable text without retaining covered text" passed after 0.107 seconds.
+✔ Test "On-device OCR adds searchable text to a raster-only PDF" passed after 1.207 seconds.
+✔ Test "Native PDF image insert, replacement and removal form a complete workflow" passed after 0.022 seconds.
+✔ Test "PDF edit enforces revision and new-output boundaries" passed after 0.014 seconds.
+✔ Test "Native RAR5 extraction verifies bytes and never overwrites output" passed after 0.006 seconds.
+✔ Test "RAR compressed payloads round-trip; links, encryption and incomplete volumes fail atomically" passed after 0.017 seconds.
+✔ Test "Native PDF text replacement removes the old text instead of covering it" passed after 0.003 seconds.
+✔ Test reviewedUpgradeRollbackAndRunningVersionPin() passed after 0.464 seconds.
+✔ Test createReadUpdateDisableRemovePreservesPackageAndConflicts() passed after 0.483 seconds.
+✔ Test "Application upgrade replaces an older bundled plugin while retaining disabled state" passed after 0.280 seconds.
+✔ Test "Removing an official plugin survives reseeding and can be explicitly reinstalled" passed after 0.326 seconds.
+✔ Test firstReadSeedsGuidesAndKeepsPythonIndependent() passed after 2.610 seconds.
+✔ Suite "FloeApp.SkillLifecycle" passed after 88.117 seconds.
+✔ Test "A live argument stream outlasts watchdog deadlines; a silent stream still fails" passed after 0.894 seconds.
+✔ Test "Short SSE events are delivered before more bytes or EOF arrive" passed after 0.001 seconds.
+✔ Test "Long text writes retain complete arguments while other tools keep their limit" passed after 0.034 seconds.
+✔ Test "Responses argument fragments are activity, not executable tool calls" passed after 0.005 seconds.
+✔ Test "Long reasoning retains all Unicode and bounds each layout fragment" passed after 0.012 seconds.
+✔ Test "Long reasoning layout coalesces bursts and survives collapse/reopen" passed after 0.473 seconds.
+✔ Test "A visible session recovers a durable change without a navigation refresh" passed after 2.199 seconds.
+✔ Test "Sidebar attention states never masquerade as running or completed" passed after 0.001 seconds.
+✔ Test "Latest and live tool groups are visible without an extra tap" passed after 0.001 seconds.
+✔ Test "The final assistant reply always precedes the terminal row" passed after 0.002 seconds.
+✔ Test "A confirmed final-answer review never renders trailing reasoning below the answer" passed after 0.001 seconds.
+✔ Test "Reasoning after assistant text stays visible when it leads to a tool" passed after 0.001 seconds.
+✔ Test "A persisted terminal suppresses stale live animation tails" passed after 0.001 seconds.
+✔ Test "A final reply stays below the tool group that produced it" passed after 0.001 seconds.
+✔ Test "Completed tool keeps its request so the card can show exact input and output" passed after 0.001 seconds.
+✔ Test "Harness-suppressed duplicate protocol pairs stay out of the timeline" passed after 0.001 seconds.
+✔ Test "Reasoning after a tool result starts the next step group" passed after 0.001 seconds.
+✔ Test "Legacy runs without assistantText fall back to the persisted message before terminal" passed after 0.001 seconds.
+✔ Test "Reloading a thread never duplicates the final reply" passed after 0.001 seconds.
+✔ Test "A completed run with no final text surfaces an explicit missing-reply row" passed after 0.001 seconds.
+✔ Test "Timeline item IDs are stable across rebuilds" passed after 0.001 seconds.
+✔ Test "Events order by sequence, never by timestamp" passed after 0.002 seconds.
+✔ Test "Preparing status disappears as soon as generation starts" passed after 0.001 seconds.
+✔ Test "Terminal transition status is hidden so completion appears only after the reply" passed after 0.001 seconds.
+✔ Test "Legacy fallback never borrows an assistant reply from another run" passed after 0.001 seconds.
+✔ Test "Historical tool chains stay collapsed while their older-page entry remains available" passed after 0.001 seconds.
+✔ Test "A suspended run keeps its pending approval card actionable" passed after 0.001 seconds.
+✔ Test "Guidance consumed by an active run remains visible in conversation history" passed after 0.005 seconds.
+✔ Suite "FloeApp.ThreadTimeline" passed after 3.641 seconds.
+✔ Test run with 53 tests in 3 suites passed after 91.898 seconds.
+Test Suite 'Selected tests' started at 2026-09-09 05:55:02.146.
+Test Suite 'FloeAgentUITests.xctest' started at 2026-09-09 05:55:02.153.
+Test Suite 'HomeChatVoiceIPadUITests' started at 2026-09-09 05:55:02.153.
+Test Case '-[FloeAgentUITests.HomeChatVoiceIPadUITests testMaterialThumbnailsInBothLayouts]' started.
+Test Case '-[FloeAgentUITests.HomeChatVoiceIPadUITests testMaterialThumbnailsInBothLayouts]' passed (58.192 seconds).
+Test Suite 'HomeChatVoiceIPadUITests' passed at 2026-09-09 05:56:00.354.
+	 Executed 1 test, with 0 failures (0 unexpected) in 58.192 (58.201) seconds
+Test Suite 'FloeAgentUITests.xctest' passed at 2026-09-09 05:56:00.380.
+	 Executed 1 test, with 0 failures (0 unexpected) in 58.192 (58.227) seconds
+Test Suite 'Selected tests' passed at 2026-09-09 05:56:00.424.
+	 Executed 1 test, with 0 failures (0 unexpected) in 58.192 (58.278) seconds
+** TEST SUCCEEDED **

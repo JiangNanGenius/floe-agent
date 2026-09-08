@@ -6,6 +6,23 @@ import FloeTools
 
 @Suite("FloeExecution.URLDownload")
 struct URLDownloadToolTests {
+    @Test func errorResponseNeverReplacesDestination() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("output.pdf")
+        try Data("original".utf8).write(to: destination)
+        for code in [404, 500, 302] {
+            let temporary = root.appendingPathComponent("download")
+            try Data("error page".utf8).write(to: temporary)
+            let response = try #require(HTTPURLResponse(url: URL(string: "https://example.com/file")!, statusCode: code, httpVersion: nil, headerFields: nil))
+            #expect(throws: HTTPRequestError.self) {
+                try HTTPRequestService.commitDownload(temporary: temporary, response: response, maxBytes: 1024, destination: destination)
+            }
+            #expect(!FileManager.default.fileExists(atPath: temporary.path))
+            #expect(try Data(contentsOf: destination) == Data("original".utf8))
+        }
+    }
 
     @Test("descriptor is side-effecting network + file write")
     func descriptorContract() {

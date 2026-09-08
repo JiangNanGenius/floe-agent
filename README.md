@@ -30,6 +30,8 @@ This round covers editing correctness and everyday workflows: the plugin marketp
 
 See the [upgrade scope, verification status, and interaction screenshots](docs/WORKFLOW_UPGRADE.md). These changes describe the development branch; TestFlight availability is verified separately.
 
+The [implementation checklist](docs/WORKFLOW_UPGRADE_IMPLEMENTATION.md) defines the full Office frontend: document pages, spreadsheet grids and slide objects, with read-only inspection and editing only in fullscreen. Tool/skill directories, multi-query discovery, bundled plugin upgrades and paged chat history are being implemented alongside it. [Current test evidence and screenshots](docs/evidence/workflow-upgrade-20260909/README.md) distinguish verified flows from outstanding acceptance work.
+
 ## Why Floe Agent
 
 - **Bring your own models.** Connect compatible providers with credentials you control. Agent, vision, image-generation, and image-editing roles can be configured independently.

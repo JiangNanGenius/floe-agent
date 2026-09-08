@@ -31,6 +31,7 @@ struct FilePreviewView: View {
     @StateObject private var remotePreview = RemoteFilePreviewCopy()
     @State private var content: FileContent?
     @State private var pdfURL: URL?
+    @State private var binaryPreviewURL: URL?
     @State private var loadError: String?
     @State private var isIDEPresented = false
     @State private var isOfficeEditorPresented = false
@@ -53,6 +54,9 @@ struct FilePreviewView: View {
                     guard resolved.standardizedFileURL == pdfURL.standardizedFileURL else { throw CocoaError(.fileReadNoPermission) }
                     try service.guardResolver.assertReadableSize(resolved)
                 }).id(pdfURL)
+            } else if let binaryPreviewURL {
+                QuickLookView(url: binaryPreviewURL)
+                    .accessibilityIdentifier("file.preview.binary.inline")
             } else if let content {
                 contentView(content)
             } else if !isTextual && !isPDF {
@@ -246,6 +250,7 @@ struct FilePreviewView: View {
         loadError = nil
         content = nil
         pdfURL = nil
+        binaryPreviewURL = nil
         remotePreview.clear()
         if center.fileService == nil, let conversationID {
             do {
@@ -275,10 +280,20 @@ struct FilePreviewView: View {
             return
         }
         guard isTextual else {
-            // Office documents, PDFs, images and other binaries are previewed
-            // via Quick Look — never decoded as UTF-8 text (which would show
-            // garbled bytes).
-            await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
+            // Embed the read-only renderer directly in the inspector. Full
+            // Office editing remains a separate native-engine qualification.
+            do {
+                if center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) {
+                    let bytes = try await center.readRemotePreview(relativePath: relativePath)
+                    try Task.checkCancellation()
+                    binaryPreviewURL = try remotePreview.store(bytes, fileName: fileName)
+                } else if let service = center.fileService {
+                    let url = try service.guardResolver.resolve(relativePath)
+                    try service.guardResolver.assertReadableSize(url)
+                    binaryPreviewURL = url
+                }
+                await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
+            } catch { loadError = error.localizedDescription }
             return
         }
         do {
