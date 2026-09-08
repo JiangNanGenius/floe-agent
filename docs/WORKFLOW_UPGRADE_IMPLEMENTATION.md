@@ -71,3 +71,4 @@
 - 已通过的测试和截图见 [本轮验证记录](evidence/workflow-upgrade-20260909/README.md)。没有新版本标签、TestFlight 上传或完整 Office 验收结果。
 - Office 云端原生构建修正继承的调试符号配置，并增加静态库与前端资源产物保存；当前构建任务为 [34268468731](https://github.com/JiangNanGenius/floe-agent/actions/runs/34268468731)，任务状态需继续核实。
 - 持续目标续跑：核实 Office 原生构建仍处于 `Check or build engine`，没有重启或重复启动。补齐 `org.floeagent.canvas` 的系统导出类型声明及 `.floecanvas` 扩展名，同时同步 XcodeGen 配置与实际 Info.plist；原有 iPhone/iPad 方向配置保持一致。此修复针对 UI 测试捕获的未声明文件类型告警，不能代替画布全部验收。
+- R01 数据层与工具接入：新增 v37 待办修订表、`task.readPlan` / `task.updatePlan` 常驻工具和聊天可折叠待办。步骤保留稳定 ID，版本冲突拒绝覆盖，工具调用编号去重，跨轮读取相同任务的进度；完成待办不创建或完成 Goal。14 项待办/工具发现测试通过（`/tmp/floe-checklist-tests-3.log`），iOS 模拟器应用构建通过（`/tmp/floe-checklist-app-build.log`）。聊天实屏、目标继承、画布/任务中心/PiP 的统一显示仍待验收，R01–R05 暂不勾选。

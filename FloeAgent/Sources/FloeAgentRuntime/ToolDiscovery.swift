@@ -116,14 +116,14 @@ enum ToolDiscovery {
 
     static func index(_ descriptors: [ToolCatalog.Descriptor]) -> String {
         let groups = Dictionary(grouping: descriptors, by: { group($0.name) })
-        return "Use tools.list to enumerate all executable tool metadata and skill.list to enumerate installed guides. Tool discovery: full schemas are loaded only for relevant groups. Installed groups: "
+        return "At task start, judge whether the request requires substantial multi-step work. If so, use task.readPlan and task.updatePlan to maintain a durable checklist while executing; simple questions need none. A checklist never enables Goal mode. Use tools.list to enumerate all executable tool metadata and skill.list to enumerate installed guides. Tool discovery: full schemas are loaded only for relevant groups. Installed groups: "
             + groups.keys.sorted().map { "\($0) (\(groups[$0]!.count))" }.joined(separator: ", ")
             + ". These groups are installed; schemas load on first relevant tools.search, and deferred does not mean unavailable. Guides are optional workflow help via skill.search/skill.read; exact callable schemas use tools.search. Python execution is exec.localPython (python group), SSH Executor and interactive Terminal are separate. Connection state does not remove installed capabilities. Memory housekeeping is not a prerequisite; continue the actual task after any relevant memory check."
     }
 
     /// Discovery is a presentation budget, never an authority grant.
     static func bounded(_ descriptors: [ToolCatalog.Descriptor], priority: [String], pinned: Set<String> = [], maxTools: Int = 23, maxBytes: Int = 23_000) -> [ToolCatalog.Descriptor] {
-        let core: Set<String> = ["skill.search", "skill.read", "skill.list"]
+        let core: Set<String> = ["skill.search", "skill.read", "skill.list", "task.readPlan", "task.updatePlan"]
         let ranks = Dictionary(priority.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
         let ordered = descriptors.sorted {
             let a = core.contains($0.name) || pinned.contains($0.name)

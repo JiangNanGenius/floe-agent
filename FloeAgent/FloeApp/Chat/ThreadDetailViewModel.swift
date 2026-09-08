@@ -110,6 +110,7 @@ final class ThreadDetailViewModel: ObservableObject {
     /// When true the composer is removed and no follow-up can launch.
     @Published private(set) var isConversationMissing = false
     @Published private(set) var latestPlan: PlanDraft?
+    @Published private(set) var taskChecklist: TaskChecklist?
     @Published private(set) var activeGoal: ConversationGoal?
     @Published private(set) var taskTitle: String = ""
     @Published private(set) var taskPolicy: TaskPolicy
@@ -372,6 +373,7 @@ final class ThreadDetailViewModel: ObservableObject {
             stage = "visibleRunDetails"
             try await hydrateVisibleRunDetails()
             stage = "planLoad"
+            taskChecklist = try await TaskChecklistStore(database: center.environment.database).latest(conversationID: conversationID)
             latestPlan = try await center.environment.intelligenceStore
                 .latestPlan(conversationID: conversationID)
             // Restore Plan mode while an unfinished plan is still awaiting
@@ -930,6 +932,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 }
                 self.events = self.selectedRunID.flatMap { self.eventsByRun[$0] } ?? []
                 self.latestPlan = snapshot.latestPlan
+                self.taskChecklist = snapshot.taskChecklist
                 // Keep Plan mode in sync when a plan becomes ready or still
                 // awaits input, so reopening never drops the active mode.
                 self.reconcilePlanComposerMode()

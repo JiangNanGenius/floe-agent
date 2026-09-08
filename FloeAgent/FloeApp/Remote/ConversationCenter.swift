@@ -178,6 +178,7 @@ struct ConversationSessionSnapshot: Sendable {
     let eventsByRun: [UUID: [RunEventRecord]]
     let pendingApprovals: [PendingApproval]
     let latestPlan: PlanDraft?
+    let taskChecklist: TaskChecklist?
     let activeGoal: ConversationGoal?
     let taskPolicy: TaskPolicy
     let pendingInputs: [PendingUserInput]
@@ -545,6 +546,7 @@ final class ConversationCenter: ObservableObject {
             eventsByRun: events,
             pendingApprovals: pendingApprovals.filter { $0.conversationID == conversationID },
             latestPlan: try await environment.intelligenceStore.latestPlan(conversationID: conversationID),
+            taskChecklist: try await TaskChecklistStore(database: environment.database).latest(conversationID: conversationID),
             activeGoal: try await environment.intelligenceStore.goals(conversationID: conversationID).first,
             taskPolicy: taskPolicy,
             pendingInputs: try await environment.runningInputStore.pending(conversationID: conversationID)

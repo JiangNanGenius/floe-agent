@@ -1,0 +1,26 @@
+✔ Test "audit_entries rejects UPDATE and DELETE (append-only)" passed after 2.054 seconds.
+✔ Test "Migrations create app and sync tables plus FTS virtual table" passed after 2.089 seconds.
+✔ Test "FTS5 trigger sync and tokenization contract" passed after 2.114 seconds.
+✔ Test "Migration is idempotent (second migrate is a no-op)" passed after 2.218 seconds.
+✔ Test "user_version aligns with applied migrations" passed after 2.243 seconds.
+✔ Test "Foreign key cascade: deleting a conversation removes messages" passed after 2.275 seconds.
+✔ Test "Concurrent writers serialize without error" passed after 2.319 seconds.
+✔ Suite "FloePersistence.DatabaseManager" passed after 2.326 seconds.
+✔ Test run with 7 tests in 1 suite passed after 2.328 seconds.
+✔ Test "Executor and interactive Terminal are separate roles despite the SSH prefix" passed after 0.087 seconds.
+✔ Test "Discovery never invents or restores tools outside the supplied ceiling" passed after 0.102 seconds.
+✔ Test "Exact lookup and bounded presentation keep requested tools and the skill reader" passed after 0.102 seconds.
+✔ Test "Chinese skill discovery loads the available lifecycle without unrelated tools" passed after 0.102 seconds.
+✔ Test "VNC discovery loads the whole lifecycle and SSH, not unrelated groups" passed after 0.102 seconds.
+✔ Test "The executable registry is authoritative; static-only declarations stay hidden" passed after 0.103 seconds.
+✔ Test directoryDistinguishesOwnershipFromWorkflowGuidance() passed after 0.103 seconds.
+✔ Test "Description fallback does not activate unrelated tools in the same group" passed after 0.103 seconds.
+✔ Test "Chinese mail discovery selects only available mail runners" passed after 0.078 seconds.
+✔ Test batchExactAndCapabilityQueriesDoNotMaskEachOther() passed after 0.111 seconds.
+✔ Test directoryPagingDoesNotLoadOrTruncateToSchemaBudget() passed after 0.135 seconds.
+✔ Suite "Deferred tool discovery" passed after 0.137 seconds.
+✔ Test concurrentWritersAndToolScope() passed after 0.665 seconds.
+✔ Test replayConflictAndCrossRoundRecovery() passed after 0.724 seconds.
+✔ Test unfinishedStepsCannotDisappearAndCompletionNeedsEvidence() passed after 0.741 seconds.
+✔ Suite "Durable task checklists" passed after 0.743 seconds.
+✔ Test run with 14 tests in 2 suites passed after 0.745 seconds.

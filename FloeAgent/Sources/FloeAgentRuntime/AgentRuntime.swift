@@ -184,7 +184,7 @@ public struct CatalogToolExecutor: ToolExecutor {
                 outputDigest: output.fullOutputSHA256,
                 exitStatus: output.exitStatus,
                 artifacts: output.artifacts,
-                maximumSummaryCharacters: ["skill.read", "skill.list", "skill.search"].contains(call.toolName) ? 262_144 : 4096
+                maximumSummaryCharacters: ["skill.read", "skill.list", "skill.search", "task.readPlan", "task.updatePlan"].contains(call.toolName) ? 262_144 : 4096
             )
         } catch let error as FloeError where error == .cancelled {
             return ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
@@ -1134,7 +1134,7 @@ public actor FloeAgentRuntime {
         // Restore recently used groups without replaying a discovery call.
         let recentGroups = Set(executionLedger.entries.suffix(6).map { ToolDiscovery.group($0.toolName) })
         catalogDescriptors = catalogDescriptors.filter {
-            ["skill.search", "skill.read", "skill.list"].contains($0.name) || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
+            ["skill.search", "skill.read", "skill.list", "task.readPlan", "task.updatePlan"].contains($0.name) || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
         }
         let statefulGroups: Set<String> = ["vnc", "executor", "terminal"]
         let pinned = Set(catalogDescriptors.filter { statefulGroups.contains(ToolDiscovery.group($0.name)) && recentGroups.contains(ToolDiscovery.group($0.name)) }.map(\.name))

@@ -39,6 +39,7 @@ struct ThreadDetailView: View {
     @State private var isUserScrolling = false
     @State private var structuredExport: TaskExportFile?
     @State private var exporting = false
+    @State private var showsChecklist = false
 
     init(conversationID: UUID, center: ConversationCenter) {
         _viewModel = StateObject(
@@ -48,6 +49,9 @@ struct ThreadDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let checklist = viewModel.taskChecklist {
+                checklistStatus(checklist)
+            }
             if viewModel.latestPlan != nil || viewModel.activeGoal != nil {
                 intelligenceStatus
             }
@@ -134,6 +138,46 @@ struct ThreadDetailView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func checklistStatus(_ checklist: TaskChecklist) -> some View {
+        DisclosureGroup(isExpanded: $showsChecklist) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(checklist.steps) { step in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: checklistIcon(step.status))
+                                .foregroundStyle(step.status == .completed ? Color.green : Color.secondary)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(step.title).font(.subheadline)
+                                if !step.evidence.isEmpty {
+                                    Text(step.evidence.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(maxHeight: 240)
+        } label: {
+            HStack {
+                Text(checklist.title).lineLimit(1)
+                Spacer()
+                Text("\(checklist.steps.filter { $0.status == .completed }.count)/\(checklist.steps.count)")
+                    .monospacedDigit().foregroundStyle(.secondary)
+            }.font(.subheadline)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .accessibilityIdentifier("thread.checklist")
+    }
+
+    private func checklistIcon(_ status: TaskChecklist.Step.Status) -> String {
+        switch status {
+        case .pending: "circle"
+        case .inProgress: "arrow.trianglehead.2.clockwise.rotate.90"
+        case .completed: "checkmark.circle.fill"
+        case .blocked: "pause.circle"
+        case .cancelled: "minus.circle"
         }
     }
 

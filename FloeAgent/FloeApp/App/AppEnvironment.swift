@@ -431,6 +431,7 @@ final class AppEnvironment: ObservableObject {
         // logged inside the seeder and never block startup.
         if shouldSeedBundledSkills { Task { await skillsCenter.seedBuiltinDomainSkills() } }
         // Durable memory.
+        registerTaskChecklistTools(store: TaskChecklistStore(database: database))
         registerMemoryTools(store: intelligenceStore) { [runStore] runID in
             try await runStore.run(id: runID)?.conversationID
         }
