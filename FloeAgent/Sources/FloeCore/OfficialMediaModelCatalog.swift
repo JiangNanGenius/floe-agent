@@ -3,8 +3,10 @@ import Foundation
 /// Versioned, product-owned presets for official first-party endpoints. The
 /// remote IDs remain editable because providers retire model revisions.
 public enum OfficialMediaModelCatalog {
-    public static let manifestVersion = 2
+    public static let manifestVersion = 3
     public static let verifiedAt = ISO8601DateFormatter().date(from: "2026-08-29T00:00:00Z")!
+
+    private static let mediaRefreshDate = ISO8601DateFormatter().date(from: "2026-09-08T00:00:00Z")!
 
     public static let models: [MediaModelDescriptor] = [
         .init(id: "openai.gpt-image-2", provider: .openAI, kind: .image,
@@ -46,6 +48,26 @@ public enum OfficialMediaModelCatalog {
               supportedQualities: ["720p", "1080p", "4K"], maximumReferenceAssets: 3,
               supportsAudio: true, verifiedAt: verifiedAt, manifestVersion: manifestVersion),
 
+        .init(id: "volcengine.seedream-5-pro", provider: .volcengineArk, kind: .image,
+              remoteModelID: "doubao-seedream-5-0-pro-260628", displayName: "Seedream 5.0 Pro",
+              supportedAspectRatios: ["1:1", "4:3", "3:4", "16:9", "9:16"],
+              supportedResolutions: ["1K", "1.5K", "2K"], defaultResolution: "2K", maximumReferenceAssets: 10,
+              supportsWatermark: true, supportsPromptOptimization: true,
+              region: "cn-beijing", verifiedAt: mediaRefreshDate, manifestVersion: manifestVersion),
+        .init(id: "volcengine.seedream-5-lite", provider: .volcengineArk, kind: .image,
+              remoteModelID: "doubao-seedream-5-0-lite-260128", displayName: "Seedream 5.0 Lite",
+              supportedAspectRatios: ["1:1", "4:3", "3:4", "16:9", "9:16"],
+              supportedResolutions: ["2K", "3K", "4K"], defaultResolution: "2K", maximumReferenceAssets: 10,
+              supportsWatermark: true, supportsPromptOptimization: true,
+              region: "cn-beijing", verifiedAt: mediaRefreshDate, manifestVersion: manifestVersion),
+        .init(id: "volcengine.seedance-2-5", provider: .volcengineArk, kind: .video,
+              remoteModelID: "doubao-seedance-2-5-260628", displayName: "Seedance 2.5",
+              supportedAspectRatios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
+              supportedDurations: Array(4...30),
+              supportedQualities: ["480p", "720p", "1080p"], maximumReferenceAssets: 1,
+              supportsAudio: true, supportsWatermark: true, region: "cn-beijing",
+              verifiedAt: mediaRefreshDate, manifestVersion: manifestVersion),
+
         .init(id: "volcengine.seedream", provider: .volcengineArk, kind: .image,
               remoteModelID: "doubao-seedream-4-0-250828", displayName: "Seedream 4.0",
               supportedAspectRatios: ["1:1", "4:3", "3:4", "16:9", "9:16"],
@@ -66,19 +88,19 @@ public enum OfficialMediaModelCatalog {
               supportedAspectRatios: ["1:1", "4:3", "3:4", "16:9", "9:16"],
               supportedResolutions: ["1K", "2K"], defaultResolution: "2K", maximumReferenceAssets: 3,
               supportsWatermark: true, supportsSeed: true, supportsPromptOptimization: true,
-              region: "cn-beijing", verifiedAt: verifiedAt, manifestVersion: manifestVersion),
+              region: "cn-beijing", verifiedAt: mediaRefreshDate, manifestVersion: manifestVersion),
         .init(id: "alibaba.wan-image", provider: .alibabaModelStudio, kind: .image,
               remoteModelID: "wan2.7-image-pro", displayName: "Wan Image 2.7 Pro",
               supportedAspectRatios: ["1:1", "4:3", "3:4", "16:9", "9:16"],
               supportedResolutions: ["1K", "2K", "4K"], defaultResolution: "2K", maximumReferenceAssets: 9,
               supportsWatermark: true, supportsSeed: true,
-              region: "cn-beijing", verifiedAt: verifiedAt, manifestVersion: manifestVersion),
+              region: "cn-beijing", verifiedAt: mediaRefreshDate, manifestVersion: manifestVersion),
         .init(id: "alibaba.wan-video", provider: .alibabaModelStudio, kind: .video,
               remoteModelID: "wan3.0-video", displayName: "Wan Video 3.0",
-              supportedAspectRatios: ["16:9", "9:16", "1:1"], supportedDurations: [5, 10],
+              supportedAspectRatios: ["16:9", "4:3", "1:1", "3:4", "9:16"], supportedDurations: Array(2...30),
               supportedQualities: ["480p", "720p", "1080p"], maximumReferenceAssets: 1,
               supportsAudio: true, supportsWatermark: true, supportsSeed: true,
-              region: "cn-beijing", verifiedAt: verifiedAt, manifestVersion: manifestVersion)
+              region: "cn-beijing", verifiedAt: mediaRefreshDate, manifestVersion: manifestVersion)
     ]
 
     public static func models(provider: MediaProviderFamily, kind: MediaKind) -> [MediaModelDescriptor] {

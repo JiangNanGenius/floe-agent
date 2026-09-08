@@ -225,3 +225,7 @@ Task history is device-local. Configuration sync includes provider/model profile
 ## Long reasoning (development branch)
 
 Expanded long reasoning uses its own scrolling reading area with beginning/latest navigation and fullscreen reading. Copy retains the complete transcript. Partial tool-argument generation counts as activity; execution still waits for complete, validated arguments.
+
+### Convert existing files (this test release)
+
+Ask to convert a workspace Markdown, DOCX, HTML, RTF or text file to another supported format, or to PDF, while keeping the source. Floe passes file paths to its bundled offline converter rather than asking the model to rewrite the body. Results are saved as new files; only compact status and warnings return to the model. Local images are embedded. Searchable PDF input exports text in page order; scans need OCR first. Complex page geometry, floating objects and formatting that Markdown cannot represent are not guaranteed to survive. Open the output to inspect it.

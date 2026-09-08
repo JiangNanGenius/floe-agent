@@ -367,6 +367,16 @@ struct ImageAdapterTests {
         #expect(ImageAdapterURLProtocol.snapshotRequests().isEmpty)
     }
 
+    @Test func seedreamProRejectsUnsupportedBatchAndResolution() throws {
+        let adapter = VolcengineImageAdapter()
+        #expect(adapter.maximumOutputImages(modelRemoteID: "doubao-seedream-5-0-pro-260628") == 1)
+        #expect(throws: RemoteImageError.self) {
+            try ImageGenerationPresetResolver.nativeSize(provider: .volcengineArk, modelRemoteID: "doubao-seedream-5-0-pro-260628", operation: .generate, selection: .init(aspectRatio: "1:1", resolution: "4K"))
+        }
+        #expect(try ImageGenerationPresetResolver.nativeSize(provider: .volcengineArk, modelRemoteID: "doubao-seedream-5-0-pro-260628", operation: .generate, selection: .init(aspectRatio: "1:1", resolution: "1.5K")) == "1536x1536")
+        #expect(try ImageGenerationPresetResolver.nativeSize(provider: .volcengineArk, modelRemoteID: "doubao-seedream-5-0-lite-260128", operation: .generate, selection: .init(aspectRatio: "1:1", resolution: "3K")) == "3072x3072")
+    }
+
     @Test("Provider preset resolver never sends an aspect label as native size")
     func providerPresetResolution() throws {
         let ark = try ImageGenerationPresetResolver.nativeSize(

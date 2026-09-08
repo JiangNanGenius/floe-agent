@@ -1,0 +1,11 @@
+# Offline document conversion
+
+Bundled browser engine used by `document.convert` and `document.pdf.convert` on iPhone/iPad. The model passes paths, not the document content. No runtime library downloads or conversion server are used.
+
+Pinned reuse: [Marked](https://github.com/markedjs/marked), [Mammoth](https://github.com/mwilliamson/mammoth.js), [TurboDocx html-to-docx](https://github.com/TurboDocx/html-to-docx), [Turndown](https://github.com/mixmark-io/turndown) with its GFM plugin, and [DOMPurify](https://github.com/cure53/DOMPurify). Exact versions and registry integrity hashes are in package-lock.json. The modified OFL Noto Sans SC document font preserves distinct CJK code points during export (see FONT_PROVENANCE.md). Apple WebKit printing, PDFKit text extraction and native RTF support complete the file pipeline.
+
+Rebuild from this folder using `npm ci --ignore-scripts && npm run build`. Build tooling is development-only. Commit converter.js, package-lock.json, build.mjs, inventory.json, and the generated app resource folder. Bundled JS SHA-256 and dependency notices accompany the source. The npm production dependency closure is recorded because upstream browser files contain their own bundled dependencies. JSZip is used under its MIT option; DOMPurify may be used under MPL-2.0 or Apache-2.0.
+
+Inputs and outputs are bounded, output names must be new, references are workspace-authorized and local images are embedded. WebKit uses a nonpersistent store, a network/file content blocker and a restrictive CSP. The source document is never loaded as an executable webpage; sanitized content enters a conversion-only view. External image URLs must first be downloaded to authorized workspace files. Partial failures never publish a target file. Warnings and digests, not the converted body, go back to model context.
+
+Conversion is semantic, not an exact Office page-layout round trip. Markdown cannot represent all Word/RTF styles, floating objects or page geometry. PDF input preserves searchable text and page order, not original tables or images; scanned pages fail explicitly and require the existing OCR workflow. RTF covers basic styled text. PDF output is paginated A4. Limits: 16 MiB file/output, 64 local image references, 16 million pixels per decoded local image, 500 PDF pages, finite operation timeout and cancellation checks.

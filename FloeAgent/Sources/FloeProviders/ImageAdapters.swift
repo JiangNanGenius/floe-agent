@@ -561,7 +561,9 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
         operation == .generate ? 0 : 10
     }
 
-    public func maximumOutputImages(modelRemoteID: String?) -> Int { 4 }
+    public func maximumOutputImages(modelRemoteID: String?) -> Int {
+        modelRemoteID?.contains("seedream-5-0-pro") == true ? 1 : 4
+    }
 
     public func perform(
         _ request: RemoteImageRequest,
@@ -584,7 +586,7 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
             var prompt: String
             var image: [String]?
             var size: String
-            var sequential_image_generation: String
+            var sequential_image_generation: String?
             var sequential_image_generation_options: [String: Int]?
             var response_format: String
             var watermark: Bool
@@ -602,7 +604,7 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
             prompt: request.prompt,
             image: images,
             size: nativeSize,
-            sequential_image_generation: count > 1 ? "auto" : "disabled",
+            sequential_image_generation: model.contains("seedream-5-0-pro") ? nil : (count > 1 ? "auto" : "disabled"),
             sequential_image_generation_options: count > 1 ? ["max_images": count] : nil,
             response_format: "b64_json",
             watermark: false

@@ -24,7 +24,7 @@ enum ToolDiscovery {
             "terminal": ["终端", "terminal", "交互", "telnet", "串口"],
             "python": ["python", "numpy", "pillow", "pandas", "scipy", "matplotlib", "数据分析"],
             "pdf": ["pdf"],
-            "office": ["office", "word", "excel", "powerpoint", "ppt", "幻灯片", "演示文稿", "表格", "工作簿", "文档"],
+            "office": ["markdown", "rtf", "富文本", "格式转换", "互转", "office", "word", "excel", "powerpoint", "ppt", "幻灯片", "演示文稿", "表格", "工作簿", "文档"],
             "http": ["http", "接口", "api"],
             "network": ["network", "网络", "ping", "dns", "http", "端口", "traceroute"],
             "workspace": ["workspace", "文件", "编辑", "file", "html", "代码"],

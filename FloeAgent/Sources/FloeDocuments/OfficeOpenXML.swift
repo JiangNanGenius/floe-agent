@@ -260,9 +260,16 @@ private struct OfficeArchive {
         self.url = url
         self.archive = try Archive(url: url, accessMode: .read)
         var discovered: [String] = []
+        var entryCount = 0, expandedBytes: UInt64 = 0
         for entry in archive {
-            guard discovered.count < maximumEntries else { throw OfficeDocumentError.tooManyEntries }
-            guard Self.isSafe(path: entry.path) else { throw OfficeDocumentError.unsafeEntry(entry.path) }
+            entryCount += 1
+            guard entryCount <= maximumEntries else { throw OfficeDocumentError.tooManyEntries }
+            let path = entry.type == .directory && entry.path.hasSuffix("/") ? String(entry.path.dropLast()) : entry.path
+            guard Self.isSafe(path: path), entry.type == .file || entry.type == .directory else { throw OfficeDocumentError.unsafeEntry(entry.path) }
+            if entry.type == .directory { continue }
+            expandedBytes += UInt64(entry.uncompressedSize)
+            guard expandedBytes <= 128 * 1_024 * 1_024 else { throw OfficeDocumentError.packageTooLarge }
+            guard !discovered.contains(entry.path) else { throw OfficeDocumentError.unsafeEntry(entry.path) }
             discovered.append(entry.path)
         }
         self.paths = discovered

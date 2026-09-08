@@ -31,7 +31,7 @@ public enum ImageGenerationPresetResolver {
         }
         let resolution = cleaned(selection.resolution)?.uppercased()
             ?? defaultResolution(provider: provider, modelRemoteID: modelRemoteID)
-        guard ["1K", "2K", "4K"].contains(resolution) else {
+        guard (["1K", "2K", "4K"].contains(resolution) || (provider == .volcengineArk && ["1.5K", "3K"].contains(resolution))) else {
             throw RemoteImageError.requestFailed("当前图片模型不支持分辨率 \(resolution)。")
         }
 
@@ -39,6 +39,11 @@ public enum ImageGenerationPresetResolver {
         case .openAI:
             return openAISize(aspect: aspect, resolution: resolution)
         case .volcengineArk:
+            let model = modelRemoteID?.lowercased() ?? ""
+            if model.contains("seedream-5-0") {
+                let allowed = model.contains("-pro") ? ["1K", "1.5K", "2K"] : ["2K", "3K", "4K"]
+                guard allowed.contains(resolution) else { throw RemoteImageError.requestFailed("所选 Seedream 模型不支持分辨率 \(resolution)。") }
+            }
             return volcengineSize(aspect: aspect, resolution: resolution)
         case .alibabaStudio:
             if operation != .generate, resolution == "4K" {
@@ -103,6 +108,10 @@ public enum ImageGenerationPresetResolver {
                 "16:9": "5404x3040", "9:16": "3040x5404"
             ]
         ]
+        if resolution == "1.5K" || resolution == "3K", let base = tables["2K"]?[aspect] {
+            let factor = resolution == "1.5K" ? 0.75 : 1.5
+            return base.split(separator: "x").compactMap { Double($0) }.map { String(Int(($0 * factor / 8).rounded()) * 8) }.joined(separator: "x")
+        }
         return tables[resolution]?[aspect] ?? "2048x2048"
     }
 

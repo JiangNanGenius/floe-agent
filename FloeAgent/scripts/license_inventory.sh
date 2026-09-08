@@ -11,7 +11,7 @@ OUTPUT="LICENSES-THIRD-PARTY.md"
 python3 - <<'PY'
 import json, subprocess, sys
 
-ALLOWED = {"MIT", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "MPL-2.0", "ISC", "0BSD", "Zlib"}
+ALLOWED = {"MIT", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "MPL-2.0", "ISC", "0BSD", "Zlib", "OFL-1.1"}
 GPL_FAMILY = {"GPL-2.0", "GPL-3.0", "LGPL-2.1", "LGPL-3.0", "AGPL-3.0"}
 
 with open("Package.resolved") as f:
@@ -72,6 +72,17 @@ rows.extend([
     ("six", "1.17.0", "MIT", "https://pypi.org/project/six/1.17.0/"),
     ("tzdata", "2026.3", "Apache-2.0", "https://pypi.org/project/tzdata/2026.3/"),
 ])
+
+rows.append(("FloeDocumentSans (modified Noto Sans SC)", "2.004", "OFL-1.1", "https://github.com/notofonts/noto-cjk/tree/523d033d6cb47f4a80c58a35753646f5c3608a78"))
+
+# Offline conversion bundles are checked in with a reproducible npm lock.
+with open("ThirdParty/DocumentConversion/inventory.json") as f:
+    conversion = json.load(f)
+for package in conversion["packages"]:
+    license_name = package["license"]
+    if "GPL" in license_name and " OR " not in license_name:
+        violations.append(package["name"])
+    rows.append((package["name"], package["version"], license_name, "https://www.npmjs.com/package/" + package["name"]))
 
 with open("LICENSES-THIRD-PARTY.md", "w") as out:
     out.write("# Third-Party Licenses\n\n")

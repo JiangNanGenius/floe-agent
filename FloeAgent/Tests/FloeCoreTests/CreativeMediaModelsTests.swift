@@ -4,6 +4,19 @@ import Testing
 
 @Suite("Creative media contracts")
 struct CreativeMediaModelsTests {
+    @Test func refreshedChineseMediaCatalogMatchesProviderLimits() throws {
+        let pro = try #require(OfficialMediaModelCatalog.models.first { $0.remoteModelID == "doubao-seedream-5-0-pro-260628" })
+        #expect(pro.supportedResolutions == ["1K", "1.5K", "2K"])
+        let lite = try #require(OfficialMediaModelCatalog.models.first { $0.remoteModelID == "doubao-seedream-5-0-lite-260128" })
+        #expect(lite.supportedResolutions == ["2K", "3K", "4K"])
+        let seedance = try #require(OfficialMediaModelCatalog.models.first { $0.remoteModelID == "doubao-seedance-2-5-260628" })
+        #expect(seedance.supportedDurations == Array(4...30))
+        #expect(!seedance.supportsSeed)
+        let wan = try #require(OfficialMediaModelCatalog.models.first { $0.remoteModelID == "wan3.0-video" })
+        #expect(wan.supportedDurations == Array(2...30))
+        #expect(wan.supportedAspectRatios.contains("4:3"))
+    }
+
     @Test func jobStateIsMonotonicAndTerminal() {
         #expect(MediaGenerationJobState.preparing.canTransition(to: .submitted))
         #expect(MediaGenerationJobState.submitted.canTransition(to: .running))

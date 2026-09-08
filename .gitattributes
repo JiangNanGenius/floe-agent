@@ -1,0 +1,3 @@
+# Vendored output: preserve upstream strings/license formatting; edit the builder.
+FloeAgent/FloeApp/Resources/DocumentConversion/converter.js linguist-generated=true -whitespace
+FloeAgent/FloeApp/Resources/DocumentConversion/THIRD-PARTY-NOTICES.txt linguist-generated=true -whitespace

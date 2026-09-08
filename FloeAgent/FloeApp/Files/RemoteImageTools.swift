@@ -1187,6 +1187,10 @@ func registerRemoteImageTools(center: FilesCenter, registry: ToolRunnerRegistry 
         return try await center.environment.credentialVault.resolveForApprovedUse(CredentialHandle(id: id))
     }))
     ToolCatalog.register(PDFUnlockTool.self)
+    ToolCatalog.register(DocumentConvertTool.self)
+    registry.register(DocumentConvertTool())
+    ToolCatalog.register(PDFConvertTool.self)
+    registry.register(PDFConvertTool())
     ToolCatalog.register(PDFExportTool.self)
     registry.register(PDFExportTool())
     registry.register(PDFUnlockTool(resolver: { [weak center] id in

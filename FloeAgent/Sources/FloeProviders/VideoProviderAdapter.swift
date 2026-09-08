@@ -277,14 +277,38 @@ public struct VolcengineVideoAdapter: VideoProviderAdapter {
     public init() {}
     public func submit(_ request: RemoteVideoRequest, provider: ProviderProfile, credentials: ProviderCredentials) async throws -> RemoteVideoSubmission {
         let url = provider.baseURL.appendingPathComponent("contents/generations/tasks")
-        var body: [String: Any] = ["model": request.modelRemoteID, "content": [["type": "text", "text": request.prompt]]]
-        if let duration = request.options.durationSeconds { body["duration"] = duration }
-        if let ratio = request.options.aspectRatio { body["ratio"] = ratio }
-        if let resolution = request.options.resolution { body["resolution"] = resolution }
+        let body = try Self.requestBody(request)
         let data = try await VideoHTTP.data(for: VideoHTTP.request(url: url, method: "POST", body: try JSONSerialization.data(withJSONObject: body), provider: provider, credentials: credentials), secret: credentials.apiKey)
         let json = try VideoHTTP.dictionary(data)
         guard let id = json["id"] as? String else { throw RemoteVideoError.invalidResponse("Volcengine returned no task ID") }
         return .init(providerTaskID: id, estimatedCompletionAt: Date().addingTimeInterval(180), resultRetentionExpiresAt: nil)
+    }
+    static func requestBody(_ request: RemoteVideoRequest) throws -> [String: Any] {
+        let latest = request.modelRemoteID.contains("seedance-2-5")
+        guard request.referenceAssetURLs.count <= 1 else { throw RemoteVideoError.invalidRequest("This mode accepts one first-frame image") }
+        var content: [[String: Any]] = [["type": "text", "text": request.prompt]]
+        if let image = request.referenceAssetURLs.first {
+            guard image.scheme == "https" || image.scheme == "data" else { throw RemoteVideoError.invalidRequest("Upload the reference image before generating video") }
+            content.append(["type": "image_url", "image_url": ["url": image.absoluteString], "role": "first_frame"])
+        }
+        var body: [String: Any] = ["model": request.modelRemoteID, "content": content]
+        if let value = request.options.durationSeconds {
+            if latest && !(4...30).contains(value) { throw RemoteVideoError.invalidRequest("Seedance 2.5 supports 4–30 seconds") }
+            body["duration"] = value
+        }
+        if latest && !request.referenceAssetURLs.isEmpty { body["ratio"] = "adaptive" }
+        else if let value = request.options.aspectRatio { body["ratio"] = value }
+        if let value = request.options.resolution {
+            if latest && !["480p", "720p", "1080p"].contains(value.lowercased()) { throw RemoteVideoError.invalidRequest("Unsupported Seedance 2.5 resolution") }
+            body["resolution"] = value.lowercased()
+        }
+        if let value = request.options.includeAudio { body["generate_audio"] = value }
+        if let value = request.options.watermark { body["watermark"] = value }
+        if let value = request.options.seed {
+            guard !latest else { throw RemoteVideoError.invalidRequest("Seedance 2.5 does not support a fixed seed") }
+            body["seed"] = value
+        }
+        return body
     }
     public func status(taskID: String, modelRemoteID: String, provider: ProviderProfile, credentials: ProviderCredentials) async throws -> RemoteVideoStatus {
         let data = try await VideoHTTP.data(for: VideoHTTP.request(url: provider.baseURL.appendingPathComponent("contents/generations/tasks/\(taskID)"), provider: provider, credentials: credentials), secret: credentials.apiKey)
@@ -310,13 +334,41 @@ public struct AlibabaVideoAdapter: VideoProviderAdapter {
     public init() {}
     public func submit(_ request: RemoteVideoRequest, provider: ProviderProfile, credentials: ProviderCredentials) async throws -> RemoteVideoSubmission {
         let url = provider.baseURL.appendingPathComponent("services/aigc/video-generation/video-synthesis")
-        let body: [String: Any] = ["model": request.modelRemoteID, "input": ["prompt": request.prompt], "parameters": ["duration": request.options.durationSeconds as Any, "size": request.options.resolution as Any]]
+        let body = try Self.requestBody(request)
         var urlRequest = VideoHTTP.request(url: url, method: "POST", body: try JSONSerialization.data(withJSONObject: body), provider: provider, credentials: credentials)
         urlRequest.setValue("enable", forHTTPHeaderField: "X-DashScope-Async")
         let json = try VideoHTTP.dictionary(try await VideoHTTP.data(for: urlRequest, secret: credentials.apiKey))
         let output = json["output"] as? [String: Any]
         guard let id = output?["task_id"] as? String else { throw RemoteVideoError.invalidResponse("Alibaba returned no task ID") }
         return .init(providerTaskID: id, estimatedCompletionAt: Date().addingTimeInterval(180), resultRetentionExpiresAt: nil)
+    }
+    static func requestBody(_ request: RemoteVideoRequest) throws -> [String: Any] {
+        let latest = request.modelRemoteID.hasPrefix("wan3.0-")
+        let modern = latest || request.modelRemoteID.hasPrefix("wan2.7-")
+        var input: [String: Any] = ["prompt": request.prompt]
+        var parameters: [String: Any] = [:]
+        if !request.referenceAssetURLs.isEmpty {
+            guard latest, request.referenceAssetURLs.count == 1,
+                  let image = request.referenceAssetURLs.first,
+                  image.scheme == "https" || image.scheme == "data" else {
+                throw RemoteVideoError.invalidRequest("This mode accepts one uploaded Wan 3.0 first-frame image")
+            }
+            input["media"] = [["type": "first_frame", "url": image.absoluteString]]
+            parameters["ratio"] = "adaptive"
+        } else if let value = request.options.aspectRatio, modern { parameters["ratio"] = value }
+        if let value = request.options.durationSeconds {
+            if latest && !(2...30).contains(value) { throw RemoteVideoError.invalidRequest("Wan 3.0 supports 2–30 seconds") }
+            parameters["duration"] = value
+        }
+        if let value = request.options.resolution {
+            if latest && !["480P", "720P", "1080P"].contains(value.uppercased()) { throw RemoteVideoError.invalidRequest("Unsupported Wan 3.0 resolution") }
+            parameters[modern ? "resolution" : "size"] = modern ? value.uppercased() : value
+        }
+        if let value = request.options.includeAudio { parameters["audio"] = value }
+        if let value = request.options.watermark { parameters["watermark"] = value }
+        if let value = request.options.seed { parameters["seed"] = value }
+        if let value = request.options.promptOptimization { parameters["prompt_extend"] = value }
+        return ["model": request.modelRemoteID, "input": input, "parameters": parameters]
     }
     public func status(taskID: String, modelRemoteID: String, provider: ProviderProfile, credentials: ProviderCredentials) async throws -> RemoteVideoStatus {
         let json = try VideoHTTP.dictionary(try await VideoHTTP.data(for: VideoHTTP.request(url: provider.baseURL.appendingPathComponent("tasks/\(taskID)"), provider: provider, credentials: credentials), secret: credentials.apiKey))

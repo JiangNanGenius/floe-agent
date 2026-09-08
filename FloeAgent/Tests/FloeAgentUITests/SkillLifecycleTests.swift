@@ -12,6 +12,89 @@ import CryptoKit
 
 @Suite("FloeApp.SkillLifecycle", .serialized)
 struct SkillLifecycleTests {
+    @Test("Long PDF conversion preserves pagination, final content and distinct Unicode aliases")
+    @MainActor func longConversionPDFIntegrity() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("convert-long-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let exact = "文⽂一⼀二⼆目⽬ＡA①1 ffi"
+        let body = (0..<200).map { i in "第\(i)段标记\n\n" + String(repeating: "这是长篇文章转换测试，分页后文字仍须完整保留。", count: 10) }.joined(separator: "\n\n")
+        let source = "# 字符保真\n\n\(exact)\n\n\(body)\n\n全文结束标记"
+        try Data(source.utf8).write(to: root.appendingPathComponent("long.md"))
+        let context = ToolContext(runID: UUID(), approvalGrantID: UUID(), workspaceRootURL: root, cancellation: CancellationToken())
+        _ = try await PDFConvertTool().execute(.init(inputPath: "long.md", outputPath: "long.pdf", format: "pdf"), context: context)
+        let pdf = try #require(PDFDocument(url: root.appendingPathComponent("long.pdf")))
+        #expect(pdf.pageCount > 10)
+        let text = try #require(pdf.string)
+        #expect(text.contains(exact))
+        for i in 0..<200 { #expect(text.contains("第\(i)段标记")) }
+        #expect(pdf.page(at: pdf.pageCount - 1)?.string?.contains("全文结束标记") == true)
+        #expect(try String(contentsOf: root.appendingPathComponent("long.md"), encoding: .utf8) == source)
+        print("LONG_CONVERSION_PAGES=\(pdf.pageCount) SOURCE_CHARACTERS=\(source.count)")
+    }
+
+    @Test("Offline document conversions preserve Chinese, formatting, tables and source bytes")
+    @MainActor func documentConversionRoundTrips() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("convert-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = "# 中文标题\n\n保留原文 **加粗内容** 与 *斜体*。\n\n- 第一项\n- 第二项\n\n| 项目 | 数量 |\n| --- | --- |\n| 苹果 | 12 |\n\n[链接](https://example.com)\n\n结尾标记"
+        let original = Data(source.utf8)
+        try original.write(to: root.appendingPathComponent("source.md"))
+        let context = ToolContext(runID: UUID(), approvalGrantID: UUID(), workspaceRootURL: root, cancellation: CancellationToken())
+        for (format, ext) in [("html","html"),("docx","docx"),("rtf","rtf")] {
+            let output = "converted.\(ext)"
+            let status = try await DocumentConvertTool().execute(.init(inputPath: "source.md", outputPath: output, format: format), context: context)
+            #expect(!status.summary.contains("保留原文"))
+            #expect(status.summary.contains("modelRewrite=false"))
+            _ = try await DocumentConvertTool().execute(.init(inputPath: output, outputPath: "back-\(ext).md", format: "markdown"), context: context)
+            let back = try String(contentsOf: root.appendingPathComponent("back-\(ext).md"), encoding: .utf8)
+            #expect(back.contains("中文标题"))
+            #expect(back.contains("加粗内容"))
+            #expect(back.contains("结尾标记"))
+            if format != "rtf" { #expect(back.contains("苹果")); #expect(back.contains("12")); #expect(back.contains("**加粗内容**")) }
+        }
+        _ = try await PDFConvertTool().execute(.init(inputPath: "source.md", outputPath: "rendered.pdf", format: "pdf"), context: context)
+        let pdf = try #require(PDFDocument(url: root.appendingPathComponent("rendered.pdf")))
+        let evidence = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("DocumentConversionEvidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        for file in ["rendered.pdf", "converted.docx", "converted.rtf", "converted.html"] {
+            try Data(contentsOf: root.appendingPathComponent(file)).write(to: evidence.appendingPathComponent(file), options: .atomic)
+        }
+        print("CONVERSION_EVIDENCE=\(evidence.path)")
+        print("CONVERSION_PDF_TEXT=\(pdf.string ?? "missing")")
+        #expect(pdf.pageCount >= 1)
+        #expect(pdf.string?.contains("中文标题") == true)
+        #expect(pdf.string?.contains("结尾标记") == true)
+        _ = try await PDFConvertTool().execute(.init(inputPath: "rendered.pdf", outputPath: "pdf-back.md", format: "markdown"), context: context)
+        #expect(try String(contentsOf: root.appendingPathComponent("pdf-back.md"), encoding: .utf8).contains("结尾标记"))
+        #expect(try Data(contentsOf: root.appendingPathComponent("source.md")) == original)
+        await #expect(throws: (any Error).self) { try await DocumentConvertTool().execute(.init(inputPath: "source.md", outputPath: "converted.docx", format: "docx"), context: context) }
+    }
+
+    @Test("Conversion embeds local images and refuses missing, remote or escaping assets")
+    @MainActor func conversionAssetsAndBounds() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("convert-assets-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 20, height: 20)).image { ctx in UIColor.red.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 20, height: 20)) }
+        try #require(image.pngData()).write(to: root.appendingPathComponent("red.png"))
+        try Data("# Image\n\n![red](red.png)".utf8).write(to: root.appendingPathComponent("source.md"))
+        let context = ToolContext(runID: UUID(), approvalGrantID: UUID(), workspaceRootURL: root, cancellation: CancellationToken())
+        _ = try await DocumentConvertTool().execute(.init(inputPath: "source.md", outputPath: "images.docx", format: "docx"), context: context)
+        _ = try await DocumentConvertTool().execute(.init(inputPath: "images.docx", outputPath: "images.md", format: "markdown"), context: context)
+        #expect(try String(contentsOf: root.appendingPathComponent("images.md"), encoding: .utf8).contains("data:image/png;base64,"))
+        for (index, path) in ["missing.png","https://example.invalid/image.png","../outside.png"].enumerated() {
+            try Data("![image](\(path))".utf8).write(to: root.appendingPathComponent("source.md"))
+            await #expect(throws: (any Error).self) { try await DocumentConvertTool().execute(.init(inputPath: "source.md", outputPath: "bad-\(index).docx", format: "docx"), context: context) }
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("bad-\(index).docx").path))
+        }
+        #expect(throws: (any Error).self) { try DocumentConvertTool().validate(.init(inputPath: "source.md", outputPath: "wrong.pdf", format: "docx")) }
+        let blank = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 200, height: 200)).pdfData { $0.beginPage() }
+        try blank.write(to: root.appendingPathComponent("scan.pdf"))
+        await #expect(throws: (any Error).self) { try await PDFConvertTool().execute(.init(inputPath: "scan.pdf", outputPath: "scan.md", format: "markdown"), context: context) }
+    }
+
     @Test("Task deletion retains failed cleanup and replays without touching a symlink target")
     @MainActor func durablePrivateCleanup() async throws {
         let environment = AppEnvironment.preview()

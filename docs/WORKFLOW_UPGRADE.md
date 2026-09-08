@@ -8,6 +8,7 @@ Status: in development on `codex/office-workflow-upgrade`, based on Floe Agent 1
 
 | Area | Implemented in this branch | Still required |
 | --- | --- | --- |
+| File conversion | Offline path-based Markdown, DOCX, HTML, RTF and text conversion; separate PDF conversion; local/embedded images, source preservation and bounded status replies | Final round-trip and pagination verification; complex Word layout and scanned-PDF OCR remain explicit limits |
 | Office: Word, Excel, PowerPoint | Existing local creation/basic editing; content digest, stale-write rejection, staged save and reopened-field verification | Qualified offline engine, full formatting/layout/backgrounds, charts, embedded attachments, formula recalculation, object positioning, masters and advanced presentation editing; cross-client round trips |
 | PDF, separate tool group | Inline reader, shared fullscreen reading session, changed-file reload, password/error handling; corrected JavaScript package loading for forms | Complete editing matrix, large files, real-device fullscreen/reading-position verification |
 | Plugin marketplace | Discover/Installed; official installation, persistent uninstall/reinstall, enablement, import and connector entries; version/update controls; verified catalog and expanded-permission review | Broader catalog coverage and live installation/update connectivity matrix |
@@ -116,3 +117,23 @@ These synthetic stress captures exercise the actual reasoning disclosure/reader 
 <img src="images/workflow-upgrade/iphone-long-reasoning-folded.png" width="280" alt="Large synthetic reasoning transcript while folded">
 <img src="images/workflow-upgrade/iphone-long-reasoning-expanded-updating.png" width="280" alt="Expanded long reasoning remains interactive after appended content">
 <img src="images/workflow-upgrade/iphone-long-reasoning-fullscreen.png" width="280" alt="Fullscreen long reasoning with beginning and latest navigation">
+
+## File-to-file conversion / 直接转换已有文件
+
+Use `document.convert` for Markdown, DOCX, HTML, RTF and plain text. Use `document.pdf.convert` when either side is PDF. Arguments contain `inputPath`, `outputPath` and `format`; the model does not need to read and rewrite the body. Tools return a compact saved-file status, digest and warnings. Existing output files are refused and source files are preserved.
+
+For example: `document.convert` with `inputPath: "report.md"`, `outputPath: "report.docx"`, `format: "docx"`; or `document.pdf.convert` with the same source, `outputPath: "report.pdf"`, `format: "pdf"`. Word/HTML/RTF can be converted back with `format: "markdown"`. Local images resolve relative to the input document and are embedded; external images must first be downloaded to the workspace. Text and converted images do not enter the model transcript.
+
+The [bundled engine and dependency lock](../FloeAgent/ThirdParty/DocumentConversion/README.md) reuse Marked, Mammoth, TurboDocx html-to-docx, Turndown/GFM and DOMPurify. PDF uses Apple WebKit printing and PDFKit extraction. RTF uses native rich-text import/export. There are no runtime package downloads or third-party conversion servers.
+
+These are semantic conversions. Markdown cannot retain every Word font/layout property; RTF covers basic rich text. PDF extraction preserves searchable text and page order, not original table/image layout. Scanned pages fail explicitly and require the existing OCR workflow. Unsupported images, permission errors and unsafe paths fail without publishing a partial output.
+
+The PDF export font preserves distinct Unicode mappings rather than normalizing the source. The following image was rendered from the actual simulator conversion output; Chinese headings, bold/italic text, lists, table borders and links are visible. This is generated-file evidence, not a physical-device screenshot.
+
+<img src="images/workflow-upgrade/document-conversion-pdf.png" width="520" alt="Actual Markdown-to-PDF conversion retaining Chinese text, styles, list and table">
+
+## Official media refresh
+
+The [2026-09-08 model verification](MEDIA_MODEL_CATALOG_2026-09-08.md) adds Seedance 2.5 and Seedream 5.0 Pro/Lite without overwriting user-configured IDs or removing older presets. Wan 3.0's duration and wire parameters are corrected. Provider-request tests run without billable model generation; account/region access and actual generated output remain live-test boundaries.
+
+Validation on 2026-09-08: 45 model/catalog and conversion tests passed, followed by the final Unicode/long-document rerun and the image/path rejection suite. The 48,122-character fixture produced 42 pages; all 200 paragraph markers, distinct CJK/radical/full-width characters and the final marker survived. Source bytes remained unchanged. Full cloud release gates and real-device acceptance are tracked separately.

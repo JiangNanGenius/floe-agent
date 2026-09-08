@@ -20,7 +20,8 @@ public let toolArgumentsMaxBytes = 65_536 // 64 KiB
 /// the smaller default. Underscore aliases cover compatible provider wire names.
 public func toolArgumentsByteLimit(for toolName: String) -> Int {
     switch toolName {
-    case "workspace.createFile", "workspace.writeFile", "workspace.applyPatch",
+    case "document.createMarkdown", "document_createMarkdown",
+         "workspace.createFile", "workspace.writeFile", "workspace.applyPatch",
          "workspace_createFile", "workspace_writeFile", "workspace_applyPatch":
         return 1_048_576
     default: return toolArgumentsMaxBytes
