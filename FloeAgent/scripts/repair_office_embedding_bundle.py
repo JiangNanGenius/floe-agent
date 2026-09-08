@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repair the two known unused test aliases in a SHA-locked Office bundle."""
+"""Repair known packaging-only defects in a SHA-locked Office bundle."""
 import argparse
 import json
 import os
@@ -39,11 +39,19 @@ def repair(archive_path, destination, lock_path=DEFAULT_LOCK):
         raise ValueError("Unexpected alias or native linker manifest")
     for entry in removed:
         contained(destination, entry["path"]).unlink()
+    restored = lock.get("restoredEmptyDirectories", [])
+    for name in restored:
+        path = contained(destination, name)
+        if path.exists() or path.is_symlink() or any(entry["path"] == name for entry in manifest["files"]):
+            raise ValueError("Expected omitted empty resource directory")
+        path.mkdir(parents=True)
+        kept.append({"path": name, "directory": True})
     manifest["files"] = kept
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     checked = verify(destination, prepare=True)
     report = {"originalArchiveSHA256": lock["archiveSHA256"],
               "originalManifestSHA256": manifest_hash, "removedUnusedTestAliases": removed,
+              "restoredEmptyDirectories": restored,
               "verified": checked, "nativeCompilePassed": False, "deviceRoundtripPassed": False}
     (destination / "bundle-repair.json").write_text(json.dumps(report, indent=2) + "\n")
     return report

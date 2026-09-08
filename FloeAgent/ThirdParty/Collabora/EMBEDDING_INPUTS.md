@@ -51,7 +51,7 @@ cleanup. The embedding target must link GameController and use the prepared
 controller; Floe needs its own bounded engine startup rather than replacing its
 app delegate with the upstream app delegate.
 
-Twenty synthetic packaging/preparation/repair tests pass. The overlay also applies to
+Twenty-two synthetic packaging/preparation/repair tests pass. The overlay also applies to
 the actual pinned source hashes, and its public keyboard helper passes an
 iphoneos arm64 Objective-C syntax check. This is not a full controller compile,
 engine link, keyboard test, or native document-editing acceptance.
@@ -160,3 +160,14 @@ The separate `office-mobile-qualification.yml` workflow downloads this preserved
 bundle and performs verification, source preparation and Mobile compile/link.
 It does not repeat the engine or dependency builds. Early input-verification
 failures now produce a failed qualification receipt as well as job logs.
+
+Run `34288940412` passed bundle verification/source preparation and entered
+Xcode, then failed copying the absent empty `resources/config` directory. The
+pinned `engine/ios/CustomTarget_iOS_setup.mk` creates this directory without
+populating it. The repair lock now restores exactly that empty directory; the
+packager and verifier also preserve explicit directory entries, so empty folder
+resources and header-directory aliases survive relocation. All 57 source paths
+and 28 resource references were checked in the prepared project; this was the
+only missing resource. This check does not prove header compilation or linking.
+The revised repair was also executed against the actual locked archive in a new
+local extraction: 46,524 entries and all 369 linker inputs verified successfully.

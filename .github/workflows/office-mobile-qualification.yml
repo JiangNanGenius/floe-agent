@@ -29,7 +29,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh run download 34287476509 -n office-engine-complete-inputs -D "$RUNNER_TEMP/complete-office-inputs"
-      - name: Verify and repair the two locked unused test aliases
+      - name: Verify aliases and restore the locked empty resource directory
         run: |
           python3 FloeAgent/scripts/repair_office_embedding_bundle.py \
             "$RUNNER_TEMP/complete-office-inputs/office-engine-ios-arm64.tar.gz" \

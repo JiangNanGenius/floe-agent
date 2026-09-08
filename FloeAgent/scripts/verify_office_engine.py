@@ -34,6 +34,9 @@ def verify(root, prepare=False):
                 raise ValueError(f"Changed or dangling symlink: {name}")
             if Path(entry["symlink"]).is_absolute():
                 raise ValueError(f"Non-portable symlink: {name}")
+        elif entry.get("directory") is True:
+            if path.is_symlink() or not path.is_dir():
+                raise ValueError(f"Changed or missing directory: {name}")
         elif path.is_symlink() or not path.is_file() or path.stat().st_size != entry["size"] or digest(path) != entry["sha256"]:
             raise ValueError(f"Changed or missing file: {name}")
     inputs = manifest.get("linkerInputs", manifest["linkerArchives"])

@@ -62,7 +62,11 @@ def package(root):
             return
         visited.add(key)
         if path.is_dir():
-            for child in sorted(path.iterdir()):
+            # Xcode folder resources and directory aliases require directories
+            # even when all their files are absent or excluded by this filter.
+            paths.add(path)
+            children = sorted(path.iterdir())
+            for child in children:
                 collect(child, headers_only)
         elif path.is_file():
             if not headers_only or path.suffix in HEADER_SUFFIXES or path.name.startswith(("LICENSE", "COPYING", "NOTICE")):
@@ -106,6 +110,8 @@ def package(root):
         item = {"path": str(path.relative_to(root))}
         if path in links:
             item["symlink"] = links[path]
+        elif path.is_dir():
+            item["directory"] = True
         else:
             item.update(size=path.stat().st_size, sha256=digest(path))
         entries.append(item)
@@ -129,6 +135,8 @@ def package(root):
                 info = archive.gettarinfo(str(path), arcname=str(path.relative_to(root)))
                 if path in links:
                     info.linkname = links[path]
+                    archive.addfile(info)
+                elif path.is_dir():
                     archive.addfile(info)
                 else:
                     # Materialize hard links too: every hashed file is portable.

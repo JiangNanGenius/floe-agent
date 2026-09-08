@@ -1,0 +1,21 @@
+{
+  "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+  "overlaySHA256": "8cee49fb70084cb07284f820c7ac69ea88f80fbe467e51bdacb627c6c02871f0",
+  "nativeCompilePassed": false,
+  "nativeLinkPassed": false,
+  "embeddedEditorPassed": false,
+  "deviceRoundtripPassed": false,
+  "stage": "failed",
+  "projectSHA256": "a4132cb4060b12a5b0b41dbc1a13d4c1e51073fe3bed3386ad26e37d99253cf3",
+  "exitCode": 65,
+  "runID": "34288940412",
+  "failure": "Xcode could not copy the empty resources/config directory omitted by packaging",
+  "preparedProjectPathsChecked": {
+    "sourcePaths": 57,
+    "resourceReferences": 28,
+    "missingBeforeRepair": 1
+  },
+  "fix": "Preserve directory entries and restore the exact empty config directory declared by pinned upstream ios/CustomTarget_iOS_setup.mk",
+  "packagingTests": 22,
+  "projectBoundaryTests": 5
+}

@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "native-built-pending-complete-embedding-inputs-and-device-roundtrip",
+  "qualificationStatus": "native-built-pending-mobile-compile-and-device-roundtrip",
   "qualifiedNativeArtifact": {
     "runID": "34268468731",
     "artifactName": "office-engine-ios-arm64",
@@ -21,7 +21,10 @@
       "source/engine/workdir/UnpackedTarball/zstd/tests/cli-tests/bin/unzstd": "zstd",
       "source/engine/workdir/UnpackedTarball/zstd/tests/cli-tests/bin/zstdcat": "zstd"
     },
-    "note": "All 369 native linker inputs and generated headers retained. Before verification remove exactly the two locked unused zstd test aliases; preserve every other hashed input. Full Mobile compile/link still pending."
+    "restoredEmptyDirectories": [
+      "source/engine/workdir/CustomTarget/ios/resources/config"
+    ],
+    "note": "All 369 native linker inputs and generated headers retained. Repair exactly two unused test aliases and restore the empty config resource directory declared by pinned CustomTarget_iOS_setup.mk. Preserve every hashed file. Full Mobile compile/link still pending."
   },
   "documentation": "https://github.com/CollaboraOnline/online.mirror/blob/27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc/ios/README.md",
   "platform": "iphoneos-arm64",

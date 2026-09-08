@@ -68,6 +68,19 @@ class OfficeEngineBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Missing editor"):
             package(self.root)
 
+    def test_empty_resource_directory_survives_packaging_and_relocation(self):
+        config = self.source / "engine/workdir/CustomTarget/ios/resources/config"
+        config.mkdir(parents=True)
+        package(self.root)
+        relocated = self.extract()
+        target = relocated / config.relative_to(self.root)
+        self.assertTrue(target.is_dir())
+        self.assertEqual(list(target.iterdir()), [])
+        verify(relocated)
+        target.rmdir()
+        with self.assertRaisesRegex(ValueError, "missing directory"):
+            verify(relocated)
+
     def test_header_only_collection_does_not_ship_dangling_test_script_alias(self):
         scripts = self.source / "engine/workdir/UnpackedTarball/zstd/tests/cli-tests/bin"
         scripts.mkdir(parents=True)
@@ -82,7 +95,7 @@ class OfficeEngineBundleTests(unittest.TestCase):
         manifest = package(self.root)
         archive_path = self.root / "office-engine-ios-arm64.tar.gz"
         with tarfile.open(archive_path) as archive:
-            contents = [(m, archive.extractfile(m).read()) for m in archive.getmembers()]
+            contents = [(m, archive.extractfile(m).read() if m.isfile() else None) for m in archive.getmembers()]
         alias = "source/engine/workdir/UnpackedTarball/zstd/tests/cli-tests/bin/unzstd"
         target = "different" if altered_target else "zstd"
         manifest["files"].append({"path": alias, "symlink": target})
@@ -91,7 +104,7 @@ class OfficeEngineBundleTests(unittest.TestCase):
                 if member.name == "bundle-manifest.json":
                     data = json.dumps(manifest).encode()
                     member.size = len(data)
-                archive.addfile(member, io.BytesIO(data))
+                archive.addfile(member, io.BytesIO(data) if data is not None else None)
             link = tarfile.TarInfo(alias)
             link.type = tarfile.SYMTYPE
             link.linkname = target
@@ -126,6 +139,18 @@ class OfficeEngineBundleTests(unittest.TestCase):
         archive, lock = self.broken_test_alias_archive(altered_target=True)
         with self.assertRaisesRegex(ValueError, "does not match"):
             repair(archive, self.root / "repaired", lock)
+
+    def test_locked_repair_restores_only_declared_empty_resource(self):
+        archive, lock = self.broken_test_alias_archive()
+        name = "source/engine/workdir/CustomTarget/ios/resources/config"
+        data = json.loads(lock.read_text())
+        data["qualifiedEmbeddingArtifact"]["restoredEmptyDirectories"] = [name]
+        lock.write_text(json.dumps(data))
+        destination = self.root / "repaired"
+        report = repair(archive, destination, lock)
+        self.assertEqual(report["restoredEmptyDirectories"], [name])
+        self.assertEqual(list((destination / name).iterdir()), [])
+        verify(destination)
 
     def test_external_symlink_rejects_packaging(self):
         (self.source / "host-link").symlink_to(Path(self.directory.name))
