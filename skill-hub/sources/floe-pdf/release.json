@@ -1,1 +1,6 @@
-{"description":"Native PDF editing, region reflow, images, forms, annotations, OCR and verified raster redaction.","minimumAppVersion":"1.4.98","name":"PDF Workbench","releaseNotes":{"en":"Native region text reflow and image editing; annotation/form workflows, metadata and bookmarks, on-device searchable OCR, explicit verified raster redaction, credential references and revision-safe outputs.","zh-Hans":"新增原生区域文字重排与图片编辑、批注和表单管理、元数据和书签、离线可搜索 OCR、明确授权后的栅格脱敏验证，以及凭据引用和版本冲突保护。"}}
+{
+  "description": "Native PDF editing, region reflow, images, forms, annotations, OCR and verified raster redaction.",
+  "minimumAppVersion": "1.5.2",
+  "name": "PDF Workbench",
+  "releaseNotes": "新增本地文件格式转换，直接使用已有文件，减少模型重复输出。"
+}

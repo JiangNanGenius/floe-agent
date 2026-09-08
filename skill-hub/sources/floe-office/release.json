@@ -1,1 +1,6 @@
-{"description":"Word, workbook and Markdown creation/inspection/editing with the right tool for each job.","minimumAppVersion":"1.4.98","name":"Office Documents","releaseNotes":{"en":"Move to the exclusive official signed ZIP update source.","zh-Hans":"迁移至唯一官方签名 ZIP 更新源。"}}
+{
+  "description": "Word, workbook and Markdown creation/inspection/editing with the right tool for each job.",
+  "minimumAppVersion": "1.5.2",
+  "name": "Office Documents",
+  "releaseNotes": "新增本地文件格式转换，直接使用已有文件，减少模型重复输出。"
+}
