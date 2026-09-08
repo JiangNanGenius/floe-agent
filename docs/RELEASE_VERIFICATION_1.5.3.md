@@ -14,8 +14,8 @@ Immutable source: `5f9eeec8d80c6af74816391c49e0248757c8f239`; tag `v1.5.3`.
 ## Cloud and Apple gates
 
 - [Full CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/34233559888): passed. 1,007 SwiftPM test executions, 122/122 app regressions, Linux build, App Store SDK compatibility build, secret scan, SBOM and 152-dependency license inventory passed.
-- [Release build, signing and upload](https://github.com/JiangNanGenius/floe-agent/actions/runs/34233559897): all jobs passed, including SwiftPM tests, simulator/device builds, app regressions, source/binary scans, dependency checks, accepted-SDK rebuild/regressions, package verification, signing, upload and paired GitHub release publication.
-- Apple processing: upload accepted; [initial discovery](https://github.com/JiangNanGenius/floe-agent/actions/runs/34245430637) reported `PROCESSING`, no errors/warnings, upload ID `d95e0909-c75f-44f9-81dc-eee9ba8b48cc`.
+- [Release build, signing and upload](https://github.com/JiangNanGenius/floe-agent/actions/runs/34233559897): all jobs passed, including SwiftPM tests, simulator/device builds, app regressions, source/binary scans, dependency checks, accepted-SDK rebuild/regressions (122/122 app tests passed on each SDK), package verification, signing, upload and paired GitHub release publication.
+- Apple processing: [discovery confirmed `VALID`](https://github.com/JiangNanGenius/floe-agent/actions/runs/34246903131), version 1.5.3, build 134, build ID `d95e0909-c75f-44f9-81dc-eee9ba8b48cc`. Upload processing completed with no errors or warnings.
 - Floe QA internal group visibility: not yet verified.
 
 This record does not yet establish TestFlight installation availability. It will be updated from the completed gates.
