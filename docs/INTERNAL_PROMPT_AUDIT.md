@@ -44,7 +44,7 @@
 | 画布 `CanvasNodeRefinementService` | 节点正文、配置、引用与用户编辑指令放在同一消息 | 明确前者是待编辑数据，只按用户编辑指令改；完整图形行为仍待 C01 验收 |
 | `SubagentRunner` | 提供的上下文未显式标记为参考数据 | 保持只读/不可再次委派限制，补充上下文不能提高授权 |
 
-[验证摘要](evidence/workflow-upgrade-20260909/prompt-audit-tests-summary.txt)：107 项 Swift 测试通过，另有 4 项官方元数据构建测试。iPad 应用实际首次安装指南、读取并与注册工具交叉核对的单项测试通过（`/tmp/floe-prompt-guide-registry.xcresult`）；此次应用测试在新签名指南生成之前完成，生成后需再验。
+[验证摘要](evidence/workflow-upgrade-20260909/prompt-audit-tests-summary.txt)：107 项 Swift 测试通过，另有 4 项官方元数据构建测试。iPad 应用实际首次安装指南、读取并与注册工具交叉核对的单项测试通过（`/tmp/floe-prompt-guide-registry.xcresult`）；生成新指南后已在 `/tmp/floe-prompt-signed-registry.xcresult` 再验通过。
 
 保留了 5 个真实请求组装路径的**合成输入**捕获：[普通](evidence/workflow-upgrade-20260909/prompt-snapshots/chat.json)、[计划](evidence/workflow-upgrade-20260909/prompt-snapshots/plan.json)、[Goal 模式](evidence/workflow-upgrade-20260909/prompt-snapshots/goal.json)、[模型无工具能力](evidence/workflow-upgrade-20260909/prompt-snapshots/model-without-tools.json)、[用户关闭工具](evidence/workflow-upgrade-20260909/prompt-snapshots/tools-disabled.json)。记录系统消息、工具名、字符数和 UTF-8 长度，不含凭据；未调用真实模型，字符数不能冒充实际 token 或缓存收益。Goal 样本只验证模式和工具层，不代表完整持久 Goal/恢复样本。
 
@@ -54,6 +54,8 @@
 - `ContextEngine`、`ConversationHistoryAssembler`、手动压缩、恢复/重试/最终校验插入层：当前已有连续性测试，仍需覆盖长任务实际最终请求与全部分支的重复指令。
 - `ConversationCenter` 的图像转述、Goal 证据判断、标题生成；画布墨迹/视觉辅助/生成上下文；记忆整理/MemoryDream/SkillDream 辅助请求：已定位并阅读相关来源，仍需固定合成任务验证输出边界、长度、引用来源与持久化。
 - 所有工具说明和 schema 必须以当前注册 executor 为准；Office 深层模型编辑、完整前端、PDF、文件转换等完成后再次逐项复核，不保留此次基础能力限制作为最终产品目标。
-- 最终签名指南、实际运行注入、真实模型对照指标和全部发布验收未齐全，H01–H06 保持未勾选。不要把“已扫过源文件”写成“全部提示词已验收”。
+- 本次指南签名及应用安装检查已通过；最终功能版本的实际运行注入、真实模型对照指标和全部发布验收仍未齐全，H01–H06 保持未勾选。不要把“已扫过源文件”写成“全部提示词已验收”。
 
 Office 1.2.1 的目录最低应用版本设为 1.5.4：旧版 1.5.3 的 inspect 没有返回工具级 sha256，不能给旧版推送依赖该返回值的新指南。当前分支仍未进行应用版本递增；正式发布版本须至少满足此门槛。
+
+指南签名生成任务 [34280433826](https://github.com/JiangNanGenius/floe-agent/actions/runs/34280433826) 成功，最低应用版本调整后的再次签名 [34280703973](https://github.com/JiangNanGenius/floe-agent/actions/runs/34280703973) 也成功。生成后 26 项真实 ZIP/签名/包边界测试及 1 项应用注册测试通过，见 [签名后验收](evidence/workflow-upgrade-20260909/signed-guide-tests-summary.txt)。本地 Python 3.12 缺少 cryptography，未将该本地 build.py --check 失败计为通过；云端生成和 --check、Swift 加密验证分别有成功证据。

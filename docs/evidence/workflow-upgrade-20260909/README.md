@@ -51,6 +51,6 @@ iPhone 17 Pro / iOS 27 模拟器的长思考展开、更新、全屏与折叠交
 
 ## 第二轮提示词审查
 
-见 [107 项 Swift 回归](prompt-audit-tests-summary.txt)、[4 项官方指南元数据检查](guide-metadata-tests-summary.txt) 和 [完整审查台账](../../INTERNAL_PROMPT_AUDIT.md)。目录 `prompt-snapshots` 保存 5 个合成场景在实际 provider 请求边界的系统消息/工具集合；无真实模型调用，不是 token 效率证明。iPad 指南注册测试通过，新签名版本生成后仍需复验。
+见 [107 项 Swift 回归](prompt-audit-tests-summary.txt)、[4 项官方指南元数据检查](guide-metadata-tests-summary.txt) 和 [完整审查台账](../../INTERNAL_PROMPT_AUDIT.md)。目录 `prompt-snapshots` 保存 5 个合成场景在实际 provider 请求边界的系统消息/工具集合；无真实模型调用，不是 token 效率证明。新签名版本生成后，iPad 指南安装/注册测试及 26 项签名包回归再次通过，见 [结果](signed-guide-tests-summary.txt)。该 26 项与前面的 107 项有重叠，不能相加作为唯一测试数量。
 
 Office 接入补丁的 [锁定源码检查](office-native-overlay-check.json) 只证明补丁可作用于锁定源码及公开键盘 API 片段可编译；没有完整原生控制器、真机输入或文档保真结果。

@@ -1,0 +1,15 @@
+After official-guide regeneration: Swift tests --enable-swift-testing --filter OfficialSkillHubTests|SkillPackageTests
+✔ Test run with 26 tests in 2 suites passed after 0.076 seconds.
+This 26-test subset overlaps the earlier 107-test run; do not add counts as unique tests.
+
+Application build and installed-guide/executable-registry verification:
+◇ Test firstReadSeedsGuidesAndKeepsPythonIndependent() started.
+✔ Test firstReadSeedsGuidesAndKeepsPythonIndependent() passed after 2.350 seconds.
+✔ Test run with 1 test in 1 suite passed after 2.353 seconds.
+** TEST SUCCEEDED **
+Result bundle: /tmp/floe-prompt-signed-registry.xcresult
+Actual bundled guide installation and registered references only, not all tool behaviors or Office frontend fidelity.
+
+Final catalog minimum-app-version re-signing: run 34280703973 succeeded.
+After fast-forward to 211abc7, --skip-build --enable-swift-testing --filter OfficialSkillHubTests read and verified the newly signed catalog:
+✔ Test run with 5 tests in 1 suite passed after 0.018 seconds.
