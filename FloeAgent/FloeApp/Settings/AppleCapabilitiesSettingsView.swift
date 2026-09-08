@@ -117,7 +117,7 @@ enum AppleCapabilityPreferences {
         ## Apple system integrations
         Enabled on this device: \(names).
         Use only the corresponding compiled tools. Ask for the minimum system permission at first real use, handle denial without retry loops, and never claim that a system-owned UI was confirmed. Mail sending, camera capture, Home access, and other system consent remain user-controlled.
-        Detailed workflow guides are on-demand Floe skills (read via skill.read before non-trivial work): floe.apple for Apple capability tasks (mail/calendar/photos/home/reminders/shortcuts/clipboard/camera), floe.pdf / floe.office for document work, floe.browser for browser and visual tasks.
+        When Apple workflow guidance is needed, read floe-apple with skill.read; reuse the current guide if already read. Known tool calls do not require a guide. App enablement does not prove operating-system permission has been granted.
         """
     }
 }

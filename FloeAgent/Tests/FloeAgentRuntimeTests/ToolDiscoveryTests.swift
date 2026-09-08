@@ -5,6 +5,17 @@ import FloeTools
 
 @Suite("Deferred tool discovery")
 struct ToolDiscoveryTests {
+    @Test func instructionsRespectTheEffectiveCatalog() {
+        let limited = ToolDiscovery.index([descriptor("workspace.readFile")])
+        #expect(!limited.contains("task.updatePlan"))
+        #expect(!limited.contains("exec.localPython"))
+        #expect(!limited.contains("skill.list"))
+        let complete = ToolDiscovery.index(["task.readPlan", "task.updatePlan", "skill.list"].map(descriptor))
+        #expect(complete.contains("Revise the same checklist"))
+        #expect(complete.contains("A checklist never enables Goal mode"))
+        #expect(complete.contains("skill.list"))
+    }
+
     @Test func directoryDistinguishesOwnershipFromWorkflowGuidance() throws {
         let owned = ToolCatalog.Descriptor(name: "custom.report", toolDescription: "Report", parametersJSON: "{}",
             riskLabels: [], isSideEffecting: false, ownerSkillID: "report-plugin")

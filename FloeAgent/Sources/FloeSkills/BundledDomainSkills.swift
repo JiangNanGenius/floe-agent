@@ -28,7 +28,7 @@ public enum BundledDomainSkills {
             let pattern = #"(?<![A-Za-z0-9_.-])[a-z][A-Za-z0-9]*(?:\.[a-zA-Z][A-Za-z0-9]*)+(?![A-Za-z0-9_.-])"#
             let regex = try! NSRegularExpression(pattern: pattern)
             let ns = markdown as NSString
-            let allowedRoots = ["document", "font", "network", "web", "exec", "ssh", "canvas", "image", "apple", "mail", "browser", "workspace", "crypto", "credential", "vnc", "remote", "remoteHosting", "cloudWorkspace", "bluetooth"]
+            let allowedRoots = ["document", "presentation", "font", "network", "web", "exec", "ssh", "canvas", "image", "apple", "mail", "browser", "workspace", "crypto", "credential", "vnc", "remote", "remoteHosting", "cloudWorkspace", "bluetooth"]
             return Set(regex.matches(in: markdown, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range) }.filter { allowedRoots.contains(String($0.split(separator: ".")[0])) }).sorted()
         }
     }
@@ -44,7 +44,7 @@ public enum BundledDomainSkills {
             id: "floe-remote",
             name: "Remote Operations",
             description: "VNC, Executor, interactive Terminal, host configuration and remote workspace lifecycle. Load only the subgroup needed for the current task.",
-            version: "1.0.0",
+            version: "1.0.1",
             exposed: false,
             markdown: """
             ## Remote operations
@@ -57,7 +57,7 @@ public enum BundledDomainSkills {
             ### Interactive Terminal
             `ssh.shellOpen` → `ssh.shellExchange` → `ssh.shellClose` uses a run-scoped sessionID, never a taskID. `remote.connection.open`, `remote.connection.exchange`, `remote.connection.close` and BLE serial sessions likewise reuse their exact session IDs. Use Executor for durable one-shot commands.
             ### VNC
-            `vnc.status` → `vnc.connect` → `vnc.observe` → one input with post-action evidence. `vnc.click`, `vnc.drag`, `vnc.typeText`, `vnc.typeCredential`, `vnc.keyPress` and `vnc.scroll` require a connected session and current evidence. `vnc.disconnect` closes it.
+            Reuse a confirmed connection. Use `vnc.status` when state is unknown, `vnc.connect` when disconnected, then `vnc.observe` for fresh evidence. `vnc.click`, `vnc.drag`, `vnc.typeText`, `vnc.typeCredential`, `vnc.keyPress` and `vnc.scroll` require a connected session and current evidence; verify one input with its post-action evidence. `vnc.disconnect` closes it.
             Honor the user's prerequisite route first, including authorized SSH repair when requested. Never repeat an unchanged failed call. partialSuccess/inputDispatched means input may already have executed: inspect evidence, never replay the input merely because screenshot capture failed. Reuse credential references; do not request or expose secret values.
             ### Cloud workspaces and sharing
             Reuse the exact hostID/workspaceID in Workspace links; `cloudWorkspace.catalog` or `cloudWorkspace.create` resolves missing IDs. A local Cloud marker is not remote file content.

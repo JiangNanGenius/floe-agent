@@ -1,0 +1,8 @@
+Synthetic provider-boundary, skill package and Office tool regressions
+Command: DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test --package-path FloeAgent --jobs 2 --enable-swift-testing --filter OfficeDocumentTests|SkillPackageTests|ToolLoopHardeningTests|ToolDiscoveryTests|HarnessPlanningTests|SkillManagementTests|SkillCreateToolTests
+✔ Test run with 31 tests in 3 suites passed after 0.083 seconds.
+✔ Test run with 5 tests in 1 suite passed after 0.064 seconds.
+✔ Test run with 71 tests in 3 suites passed after 0.329 seconds.
+107 tests passed. Real model not invoked; no measured token-efficiency result.
+The initial invocation without --enable-swift-testing built only and is not counted.
+An intermediate Office digest test failed because an optional value was formatted as debug text; explicit digest unwrapping fixed the public response and the repeated stale-write test passed.

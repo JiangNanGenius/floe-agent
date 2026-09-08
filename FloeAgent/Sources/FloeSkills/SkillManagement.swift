@@ -38,7 +38,7 @@ public extension SkillManaging {
 public struct SkillSearchTool: AgentTool {
     public typealias Arguments = DiscoveryQueries
     public static let name = "skill.search"
-    public static let toolDescription = "Find installed workflow guides by task, domain or skill ID (English or Chinese). Prefer this for PDF, Office, network and multi-step domain workflows; then skill.read the returned ID before acting. For an exact executable function use tools.search. Search does not grant permissions, enable a disabled skill or execute scripts."
+    public static let toolDescription = "Find installed workflow guides by task, domain or skill ID (English or Chinese). Use query for one need or queries for multiple independent needs. Read a returned guide with skill.read when its workflow guidance is needed; known tool calls do not require a guide. Use tools.search for executable schemas and skill.list for the complete guide inventory. Search does not grant permissions, enable a disabled skill or execute scripts."
     public static let parametersJSON = DiscoveryQueries.parametersJSON
     public static let riskLabels: Set<RiskLabel> = []
     public static let isSideEffecting = false
@@ -92,7 +92,7 @@ public struct SkillSearchTool: AgentTool {
         }
         let data = try JSONEncoder().encode(Response(matches: matches, queryMatches: queryMatches,
             installedIDs: matches.isEmpty ? rows.map(\.id).sorted() : [],
-            nextAction: matches.isEmpty ? "Choose an installed ID with skill.read, or tools.search for an executable capability; do not repeat the same search." : "Read the chosen enabled guide with skill.read(id:); disabled guides require a user settings change."))
+            nextAction: matches.isEmpty ? "Use skill.list for the full inventory or tools.search for an executable capability; do not repeat the same search." : "If workflow guidance is needed, read the chosen enabled guide with skill.read(id:). Otherwise use known schemas or tools.search. Disabled guides remain disabled; reading never enables them."))
         return ToolExecutionOutput(summary: String(decoding: data, as: UTF8.self), fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(), maximumSummaryCharacters: 32_768)
     }
 }

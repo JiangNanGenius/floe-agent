@@ -214,7 +214,7 @@ public struct NetworkTCPProbeTool: AgentTool {
         public var timeoutSeconds: Int?
     }
     public static let name = "network.tcpProbe"
-    public static let toolDescription = "Probe one TCP port on this device by default, or on an explicitly selected SSH host, with a bounded timeout. Useful for checking VNC, SSH, HTTP and database service reachability after ping."
+    public static let toolDescription = "Probe one TCP port on this device by default, or on an explicitly selected SSH host, with a bounded timeout. Use directly for VNC, SSH, HTTP and database service reachability; ping is not a prerequisite. A TCP result is not ICMP reachability or a traceroute."
     public static let parametersJSON = #"{"type":"object","properties":{"target":{"type":"string"},"port":{"type":"integer","minimum":1,"maximum":65535},"executionTarget":{"type":"string","enum":["device","host"],"description":"Defaults to device; host requires hostID"},"hostID":{"type":"string"},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":10}},"required":["target","port"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.networkAccess, .executesRemoteCommand]
     public static let isSideEffecting = false

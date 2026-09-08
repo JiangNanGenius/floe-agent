@@ -3,7 +3,7 @@ import copy
 import json
 import unittest
 
-from build import IDS, ROOT, validate_release
+from build import IDS, ROOT, validate_release, validate_guide_metadata
 
 
 class ReleaseMetadataTests(unittest.TestCase):
@@ -13,7 +13,21 @@ class ReleaseMetadataTests(unittest.TestCase):
     def test_all_published_source_metadata(self):
         for skill_id in IDS:
             with self.subTest(skill_id=skill_id):
-                validate_release(json.loads((ROOT / "sources" / skill_id / "release.json").read_bytes()))
+                folder = ROOT / "sources" / skill_id
+                release = json.loads((folder / "release.json").read_bytes())
+                validate_release(release)
+                validate_guide_metadata((folder / "SKILL.md").read_text(), json.loads((folder / "floe.json").read_bytes()), release)
+
+    def test_package_and_discovery_metadata_cannot_drift(self):
+        folder = ROOT / "sources/floe-office"
+        manifest = json.loads((folder / "floe.json").read_bytes())
+        markdown = (folder / "SKILL.md").read_text()
+        for field in ("name", "description"):
+            changed = dict(self.release, **{field: "Different discovery metadata"})
+            with self.assertRaises(ValueError):
+                validate_guide_metadata(markdown, manifest, changed)
+        with self.assertRaises(ValueError):
+            validate_guide_metadata(markdown, dict(manifest, id="wrong-id"), self.release)
 
     def test_rejects_previously_signed_string_and_missing_translations(self):
         for notes in ("previously accepted string", {}, {"en": "English"},

@@ -1,12 +1,15 @@
 ---
 name: floe-office
 display_name: Office Documents
-description: Word, workbook and Markdown creation/inspection/editing with the right tool for each job.
+description: Word, Excel and PowerPoint creation, existing text edits, and file conversion with explicit capability limits.
 ---
 
 ## Office document workflow
 - **Word (.docx)**: `document.createWord` generates a real OOXML document; `document.office.inspect` returns stable field IDs; `document.office.updateText` edits those fields (use only explicit IDs from inspect; never guess).
 - **Workbook (.xlsx)**: `document.createWorkbook` builds a spreadsheet from sheet JSON. To **read** cell values quickly use `document.readSheet` (read-only TSV). To **edit** use `document.office.inspect` first — it returns the editable field/formula IDs that `document.office.updateText` consumes. Do not treat readSheet output as editable IDs.
+- **PowerPoint (.pptx)**: `presentation.createDeck` creates a basic 16:9 deck from slide titles, bullets and speaker notes. Read existing slide text and notes with `document.office.inspect`, then edit exact returned IDs with `document.office.updateText`. `presentation.createInline` creates a chat table/chart/web result, not a slide-deck file.
+- **Editing boundary**: these basic create/text-update schemas do not provide object placement, font/layout editing, charts, attachments or full spreadsheet recalculation. Do not claim a full Office frontend is available from these tools; discover other actually registered capabilities for a requested operation and report unsupported operations precisely.
+- **Revision safety**: use the sha256 returned by inspection as expectedSHA256 for edits. Reuse the new digest after a successful update; re-inspect after a conflict instead of dropping the check.
 - **Markdown**: `document.createMarkdown` writes .md/.markdown/.txt only (for .docx use createWord).
 - **Fonts**: before `font.remove`, call `font.list` and reuse the exact digest id — never derive it from a filename.
 - Always reopen/inspect the saved artifact to verify, and save to a new file unless overwrite was explicitly requested.

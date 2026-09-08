@@ -1175,7 +1175,7 @@ public actor FloeAgentRuntime {
             legacyMessages.insert((role: "system", content: temporalContext), at: 0)
             contentMessages.insert(ProviderMessage(role: "system", content: [.text(temporalContext)]), at: 0)
         }
-        if !prerequisiteNotes.isEmpty {
+        if supportsTools, !prerequisiteNotes.isEmpty {
             let note = "Installed tools remain callable; satisfy these execution prerequisites first:\n"
                 + prerequisiteNotes.joined(separator: "\n")
             if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
@@ -1183,7 +1183,7 @@ public actor FloeAgentRuntime {
                 contentMessages[index].content.append(.text(note))
             }
         }
-        if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
+        if supportsTools, let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
             let discovery = ToolDiscovery.index(discoverableDescriptors)
             legacyMessages[index].content += "\n\n" + discovery
             contentMessages[index].content.append(.text(discovery))

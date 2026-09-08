@@ -803,6 +803,60 @@ struct ToolLoopHardeningTests {
 
     // MARK: 5. Run-context system message injection
 
+    @Test("Actual tool-free requests omit discovery and workflow activation in both provider message forms")
+    func toolFreeProviderBoundary() async throws {
+        for disableConfiguration in [false, true] {
+            let (conversationStore, runStore) = try await makeStores()
+            let conversationID = UUID(), provider = TestFixtures.localhostProvider()
+            try await conversationStore.saveConversation(.init(id: conversationID, title: "Synthetic prompt audit", createdAt: Date(), updatedAt: Date()))
+            var model = TestFixtures.testModel(providerID: provider.id)
+            if !disableConfiguration { model.capabilities.remove(.tools) }
+            let adapter = MockAdapter()
+            adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+            let service = ConversationRunService(
+                configuration: .init(conversationID: conversationID, provider: provider, model: model, toolsEnabled: !disableConfiguration),
+                adapter: adapter, policy: HumanApprovalPolicy(), executor: MockExecutor(),
+                conversationStore: conversationStore, runStore: runStore,
+                runContext: .init(availableToolNames: ["exec.localPython"], skillInstructions: "Synthetic guide: call exec.localPython")
+            )
+            try await service.start(goal: "Answer this simple synthetic question")
+            let request = try #require(adapter.requests.first)
+            #expect(request.toolSchemas.isEmpty)
+            let legacy = request.messages.filter { $0.role == "system" }.map(\.content).joined(separator: "\n")
+            let structured = request.contentMessages.filter { $0.role == "system" }.flatMap(\.content).compactMap { part -> String? in
+                if case .text(let value) = part { return value }; return nil
+            }.joined(separator: "\n")
+            for prompt in [legacy, structured] {
+                #expect(prompt.contains("Native tool calling is unavailable"))
+                for absent in ["tools.search", "tools.list", "task.updatePlan", "exec.localPython", "Synthetic guide"] {
+                    #expect(!prompt.contains(absent))
+                }
+            }
+            try writeSyntheticPromptAudit(request, name: disableConfiguration ? "tools-disabled" : "model-without-tools")
+        }
+    }
+
+    @Test("Final request checklist guidance follows the current mode and tool policy")
+    func planDiscoveryMatchesReadOnlySchemas() async throws {
+        for mode: ConversationMode in [.chat, .plan, .goal] {
+            let adapter = MockAdapter()
+            adapter.script = [[.completed(.init(stopReason: .endTurn))]]
+            let executor = MockExecutor()
+            for (name, effect): (String, ToolEffect) in [("task.readPlan", .readOnly), ("task.updatePlan", .internalState)] {
+                executor.descriptors[name] = .init(name: name, toolDescription: name, parametersJSON: "{}", riskLabels: [], isSideEffecting: false, effect: effect)
+            }
+            let provider = TestFixtures.localhostProvider()
+            let runtime = FloeAgentRuntime(configuration: .init(provider: provider, model: TestFixtures.testModel(providerID: provider.id), conversationMode: mode),
+                adapter: adapter, policy: HumanApprovalPolicy(), executor: executor)
+            await runtime.injectSystemContext(AgentPromptComposer.compose(mode: mode, runtimeContext: "Synthetic audit"))
+            try await runtime.start(goal: "Plan the work")
+            let request = try #require(adapter.requests.first)
+            #expect(request.toolSchemas.contains { $0.name == "task.updatePlan" } == (mode != .plan))
+            #expect(request.messages.contains { $0.role == "system" && $0.content.contains("task.updatePlan") } == (mode != .plan))
+            try writeSyntheticPromptAudit(request, name: mode.rawValue)
+        }
+    }
+
     @Test("Run context includes the live local clock and UTC offset")
     func systemContextIncludesCurrentTimeZone() throws {
         let timeZone = try #require(TimeZone(secondsFromGMT: 9 * 3_600 + 30 * 60))
@@ -909,14 +963,16 @@ struct ToolLoopHardeningTests {
 
     @Test("Models without native tool calling never receive tool names")
     func systemContextSuppressesToolsForTextOnlyModels() {
-        let message = ConversationRunService.buildContextMessage(
-            .init(availableToolNames: ["workspace.listDirectory", "exec.localPython"]),
-            toolsAvailable: false
-        )
-
-        #expect(message.contains("native tool calling is disabled"))
-        #expect(!message.contains("workspace.listDirectory"))
-        #expect(!message.contains("exec.localPython"))
+        for mode: ConversationMode in [.chat, .plan, .goal] {
+            let message = ConversationRunService.buildContextMessage(
+                .init(availableToolNames: ["workspace.listDirectory", "exec.localPython"]),
+                mode: mode, toolsAvailable: false
+            )
+            #expect(message.contains("native tool calling is disabled"))
+            for absent in ["workspace.listDirectory", "exec.localPython", "tools.search", "skill.list", "plan.submit"] {
+                #expect(!message.contains(absent))
+            }
+        }
     }
 
     @Test("Uploaded visual files route to semantic inspection instead of OCR")
@@ -963,4 +1019,31 @@ private struct WorkspaceProbeTool: AgentTool {
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         ToolExecutionOutput(summary: "unreachable", fullOutputSHA256: "")
     }
+}
+
+/// Opt-in fixture evidence only. Never called by the app or a real provider.
+/// Audit output contains synthetic messages, schema names and lengths, not
+/// credentials, provider profiles, real conversations or inferred token usage.
+private func writeSyntheticPromptAudit(_ request: ProviderStreamRequest, name: String) throws {
+    guard let path = ProcessInfo.processInfo.environment["FLOE_SYNTHETIC_PROMPT_AUDIT_DIR"] else { return }
+    let root = URL(fileURLWithPath: path, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let legacy = request.messages.filter { $0.role == "system" }.map(\.content)
+    let structured = request.contentMessages.filter { $0.role == "system" }.map { message in
+        message.content.compactMap { part -> String? in
+            if case .text(let text) = part { return text }; return nil
+        }.joined(separator: "\n")
+    }
+    let snapshot: [String: Any] = [
+        "kind": "synthetic provider-boundary capture",
+        "scenario": name,
+        "legacySystemMessages": legacy,
+        "structuredSystemMessages": structured,
+        "toolNames": request.toolSchemas.map(\.name),
+        "systemCharacters": legacy.reduce(0) { $0 + $1.count },
+        "systemUTF8Bytes": legacy.reduce(0) { $0 + $1.utf8.count },
+        "realModelInvoked": false
+    ]
+    try JSONSerialization.data(withJSONObject: snapshot, options: [.prettyPrinted, .sortedKeys])
+        .write(to: root.appendingPathComponent(name + ".json"), options: .atomic)
 }

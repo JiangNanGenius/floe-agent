@@ -7,6 +7,7 @@ public enum AgentPromptComposer {
     public static func compose(
         mode: ConversationMode,
         runtimeContext: String,
+        toolsAvailable: Bool = true,
         soul: String? = nil,
         userProfile: String? = nil,
         activePlan: PlanDraft? = nil,
@@ -15,11 +16,11 @@ public enum AgentPromptComposer {
         var layers = [
             immutableRuntime,
             baseAgent,
-            operatingProtocol,
+            toolsAvailable ? operatingProtocol : toolFreeProtocol,
             stepSettlementProtocol,
             contextContinuityProtocol,
             failureProtocol,
-            modeLayer(mode)
+            modeLayer(mode, toolsAvailable: toolsAvailable)
         ]
         layers.append(runtimeContext)
         if let soul, !soul.isEmpty {
@@ -113,6 +114,11 @@ public enum AgentPromptComposer {
     Classify a failure before retrying it: invalid input, unsupported capability, permission/approval required, not found, transient transport/service error, or deterministic execution failure. Retry an unchanged call only when the failure is plausibly transient and there is a concrete reason the condition changed. For invalid, unsupported, denied, not-found, or repeated unchanged results, change the input or approach immediately. Never loop through nearby tools merely to appear active. If no safe path remains, report the exact blocker and the smallest user action that would unblock it.
     """
 
+    private static let toolFreeProtocol = """
+    # Available execution
+    Native tool calling is unavailable for this request. Answer from the supplied evidence, distinguishing facts and unknowns. Do not invent function calls, claim external actions, or present a proposed change as applied. State a missing execution capability only when it prevents the requested result.
+    """
+
     private static let stepSettlementProtocol = """
     # Step settlement protocol
     Treat each provider turn as an ordered sequence of complete steps. Before a tool call, state only the concise purpose needed by the user; do not claim the expected result. A structured tool request closes the current assistant step. Wait for the paired structured result before reasoning about its outcome, then advance from that evidence. Never place the next-step reasoning inside the preceding tool's result or approval region.
@@ -125,11 +131,14 @@ public enum AgentPromptComposer {
     Conversation history may contain a harness-generated continuation summary and compacted tool-result previews. Treat those records as prior working state, not as a new user request: resume the latest unfinished task directly without greeting, recapping the summary, rebuilding the plan, or rediscovering facts already recorded. Preserve the user's corrections over older assumptions. Reuse successful observations until there is a concrete reason they may be stale. A compacted tool result includes bounded evidence and a digest; request or reproduce the full result only when exact omitted bytes are necessary for the next decision. Before relying on a long tool result later, carry its decisive facts, identifiers, errors, and verification outcome into the working state.
     """
 
-    private static func modeLayer(_ mode: ConversationMode) -> String {
+    private static func modeLayer(_ mode: ConversationMode, toolsAvailable: Bool) -> String {
         switch mode {
         case .chat:
             return "# Chat mode\nAnswer or execute the current request. Tools may be used only within the active capability and approval policy."
         case .plan:
+            guard toolsAvailable else {
+                return "# Plan mode\nPrepare a concrete implementation plan from the supplied evidence, with ordered work, assumptions, acceptance checks and unresolved decisions. No execution or native plan submission is available in this request."
+            }
             return """
             # Plan mode
             Investigate with read-only tools only. Resolve material ambiguity before submission. Produce a complete implementation plan containing ordered sections, assumptions, risks with mitigations, acceptance criteria, and concrete verification. When ready, call the native `plan.submit` tool exactly once; do not print pseudo function-call markup.

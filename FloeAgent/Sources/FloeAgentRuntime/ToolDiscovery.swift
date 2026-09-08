@@ -116,9 +116,22 @@ enum ToolDiscovery {
 
     static func index(_ descriptors: [ToolCatalog.Descriptor]) -> String {
         let groups = Dictionary(grouping: descriptors, by: { group($0.name) })
-        return "At task start, judge whether the request requires substantial multi-step work. If so, use task.readPlan and task.updatePlan to maintain a durable checklist while executing; simple questions need none. A checklist never enables Goal mode. Use tools.list to enumerate all executable tool metadata and skill.list to enumerate installed guides. Tool discovery: full schemas are loaded only for relevant groups. Installed groups: "
-            + groups.keys.sorted().map { "\($0) (\(groups[$0]!.count))" }.joined(separator: ", ")
-            + ". These groups are installed; schemas load on first relevant tools.search, and deferred does not mean unavailable. Guides are optional workflow help via skill.search/skill.read; exact callable schemas use tools.search. Python execution is exec.localPython (python group), SSH Executor and interactive Terminal are separate. Connection state does not remove installed capabilities. Memory housekeeping is not a prerequisite; continue the actual task after any relevant memory check."
+        let names = Set(descriptors.map(\.name))
+        var lines: [String] = []
+        if names.isSuperset(of: ["task.readPlan", "task.updatePlan"]) {
+            lines.append("At task start, judge whether the request requires substantial multi-step work. If so, use task.readPlan and task.updatePlan to maintain a durable checklist while executing; simple questions need none. Revise the same checklist when new evidence or user steering changes the work: preserve step IDs, update the revision, and retain completed evidence. A checklist never enables Goal mode.")
+        }
+        lines.append("Use tools.list to enumerate tool metadata available in this run; it does not load every schema. Use tools.search to load definitions by exact name or capability, batching independent queries. Available groups: "
+            + (groups.isEmpty ? "none" : groups.keys.sorted().map { "\($0) (\(groups[$0]!.count))" }.joined(separator: ", "))
+            + ". Deferred schemas are not missing capabilities; runtime permissions and prerequisites still apply.")
+        if names.contains("skill.list") { lines.append("Use skill.list for the complete installed guide inventory.") }
+        if names.isSuperset(of: ["skill.search", "skill.read"]) {
+            lines.append("Guides provide optional workflow help via skill.search/skill.read. Known tool calls do not require a guide; reuse a guide already read at the current revision.")
+        }
+        if names.contains("exec.localPython") {
+            lines.append("Local Python execution is exec.localPython; it is a different environment from SSH Executor or interactive Terminal.")
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// Discovery is a presentation budget, never an authority grant.

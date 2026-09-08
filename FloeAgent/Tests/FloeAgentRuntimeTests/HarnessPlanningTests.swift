@@ -423,7 +423,9 @@ struct HarnessPlanningTests {
         #expect(prompt.contains("discover only the needed subgroup"))
         #expect(prompt.contains("partialSuccess may already have dispatched input"))
         #expect(!prompt.contains("call vnc.observe first"))
-        #expect(prompt.contains("require vnc.status -> vnc.connect -> vnc.observe"))
+        #expect(prompt.contains("Reuse a confirmed connection"))
+        #expect(prompt.contains("use vnc.status if state is unknown"))
+        #expect(!prompt.contains("require vnc.status -> vnc.connect -> vnc.observe"))
         #expect(prompt.contains("publish shares only with explicit authority"))
         // The compressed VNC section stays bounded (was ~1090 chars before).
         #expect(prompt.contains("skill.search then skill.read"))

@@ -1,7 +1,7 @@
 ---
 name: floe-pdf
 display_name: PDF Workbench
-description: Closed-loop PDF workflow: inspect, render, merge, split, edit, fill forms, verify.
+description: Native PDF editing, region reflow, images, forms, annotations, OCR and verified raster redaction.
 ---
 
 ## PDF workbench

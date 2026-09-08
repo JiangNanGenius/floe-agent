@@ -11,13 +11,13 @@ enum ToolWorkflowGuidance {
         var lines: [String] = []
 
         if names.contains(where: { ["executor", "terminal", "hosts", "vnc"].contains(ToolCapabilityGroups.group($0)) || $0.hasPrefix("cloudWorkspace.") || $0.hasPrefix("remoteHosting.") }) {
-            lines.append("Remote workflow: skill.read id=floe-remote; discover only the needed subgroup. Executor taskID and Terminal sessionID are distinct. Reuse returned IDs, honor the user's prerequisite order, never replay dispatched side effects, and publish shares only with explicit authority.")
+            lines.append("Remote workflow: discover only the needed subgroup; optional guidance: skill.read id=floe-remote. Executor taskID and Terminal sessionID are distinct. Reuse returned IDs, honor the user's prerequisite order, never replay dispatched side effects, and publish shares only with explicit authority.")
         }
-        if names.contains("browser.navigate") && names.contains("browser.observe") {
-            lines.append("Browser workflow: reuse the tabID/documentID from browser.navigate and fresh element refs from browser.observe for one action, then observe again. Full DOM-first strategy: skill.read id=floe-browser.")
+        if names.contains("browser.observe") {
+            lines.append("Browser workflow: prefer browser.observe DOM refs and reuse the current tabID/documentID; screenshots/OCR are the fallback with fresh evidence. Use refs for one action and verify its returned post-action state; observe again when needed for the next action. Optional strategy: skill.read id=floe-browser.")
         }
         if names.contains("vnc.observe") {
-            lines.append("VNC requires a connected session and fresh evidence before input. partialSuccess may already have dispatched input: use post-action evidence, never replay it. Credentials remain secure references. Full lifecycle: floe-remote.")
+            lines.append("VNC requires a connected session and fresh evidence before input. Reuse a confirmed connection; use vnc.status if state is unknown, vnc.connect if disconnected, then vnc.observe for evidence. Honor the user's prerequisite route, prefer OCR recognizedText references over raw coordinates, perform one bounded action and verify its returned screenshot. inputDispatched=true is protocol delivery, never task success. partialSuccess may already have dispatched input: use post-action evidence, never replay it. Credentials remain secure references. Optional lifecycle guide: floe-remote.")
         }
         if names.contains("canvas.getState") {
             lines.append("Canvas workflow: reuse the latest canvasID/revision/node IDs from canvas.getState; apply returned deltas without re-inspecting unless a revision conflict occurs. Details: skill.read id=floe-data-code.")

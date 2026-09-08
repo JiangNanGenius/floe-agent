@@ -1,0 +1,8 @@
+Command: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s skill-hub -p test_*.py
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.003s
+
+OK
+
+Initially caught PDF SKILL.md/release description drift; corrected in new source version before signing.

@@ -92,7 +92,28 @@ def validate_release(release):
     if any(not notes.get(locale, "").strip() for locale in ("zh-Hans", "en")):
         raise ValueError("releaseNotes requires nonempty zh-Hans and en translations")
     if any(not isinstance(release.get(field), str) or not release[field].strip() for field in ("name", "description")):
-        raise ValueError("release metadata requires name and description")
+            raise ValueError("release metadata requires name and description")
+
+
+def validate_guide_metadata(markdown, manifest, release):
+    """Official source guides use a small, unquoted frontmatter contract.
+
+    Reject drift before signing: the app uses release metadata in discovery,
+    while installed packages use SKILL.md. They must describe the same guide.
+    This is not the general third-party skill Markdown parser.
+    """
+    match = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", markdown, re.S)
+    if not match:
+        raise ValueError("official guide requires frontmatter")
+    values = {}
+    for line in match[1].splitlines():
+        field, separator, value = line.partition(":")
+        if not separator or field in values:
+            raise ValueError("invalid or duplicate official guide metadata")
+        values[field] = value.strip()
+    expected = {"name": manifest["id"], "display_name": release["name"], "description": release["description"]}
+    if values != expected:
+        raise ValueError("official guide metadata differs from its manifest or release description")
 
 
 def build(check, key):
@@ -118,6 +139,7 @@ def build(check, key):
         manifest = json.loads(files["floe.json"])
         release = json.loads((folder / "release.json").read_bytes())
         validate_release(release)
+        validate_guide_metadata(files["SKILL.md"].decode(), manifest, release)
         version = manifest["version"]
         if manifest["id"] != skill_id or not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version):
             raise ValueError("invalid package identity/version")

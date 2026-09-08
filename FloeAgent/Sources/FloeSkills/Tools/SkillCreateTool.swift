@@ -34,7 +34,7 @@ public struct SkillCreateTool: AgentTool {
 
     public static let name = "skill.create"
     public static let toolDescription =
-        "Create a reusable Floe skill from instructions and optional audited pure-Python scripts. Python scripts must accept changing task data through inputJSON rather than rewriting their source. Optional dependencies must be exact PyPI name==version pure-Python wheels with a narrow purpose and capability list. Floe audits scripts and wheels once during installation; later execution of the exact installed script and package set can run without repeated approval, while changed code or broader side effects return to normal approval. If the skill will carry Python scripts, read floe.python via skill.read first for the scriptRuntime/capability/audit contract."
+        "Create a reusable Floe skill from instructions and optional audited pure-Python scripts. Python scripts must accept changing task data through inputJSON rather than rewriting their source. Optional dependencies must be exact PyPI name==version pure-Python wheels with a narrow purpose and capability list. Floe audits scripts and wheels once during installation; later execution of the exact installed script and package set can run without repeated approval, while changed code or broader side effects return to normal approval. If the skill will carry Python scripts, read floe-python via skill.read first for the scriptRuntime/capability/audit contract; reuse that guide if its current version is already in context."
     public static let parametersJSON = #"""
     {
       "type": "object",

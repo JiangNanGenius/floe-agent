@@ -260,7 +260,7 @@ public actor ConversationRunService {
         self.resourceAccessCleanup = resourceAccessCleanup
         self.secretForRedaction = credentials.apiKey
         self.streamedTextLimitBytes = configuration.model.limits.clientOutputSafetyBytes
-        self.modelSupportsTools = configuration.model.capabilities.contains(.tools)
+        self.modelSupportsTools = configuration.toolsEnabled && configuration.model.capabilities.contains(.tools)
         let dynamicApprovalPolicy = DynamicApprovalPolicy(policy)
         self.dynamicApprovalPolicy = dynamicApprovalPolicy
         // The sink forwards into the service via closures so callbacks reach
@@ -1648,18 +1648,12 @@ public actor ConversationRunService {
                     ? "Available tools: none registered"
                     : "Installed tool groups: \(Set(toolNames.map(ToolCapabilityGroups.group)).sorted().joined(separator: ", ")). Use tools.search for exact callable definitions; not all schemas are loaded at once."
             )
-            if toolNames.contains("browser.observe") && toolNames.contains("browser.screenshot") {
-                lines.append("Browser interaction policy: prefer browser.observe DOM refs; screenshots/OCR are the fallback with fresh evidence. Full strategy: skill.read id=floe-browser.")
-            }
-            if toolNames.contains("vnc.observe") && toolNames.contains("vnc.click") {
-                lines.append("VNC interaction policy: satisfy any user-requested prerequisite route, require vnc.status -> vnc.connect -> vnc.observe, prefer OCR recognizedText references over raw coordinates, perform one bounded action and verify the returned screenshot. inputDispatched=true is protocol delivery, never task success.")
-            }
             lines.append(contentsOf: ToolWorkflowGuidance.contextLines(for: toolNames))
             lines.append("Discovery routing: use skill.search then skill.read when domain workflow guidance is needed or a tool error requires clarification. Exact tool calls do not require reading a guide; use tools.search directly. Compiled tools are available to any authorized official, custom or imported skill. Reading a guide can load its available executable definitions. A deferred schema is not a missing capability. Do not repeat a broad search: use the returned exact ID/name and distinguish loaded from deferred results. Never infer permission from a guide. Python (exec.localPython) and SSH Executor are underlying execution capabilities, independent of guide enablement; interactive Terminal is separate.")
         } else {
             lines.append("Available tools: none (native tool calling is disabled for this model)")
         }
-        if let skills = context?.skillInstructions, !skills.isEmpty {
+        if toolsAvailable, let skills = context?.skillInstructions, !skills.isEmpty {
             lines.append("# Available workflow guides (not an inventory of executable tool groups)")
             lines.append(skills)
         }
@@ -1671,6 +1665,7 @@ public actor ConversationRunService {
         return AgentPromptComposer.compose(
             mode: mode,
             runtimeContext: lines.joined(separator: "\n"),
+            toolsAvailable: toolsAvailable,
             soul: context?.soulContext,
             userProfile: context?.userProfileContext,
             activePlan: context?.activePlan,

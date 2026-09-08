@@ -3,7 +3,7 @@
   "minimumAppVersion": "1.5.3",
   "name": "PDF Workbench",
   "releaseNotes": {
-    "zh-Hans": "新增本地文件格式转换，直接使用已有文件，减少模型重复输出。",
-    "en": "Convert existing local files without having the model rewrite the full document."
+    "zh-Hans": "统一 PDF 指南和工具目录的能力说明。",
+    "en": "Align the PDF guide and discovery description."
   }
 }

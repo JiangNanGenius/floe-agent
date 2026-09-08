@@ -109,13 +109,22 @@ struct OfficeDocumentTests {
         #expect(inspected.exitStatus == 0)
         #expect(inspected.summary.contains("kind=docx"))
 
-        let snapshot = try OfficeDocumentService.inspect(url: root.appendingPathComponent("docs/report.docx"))
-        let title = try #require(snapshot.fields.first(where: { $0.text == "Report" }))
+        // Consume the tool's public response, just as the model must. The
+        // underlying service already had a digest, but the tool omitted it.
+        let revision = try #require(inspected.summary.split(whereSeparator: \.isWhitespace).first { $0.hasPrefix("sha256=") }.map { String($0.dropFirst("sha256=".count)) })
+        #expect(revision.count == 64)
+        let fieldLine = try #require(inspected.summary.split(separator: "\n").first { $0.hasSuffix("text=Report") })
+        let fieldID = try #require(fieldLine.split(separator: " ").first.map { String($0.dropFirst("id=".count)) })
         let update = OfficeUpdateTextTool(rootProvider: { root })
         let changed = try await update.execute(
-            .init(path: "docs/report.docx", updates: [title.id: "Updated report"]), context: context
+            .init(path: "docs/report.docx", updates: [fieldID: "Updated report"], expectedSHA256: revision), context: context
         )
         #expect(changed.exitStatus == 0)
+        #expect(changed.summary.contains("sha256="))
+        let savedBytes = try Data(contentsOf: root.appendingPathComponent("docs/report.docx"))
+        let stale = try await update.execute(.init(path: "docs/report.docx", updates: [fieldID: "Old model state"], expectedSHA256: revision), context: context)
+        #expect(stale.exitStatus == 2)
+        #expect(try Data(contentsOf: root.appendingPathComponent("docs/report.docx")) == savedBytes)
         #expect(try OfficeDocumentService.inspect(url: root.appendingPathComponent("docs/report.docx"))
             .fields.map(\.text).contains("Updated report"))
     }

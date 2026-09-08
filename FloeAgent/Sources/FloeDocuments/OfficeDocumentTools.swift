@@ -72,11 +72,14 @@ public struct OfficeInspectTool: AgentTool {
         do {
             let url = try OfficeToolSupport.resolve(args.path, context: context, fallback: rootProvider, mustExist: true)
             let snapshot = try OfficeDocumentService.inspect(url: url)
+            guard let digest = snapshot.sha256 else {
+                throw FloeError.validationFailed("Office inspection did not return a verified revision")
+            }
             let lines = snapshot.fields.prefix(2_000).map {
                 "id=\($0.id) section=\($0.section) label=\($0.label) text=\($0.text.replacingOccurrences(of: "\n", with: "\\n"))"
             }
             return OfficeToolSupport.output(
-                "kind=\(snapshot.kind.rawValue) fields=\(snapshot.fields.count) entries=\(snapshot.packageEntries) bytes=\(snapshot.packageBytes)\n"
+                "kind=\(snapshot.kind.rawValue) sha256=\(digest) fields=\(snapshot.fields.count) entries=\(snapshot.packageEntries) bytes=\(snapshot.packageBytes)\n"
                     + lines.joined(separator: "\n")
             )
         } catch {
@@ -111,7 +114,10 @@ public struct OfficeUpdateTextTool: AgentTool {
         do {
             let url = try OfficeToolSupport.resolve(args.path, context: context, fallback: rootProvider, mustExist: true)
             let result = try OfficeDocumentService.update(sourceURL: url, updates: args.updates, expectedSHA256: args.expectedSHA256)
-            return OfficeToolSupport.output("updated=\(args.path) fields=\(args.updates.count) verifiedFields=\(result.fields.count)")
+            guard let digest = result.sha256 else {
+                throw FloeError.validationFailed("Office save could not confirm the resulting revision; inspect before retrying")
+            }
+            return OfficeToolSupport.output("updated=\(args.path) sha256=\(digest) fields=\(args.updates.count) verifiedFields=\(result.fields.count)")
         } catch {
             return OfficeToolSupport.output("status=error error=\(error.localizedDescription)", exitStatus: 2)
         }
@@ -192,7 +198,7 @@ public struct PresentationCreateDeckTool: AgentTool {
     }
     public static let name = "presentation.createDeck"
     public static let toolDescription =
-        "Create an editable native 16:9 .pptx in the workspace. First ground claims and assets with web.search/web.fetch, then plan a concise storyboard, vary slide content, keep audience-facing copy clean, and add source URLs to slide notes. Floe creates a local OOXML deck, validates it, and exposes its text for manual editing. For an inline conversation table/chart/web preview instead of a .pptx file, use presentation.createInline."
+        "Create a native 16:9 .pptx with slide titles, bullet text and optional speaker notes. Use supplied content; research with web.search/web.fetch only when additional source material is needed, and place supporting URLs in notes. This basic creation schema does not position objects, insert charts/images, or edit themes. Floe validates the OOXML package; use document.office.inspect/updateText for existing text fields. For an inline conversation table/chart/web preview use presentation.createInline."
     public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","description":"New workspace-relative .pptx path"},"title":{"type":"string","maxLength":300},"slides":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"title":{"type":"string","maxLength":300},"bullets":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":1000}},"notes":{"type":"string","description":"Optional speaker notes including [Sources] URLs","maxLength":20000}},"required":["title","bullets"],"additionalProperties":false}}},"required":["path","title","slides"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles]
     public static let isSideEffecting = true

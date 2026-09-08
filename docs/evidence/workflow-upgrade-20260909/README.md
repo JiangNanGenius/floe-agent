@@ -46,4 +46,11 @@ iPhone 17 Pro / iOS 27 模拟器的长思考展开、更新、全屏与折叠交
 
 ## Office 构建包完整性
 
-[8 项构建包测试](office-bundle-tests-summary.txt)通过：移位后相对链接和库清单有效、缺失头文件/库拒绝打包、目录外链接拒绝、文件/源码修改拒绝、未完成构建拒绝。最初用系统旧 Python 运行不支持安全提取参数，切到 Python 3.12 后修正了 macOS `/var` 与 `/private/var` 的路径规范化断言；最终通过。测试使用合成输入，未宣称当前云端产物完整或原生编辑器可运行。
+[12 项构建包/接入补丁测试](office-bundle-tests-summary.txt)通过：移位后相对链接和库清单有效、缺失头文件/库拒绝打包、目录外链接拒绝、文件/源码修改拒绝、未完成构建拒绝。最初用系统旧 Python 运行不支持安全提取参数，切到 Python 3.12 后修正了 macOS `/var` 与 `/private/var` 的路径规范化断言；最终通过。测试使用合成输入，未宣称当前云端产物完整或原生编辑器可运行。
+
+
+## 第二轮提示词审查
+
+见 [107 项 Swift 回归](prompt-audit-tests-summary.txt)、[4 项官方指南元数据检查](guide-metadata-tests-summary.txt) 和 [完整审查台账](../../INTERNAL_PROMPT_AUDIT.md)。目录 `prompt-snapshots` 保存 5 个合成场景在实际 provider 请求边界的系统消息/工具集合；无真实模型调用，不是 token 效率证明。iPad 指南注册测试通过，新签名版本生成后仍需复验。
+
+Office 接入补丁的 [锁定源码检查](office-native-overlay-check.json) 只证明补丁可作用于锁定源码及公开键盘 API 片段可编译；没有完整原生控制器、真机输入或文档保真结果。
