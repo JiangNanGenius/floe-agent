@@ -1,6 +1,6 @@
 # Editing and workflow upgrade / 编辑与工作流升级
 
-Status: release candidate 1.5.3 (134), immutable source `5f9eeec8d80c6af74816391c49e0248757c8f239`. [Release verification](RELEASE_VERIFICATION_1.5.3.md) tracks installation availability separately. 更新范围覆盖完整编辑能力、插件与文件管理、画布和任务反馈；本轮大计划尚未完成全部验收。
+Status: **1.5.3 (134) is available in the Floe QA internal TestFlight group**, with Apple `VALID` and group visibility verified on 2026-09-09 (Australia/Sydney). Immutable release source: `5f9eeec8d80c6af74816391c49e0248757c8f239`. See the [release verification](RELEASE_VERIFICATION_1.5.3.md). 更新范围覆盖完整编辑能力、插件与文件管理、画布和任务反馈；本轮大计划尚未完成全部验收。
 
 [English guide](USER_GUIDE.md) · [中文使用指南](USER_GUIDE.zh-CN.md) · [Architecture](ARCHITECTURE_OVERVIEW.md)
 

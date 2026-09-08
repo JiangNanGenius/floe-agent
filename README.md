@@ -68,7 +68,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.5.3 (build 134); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
+Floe Agent **1.5.3 (build 134)** is available to the existing **Floe QA internal TestFlight group**. Apple processing and group visibility were verified on September 9, 2026 (Australia/Sydney). See the [release notes](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.5.3) and [verification record](docs/RELEASE_VERIFICATION_1.5.3.md). Physical-device acceptance and unfinished Office capabilities remain listed in the [upgrade scope](docs/WORKFLOW_UPGRADE.md).
 
 ### Unsigned IPA
 

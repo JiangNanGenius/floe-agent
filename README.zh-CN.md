@@ -68,7 +68,7 @@ flowchart LR
 
 ### TestFlight
 
-项目会在测试组开放时通过 TestFlight 分发签名版本。当前源码目标版本为 Floe Agent 1.5.3（build 134）；只有同时通过发布门禁并能在 TestFlight 中看到的构建才算完成发布。仅有源码版本或标签不能证明 Apple 已收到或处理该构建。
+Floe Agent **1.5.3（build 134）** 已向现有 **Floe QA 内部 TestFlight 测试组**开放。2026 年 9 月 9 日（悉尼时间）已核实 Apple 处理通过和测试组可见性。查看[发布说明](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.5.3)与[验证记录](docs/RELEASE_VERIFICATION_1.5.3.md)；真机验收和未完成的 Office 能力仍列在[本轮更新目标](docs/WORKFLOW_UPGRADE.md)中。
 
 ### 未签名 IPA
 

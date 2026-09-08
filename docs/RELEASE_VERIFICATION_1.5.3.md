@@ -16,9 +16,9 @@ Immutable source: `5f9eeec8d80c6af74816391c49e0248757c8f239`; tag `v1.5.3`.
 - [Full CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/34233559888): passed. 1,007 SwiftPM test executions, 122/122 app regressions, Linux build, App Store SDK compatibility build, secret scan, SBOM and 152-dependency license inventory passed.
 - [Release build, signing and upload](https://github.com/JiangNanGenius/floe-agent/actions/runs/34233559897): all jobs passed, including SwiftPM tests, simulator/device builds, app regressions, source/binary scans, dependency checks, accepted-SDK rebuild/regressions (122/122 app tests passed on each SDK), package verification, signing, upload and paired GitHub release publication.
 - Apple processing: [discovery confirmed `VALID`](https://github.com/JiangNanGenius/floe-agent/actions/runs/34246903131), version 1.5.3, build 134, build ID `d95e0909-c75f-44f9-81dc-eee9ba8b48cc`. Upload processing completed with no errors or warnings.
-- Floe QA internal group visibility: not yet verified.
+- [Floe QA internal group visibility verified](https://github.com/JiangNanGenius/floe-agent/actions/runs/34247056003): exactly one group, `Floe QA`, internal=true, public link not enabled; zero unexpected groups. Marketing version 1.5.3 and build 134 match.
 
-This record does not yet establish TestFlight installation availability. It will be updated from the completed gates.
+Verified on 2026-09-09 (Australia/Sydney): **1.5.3 (134) is available to the existing Floe QA internal TestFlight group.** This is internal TestFlight availability, not public App Store publication or physical-device acceptance.
 
 ## Device test priorities / 真机测试重点
 

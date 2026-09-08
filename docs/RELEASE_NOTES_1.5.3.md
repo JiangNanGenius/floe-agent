@@ -2,7 +2,9 @@
 
 ### 简体中文
 
-本次发布已完成的工作流升级和本地文档转换工具，方便真机测试。
+**已在 Floe QA 内部 TestFlight 测试组开放：1.5.3（134）。** Apple 处理和测试组可见性已于 2026 年 9 月 9 日（悉尼时间）核实。
+
+本次发布工作流升级和本地文档转换工具，方便真机测试。
 
 - 新增 Markdown、Word DOCX、HTML、RTF 和文本文件互转，以及与 PDF 的转换。直接读取已有文件，不让模型重新抄写全文，减少 token 消耗。保留源文件并保存新副本；格式、扫描件和布局限制会明确报告。
 
@@ -17,13 +19,15 @@
 - 改善聊天、画布的状态刷新和工作区清理恢复；画中画显示阶段、耗时及活动信息。
 - 修复 PDF 表单脚本加载与 Stata 清理命令，调整工具与技能发现说明。
 
-Word、Excel、PowerPoint 的完整离线深度编辑引擎仍在验证，本版不宣称完成该能力。超长输入和 Markdown 正文性能、真实模型长文请求、画布横屏细节和真机长任务仍需测试。完整范围和操作截图见 [更新文档](WORKFLOW_UPGRADE.md)。
+Word、Excel、PowerPoint 的完整离线深度编辑引擎尚未接入；其原生构建因空间不足停止。PowerPoint 新建、完整图表/附件/深度排版仍未完成；现有幻灯片文字可检查和修改。超长输入和 Markdown 正文性能、真实模型长文请求、画布横屏细节和真机长任务仍需测试。完整范围和操作截图见 [更新文档](WORKFLOW_UPGRADE.md)。
 
-此前工作流源码已通过完整 CI；本次新增转换和模型更新已通过定向模拟器回归（含 48,122 字、42 页的保真检查）；发布构建、签名上传、Apple 处理和测试组可见性由本次发布流程分别核验。内部测试版尚未在此文档中标记为已可安装。
+本版已通过完整 CI（1,007 次 SwiftPM 测试、122 项应用回归）和两套 SDK 的发布回归（各 122/122 通过），并完成签名上传、Apple VALID 处理及内部测试组验证。转换测试覆盖 48,122 字、42 页的文本完整性检查。详细证据见[发布验证记录](RELEASE_VERIFICATION_1.5.3.md)。
 
 ### English
 
-This test release delivers completed workflow improvements and offline document conversion for device testing.
+**Available to the existing Floe QA internal TestFlight group: 1.5.3 (134).** Apple VALID processing and internal group visibility were verified on September 9, 2026 (Australia/Sydney).
+
+This test release delivers workflow improvements and offline document conversion for device testing.
 
 - Convert existing Markdown, DOCX, HTML, RTF and text files, plus PDF input/output, without model rewriting. Preserve source files and save new copies; report format, scanned-page and layout limitations.
 
@@ -38,6 +42,6 @@ This test release delivers completed workflow improvements and offline document 
 - Improve conversation/canvas state refresh, recover workspace cleanup and expose stage, elapsed time and activity in Picture in Picture.
 - Correct PDF form script loading and Stata clear behavior, and clarify tool/skill discovery.
 
-The complete offline Word, Excel and PowerPoint editing engine remains under qualification and is not claimed as complete. Long composer/Markdown performance, live-provider long writes, landscape canvas polish and device lifecycle acceptance remain open. See the [upgrade scope and screenshots](WORKFLOW_UPGRADE.md).
+The complete offline Word, Excel and PowerPoint editing engine remains unintegrated after its native qualification stopped at the disk reserve. PowerPoint creation, full charts/attachments and advanced layout remain unfinished; existing slide/note text fields can be inspected and updated. Long composer/Markdown performance, live-provider long writes, landscape canvas polish and device lifecycle acceptance remain open. See the [upgrade scope and screenshots](WORKFLOW_UPGRADE.md).
 
-Earlier workflow-source CI passed. New conversion/model changes passed focused simulator regressions, including a 48,122-character, 42-page integrity fixture. This release separately verifies builds, signing/upload, Apple processing and internal tester visibility; this document does not yet claim installation availability.
+Full CI passed with 1,007 SwiftPM test executions and 122 app regressions. Release app regressions passed on both SDKs (122/122 each), followed by signed upload, Apple VALID processing and internal group visibility verification. Conversion coverage includes a 48,122-character, 42-page text-integrity fixture. See the [release verification record](RELEASE_VERIFICATION_1.5.3.md).
