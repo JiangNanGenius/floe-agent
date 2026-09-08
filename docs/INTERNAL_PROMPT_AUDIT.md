@@ -51,6 +51,7 @@
 ## 仍须完成的最终审查
 
 - 本地模型的 `LocalProviderAdapter.promptBuild` 会另行生成短提示词，并丢弃大部分运行系统层；非 Apple 路径仍描述 JSON tool_call 兼容回退。须对照实际解析/权限边界验证，确保最新用户修正、计划/Goal/恢复关键状态不会丢失，不能据云端回归认定本地模型通过。
+  - 后续细查确认：MLX 转录目前每条最多保留 800 字符，长用户输入的尾部修正可能丢失；目录被扁平放入用户消息，却由系统层称作权威目录。须同时修复内容预算与来源边界，不能仅把云端长提示词原样塞入本地有限上下文。
 - `ContextEngine`、`ConversationHistoryAssembler`、手动压缩、恢复/重试/最终校验插入层：当前已有连续性测试，仍需覆盖长任务实际最终请求与全部分支的重复指令。
 - `ConversationCenter` 的图像转述、Goal 证据判断、标题生成；画布墨迹/视觉辅助/生成上下文；记忆整理/MemoryDream/SkillDream 辅助请求：已定位并阅读相关来源，仍需固定合成任务验证输出边界、长度、引用来源与持久化。
 - 所有工具说明和 schema 必须以当前注册 executor 为准；Office 深层模型编辑、完整前端、PDF、文件转换等完成后再次逐项复核，不保留此次基础能力限制作为最终产品目标。
@@ -59,3 +60,11 @@
 Office 1.2.1 的目录最低应用版本设为 1.5.4：旧版 1.5.3 的 inspect 没有返回工具级 sha256，不能给旧版推送依赖该返回值的新指南。当前分支仍未进行应用版本递增；正式发布版本须至少满足此门槛。
 
 指南签名生成任务 [34280433826](https://github.com/JiangNanGenius/floe-agent/actions/runs/34280433826) 成功，最低应用版本调整后的再次签名 [34280703973](https://github.com/JiangNanGenius/floe-agent/actions/runs/34280703973) 也成功。生成后 26 项真实 ZIP/签名/包边界测试及 1 项应用注册测试通过，见 [签名后验收](evidence/workflow-upgrade-20260909/signed-guide-tests-summary.txt)。本地 Python 3.12 缺少 cryptography，未将该本地 build.py --check 失败计为通过；云端生成和 --check、Swift 加密验证分别有成功证据。
+
+## 第三轮：介绍实际参与发现、完整目录与版本说明
+
+发现此前 `skill.search` 只搜索 ID/名称及内置别名，没有使用各 SKILL.md 的 description，第三方指南因此可能无法按用途找到。现复用安装校验的元数据解析器，从持久安装内容取得介绍；列表和搜索返回介绍，按名称/介绍关键词检索并补齐 PPT 别名。精确读取仍使用任务固定版本的介绍，目录显示当前安装版本；两者不是同一个修订时不混用。
+
+发现接口统一剥离正文与正文分页字段，不激活指南。列表按编码后的实际大小缩短页并返回游标；搜索结果超过预算时明确要求缩小查询，避免框架截断 JSON。未匹配搜索不再塞入整个无界安装目录，统一指向 skill.list。`skill.manage` 说明明确使用 currentDigest 或当前目录 digest，避免把运行时固定的旧 digest 用作修改基准。
+
+[39 项 Skill 回归及 1 项应用安装/目录测试](evidence/workflow-upgrade-20260909/skill-description-tests-summary.txt)通过，包括第三方用途、多独立查询、大小写/重音、禁用状态、正文不泄漏、旧数据解码以及 100 项带大量 JSON 转义的分页完整性。这是关键词和数据合同验证；未证明任意自然语言语义召回率或真实模型效率，最终 H01–H06 仍待完整验收。

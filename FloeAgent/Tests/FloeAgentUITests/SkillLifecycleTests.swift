@@ -606,7 +606,11 @@ struct SkillLifecycleTests {
         for guide in BundledDomainSkills.all {
             #expect(Set(guide.toolNames).isSubset(of: catalogNames), "Unknown tool reference in \(guide.id): \(Set(guide.toolNames).subtracting(catalogNames))")
         }
-        #expect(try await center.readSkills(id: nil).count == BundledDomainSkills.all.count)
+        let inventory = try await center.readSkills(id: nil)
+        #expect(inventory.count == BundledDomainSkills.all.count)
+        #expect(inventory.allSatisfy { $0.description?.isEmpty == false && $0.markdown == nil })
+        #expect(inventory.first { $0.id == pdf.id }?.description == pdf.description)
+        #expect(SkillSearchTool.matches(query: "PowerPoint", rows: inventory).first?.id == "floe-office")
         let selection = await center.runtimeSelection(runID: UUID())
         #expect(selection.allowedToolNames == nil)
         let python = try #require(try await center.readSkills(id: "floe-python").first)

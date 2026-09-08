@@ -1,0 +1,16 @@
+Skill metadata discovery regression, 2026-09-09
+Command: DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test --package-path FloeAgent --jobs 2 --enable-swift-testing --filter FloeSkillsTests
+Log: /tmp/floe-skill-description-all-tests.log
+✔ Suite "FloeSkills.SkillCreate" passed after 0.016 seconds.
+✔ Suite "Official signed Skill Hub" passed after 0.053 seconds.
+✔ Suite "FloeSkills package boundary" passed after 0.191 seconds.
+✔ Suite "Skill management contracts" passed after 0.194 seconds.
+✔ Test run with 39 tests in 4 suites passed after 0.194 seconds.
+
+Application installation and discovery integration
+Result: /tmp/floe-skill-description-app.xcresult
+Test: FloeAppTests/SkillLifecycleTests/firstReadSeedsGuidesAndKeepsPythonIndependent()
+✔ Test run with 1 test in 1 suite passed after 3.201 seconds.
+** TEST SUCCEEDED **
+
+Synthetic fixtures and iPad Simulator only. No real provider invocation, physical-device acceptance, or release is established by these tests.

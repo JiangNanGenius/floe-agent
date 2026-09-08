@@ -60,3 +60,7 @@ Office 接入补丁的 [锁定源码检查](office-native-overlay-check.json) �
 后续补丁的 [8 个生命周期片段场景](office-native-lifecycle-check.json) 和 [12 项构建包回归](office-lifecycle-bundle-tests-summary.txt)通过。测试从锁定上游源码应用补丁，编译真实保存/关闭方法片段，以可控文档回调和真实临时文件验证失败保留、完成顺序及重复关闭；同时使用 iphoneos SDK 检查完整公开控制器/文档头文件。该记录对应新的补丁哈希；上一节键盘检查是此前补丁的历史证据。
 
 这不是完整控制器或 LibreOffice 引擎编译，也不是 UIKit 的实际保存/真机 Office 编辑测试。原生回调、持久恢复目录、自动保存与显式保存协调仍须与 Floe 会话接通后验证。云端资格检查新增独立记录入口，生命周期检查失败也保留已经成功构建的引擎；运行中旧任务不受修改影响。
+
+## Skill 介绍与分页发现
+
+[39 项 Skill 回归和 1 项应用安装检查](skill-description-tests-summary.txt)通过。第三方介绍关键词、多查询、禁用状态、旧元数据、正文隔离和 100 项较大目录的完整分页有测试覆盖；应用实际安装后的介绍与精确读取保持一致，PowerPoint 可找到 Office 指南。没有真实模型召回率、token 收益或发布验收结论。

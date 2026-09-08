@@ -552,7 +552,8 @@ final class SkillsCenter: ObservableObject {
         if id == nil {
             return rows.map { row in
                 ManagedSkill(id: row.id, name: DomainSkillLibrary.all.first { $0.id == row.id }?.name ?? row.name,
-                    version: row.version, enabled: row.status == "enabled", digest: row.rewrittenDigest, markdown: nil)
+                    version: row.version, enabled: row.status == "enabled", digest: row.rewrittenDigest, markdown: nil,
+                    description: (try? SkillPackageValidator().parseSkillMarkdown(Data(row.skillMarkdown.utf8)))?.description)
             }
         }
         let pythonManifest = id == "floe-python" ? await environment.localPythonProbe.runtimeManifest() : nil
@@ -567,7 +568,7 @@ final class SkillsCenter: ObservableObject {
                     markdown += "\n### Audited source: \(path)\nPass task data through inputJSON; run this source verbatim.\n```python\n\(String(decoding: snapshot.files[path]!, as: UTF8.self))\n```\n"
                 }
             }
-            return ManagedSkill(id: row.id, name: builtin?.name ?? row.name, version: manifest.version, enabled: row.status == "enabled", digest: snapshot.package.canonicalSHA256, markdown: id == nil ? nil : markdown, requiredToolNames: id == nil ? nil : Array(Set(manifest.tools + (builtin?.automaticallyLoadedToolNames ?? []))).sorted(), currentDigest: row.rewrittenDigest)
+            return ManagedSkill(id: row.id, name: builtin?.name ?? row.name, version: manifest.version, enabled: row.status == "enabled", digest: snapshot.package.canonicalSHA256, markdown: id == nil ? nil : markdown, requiredToolNames: id == nil ? nil : Array(Set(manifest.tools + (builtin?.automaticallyLoadedToolNames ?? []))).sorted(), currentDigest: row.rewrittenDigest, description: snapshot.package.metadata.description)
         }
     }
 

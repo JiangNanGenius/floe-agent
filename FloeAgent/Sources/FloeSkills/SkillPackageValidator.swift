@@ -190,7 +190,9 @@ public struct SkillPackageValidator: Sendable {
         }
     }
 
-    private func parseSkillMarkdown(_ data: Data) throws -> SkillMetadata {
+    /// Parse installed metadata with the same contract used during package validation.
+    /// This does not load a package, activate instructions, or execute scripts.
+    public func parseSkillMarkdown(_ data: Data) throws -> SkillMetadata {
         guard let text = String(data: data, encoding: .utf8) else {
             throw SkillValidationError.invalidFrontmatter("file must be UTF-8")
         }
