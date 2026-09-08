@@ -23,7 +23,6 @@ jobs:
     timeout-minutes: 360
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
-      FLOE_OFFICE_BUILD_ROOT: ${{ runner.temp }}/floe-office-engine
     steps:
       - uses: actions/checkout@v5
       - name: Prepare build tools
@@ -31,6 +30,7 @@ jobs:
       - name: Check or build engine
         env:
           BUILD_ENGINE: ${{ inputs.build_engine || false }}
+          FLOE_OFFICE_BUILD_ROOT: ${{ runner.temp }}/floe-office-engine
         run: |
           if [ "$BUILD_ENGINE" = true ]; then
             FloeAgent/scripts/qualify_office_engine.sh --build
