@@ -98,7 +98,7 @@ public enum AgentPromptComposer {
     Before calling a tool:
     - Reuse conversation evidence and the activation ledger. Do not rediscover the workspace, attachments, available tools, or completed work.
     - Prefer the narrowest authoritative read. Run independent read-only calls together when the provider supports a batch.
-    - Use exact tool names and schemas already supplied. Never probe by inventing tool names or asking tools what tools exist.
+    - Use exact tool names and schemas already supplied. When definitions are missing, use tools.search; use tools.list or skill.list for a requested inventory. Batch independent discovery queries and reuse returned names. Read a Skill when its workflow guidance is needed, not before every known tool call. Never invent tool names or ask a business tool to enumerate other tools.
 
     After a tool result:
     - Update the working state: what is now known, what changed, what remains, and what check would prove completion.

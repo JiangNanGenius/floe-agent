@@ -16,6 +16,30 @@ struct TaskChecklistTests {
         return (db, task, run)
     }
 
+    @Test func sharedProgressRejectsLateAndUnrelatedSnapshots() async throws {
+        let (db, task, run) = try await fixture()
+        let store = TaskChecklistStore(database: db)
+        let first = try await store.update(.init(expectedRevision: 0, title: "Work", steps: [
+            .init(id: "a", title: "Inspect", status: .completed, evidence: ["report.txt"]),
+            .init(id: "b", title: "Build", status: .inProgress),
+            .init(id: "c", title: "Removed", status: .cancelled)
+        ]), runID: run, operationID: "first")
+        #expect(first.progressSummary == "已完成 1/3 项 · 已取消 1 项")
+        #expect(first.currentStep?.id == "b")
+        #expect(!first.isFinished)
+        #expect(first.canReplace(nil, conversationID: task))
+        #expect(!first.canReplace(nil, conversationID: UUID()))
+        #expect(!first.canReplace(first, conversationID: task))
+        let second = try await store.update(.init(expectedRevision: 1, title: "Work", steps: [
+            .init(id: "a", title: "Inspect", status: .completed, evidence: ["report.txt"]),
+            .init(id: "b", title: "Build", status: .blocked),
+            .init(id: "c", title: "Removed", status: .cancelled)
+        ]), runID: run, operationID: "second")
+        #expect(second.currentStep == nil)
+        #expect(second.canReplace(first, conversationID: task))
+        #expect(!first.canReplace(second, conversationID: task))
+    }
+
     @Test func replayConflictAndCrossRoundRecovery() async throws {
         let (db, task, run) = try await fixture()
         let store = TaskChecklistStore(database: db)

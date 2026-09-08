@@ -8,6 +8,7 @@ import CryptoKit
 import FloeCore
 import FloePersistence
 import FloeProviders
+import FloeAgentRuntime
 
 extension Notification.Name {
     static let floeOpenConversation = Notification.Name("org.floeagent.open-conversation")
@@ -99,6 +100,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         var outputCharacters = 0
         var reportedTokensPerSecond: Double?
         var isGenerating = false
+        var checklist: TaskChecklist?
 
         func presentation(now: Date = Date()) -> String {
             let elapsed = max(0, Int(now.timeIntervalSince(stageStartedAt)))
@@ -110,7 +112,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 speed = String(format: " · %.1f 字符/秒", Double(outputCharacters) / max(1, now.timeIntervalSince(outputWindowStartedAt)))
             } else { speed = "" }
             let activity = idle < 3 ? "刚收到活动" : "距上次活动 \(idle) 秒"
-            return "\(stage)\n本阶段 \(elapsed) 秒\(speed)\n\(activity)"
+            // Bound the step caption so long titles leave room for real activity.
+            let step = checklist?.currentStep.map { String($0.title.prefix(20)).replacingOccurrences(of: "\n", with: " ") }
+            let task = checklist.map { "\n\($0.progressSummary)" + (step.map { "\n当前：\($0)" } ?? "") } ?? ""
+            return "\(stage)\n本阶段 \(elapsed) 秒\(speed)\n\(activity)\(task)"
         }
     }
     private var activeRuns: [UUID: ActiveRun] = [:]
@@ -516,6 +521,18 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         if let tokensPerSecond { active.reportedTokensPerSecond = tokensPerSecond }
         activeRuns[runID] = active
+    }
+
+    /// Checklist revisions are shared with chat. This is plan bookkeeping,
+    /// not a provider heartbeat and not evidence that the overall Goal is done.
+    func didUpdateChecklist(runID: UUID, checklist: TaskChecklist) {
+        guard var active = activeRuns[runID],
+              checklist.canReplace(active.checklist, conversationID: active.conversationID) else { return }
+        active.checklist = checklist
+        activeRuns[runID] = active
+        if surfacedRunID == runID {
+            environment.backgroundVideoService.update(progress: active.presentation())
+        }
     }
 
     func didUpdateProgress(runID: UUID, stage: String, progress: Int64, isGenerating: Bool = false) {

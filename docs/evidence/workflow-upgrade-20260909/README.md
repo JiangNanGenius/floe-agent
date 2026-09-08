@@ -29,3 +29,9 @@ iPhone 17 Pro / iOS 27 模拟器的长思考展开、更新、全屏与折叠交
 原始结果包保留在开发机 `/tmp/floe-workflow-app-regression-20260909.xcresult` 与 `/tmp/floe-workflow-ui-20260909.xcresult`；同目录的摘要是这些实际测试输出的摘录。
 
 最终应用及素材回归结果包：`/tmp/floe-workflow-final-regression-20260909.xcresult`。
+
+## 持久待办与提示词规则
+
+37 项待办/计划/Goal/提示词回归通过，见 [结果摘要](checklist-prompt-tests-summary.txt)。iPad 实际聊天读取持久待办并展开查看步骤/记录的 UI 测试通过（`/tmp/floe-checklist-ui-20260909.xcresult`）。已人工检查 [折叠](ipad-checklist-folded.png) 与 [展开](ipad-checklist-expanded.png) 截图。
+
+此合成任务故意保留未完成步骤；截图中运行栏仍写“已完成”，说明 R04 需要进一步区分本轮结束与整体任务完成。fixture 没有模型最终回复，因此出现相应提示，不代表一次真实模型执行。测试尚未覆盖实时多轮更新、真正 PiP 展示或模型调用效率。

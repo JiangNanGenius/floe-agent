@@ -3808,15 +3808,31 @@ final class ConversationCenter: ObservableObject {
         snapshotTasks[runID] = Task { [weak self, weak service] in
             guard let service else { return }
             let stream = service.events()
+            var checklistCalls: Set<String> = []
             if let self {
                 let snapshot = await service.snapshot()
                 self.apply(snapshot)
+                await self.refreshChecklistSurface(runID: runID, conversationID: snapshot.conversationID)
                 self.publishSession(snapshot.conversationID)
             }
             for await event in stream {
                 guard !Task.isCancelled, let self else { break }
                 switch event {
-                case .stateChanged, .toolLifecycle, .approvalRequested,
+                case .toolLifecycle(let lifecycle):
+                    var checklistChanged = false
+                    switch lifecycle {
+                    case .requested(let call), .started(let call):
+                        if call.toolName == "task.updatePlan" { checklistCalls.insert(call.id) }
+                    case .finished(let result):
+                        checklistChanged = checklistCalls.remove(result.callID) != nil && result.status == .ok
+                    }
+                    let snapshot = await service.snapshot()
+                    self.apply(snapshot)
+                    if checklistChanged {
+                        await self.refreshChecklistSurface(runID: runID, conversationID: snapshot.conversationID)
+                    }
+                    self.publishSession(snapshot.conversationID)
+                case .stateChanged, .approvalRequested,
                      .approvalReviewChanged,
                      .livenessChanged, .providerAttemptChanged,
                      .contextCompacted, .planChanged, .goalChanged,
@@ -3832,6 +3848,18 @@ final class ConversationCenter: ObservableObject {
                 }
             }
             self?.snapshotTasks[runID] = nil
+        }
+    }
+
+    private func refreshChecklistSurface(runID: UUID, conversationID: UUID) async {
+        // Read the authoritative revision, not an idempotent tool retry's older
+        // receipt. Never query the database for each streamed token.
+        do {
+            if let checklist = try await TaskChecklistStore(database: environment.database).latest(conversationID: conversationID) {
+                environment.backgroundRunCoordinator.didUpdateChecklist(runID: runID, checklist: checklist)
+            }
+        } catch {
+            FloeLogger(category: .app).warning("checklistSurfaceRefreshFailed run=\(runID.uuidString)")
         }
     }
 

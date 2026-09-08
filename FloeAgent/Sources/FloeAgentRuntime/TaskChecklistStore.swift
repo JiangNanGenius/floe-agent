@@ -25,6 +25,23 @@ public struct TaskChecklist: Codable, Sendable, Equatable {
     public var steps: [Step]
     public var updatedAt: Date
     public var isFinished: Bool { steps.allSatisfy { $0.status == .completed || $0.status == .cancelled } }
+    public var completedCount: Int { steps.filter { $0.status == .completed }.count }
+    public var cancelledCount: Int { steps.filter { $0.status == .cancelled }.count }
+    /// Never counts cancelled work as completed or invents an active step.
+    public var progressSummary: String {
+        let cancelled = cancelledCount > 0 ? " · 已取消 \(cancelledCount) 项" : ""
+        return "已完成 \(completedCount)/\(steps.count) 项\(cancelled)"
+    }
+    public var currentStep: Step? { steps.first { $0.status == .inProgress } }
+
+    /// A new run may continue the same task. Late receipts and snapshots from
+    /// a different conversation must not roll the shared UI backwards.
+    public func canReplace(_ previous: TaskChecklist?, conversationID: UUID?) -> Bool {
+        guard self.conversationID == conversationID else { return false }
+        guard let previous else { return true }
+        return previous.conversationID == self.conversationID && revision > previous.revision
+    }
+
 }
 
 public struct TaskChecklistUpdate: Codable, Sendable {

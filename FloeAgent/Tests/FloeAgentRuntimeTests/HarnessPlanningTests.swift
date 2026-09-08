@@ -390,6 +390,19 @@ struct HarnessPlanningTests {
         #expect(bindings.count <= 16)
     }
 
+    @Test("Discovery routing stays usable in every conversation mode")
+    func promptDiscoveryRouting() {
+        for mode: ConversationMode in [.chat, .plan, .goal] {
+            let prompt = AgentPromptComposer.compose(mode: mode, runtimeContext: "Synthetic environment")
+            #expect(prompt.contains("use tools.search"))
+            #expect(prompt.contains("tools.list or skill.list"))
+            #expect(prompt.contains("not before every known tool call"))
+            #expect(!prompt.contains("or asking tools what tools exist"))
+            #expect(prompt.contains("Never invent tool names"))
+            #expect(prompt.contains("stop for approval when required"))
+        }
+    }
+
     @Test("run context publishes bounded stateful tool workflows")
     func toolWorkflowContext() {
         let prompt = ConversationRunService.buildContextMessage(

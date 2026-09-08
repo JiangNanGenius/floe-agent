@@ -1,0 +1,44 @@
+Command: swift test --filter HarnessPlanningTests|TaskChecklistTests
+Working directory: FloeAgent
+◇ Suite "Durable task checklists" started.
+◇ Suite "Harness planning, goals, context, and memory" started.
+✔ Test "VNC connect is available before an optional status read but observation remains gated" passed after 0.331 seconds.
+✔ Test "Goal completion requires steps, evidence, review, and confirmation" passed after 0.331 seconds.
+✔ Test "resource discovery produces bounded structured bindings" passed after 0.331 seconds.
+✔ Test "deterministic compaction preserves corrections, outcomes, and continuation state" passed after 0.331 seconds.
+✔ Test "Plan policy exposes and executes read-only tools only" passed after 0.332 seconds.
+✔ Test "An explicit SSH-before-VNC request keeps every VNC tool hidden until SSH executes" passed after 0.332 seconds.
+✔ Test "Unconfigured VNC waits for resolver and memory writes wait for prior inspection" passed after 0.332 seconds.
+✔ Test "activation ledger preserves resource IDs before truncating large results" passed after 0.333 seconds.
+✔ Test "A conditional SSH fallback takes over after VNC connection failure" passed after 0.332 seconds.
+✔ Test "Plan revisions are immutable and decision complete only when ready" passed after 0.332 seconds.
+✔ Test "Harness emits push events in order" passed after 0.332 seconds.
+✔ Test "Context compaction keeps protected messages and labels history untrusted" passed after 0.332 seconds.
+✔ Test "activation ledger is bounded, deduplicated, and framed as data" passed after 0.332 seconds.
+✔ Test "Harness budget forbids grandchildren and enforces total reservations" passed after 0.332 seconds.
+✔ Test "failed stateful tools point to their ID discovery predecessor" passed after 0.332 seconds.
+✔ Test "Compaction rejects an empty model summary" passed after 0.332 seconds.
+✔ Test "Saving a VNC endpoint exposes connect without another stale status pass" passed after 0.332 seconds.
+✔ Test "Goal blocks after three identical no-progress cycles without claiming completion" passed after 0.332 seconds.
+✔ Test "Discovery routing stays usable in every conversation mode" passed after 0.332 seconds.
+✔ Test "Forced compaction of a short conversation is an explicit no-op" passed after 0.332 seconds.
+✔ Test "structured plan submission is complete and carries advisory Goal conversion" passed after 0.333 seconds.
+✔ Test "Compaction rejects a summary that does not shrink context" passed after 0.333 seconds.
+✔ Test "artifact bindings are exposed before bounded tool output" passed after 0.333 seconds.
+✔ Test "empty activation ledger forbids invented tool evidence" passed after 0.333 seconds.
+✔ Test "mode prompt replaces planning rules and preserves Goal boundaries" passed after 0.333 seconds.
+✔ Test "Context compression policy adapts independently of model loading" passed after 0.333 seconds.
+✔ Test "A successful mutation invalidates a recovered status observation" passed after 0.332 seconds.
+✔ Test "VNC schemas advance only after durable prerequisite evidence" passed after 0.333 seconds.
+✔ Test "run context publishes bounded stateful tool workflows" passed after 0.333 seconds.
+✔ Test "Memory policy rejects secrets and bounds pending workspace candidates" passed after 0.333 seconds.
+✔ Test sharedProgressRejectsLateAndUnrelatedSnapshots() passed after 0.911 seconds.
+✔ Test concurrentWritersAndToolScope() passed after 0.921 seconds.
+✔ Test replayConflictAndCrossRoundRecovery() passed after 0.946 seconds.
+✔ Test unfinishedStepsCannotDisappearAndCompletionNeedsEvidence() passed after 0.988 seconds.
+✔ Suite "Durable task checklists" passed after 0.989 seconds.
+✔ Test "Manual snapshots survive reload without deleting original messages or duplicating summaries" passed after 0.992 seconds.
+✔ Test "Goal compare-and-swap rejects a stale continuation revision" passed after 1.001 seconds.
+✔ Test "conversation timeline keyset cursor neither repeats nor skips equal timestamps" passed after 1.014 seconds.
+✔ Suite "Harness planning, goals, context, and memory" passed after 1.015 seconds.
+✔ Test run with 37 tests in 2 suites passed after 1.019 seconds.

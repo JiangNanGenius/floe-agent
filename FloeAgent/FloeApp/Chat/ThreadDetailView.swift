@@ -161,9 +161,14 @@ struct ThreadDetailView: View {
             }.frame(maxHeight: 240)
         } label: {
             HStack {
-                Text(checklist.title).lineLimit(1)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(checklist.title).lineLimit(1)
+                    if let step = checklist.currentStep {
+                        Text("当前：\(step.title)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
                 Spacer()
-                Text("\(checklist.steps.filter { $0.status == .completed }.count)/\(checklist.steps.count)")
+                Text(checklist.progressSummary)
                     .monospacedDigit().foregroundStyle(.secondary)
             }.font(.subheadline)
         }

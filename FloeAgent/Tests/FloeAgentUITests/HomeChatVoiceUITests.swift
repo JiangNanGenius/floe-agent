@@ -84,6 +84,30 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
         add(management)
     }
 
+    func testDurableChecklistRestoresInChat() throws {
+        app.terminate()
+        app.launchArguments += ["--ui-test-batch-fixture", "--ui-test-checklist-fixture"]
+        app.launch()
+        let row = app.descendants(matching: .any).matching(identifier: "sidebar.conversation.57C0A79F-CF1B-45D2-B640-EF54E5C55391").firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        let checklist = app.descendants(matching: .any).matching(identifier: "thread.checklist").firstMatch
+        XCTAssertTrue(checklist.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["当前：更新图表与正文"].exists)
+        XCTAssertTrue(app.staticTexts["已完成 1/4 项 · 已取消 1 项"].exists)
+        let folded = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        folded.name = "Durable checklist folded"
+        folded.lifetime = .keepAlways
+        add(folded)
+        checklist.tap()
+        XCTAssertTrue(app.staticTexts["检查记录.txt"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["保存并重新打开验证"].exists)
+        let expanded = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        expanded.name = "Durable checklist expanded"
+        expanded.lifetime = .keepAlways
+        add(expanded)
+    }
+
     func testMaterialThumbnailsInBothLayouts() throws {
         app.terminate()
         app.launchArguments += ["--ui-test-material-fixture"]

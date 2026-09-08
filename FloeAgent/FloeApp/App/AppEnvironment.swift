@@ -717,6 +717,21 @@ final class AppEnvironment: ObservableObject {
                 }
             }
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains("--ui-test-checklist-fixture") {
+                let taskID = UUID(uuidString: "57C0A79F-CF1B-45D2-B640-EF54E5C55391")!
+                let runID = UUID(uuidString: "8C09095D-7CB9-4BB0-AC5D-3C58CB71A2B4")!
+                let store = TaskChecklistStore(database: database)
+                if try await store.latest(conversationID: taskID) == nil {
+                    try await runStore.saveRun(.init(id: runID, conversationID: taskID, state: "completed", goal: "合成待办验收", startedAt: Date(), endedAt: Date()))
+                    _ = try await store.update(.init(expectedRevision: 0, title: "文档更新", steps: [
+                        .init(id: "read", title: "检查原始文档", status: .completed, evidence: ["检查记录.txt"]),
+                        .init(id: "edit", title: "更新图表与正文", status: .inProgress),
+                        .init(id: "verify", title: "保存并重新打开验证"),
+                        .init(id: "removed", title: "已取消的额外导出", status: .cancelled)
+                    ]), runID: runID, operationID: "ui-fixture")
+                }
+            }
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                ProcessInfo.processInfo.arguments.contains("--ui-test-pdf-fixture") {
                 let fixtureID = UUID(uuidString: "57C0A79F-CF1B-45D2-B640-EF54E5C55391")!
                 let record = try await SQLiteWorkspaceStore(database: database).ensureWorkspace(
