@@ -1,0 +1,8 @@
+Command: /opt/homebrew/bin/python3.12 FloeAgent/scripts/test_office_engine_bundle.py
+........
+----------------------------------------------------------------------
+Ran 8 tests in 0.110s
+
+OK
+
+Synthetic build inputs only. Native linking and Office device editing are unverified.
