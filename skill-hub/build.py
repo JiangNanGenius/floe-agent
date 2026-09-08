@@ -79,6 +79,22 @@ def signing_key(provision):
     return key
 
 
+def validate_release(release):
+    """Match the app catalog contract before generating or signing artifacts."""
+    if not isinstance(release, dict):
+        raise ValueError("release metadata must be an object")
+    version = release.get("minimumAppVersion")
+    if not isinstance(version, str) or not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version):
+        raise ValueError("invalid minimumAppVersion")
+    notes = release.get("releaseNotes")
+    if not isinstance(notes, dict) or any(not isinstance(value, str) for value in notes.values()):
+        raise ValueError("releaseNotes must be a localized string dictionary")
+    if any(not notes.get(locale, "").strip() for locale in ("zh-Hans", "en")):
+        raise ValueError("releaseNotes requires nonempty zh-Hans and en translations")
+    if any(not isinstance(release.get(field), str) or not release[field].strip() for field in ("name", "description")):
+        raise ValueError("release metadata requires name and description")
+
+
 def build(check, key):
     outputs = {}
     packages = []
@@ -101,6 +117,7 @@ def build(check, key):
         seed_files.append("        " + json.dumps(skill_id) + ": [" + ", ".join(json.dumps(name) + ": Data(base64Encoded: " + json.dumps(base64.b64encode(data).decode()) + ")!" for name, data in files.items()) + "]")
         manifest = json.loads(files["floe.json"])
         release = json.loads((folder / "release.json").read_bytes())
+        validate_release(release)
         version = manifest["version"]
         if manifest["id"] != skill_id or not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version):
             raise ValueError("invalid package identity/version")

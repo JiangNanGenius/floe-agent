@@ -18,6 +18,7 @@ jobs:
         with:
           python-version: '3.13'
       - run: python -m pip install cryptography==46.0.6
+      - run: python -m unittest discover -s skill-hub -p 'test_*.py'
       - run: python skill-hub/build.py --check
       - name: Reject changes to published ZIP versions
         env:

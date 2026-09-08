@@ -1,6 +1,9 @@
 {
   "description": "Native PDF editing, region reflow, images, forms, annotations, OCR and verified raster redaction.",
-  "minimumAppVersion": "1.5.2",
+  "minimumAppVersion": "1.5.3",
   "name": "PDF Workbench",
-  "releaseNotes": "新增本地文件格式转换，直接使用已有文件，减少模型重复输出。"
+  "releaseNotes": {
+    "zh-Hans": "新增本地文件格式转换，直接使用已有文件，减少模型重复输出。",
+    "en": "Convert existing local files without having the model rewrite the full document."
+  }
 }
