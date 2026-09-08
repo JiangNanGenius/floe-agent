@@ -13,6 +13,7 @@ on:
       - 'FloeAgent/scripts/qualify_office_engine.sh'
       - 'FloeAgent/scripts/package_office_engine.py'
       - 'FloeAgent/scripts/verify_office_engine.py'
+      - 'FloeAgent/scripts/prepare_office_native_sources.py'
       - 'FloeAgent/scripts/test_office_engine_bundle.py'
       - 'FloeAgent/ThirdParty/Collabora/**'
 permissions:

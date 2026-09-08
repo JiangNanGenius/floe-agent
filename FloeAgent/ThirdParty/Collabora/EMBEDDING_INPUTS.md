@@ -37,6 +37,23 @@ Local packaging tests require Python 3.12 or newer:
 python3 FloeAgent/scripts/test_office_engine_bundle.py
 ```
 
+## Pinned source preparation
+
+`prepare_office_native_sources.py /path/to/extracted-bundle` verifies a format-2
+bundle and the source/patch hashes in `engine.lock.json`, then creates separate
+`prepared/native` copies. Original verified sources remain intact. Repeated
+preparation is idempotent; edited prepared sources are preserved and rejected.
+The overlay replaces private keyboard introspection with public `GCKeyboard`,
+removes WebKit method swizzling, and removes upstream's global temporary-folder
+cleanup. The embedding target must link GameController and use the prepared
+controller; Floe needs its own bounded engine startup rather than replacing its
+app delegate with the upstream app delegate.
+
+Twelve synthetic packaging/preparation tests pass. The overlay also applies to
+the actual pinned source hashes, and its public keyboard helper passes an
+iphoneos arm64 Objective-C syntax check. This is not a full controller compile,
+engine link, keyboard test, or native document-editing acceptance.
+
 ## Remaining integration work
 
 - Actual bundle verification, native Mobile compilation/linking and resource
@@ -45,8 +62,8 @@ python3 FloeAgent/scripts/test_office_engine_bundle.py
   packager. It is not retroactively upgraded by these changes. Its eventual
   archive must be inspected and may need supplementation with generated headers
   and native sources. Preserve reusable libraries; do not restart a live build.
-- Upstream `DocumentViewController.mm` uses private keyboard introspection.
-  Replace that before shipping. Apple's public
+- Verify the prepared controller is actually compiled and linked before shipping.
+  Apple's public
   [GCKeyboard.coalescedKeyboard](https://developer.apple.com/documentation/gamecontroller/gckeyboard/coalesced?language=objc)
   reports connected keyboards; verify attachment/detachment, onscreen keyboard
   and Chinese input behavior on a device after replacement.

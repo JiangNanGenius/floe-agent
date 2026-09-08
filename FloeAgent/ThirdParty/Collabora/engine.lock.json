@@ -27,5 +27,22 @@
   "buildReserveGiB": 6,
   "minimumIOS": "26.0",
   "sourcePatch": "patches/ios-deployment-target.patch",
-  "sourcePatchSHA256": "09517b9a2dd4002a767491976762410d4cefd45172ea8cf401196268f5817ad7"
+  "sourcePatchSHA256": "09517b9a2dd4002a767491976762410d4cefd45172ea8cf401196268f5817ad7",
+  "embeddingOverlay": {
+    "patch": "patches/ios-embedding-boundaries.patch",
+    "sha256": "6a199e55e88a6fb573cad5a8a892d3a99ef4605a0c33999ee8478089a93421a1",
+    "requiredFrameworks": [
+      "GameController"
+    ],
+    "files": {
+      "ios/Mobile/DocumentViewController.mm": {
+        "originalSHA256": "7dab7a3c15e7fbf45a3b5227007ad523397f9984800ef6ed16f99c5ffdbbbeba",
+        "preparedSHA256": "973545f45c529f045a58c4826dc272f91bd0d5f4622ee386612710635188134b"
+      },
+      "ios/Mobile/AppDelegate.mm": {
+        "originalSHA256": "cd6f02a0c5aa2125245ada862ed7abe69422232f4485f3c2dbadea75464dd2e1",
+        "preparedSHA256": "b804dcf3eb3fe5fd7212bdc849dfd4a5a9638c9d6e962a6160dcc5d5c55565c9"
+      }
+    }
+  }
 }

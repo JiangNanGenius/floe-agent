@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 import json
+import difflib
+import hashlib
 from pathlib import Path
 import tarfile
 import tempfile
 import unittest
 from package_office_engine import package, REQUIRED
 from verify_office_engine import verify
+from prepare_office_native_sources import prepare
 
 
 class OfficeEngineBundleTests(unittest.TestCase):
@@ -97,6 +100,58 @@ class OfficeEngineBundleTests(unittest.TestCase):
         link.symlink_to(header)
         with self.assertRaisesRegex(ValueError, "escapes"):
             verify(relocated)
+
+    def overlay_fixture(self):
+        name = "ios/Mobile/DocumentViewController.mm"
+        original = self.source / name
+        original.write_text(original.read_text() + "\n")
+        package(self.root)
+        relocated = self.extract()
+        old = (relocated / "source" / name).read_text()
+        new = "public API input\n"
+        patch_text = "".join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), fromfile="a/" + name, tofile="b/" + name))
+        patch = Path(self.directory.name) / "overlay.patch"
+        patch.write_text(patch_text)
+        sha = lambda value: hashlib.sha256(value.encode()).hexdigest()
+        lock = {"commit": "fixture", "embeddingOverlay": {
+            "patch": patch.name, "sha256": sha(patch_text), "requiredFrameworks": ["GameController"],
+            "files": {name: {"originalSHA256": sha(old), "preparedSHA256": sha(new)}}}}
+        lock_path = Path(self.directory.name) / "lock.json"
+        lock_path.write_text(json.dumps(lock))
+        return relocated, lock_path, name, old, new
+
+    def test_native_overlay_preserves_verified_inputs_and_replays(self):
+        root, lock, name, old, new = self.overlay_fixture()
+        result = prepare(root, lock)
+        self.assertEqual((root / "source" / name).read_text(), old)
+        self.assertEqual((root / "prepared/native" / name).read_text(), new)
+        self.assertFalse(result["nativeCompilePassed"])
+        self.assertEqual(prepare(root, lock), result)
+        verify(root)
+
+    def test_native_overlay_rejects_unpinned_source(self):
+        root, lock, name, _, _ = self.overlay_fixture()
+        data = json.loads(lock.read_text())
+        data["embeddingOverlay"]["files"][name]["originalSHA256"] = "wrong"
+        lock.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, "pinned overlay"):
+            prepare(root, lock)
+        self.assertFalse((root / "prepared/native").exists())
+
+    def test_native_overlay_does_not_overwrite_manual_edits(self):
+        root, lock, name, _, _ = self.overlay_fixture()
+        prepare(root, lock)
+        target = root / "prepared/native" / name
+        target.write_text("manual change")
+        with self.assertRaisesRegex(ValueError, "was edited"):
+            prepare(root, lock)
+        self.assertEqual(target.read_text(), "manual change")
+
+    def test_native_overlay_checks_patch_digest(self):
+        root, lock, _, _, _ = self.overlay_fixture()
+        (lock.parent / "overlay.patch").write_text("changed patch")
+        with self.assertRaisesRegex(ValueError, "patch checksum"):
+            prepare(root, lock)
 
     def test_unqualified_build_is_rejected(self):
         (self.root / "qualification.json").write_text('{"nativeBuildPassed": false}')

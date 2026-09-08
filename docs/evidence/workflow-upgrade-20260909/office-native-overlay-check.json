@@ -1,0 +1,16 @@
+{
+  "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+  "patchSHA256": "6a199e55e88a6fb573cad5a8a892d3a99ef4605a0c33999ee8478089a93421a1",
+  "requiredFrameworks": [
+    "GameController"
+  ],
+  "files": {
+    "ios/Mobile/DocumentViewController.mm": "973545f45c529f045a58c4826dc272f91bd0d5f4622ee386612710635188134b",
+    "ios/Mobile/AppDelegate.mm": "b804dcf3eb3fe5fd7212bdc849dfd4a5a9638c9d6e962a6160dcc5d5c55565c9"
+  },
+  "nativeCompilePassed": false,
+  "deviceKeyboardPassed": false,
+  "validationKind": "pinned source overlay on synthetic bundle; public API fragment only",
+  "publicKeyboardSyntaxPassed": true,
+  "wholeNativeControllerCompiled": false
+}

@@ -1,8 +1,9 @@
-Command: /opt/homebrew/bin/python3.12 FloeAgent/scripts/test_office_engine_bundle.py
-........
+Synthetic packaging, relocation, integrity and pinned overlay contracts
+Command: PYTHONDONTWRITEBYTECODE=1 python3.12 FloeAgent/scripts/test_office_engine_bundle.py
+............
 ----------------------------------------------------------------------
-Ran 8 tests in 0.110s
+Ran 12 tests in 0.313s
 
 OK
 
-Synthetic build inputs only. Native linking and Office device editing are unverified.
+No complete native app compile, device keyboard or Office fidelity result.
