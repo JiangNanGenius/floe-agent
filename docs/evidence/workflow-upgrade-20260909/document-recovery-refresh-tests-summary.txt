@@ -1,0 +1,16 @@
+Document recovery refresh — 2026-09-09
+
+9 tests in 1 suite passed, including a new parameterized test with 2 fault cases.
+Command: DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test --package-path FloeAgent --enable-swift-testing --jobs 2 --filter DocumentWorkspaceTests
+Final log: /tmp/floe-document-recovery-refresh-final-tests.log
+
+New fault cases: recovery-stage copy throws fileWriteOutOfSpace; recovery-stage
+copy produces inconsistent bytes. Both preserve the previous recovery file,
+current working file and original file, and remove only the owned staging file.
+The existing external-change test now starts with an older recovery file and
+verifies that successful refresh replaces it before the original-file conflict.
+Existing normal saves, repeated saves, bookmark resolution, forged-session
+rejection, conflict handling and close/discard checks also pass.
+
+This is file-lifecycle coverage, not Office engine persistence, crash recovery
+index/UI, object formatting, Microsoft Office reopen or physical-device proof.

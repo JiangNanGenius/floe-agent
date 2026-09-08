@@ -3,8 +3,50 @@ import Testing
 @testable import FloeDocuments
 @testable import FloeCore
 
+private final class RecoveryCopyFaultFileManager: FileManager, @unchecked Sendable {
+    enum Fault { case copyFailure, changedCopy }
+    let fault: Fault
+
+    init(_ fault: Fault) { self.fault = fault; super.init() }
+
+    override func copyItem(at srcURL: URL, to dstURL: URL) throws {
+        guard dstURL.lastPathComponent.hasPrefix(".floe-recovery-") else {
+            return try super.copyItem(at: srcURL, to: dstURL)
+        }
+        switch fault {
+        case .copyFailure:
+            throw CocoaError(.fileWriteOutOfSpace)
+        case .changedCopy:
+            try Data("incomplete new copy".utf8).write(to: dstURL)
+        }
+    }
+}
+
 @Suite("FloeDocuments.DocumentWorkspace")
 struct DocumentWorkspaceTests {
+
+    @Test("Failed or inconsistent recovery refresh preserves the previous recovery bytes",
+          arguments: [RecoveryCopyFaultFileManager.Fault.copyFailure, .changedCopy])
+    fileprivate func recoveryRefreshFailure(_ fault: RecoveryCopyFaultFileManager.Fault) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("floe-recovery-fault-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let workspace = try SecurityScopedDocumentWorkspace(root: root.appendingPathComponent("sessions"),
+                                                            fileManager: RecoveryCopyFaultFileManager(fault))
+        let original = root.appendingPathComponent("document.docx")
+        try Data("original".utf8).write(to: original)
+        let session = try await workspace.open(securityScopedURL: original)
+        try Data("previous recovery".utf8).write(to: session.recoveryURL)
+        try Data("current edit".utf8).write(to: session.workingURL)
+        await #expect(throws: (any Error).self) { try await workspace.save(session) }
+        #expect(try Data(contentsOf: original) == Data("original".utf8))
+        #expect(try Data(contentsOf: session.recoveryURL) == Data("previous recovery".utf8))
+        #expect(try Data(contentsOf: session.workingURL) == Data("current edit".utf8))
+        let files = try FileManager.default.contentsOfDirectory(atPath: session.workingURL.deletingLastPathComponent().path)
+        #expect(!files.contains { $0.hasPrefix(".floe-recovery-") })
+        await workspace.close(session)
+        #expect(try Data(contentsOf: session.recoveryURL) == Data("previous recovery".utf8))
+    }
 
     private func makeWorkspace() throws -> (URL, SecurityScopedDocumentWorkspace) {
         let root = FileManager.default.temporaryDirectory
@@ -93,6 +135,7 @@ struct DocumentWorkspaceTests {
         try Data("base".utf8).write(to: original)
         let session = try await workspace.open(securityScopedURL: original)
         try Data("edit".utf8).write(to: session.workingURL)
+        try Data("older recovery".utf8).write(to: session.recoveryURL)
         try Data("peer".utf8).write(to: original)
         await #expect(throws: (any Error).self) { try await workspace.save(session) }
         #expect(try Data(contentsOf: original) == Data("peer".utf8))

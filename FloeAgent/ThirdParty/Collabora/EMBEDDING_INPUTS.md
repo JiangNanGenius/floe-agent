@@ -15,7 +15,8 @@ Engine archives plus browser files alone do not cover this dependency set.
 `package_office_engine.py` now includes these source/header/resource trees and
 an ordered linker input manifest (`linkerInputs`), including explicitly required
 `.a` libraries and `.o` objects. `linkerArchives` remains the archive-only subset.
-File entries carry SHA-256 and size. Symlink
+File entries carry SHA-256 and size; explicit directory entries preserve empty
+folder resources and directory aliases. Symlink
 targets are relative to their location and must stay within the build root;
 runner-specific absolute links are not shipped. Build object trees are excluded
 except required static libraries and generated inputs. Third-party licenses are
@@ -92,8 +93,9 @@ even if a lifecycle check fails. The already-running old workflow is unchanged.
 
 ## Remaining integration work
 
-- Actual bundle verification, native Mobile compilation/linking and resource
-  loading must pass before attaching the editor to Floe file sessions.
+- Actual bundle verification and native Mobile compilation/linking have passed
+  in the isolated target. Floe host integration and on-device resource loading
+  must pass before enabling its editor for file sessions.
 - Qualification run `34268468731` completed successfully. Its old-format archive
   is locked by SHA-256 in `engine.lock.json` and preserved locally. Inventory
   confirms 278 linked archives are present but all 91 explicitly linked NSS
@@ -102,9 +104,10 @@ even if a lifecycle check fails. The already-running old workflow is unchanged.
   with the pinned host cppumaker and rebuilds only NSS dependencies, then restores
   and checks the original archive bytes before packaging complete inputs. Its
   cloud workflow preserves generated dependencies even if later packaging fails.
-  This pipeline still requires successful execution; no complete native Mobile
-  compile/link or file-editing result is established by the initial engine build.
-- Verify the prepared controller is actually compiled and linked before shipping.
+  Supplementation and the subsequent complete Mobile compile/link have now
+  succeeded; see the locked artifacts and qualification record below. The
+  initial engine build alone did not establish these later results.
+- Verify the prepared controller is compiled and linked into Floe before shipping.
   Apple's public
   [GCKeyboard.coalescedKeyboard](https://developer.apple.com/documentation/gamecontroller/gckeyboard/coalesced?language=objc)
   reports connected keyboards; verify attachment/detachment, onscreen keyboard
@@ -171,3 +174,24 @@ and 28 resource references were checked in the prepared project; this was the
 only missing resource. This check does not prove header compilation or linking.
 The revised repair was also executed against the actual locked archive in a new
 local extraction: 46,524 entries and all 369 linker inputs verified successfully.
+
+## Native Mobile compile/link passed
+
+Run [34289431937](https://github.com/JiangNanGenius/floe-agent/actions/runs/34289431937)
+completed successfully with the locked overlay. Xcode compiled the complete
+prepared Mobile target and linked its arm64 iphoneos executable (minimum iOS
+26.0, SDK 27.0). The unsigned app archive was retrieved; its executable SHA-256
+matches the cloud receipt. The archive and executable hashes are retained in
+`engine.lock.json.qualifiedMobileArtifact`. The executable is 191,386,256 bytes;
+the archived app has 5,135 entries totaling 342,972,254 uncompressed bytes.
+
+This supersedes the pending **compile/link** notes above, but does not prove
+Floe embedding, launch, document editing, keyboard behavior or layout fidelity.
+Next integration must expose the native controller through a Floe-owned host,
+exclude the upstream app delegate/browser lifecycle, initialize an isolated
+engine profile/cache, keep engine document copies in persistent Floe sessions,
+and correlate explicit-save completion with UIDocument persistence before
+original-file writeback. The existing uncorrelated save callback is insufficient
+to distinguish an earlier autosave from the user's explicit save. Inspector and
+fullscreen presentation must preserve document state and enforce readonly/edit
+access, and source/resource integration must be compiled again in Floe.

@@ -78,10 +78,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         let newDigest = try Self.digest(session.workingURL)
         // Preserve the user's edit before attempting any writeback. The engine
         // must finish writing its private copy before invoking this method.
-        if fileManager.fileExists(atPath: session.recoveryURL.path) {
-            try fileManager.removeItem(at: session.recoveryURL)
-        }
-        try fileManager.copyItem(at: session.workingURL, to: session.recoveryURL)
+        try preserveRecoveryCopy(session, expectedDigest: newDigest)
 
         var coordinationError: NSError?
         var replacementError: Error?
@@ -126,6 +123,21 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         if scopedSessions.remove(session.id) != nil { session.originalURL.stopAccessingSecurityScopedResource() }
         sessions[session.id] = nil
         savedDigests[session.id] = nil
+    }
+
+    private func preserveRecoveryCopy(_ session: DocumentSession, expectedDigest: String) throws {
+        let stage = session.recoveryURL.deletingLastPathComponent()
+            .appendingPathComponent(".floe-recovery-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: stage) }
+        try fileManager.copyItem(at: session.workingURL, to: stage)
+        guard try Self.digest(stage) == expectedDigest else {
+            throw FloeError.validationFailed("Editor is still writing; previous recovery copy was preserved")
+        }
+        if fileManager.fileExists(atPath: session.recoveryURL.path) {
+            _ = try fileManager.replaceItemAt(session.recoveryURL, withItemAt: stage)
+        } else {
+            try fileManager.moveItem(at: stage, to: session.recoveryURL)
+        }
     }
 
     private static func digest(_ url: URL) throws -> String {
