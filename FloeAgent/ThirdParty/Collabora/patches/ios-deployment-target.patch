@@ -1,0 +1,15 @@
+--- a/engine/configure.ac
++++ b/engine/configure.ac
+@@ -3606,10 +3606,10 @@
+ 
+     if test "$enable_ios_simulator" = "yes"; then
+         platformlc=iphonesimulator
+-        versionmin=-mios-simulator-version-min=14.5
++        versionmin=-mios-simulator-version-min=26.0
+     else
+         platformlc=iphoneos
+-        versionmin=-miphoneos-version-min=14.5
++        versionmin=-miphoneos-version-min=26.0
+     fi
+ 
+     sysroot=`xcrun --sdk $platformlc --show-sdk-path`

@@ -11,7 +11,7 @@ on:
     paths:
       - '.github/workflows/office-engine-qualification.yml'
       - 'FloeAgent/scripts/qualify_office_engine.sh'
-      - 'FloeAgent/ThirdParty/Collabora/engine.lock.json'
+      - 'FloeAgent/ThirdParty/Collabora/**'
 permissions:
   contents: read
 concurrency:
@@ -53,5 +53,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: office-engine-qualification
-          path: ${{ runner.temp }}/floe-office-engine/qualification.json
+          path: |
+            ${{ runner.temp }}/floe-office-engine/qualification.json
+            ${{ runner.temp }}/floe-office-engine/qualification-logs
           if-no-files-found: warn

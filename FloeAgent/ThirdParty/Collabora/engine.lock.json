@@ -8,7 +8,8 @@
   "engineConfigureArguments": [
     "--with-distro=CPiOS",
     "--disable-debug",
-    "--disable-dbgutil"
+    "--disable-dbgutil",
+    "--with-lang=en-US"
   ],
   "acceptance": [
     "native static engine build",
@@ -22,5 +23,8 @@
   ],
   "recommendedFreeGiB": 150,
   "minimumFreeGiB": 12,
-  "buildReserveGiB": 6
+  "buildReserveGiB": 6,
+  "minimumIOS": "26.0",
+  "sourcePatch": "patches/ios-deployment-target.patch",
+  "sourcePatchSHA256": "09517b9a2dd4002a767491976762410d4cefd45172ea8cf401196268f5817ad7"
 }
