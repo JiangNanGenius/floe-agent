@@ -1,0 +1,27 @@
+{
+  "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+  "stage": "headers-udkapi",
+  "supplementPassed": false,
+  "nativeCompilePassed": false,
+  "deviceRoundtripPassed": false,
+  "reusedRunID": "34268468731",
+  "reusedArchives": 277,
+  "requiredLinkerObjects": 91,
+  "failedStage": "headers-udkapi",
+  "exitCode": -6,
+  "runID": "34286492116",
+  "runConclusion": "failure",
+  "failure": "Host cppumaker DYLD_LIBRARY_PATH pointed at program; actual macOS gbuild delivery is Contents/Frameworks",
+  "preservedObjectFiles": 504,
+  "fix": "Use actual host Frameworks delivery; preserve host dylibs; add full prepared Mobile compile/link qualification after preserving reusable artifact",
+  "validation": {
+    "bundleTests": 16,
+    "projectBoundaryTests": 4,
+    "actualPinnedProject": {
+      "sourceFiles": 57,
+      "frameworkEntries": 6,
+      "editorResourceEntries": 28
+    },
+    "nativeMobileCompiled": false
+  }
+}

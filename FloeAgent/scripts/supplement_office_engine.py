@@ -90,7 +90,12 @@ def supplement(archive_path, root, lock_path=LOCK):
     generator = engine / "workdir_for_build/LinkTarget/Executable/cppumaker"
     if not generator.is_file():
         raise ValueError("Pinned host cppumaker did not build at its expected path")
-    generator_env = dict(env, DYLD_LIBRARY_PATH=str(engine / "instdir_for_build/program"))
+    # macOS gbuild delivers host libraries into the app-style Frameworks
+    # directory, not the Unix/iOS program directory (confirmed in link logs).
+    host_libraries = engine / "instdir_for_build/Contents/Frameworks"
+    if not (host_libraries / "libunoidllo.dylib").is_file():
+        raise ValueError("Host cppumaker libraries were not delivered")
+    generator_env = dict(env, DYLD_LIBRARY_PATH=str(host_libraries))
     registries = engine / "workdir/CustomTarget/ios/resources"
     for api in ("udkapi", "offapi"):
         output = engine / "workdir/UnoApiHeadersTarget" / api / "comprehensive"

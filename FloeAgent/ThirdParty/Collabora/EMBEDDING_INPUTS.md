@@ -51,7 +51,7 @@ cleanup. The embedding target must link GameController and use the prepared
 controller; Floe needs its own bounded engine startup rather than replacing its
 app delegate with the upstream app delegate.
 
-Twelve synthetic packaging/preparation tests pass. The overlay also applies to
+Sixteen synthetic packaging/preparation tests pass. The overlay also applies to
 the actual pinned source hashes, and its public keyboard helper passes an
 iphoneos arm64 Objective-C syntax check. This is not a full controller compile,
 engine link, keyboard test, or native document-editing acceptance.
@@ -123,3 +123,23 @@ even if a lifecycle check fails. The already-running old workflow is unchanged.
   fonts, charts, embedded content, formulas and untouched features. No simulator
   result substitutes for device engine acceptance: upstream builds the engine
   for iphoneos, not iphonesimulator.
+
+## Complete native UI qualification
+
+`qualify_office_mobile.py <verified-format-2-bundle> <new-output-directory>`
+prepares a separate native source tree with the exact locked overlay and builds
+the upstream Mobile target for unsigned arm64 iphoneos. It retains all 57 native
+source entries and 28 editor resource entries, uses the relocated complete linker
+list and adds GameController. Upstream release scripting, test-data copying and
+the separate QuickLook extension are excluded. Verified input files stay intact.
+The result includes the Xcode log, result bundle, executable hash and platform
+load commands. A successful result proves compilation/linking only: all Floe
+embedding and device-editing acceptance flags remain false.
+
+Four project-boundary tests pass, and the transformation was inspected against
+the actual pinned project. The complete native UI build still needs to execute.
+Dependency attempt `34286492116` generated the host tool and NSS objects but failed
+starting cppumaker because the script used `instdir_for_build/program`. Its actual
+macOS library delivery is `instdir_for_build/Contents/Frameworks`; the corrected
+workflow also preserves those dylibs. Logs and generated objects were retrieved.
+This failure did not invalidate or replace the already-qualified engine archives.

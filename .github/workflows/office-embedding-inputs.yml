@@ -40,7 +40,9 @@ jobs:
         run: |
           gh run download 34268468731 -n office-engine-ios-arm64 -D "$RUNNER_TEMP/qualified-office"
       - name: Validate packaging contracts
-        run: python3 FloeAgent/scripts/test_office_engine_bundle.py
+        run: |
+          python3 FloeAgent/scripts/test_office_engine_bundle.py
+          python3 FloeAgent/scripts/test_office_mobile_qualification.py
       - name: Reuse engine libraries and complete missing native inputs
         run: |
           python3 FloeAgent/scripts/supplement_office_engine.py \
@@ -71,5 +73,26 @@ jobs:
             ${{ runner.temp }}/floe-office-embedding-inputs/source/engine/workdir/UnoApiHeadersTarget
             ${{ runner.temp }}/floe-office-embedding-inputs/source/engine/workdir/UnpackedTarball/nss/**/*.o
             ${{ runner.temp }}/floe-office-embedding-inputs/source/engine/workdir_for_build/LinkTarget/Executable/cppumaker
-            ${{ runner.temp }}/floe-office-embedding-inputs/source/engine/instdir_for_build/program/*.dylib
+            ${{ runner.temp }}/floe-office-embedding-inputs/source/engine/instdir_for_build/Contents/Frameworks/*.dylib
+          if-no-files-found: warn
+      - name: Compile and link the prepared native Mobile frontend
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, tarfile
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          with tarfile.open(root / 'floe-office-embedding-inputs/office-engine-ios-arm64.tar.gz') as archive:
+              archive.extractall(root / 'office-native-bundle', filter='data')
+          PY
+          python3 FloeAgent/scripts/qualify_office_mobile.py \
+            "$RUNNER_TEMP/office-native-bundle" "$RUNNER_TEMP/office-mobile-qualification"
+      - name: Preserve native UI compilation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-mobile-qualification
+          path: |
+            ${{ runner.temp }}/office-mobile-qualification/qualification.json
+            ${{ runner.temp }}/office-mobile-qualification/xcodebuild.log
+            ${{ runner.temp }}/office-mobile-qualification/Mobile.xcresult
           if-no-files-found: warn
