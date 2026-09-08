@@ -1,0 +1,17 @@
+Local prompt and harness regression, 2026-09-09
+Command: DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test --package-path FloeAgent --jobs 2 --enable-swift-testing --filter FloeLocalModelsTests|HarnessPlanningTests|ToolLoopHardeningTests
+Log: /tmp/floe-local-context-verified-tests.log
+✔ Test run with 38 tests in 2 suites passed after 0.235 seconds.
+✔ Test run with 60 tests in 2 suites passed after 0.318 seconds.
+
+The 38 local + 60 harness tests are 98 distinct tests.
+Dispatch clock assertion and snapshot refresh recheck (overlaps the 98):
+Log: /tmp/floe-local-context-clock-retest.log
+✔ Test run with 1 test in 1 suite passed after 0.232 seconds.
+
+iPad Simulator arm64 application build: /tmp/floe-local-context-final-app-build.log
+** BUILD SUCCEEDED **
+
+Initial new harness fixture failed its expected file-tool directory assertion because it did not request file reading. The corrected explicit-file-read fixture passed both normal and prepared launch paths.
+
+No weights loaded, no real model generation, no tool execution. These are assembly/contract checks and an application build, not physical-device performance or release acceptance.

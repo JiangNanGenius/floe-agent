@@ -1183,7 +1183,9 @@ public actor FloeAgentRuntime {
                 contentMessages[index].content.append(.text(note))
             }
         }
-        if supportsTools, let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
+        // Local adapters build their own admitted tool metadata. Keep runtime
+        // state and receipts, without appending a second full cloud directory.
+        if supportsTools, configuration.provider.kind != .local, let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
             let discovery = ToolDiscovery.index(discoverableDescriptors)
             legacyMessages[index].content += "\n\n" + discovery
             contentMessages[index].content.append(.text(discovery))

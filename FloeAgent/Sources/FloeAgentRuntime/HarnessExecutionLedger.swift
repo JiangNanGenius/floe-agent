@@ -304,7 +304,7 @@ struct HarnessExecutionLedger: Sendable {
         guard !entries.isEmpty else {
             return """
             # Activation ledger (harness generated)
-            No structured tool call has executed in this activation. If the request needs external observation or action, emit a native tool call now. Any prose claiming a tool result, screenshot, hash, changed state, or successful action before an entry appears here is unsupported and must not be presented as fact.
+            No structured tool call has executed in this activation. If the request needs external observation or action, call an appropriate tool only if it is offered in this request; otherwise state the missing capability when it prevents completion. Any prose claiming a tool result, screenshot, hash, changed state, or successful action before an entry appears here is unsupported and must not be presented as fact.
             """
         }
         let lines = entries.suffix(8).map { entry in

@@ -99,6 +99,7 @@ public actor ConversationRunService {
     /// When false the run-context system message omits the tool list so the
     /// model does not hallucinate pseudo `<tool_call>` markup it cannot execute.
     private let modelSupportsTools: Bool
+    private let usesLocalPrompt: Bool
     private let dynamicApprovalPolicy: DynamicApprovalPolicy
     private let logger = FloeLogger(category: .runtime)
     private var streamedText = ""
@@ -261,6 +262,7 @@ public actor ConversationRunService {
         self.secretForRedaction = credentials.apiKey
         self.streamedTextLimitBytes = configuration.model.limits.clientOutputSafetyBytes
         self.modelSupportsTools = configuration.toolsEnabled && configuration.model.capabilities.contains(.tools)
+        self.usesLocalPrompt = configuration.provider.kind == .local
         let dynamicApprovalPolicy = DynamicApprovalPolicy(policy)
         self.dynamicApprovalPolicy = dynamicApprovalPolicy
         // The sink forwards into the service via closures so callbacks reach
@@ -426,6 +428,7 @@ public actor ConversationRunService {
             runContext,
             mode: conversationMode,
             toolsAvailable: modelSupportsTools,
+            compactForLocal: usesLocalPrompt,
             hasImageAttachments: !currentUserImages.isEmpty
         ))
         try await runtime.start(goal: goal, images: currentUserImages)
@@ -449,6 +452,7 @@ public actor ConversationRunService {
             runContext,
             mode: conversationMode,
             toolsAvailable: modelSupportsTools,
+            compactForLocal: usesLocalPrompt,
             hasImageAttachments: !currentUserImages.isEmpty
         ))
         try await runtime.start(goal: goal, images: currentUserImages)
@@ -1602,6 +1606,7 @@ public actor ConversationRunService {
         _ context: RunContext?,
         mode: ConversationMode = .chat,
         toolsAvailable: Bool = true,
+        compactForLocal: Bool = false,
         hasImageAttachments: Bool = false,
         currentDate: Date = Date(),
         timeZone: TimeZone = .autoupdatingCurrent
@@ -1642,7 +1647,9 @@ public actor ConversationRunService {
             lines.append(contentsOf: notes.map { "- \($0)" })
             lines.append("Cloud workspace links are remote resources reached only through their verified SSH tunnel. Local marker files are not cached copies of remote content.")
         }
-        if toolsAvailable {
+        if toolsAvailable && compactForLocal {
+            lines.append("Callable tools are supplied by the device adapter for this request. Reuse exact known schemas. Discover additional definitions or guides only through discovery tools that are actually offered; installed does not mean loaded or authorized.")
+        } else if toolsAvailable {
             lines.append(
                 toolNames.isEmpty
                     ? "Available tools: none registered"
@@ -1669,7 +1676,8 @@ public actor ConversationRunService {
             soul: context?.soulContext,
             userProfile: context?.userProfileContext,
             activePlan: context?.activePlan,
-            activeGoal: context?.activeGoal
+            activeGoal: context?.activeGoal,
+            compactForLocal: compactForLocal
         )
     }
 

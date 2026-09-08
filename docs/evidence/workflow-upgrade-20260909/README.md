@@ -64,3 +64,7 @@ Office 接入补丁的 [锁定源码检查](office-native-overlay-check.json) �
 ## Skill 介绍与分页发现
 
 [39 项 Skill 回归和 1 项应用安装检查](skill-description-tests-summary.txt)通过。第三方介绍关键词、多查询、禁用状态、旧元数据、正文隔离和 100 项较大目录的完整分页有测试覆盖；应用实际安装后的介绍与精确读取保持一致，PowerPoint 可找到 Office 指南。没有真实模型召回率、token 收益或发布验收结论。
+
+## 本地运行规则、长输入与请求边界
+
+[98 项相关回归和应用构建](local-context-tests-summary.txt)通过，包含本地模型目录/解析、计划/Goal/恢复既有回归及新增当前输入完整性、系统来源和普通/已准备运行链路。新增 [local-normal](prompt-snapshots/local-normal.json) 与 [local-prepared](prompt-snapshots/local-prepared.json) 保存合成场景下运行服务、时钟刷新与本地适配器组装后的请求；没有调用真实模型。云端五份样本也随执行记录措辞更新。所有样本只包含合成任务内容及运行时钟；实际 token、设备性能和长期恢复效果没有由这些测试证明。

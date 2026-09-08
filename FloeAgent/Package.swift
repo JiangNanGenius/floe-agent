@@ -621,7 +621,7 @@ let package = Package(
             name: "FloeLocalModelsTests",
             dependencies: [
                 "FloeLocalModelCatalog", "FloeLocalModels", "FloeProviders",
-                "FloeModels", "FloeCore"
+                "FloeModels", "FloeCore", "FloeAgentRuntime"
             ],
             path: "Tests/FloeLocalModelsTests",
             swiftSettings: [

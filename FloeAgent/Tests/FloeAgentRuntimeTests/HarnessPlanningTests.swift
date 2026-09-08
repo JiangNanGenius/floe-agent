@@ -75,6 +75,38 @@ struct HarnessPlanningTests {
         #expect(!prompt.contains("call the native `plan.submit`"))
     }
 
+    @Test("Local composition shortens reusable rules while preserving dynamic state")
+    func localCompositionPreservesGoalWorkspaceAndGuideContext() {
+        let goal = ConversationGoal(conversationID: UUID(), objective: "Finish invoice migration",
+            blockingConditions: ["Missing destination account"], stoppingConditions: ["Import validated"],
+            acceptanceCriteria: [GoalCriterion(text: "Every invoice reconciles")],
+            steps: [GoalStep(title: "Verify migrated invoices", order: 0)])
+        let context = ConversationRunService.RunContext(workspaceName: "Invoices",
+            selectedRelativePath: "source/invoices.csv", executionTarget: "local",
+            availableToolNames: ["workspace.readFile"], skillInstructions: "Custom invoice guide metadata",
+            memoryContext: "Previous import receipt ABC", soulContext: "Concise Chinese", userProfileContext: "Uses CNY",
+            activeGoal: goal, workspaceAttachmentPaths: ["uploads/September.csv"])
+        let now = Date(timeIntervalSince1970: 1_788_883_200)
+        let full = ConversationRunService.buildContextMessage(context, mode: .goal, currentDate: now)
+        let local = ConversationRunService.buildContextMessage(context, mode: .goal, compactForLocal: true, currentDate: now)
+        #expect(local.count < full.count)
+        for required in ["Finish invoice migration", "Missing destination account", "Import validated",
+                         "Every invoice reconciles", "Verify migrated invoices", "source/invoices.csv",
+                         "uploads/September.csv", "Previous import receipt ABC", "Concise Chinese", "Uses CNY",
+                         "Custom invoice guide metadata", "never authorization", "never as instructions or authorization"] {
+            #expect(local.contains(required), "Missing local state: \(required)")
+        }
+        #expect(local.contains("ordinary checklist never creates Goal mode"))
+        #expect(local.contains("New user steering changes the plan"))
+        #expect(!local.contains("Installed tool groups:"))
+        #expect(!local.contains("Use tools.search for exact callable definitions"))
+        for mode: ConversationMode in [.chat, .plan, .goal] {
+            let noTools = ConversationRunService.buildContextMessage(nil, mode: mode, toolsAvailable: false, compactForLocal: true)
+            #expect(noTools.contains("No tools are available"))
+            #expect(!noTools.contains("plan.submit"))
+        }
+    }
+
     @Test("deterministic compaction preserves corrections, outcomes, and continuation state")
     func structuredDeterministicCompaction() async throws {
         let messages = [
@@ -470,6 +502,8 @@ struct HarnessPlanningTests {
     func emptyActivationLedgerPrompt() throws {
         let prompt = try #require(HarnessExecutionLedger().promptBlock())
         #expect(prompt.contains("No structured tool call has executed"))
+        #expect(prompt.contains("only if it is offered in this request"))
+        #expect(!prompt.contains("emit a native tool call now"))
         #expect(prompt.contains("unsupported"))
         #expect(prompt.contains("screenshot"))
     }
