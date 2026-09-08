@@ -1,0 +1,10 @@
+Command: /opt/homebrew/bin/python3.12 FloeAgent/scripts/test_office_engine_bundle.py
+Log: /tmp/floe-office-complete-input-tests.log
+
+................
+----------------------------------------------------------------------
+Ran 16 tests in 0.327s
+
+OK
+
+Synthetic packaging, relocation, overlay and artifact-preservation boundaries only. Supplement compilation and native Mobile integration are not verified by these tests.

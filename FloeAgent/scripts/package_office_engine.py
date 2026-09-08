@@ -82,7 +82,7 @@ def package(root):
             collect(path)
 
     archive_list = source / "engine/workdir/CustomTarget/ios/ios-all-static-libs.list"
-    linker_archives = []
+    linker_inputs = []
     for line in archive_list.read_text().splitlines():
         if not line.strip():
             continue
@@ -90,11 +90,11 @@ def package(root):
         if not path.is_absolute():
             path = source / "engine" / path
         path = path.resolve(strict=True)
-        if not path.is_relative_to(root) or path.suffix != ".a":
-            raise ValueError("Native linker list contains an unsupported archive path")
+        if not path.is_relative_to(root) or path.suffix not in {".a", ".o"}:
+            raise ValueError("Native linker list contains an unsupported input path")
         collect(path)
-        linker_archives.append(str(path.relative_to(root)))
-    if not linker_archives:
+        linker_inputs.append(str(path.relative_to(root)))
+    if not linker_inputs:
         raise ValueError("Native linker archive list is empty")
 
     entries = []
@@ -107,7 +107,8 @@ def package(root):
         entries.append(item)
     manifest = {
         "formatVersion": 2, "sourceCommit": report["commit"],
-        "originalBuildRoot": str(root), "linkerArchives": linker_archives,
+        "originalBuildRoot": str(root), "linkerInputs": linker_inputs,
+        "linkerArchives": [name for name in linker_inputs if name.endswith(".a")],
         "embeddingVerified": False, "deviceRoundtripVerified": False,
         "files": entries,
     }

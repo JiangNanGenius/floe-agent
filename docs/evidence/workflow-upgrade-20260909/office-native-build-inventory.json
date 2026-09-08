@@ -1,0 +1,35 @@
+{
+  "archiveSHA256": "5c89f5e0a65cd3eb507c913469079dac7ee3ee9df35ce3e4ff83a31f0db688fb",
+  "entries": 16617,
+  "expandedFileBytes": 1737511433,
+  "archives": 544,
+  "prefixCounts": {
+    "source/engine/config_host/": 0,
+    "source/engine/workdir/UnoApiHeadersTarget/": 0,
+    "source/common/": 0,
+    "source/kit/": 0,
+    "source/net/": 0,
+    "source/wsd/": 0,
+    "source/browser/dist/": 3333,
+    "source/engine/workdir/CustomTarget/ios/": 2157,
+    "source/engine/instdir/": 3265
+  },
+  "absolutePaths": [],
+  "runID": "34268468731",
+  "workflowCommit": "f72576454a984e98d365807924d53171bcffb93e",
+  "artifactID": 10078868920,
+  "workflowConclusion": "success",
+  "linkedArchivesPresent": 278,
+  "linkedObjectsMissing": 91,
+  "nativeMobileCompilePassed": false,
+  "embeddedEditorPassed": false,
+  "deviceRoundtripPassed": false,
+  "platformSample": {
+    "archive": "libsallo.a",
+    "member": "backtrace.o",
+    "platform": "IOS",
+    "minimumOS": "26.0",
+    "sdk": "27.0",
+    "scope": "One archive member inspected with xcrun vtool; not an all-input platform audit"
+  }
+}

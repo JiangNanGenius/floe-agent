@@ -36,12 +36,12 @@ def verify(root, prepare=False):
                 raise ValueError(f"Non-portable symlink: {name}")
         elif path.is_symlink() or not path.is_file() or path.stat().st_size != entry["size"] or digest(path) != entry["sha256"]:
             raise ValueError(f"Changed or missing file: {name}")
-    archives = manifest["linkerArchives"]
-    if not archives:
+    inputs = manifest.get("linkerInputs", manifest["linkerArchives"])
+    if not inputs:
         raise ValueError("Empty linker list")
-    for name in archives:
-        if name not in seen or contained(root, name).suffix != ".a":
-            raise ValueError(f"Linker archive not covered by manifest: {name}")
+    for name in inputs:
+        if name not in seen or contained(root, name).suffix not in {".a", ".o"}:
+            raise ValueError(f"Linker input not covered by manifest: {name}")
     if prepare:
         output = root / "prepared"
         if output.is_symlink():
@@ -53,9 +53,10 @@ def verify(root, prepare=False):
         temporary = output / ".ios-all-static-libs.partial"
         if temporary.is_symlink() or list_path.is_symlink():
             raise ValueError("Preparation output cannot be a symlink")
-        temporary.write_text("\n".join(str(contained(root, name)) for name in archives) + "\n")
+        temporary.write_text("\n".join(str(contained(root, name)) for name in inputs) + "\n")
         temporary.replace(list_path)
-    return {"filesVerified": len(seen), "archivesVerified": len(archives),
+    return {"filesVerified": len(seen), "archivesVerified": sum(name.endswith(".a") for name in inputs),
+            "objectsVerified": sum(name.endswith(".o") for name in inputs), "linkerInputsVerified": len(inputs),
             "sourceCommit": manifest["sourceCommit"], "embeddingVerified": False,
             "deviceRoundtripVerified": False}
 

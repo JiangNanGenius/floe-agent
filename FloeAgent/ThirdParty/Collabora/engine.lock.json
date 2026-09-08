@@ -1,7 +1,16 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "pending-native-build-and-device-roundtrip",
+  "qualificationStatus": "native-built-pending-complete-embedding-inputs-and-device-roundtrip",
+  "qualifiedNativeArtifact": {
+    "runID": "34268468731",
+    "artifactName": "office-engine-ios-arm64",
+    "artifactID": 10078868920,
+    "workflowCommit": "f72576454a984e98d365807924d53171bcffb93e",
+    "archiveSHA256": "5c89f5e0a65cd3eb507c913469079dac7ee3ee9df35ce3e4ff83a31f0db688fb",
+    "missingLinkerObjects": 91,
+    "note": "Successful engine build; old archive omits generated headers, native source trees and explicit NSS linker objects. Preserve its libraries; supplement before embedding."
+  },
   "documentation": "https://github.com/CollaboraOnline/online.mirror/blob/27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc/ios/README.md",
   "platform": "iphoneos-arm64",
   "minimumFreeGiBNote": "12 GiB permits a bounded build attempt; stop the build at 6 GiB free. Historical 150 GiB is a recommendation, not an upstream minimum.",

@@ -1,0 +1,75 @@
+name: Complete Native Office Embedding Inputs
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/office-workflow-upgrade']
+    paths: ['.github/workflows/office-embedding-inputs.yml']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: office-embedding-inputs
+  cancel-in-progress: false
+jobs:
+  supplement:
+    runs-on: xcode-27
+    timeout-minutes: 180
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Prepare pinned-source build dependencies
+        run: |
+          brew install autoconf automake libtool pkg-config make gperf bison flex nasm
+          python3 -m venv "$RUNNER_TEMP/office-python"
+          "$RUNNER_TEMP/office-python/bin/pip" install polib==1.2.0 lxml==5.4.0
+          {
+            echo "$RUNNER_TEMP/office-python/bin"
+            echo "$(brew --prefix bison)/bin"
+            echo "$(brew --prefix flex)/bin"
+          } >> "$GITHUB_PATH"
+      - name: Download the locked successful native build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 34268468731 -n office-engine-ios-arm64 -D "$RUNNER_TEMP/qualified-office"
+      - name: Validate packaging contracts
+        run: python3 FloeAgent/scripts/test_office_engine_bundle.py
+      - name: Reuse engine libraries and complete missing native inputs
+        run: |
+          python3 FloeAgent/scripts/supplement_office_engine.py \
+            "$RUNNER_TEMP/qualified-office/office-engine-ios-arm64.tar.gz" \
+            "$RUNNER_TEMP/floe-office-embedding-inputs"
+      - name: Preserve dependency qualification and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-embedding-input-evidence
+          path: ${{ runner.temp }}/floe-office-embedding-inputs/qualification-logs
+          if-no-files-found: warn
+      - name: Preserve complete reusable inputs
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-engine-complete-inputs
+          path: ${{ runner.temp }}/floe-office-embedding-inputs/office-engine-ios-arm64.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+      - name: Preserve generated dependencies even if later packaging fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-embedding-generated-inputs
+          path: |
+            ${{ runner.temp }}/floe-office-embedding-inputs/source/engine/config_host
+            ${{ runner.temp }}/floe-office-embedding-inputs/source/engine/workdir/UnoApiHeadersTarget
+            ${{ runner.temp }}/floe-office-embedding-inputs/source/engine/workdir/UnpackedTarball/nss/**/*.o
+            ${{ runner.temp }}/floe-office-embedding-inputs/source/engine/workdir_for_build/LinkTarget/Executable/cppumaker
+            ${{ runner.temp }}/floe-office-embedding-inputs/source/engine/instdir_for_build/program/*.dylib
+          if-no-files-found: warn

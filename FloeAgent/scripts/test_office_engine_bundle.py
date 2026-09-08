@@ -9,6 +9,7 @@ import unittest
 from package_office_engine import package, REQUIRED
 from verify_office_engine import verify
 from prepare_office_native_sources import prepare
+from supplement_office_engine import supplement
 
 
 class OfficeEngineBundleTests(unittest.TestCase):
@@ -69,6 +70,44 @@ class OfficeEngineBundleTests(unittest.TestCase):
         (self.source / "host-link").symlink_to(Path(self.directory.name))
         with self.assertRaisesRegex(ValueError, "escapes"):
             package(self.root)
+
+    def test_explicit_linker_objects_are_preserved_in_order(self):
+        obj = self.source / "engine/workdir/UnpackedTarball/nss/freebl/aes.o"
+        obj.parent.mkdir(parents=True)
+        obj.write_bytes(b"synthetic object")
+        self.list.write_text(str(obj) + "\n" + str(self.library) + "\n")
+        manifest = package(self.root)
+        self.assertEqual(manifest["linkerInputs"], [str(obj.relative_to(self.root)), str(self.library.relative_to(self.root))])
+        relocated = self.extract()
+        result = verify(relocated, prepare=True)
+        self.assertEqual(result["objectsVerified"], 1)
+        self.assertEqual(result["archivesVerified"], 1)
+        self.assertEqual((relocated / "prepared/ios-all-static-libs.list").read_text().splitlines(),
+                         [str((relocated / path).resolve()) for path in manifest["linkerInputs"]])
+
+    def test_missing_explicit_linker_object_rejects_packaging(self):
+        self.list.write_text(str(self.library) + "\n" + str(self.source / "engine/missing.o") + "\n")
+        with self.assertRaises(FileNotFoundError):
+            package(self.root)
+
+    def test_supplement_rejects_changed_artifact_before_checkout(self):
+        archive = Path(self.directory.name) / "untrusted.tar.gz"
+        archive.write_bytes(b"changed archive")
+        lock = Path(self.directory.name) / "artifact-lock.json"
+        lock.write_text(json.dumps({"qualifiedNativeArtifact": {"archiveSHA256": "incorrect"}}))
+        output = Path(self.directory.name) / "new-build"
+        with self.assertRaisesRegex(ValueError, "locked archive"):
+            supplement(archive, output, lock)
+        self.assertFalse(output.exists())
+
+    def test_supplement_preserves_existing_build_root(self):
+        archive = Path(self.directory.name) / "original.tar.gz"
+        archive.write_bytes(b"verified input")
+        lock = Path(self.directory.name) / "artifact-lock.json"
+        lock.write_text(json.dumps({"qualifiedNativeArtifact": {"archiveSHA256": hashlib.sha256(archive.read_bytes()).hexdigest()}}))
+        with self.assertRaisesRegex(ValueError, "existing inputs must be preserved"):
+            supplement(archive, self.root, lock)
+        self.assertTrue(self.library.exists())
 
     def test_missing_archive_rejects_packaging(self):
         self.library.unlink()

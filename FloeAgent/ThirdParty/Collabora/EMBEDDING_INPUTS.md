@@ -13,7 +13,9 @@ Engine archives plus browser files alone do not cover this dependency set.
 ## Bundle format 2
 
 `package_office_engine.py` now includes these source/header/resource trees and
-an ordered linker archive manifest. File entries carry SHA-256 and size. Symlink
+an ordered linker input manifest (`linkerInputs`), including explicitly required
+`.a` libraries and `.o` objects. `linkerArchives` remains the archive-only subset.
+File entries carry SHA-256 and size. Symlink
 targets are relative to their location and must stay within the build root;
 runner-specific absolute links are not shipped. Build object trees are excluded
 except required static libraries and generated inputs. Third-party licenses are
@@ -92,10 +94,16 @@ even if a lifecycle check fails. The already-running old workflow is unchanged.
 
 - Actual bundle verification, native Mobile compilation/linking and resource
   loading must pass before attaching the editor to Floe file sessions.
-- The in-flight qualification run `34268468731` started with the previous
-  packager. It is not retroactively upgraded by these changes. Its eventual
-  archive must be inspected and may need supplementation with generated headers
-  and native sources. Preserve reusable libraries; do not restart a live build.
+- Qualification run `34268468731` completed successfully. Its old-format archive
+  is locked by SHA-256 in `engine.lock.json` and preserved locally. Inventory
+  confirms 278 linked archives are present but all 91 explicitly linked NSS
+  objects, generated config/UNO headers and common/kit/net/wsd sources are absent.
+  `supplement_office_engine.py` reuses those archives, generates missing headers
+  with the pinned host cppumaker and rebuilds only NSS dependencies, then restores
+  and checks the original archive bytes before packaging complete inputs. Its
+  cloud workflow preserves generated dependencies even if later packaging fails.
+  This pipeline still requires successful execution; no complete native Mobile
+  compile/link or file-editing result is established by the initial engine build.
 - Verify the prepared controller is actually compiled and linked before shipping.
   Apple's public
   [GCKeyboard.coalescedKeyboard](https://developer.apple.com/documentation/gamecontroller/gckeyboard/coalesced?language=objc)

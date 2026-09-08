@@ -68,3 +68,9 @@ Office 接入补丁的 [锁定源码检查](office-native-overlay-check.json) �
 ## 本地运行规则、长输入与请求边界
 
 [98 项相关回归和应用构建](local-context-tests-summary.txt)通过，包含本地模型目录/解析、计划/Goal/恢复既有回归及新增当前输入完整性、系统来源和普通/已准备运行链路。新增 [local-normal](prompt-snapshots/local-normal.json) 与 [local-prepared](prompt-snapshots/local-prepared.json) 保存合成场景下运行服务、时钟刷新与本地适配器组装后的请求；没有调用真实模型。云端五份样本也随执行记录措辞更新。所有样本只包含合成任务内容及运行时钟；实际 token、设备性能和长期恢复效果没有由这些测试证明。
+
+## Office 实际原生构建产物
+
+[构建任务 34268468731](https://github.com/JiangNanGenius/floe-agent/actions/runs/34268468731) 的引擎、前端构建和产物上传全部成功。[原始资格报告](office-native-build-qualification.json)明确嵌入和真机仍未通过。[实际归档清单](office-native-build-inventory.json)记录 SHA-256、16,617 项输入、缺少的头文件/原生目录以及 91 个链接对象；278 个链接库齐全。544 是包内所有库文件数量，含重复交付路径及主机构建库，不能把该数当作 iOS 实际链接数。
+
+旧归档与解包保存在外置盘 `/Volumes/TECLAST/FloeOfficeBuilds/34268468731`，避免占满系统盘。新打包器保留 `.a` 与显式 `.o` 的完整顺序，缺失对象拒绝打包。[16 项测试](office-complete-input-tests-summary.txt)覆盖这些边界及复用任务在摘要不符/已有目录时不覆盖。依赖补齐流水线尚需运行成功；此处不声称完整原生编辑器已接入。

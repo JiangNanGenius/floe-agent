@@ -1,0 +1,25 @@
+{
+  "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+  "freeGiB": 39.4,
+  "requiredFreeGiB": 12,
+  "missingTools": [],
+  "iphoneosSDKAvailable": true,
+  "nativeBuildPassed": true,
+  "embeddedEditorPassed": false,
+  "deviceRoundtripPassed": false,
+  "minimumIOS": "26.0",
+  "sourcePatchSHA256": "09517b9a2dd4002a767491976762410d4cefd45172ea8cf401196268f5817ad7",
+  "engineConfigureArguments": [
+    "--with-distro=CPiOS",
+    "--disable-debug",
+    "--disable-dbgutil",
+    "--disable-symbols",
+    "--with-lang=en-US zh-CN zh-TW"
+  ],
+  "gateNote": "12 GiB permits a bounded build attempt; stop the build at 6 GiB free. Historical 150 GiB is a recommendation, not an upstream minimum.",
+  "recommendedFreeGiB": 150,
+  "buildReserveGiB": 6,
+  "preflightPassed": true,
+  "stage": "editor-build",
+  "nativeArchiveManifest": "/Users/runner/work/_temp/floe-office-engine/source/engine/workdir/CustomTarget/ios/ios-all-static-libs.list"
+}
