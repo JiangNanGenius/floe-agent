@@ -74,3 +74,5 @@ Office 接入补丁的 [锁定源码检查](office-native-overlay-check.json) �
 [构建任务 34268468731](https://github.com/JiangNanGenius/floe-agent/actions/runs/34268468731) 的引擎、前端构建和产物上传全部成功。[原始资格报告](office-native-build-qualification.json)明确嵌入和真机仍未通过。[实际归档清单](office-native-build-inventory.json)记录 SHA-256、16,617 项输入、缺少的头文件/原生目录以及 91 个链接对象；278 个链接库齐全。544 是包内所有库文件数量，含重复交付路径及主机构建库，不能把该数当作 iOS 实际链接数。
 
 旧归档与解包保存在外置盘 `/Volumes/TECLAST/FloeOfficeBuilds/34268468731`，避免占满系统盘。新打包器保留 `.a` 与显式 `.o` 的完整顺序，缺失对象拒绝打包。[16 项测试](office-complete-input-tests-summary.txt)覆盖这些边界及复用任务在摘要不符/已有目录时不覆盖。依赖补齐流水线尚需运行成功；此处不声称完整原生编辑器已接入。
+
+补齐任务 [34286492116](https://github.com/JiangNanGenius/floe-agent/actions/runs/34286492116) 已启动；同一提交的常规打包/补丁及预检任务 [34286492003](https://github.com/JiangNanGenius/floe-agent/actions/runs/34286492003) 成功，后者不执行完整引擎重建。原始库抽样对象确认为 iOS、最低 26.0、SDK 27.0；仅是单对象平台检查，不代替全部链接和真机验证。
