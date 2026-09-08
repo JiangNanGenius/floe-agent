@@ -12,6 +12,43 @@ from package_office_engine import digest
 from prepare_office_native_sources import prepare, DEFAULT_LOCK
 
 
+def shadow_sources(root, shadow, overlay):
+    """Give every patched subtree an owned copy; never write through aliases."""
+    root, shadow = Path(root).resolve(), Path(shadow).resolve()
+    source = root / "source"
+    names = list(overlay["files"])
+    for name in names:
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts or len(relative.parts) < 2:
+            raise ValueError("Invalid native overlay path")
+    copied_roots = {"ios"} | {Path(name).parts[0] for name in names}
+    shadow.mkdir()
+    for child in source.iterdir():
+        target = shadow / child.name
+        if child.name in copied_roots:
+            if child.is_symlink() or not child.is_dir():
+                raise ValueError("Patched subtree must be a real source directory")
+            shutil.copytree(child, target, symlinks=True)
+            for link in target.rglob("*"):
+                if link.is_symlink():
+                    resolved = (source / link.relative_to(shadow)).resolve(strict=True)
+                    if not resolved.is_relative_to(root):
+                        raise ValueError("Source alias escapes verified inputs")
+                    link.unlink()
+                    link.symlink_to(resolved)
+        else:
+            target.symlink_to(child.resolve(strict=True))
+    for name, checksum in overlay["files"].items():
+        path = shadow / name
+        if any(parent.is_symlink() for parent in path.parents if parent != shadow and parent.is_relative_to(shadow)):
+            raise ValueError("Native overlay parent is a source alias")
+        if path.is_symlink():
+            path.unlink()
+        shutil.copyfile(root / "prepared/native" / name, path)
+        if digest(path) != checksum:
+            raise ValueError("Qualification does not compile the prepared overlay")
+
+
 def qualification_project(project, linker_list, minimum_ios, frameworks):
     """Keep upstream editor sources/resources, omit its release-only machinery."""
     project = copy.deepcopy(project)
@@ -73,30 +110,7 @@ def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK):
     save()
     source = root / "source"
     shadow = destination / "source"
-    shadow.mkdir()
-    # Only ios/kit need changed files. All large engine inputs stay read-only
-    # in the verified bundle; no hard links or source-tree build outputs.
-    for child in source.iterdir():
-        target = shadow / child.name
-        if child.name in {"ios", "kit"}:
-            shutil.copytree(child, target, symlinks=True)
-            for link in target.rglob("*"):
-                if link.is_symlink():
-                    original = source / link.relative_to(shadow)
-                    resolved = original.resolve(strict=True)
-                    if not resolved.is_relative_to(root):
-                        raise ValueError("Source alias escapes verified inputs")
-                    link.unlink()
-                    link.symlink_to(resolved)
-        else:
-            target.symlink_to(child.resolve(strict=True))
-    for name, checksum in overlay["files"].items():
-        path = shadow / name
-        if path.is_symlink():
-            path.unlink()
-        shutil.copyfile(root / "prepared/native" / name, path)
-        if digest(path) != checksum:
-            raise ValueError("Qualification does not compile the prepared overlay")
+    shadow_sources(root, shadow, overlay)
     # configure normally creates this root alias; the old qualified archive
     # retained the ICU data but omitted the alias. Use its one actual data file.
     icu = shadow / "ICU.dat"

@@ -1,0 +1,69 @@
+name: Qualify Floe Native Office Host
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/office-workflow-upgrade']
+    paths: ['.github/workflows/office-native-host.yml']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: office-native-host
+  cancel-in-progress: false
+jobs:
+  native-host:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate native input and framework tooling
+        run: |
+          python3 FloeAgent/scripts/test_office_engine_bundle.py
+          python3 FloeAgent/scripts/test_office_mobile_qualification.py
+          python3 FloeAgent/scripts/test_office_native_host.py
+      - name: Reuse complete qualified engine inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download 34287476509 -n office-engine-complete-inputs -D "$RUNNER_TEMP/complete-office-inputs"
+      - name: Verify and repair the locked archive
+        run: |
+          python3 FloeAgent/scripts/repair_office_embedding_bundle.py \
+            "$RUNNER_TEMP/complete-office-inputs/office-engine-ios-arm64.tar.gz" \
+            "$RUNNER_TEMP/office-native-bundle"
+      - name: Build Floe runtime and document host with complete native frontend
+        run: |
+          python3 FloeAgent/scripts/build_office_native_host.py \
+            "$RUNNER_TEMP/office-native-bundle" "$RUNNER_TEMP/office-native-host"
+      - name: Preserve host qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-native-host-evidence
+          path: |
+            ${{ runner.temp }}/office-native-bundle/bundle-repair.json
+            ${{ runner.temp }}/office-native-host/qualification.json
+            ${{ runner.temp }}/office-native-host/native-host.json
+            ${{ runner.temp }}/office-native-host/native-host-build.log
+            ${{ runner.temp }}/office-native-host/swift-import.log
+            ${{ runner.temp }}/office-native-host/NativeHost.xcresult
+          if-no-files-found: warn
+      - name: Package unsigned framework and main-bundle resources
+        if: success()
+        run: |
+          mkdir "$RUNNER_TEMP/OfficeNativeHost"
+          cp -R "$RUNNER_TEMP/office-native-host/products/Release-iphoneos/FloeOfficeNative.framework" "$RUNNER_TEMP/OfficeNativeHost/"
+          cp -R "$RUNNER_TEMP/office-native-host/OfficeRuntimeResources" "$RUNNER_TEMP/OfficeNativeHost/"
+          cp "$RUNNER_TEMP/office-native-host/native-host.json" "$RUNNER_TEMP/OfficeNativeHost/"
+          ditto -c -k --keepParent "$RUNNER_TEMP/OfficeNativeHost" "$RUNNER_TEMP/OfficeNativeHost.zip"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: office-native-host-unsigned
+          path: ${{ runner.temp }}/OfficeNativeHost.zip
+          compression-level: 0

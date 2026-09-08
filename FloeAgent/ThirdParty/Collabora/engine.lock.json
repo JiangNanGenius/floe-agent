@@ -64,7 +64,7 @@
   "sourcePatchSHA256": "09517b9a2dd4002a767491976762410d4cefd45172ea8cf401196268f5817ad7",
   "embeddingOverlay": {
     "patch": "patches/ios-embedding-boundaries.patch",
-    "sha256": "8cee49fb70084cb07284f820c7ac69ea88f80fbe467e51bdacb627c6c02871f0",
+    "sha256": "7f034b606318e26672c1fcb6fc84092899a434c82b205420bafb8143d727c8af",
     "requiredFrameworks": [
       "GameController"
     ],
@@ -83,11 +83,27 @@
       },
       "ios/Mobile/CODocument.h": {
         "originalSHA256": "1b46b5557c315949f61345c130c3c1f78cd239b01552b6305c84a1a780c59c8e",
-        "preparedSHA256": "8bda2cad6f5abea19a93458e4912adfb85eca5f4ff28fbea44db3722668c6f7f"
+        "preparedSHA256": "55191cfb6f95e5bf6902d579baede71f1b607c19cb63ab1ffc3fc1de57b675c3"
       },
       "kit/ChildSession.cpp": {
         "originalSHA256": "66ec2517f99b6535e626d2a1f377bea12c04f9f83efd7bed7211303bce8e578b",
         "preparedSHA256": "51db32e32a2bb59942df6a814bad6a6a5ad6ce1ef697fc7c77e9025389a01704"
+      },
+      "ios/Mobile/CODocument.mm": {
+        "originalSHA256": "4a283c74308e8eec41eb736b731b787f7055e4d61adb4a177b2e1d5cc046df65",
+        "preparedSHA256": "e14c7d6fd6a299243bb30070d4386bc6b36ae24d2c7e663f956f7aca6bd6b49c"
+      },
+      "ios/ios.h": {
+        "originalSHA256": "3bc138bf62d95b68ad2102c33e78a85cf614d9899b1c57328a1ae8e964860bc1",
+        "preparedSHA256": "0f9a2442576a3fc2b283fe94a39950814d3b96671aadd294c581e38e13c55225"
+      },
+      "ios/ios.mm": {
+        "originalSHA256": "28c5ce3f2c9a31b168620366adb769dd6bd9a010edbff357fab0df791be69c68",
+        "preparedSHA256": "04a489c6c1ace46806c1ed2f8a13d0c468a14ccaa7ab6e26735db8babe99930c"
+      },
+      "wsd/COOLWSD.cpp": {
+        "originalSHA256": "85c90ccfe758200843b6fe659a7944847bf6234e5d331a970a0ce7597ef83786",
+        "preparedSHA256": "b913176634edc140e673a772a5b14b830aab03ac125c5bac9865dceb52168278"
       }
     }
   }

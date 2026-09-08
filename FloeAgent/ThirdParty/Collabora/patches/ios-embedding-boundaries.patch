@@ -256,10 +256,13 @@
  
  @class DocumentViewController;
  
-@@ -27,6 +26,10 @@
+@@ -27,6 +26,13 @@
  
  @property (weak) DocumentViewController *viewController;
  
++// Floe supplies a persistent session directory; every open creates a new child.
++@property (copy, nullable) NSURL *floeEngineCopyDirectory;
++
 +// Main-queue event for each engine save. Success means UIDocument finished
 +// writing fileURL, not that Floe committed the original or verified layout.
 +@property (copy, nullable) void (^floeSaveCompletion)(BOOL success);
@@ -315,3 +318,102 @@
              }
          }
  
+--- a/ios/Mobile/CODocument.mm
++++ b/ios/Mobile/CODocument.mm
+@@ -48,6 +48,13 @@
+ 
+ @implementation CODocument
+ 
++- (instancetype)initWithFileURL:(NSURL *)url {
++    self = [super initWithFileURL:url];
++    if (self)
++        fakeClientFd = -1;
++    return self;
++}
++
+ - (id)contentsForType:(NSString*)typeName error:(NSError **)errorPtr {
+     return [NSData dataWithContentsOfFile:[copyFileURL path] options:0 error:errorPtr];
+ }
+@@ -65,24 +72,35 @@
+     if (fakeClientFd >= 0)
+         return YES;
+ 
+-    fakeClientFd = fakeSocketSocket();
+-
+     appDocId = appDocIdCounter++;
+-    NSURL *copyFileDirectory = [[NSFileManager.defaultManager temporaryDirectory] URLByAppendingPathComponent:[NSString stringWithFormat:@"%d", appDocId]];
+-    if (![NSFileManager.defaultManager createDirectoryAtURL:copyFileDirectory withIntermediateDirectories:YES attributes:nil error:nil]) {
+-        LOG_ERR("Could not create directory " << [[copyFileDirectory path] UTF8String]);
++    NSURL *baseDirectory = self.floeEngineCopyDirectory ?: NSFileManager.defaultManager.temporaryDirectory;
++    if (!baseDirectory.isFileURL) {
++        if (errorPtr)
++            *errorPtr = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteInvalidFileNameError userInfo:nil];
+         return NO;
+     }
++    NSURL *copyFileDirectory = [baseDirectory URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
++    if (![NSFileManager.defaultManager createDirectoryAtURL:copyFileDirectory withIntermediateDirectories:YES attributes:nil error:errorPtr])
++        return NO;
+ 
+-    copyFileURL = [copyFileDirectory URLByAppendingPathComponent:[[[self fileURL] path] lastPathComponent]];
+-
+-    NSError *error;
+-    [[NSFileManager defaultManager] removeItemAtURL:copyFileURL error:nil];
+-    [[NSFileManager defaultManager] copyItemAtURL:[self fileURL] toURL:copyFileURL error:&error];
+-    if (error != nil)
++    // Never delete a previous editor generation or its recovery data.
++    NSURL *candidate = [copyFileDirectory URLByAppendingPathComponent:self.fileURL.lastPathComponent];
++    if (![NSFileManager.defaultManager copyItemAtURL:self.fileURL toURL:candidate error:errorPtr])
+         return NO;
+ 
+     NSURL *url = [[NSBundle mainBundle] URLForResource:@"cool" withExtension:@"html"];
++    if (!url) {
++        if (errorPtr)
++            *errorPtr = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadNoSuchFileError userInfo:nil];
++        return NO;
++    }
++    copyFileURL = candidate;
++    // Opening may fail before resources or files are ready. Allocate the socket
++    // last so a later retry cannot mistake that failed open for a live document.
++    fakeClientFd = fakeSocketSocket();
++    if (fakeClientFd < 0)
++        return NO;
++
+     NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+     DocumentData::allocate(appDocId).coDocument = self;
+     components.queryItems = @[ [NSURLQueryItem queryItemWithName:@"file_path" value:[copyFileURL absoluteString]],
+--- a/ios/ios.h
++++ b/ios/ios.h
+@@ -16,6 +16,9 @@
+ 
+ extern int coolwsd_server_socket_fd;
+ 
++// Set once before starting COOLWSD; invoked after its accept/web polls start.
++extern void (*floeOfficeServerReadyCallback)();
++
+ extern COKit *lo_kit;
+ 
+ /* Install the engine-driven clipboard provider: the engine advertises formats on copy and reads
+--- a/ios/ios.mm
++++ b/ios/ios.mm
+@@ -25,6 +25,7 @@
+ const char *user_name = nullptr;
+ 
+ int coolwsd_server_socket_fd = -1;
++void (*floeOfficeServerReadyCallback)() = nullptr;
+ 
+ COKit *lo_kit;
+ 
+--- a/wsd/COOLWSD.cpp
++++ b/wsd/COOLWSD.cpp
+@@ -3680,6 +3680,11 @@
+ 
+     WebServerPoll->startThread();
+ 
++#if defined(IOS)
++    if (floeOfficeServerReadyCallback)
++        floeOfficeServerReadyCallback();
++#endif
++
+ #if !MOBILEAPP
+     _admin.start();
+ #endif

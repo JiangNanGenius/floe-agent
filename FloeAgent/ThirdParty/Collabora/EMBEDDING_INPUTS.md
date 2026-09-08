@@ -52,6 +52,34 @@ cleanup. The embedding target must link GameController and use the prepared
 controller; Floe needs its own bounded engine startup rather than replacing its
 app delegate with the upstream app delegate.
 
+## Floe-owned native host (qualification in progress)
+
+`FloeOfficeNative/FloeOfficeNative.h` exposes a pure Objective-C UIKit facade to
+Swift. Its runtime waits for the native server's poll loops to start before it
+admits documents. It uses a versioned Application Support profile/cache, replaces
+upstream application startup/termination, and reports server failure without
+aborting Floe or deleting document copies. Initialization currently retains
+upstream main-thread affinity; device startup latency is not yet measured.
+
+The document controller embeds the actual upstream editor with a fixed readonly
+or editable permission. It only accepts a file inside a supplied persistent
+session directory. Each engine open creates a new UUID child; failed opens and
+later generations never erase previous copies. The open event means UIDocument
+loaded its copy, not that the frontend rendered. Save events include autosaves
+and are explicitly not correlated explicit-save or original-writeback receipts.
+Original-file CAS, save correlation, close recovery and the SwiftUI inspector /
+fullscreen session transition remain integration gates.
+
+`build_office_native_host.py` transforms the verified Mobile project into a
+framework, replacing its six app/browser/template source files with Floe's host
+and retaining the real editor/common/kit/net/wsd sources and ordered native
+linker inputs. Engine/browser resources are packaged as `OfficeRuntimeResources`
+for copying into the Floe **main app bundle**, as required by native bootstrap.
+The framework only publishes the facade header. Qualification includes a real
+native compile/link and a Swift module import; neither establishes UI/device
+editing acceptance. All patched top-level source trees (including wsd) get owned
+copies, and writes beneath directory aliases are rejected.
+
 Twenty-two synthetic packaging/preparation/repair tests pass. The overlay also applies to
 the actual pinned source hashes, and its public keyboard helper passes an
 iphoneos arm64 Objective-C syntax check. This is not a full controller compile,

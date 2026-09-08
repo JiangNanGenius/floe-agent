@@ -5,10 +5,44 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from qualify_office_mobile import qualification_project, qualify
+from qualify_office_mobile import qualification_project, qualify, shadow_sources
+from package_office_engine import digest
 
 
 class MobileQualificationTests(unittest.TestCase):
+    def test_new_patch_subtree_never_writes_through_to_verified_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            original = root / 'source/wsd/COOLWSD.cpp'
+            original.parent.mkdir(parents=True)
+            original.write_text('original server')
+            (root / 'source/ios').mkdir()
+            (root / 'source/engine').mkdir()
+            prepared = root / 'prepared/native/wsd/COOLWSD.cpp'
+            prepared.parent.mkdir(parents=True)
+            prepared.write_text('prepared server')
+            shadow = root / 'shadow'
+            shadow_sources(root, shadow, {'files': {'wsd/COOLWSD.cpp': digest(prepared)}})
+            self.assertEqual(original.read_text(), 'original server')
+            self.assertEqual((shadow / 'wsd/COOLWSD.cpp').read_text(), 'prepared server')
+            self.assertFalse((shadow / 'wsd').is_symlink())
+            self.assertTrue((shadow / 'engine').is_symlink())
+
+    def test_patch_below_directory_alias_is_rejected_without_changing_target(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            original = root / 'source/engine/actual/file.cpp'
+            original.parent.mkdir(parents=True)
+            original.write_text('original')
+            (root / 'source/ios').mkdir()
+            (root / 'source/ios/alias').symlink_to('../engine/actual')
+            prepared = root / 'prepared/native/ios/alias/file.cpp'
+            prepared.parent.mkdir(parents=True)
+            prepared.write_text('prepared')
+            with self.assertRaisesRegex(ValueError, 'parent is a source alias'):
+                shadow_sources(root, root / 'shadow', {'files': {'ios/alias/file.cpp': digest(prepared)}})
+            self.assertEqual(original.read_text(), 'original')
+
     def setUp(self):
         self.project = {"objects": {
             "mobile": {"isa": "PBXNativeTarget", "name": "Mobile", "dependencies": ["extension"],
