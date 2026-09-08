@@ -54,6 +54,40 @@ the actual pinned source hashes, and its public keyboard helper passes an
 iphoneos arm64 Objective-C syntax check. This is not a full controller compile,
 engine link, keyboard test, or native document-editing acceptance.
 
+## Save and close boundary overlay
+
+The pinned Mobile save callback deleted the engine copy after **both successful
+and failed** UIDocument saves. Its close path deleted the copy before closing
+UIDocument and dismissed the controller before knowing the close result. Floe's
+overlay retains those copies, dispatches persistence on the main queue, and
+exposes `CODocument.floeSaveCompletion` plus
+`DocumentViewController.floeCloseCompletion`. A save callback reports engine
+failure or the subsequent UIDocument persistence result. It does **not** report
+Floe's original-file writeback, round-trip verification, or a host operation ID.
+The host must serialize explicit save/close requests and wait for the relevant
+completion before committing through `DocumentWorkspace`.
+
+A successful close releases web handlers before returning control to the host;
+a failed close retains the view and files. Uninitialized forwarding-pipe IDs
+start at -1, and repeated close notifications cannot close another fake socket
+or issue duplicate terminal callbacks. The host owns final dismissal and cleanup.
+
+`test_office_native_lifecycle.py` applies the exact pinned overlay and compiles
+the save/close fragments with controlled document/view doubles on macOS. Eight
+checks execute success, failure, pending and duplicate-close paths against real
+temporary copy files. Public controller/document headers also pass an iphoneos
+arm64 syntax check. This does not compile the complete controller/engine or run
+UIKit document persistence. In a prepared format-2 bundle, run:
+
+```sh
+python3 FloeAgent/scripts/test_office_native_lifecycle.py /path/to/bundle/prepared/native
+```
+
+For a pinned upstream source tree, pass its root with `--original-source`; only
+the lifecycle files are copied and patched in a temporary directory. The cloud
+workflow records this check separately and retains a successfully built engine
+even if a lifecycle check fails. The already-running old workflow is unchanged.
+
 ## Remaining integration work
 
 - Actual bundle verification, native Mobile compilation/linking and resource
@@ -72,6 +106,11 @@ engine link, keyboard test, or native document-editing acceptance.
   settle before Floe's coordinated writeback; conflict/failed-save content must
   remain recoverable. The existing workspace lifecycle tests cover file bytes,
   not engine save callbacks or Office formatting.
+- Native engine copies still use upstream's temporary directory. Before enabling
+  the adapter, put them inside a persistent Floe session, connect recovery indexing,
+  serialize engine autosave/explicit-save/close acknowledgements, and test WebKit
+  termination plus unsaved in-memory engine changes. Retaining a temporary copy
+  in these callbacks alone does not prove restart recovery or complete save safety.
 - Reopen native DOCX/XLSX/PPTX in Microsoft Office and verify object geometry,
   fonts, charts, embedded content, formulas and untouched features. No simulator
   result substitutes for device engine acceptance: upstream builds the engine

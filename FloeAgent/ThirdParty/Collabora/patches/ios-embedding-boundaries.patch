@@ -10,7 +10,13 @@
  
  #import <poll.h>
  #import <sys/stat.h>
-@@ -43,45 +42,14 @@
+@@ -39,52 +38,25 @@
+ @interface DocumentViewController() <WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIScrollViewDelegate, UIDocumentPickerDelegate, UIFontPickerViewControllerDelegate> {
+     int closeNotificationPipeForForwardingThread[2];
+     NSURL *downloadAsTmpURL;
++    BOOL floeClosing;
++    BOOL floeClosed;
+ }
  
  @end
  
@@ -59,7 +65,12 @@
  
  - (void)viewDidLoad {
      [super viewDidLoad];
-@@ -129,61 +97,8 @@
++    closeNotificationPipeForForwardingThread[0] = -1;
++    closeNotificationPipeForForwardingThread[1] = -1;
+ 
+     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
+     WKUserContentController *userContentController = [[WKUserContentController alloc] init];
+@@ -129,61 +101,8 @@
      self.webView.navigationDelegate = self;
      self.webView.UIDelegate = self;
  
@@ -123,6 +134,84 @@
  
      WKWebView *webViewP = self.webView;
      NSDictionary *views = NSDictionaryOfVariableBindings(webViewP);
+@@ -257,18 +176,31 @@
+ }
+ 
+ - (IBAction)dismissDocumentViewController {
+-    [[NSNotificationCenter defaultCenter] removeObserver:self name:UIKeyboardWillHideNotification object:nil];
+-    [self dismissViewControllerAnimated:YES completion:^ {
+-            [self.document closeWithCompletionHandler:^(BOOL success){
+-                    LOG_TRC("close completion handler gets " << (success?"YES":"NO"));
+-                    [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"debug"];
+-                    [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"lok"];
+-                    [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"error"];
+-                    // Don't set webView.configuration.userContentController to
+-                    // nil as it generates a "nil not allowed" compiler warning
+-                    [self.webView removeFromSuperview];
+-                    self.webView = nil;
+-                    }];
++    if (floeClosing || floeClosed)
++        return;
++    floeClosing = YES;
++    // UIDocument must settle before the host dismisses the editor or writes
++    // its working file back to the original. Failed closes retain all copies.
++    [self.document closeWithCompletionHandler:^(BOOL success) {
++        dispatch_async(dispatch_get_main_queue(), ^{
++            self->floeClosing = NO;
++            if (!success) {
++                if (self.floeCloseCompletion)
++                    self.floeCloseCompletion(NO);
++                return;
++            }
++            self->floeClosed = YES;
++            [[NSNotificationCenter defaultCenter] removeObserver:self name:UIKeyboardWillHideNotification object:nil];
++            [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"debug"];
++            [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"lok"];
++            [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"error"];
++            [self.webView removeFromSuperview];
++            self.webView = nil;
++            if (self.floeCloseCompletion)
++                self.floeCloseCompletion(YES);
++            else
++                [self dismissViewControllerAnimated:YES completion:nil];
++        });
+     }];
+ }
+ 
+@@ -605,20 +537,19 @@
+ }
+ 
+ - (void)bye {
+-    // Close one end of the socket pair, that will wake up the forwarding thread above
+-    fakeSocketClose(closeNotificationPipeForForwardingThread[0]);
+-
+-    // DocumentData::deallocate(self.document->appDocId);
+-
+-    if (![[NSFileManager defaultManager] removeItemAtURL:self.document->copyFileURL error:nil]) {
+-        LOG_SYS("Could not remove copy of document at " << [[self.document->copyFileURL path] UTF8String]);
+-    }
+-
+-    // The dismissViewControllerAnimated must be done on the main queue.
+-    dispatch_async(dispatch_get_main_queue(),
+-                   ^{
+-                       [self dismissDocumentViewController];
+-                   });
++    dispatch_async(dispatch_get_main_queue(), ^{
++        if (self->floeClosing || self->floeClosed)
++            return;
++        // An open failure can reach BYE before HULLO created a pipe. Never
++        // close an uninitialized fake descriptor belonging to another editor.
++        if (self->closeNotificationPipeForForwardingThread[0] >= 0) {
++            fakeSocketClose(self->closeNotificationPipeForForwardingThread[0]);
++            self->closeNotificationPipeForForwardingThread[0] = -1;
++        }
++        // Floe owns cleanup after coordinated writeback or explicit discard.
++        // Preserve the engine copy even when WebKit terminates unexpectedly.
++        [self dismissDocumentViewController];
++    });
+ }
+ 
+ - (void)exportFileURL:(NSURL *)fileURL {
 --- a/ios/Mobile/AppDelegate.mm
 +++ b/ios/Mobile/AppDelegate.mm
 @@ -136,17 +136,8 @@
@@ -145,3 +234,84 @@
  
      fakeSocketSetLoggingCallback([](const std::string& line)
                                   {
+--- a/ios/Mobile/DocumentViewController.h
++++ b/ios/Mobile/DocumentViewController.h
+@@ -20,6 +20,9 @@
+ @property (strong) WKWebView *webView;
+ @property void *schemeHandler;
+ 
++// Main-queue completion; host owns dismissal and cleanup when installed.
++@property (copy, nullable) void (^floeCloseCompletion)(BOOL success);
++
+ - (void)bye;
+ 
+ - (void)exportFileURL:(NSURL *)fileURL;
+--- a/ios/Mobile/CODocument.h
++++ b/ios/Mobile/CODocument.h
+@@ -13,7 +13,6 @@
+ 
+ #import <UIKit/UIKit.h>
+ 
+-#import <COKit/COKit.hxx>
+ 
+ @class DocumentViewController;
+ 
+@@ -27,6 +26,10 @@
+ 
+ @property (weak) DocumentViewController *viewController;
+ 
++// Main-queue event for each engine save. Success means UIDocument finished
++// writing fileURL, not that Floe committed the original or verified layout.
++@property (copy, nullable) void (^floeSaveCompletion)(BOOL success);
++
+ - (void)send2JS:(const char*)buffer length:(int)length;
+ 
+ @end
+--- a/kit/ChildSession.cpp
++++ b/kit/ChildSession.cpp
+@@ -4265,27 +4265,31 @@
+                 // After the document has been saved (into the temporary copy that we set up in
+                 // -[CODocument loadFromContents:ofType:error:]), save it also using the system API so
+                 // that file provider extensions notice.
+-                if (!success.isEmpty() && success.toString() == "true")
+-                {
+ #if defined(IOS)
+-                    CODocument* document =
+-                        DocumentData::get(_docManager->getMobileAppDocId()).coDocument;
++                CODocument* document =
++                    DocumentData::get(_docManager->getMobileAppDocId()).coDocument;
++                const bool engineSaved = !success.isEmpty() && success.toString() == "true";
++                dispatch_async(dispatch_get_main_queue(), ^{
++                    if (!engineSaved) {
++                        if (document.floeSaveCompletion)
++                            document.floeSaveCompletion(NO);
++                        return;
++                    }
+                     [document saveToURL:[document fileURL]
+                          forSaveOperation:UIDocumentSaveForOverwriting
+-                        completionHandler:^(BOOL success) {
+-                          LOG_TRC("ChildSession::loKitCallback() save completion handler gets "
+-                                  << (success ? "YES" : "NO"));
+-                          if (![[NSFileManager defaultManager] removeItemAtURL:document->copyFileURL
+-                                                                         error:nil])
+-                          {
+-                              LOG_SYS("Could not remove copy of document at "
+-                                      << [[document->copyFileURL path] UTF8String]);
+-                          }
++                        completionHandler:^(BOOL saved) {
++                          // Keep copyFileURL for further edits, retry and crash
++                          // recovery. Only Floe's session owner may remove it.
++                          dispatch_async(dispatch_get_main_queue(), ^{
++                              if (document.floeSaveCompletion)
++                                  document.floeSaveCompletion(saved);
++                          });
+                         }];
++                });
+ #elif defined(__ANDROID__)
++                if (!success.isEmpty() && success.toString() == "true")
+                     postDirectMessage("SAVE " + payload);
+ #endif
+-                }
+             }
+         }
+ 

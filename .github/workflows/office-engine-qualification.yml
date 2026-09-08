@@ -15,6 +15,7 @@ on:
       - 'FloeAgent/scripts/verify_office_engine.py'
       - 'FloeAgent/scripts/prepare_office_native_sources.py'
       - 'FloeAgent/scripts/test_office_engine_bundle.py'
+      - 'FloeAgent/scripts/test_office_native_lifecycle.py'
       - 'FloeAgent/ThirdParty/Collabora/**'
 permissions:
   contents: read
@@ -48,6 +49,7 @@ jobs:
       - name: Verify bundle packaging and relocation tests
         run: python3 FloeAgent/scripts/test_office_engine_bundle.py
       - name: Check or build engine
+        id: engine
         env:
           BUILD_ENGINE: ${{ inputs.build_engine || false }}
           FLOE_OFFICE_BUILD_ROOT: ${{ runner.temp }}/floe-office-engine
@@ -57,6 +59,12 @@ jobs:
           else
             FloeAgent/scripts/qualify_office_engine.sh --check
           fi
+      - name: Check pinned native save and close boundaries
+        if: success() && inputs.build_engine
+        run: |
+          python3 FloeAgent/scripts/test_office_native_lifecycle.py \
+            "$RUNNER_TEMP/floe-office-engine/source" --original-source \
+            > "$RUNNER_TEMP/floe-office-engine/qualification-logs/native-lifecycle.json"
       - name: Preserve qualification evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -67,12 +75,13 @@ jobs:
             ${{ runner.temp }}/floe-office-engine/qualification-logs
           if-no-files-found: warn
       - name: Package reusable native engine and editor resources
-        if: success() && inputs.build_engine
+        id: package
+        if: always() && inputs.build_engine && steps.engine.outcome == 'success'
         env:
           FLOE_OFFICE_BUILD_ROOT: ${{ runner.temp }}/floe-office-engine
         run: python3 FloeAgent/scripts/package_office_engine.py
       - name: Preserve reusable engine
-        if: success() && inputs.build_engine
+        if: always() && inputs.build_engine && steps.package.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: office-engine-ios-arm64

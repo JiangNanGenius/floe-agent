@@ -1,0 +1,20 @@
+{
+  "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+  "patchSHA256": "8cee49fb70084cb07284f820c7ac69ea88f80fbe467e51bdacb627c6c02871f0",
+  "kind": "compiled native fragments with controlled document and view doubles",
+  "checksPassed": [
+    "engine failure reports failure without committing",
+    "engine success waits for document persistence callback",
+    "failed persistence retains the engine copy",
+    "successful persistence retains the working engine copy for continued editing",
+    "uninitialized and duplicate close requests do not close another descriptor or dismiss early",
+    "failed close retains view and file and reports failure",
+    "successful close releases web handlers before handing control to host without deleting files",
+    "completed close cannot dispatch or complete again"
+  ],
+  "nativePublicHeadersSyntaxPassed": true,
+  "fullNativeControllerCompiled": false,
+  "deviceRoundtripPassed": false,
+  "originalSourceOverlayApplied": true,
+  "format2PreparationPassedOnSyntheticBundle": true
+}

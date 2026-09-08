@@ -1,0 +1,10 @@
+Pinned lifecycle overlay and format-2 bundle preparation regression
+Command: PYTHONDONTWRITEBYTECODE=1 python3.12 FloeAgent/scripts/test_office_engine_bundle.py
+............
+----------------------------------------------------------------------
+Ran 12 tests in 0.315s
+
+OK
+
+Native lifecycle fragment checks: office-native-lifecycle-check.json
+These are source/lifecycle checks, not an embedded editor or device roundtrip result.

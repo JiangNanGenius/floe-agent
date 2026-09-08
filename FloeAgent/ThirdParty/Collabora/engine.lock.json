@@ -30,18 +30,30 @@
   "sourcePatchSHA256": "09517b9a2dd4002a767491976762410d4cefd45172ea8cf401196268f5817ad7",
   "embeddingOverlay": {
     "patch": "patches/ios-embedding-boundaries.patch",
-    "sha256": "6a199e55e88a6fb573cad5a8a892d3a99ef4605a0c33999ee8478089a93421a1",
+    "sha256": "8cee49fb70084cb07284f820c7ac69ea88f80fbe467e51bdacb627c6c02871f0",
     "requiredFrameworks": [
       "GameController"
     ],
     "files": {
       "ios/Mobile/DocumentViewController.mm": {
         "originalSHA256": "7dab7a3c15e7fbf45a3b5227007ad523397f9984800ef6ed16f99c5ffdbbbeba",
-        "preparedSHA256": "973545f45c529f045a58c4826dc272f91bd0d5f4622ee386612710635188134b"
+        "preparedSHA256": "0acb4c7dc83d816a4544860ddcfdef741c1062466415ce13b30664931d99f9c4"
       },
       "ios/Mobile/AppDelegate.mm": {
         "originalSHA256": "cd6f02a0c5aa2125245ada862ed7abe69422232f4485f3c2dbadea75464dd2e1",
         "preparedSHA256": "b804dcf3eb3fe5fd7212bdc849dfd4a5a9638c9d6e962a6160dcc5d5c55565c9"
+      },
+      "ios/Mobile/DocumentViewController.h": {
+        "originalSHA256": "0638ddf4e50ad3508a6507272edadc236c6e17ecee40bb1e5168e3d2ec556e63",
+        "preparedSHA256": "578c107afb3ef768adf7474b19b5b2ca920e8d79b8a5d7243dd5209893adeabb"
+      },
+      "ios/Mobile/CODocument.h": {
+        "originalSHA256": "1b46b5557c315949f61345c130c3c1f78cd239b01552b6305c84a1a780c59c8e",
+        "preparedSHA256": "8bda2cad6f5abea19a93458e4912adfb85eca5f4ff28fbea44db3722668c6f7f"
+      },
+      "kit/ChildSession.cpp": {
+        "originalSHA256": "66ec2517f99b6535e626d2a1f377bea12c04f9f83efd7bed7211303bce8e578b",
+        "preparedSHA256": "51db32e32a2bb59942df6a814bad6a6a5ad6ce1ef697fc7c77e9025389a01704"
       }
     }
   }
