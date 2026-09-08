@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 import copy
+import json
 from pathlib import Path
+import tempfile
 import unittest
-from qualify_office_mobile import qualification_project
+from unittest.mock import patch
+from qualify_office_mobile import qualification_project, qualify
 
 
 class MobileQualificationTests(unittest.TestCase):
@@ -48,6 +51,17 @@ class MobileQualificationTests(unittest.TestCase):
         self.project['objects']['mobile']['name'] = 'DifferentApp'
         with self.assertRaisesRegex(ValueError, 'exactly one'):
             self.prepare()
+
+    def test_input_verification_failure_preserves_a_failed_receipt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with patch('qualify_office_mobile.prepare', side_effect=ValueError('changed input')):
+                with self.assertRaisesRegex(ValueError, 'changed input'):
+                    qualify(root / 'bundle', root / 'output', build=False)
+            report = json.loads((root / 'output/qualification.json').read_text())
+            self.assertEqual(report['stage'], 'input-verification-failed')
+            self.assertFalse(report['nativeCompilePassed'])
+            self.assertFalse(report['embeddedEditorPassed'])
 
 
 if __name__ == '__main__':

@@ -1,0 +1,61 @@
+{
+  "runID": "34287476509",
+  "runConclusion": "failure",
+  "successfulStep": "Generate and package complete native embedding inputs",
+  "failureStage": "Input verification before Mobile compile",
+  "failure": "Two unused zstd test aliases point to an intentionally omitted CLI script",
+  "supplement": {
+    "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+    "stage": "packaged",
+    "supplementPassed": true,
+    "nativeCompilePassed": false,
+    "deviceRoundtripPassed": false,
+    "reusedRunID": "34268468731",
+    "reusedArchives": 277,
+    "requiredLinkerObjects": 91,
+    "normalizedAssetLinks": [
+      "ios/FakeQuickLook/Assets.xcassets/Icon.imageset/Contents.json",
+      "ios/Mobile/Assets.xcassets/AppIcon.appiconset/Contents.json"
+    ],
+    "filesPackaged": 46525,
+    "linkerInputsPackaged": 369
+  },
+  "archive": {
+    "runID": "34287476509",
+    "archiveSHA256": "9f835bbc495af06b4f958eedd9c6975e6b51309539de2cffb38f60ee547f17d4",
+    "formatVersion": 2,
+    "files": 46525,
+    "linkerInputs": 369,
+    "archives": 278,
+    "objects": 91,
+    "nativeMobileCompiled": false
+  },
+  "repair": {
+    "originalArchiveSHA256": "9f835bbc495af06b4f958eedd9c6975e6b51309539de2cffb38f60ee547f17d4",
+    "originalManifestSHA256": "e114a857d34c1ba099abd8e8f7c8fd16926c3ceb6595da814627ac98b4633b36",
+    "removedUnusedTestAliases": [
+      {
+        "path": "source/engine/workdir/UnpackedTarball/zstd/tests/cli-tests/bin/unzstd",
+        "symlink": "zstd"
+      },
+      {
+        "path": "source/engine/workdir/UnpackedTarball/zstd/tests/cli-tests/bin/zstdcat",
+        "symlink": "zstd"
+      }
+    ],
+    "verified": {
+      "filesVerified": 46523,
+      "archivesVerified": 278,
+      "objectsVerified": 91,
+      "linkerInputsVerified": 369,
+      "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+      "embeddingVerified": false,
+      "deviceRoundtripVerified": false
+    },
+    "nativeCompilePassed": false,
+    "deviceRoundtripPassed": false
+  },
+  "localPackagingRepairTests": 20,
+  "localProjectBoundaryTests": 5,
+  "nativeMobileCompiled": false
+}

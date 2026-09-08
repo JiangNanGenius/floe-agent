@@ -11,6 +11,18 @@
     "missingLinkerObjects": 91,
     "note": "Successful engine build; old archive omits generated headers, native source trees and explicit NSS linker objects. Preserve its libraries; supplement before embedding."
   },
+  "qualifiedEmbeddingArtifact": {
+    "runID": "34287476509",
+    "artifactName": "office-engine-complete-inputs",
+    "artifactID": 10080355165,
+    "workflowCommit": "c251584a6daf55c74a923ed966a884cc32aaf41e",
+    "archiveSHA256": "9f835bbc495af06b4f958eedd9c6975e6b51309539de2cffb38f60ee547f17d4",
+    "omittedTestAliases": {
+      "source/engine/workdir/UnpackedTarball/zstd/tests/cli-tests/bin/unzstd": "zstd",
+      "source/engine/workdir/UnpackedTarball/zstd/tests/cli-tests/bin/zstdcat": "zstd"
+    },
+    "note": "All 369 native linker inputs and generated headers retained. Before verification remove exactly the two locked unused zstd test aliases; preserve every other hashed input. Full Mobile compile/link still pending."
+  },
   "documentation": "https://github.com/CollaboraOnline/online.mirror/blob/27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc/ios/README.md",
   "platform": "iphoneos-arm64",
   "minimumFreeGiBNote": "12 GiB permits a bounded build attempt; stop the build at 6 GiB free. Historical 150 GiB is a recommendation, not an upstream minimum.",

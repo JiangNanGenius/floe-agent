@@ -47,6 +47,10 @@ def package(root):
             target = path.resolve(strict=True)
             if not target.is_relative_to(root):
                 raise ValueError(f"Dependency escapes build root: {path.relative_to(root)}")
+            # Header-only dependency collection must not retain links to
+            # excluded executables/scripts (e.g. zstd's CLI test aliases).
+            if headers_only and target.is_file() and target.suffix not in HEADER_SUFFIXES and not target.name.startswith(("LICENSE", "COPYING", "NOTICE")):
+                return
             links[path] = os.path.relpath(target, path.parent)
             paths.add(path)
             # The top-level engine alias must not pull in all object files.

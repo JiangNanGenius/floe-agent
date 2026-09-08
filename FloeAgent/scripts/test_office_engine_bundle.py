@@ -2,6 +2,7 @@
 import json
 import difflib
 import hashlib
+import io
 from pathlib import Path
 import tarfile
 import tempfile
@@ -10,6 +11,7 @@ from package_office_engine import package, REQUIRED
 from verify_office_engine import verify
 from prepare_office_native_sources import prepare
 from supplement_office_engine import supplement
+from repair_office_embedding_bundle import repair
 
 
 class OfficeEngineBundleTests(unittest.TestCase):
@@ -65,6 +67,65 @@ class OfficeEngineBundleTests(unittest.TestCase):
         (self.source / "engine/config_host").rmdir()
         with self.assertRaisesRegex(ValueError, "Missing editor"):
             package(self.root)
+
+    def test_header_only_collection_does_not_ship_dangling_test_script_alias(self):
+        scripts = self.source / "engine/workdir/UnpackedTarball/zstd/tests/cli-tests/bin"
+        scripts.mkdir(parents=True)
+        (scripts / "zstd").write_text("test runner, not an embedding header")
+        (scripts / "unzstd").symlink_to("zstd")
+        package(self.root)
+        relocated = self.extract()
+        self.assertFalse((relocated / scripts.relative_to(self.root) / "unzstd").is_symlink())
+        self.assertEqual(verify(relocated)["archivesVerified"], 1)
+
+    def broken_test_alias_archive(self, *, altered_target=False):
+        manifest = package(self.root)
+        archive_path = self.root / "office-engine-ios-arm64.tar.gz"
+        with tarfile.open(archive_path) as archive:
+            contents = [(m, archive.extractfile(m).read()) for m in archive.getmembers()]
+        alias = "source/engine/workdir/UnpackedTarball/zstd/tests/cli-tests/bin/unzstd"
+        target = "different" if altered_target else "zstd"
+        manifest["files"].append({"path": alias, "symlink": target})
+        with tarfile.open(archive_path, "w:gz") as archive:
+            for member, data in contents:
+                if member.name == "bundle-manifest.json":
+                    data = json.dumps(manifest).encode()
+                    member.size = len(data)
+                archive.addfile(member, io.BytesIO(data))
+            link = tarfile.TarInfo(alias)
+            link.type = tarfile.SYMTYPE
+            link.linkname = target
+            archive.addfile(link)
+        lock = self.root / "repair.lock.json"
+        lock.write_text(json.dumps({"qualifiedEmbeddingArtifact": {
+            "archiveSHA256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+            "omittedTestAliases": {alias: "zstd"}}}))
+        return archive_path, lock
+
+    def test_locked_repair_preserves_all_native_bytes_and_original_archive(self):
+        archive, lock = self.broken_test_alias_archive()
+        original = archive.read_bytes()
+        destination = self.root / "repaired"
+        report = repair(archive, destination, lock)
+        self.assertEqual(report["verified"]["archivesVerified"], 1)
+        self.assertEqual((destination / self.library.relative_to(self.root)).read_bytes(), self.library.read_bytes())
+        self.assertEqual(len(report["removedUnusedTestAliases"]), 1)
+        self.assertEqual(archive.read_bytes(), original)
+        with self.assertRaisesRegex(ValueError, "new destination"):
+            repair(archive, destination, lock)
+
+    def test_locked_repair_rejects_unknown_archive_before_creating_output(self):
+        archive, lock = self.broken_test_alias_archive()
+        archive.write_bytes(archive.read_bytes() + b"changed")
+        destination = self.root / "repaired"
+        with self.assertRaisesRegex(ValueError, "differs from locked"):
+            repair(archive, destination, lock)
+        self.assertFalse(destination.exists())
+
+    def test_locked_repair_rejects_a_different_alias_defect(self):
+        archive, lock = self.broken_test_alias_archive(altered_target=True)
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            repair(archive, self.root / "repaired", lock)
 
     def test_external_symlink_rejects_packaging(self):
         (self.source / "host-link").symlink_to(Path(self.directory.name))

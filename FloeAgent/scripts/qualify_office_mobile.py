@@ -53,16 +53,23 @@ def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK):
     if destination.exists():
         raise ValueError("Use a new output directory; previous build evidence is preserved")
     lock = json.loads(Path(lock_path).read_text())
-    overlay = prepare(root, lock_path)
     destination.mkdir(parents=True)
-    report = {"sourceCommit": overlay["sourceCommit"], "overlaySHA256": overlay["patchSHA256"],
+    report = {"sourceCommit": lock["commit"], "overlaySHA256": lock["embeddingOverlay"]["sha256"],
               "nativeCompilePassed": False, "nativeLinkPassed": False,
               "embeddedEditorPassed": False, "deviceRoundtripPassed": False,
-              "stage": "prepare"}
+              "stage": "verify-inputs"}
 
     def save():
         (destination / "qualification.json").write_text(json.dumps(report, indent=2) + "\n")
 
+    save()
+    try:
+        overlay = prepare(root, lock_path)
+    except Exception as error:
+        report.update(stage="input-verification-failed", error=str(error))
+        save()
+        raise
+    report["stage"] = "prepare"
     save()
     source = root / "source"
     shadow = destination / "source"

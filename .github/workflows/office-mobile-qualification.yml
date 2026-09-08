@@ -1,0 +1,61 @@
+name: Qualify Native Office Mobile Frontend
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/office-workflow-upgrade']
+    paths: ['.github/workflows/office-mobile-qualification.yml']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: office-mobile-qualification
+  cancel-in-progress: false
+jobs:
+  native-mobile:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate qualification tooling
+        run: |
+          python3 FloeAgent/scripts/test_office_engine_bundle.py
+          python3 FloeAgent/scripts/test_office_mobile_qualification.py
+      - name: Download complete preserved native inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download 34287476509 -n office-engine-complete-inputs -D "$RUNNER_TEMP/complete-office-inputs"
+      - name: Verify and repair the two locked unused test aliases
+        run: |
+          python3 FloeAgent/scripts/repair_office_embedding_bundle.py \
+            "$RUNNER_TEMP/complete-office-inputs/office-engine-ios-arm64.tar.gz" \
+            "$RUNNER_TEMP/office-native-bundle"
+      - name: Compile and link the complete native Mobile frontend
+        run: |
+          python3 FloeAgent/scripts/qualify_office_mobile.py \
+            "$RUNNER_TEMP/office-native-bundle" "$RUNNER_TEMP/office-mobile-qualification"
+      - name: Preserve qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-mobile-qualification
+          path: |
+            ${{ runner.temp }}/office-native-bundle/bundle-repair.json
+            ${{ runner.temp }}/office-mobile-qualification/qualification.json
+            ${{ runner.temp }}/office-mobile-qualification/xcodebuild.log
+            ${{ runner.temp }}/office-mobile-qualification/Mobile.xcresult
+          if-no-files-found: warn
+      - name: Preserve unsigned qualification app
+        if: success()
+        run: |
+          ditto -c -k --keepParent "$RUNNER_TEMP/office-mobile-qualification/products/Release-iphoneos/Mobile.app" "$RUNNER_TEMP/OfficeMobileQualification.zip"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: office-mobile-unsigned-app
+          path: ${{ runner.temp }}/OfficeMobileQualification.zip
+          compression-level: 0

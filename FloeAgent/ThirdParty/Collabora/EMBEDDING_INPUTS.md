@@ -51,7 +51,7 @@ cleanup. The embedding target must link GameController and use the prepared
 controller; Floe needs its own bounded engine startup rather than replacing its
 app delegate with the upstream app delegate.
 
-Sixteen synthetic packaging/preparation tests pass. The overlay also applies to
+Twenty synthetic packaging/preparation/repair tests pass. The overlay also applies to
 the actual pinned source hashes, and its public keyboard helper passes an
 iphoneos arm64 Objective-C syntax check. This is not a full controller compile,
 engine link, keyboard test, or native document-editing acceptance.
@@ -136,10 +136,27 @@ The result includes the Xcode log, result bundle, executable hash and platform
 load commands. A successful result proves compilation/linking only: all Floe
 embedding and device-editing acceptance flags remain false.
 
-Four project-boundary tests pass, and the transformation was inspected against
+Five project-boundary/evidence tests pass, and the transformation was inspected against
 the actual pinned project. The complete native UI build still needs to execute.
 Dependency attempt `34286492116` generated the host tool and NSS objects but failed
 starting cppumaker because the script used `instdir_for_build/program`. Its actual
 macOS library delivery is `instdir_for_build/Contents/Frameworks`; the corrected
 workflow also preserves those dylibs. Logs and generated objects were retrieved.
 This failure did not invalidate or replace the already-qualified engine archives.
+
+Dependency run `34287476509` then successfully generated and packaged 46,525
+inputs and all 369 ordered linker entries (278 archive entries, 277 distinct
+archives, and 91 objects). Its SHA-locked artifact is retained. Native UI
+qualification stopped before compilation because two unused zstd CLI test links
+pointed to a script excluded by header-only packaging. The packager now omits
+such aliases. `repair_office_embedding_bundle.py` only accepts the exact locked
+archive and removes exactly those two recorded links in a fresh extraction;
+it verifies every other file, alias and linker entry and leaves the original
+archive intact. The actual repaired bundle passed verification: 46,523 entries,
+all 369 linker inputs. All 91 regenerated NSS objects were also inspected and
+are iOS objects with minimum OS 26.0. This is still not native UI compilation.
+
+The separate `office-mobile-qualification.yml` workflow downloads this preserved
+bundle and performs verification, source preparation and Mobile compile/link.
+It does not repeat the engine or dependency builds. Early input-verification
+failures now produce a failed qualification receipt as well as job logs.
