@@ -603,8 +603,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 self.postNotification(
                     identifier: "run.\(runID.uuidString)",
                     conversationID: conversationID,
-                    title: succeeded ? "任务已完成" : "任务失败",
-                    body: message ?? (succeeded ? "Floe Agent 已完成任务。" : "打开任务查看并恢复。")
+                    title: succeeded ? "本轮已结束" : "本轮运行失败",
+                    body: message ?? (succeeded ? "打开任务查看本轮结果与待办进度。" : "打开任务查看并恢复。")
                 )
             }
         }

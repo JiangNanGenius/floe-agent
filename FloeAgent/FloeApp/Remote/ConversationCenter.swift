@@ -431,14 +431,19 @@ final class ConversationCenter: ObservableObject {
 
     /// Reloads conversations, providers and models from the stores.
     func reload() async {
+        // Local model discovery can initialize a runtime. Publish persisted
+        // history first so that work is immediately navigable while it runs.
+        do {
+            conversations = try await environment.conversationStore.conversations()
+                .sorted { $0.updatedAt > $1.updatedAt }
+        } catch {
+            FloeLogger(category: .app).warning("conversationHistoryReloadFailed")
+        }
         await reconcileLocalModelConfiguration()
-        async let loadedConversations = environment.conversationStore.conversations()
         async let loadedProviders = environment.configurationStore.providers()
         async let loadedModels = environment.configurationStore.models()
         async let loadedPreferences = environment.configurationStore.preferences()
         do {
-            conversations = try await loadedConversations
-                .sorted { $0.updatedAt > $1.updatedAt }
             let allProviders = try await loadedProviders
             let allModels = try await loadedModels
             configuredProviders = allProviders
@@ -3891,7 +3896,7 @@ final class ConversationCenter: ObservableObject {
         case "waitingApproval": ("等待你的审批", 60)
         case "compacting": ("正在整理上下文", 72)
         case "verifying": ("正在复核答案", 88)
-        case "completed": ("已完成", 100)
+        case "completed": ("本轮已结束", 100)
         case "failed": ("运行失败", 100)
         case "recoveryFailed": ("恢复失败，可安全继续", 100)
         case "checkpointed": (snapshot.checkpointReason ?? "任务已暂停", 70)

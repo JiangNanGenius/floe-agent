@@ -95,6 +95,9 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
         XCTAssertTrue(checklist.waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["当前：更新图表与正文"].exists)
         XCTAssertTrue(app.staticTexts["已完成 1/4 项 · 已取消 1 项"].exists)
+        let roundState = app.staticTexts["thread.run_state.completed"]
+        XCTAssertTrue(roundState.waitForExistence(timeout: 10))
+        XCTAssertEqual(roundState.label, "本轮已结束")
         let folded = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         folded.name = "Durable checklist folded"
         folded.lifetime = .keepAlways

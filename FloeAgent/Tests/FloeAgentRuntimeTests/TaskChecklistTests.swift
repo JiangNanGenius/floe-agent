@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import Testing
 import FloePersistence
 import FloeTools
@@ -72,6 +73,34 @@ struct TaskChecklistTests {
         #expect(cancelled.isFinished)
         let next = try await store.update(.init(expectedRevision: 2, title: "Next", steps: [.init(id: "b", title: "B")], startNew: true), runID: run, operationID: "new")
         #expect(next.revision == 3 && next.steps.map(\.id) == ["b"])
+    }
+
+    @Test func liveSteeringCanReorderReopenAndExtendPlan() async throws {
+        let (db, task, run) = try await fixture()
+        let store = TaskChecklistStore(database: db)
+        _ = try await store.update(.init(expectedRevision: 0, title: "Original plan", steps: [
+            .init(id: "inspect", title: "Inspect", status: .completed, evidence: ["old-report.txt"]),
+            .init(id: "build", title: "Build", status: .inProgress),
+            .init(id: "publish", title: "Publish")
+        ]), runID: run, operationID: "initial")
+        // User changes the delivery scope; fresh evidence invalidates a prior
+        // result. The model revises the same plan while this run is active.
+        let revised = try await store.update(.init(expectedRevision: 1, title: "Revised plan", steps: [
+            .init(id: "reproduce", title: "Reproduce newly reported issue", status: .inProgress),
+            .init(id: "inspect", title: "Inspect the corrected input", status: .pending),
+            .init(id: "build", title: "Build after correction", status: .pending),
+            .init(id: "publish", title: "Publish", status: .cancelled)
+        ]), runID: run, operationID: "steering")
+        let restored = try await TaskChecklistStore(database: db).latest(conversationID: task)
+        #expect(restored == revised)
+        #expect(revised.steps.map(\.id) == ["reproduce", "inspect", "build", "publish"])
+        #expect(revised.currentStep?.id == "reproduce")
+        #expect(revised.completedCount == 0 && revised.cancelledCount == 1)
+        #expect(revised.revision == 2 && !revised.isFinished)
+        let revisions = try await db.reader { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM task_checklist_revisions WHERE conversation_id = ?", arguments: [task.uuidString])
+        }
+        #expect(revisions == 2)
     }
 
     @Test func concurrentWritersAndToolScope() async throws {

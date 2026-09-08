@@ -37,7 +37,7 @@ enum RunStateLocalizer {
         case "waitingUser": "等待你的输入"
         case "cancelled": "state.stopped"
         case "cancelling": "state.cancelling"
-        case "completed": "state.completed"
+        case "completed": "state.round_ended"
         case "recoveryFailed": "state.recovery_failed"
         case "failed": "state.failed"
         default: "state.unknown"
@@ -93,7 +93,7 @@ enum RunStateLocalizer {
     static func terminalTitle(stopReason: String) -> LocalizedStringKey {
         switch stopReason {
         case "endTurn", "completed", "stop":
-            "state.completed"
+            "state.round_ended"
         case "cancelled":
             "state.stopped"
         case "maxTokens", "length":
@@ -101,9 +101,9 @@ enum RunStateLocalizer {
         case "budgetLimited", "noProgress":
             "任务未完成，可继续"
         case "toolUse":
-            "state.completed"
+            "state.round_ended"
         default:
-            "state.completed"
+            "state.unknown"
         }
     }
 }

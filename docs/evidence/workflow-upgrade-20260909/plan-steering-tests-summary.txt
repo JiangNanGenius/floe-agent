@@ -1,0 +1,8 @@
+Command: swift test --filter TaskChecklistTests (cwd FloeAgent)
+✔ Test sharedProgressRejectsLateAndUnrelatedSnapshots() passed after 0.118 seconds.
+✔ Test liveSteeringCanReorderReopenAndExtendPlan() passed after 0.118 seconds.
+✔ Test concurrentWritersAndToolScope() passed after 0.121 seconds.
+✔ Test unfinishedStepsCannotDisappearAndCompletionNeedsEvidence() passed after 0.122 seconds.
+✔ Test replayConflictAndCrossRoundRecovery() passed after 0.123 seconds.
+✔ Suite "Durable task checklists" passed after 0.124 seconds.
+✔ Test run with 5 tests in 1 suite passed after 0.124 seconds.

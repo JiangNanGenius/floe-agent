@@ -9284,6 +9284,13 @@
         }
       }
     },
+    "state.round_ended": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Turn ended" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本轮已结束" } }
+      }
+    },
     "state.completed": {
       "extractionState": "manual",
       "localizations": {

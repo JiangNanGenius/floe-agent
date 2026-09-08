@@ -274,13 +274,14 @@ struct RootView: View {
             // Repair only rows left by a previous process before settings or
             // UI reloads can yield to a newly-created run.
             await environment.conversationCenter.reconcileInterruptedRunsOnLaunch()
-            // Refresh the complete settings snapshot (including probes) after
-            // the launch-critical values were restored during bootstrap.
-            await environment.settingsCenter.load()
+            // Publish local task history before optional provider probes.
+            // Launch-critical settings already came from bootstrap; network
+            // diagnostics must not leave an otherwise ready sidebar empty.
+            await environment.workspaceCenter.reload()
             router.reconcileOnLaunch(environment: environment)
             await environment.conversationCenter.reload()
+            await environment.settingsCenter.load()
             await environment.conversationCenter.resumeSafeRunsAfterForeground()
-            await environment.workspaceCenter.reload()
             await environment.backgroundRunCoordinator.reconcileSchedulesAfterLaunch()
             await presentOnboardingIfNeeded()
         }
@@ -600,6 +601,12 @@ struct RootView: View {
     /// Shared information architecture. NavigationSplitView projects this
     /// as a first column on iPad and a native drawer on iPhone.
     private var sidebarColumn: some View {
+        SidebarObservationHost(center: environment.conversationCenter, workspaces: environment.workspaceCenter) {
+            sidebarContent
+        }
+    }
+
+    private var sidebarContent: some View {
         VStack(spacing: 0) {
             List(selection: $router.sidebarSelection) {
                 Section {
@@ -692,8 +699,8 @@ struct RootView: View {
         }
         .navigationTitle("app.name")
         .task {
-            await environment.conversationCenter.reload()
             await environment.workspaceCenter.reload()
+            await environment.conversationCenter.reload()
         }
         .onChange(of: router.sidebarSelection) { _, selection in
             applySidebarSelection(selection)
@@ -1137,6 +1144,15 @@ private struct TaskRenameSheet: View {
         }
         .presentationDetents([.medium])
     }
+}
+
+/// Observe nested stores at the sidebar boundary, not the whole chat tree.
+/// Reading them through AppEnvironment alone does not subscribe to updates.
+private struct SidebarObservationHost<Content: View>: View {
+    @ObservedObject var center: ConversationCenter
+    @ObservedObject var workspaces: WorkspaceCenter
+    @ViewBuilder var content: () -> Content
+    var body: some View { content() }
 }
 
 #endif

@@ -1,0 +1,11 @@
+Command: swift test --package-path FloeAgent --filter DocumentWorkspaceTests
+✔ Test "Opening a non-file URL throws validationFailed" passed after 0.007 seconds.
+✔ Test "Close is idempotent and releases the working copy" passed after 0.036 seconds.
+✔ Test "Forged session paths cannot direct writeback or cleanup" passed after 0.038 seconds.
+✔ Test "Conflict-safe writeback leaves a recovery copy when the original vanished" passed after 0.042 seconds.
+✔ Test "External same-size changes survive save conflicts and normal close" passed after 0.045 seconds.
+✔ Test "Repeated saves advance the baseline and explicit discard preserves the original" passed after 0.073 seconds.
+✔ Test "Security-scoped bookmark round-trip resolves back to the original" passed after 0.074 seconds.
+✔ Test "Save replaces the original through a private working copy" passed after 0.074 seconds.
+✔ Suite "FloeDocuments.DocumentWorkspace" passed after 0.074 seconds.
+✔ Test run with 8 tests in 1 suite passed after 0.075 seconds.

@@ -35,3 +35,11 @@ iPhone 17 Pro / iOS 27 模拟器的长思考展开、更新、全屏与折叠交
 37 项待办/计划/Goal/提示词回归通过，见 [结果摘要](checklist-prompt-tests-summary.txt)。iPad 实际聊天读取持久待办并展开查看步骤/记录的 UI 测试通过（`/tmp/floe-checklist-ui-20260909.xcresult`）。已人工检查 [折叠](ipad-checklist-folded.png) 与 [展开](ipad-checklist-expanded.png) 截图。
 
 此合成任务故意保留未完成步骤；截图中运行栏仍写“已完成”，说明 R04 需要进一步区分本轮结束与整体任务完成。fixture 没有模型最终回复，因此出现相应提示，不代表一次真实模型执行。测试尚未覆盖实时多轮更新、真正 PiP 展示或模型调用效率。
+
+## 执行中修订、轮次状态与保存冲突
+
+- [5 项待办测试](plan-steering-tests-summary.txt)通过，包含同一运行中重排、追加、重新打开已完成项、取消及修订历史。真实用户引导到模型调用的链路仍待验收。
+- [8 项文件会话测试](document-session-tests-summary.txt)通过，包含同尺寸外部修改冲突、保留未保存内容、连续保存和明确放弃。这是文件生命周期验证，不是 Office 排版/编辑验收。
+- 更新轮次文案的前三次 UI 测试在侧栏任务出现前失败。数据库读回确认任务和清单已保存。提前本地工作区/聊天加载，并为侧栏直接订阅子数据源后，第四次相同测试通过（`/tmp/floe-checklist-round-state-4.xcresult`）；[折叠](ipad-round-ended-folded.png)、[展开](ipad-round-ended-expanded.png)已人工检查。顶部明确显示“本轮已结束”，不会把剩余待办暗示为全部完成。新截图替代上一节同一场景的旧文案；旧图保留作为对比证据。
+
+文件恢复副本现保留在 Application Support；重启恢复索引和完整编辑器的保存/恢复 UI 仍需接入。外部未遵循文件协调协议的并发写入尚需与模型文件锁统一验证。

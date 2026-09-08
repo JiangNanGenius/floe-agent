@@ -85,6 +85,56 @@ struct DocumentWorkspaceTests {
         await workspace.close(session)
     }
 
+    @Test("External same-size changes survive save conflicts and normal close")
+    func externalChangeCannotBeOverwritten() async throws {
+        let (root, workspace) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("conflict.xlsx")
+        try Data("base".utf8).write(to: original)
+        let session = try await workspace.open(securityScopedURL: original)
+        try Data("edit".utf8).write(to: session.workingURL)
+        try Data("peer".utf8).write(to: original)
+        await #expect(throws: (any Error).self) { try await workspace.save(session) }
+        #expect(try Data(contentsOf: original) == Data("peer".utf8))
+        #expect(try Data(contentsOf: session.recoveryURL) == Data("edit".utf8))
+        await workspace.close(session)
+        #expect(try Data(contentsOf: session.workingURL) == Data("edit".utf8))
+        await #expect(throws: (any Error).self) { try await workspace.save(session) }
+    }
+
+    @Test("Repeated saves advance the baseline and explicit discard preserves the original")
+    func repeatedSaveAndDiscard() async throws {
+        let (root, workspace) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("slides.pptx")
+        try Data("one".utf8).write(to: original)
+        let session = try await workspace.open(securityScopedURL: original)
+        for value in ["two", "three"] {
+            try Data(value.utf8).write(to: session.workingURL)
+            try await workspace.save(session)
+            #expect(try Data(contentsOf: original) == Data(value.utf8))
+            #expect(try Data(contentsOf: session.workingURL) == Data(value.utf8))
+        }
+        try Data("discard".utf8).write(to: session.workingURL)
+        await workspace.discardChangesAndClose(session)
+        #expect(try Data(contentsOf: original) == Data("three".utf8))
+        #expect(!FileManager.default.fileExists(atPath: session.workingURL.path))
+    }
+
+    @Test("Forged session paths cannot direct writeback or cleanup")
+    func forgedSessionIsRejected() async throws {
+        let (root, workspace) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("original.docx")
+        try Data("original".utf8).write(to: original)
+        let session = try await workspace.open(securityScopedURL: original)
+        let forged = DocumentSession(id: session.id, originalURL: original, workingURL: original, recoveryURL: root.appendingPathComponent("bad"))
+        await #expect(throws: (any Error).self) { try await workspace.save(forged) }
+        await workspace.discardChangesAndClose(forged)
+        #expect(try Data(contentsOf: original) == Data("original".utf8))
+        await workspace.close(session)
+    }
+
     @Test("Close is idempotent and releases the working copy")
     func closeIdempotent() async throws {
         let (root, workspace) = try makeWorkspace()
@@ -100,7 +150,8 @@ struct DocumentWorkspaceTests {
 
     @Test("Opening a non-file URL throws validationFailed")
     func openRejectsNonFileURL() async throws {
-        let (_, workspace) = try makeWorkspace()
+        let (root, workspace) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
         let bad = URL(string: "https://example.com/doc.docx")!
         await #expect(throws: FloeError.self) {
             _ = try await workspace.open(securityScopedURL: bad)
