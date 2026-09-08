@@ -1,6 +1,6 @@
 {
   "description": "Word, Excel and PowerPoint creation, existing text edits, and file conversion with explicit capability limits.",
-  "minimumAppVersion": "1.5.3",
+  "minimumAppVersion": "1.5.4",
   "name": "Office Documents",
   "releaseNotes": {
     "zh-Hans": "补充幻灯片工作流和编辑范围，明确版本校验。",
