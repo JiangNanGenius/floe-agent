@@ -1,4 +1,4 @@
-## Floe Agent 1.5.0 (Build 131 candidate)
+## Floe Agent 1.5.0 (Build 131)
 
 ### 简体中文
 
@@ -12,7 +12,11 @@
 - 侧边栏和任务列表增加失败、挂起、等待审批、无进展及预算暂停提示。压缩和续跑状态增加轻量过渡，并遵循“减少动态效果”。
 - 发布流程可复用同一提交已成功的可信 CI 回归证据，保留稳定 App Store SDK、实际二进制和签名上传检查。
 
-仅内部 TestFlight；发布尚未完成。版本、CI、上传回执、Apple VALID、Floe QA 可见性和实体 iPad 验收分别记录。保留已经真机确认的 VNC 与 PiP 实现。
+内部 TestFlight 已发布：2026-09-08 确认 Apple `VALID`，且仅 Floe QA 内部组可见，无公开链接或外部测试组。保留已经真机确认的 VNC 与 PiP 实现；本版本的实体 iPad 长任务、搜索、压缩、状态提示和导出体验仍待验收，不开放外部 Beta。
+
+- [CI 全部通过](https://github.com/JiangNanGenius/floe-agent/actions/runs/34160050948)；[签名上传成功](https://github.com/JiangNanGenius/floe-agent/actions/runs/34187111578)。
+- [Apple VALID 与内部组验证](https://github.com/JiangNanGenius/floe-agent/actions/runs/34193665453)：1.5.0 / 131，仅 1 个 Floe QA 内部组。
+- GitHub 附带的 IPA 是未签名审计产物，不能直接安装；请通过 TestFlight 安装。
 
 ### English
 
@@ -26,4 +30,8 @@
 - Sidebar and task-list indicators distinguish failure, interruption, approval waiting, no progress and budget pauses. Compaction and continuation use lightweight transitions respecting Reduce Motion.
 - Releases can reuse successful trusted CI evidence for the exact same commit, retaining stable App Store SDK, binary, signing and upload gates.
 
-Internal TestFlight only; delivery is not yet complete. CI, upload receipt, Apple VALID, internal Floe QA visibility and physical-device acceptance remain separate gates. Preserve the existing device-validated VNC and PiP implementations.
+Internal TestFlight delivery verified on 2026-09-08: Apple `VALID`, visible only to the internal Floe QA group, with no public link or external test group. Existing device-validated VNC and PiP implementations are preserved. Physical-iPad acceptance of this version's long runs, discovery, compaction, attention indicators and export UX remains open; external Beta is not enabled.
+
+- [All CI gates passed](https://github.com/JiangNanGenius/floe-agent/actions/runs/34160050948); [signed upload succeeded](https://github.com/JiangNanGenius/floe-agent/actions/runs/34187111578).
+- [Apple VALID and internal-group verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/34193665453): 1.5.0 / 131, exactly one internal Floe QA group.
+- The IPA attached to GitHub is an unsigned audit artifact and cannot be installed directly. Install through TestFlight.

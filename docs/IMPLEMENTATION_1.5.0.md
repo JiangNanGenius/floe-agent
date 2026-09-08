@@ -1,6 +1,6 @@
 # Floe 1.5.0 execution and context reliability
 
-Status: implementation and local verification in progress; no release or TestFlight delivery claimed.
+Status: implementation, CI, signed upload and internal TestFlight delivery verified on 2026-09-08. Physical-iPad acceptance remains open; external Beta is not enabled.
 
 ## Evidence and scope
 
@@ -19,7 +19,7 @@ Status: implementation and local verification in progress; no release or TestFli
 5. Count Goal model requests from structured attempt events. Exclude discovery from accomplishment evidence and reset repeated blockers after new evidence.
 6. Add JSONL export of persisted messages/parts, native events, usage/errors, per-run watermarks and a completion footer; redact secrets and disclose raw-output/artifact limitations.
 7. Add sidebar/list attention indicators and terminal-state precedence. Add compact/continuation transitions respecting Reduce Motion.
-8. Bump all targets to 1.5.0, provisional build 131. Remove redundant Debug build-only CI steps; reuse exact-SHA trusted CI in release with fallback tests, keeping stable-SDK and binary gates.
+8. Bump all targets to 1.5.0, build 131. Remove redundant Debug build-only CI steps; reuse exact-SHA trusted CI in release with fallback tests, keeping stable-SDK and binary gates.
 
 ## Reference implementations
 
@@ -36,14 +36,15 @@ Status: implementation and local verification in progress; no release or TestFli
 - [x] Initial arm64 iOS Simulator Debug build.
 - [x] Workflow YAML parse and whitespace diff check.
 - [x] SwiftPM main regression: 972 tests. JavaScript execution/deadline groups: 24 tests. Focused provider replay: 17 tests; recovery/discovery: 14 tests. iPad Simulator timeline/status regression: 20 tests.
-- [x] Tracked diff secret scan (redacted output), pinned dependency check (32 dependencies), workflow YAML and embedded shell syntax checks. Tag release preflight still runs before release.
-- [x] [Apple discovery](https://github.com/JiangNanGenius/floe-agent/actions/runs/34159236167) reports latest upload 1.4.99/130; candidate 1.5.0/131 is unused in that snapshot.
-- [ ] Commit/push; new exact-source CI green.
-- [ ] Tag and internal TestFlight upload; separately record receipt, Apple VALID and Floe QA visibility.
+- [x] Tracked diff secret scan (redacted output), pinned dependency check (32 dependencies), workflow YAML and embedded shell syntax checks. Tag release preflight passed for `v1.5.0`.
+- [x] [Pre-release Apple discovery](https://github.com/JiangNanGenius/floe-agent/actions/runs/34187081652) confirmed build 131 was unused before upload.
+- [x] Commit/push; [exact-source CI green](https://github.com/JiangNanGenius/floe-agent/actions/runs/34160050948) for `a55fa2bc2572a9ec7917d6a8c2e004acc057a7cd`: all three required jobs passed, including actual app regression tests, secret scan, SBOM and license gates.
+- [x] Immutable `v1.5.0` tag points to that exact source. [Release 34187111578](https://github.com/JiangNanGenius/floe-agent/actions/runs/34187111578) passed build verification, accepted-App-Store-SDK regression tests, signing/upload and GitHub asset publication. Transport receipt: `cea230e5-fdae-4222-91c1-8b607b5a60f9`, accepted at 2026-09-08 05:55:50 UTC.
+- [x] [Post-upload Apple discovery](https://github.com/JiangNanGenius/floe-agent/actions/runs/34193590371) reports 1.5.0 / 131 `VALID`. [Group verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/34193665453) passed at 2026-09-08 06:12:35 UTC: build ID `cea230e5-fdae-4222-91c1-8b607b5a60f9`, exactly one internal Floe QA group (`c09d3f5c-f5b3-485f-9ddb-98c61fa80ad1`), zero unexpected groups, public link not enabled.
 - [ ] Physical iPad long-run discovery, compaction, sidebar attention and export UX; no external Beta before acceptance.
 
 ## Explicit limitations
 
 - Compaction currently uses Floe's deterministic summarizer. Do not claim an LLM-generated summary or an embeddings-based search engine.
 - Export is complete for persisted records through each recorded watermark, not a reconstruction of raw output that older versions never stored. Referenced artifact bytes are not embedded.
-- Build 131 is provisional until live App Store Connect discovery confirms availability. Local compile/tests are not TestFlight delivery or device acceptance.
+- Build 131 is verified for internal TestFlight. This verifies server-side distribution, not a successful installation or acceptance on the user's physical iPad. The GitHub IPA is unsigned and not directly installable. Release evidence updates do not move the immutable source tag.
