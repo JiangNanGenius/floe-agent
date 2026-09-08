@@ -1,0 +1,15 @@
+{
+  "patchSHA256": "7f034b606318e26672c1fcb6fc84092899a434c82b205420bafb8143d727c8af",
+  "checksPassed": [
+    "missing editor resources do not allocate a socket or mark the document open",
+    "retry creates a new persistent generation and retains the failed-open copy",
+    "repeated load of an open document does not recopy or allocate another socket",
+    "a second editor generation cannot replace the first generation",
+    "failed source copy leaves previous files intact and allocates no socket",
+    "non-file engine directories are rejected before opening",
+    "failed socket allocation retains its persistent copy and permits a later retry"
+  ],
+  "kind": "locked copy-opening fragment with real files and controlled resources/sockets",
+  "fullNativeDocumentOpened": false,
+  "deviceRoundtripPassed": false
+}

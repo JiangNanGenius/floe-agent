@@ -54,7 +54,7 @@ def check(root):
 
 
 def check_source(source_root):
-    """Prepare only the five pinned source files, not a complete engine bundle."""
+    """Prepare all locked overlay files, not a complete engine bundle."""
     lock = json.loads((BASE / "engine.lock.json").read_text())
     overlay = lock["embeddingOverlay"]
     patch = BASE / overlay["patch"]

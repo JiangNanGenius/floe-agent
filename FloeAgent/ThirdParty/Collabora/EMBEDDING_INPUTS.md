@@ -80,6 +80,15 @@ native compile/link and a Swift module import; neither establishes UI/device
 editing acceptance. All patched top-level source trees (including wsd) get owned
 copies, and writes beneath directory aliases are rejected.
 
+The copy-opening fragment is also compiled separately against real temporary
+files and controlled resources/sockets: seven checks cover missing resources,
+retry generations, repeated loads, independent opens, failed source copies,
+non-file directories, and failed socket allocation. This supplements the eight
+save/close fragment checks, but does not substitute for a real UIDocument open
+or frontend rendering. `DocumentWorkspace.close` retains the session whenever
+native generations, recovery data, or unknown sidecars exist, even when the
+working file's digest is unchanged; only explicit discard removes those files.
+
 Twenty-two synthetic packaging/preparation/repair tests pass. The overlay also applies to
 the actual pinned source hashes, and its public keyboard helper passes an
 iphoneos arm64 Objective-C syntax check. This is not a full controller compile,

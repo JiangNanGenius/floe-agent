@@ -25,6 +25,39 @@ private final class RecoveryCopyFaultFileManager: FileManager, @unchecked Sendab
 @Suite("FloeDocuments.DocumentWorkspace")
 struct DocumentWorkspaceTests {
 
+    @Test("Normal close preserves unsettled engine generations even when the working file is unchanged")
+    func engineGenerationSurvivesCleanWorkingClose() async throws {
+        let (root, workspace) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("native.docx")
+        try Data("original".utf8).write(to: original)
+        let session = try await workspace.open(securityScopedURL: original)
+        let generation = session.engineCopyDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: generation, withIntermediateDirectories: true)
+        let nativeCopy = generation.appendingPathComponent("working.docx")
+        try Data("new engine edits".utf8).write(to: nativeCopy)
+        await workspace.close(session)
+        await workspace.close(session)
+        #expect(try Data(contentsOf: nativeCopy) == Data("new engine edits".utf8))
+        #expect(try Data(contentsOf: session.workingURL) == Data("original".utf8))
+        #expect(try Data(contentsOf: original) == Data("original".utf8))
+    }
+
+    @Test("Only explicit discard may remove a native generation before it reaches the working file")
+    func explicitDiscardRemovesNativeGeneration() async throws {
+        let (root, workspace) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("native.pptx")
+        try Data("original".utf8).write(to: original)
+        let session = try await workspace.open(securityScopedURL: original)
+        try FileManager.default.createDirectory(at: session.engineCopyDirectory, withIntermediateDirectories: true)
+        let nativeCopy = session.engineCopyDirectory.appendingPathComponent("working.pptx")
+        try Data("discarded edit".utf8).write(to: nativeCopy)
+        await workspace.discardChangesAndClose(session)
+        #expect(!FileManager.default.fileExists(atPath: nativeCopy.path))
+        #expect(try Data(contentsOf: original) == Data("original".utf8))
+    }
+
     @Test("Failed or inconsistent recovery refresh preserves the previous recovery bytes",
           arguments: [RecoveryCopyFaultFileManager.Fault.copyFailure, .changedCopy])
     fileprivate func recoveryRefreshFailure(_ fault: RecoveryCopyFaultFileManager.Fault) async throws {

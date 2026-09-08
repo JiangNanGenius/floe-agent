@@ -8,6 +8,12 @@ public struct DocumentSession: Sendable, Identifiable, Hashable {
     public let workingURL: URL
     public let recoveryURL: URL
 
+    /// Native editor generations live here until the host settles or explicitly
+    /// discards them. A clean working file alone cannot prove these are saved.
+    public var engineCopyDirectory: URL {
+        workingURL.deletingLastPathComponent().appendingPathComponent("engine", isDirectory: true)
+    }
+
     public init(id: UUID, originalURL: URL, workingURL: URL, recoveryURL: URL) {
         self.id = id
         self.originalURL = originalURL
@@ -105,12 +111,18 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     }
 
     /// A normal close never discards edits. Dirty or unreadable copies remain
-    /// in Application Support for recovery; explicit discard is separate.
+    /// in Application Support for recovery; explicit discard is separate. Native
+    /// generations may be newer than workingURL when engine persistence failed.
     public func close(_ session: DocumentSession) async {
         guard sessions[session.id] == session else { return }
         let clean = (try? Self.digest(session.workingURL)).map { $0 == savedDigests[session.id] } ?? false
+        let directory = session.workingURL.deletingLastPathComponent()
+        let entries = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        // Conservatively retain native generations, recovery files, and unknown
+        // sidecars. The editor must settle them before ordinary cleanup is safe.
+        let onlyWorkingCopy = entries.map { $0.allSatisfy { $0.lastPathComponent == session.workingURL.lastPathComponent } } ?? false
         release(session)
-        if clean { try? fileManager.removeItem(at: session.workingURL.deletingLastPathComponent()) }
+        if clean && onlyWorkingCopy { try? fileManager.removeItem(at: directory) }
     }
 
     public func discardChangesAndClose(_ session: DocumentSession) async {
