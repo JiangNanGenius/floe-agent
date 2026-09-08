@@ -2,7 +2,7 @@
 
 [Website](https://www.floe-agent.com/) · [Product README](../README.md) · [中文 README](../README.zh-CN.md) · [Architecture](../docs/ARCHITECTURE_OVERVIEW.md) · [User guide](../docs/USER_GUIDE.md) · [中文使用指南](../docs/USER_GUIDE.zh-CN.md)
 
-This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for the Floe Agent 1.4.56 source target (build 87). The minimum deployment target is iOS/iPadOS 26.0 and the current database schema is v30.
+This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for the Floe Agent 1.5.0 source target (build 131). The minimum deployment target is iOS/iPadOS 26.0 and the current database schema is v36.
 
 ## Build prerequisites
 
@@ -57,7 +57,7 @@ CI regenerates the project and fails if the committed project differs.
 | `FloeLocalModels` | Apple Foundation Models availability/runtime, curated MLX downloads, resource policy, dynamic local context, and bounded local tool-call translation. |
 | `FloeAgentRuntime` | Continuous run state machine, context assembly, Plan/Goal/Memory, harness, checkpoints, and tool loop. |
 | `FloeTools`, `FloeSecurity` | Compile-time tool catalog, scoped execution, approvals, audit chain, Keychain, and catastrophic-action gate. |
-| `FloePersistence` | GRDB stores, atomic run launch, credential metadata, archive state, and append-only migrations through v14. |
+| `FloePersistence` | GRDB stores, atomic run launch, credential metadata, archive state, and append-only migrations through v36, including durable private-workspace cleanup intents. |
 | `FloeWorkspace`, `FloeDocuments`, `FloeImages` | File scopes, change evidence, document working copies, and image operations. |
 | `FloeGit` | Non-destructive libgit2 repository operations, GitHub API/Keychain integration, and model-facing local/cloud source-control tools. |
 | `FloeSSH`, `FloeExecution`, `FloeVNC` | SSH/jump/PTY/forwarding, remote execution, and Metal-backed VNC. |
@@ -98,3 +98,9 @@ The release workflow builds an unsigned device IPA and signs the exact verified 
 - Keep public product architecture in [`docs/ARCHITECTURE_OVERVIEW.md`](../docs/ARCHITECTURE_OVERVIEW.md).
 - Keep internal plans, audits, validation evidence, App Review research and release handoffs outside the public repository.
 - Never copy credentials, personal paths, hostnames, device identifiers, or unredacted diagnostics into fixtures or documentation.
+
+## Workflow-upgrade verification
+
+The [current upgrade record](../docs/WORKFLOW_UPGRADE.md) distinguishes implemented behavior from pending engine/device verification. Focused app suites cover canvas contracts, workspace cleanup, plugin lifecycle and PDF refresh. `HomeChatVoiceIPhoneUITests.testCanvasCreationRemainsVisibleInPortraitAndLandscape` drives real compact navigation and both creation menus, retaining screenshot attachments. iPad navigation tests retain plugin, selection and workspace-manager screenshots.
+
+Run `scripts/qualify_office_engine.sh --check` for the isolated pinned Collabora prerequisite check; the separate cloud workflow can perform the native build. Qualification does not enable advanced editing or certify app embedding, licensing, or file fidelity. Heavy engine builds belong on an adequately provisioned build host.

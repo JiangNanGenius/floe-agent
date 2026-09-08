@@ -118,35 +118,7 @@ struct CreativeModeHubView: View {
     }
 
     var body: some View {
-        Group {
-            if imageGenerationReady {
-                canvasList
-            } else {
-                ContentUnavailableView {
-                    Label("需要生图模型", systemImage: "photo.badge.plus")
-                } description: {
-                    Text(hasImageGenerationModel
-                         ? "请选择创意模式默认使用的生图模型。视频模型是可选的 Extra，工作区也可以稍后再添加。"
-                         : "创意模式至少需要一个已启用的图片生成模型。视频模型是可选的 Extra，工作区也可以稍后再添加。")
-                } actions: {
-                    if hasImageGenerationModel {
-                        NavigationLink {
-                            AuxiliaryModelsView(center: environment.conversationCenter)
-                        } label: {
-                            Text("选择生图模型")
-                        }
-                        .buttonStyle(.borderedProminent)
-                    } else {
-                        NavigationLink {
-                            ProviderListView(center: environment.conversationCenter)
-                        } label: {
-                            Text("添加生图服务商")
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                }
-            }
-        }
+        canvasList
         .navigationTitle("创意模式")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
@@ -256,6 +228,7 @@ struct CreativeModeHubView: View {
                 }
                 .buttonStyle(.plain)
                 .frame(minHeight: FloeTheme.minimumTarget)
+                .accessibilityIdentifier("canvas.home.create")
                 Button {
                     showsMaterialLibrary = true
                 } label: {
@@ -269,6 +242,22 @@ struct CreativeModeHubView: View {
                 Text("快速开始")
             } footer: {
                 Text("私人画布独立保存；素材可稍后移动到工作区或导出。")
+            }
+
+            if !imageGenerationReady {
+                Section {
+                    if hasImageGenerationModel {
+                        NavigationLink("设置图片生成") {
+                            AuxiliaryModelsView(center: environment.conversationCenter)
+                        }
+                    } else {
+                        NavigationLink("添加生图模型") {
+                            ProviderListView(center: environment.conversationCenter)
+                        }
+                    }
+                } footer: {
+                    Text("配置模型后即可在画布中生成图片。")
+                }
             }
 
             let privateCanvases = WorkspaceCanvasRegistry.summaries().filter { $0.workspaceID == nil }
@@ -620,6 +609,7 @@ private struct CanvasNodeCreationMenu: View {
             Section(section.title) {
                 ForEach(CanvasNodeCreationKind.allCases.filter { $0.section == section }) { kind in
                     Button(kind.title, systemImage: kind.icon) { onCreate(kind) }
+                        .accessibilityIdentifier("canvas.node.create.\(kind.rawValue)")
                 }
             }
         }
@@ -1192,6 +1182,8 @@ private final class CanvasDocumentStore: ObservableObject {
     private var undoStack: [FloeCanvasProject] = []
     private var redoStack: [FloeCanvasProject] = []
     private var interactiveMutationRecorded = false
+    private var lastExternalModificationDate: Date?
+    private var lastExternalFileSize: Int?
 
     enum ExportFormat { case package, png, pdf }
 
@@ -1373,15 +1365,22 @@ private final class CanvasDocumentStore: ObservableObject {
         persist()
     }
 
-    func reloadExternalChange() {
+    func reloadExternalChange(force: Bool = true) {
         // A drag or pen stroke owns an in-memory draft until its commit.
         // Reconciliation must not replace that draft halfway through a gesture.
         guard !interactiveMutationRecorded else { return }
         do {
+            var observedURL = fileURL
+            observedURL.removeAllCachedResourceValues()
+            let metadata = try observedURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            if !force, metadata.contentModificationDate == lastExternalModificationDate,
+               metadata.fileSize == lastExternalFileSize { return }
             let incoming = try CanvasProjectFileWriter.shared.project(
                 canvasID: project.id,
                 at: fileURL
             )
+            lastExternalModificationDate = metadata.contentModificationDate
+            lastExternalFileSize = metadata.fileSize
             guard incoming.id == project.id, incoming.revision > project.revision else { return }
             recordHistory()
             project = incoming
@@ -2964,6 +2963,8 @@ struct WorkspaceCanvasView: View {
     @State private var nodeDragOrigins: [UUID: CGPoint] = [:]
     @State private var activeStrokeID: UUID?
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
+    @State private var canvasViewportSize = CGSize.zero
     @State private var showsPencilPalette = false
     @State private var closedShapeSuggestion: CGRect?
     @State private var showsAgent = false
@@ -3057,7 +3058,7 @@ struct WorkspaceCanvasView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
+        NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
             documentSidebar
                 .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 300)
         } detail: {
@@ -3102,7 +3103,7 @@ struct WorkspaceCanvasView: View {
                     } else {
                         selectedNodeIDs = [store.addAsset(
                             asset, kind: kind,
-                            at: artifactImportPoint ?? canvasPoint(CGPoint(x: 520, y: 380))
+                            at: artifactImportPoint ?? canvasPoint(visibleCanvasCenter)
                         )]
                     }
                     showsMaterials = false
@@ -3116,7 +3117,7 @@ struct WorkspaceCanvasView: View {
             NavigationStack {
                 CanvasPromptLibraryView { record in
                     selectedNodeIDs = [store.addNote(
-                        at: canvasPoint(CGPoint(x: 520, y: 380)),
+                        at: canvasPoint(visibleCanvasCenter),
                         text: record.prompt
                     )]
                     showsPromptLibrary = false
@@ -3233,7 +3234,7 @@ struct WorkspaceCanvasView: View {
             while !Task.isCancelled {
                 // Notifications are the fast path; disk revision reconciliation
                 // recovers a missed callback without requiring a canvas switch.
-                store.reloadExternalChange()
+                store.reloadExternalChange(force: false)
                 let canvasID = store.project.id
                 if let jobs = try? await MediaGenerationJobStore(database: environment.database)
                     .jobs(canvasID: canvasID) {
@@ -3312,7 +3313,10 @@ struct WorkspaceCanvasView: View {
         .navigationTitle("画布")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { store.addDocument() } label: {
+                Button {
+                    store.addDocument()
+                    preferredCompactColumn = .detail
+                } label: {
                     Label("新建画布", systemImage: "plus")
                 }
                 .disabled(isDeletingCanvas)
@@ -3324,6 +3328,7 @@ struct WorkspaceCanvasView: View {
         HStack(spacing: 4) {
             Button {
                 store.select(document.id)
+                preferredCompactColumn = .detail
             } label: {
                 HStack {
                     Image(systemName: document.id == store.project.selectedDocumentID
@@ -3487,9 +3492,10 @@ struct WorkspaceCanvasView: View {
                         cancelConnectionCreation()
                     }
                     .frame(width: min(340, geometry.size.width - 28))
+                    .frame(maxHeight: max(0, geometry.size.height - 24))
                     .position(
-                        x: min(max(180, draft.screenPoint.x), geometry.size.width - 180),
-                        y: min(max(190, draft.screenPoint.y), geometry.size.height - 190)
+                        x: clampedPaletteCoordinate(draft.screenPoint.x, extent: geometry.size.width, halfSize: min(340, geometry.size.width - 28) / 2 + 14),
+                        y: clampedPaletteCoordinate(draft.screenPoint.y, extent: geometry.size.height, halfSize: 190)
                     )
                     .transition(.scale(scale: 0.92).combined(with: .opacity))
                     .zIndex(48)
@@ -3502,9 +3508,10 @@ struct WorkspaceCanvasView: View {
                         withAnimation(.snappy) { self.nodeCreationPoint = nil }
                     }
                     .frame(width: min(360, geometry.size.width - 28))
+                    .frame(maxHeight: max(0, geometry.size.height - 24))
                     .position(
-                        x: min(max(190, nodeCreationPoint.x), geometry.size.width - 190),
-                        y: min(max(170, nodeCreationPoint.y), geometry.size.height - 170)
+                        x: clampedPaletteCoordinate(nodeCreationPoint.x, extent: geometry.size.width, halfSize: min(360, geometry.size.width - 28) / 2 + 14),
+                        y: clampedPaletteCoordinate(nodeCreationPoint.y, extent: geometry.size.height, halfSize: 170)
                     )
                     .transition(.scale(scale: 0.92).combined(with: .opacity))
                     .zIndex(40)
@@ -3523,11 +3530,11 @@ struct WorkspaceCanvasView: View {
                     let agentPanelWidth = isAgentCollapsed
                         ? min(232, geometry.size.width - 16)
                         : (compactAgentPanel
-                            ? max(280, geometry.size.width - 16)
+                            ? max(0, geometry.size.width - 24)
                             : min(392, max(320, geometry.size.width - 24)))
                     let agentPanelHeight = isAgentCollapsed
                         ? 56
-                        : min(compactAgentPanel ? 520 : 640, max(300, geometry.size.height - 24))
+                        : min(compactAgentPanel ? 520 : 640, max(0, geometry.size.height - 24))
                     CanvasAgentFloatingPanel(
                         store: store,
                         workspace: workspace,
@@ -3614,9 +3621,21 @@ struct WorkspaceCanvasView: View {
                 .allowsHitTesting(false)
             }
             .clipped()
-            .overlay(alignment: .bottomTrailing) { zoomControls }
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                if canvasViewportSize.width > 0, canvasViewportSize.height > 0 {
+                    pan.width += (size.width - canvasViewportSize.width) / 2
+                    pan.height += (size.height - canvasViewportSize.height) / 2
+                    panStart = pan
+                }
+                canvasViewportSize = size
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if editingNodeID == nil || !compactCanvas(size: geometry.size) {
+                    zoomControls.padding(.bottom, compactCanvas(size: geometry.size) ? 130 : 0)
+                }
+            }
             .overlay(alignment: .bottomLeading) {
-                if showsMiniMap, let document = store.selectedDocument {
+                if showsMiniMap, !compactCanvas(size: geometry.size), let document = store.selectedDocument {
                     CanvasMiniMap(
                         document: document,
                         viewportCenter: CanvasPoint(
@@ -3639,191 +3658,227 @@ struct WorkspaceCanvasView: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                VStack(spacing: 6) {
-                    selectionToolbar
-                    modeControls(size: geometry.size)
+                if editingNodeID == nil || !compactCanvas(size: geometry.size) {
+                    VStack(spacing: 6) {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            selectionToolbar.frame(minWidth: max(0, geometry.size.width - 24))
+                        }
+                        .fixedSize(horizontal: false, vertical: true)
+                        modeControls(size: geometry.size)
+                    }
                 }
             }
             .navigationTitle(store.selectedDocument?.name ?? "画布")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    HStack {
-                        BackgroundPiPToolbarButton(
-                            videoService: environment.backgroundVideoService,
-                            isRunActive: environment.backgroundVideoService.shouldOfferManualControl
-                        )
-                        Menu {
-                            CanvasNodeCreationMenu { kind in
-                                createNode(kind, at: canvasPoint(CGPoint(x: 520, y: 380)))
+                    if compactCanvas(size: geometry.size) {
+                        HStack {
+                            if editingNodeID != nil {
+                                Button("完成编辑", systemImage: "checkmark") { editingNodeID = nil }
+                                    .accessibilityIdentifier("canvas.node.finishEditing")
                             }
-                        } label: {
-                            Label(String(localized: "canvas.node.create"), systemImage: "plus")
+                            Menu {
+                                canvasToolbarActions
+                            } label: {
+                                Label("画布操作", systemImage: "ellipsis.circle")
+                            }
+                            .accessibilityIdentifier("canvas.actions")
                         }
-                        .accessibilityIdentifier("canvas.node.create")
-                        Button("撤销", systemImage: "arrow.uturn.backward") { store.undo() }
-                            .disabled(!store.canUndo)
-                        Button("重做", systemImage: "arrow.uturn.forward") { store.redo() }
-                            .disabled(!store.canRedo)
-                        Button {
-                            withAnimation(.snappy) {
-                                showsAgent = true
-                                isAgentCollapsed = false
-                            }
-                        } label: {
-                            Label("画布助手", systemImage: "sparkles")
-                        }
-                        Button {
-                            materialTargetNodeID = nil
-                            materialKindFilter = nil
-                            showsMaterials = true
-                        } label: {
-                            Label("素材库", systemImage: "photo.on.rectangle.angled")
-                        }
-                        Button {
-                            showsPromptLibrary = true
-                        } label: {
-                            Label("提示词库", systemImage: "books.vertical")
-                        }
-                        Button {
-                            generationSourceNodeIDs = selectedNodeIDs
-                            generationRequestedSourceNodeIDs = selectedNodeIDs
-                            generationResultPoint = canvasPoint(CGPoint(x: 520, y: 380))
-                            showsGeneration = true
-                        } label: {
-                            Label("生成", systemImage: "wand.and.stars")
-                        }
-                        Button {
-                            showsMediaJobs = true
-                        } label: {
-                            Label("媒体任务", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
-                        }
-                        .badge(canvasJobs.filter { !$0.state.isTerminal }.count)
-                        Button {
-                            let existing = store.selectedDocument?.nodes.first(where: {
-                                selectedNodeIDs.contains($0.id) && $0.kind == .scene3D
-                            })?.id
-                            let nodeID = existing ?? store.addScene3D(
-                                at: canvasPoint(CGPoint(x: 520, y: 380))
-                            )
-                            selectedNodeIDs = [nodeID]
-                            directorPresentation = Canvas3DDirectorPresentation(nodeID: nodeID)
-                        } label: {
-                            Label("3D 导演台", systemImage: "cube.transparent")
-                        }
-                        Menu {
-                            Toggle("同步此画布", isOn: Binding(
-                                get: { store.project.sync.isEnabled },
-                                set: { store.setSyncEnabled($0) }
-                            ))
-                            Menu("画布背景") {
-                                ForEach(CanvasBackgroundStyle.allCases, id: \.self) { style in
-                                    Button {
-                                        store.setBackgroundStyle(style)
-                                    } label: {
-                                        if store.selectedDocument?.backgroundStyle == style {
-                                            Label(backgroundTitle(style), systemImage: "checkmark")
-                                        } else {
-                                            Text(backgroundTitle(style))
-                                        }
-                                    }
-                                }
-                            }
-                            Menu("外观") {
-                                ForEach(["system", "light", "dark"], id: \.self) { value in
-                                    Button {
-                                        canvasAppearance = value
-                                    } label: {
-                                        let title = value == "system" ? "跟随系统"
-                                            : value == "light" ? "浅色" : "深色"
-                                        if canvasAppearance == value {
-                                            Label(title, systemImage: "checkmark")
-                                        } else {
-                                            Text(title)
-                                        }
-                                    }
-                                }
-                            }
-                            Toggle("显示缩略导航", isOn: $showsMiniMap)
-                            Button("canvas.onboarding.replay", systemImage: "questionmark.circle") {
-                                showsCanvasOnboarding = true
-                            }
-                            Button(
-                                selectedNodeIDs.count > 1 ? "自动整理所选节点" : "自动整理关系图",
-                                systemImage: "rectangle.3.group"
-                            ) {
-                                store.autoArrange(selectedNodeIDs)
-                            }
-                            .disabled((store.selectedDocument?.nodes.count ?? 0) < 2)
-                            if !selectedNodeIDs.isEmpty {
-                                Button("属性") { showsInspector = true }
-                                if selectedNodeIDs.count == 1,
-                                   let selected = store.selectedDocument?.nodes.first(where: {
-                                       selectedNodeIDs.contains($0.id)
-                                           && $0.kind == .image && $0.asset != nil
-                                   }) {
-                                    Button("裁剪与变换", systemImage: "crop.rotate") {
-                                        imageEditorPresentation = CanvasImageEditorPresentation(
-                                            id: selected.id
-                                        )
-                                    }
-                                }
-                                Button("复制到剪贴板", action: copySelection)
-                                Button("复制副本") { selectedNodeIDs = store.duplicateNodes(selectedNodeIDs) }
-                                if selectedNodeIDs.count > 1 {
-                                    Button("分组") { store.group(selectedNodeIDs) }
-                                }
-                                if canUngroupSelection {
-                                    Button("取消分组") { store.ungroup(selectedNodeIDs) }
-                                }
-                                Button("锁定") { store.setLocked(selectedNodeIDs, locked: true) }
-                                Button("解锁") { store.setLocked(selectedNodeIDs, locked: false) }
-                                if selectedNodeIDs.count > 1 {
-                                    Menu("对齐") {
-                                        Button("左对齐") { store.align(selectedNodeIDs, to: .leading) }
-                                        Button("水平居中") { store.align(selectedNodeIDs, to: .horizontalCenter) }
-                                        Button("右对齐") { store.align(selectedNodeIDs, to: .trailing) }
-                                        Button("顶部对齐") { store.align(selectedNodeIDs, to: .top) }
-                                        Button("垂直居中") { store.align(selectedNodeIDs, to: .verticalCenter) }
-                                        Button("底部对齐") { store.align(selectedNodeIDs, to: .bottom) }
-                                    }
-                                }
-                                if selectedNodeIDs.count > 2 {
-                                    Menu("分布") {
-                                        Button("水平等距") { store.distribute(selectedNodeIDs, horizontally: true) }
-                                        Button("垂直等距") { store.distribute(selectedNodeIDs, horizontally: false) }
-                                    }
-                                }
-                                Menu("层级") {
-                                    Button("移到最前") { store.changeLayer(selectedNodeIDs, bringToFront: true) }
-                                    Button("移到最后") { store.changeLayer(selectedNodeIDs, bringToFront: false) }
-                                }
-                                Button("删除所选节点", role: .destructive, action: deleteSelection)
-                            }
-                            if !selectedStrokeIDs.isEmpty {
-                                Button("整理所选笔迹", systemImage: "wand.and.rays", action: interpretSelectedInk)
-                                Button("删除所选笔迹", role: .destructive) {
-                                    store.removeStrokes(selectedStrokeIDs)
-                                    selectedStrokeIDs.removeAll()
-                                }
-                            }
-                            Menu("导出") {
-                                Button("可编辑 Floe 画布包") { prepareExport(.package) }
-                                Button("PNG 图片") { prepareExport(.png) }
-                                Button("PDF") { prepareExport(.pdf) }
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                        }
-                        Button("完成") { dismiss() }
+                    } else {
+                        HStack { canvasToolbarActions }
                     }
                 }
             }
         }
     }
 
+    private func compactCanvas(size: CGSize) -> Bool {
+        UIDevice.current.userInterfaceIdiom == .phone || size.width < 620
+    }
+
+    private func clampedPaletteCoordinate(_ value: CGFloat, extent: CGFloat, halfSize: CGFloat) -> CGFloat {
+        let inset = min(halfSize, extent / 2)
+        return min(max(inset, value), extent - inset)
+    }
+
+    private var visibleCanvasCenter: CGPoint {
+        CGPoint(x: canvasViewportSize.width / 2, y: canvasViewportSize.height / 2)
+    }
+
+    @ViewBuilder
+    private var canvasToolbarActions: some View {
+        BackgroundPiPToolbarButton(
+            videoService: environment.backgroundVideoService,
+            isRunActive: environment.backgroundVideoService.shouldOfferManualControl
+        )
+        Menu {
+            CanvasNodeCreationMenu { kind in
+                createNode(kind, at: canvasPoint(visibleCanvasCenter))
+            }
+        } label: {
+            Label(String(localized: "canvas.node.create"), systemImage: "plus")
+        }
+        .accessibilityIdentifier("canvas.node.create")
+        Button("撤销", systemImage: "arrow.uturn.backward") { store.undo() }
+            .disabled(!store.canUndo)
+        Button("重做", systemImage: "arrow.uturn.forward") { store.redo() }
+            .disabled(!store.canRedo)
+        Button {
+            withAnimation(.snappy) {
+                showsAgent = true
+                isAgentCollapsed = false
+            }
+        } label: {
+            Label("画布助手", systemImage: "sparkles")
+        }
+        Button {
+            materialTargetNodeID = nil
+            materialKindFilter = nil
+            showsMaterials = true
+        } label: {
+            Label("素材库", systemImage: "photo.on.rectangle.angled")
+        }
+        Button {
+            showsPromptLibrary = true
+        } label: {
+            Label("提示词库", systemImage: "books.vertical")
+        }
+        Button {
+            generationSourceNodeIDs = selectedNodeIDs
+            generationRequestedSourceNodeIDs = selectedNodeIDs
+            generationResultPoint = canvasPoint(visibleCanvasCenter)
+            showsGeneration = true
+        } label: {
+            Label("生成", systemImage: "wand.and.stars")
+        }
+        Button {
+            showsMediaJobs = true
+        } label: {
+            Label("媒体任务", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
+        }
+        .badge(canvasJobs.filter { !$0.state.isTerminal }.count)
+        Button {
+            let existing = store.selectedDocument?.nodes.first(where: {
+                selectedNodeIDs.contains($0.id) && $0.kind == .scene3D
+            })?.id
+            let nodeID = existing ?? store.addScene3D(
+                at: canvasPoint(visibleCanvasCenter)
+            )
+            selectedNodeIDs = [nodeID]
+            directorPresentation = Canvas3DDirectorPresentation(nodeID: nodeID)
+        } label: {
+            Label("3D 导演台", systemImage: "cube.transparent")
+        }
+        Menu {
+            Toggle("同步此画布", isOn: Binding(
+                get: { store.project.sync.isEnabled },
+                set: { store.setSyncEnabled($0) }
+            ))
+            Menu("画布背景") {
+                ForEach(CanvasBackgroundStyle.allCases, id: \.self) { style in
+                    Button {
+                        store.setBackgroundStyle(style)
+                    } label: {
+                        if store.selectedDocument?.backgroundStyle == style {
+                            Label(backgroundTitle(style), systemImage: "checkmark")
+                        } else {
+                            Text(backgroundTitle(style))
+                        }
+                    }
+                }
+            }
+            Menu("外观") {
+                ForEach(["system", "light", "dark"], id: \.self) { value in
+                    Button {
+                        canvasAppearance = value
+                    } label: {
+                        let title = value == "system" ? "跟随系统"
+                            : value == "light" ? "浅色" : "深色"
+                        if canvasAppearance == value {
+                            Label(title, systemImage: "checkmark")
+                        } else {
+                            Text(title)
+                        }
+                    }
+                }
+            }
+            Toggle("显示缩略导航", isOn: $showsMiniMap)
+            Button("canvas.onboarding.replay", systemImage: "questionmark.circle") {
+                showsCanvasOnboarding = true
+            }
+            Button(
+                selectedNodeIDs.count > 1 ? "自动整理所选节点" : "自动整理关系图",
+                systemImage: "rectangle.3.group"
+            ) {
+                store.autoArrange(selectedNodeIDs)
+            }
+            .disabled((store.selectedDocument?.nodes.count ?? 0) < 2)
+            if !selectedNodeIDs.isEmpty {
+                Button("属性") { showsInspector = true }
+                if selectedNodeIDs.count == 1,
+                   let selected = store.selectedDocument?.nodes.first(where: {
+                       selectedNodeIDs.contains($0.id)
+                           && $0.kind == .image && $0.asset != nil
+                   }) {
+                    Button("裁剪与变换", systemImage: "crop.rotate") {
+                        imageEditorPresentation = CanvasImageEditorPresentation(
+                            id: selected.id
+                        )
+                    }
+                }
+                Button("复制到剪贴板", action: copySelection)
+                Button("复制副本") { selectedNodeIDs = store.duplicateNodes(selectedNodeIDs) }
+                if selectedNodeIDs.count > 1 {
+                    Button("分组") { store.group(selectedNodeIDs) }
+                }
+                if canUngroupSelection {
+                    Button("取消分组") { store.ungroup(selectedNodeIDs) }
+                }
+                Button("锁定") { store.setLocked(selectedNodeIDs, locked: true) }
+                Button("解锁") { store.setLocked(selectedNodeIDs, locked: false) }
+                if selectedNodeIDs.count > 1 {
+                    Menu("对齐") {
+                        Button("左对齐") { store.align(selectedNodeIDs, to: .leading) }
+                        Button("水平居中") { store.align(selectedNodeIDs, to: .horizontalCenter) }
+                        Button("右对齐") { store.align(selectedNodeIDs, to: .trailing) }
+                        Button("顶部对齐") { store.align(selectedNodeIDs, to: .top) }
+                        Button("垂直居中") { store.align(selectedNodeIDs, to: .verticalCenter) }
+                        Button("底部对齐") { store.align(selectedNodeIDs, to: .bottom) }
+                    }
+                }
+                if selectedNodeIDs.count > 2 {
+                    Menu("分布") {
+                        Button("水平等距") { store.distribute(selectedNodeIDs, horizontally: true) }
+                        Button("垂直等距") { store.distribute(selectedNodeIDs, horizontally: false) }
+                    }
+                }
+                Menu("层级") {
+                    Button("移到最前") { store.changeLayer(selectedNodeIDs, bringToFront: true) }
+                    Button("移到最后") { store.changeLayer(selectedNodeIDs, bringToFront: false) }
+                }
+                Button("删除所选节点", role: .destructive, action: deleteSelection)
+            }
+            if !selectedStrokeIDs.isEmpty {
+                Button("整理所选笔迹", systemImage: "wand.and.rays", action: interpretSelectedInk)
+                Button("删除所选笔迹", role: .destructive) {
+                    store.removeStrokes(selectedStrokeIDs)
+                    selectedStrokeIDs.removeAll()
+                }
+            }
+            Menu("导出") {
+                Button("可编辑 Floe 画布包") { prepareExport(.package) }
+                Button("PNG 图片") { prepareExport(.png) }
+                Button("PDF") { prepareExport(.pdf) }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        Button("完成") { dismiss() }
+    }
+
     private func createNode(_ factory: (CGPoint) -> UUID) {
-        selectedNodeIDs = [factory(canvasPoint(CGPoint(x: 520, y: 380)))]
+        selectedNodeIDs = [factory(canvasPoint(visibleCanvasCenter))]
         selectedStrokeIDs.removeAll()
         selectedConnectionID = nil
         mode = .select
@@ -3909,7 +3964,7 @@ struct WorkspaceCanvasView: View {
     @MainActor
     private func insertImportedArtifacts(_ imported: [(CreativeAssetRecord, CanvasNodeKind)]) {
         guard !imported.isEmpty else { return }
-        let origin = artifactImportPoint ?? canvasPoint(CGPoint(x: 520, y: 380))
+        let origin = artifactImportPoint ?? canvasPoint(visibleCanvasCenter)
         var ids = Set<UUID>()
         for (index, value) in imported.enumerated() {
             let column = index % 3
@@ -5401,6 +5456,7 @@ struct WorkspaceCanvasView: View {
     }
 
     private func modeControls(size: CGSize) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 4) {
             ForEach(CanvasMode.allCases) { value in
                 Button {
@@ -5415,7 +5471,7 @@ struct WorkspaceCanvasView: View {
                 } label: {
                     Image(systemName: value.icon)
                         .font(.body.weight(mode == value ? .semibold : .regular))
-                        .frame(width: 32, height: 32)
+                        .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -5448,7 +5504,7 @@ struct WorkspaceCanvasView: View {
                 }
             } label: {
                 Image(systemName: "plus")
-                    .frame(width: 32, height: 32)
+                    .frame(width: 44, height: 44)
             }
             .accessibilityLabel("添加节点")
             .accessibilityHint("显示全部可用节点类型")
@@ -5468,13 +5524,13 @@ struct WorkspaceCanvasView: View {
                 }
             } label: {
                 Image(systemName: "slider.horizontal.3")
-                    .frame(width: 32, height: 32)
+                    .frame(width: 44, height: 44)
             }
             .accessibilityLabel("笔迹整理方式：\(inkOutputPreference.title)")
 
             Button(action: interpretSelectedInk) {
                 Image(systemName: "wand.and.rays")
-                    .frame(width: 32, height: 32)
+                    .frame(width: 44, height: 44)
                     .overlay(alignment: .topTrailing) {
                         if !selectedStrokeIDs.isEmpty {
                             Text("\(selectedStrokeIDs.count)")
@@ -5521,6 +5577,9 @@ struct WorkspaceCanvasView: View {
             )
             .presentationCompactAdaptation(.popover)
         }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: 390)
         .padding(12)
     }
 
@@ -5757,15 +5816,15 @@ struct WorkspaceCanvasView: View {
                 mode = CanvasMode.allCases[index]
             },
             createCard: {
-                let point = lastCanvasPointerPoint ?? CGPoint(x: 520, y: 360)
+                let point = lastCanvasPointerPoint ?? visibleCanvasCenter
                 createNode(.card, at: canvasPoint(point))
             },
             createText: {
-                let point = lastCanvasPointerPoint ?? CGPoint(x: 520, y: 360)
+                let point = lastCanvasPointerPoint ?? visibleCanvasCenter
                 createNode(.text, at: canvasPoint(point))
             },
             createShape: {
-                let point = lastCanvasPointerPoint ?? CGPoint(x: 520, y: 360)
+                let point = lastCanvasPointerPoint ?? visibleCanvasCenter
                 createNode(.shape, at: canvasPoint(point))
             },
             zoomIn: {
@@ -7557,7 +7616,7 @@ private struct CanvasSafeMarkupView: UIViewRepresentable {
         <!doctype html><html><head>
         <meta name="viewport" content="width=device-width,initial-scale=1">
         <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'">
-        <style>html,body{margin:0;padding:0;background:transparent;color:#222;font:-apple-system-body}main{padding:14px}svg{width:100%;height:100%}</style>
+        <style>html,body{width:100%;height:100%;margin:0;padding:0;background:transparent;color:#222;font:-apple-system-body}main{padding:14px}svg{width:100%;height:100%}</style>
         </head><body>\(content)</body></html>
         """
         if context.coordinator.lastMarkup != html {
@@ -8344,10 +8403,10 @@ private struct CanvasAgentFloatingPanel: View {
         let compact = availableSize.width < 620
         let panelWidth = isCollapsed
             ? min(232, availableSize.width - 16)
-            : (compact ? max(280, availableSize.width - 16) : min(392, max(320, availableSize.width - 24)))
+            : (compact ? max(0, availableSize.width - 24) : min(392, max(320, availableSize.width - 24)))
         let panelHeight = isCollapsed
             ? 56
-            : min(compact ? 520 : 640, max(300, availableSize.height - 24))
+            : min(compact ? 520 : 640, max(0, availableSize.height - 24))
         let anchorX = compact ? availableSize.width / 2 : availableSize.width - panelWidth / 2 - 12
         let anchorY = compact ? availableSize.height - panelHeight / 2 - 12 : panelHeight / 2 + 12
         let minimumX = 12 + panelWidth / 2 - anchorX

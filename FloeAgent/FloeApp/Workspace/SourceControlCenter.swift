@@ -28,7 +28,7 @@ final class SourceControlCenter: ObservableObject {
 
     /// Skill updates use the existing connector credential without exposing it
     /// to the model, package, upgrade journal, or redirect destination.
-    func skillRepositoryData(owner: String, repository: String, ref: String, path: String?) async throws -> Data {
+    func skillRepositoryData(owner: String, repository: String, ref: String, path: String?, usesConnectorCredential: Bool = true) async throws -> Data {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~"))
         func encoded(_ value: String) -> String { value.addingPercentEncoding(withAllowedCharacters: allowed) ?? "" }
         var components = URLComponents(string: "https://api.github.com")!
@@ -42,7 +42,7 @@ final class SourceControlCenter: ObservableObject {
         request.timeoutInterval = 30
         request.setValue(path == nil ? "application/vnd.github+json" : "application/vnd.github.raw+json", forHTTPHeaderField: "Accept")
         request.setValue("FloeAgent", forHTTPHeaderField: "User-Agent")
-        if let token = try credentials.token() { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if usesConnectorCredential, let token = try credentials.token() { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let session = URLSession(configuration: .ephemeral, delegate: SkillGitHubNoRedirect(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         let (stream, response) = try await session.bytes(for: request)

@@ -65,7 +65,7 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
         plugins.tap()
         XCTAssertTrue(app.staticTexts["plugins.card.floe-pdf"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.segmentedControls.firstMatch.exists)
-        let marketplace = XCTAttachment(screenshot: app.screenshot())
+        let marketplace = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         marketplace.name = "Plugin marketplace"
         marketplace.lifetime = .keepAlways
         add(marketplace)
@@ -78,7 +78,7 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
         selectMultiple.tap()
         XCTAssertTrue(app.navigationBars["选择任务"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["已选 1"].exists)
-        let management = XCTAttachment(screenshot: app.screenshot())
+        let management = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         management.name = "Batch task management"
         management.lifetime = .keepAlways
         add(management)
@@ -96,10 +96,45 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
         XCTAssertTrue(manage.waitForExistence(timeout: 5))
         manage.tap()
         XCTAssertTrue(app.navigationBars["所有工作区"].waitForExistence(timeout: 5))
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = "All workspace files"
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    func testWorkspacePDFInlineAndFullscreen() throws {
+        app.terminate()
+        app.launchArguments += ["--ui-test-batch-fixture", "--ui-test-pdf-fixture"]
+        app.launch()
+        try testSettingsOpensAllWorkspaces()
+        let workspace = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "聊天工作区")).firstMatch
+        XCTAssertTrue(workspace.waitForExistence(timeout: 5))
+        workspace.tap()
+        let file = app.staticTexts["预览验收.pdf"].firstMatch
+        XCTAssertTrue(file.waitForExistence(timeout: 5))
+        file.tap()
+        let document = app.otherElements["pdf.reader.document"].firstMatch
+        XCTAssertTrue(document.waitForExistence(timeout: 8))
+        let inlineWidth = document.frame.width
+        let inlineShot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        inlineShot.name = "ipad-pdf-inline"
+        inlineShot.lifetime = .keepAlways
+        add(inlineShot)
+        let expand = app.buttons["pdf.reader.expand"]
+        XCTAssertTrue(expand.isHittable)
+        expand.tap()
+        XCTAssertTrue(document.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(document.frame.width, inlineWidth)
+        let fullShot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        fullShot.name = "ipad-pdf-fullscreen"
+        fullShot.lifetime = .keepAlways
+        add(fullShot)
+        app.buttons["pdf.reader.collapse"].tap()
+        XCTAssertTrue(expand.waitForExistence(timeout: 5))
+        XCTAssertEqual(document.frame.width, inlineWidth, accuracy: 2)
+        app.buttons["workspace.preview.backToFiles"].tap()
+        XCTAssertTrue(file.waitForExistence(timeout: 5))
+        XCTAssertFalse(expand.exists)
     }
 
     /// The Home composer is directly usable as a task-start surface.
@@ -168,6 +203,7 @@ final class HomeChatVoiceIPhoneUITests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
         app = XCUIApplication()
         app.launchArguments += ["-ui-testing"]
         app.launch()
@@ -175,6 +211,77 @@ final class HomeChatVoiceIPhoneUITests: XCTestCase {
 
     override func tearDownWithError() throws {
         app = nil
+    }
+
+    func testCanvasCreationRemainsVisibleInPortraitAndLandscape() throws {
+        XCUIDevice.shared.orientation = .portrait
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let sidebar = app.buttons["phone.sidebar.open"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 8))
+        sidebar.tap()
+        let creative = app.staticTexts["sidebar.creative"]
+        XCTAssertTrue(creative.waitForExistence(timeout: 5))
+        creative.tap()
+        let newCanvas = app.buttons["canvas.home.create"]
+        XCTAssertTrue(newCanvas.waitForExistence(timeout: 5))
+        XCTAssertTrue(newCanvas.isHittable)
+        newCanvas.tap()
+        let onboarding = app.otherElements["canvas.onboarding"]
+        if onboarding.waitForExistence(timeout: 2) {
+            let close = app.buttons.matching(NSPredicate(format: "label IN %@", ["关闭", "Close"])).firstMatch
+            XCTAssertTrue(close.waitForExistence(timeout: 2))
+            close.tap()
+        }
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            XCUIDevice.shared.orientation = orientation
+            let add = app.buttons["canvas.node.create.bottom"]
+            XCTAssertTrue(add.waitForExistence(timeout: 5))
+            XCTAssertTrue(add.isHittable)
+            if orientation == .portrait {
+                let actions = app.buttons["canvas.actions"]
+                XCTAssertTrue(actions.isHittable)
+                actions.tap()
+                let create = app.buttons["canvas.node.create"]
+                XCTAssertTrue(create.waitForExistence(timeout: 3))
+                create.tap()
+            } else {
+                add.tap()
+            }
+            let nodeKind = app.buttons["SVG"]
+            XCTAssertTrue(nodeKind.waitForExistence(timeout: 3))
+            let menuShot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            menuShot.name = orientation == .portrait ? "iphone-canvas-create-menu-portrait" : "iphone-canvas-create-menu-landscape"
+            menuShot.lifetime = .keepAlways
+            self.add(menuShot)
+            nodeKind.tap()
+            let finish = app.buttons["canvas.node.finishEditing"]
+            XCTAssertTrue(finish.waitForExistence(timeout: 5))
+            let editingShot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            editingShot.name = orientation == .portrait ? "iphone-canvas-svg-editor-portrait" : "iphone-canvas-svg-editor-landscape"
+            editingShot.lifetime = .keepAlways
+            self.add(editingShot)
+            XCTAssertTrue(finish.isHittable)
+            finish.tap()
+            // WebKit paints asynchronously after the editor leaves the tree.
+            // Allow its first frame before capturing; rendered content is also
+            // visually reviewed in the exported screenshots.
+            let firstFrame = expectation(description: "WebKit first frame capture window")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { firstFrame.fulfill() }
+            wait(for: [firstFrame], timeout: 5)
+            let leading = app.buttons["canvas.connection.port.leading"].firstMatch
+            let trailing = app.buttons["canvas.connection.port.trailing"].firstMatch
+            XCTAssertTrue(leading.waitForExistence(timeout: 3))
+            XCTAssertTrue(trailing.waitForExistence(timeout: 3))
+            XCTAssertTrue(leading.isHittable)
+            XCTAssertTrue(trailing.isHittable)
+            let nodeCenter = CGPoint(x: (leading.frame.midX + trailing.frame.midX) / 2,
+                                     y: (leading.frame.midY + trailing.frame.midY) / 2)
+            XCTAssertTrue(app.frame.contains(nodeCenter), "A new node must be inside the phone viewport")
+            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            shot.name = orientation == .portrait ? "iphone-canvas-portrait" : "iphone-canvas-landscape"
+            shot.lifetime = .keepAlways
+            self.add(shot)
+        }
     }
 
     /// Compact layout starts directly on the new-task detail, with no

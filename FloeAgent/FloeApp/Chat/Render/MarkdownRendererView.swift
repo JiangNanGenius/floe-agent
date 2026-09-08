@@ -26,10 +26,10 @@ struct MarkdownRendererView: View {
     var body: some View {
         if isStreaming {
             let parts = MarkdownBlockParser.parseStreaming(source)
-            VStack(alignment: .leading, spacing: 10) {
-                MarkdownBlockSequenceView(blocks: parts.completed)
-                MarkdownBlockSequenceView(blocks: parts.tail)
-            }
+            // One stable sequence avoids remounting the visible tail whenever
+            // a newline moves it into the completed portion. Only new blocks
+            // animate; token updates never fade the entire answer.
+            MarkdownBlockSequenceView(blocks: parts.completed + parts.tail, animateInsertions: true)
         } else {
             // Terminal text is parsed once per source change; SwiftUI
             // reuses the view value while `source` is unchanged.
@@ -42,13 +42,17 @@ struct MarkdownRendererView: View {
 /// children re-enter through this view.
 struct MarkdownBlockSequenceView: View {
     let blocks: [MarkdownBlock]
+    var animateInsertions = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 MarkdownBlockView(block: block)
+                    .transition(animateInsertions && !reduceMotion ? .opacity.combined(with: .offset(y: 4)) : .identity)
             }
         }
+        .animation(animateInsertions && !reduceMotion ? .easeOut(duration: 0.16) : nil, value: blocks.count)
     }
 }
 

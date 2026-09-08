@@ -2,7 +2,7 @@
 
 [README](../README.md) · [简体中文 README](../README.zh-CN.md) · [User guide](USER_GUIDE.md)
 
-This page is the current 1.4.46 map. Older audit and delivery documents are historical evidence and may use superseded schema versions or navigation names.
+This page describes the 1.5.0 source baseline and the current workflow-upgrade branch (schema v36). Older audit and delivery documents are historical evidence and may use superseded schema versions or navigation names.
 
 ## Domain vocabulary / 领域术语
 
@@ -48,7 +48,7 @@ flowchart TB
 
 ## Persistence and ownership
 
-Schema v20 retains one workspace owner per task through `conversation_workspace_ownership`. A task created without a project receives an internal `privateTask` workspace; a project task points to a `project` workspace. Legacy many-to-many links are migrated and no longer used for canonical writes.
+The ownership model introduced in schema v20 retains one workspace owner per task through `conversation_workspace_ownership`. A task created without a project receives an internal `privateTask` workspace; a project task points to a `project` workspace. Legacy many-to-many links are migrated and no longer used for canonical writes.
 
 New-task persistence is atomic: conversation, workspace ownership, run, user message, message parts, staged attachments, policy, and initial events either all commit or all roll back. Run launch validates that the parent conversation still exists before provider I/O begins.
 
@@ -119,3 +119,13 @@ Standard MCP servers are optional external tool sources for the ordinary Agent, 
 Skills remain declarative packages with an explicit capability and tool ceiling. They may contain bounded UTF-8 Python scripts plus exact-version pure-Python requirements. Creation or installation is the trust transition: paths, source markers, immutable package specs, universal-wheel contents and artifact digests are audited there. Runtime preapproval is fingerprint-bound to the identical script and package set; it is not a persistent permission for arbitrary Python, important-file mutation, credentials, privilege, destructive behavior or external effects.
 
 The current interaction, data model, generation reuse, Pencil behavior, AI/MCP boundary, and recovery rules are documented in [Creative mode, canvas and asset architecture](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.md) and its [Simplified Chinese version](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.zh-CN.md).
+
+## Workflow-upgrade contracts
+
+Schema v36 records private-workspace cleanup intent transactionally with deletion. Physical cleanup and mount removal clear that intent only after success; startup and manager retries replay the queue. Shared project files are retained. An isolated workspace browser owns an independent network registry.
+
+Conversation snapshots carry revisions across asynchronous reads; coalesced notifications drain newer revisions. Visible chat/canvas surfaces reconcile persisted state without repeating model or tool execution. Canvas reload defers during interactive drafts and skips unchanged file metadata.
+
+Office inspect exposes a digest. Saves validate expected versions, write a staged package, reopen and verify changed fields, then replace the source. This basic path does not establish advanced Office fidelity. PDF uses a shared PDFKit reading session across inline/fullscreen presentations, with guarded local reloads and bounded remote snapshots.
+
+The official plugin catalog is verified against bundled trust keys and resolved source revisions. User removal of an exposed official plugin persists across launches. Expanded permissions remain visible during updates. See [qualification and outstanding work](WORKFLOW_UPGRADE.md).

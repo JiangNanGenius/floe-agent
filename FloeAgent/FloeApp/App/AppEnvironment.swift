@@ -111,10 +111,13 @@ final class AppEnvironment: ObservableObject {
     private lazy var _mediaGenerationService = MediaGenerationService(environment: self)
     private lazy var _creativeAssetStore = CreativeAssetStore(database: database)
     private lazy var _canvasSyncOperationStore = CanvasSyncOperationStore(database: database)
-    private lazy var _canvasCloudAssetService = CanvasCloudAssetService(
-        store: _creativeAssetStore,
-        operationStore: _canvasSyncOperationStore
-    )
+    private lazy var _canvasCloudAssetService: CanvasCloudAssetService = {
+        #if targetEnvironment(simulator)
+        return CanvasCloudAssetService(localOnlyStore: _creativeAssetStore, operationStore: _canvasSyncOperationStore)
+        #else
+        return CanvasCloudAssetService(store: _creativeAssetStore, operationStore: _canvasSyncOperationStore)
+        #endif
+    }()
     private lazy var _screenShareCenter = ScreenShareCenter(conversationCenter: _conversationCenter)
     private lazy var _backgroundVideoService = BackgroundVideoService()
     private lazy var _webSearchSettingsCenter = WebSearchSettingsCenter()
@@ -711,6 +714,32 @@ final class AppEnvironment: ObservableObject {
                     try await conversationStore.saveConversation(fixture)
                     _ = try await SQLiteWorkspaceStore(database: database).ensureWorkspace(conversationID: fixtureID, title: fixture.title)
                 }
+            }
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains("--ui-test-pdf-fixture") {
+                let fixtureID = UUID(uuidString: "57C0A79F-CF1B-45D2-B640-EF54E5C55391")!
+                let record = try await SQLiteWorkspaceStore(database: database).ensureWorkspace(
+                    conversationID: fixtureID, title: "批量选择测试"
+                )
+                let lease = try await workspaceCenter.acquireTaskRoot(record, conversationID: fixtureID)
+                defer { lease.release() }
+                let renderer = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 595, height: 842))
+                let bytes = renderer.pdfData { context in
+                    for page in 1...2 {
+                        context.beginPage()
+                        ("Floe PDF Preview · Page \(page)" as NSString).draw(
+                            at: CGPoint(x: 48, y: 64),
+                            withAttributes: [.font: UIFont.systemFont(ofSize: 26, weight: .semibold)]
+                        )
+                        ("Inline reading, fullscreen, and return to the same document." as NSString).draw(
+                            in: CGRect(x: 48, y: 118, width: 490, height: 80),
+                            withAttributes: [.font: UIFont.systemFont(ofSize: 16)]
+                        )
+                        UIColor.systemBlue.setFill()
+                        context.cgContext.fill(CGRect(x: 48, y: 220, width: 100 * page, height: 90))
+                    }
+                }
+                try bytes.write(to: lease.url.appendingPathComponent("预览验收.pdf"), options: .atomic)
             }
             if ProcessInfo.processInfo.arguments.contains("--ui-test-reset-onboarding") {
                 ConversationCenter.persistOnboardingSkippedMarker(false)

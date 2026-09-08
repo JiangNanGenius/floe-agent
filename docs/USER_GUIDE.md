@@ -4,6 +4,8 @@
 
 This guide describes the Floe Agent 1.4.50 source target (build 81). Labels may vary slightly with the system language and configured provider. Distribution status must still be verified in TestFlight; a source tag is not an Apple processing receipt.
 
+This guide includes the current development-branch workflow upgrade. See [scope, screenshots and outstanding validation](WORKFLOW_UPGRADE.md); release availability is verified separately.
+
 ## 1. Install safely
 
 Use TestFlight when a testing invitation is available. If you use the community unsigned IPA, verify its SHA-256 and provenance, inspect the source, and sign it with your own certificate. Never import a certificate, API key, SSH key, or provisioning profile supplied by an unknown distributor.
@@ -91,6 +93,8 @@ Every later message creates a new Run inside the same task. Floe reconstructs co
 
 If a task reports that it was interrupted, use **Resume** or send a continuation message. Side effects whose outcome is uncertain require confirmation before retrying.
 
+Opening an existing conversation positions it at the latest content. Live output follows while you are at the bottom; reading older history keeps your position. Long-press a task in the sidebar, workbench, or conversation list and choose **Select Multiple** to filter, select all, archive, or delete. Archived tasks can be restored in batches. Archiving running tasks explains the stop action; individual failures remain visible.
+
 ## 6. Choose a working mode
 
 - **Agent mode** can use the tools allowed by the task policy and normal approval gates.
@@ -146,7 +150,7 @@ Floe publishes **Run Floe Task** and **Schedule Floe Task** App Intents. Add **R
 
 Signed builds include bounded CPython 3.13. The model can request a familiar declarative command such as `pip install marko==2.2.0`; Floe parses its package specs and asks the package-review model whether they are necessary for the user's existing task before any download. The managed installer resolves dependencies in Application Support quarantine and activates only pure-Python `py3-none-any` wheels after hash verification and static inspection. Flags, URLs, paths, shell syntax, native extensions, Mach-O/ELF payloads, dynamic libraries, subprocess execution and sandbox escape remain unavailable.
 
-For NumPy, pandas, SciPy, Matplotlib and other supported binary scientific packages, the `exec.localPython` description tells the model to create a workspace HTML artifact, load Pyodide from public HTTPS in Floe's visible browser, and exchange bounded inputs and results with the local task as JSON. This is an explicit WebAssembly Python route, not a claim that native iOS `pip` installed the package. Use a configured trusted SSH host for packages Pyodide cannot provide or for a full native/licensed runtime.
+Supported builds bundle native NumPy, Pillow, and pandas. The runtime probe is authoritative for the current build; use available native libraries directly. Missing binary packages such as SciPy or Matplotlib can use the explicitly identified browser Pyodide route or a configured trusted SSH host. Report the actual execution environment and results.
 
 `exec.localNumerical` provides a bounded, dependency-free R, Stata and MATLAB/Octave compatibility surface for descriptive statistics, quantiles, covariance/correlation and one-predictor OLS. Stata-compatible commands include `generate`, `display`, `summarize`, `correlate` and `regress`. It is not GNU R or Stata. PyStata still requires a separately installed, licensed Stata runtime, while `pyreadstat` depends on native extensions; neither can masquerade as an installable pure-Python iOS package. Route full R/Stata to a configured trusted SSH host.
 
@@ -160,6 +164,8 @@ The Agent can create native DOCX, XLSX and PPTX files with `document.createWord`
 
 For manual revision, open the file from the workspace. Floe shows the normal document preview first. Choose **Edit Office document** to open the basic editor, make changes, and save. DOCX exposes text fields; XLSX exposes worksheet cells and formulas; PPTX exposes slide text and speaker notes. Saving is atomic and preserves untouched OOXML package parts. Use Microsoft Office, LibreOffice or another full editor for advanced layout, charts, macros, tracked changes, animation and pixel-perfect compatibility.
 
+PDF is separate from Office: open it directly from the file list, read it in the wide-screen inspector, then expand to fullscreen. The shared reading session retains page and zoom state; changed local files reload. Remote previews are downloaded read-only snapshots. Office saves check the file version and retain your draft when saving fails or conflicts.
+
 ## 14. Use the workspace canvas and standard MCP
 
 Open a workspace's Files inspector and choose **Canvas**. Each workspace owns at most one native canvas project, and that project can contain multiple canvases. The current native surface supports movable text notes, freehand drawing, panning, zooming, renaming and deleting individual canvases, and atomic local persistence. Canvas content stays with the workspace and is not silently published to a global asset library.
@@ -172,14 +178,18 @@ Only explicit source connections contribute generation context. Ordinary connect
 
 Choose **Canvas Assistant** for cross-node research and orchestration with only the tools allowed on the canvas surface. A text-only primary model routes visual understanding through the configured Canvas Vision model; when none is available, Floe reports the missing capability once instead of retrying. A research result remains read-only until you choose **Add to canvas**. Public web images are downloaded, validated, deduplicated, and stored before being used as references; raw web URLs are never sent as reference-image inputs. Standard MCP remains disabled for canvas by default. Open **… → Canvas Guide** to replay the canvas onboarding.
 
-To connect a standard remote tool server, open **Skills → Standard MCP** and add a Streamable HTTP endpoint. Floe supports no-auth, Bearer token, and custom-header authentication; secret values are stored in Keychain rather than server metadata. Each server and discovered tool can be enabled independently. Remote tools use a server-specific namespace, remain subject to the current task's local permission and approval policy, and treat server descriptions and outputs as untrusted data. Enabling **Allow canvas use** adds only that server's currently enabled tools to future Canvas Agent runs; the setting is off by default, does not grant ordinary task authority, and never bypasses approval.
+To connect a standard remote tool server, open **Plugins → Manage Connectors → Standard MCP** and add a Streamable HTTP endpoint. Floe supports no-auth, Bearer token, and custom-header authentication; secret values are stored in Keychain rather than server metadata. Each server and discovered tool can be enabled independently. Remote tools use a server-specific namespace, remain subject to the current task's local permission and approval policy, and treat server descriptions and outputs as untrusted data. Enabling **Allow canvas use** adds only that server's currently enabled tools to future Canvas Agent runs; the setting is off by default, does not grant ordinary task authority, and never bypasses approval.
+
+You can also create a private canvas from **Creative Mode → New Canvas** without first binding a workspace or configuring an image-generation model. Creation menus show generation tasks first. iPhone uses a compact action menu and scrollable bottom tools; new nodes use the actual viewport. SVG, HTML, and Markdown node refinement checks revisions to avoid overwriting concurrent edits.
 
 ## 15. Install and create Skills
 
 - **Skill Creator** builds a local declarative instruction package.
 - **Skill Finder** downloads an HTTPS candidate, uses a selected model to normalize it for iOS, then runs deterministic validation and compatibility checks.
 
-Only instruction-only or read-only low-risk packages can install automatically. Scripts, network/browser access, writes, remote execution, credentials, uploads, capability expansion, and replacements require user confirmation. Scripts are visible source recipes; the App Store build does not dynamically execute them as local plugins.
+Skill tool calls remain subject to the current task authorization and runtime validation. Supported UTF-8 Python scripts and pinned pure-Python dependencies are reviewed at installation; execution reuses only the approved fingerprints. Code or permission changes are checked again. This does not permit native dynamic plugins or installation hooks.
+
+The plugin entry separates **Discover** and **Installed**. Official entries show purpose, version, and install/update actions; source and technical details are folded away. Uninstalled official plugins stay removed across launches and can be installed again from Discover. Updates that expand permissions still show the change.
 
 ## 16. Troubleshoot
 
@@ -209,3 +219,5 @@ Open **Settings → Data Management** to inspect Floe's total footprint, install
 **Data Management → Font Resources** keeps one content-addressed Floe-global copy of each imported font. Import from Files or use a direct public HTTPS URL for a TTF, OTF, TTC or OTC file up to 32 MB. Floe registers the managed library again at launch, so Word/PDF work in every workspace can reuse it without downloading per workspace. In Automatic mode, `font.list` and bounded `font.install` bypass approval-model latency; `font.remove` remains reviewed because it affects all workspaces. Apple public APIs do not permit an arbitrary web font to be silently installed for unrelated apps, so downloaded fonts are global within Floe rather than system-wide outside Floe. If iOS does not expose a requested system font, the Agent explains that boundary and installs a permitted font into Floe's managed library instead.
 
 Task history is device-local. Configuration sync includes provider/model profiles and non-secret host profiles, while provider API keys use iCloud Keychain. **Sync saved credentials** is off by default and requires device authentication. When enabled, only credentials explicitly promoted to the vault can sync; task/workspace temporary credentials never do. A descriptor may arrive before its Keychain item, in which case the UI shows **Waiting for secret** instead of claiming synchronization completed.
+
+**Settings → Files → Browse and Manage Files** provides quick access to project workspaces and private workspaces from active or archived conversations. Browsing does not switch the current conversation workspace. Reuse directory search, preview, edit, move, export, and batch deletion. Deleting a private task cleans up its own files while shared projects remain; pending local cleanup can be retried in the manager.

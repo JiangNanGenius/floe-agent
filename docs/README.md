@@ -10,12 +10,12 @@
 | Current architecture | [Architecture overview](ARCHITECTURE_OVERVIEW.md) | 同一文档提供双语术语 |
 | Creative mode and asset architecture | [English](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.md) · [简体中文](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.zh-CN.md) | 内容、任务与产物节点，节点 AI、画布助手、触控、生成状态与恢复边界 |
 | Product definition | [Product](../PRODUCT.md) | 关键定位包含双语说明 |
-| Design direction | [Design](../DESIGN.md) | 当前工作台与交互原则 |
+| Design direction | [Design](WORKFLOW_UPGRADE.md) | 当前工作台与交互原则 |
 | Contribute | [Contributing](../CONTRIBUTING.md) | [贡献指南](../CONTRIBUTING.zh-CN.md) |
 | Security | [Security](../SECURITY.md) | [安全策略](../SECURITY.zh-CN.md) |
 | Support | [Support](../SUPPORT.md) | [支持](../SUPPORT.zh-CN.md) |
 
-Current TestFlight candidate: [Floe Agent 1.4.86 (Build 117) test notes](TESTFLIGHT_1.4.86.md). Availability must be confirmed from App Store Connect evidence.
+Current source target: Floe Agent 1.5.0 (Build 131). [Current workflow upgrade](WORKFLOW_UPGRADE.md) records development scope, test evidence, and screenshots. Source changes do not establish TestFlight availability; confirm that separately in App Store Connect.
 
 ## Product references
 

@@ -47,12 +47,12 @@ final class SkillsCenter: ObservableObject {
         do {
             let source = try OfficialSkillHub.source()
             let connector = environment.sourceControlCenter
-            let commitData = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: source.ref, path: nil)
+            let commitData = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: source.ref, path: nil, usesConnectorCredential: false)
             struct Commit: Decodable { let sha: String }
             let commit = try JSONDecoder().decode(Commit.self, from: commitData).sha
             guard commit.count == 40, commit.allSatisfy(\.isHexDigit) else { throw SkillUpgradeError.invalidCommit }
-            let catalog = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: commit, path: OfficialSkillHub.catalogPath)
-            let signature = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: commit, path: "skill-hub/catalog.sig")
+            let catalog = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: commit, path: OfficialSkillHub.catalogPath, usesConnectorCredential: false)
+            let signature = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: commit, path: "skill-hub/catalog.sig", usesConnectorCredential: false)
             var verified: [String: OfficialSkillHub.Package] = [:]
             for id in OfficialSkillHub.skillIDs {
                 verified[id] = try OfficialSkillHub.verifiedPackage(catalog: catalog, signature: signature, id: id,
@@ -93,13 +93,14 @@ final class SkillsCenter: ObservableObject {
             let staging = FileManager.default.temporaryDirectory.appendingPathComponent("floe-upgrade-\(UUID().uuidString)")
             do {
                 let connector = self.environment.sourceControlCenter
+                let usesCredential = !OfficialSkillHub.skillIDs.contains(skill.id)
                 let resolve: GitHubSkillDownload.ResolveCommit = { source in
-                        let data = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: source.ref, path: nil)
+                        let data = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: source.ref, path: nil, usesConnectorCredential: usesCredential)
                         struct Commit: Decodable { let sha: String }
                         return try JSONDecoder().decode(Commit.self, from: data).sha
                     }
                 let fetch: GitHubSkillDownload.FetchFile = { source, commit, path in
-                        try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: commit, path: path)
+                        try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: commit, path: path, usesConnectorCredential: usesCredential)
                     }
                 let candidate: SkillUpgradeCandidate
                 if OfficialSkillHub.skillIDs.contains(skill.id) {

@@ -24,6 +24,12 @@
 
 Floe Agent turns a model conversation into a durable task. Each message continues the same task, while every model execution becomes a separate run with its own progress, tool evidence, approvals, checkpoints, and recovery state. A task can use an app-managed private workspace or an explicitly selected project workspace.
 
+## Current upgrade — in development
+
+This round covers editing correctness and everyday workflows: the plugin marketplace, task selection from a long-press menu, all-workspace management, inline PDF reading, iPhone canvas support, and live execution feedback. Word, Excel, and PowerPoint share the Office tool group; PDF stays separate. The advanced Office engine is still undergoing qualification and has not been integrated.
+
+See the [upgrade scope, verification status, and interaction screenshots](docs/WORKFLOW_UPGRADE.md). These changes describe the development branch; TestFlight availability is verified separately.
+
 ## Why Floe Agent
 
 - **Bring your own models.** Connect compatible providers with credentials you control. Agent, vision, image-generation, and image-editing roles can be configured independently.
@@ -61,7 +67,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.4.86 (build 117); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
+Signed builds are distributed through TestFlight when a testing group is available. The current source target is Floe Agent 1.5.0 (build 131); consult [Releases](https://github.com/JiangNanGenius/floe-agent/releases) and TestFlight for builds that actually completed every release gate. A source version or tag alone does not prove that Apple received or processed a build.
 
 ### Unsigned IPA
 
@@ -129,7 +135,7 @@ Routine bounded reads, local workspace operations, image generation/inspection, 
 
 ### Python execution
 
-Signed Floe builds bundle a fixed CPython 3.13 runtime and standard library as app resources. `exec.localPython` runs bounded source inside the app sandbox after the configured approval policy. Managed package installation accepts pure-Python packages only: archives are isolated, inspected, and reviewed by the configured package-review model before activation; native extensions, JIT, and executable payloads are rejected. For NumPy, pandas, SciPy, Matplotlib and other supported binary scientific packages, the Python tool directory explicitly routes the model to create a workspace HTML artifact that runs Pyodide in the visible browser and exchanges bounded JSON with the task. A configured SSH host remains the path for native packages or a full licensed runtime. Each route reports output, timeout, cancellation and capability failures explicitly.
+Floe includes Python 3.13 for local scripts, files, archives, JSON, SQLite, and data processing. Supported builds bundle native NumPy, Pillow, and pandas; the runtime probe determines actual versions and availability. Use available native libraries directly. Missing binary packages such as SciPy or Matplotlib can use the explicitly identified browser Pyodide route or an authorized SSH host. Additional pure-Python packages remain subject to the existing package review.
 
 Skills may carry bounded `.py` files plus exact pure-Python package requirements. Floe validates script paths and source, resolves and inspects universal wheels at install time, and records the approved script/package fingerprints. Later runs may reuse only that exact audited code with changing task input passed separately as JSON; edits, dependency changes, privileged operations, destructive file changes, credentials and external side effects return to the normal approval path.
 
@@ -171,7 +177,7 @@ Floe Agent does **not** provide a hosted model proxy, Floe account, remote relay
 | Development | [Contributing](CONTRIBUTING.md) | [贡献指南](CONTRIBUTING.zh-CN.md) |
 | Security | [Security policy](SECURITY.md) | [安全策略](SECURITY.zh-CN.md) |
 | Support | [Support](SUPPORT.md) | [支持](SUPPORT.zh-CN.md) |
-| Design | [Design direction](DESIGN.md) | Key terms include Chinese equivalents |
+| Design | [Design direction](docs/WORKFLOW_UPGRADE.md) | Key terms include Chinese equivalents |
 
 Internal plans, audits, validation notes and release handoffs are intentionally not published in this repository.
 

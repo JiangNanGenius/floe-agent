@@ -510,6 +510,11 @@ struct RootView: View {
         .onChange(of: router.workbenchSelection) { _, _ in
             withAnimation(.snappy) { isPhoneSidebarOpen = false }
         }
+        .onChange(of: router.sidebarSelection) { _, _ in
+            // Creative mode and plugins change the sidebar route without
+            // changing the selected task. Close the phone drawer for them too.
+            withAnimation(.snappy) { isPhoneSidebarOpen = false }
+        }
     }
 
     private func phoneDrawerGesture(drawerWidth: CGFloat) -> some Gesture {

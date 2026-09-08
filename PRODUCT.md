@@ -31,6 +31,12 @@ Floe Agent is designed around three commitments:
 - Bounded bundled Python and JavaScript execution, plus declarative Skills that cannot load native plug-ins or enlarge the compiled tool catalog.
 - English and Simplified Chinese interfaces.
 
+## Current development focus
+
+The current upgrade adds a Discover/Installed plugin surface, contextual batch task management, an isolated all-workspace file manager, inline PDF reading, mobile canvas corrections, and truthful live execution feedback. Word, Excel, and PowerPoint remain one Office tool family; PDF is separate.
+
+Editing correctness takes priority over appearance: supported edits must retain intended content, formatting and object positions, survive save/reopen, preserve unrelated content and report conflicts. Full advanced Office editing remains pending offline-engine qualification and integration; the basic native editor does not establish desktop-document parity. See [scope, screenshots and verification status](docs/WORKFLOW_UPGRADE.md).
+
 ## Explicit boundaries
 
 Version 1 does not include Floe accounts, ads, behavioral analytics, model resale, a hosted proxy, downloaded native plug-ins, an unrestricted shell/process environment, Git history rewriting/force operations, RDP, VBA, ActiveX, or Office cloud collaboration.
@@ -49,4 +55,4 @@ iOS may suspend background work. Floe Agent must report that honestly and must n
 - Telemetry: no advertising or third-party behavioral analytics SDKs.
 - Status: prerelease; releases may be available for testing but are not supported for production use.
 
-Detailed architecture, milestones, verification criteria, and release gates are in the [development plan](docs/DEVELOPMENT_PLAN.md).
+Detailed architecture, milestones, verification criteria, and release gates are in the [workflow-upgrade record](docs/WORKFLOW_UPGRADE.md).

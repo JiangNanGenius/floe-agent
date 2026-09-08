@@ -38,7 +38,15 @@ enum CanvasCloudAssetLocalFileDeletion {
 public actor CanvasCloudAssetService {
     public static let zoneName = "FloeCreativeAssets"
 
-    private let database: CKDatabase
+    private let configuredDatabase: CKDatabase?
+    private var database: CKDatabase {
+        get throws {
+            guard let configuredDatabase else {
+                throw FloeError.validationFailed("Cloud sync is unavailable in this build. Local canvas editing remains available.")
+            }
+            return configuredDatabase
+        }
+    }
     private let store: CreativeAssetStore
     private let operationStore: CanvasSyncOperationStore?
     private let zoneID = CKRecordZone.ID(
@@ -50,8 +58,17 @@ public actor CanvasCloudAssetService {
         store: CreativeAssetStore,
         operationStore: CanvasSyncOperationStore? = nil
     ) {
-        self.database = container.privateCloudDatabase
+        self.configuredDatabase = container.privateCloudDatabase
         self.store = store
+        self.operationStore = operationStore
+    }
+
+    /// Local-only hosts must not construct a default CloudKit container: an
+    /// unsigned simulator has no container entitlement and CloudKit can raise
+    /// an Objective-C exception before an async error can be handled.
+    public init(localOnlyStore: CreativeAssetStore, operationStore: CanvasSyncOperationStore? = nil) {
+        self.configuredDatabase = nil
+        self.store = localOnlyStore
         self.operationStore = operationStore
     }
 

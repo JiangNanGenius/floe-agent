@@ -2,6 +2,12 @@
 
 [简体中文](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.zh-CN.md) · [User guide](USER_GUIDE.md) · [Architecture overview](ARCHITECTURE_OVERVIEW.md)
 
+## Current workflow upgrade
+
+Creative Mode offers private canvases as well as workspace-bound projects. Opening, drawing, and editing do not require image-model configuration. Phone sidebar navigation closes after selection, compact canvas navigation opens the editor, and controls adapt to available space. New nodes use the actual viewport center; resizing preserves that center. Creation menus list generation tasks first.
+
+SVG/HTML/Markdown node refinement sends bounded source content and checks revisions before applying edits. Failed saves remain failures. Visible canvas reconciliation recovers missed notifications, skips unchanged metadata, and defers while a gesture owns a draft. See [scope, screenshots, and validation](WORKFLOW_UPGRADE.md).
+
 ## Canvas workflow
 
 Floe uses one persisted canvas graph and three product roles:

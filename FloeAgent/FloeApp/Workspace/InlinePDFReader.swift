@@ -95,6 +95,7 @@ struct InlinePDFReader: View {
                                     session.fullScreen = false
                                     expanded = false
                                 }
+                                .accessibilityIdentifier("pdf.reader.collapse")
                             }
                         }
                 }

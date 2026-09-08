@@ -24,6 +24,12 @@
 
 Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送都会在同一任务中创建新的 Run，并保留历史消息、工具证据、用户决策、计划、目标、记忆、权限和恢复检查点。任务可以使用 App 内部的私有工作区，也可以归属于用户明确选择的项目工作区。
 
+## 本轮升级（开发中）
+
+这一轮围绕完整编辑能力和日常工作流程展开：插件市场、长按多选任务、全部工作区管理、右侧 PDF 阅读、iPhone 画布，以及持续更新的执行状态。Word、Excel、PowerPoint 统一归入 Office，PDF 独立；高级 Office 引擎仍在资格验证，尚未完成集成。
+
+[查看更新范围、验证状态与操作截图](docs/WORKFLOW_UPGRADE.md)。这里描述的是当前开发分支，TestFlight 可用性另行确认。
+
 ## 为什么使用 Floe Agent
 
 - **自带模型。** 用户自行连接兼容服务商，并可分别设置 Agent、识图、生图和图片编辑模型。
@@ -61,7 +67,7 @@ flowchart LR
 
 ### TestFlight
 
-项目会在测试组开放时通过 TestFlight 分发签名版本。当前源码目标版本为 Floe Agent 1.4.79（build 110）；只有同时通过发布门禁并能在 TestFlight 中看到的构建才算完成发布。仅有源码版本或标签不能证明 Apple 已收到或处理该构建。
+项目会在测试组开放时通过 TestFlight 分发签名版本。当前源码目标版本为 Floe Agent 1.5.0（build 131）；只有同时通过发布门禁并能在 TestFlight 中看到的构建才算完成发布。仅有源码版本或标签不能证明 Apple 已收到或处理该构建。
 
 ### 未签名 IPA
 
@@ -129,7 +135,7 @@ OpenAI 生图与图片编辑默认使用 `gpt-image-2`；Google Gemini Images �
 
 ### Python 执行
 
-Floe 内置适合日常脚本、文件、压缩包、JSON、SQLite 和基础数据工作的 Python 3.13。模型可以为当前任务申请安装兼容的软件包；下载前会检查用途，安装内容也会经过安全检查。NumPy、pandas、SciPy、Matplotlib 等科学计算能力通过可见浏览器中的 WebAssembly Python 运行，并与任务交换受限数据。需要完整本机环境、商业授权或特殊系统组件的工作，仍应转到用户已经信任的 SSH 主机。无论选择哪条路径，Floe 都会明确显示成功、失败、超时或能力限制，不会把未执行的操作说成已经完成。
+Floe 内置适合日常脚本、文件、压缩包、JSON、SQLite 和基础数据工作的 Python 3.13。模型可以为当前任务申请安装兼容的软件包；下载前会检查用途，安装内容也会经过安全检查。NumPy、Pillow 和 pandas 在支持的构建中原生提供，以运行时检查返回的版本和可用性为准。未提供的 SciPy、Matplotlib 等二进制依赖可使用明确标注的浏览器 Pyodide 路径或可信 SSH 主机。需要完整本机环境、商业授权或特殊系统组件的工作，仍应转到用户已经信任的 SSH 主机。无论选择哪条路径，Floe 都会明确显示成功、失败、超时或能力限制，不会把未执行的操作说成已经完成。
 
 技能可以附带受限的 `.py` 文件和锁定版本的纯 Python 依赖。Floe 在创建或安装技能时验证脚本路径与源码、解析并检查通用 wheel，并记录获准的脚本和依赖指纹。后续运行只能复用这份完全相同的已审计代码，变化的任务数据通过 JSON 单独传入；修改脚本或依赖、提权、危险文件改动、凭据和外部副作用仍回到正常审批流程。
 
@@ -169,7 +175,7 @@ Floe Agent **不提供**托管模型代理、Floe 账户、远程中继、广告
 | 参与开发 | [贡献指南](CONTRIBUTING.zh-CN.md) | [Contributing](CONTRIBUTING.md) |
 | 安全 | [安全策略](SECURITY.zh-CN.md) | [Security policy](SECURITY.md) |
 | 支持 | [支持](SUPPORT.zh-CN.md) | [Support](SUPPORT.md) |
-| 设计方向 | [设计方向](DESIGN.md) | 关键术语包含中文对照 |
+| 设计方向 | [设计方向](docs/WORKFLOW_UPGRADE.md) | 关键术语包含中文对照 |
 
 历史实现报告和审计记录统一收录在 [`docs/README.md`](docs/README.md)。历史文件只代表其记录提交的状态，不能当作当前版本的功能声明。
 

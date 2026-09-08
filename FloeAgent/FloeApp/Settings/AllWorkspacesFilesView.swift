@@ -113,6 +113,7 @@ private struct ManagedWorkspaceFilesView: View {
                     FilePreviewView(relativePath: selectedPath, center: center)
                         .toolbar { ToolbarItem(placement: .topBarLeading) {
                             Button("返回文件", systemImage: "chevron.left") { self.selectedPath = nil }
+                                .accessibilityIdentifier("workspace.preview.backToFiles")
                         } }
                 } else {
                     FileTreeView(viewModel: tree) { selectedPath = $0 }
@@ -120,6 +121,7 @@ private struct ManagedWorkspaceFilesView: View {
             } else { ProgressView() }
         }
         .navigationTitle(workspace.name)
+        .navigationBarBackButtonHidden(selectedPath != nil)
         .task(id: workspace.id) {
             do {
                 if workspace.kind == .project { try await center.openWorkspace(id: workspace.id) }
