@@ -21,7 +21,7 @@ struct ConversationListView: View {
     @State private var selectedIDs: Set<UUID> = []
     @State private var editMode: EditMode = .inactive
     @State private var presentsArchive = false
-    @State private var presentsBatch = false
+    @State private var batchStartingConversation: ConversationRecord?
     @State private var confirmsBatchDelete = false
 
     init(center: ConversationCenter) {
@@ -53,7 +53,9 @@ struct ConversationListView: View {
             ThreadDetailView(conversationID: conversationID, center: viewModel.center)
         }
         .environment(\.editMode, $editMode)
-        .sheet(isPresented: $presentsBatch) { ConversationBatchManagementView(center: viewModel.center) }
+        .sheet(item: $batchStartingConversation) { conversation in
+            ConversationBatchManagementView(center: viewModel.center, initialConversation: conversation)
+        }
         .alert("操作失败", isPresented: Binding(get: { viewModel.actionError != nil }, set: { if !$0 { viewModel.actionError = nil } })) {
             Button("好", role: .cancel) { viewModel.actionError = nil }
         } message: { Text(viewModel.actionError ?? "") }
@@ -144,6 +146,10 @@ struct ConversationListView: View {
                     .tag(conversation.id)
                     .accessibilityHint("chat.open.hint")
                     .accessibilityIdentifier("chat.row.\(conversation.id.uuidString)")
+                    .contextMenu {
+                        Button("选择多个", systemImage: "checkmark.circle") { batchStartingConversation = conversation }
+                            .accessibilityIdentifier("chat.selectMultiple")
+                    }
                     .swipeActions(edge: .leading, allowsFullSwipe: true) {
                         Button {
                             Task { await viewModel.archive(conversation) }
@@ -170,9 +176,6 @@ struct ConversationListView: View {
                 Image(systemName: "archivebox")
             }
             .accessibilityLabel("归档区")
-        }
-        ToolbarItem(placement: .primaryAction) {
-            Button("批量管理", systemImage: "checklist") { presentsBatch = true }
         }
         ToolbarItem(placement: .primaryAction) {
             Button {

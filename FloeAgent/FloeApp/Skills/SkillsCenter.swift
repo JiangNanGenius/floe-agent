@@ -527,6 +527,17 @@ final class SkillsCenter: ObservableObject {
         }
     }
 
+    func installOfficialSkill(id: String) async {
+        await perform {
+            guard OfficialSkillHub.skillIDs.contains(id) else { throw FloeError.validationFailed("Unknown official plugin") }
+            try await self.environment.skillStore.requestBundledSkillInstallation(id: id)
+            await self.performBuiltinDomainSeed()
+            guard try await self.environment.skillStore.all().contains(where: { $0.id == id }) else {
+                throw FloeError.validationFailed(self.builtinSeedFailures[id] ?? "插件安装失败，请重试。")
+            }
+        }
+    }
+
     func readSkills(id: String?, runID: UUID? = nil) async throws -> [ManagedSkill] {
         await seedBuiltinDomainSkills()
         if let id { try SkillManageTool.validateID(id) }
@@ -569,12 +580,8 @@ final class SkillsCenter: ObservableObject {
         case .setEnabled:
             try await environment.skillStore.setEnabled(request.enabled!, id: skill.id, expectedDigest: request.expectedDigest)
         case .remove:
-            // Built-in domain skills are part of the app; they can be left
-            // disabled but never removed (a removed built-in would be
-            // re-seeded on the next launch anyway).
-            guard !OfficialSkillHub.skillIDs.contains(skill.id), !(skill.sourceURL ?? "").hasPrefix(DomainSkillLibrary.builtinSourceScheme) else {
-                throw FloeError.validationFailed("Built-in skill \(skill.id) cannot be removed; leave it disabled instead")
-            }
+            // Exposed official plugins can be removed. Their persisted user
+            // intent prevents launch-time seeding from undoing that choice.
             // Keep a recoverable package outside the active store. If the DB
             // mutation fails, restore the package before reporting failure.
             let recovery = installationRoot.deletingLastPathComponent().appendingPathComponent("RemovedSkills", isDirectory: true)
@@ -582,7 +589,8 @@ final class SkillsCenter: ObservableObject {
             let backup = recovery.appendingPathComponent("\(skill.id)-\(UUID().uuidString)", isDirectory: true)
             let exists = FileManager.default.fileExists(atPath: packageURL.path)
             if exists { try FileManager.default.moveItem(at: packageURL, to: backup) }
-            do { try await environment.skillStore.remove(id: skill.id, expectedDigest: request.expectedDigest) }
+            do { try await environment.skillStore.remove(id: skill.id, expectedDigest: request.expectedDigest,
+                suppressBundledSeed: OfficialSkillHub.skillIDs.contains(skill.id)) }
             catch {
                 if exists { try FileManager.default.moveItem(at: backup, to: packageURL) }
                 throw error
@@ -646,6 +654,7 @@ final class SkillsCenter: ObservableObject {
         let validator = SkillPackageValidator()
         for definition in DomainSkillLibrary.all {
             do {
+                if definition.exposed, try await environment.skillStore.wasBundledSkillRemoved(id: definition.id) { continue }
                 let temporary = FileManager.default.temporaryDirectory
                     .appendingPathComponent("floe-domain-skill-\(definition.id)-\(UUID().uuidString)", isDirectory: true)
                 defer { try? FileManager.default.removeItem(at: temporary) }

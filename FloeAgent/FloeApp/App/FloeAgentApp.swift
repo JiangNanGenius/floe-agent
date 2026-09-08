@@ -185,7 +185,7 @@ struct RootView: View {
     @SceneStorage("floe.windowSceneIdentity") private var sceneID = UUID().uuidString
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var expandedWorkspaceIDs: Set<UUID> = []
-    @State private var showingBatchManagement = false
+    @State private var batchStartingConversation: ConversationRecord?
     @State private var renamingConversation: ConversationRecord?
     @State private var deletingConversation: ConversationRecord?
     @State private var deletingWorkspace: WorkspaceRecord?
@@ -298,8 +298,8 @@ struct RootView: View {
             SettingsRootView()
                 .presentationSizing(.page)
         }
-        .sheet(isPresented: $showingBatchManagement) {
-            ConversationBatchManagementView(center: environment.conversationCenter)
+        .sheet(item: $batchStartingConversation) { conversation in
+            ConversationBatchManagementView(center: environment.conversationCenter, initialConversation: conversation)
         }
         .sheet(item: $renamingConversation) { conversation in
             TaskRenameSheet(conversation: conversation) { title in
@@ -662,10 +662,6 @@ struct RootView: View {
             HStack(spacing: 8) {
                 Label("账户", systemImage: "person.crop.circle")
                 Spacer()
-                Button("批量管理", systemImage: "checklist") { showingBatchManagement = true }
-                    .labelStyle(.iconOnly)
-                    .frame(minWidth: 44, minHeight: 44)
-                    .accessibilityIdentifier("sidebar.batch")
                 Button {
                     router.presentedSettings = true
                 } label: {
@@ -713,6 +709,8 @@ struct RootView: View {
         .tag(SidebarSelection.workbench(.conversation(conversation.id)))
         .accessibilityIdentifier("sidebar.conversation.\(conversation.id.uuidString)")
         .contextMenu {
+            Button("选择多个", systemImage: "checkmark.circle") { batchStartingConversation = conversation }
+                .accessibilityIdentifier("sidebar.selectMultiple")
             Button {
                 renamingConversation = conversation
             } label: {

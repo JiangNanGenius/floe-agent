@@ -55,7 +55,7 @@ struct SkillsView: View {
                             HStack {
                                 Text(definition.name).font(.headline).accessibilityIdentifier("plugins.card.\(definition.id)")
                                 Spacer()
-                                Text("v\(center.catalogPackages[definition.id]?.version ?? definition.version)").font(.caption).foregroundStyle(.secondary)
+                                Text("v\(center.installed.contains(where: { $0.id == definition.id }) ? (center.catalogPackages[definition.id]?.version ?? definition.version) : definition.version)").font(.caption).foregroundStyle(.secondary)
                             }
                             Text(pluginSummary(definition)).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
                             if let installed = center.installed.first(where: { $0.id == definition.id }) {
@@ -67,7 +67,7 @@ struct SkillsView: View {
                                     Button("plugins.enable") { Task { await center.setEnabled(true, skill: installed) } }
                                 }
                             } else {
-                                Text("plugins.unavailable").font(.caption).foregroundStyle(.secondary)
+                                Button("action.install") { Task { await center.installOfficialSkill(id: definition.id) } }
                             }
                         }.padding(.vertical, 4)
                     }
@@ -123,7 +123,7 @@ struct SkillsView: View {
                             }.buttonStyle(.borderless)
                         }
                         .swipeActions {
-                            if !DomainSkillLibrary.all.contains(where: { $0.id == skill.id }) {
+                            if DomainSkillLibrary.all.first(where: { $0.id == skill.id })?.exposed != false {
                                 Button("action.delete", role: .destructive) { pendingRemoval = skill }
                             }
                         }

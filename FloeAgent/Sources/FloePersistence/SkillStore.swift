@@ -119,10 +119,27 @@ public actor SQLiteSkillStore {
         }
     }
 
-    public func remove(id: String, expectedDigest: String? = nil) async throws {
+    public func remove(id: String, expectedDigest: String? = nil, suppressBundledSeed: Bool = false) async throws {
         try await database.writer { db in
             try Self.checkDigest(db, id: id, expected: expectedDigest)
+            if suppressBundledSeed {
+                try db.execute(sql: "INSERT OR REPLACE INTO app_settings (key, value_json, updated_at) VALUES (?, 'true', ?)",
+                    arguments: ["skills.userRemoved." + id, Self.date(Date())])
+            }
             try db.execute(sql: "DELETE FROM skills WHERE id = ?", arguments: [id])
+        }
+    }
+
+    public func wasBundledSkillRemoved(id: String) async throws -> Bool {
+        try await database.reader { db in
+            try String.fetchOne(db, sql: "SELECT value_json FROM app_settings WHERE key = ?",
+                arguments: ["skills.userRemoved." + id]) == "true"
+        }
+    }
+
+    public func requestBundledSkillInstallation(id: String) async throws {
+        try await database.writer { db in
+            try db.execute(sql: "DELETE FROM app_settings WHERE key = ?", arguments: ["skills.userRemoved." + id])
         }
     }
 

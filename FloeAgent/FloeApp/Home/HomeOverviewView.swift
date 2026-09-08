@@ -21,7 +21,7 @@ struct HomeOverviewView: View {
     @State private var searchText = ""
     @State private var schedules: [TaskScheduleRecord] = []
     @State private var showingSchedule = false
-    @State private var showingBatchManagement = false
+    @State private var batchStartingConversation: ConversationRecord?
     @State private var archivedTasks: [ConversationRecord] = []
     @State private var selectedArchivedIDs: Set<UUID> = []
     @State private var confirmingArchiveDeletion = false
@@ -142,10 +142,6 @@ struct HomeOverviewView: View {
         .searchable(text: $searchText, prompt: "搜索任务")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button("批量管理", systemImage: "checklist") { showingBatchManagement = true }
-                    .accessibilityIdentifier("workbench.batch")
-            }
-            ToolbarItem(placement: .primaryAction) {
                 Button {
                     showingSchedule = true
                 } label: {
@@ -181,7 +177,9 @@ struct HomeOverviewView: View {
         }
         .task { await load() }
         .refreshable { await load() }
-        .sheet(isPresented: $showingBatchManagement) { ConversationBatchManagementView(center: center) }
+        .sheet(item: $batchStartingConversation) { conversation in
+            ConversationBatchManagementView(center: center, initialConversation: conversation)
+        }
         .sheet(isPresented: $showingSchedule) {
             TaskScheduleSheet { await load() }
         }
@@ -274,6 +272,10 @@ struct HomeOverviewView: View {
             }
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button("选择多个", systemImage: "checkmark.circle") { batchStartingConversation = conversation }
+                .accessibilityIdentifier("workbench.selectMultiple")
+        }
         .frame(minHeight: FloeTheme.minimumTarget)
         .accessibilityLabel(conversation.title.isEmpty
             ? String(localized: "chat.untitled")

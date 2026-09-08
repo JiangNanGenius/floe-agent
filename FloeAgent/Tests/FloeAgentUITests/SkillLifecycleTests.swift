@@ -453,6 +453,24 @@ struct SkillLifecycleTests {
         #expect(try Data(contentsOf: backups[0].appendingPathComponent("floe.json")) == manifest)
     }
 
+    @Test("Removing an official plugin survives reseeding and can be explicitly reinstalled")
+    @MainActor func officialRemovalAndReinstall() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("skill-market-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let center = SkillsCenter(environment: environment, installationRoot: root.appendingPathComponent("Skills"))
+        let pdf = try #require(try await center.readSkills(id: "floe-pdf").first)
+        _ = try await center.manageSkill(.init(action: .remove, id: pdf.id, expectedDigest: pdf.digest))
+        #expect(try await environment.skillStore.wasBundledSkillRemoved(id: pdf.id))
+        let reopened = SkillsCenter(environment: environment, installationRoot: root.appendingPathComponent("Skills"))
+        #expect(try await reopened.readSkills(id: nil).allSatisfy { $0.id != pdf.id })
+        await reopened.installOfficialSkill(id: pdf.id)
+        #expect(reopened.errorMessage == nil)
+        #expect(try await reopened.readSkills(id: pdf.id).first?.digest == pdf.digest)
+        #expect(try await !environment.skillStore.wasBundledSkillRemoved(id: pdf.id))
+    }
+
     @Test @MainActor func firstReadSeedsGuidesAndKeepsPythonIndependent() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("skill-seed-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }

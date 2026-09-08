@@ -703,6 +703,15 @@ final class AppEnvironment: ObservableObject {
                 _ = await cloudWorkspaceCleanupQueue.drain()
             }
             #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains("--ui-test-batch-fixture") {
+                let fixtureID = UUID(uuidString: "57C0A79F-CF1B-45D2-B640-EF54E5C55391")!
+                if try await conversationStore.conversation(id: fixtureID) == nil {
+                    let fixture = ConversationRecord(id: fixtureID, title: "批量选择测试", createdAt: Date(), updatedAt: Date())
+                    try await conversationStore.saveConversation(fixture)
+                    _ = try await SQLiteWorkspaceStore(database: database).ensureWorkspace(conversationID: fixtureID, title: fixture.title)
+                }
+            }
             if ProcessInfo.processInfo.arguments.contains("--ui-test-reset-onboarding") {
                 ConversationCenter.persistOnboardingSkippedMarker(false)
                 for provider in try await configurationStore.providers() {

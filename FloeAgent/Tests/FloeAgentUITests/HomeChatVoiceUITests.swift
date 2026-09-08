@@ -56,6 +56,9 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
     }
 
     func testPluginMarketplaceAndBatchEntry() throws {
+        app.terminate()
+        app.launchArguments += ["--ui-test-batch-fixture"]
+        app.launch()
         XCUIDevice.shared.orientation = .portrait
         let plugins = app.staticTexts["sidebar.skills"]
         XCTAssertTrue(plugins.waitForExistence(timeout: 8))
@@ -66,10 +69,15 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
         marketplace.name = "Plugin marketplace"
         marketplace.lifetime = .keepAlways
         add(marketplace)
-        let batch = app.buttons["sidebar.batch"]
-        XCTAssertTrue(batch.exists)
-        batch.tap()
-        XCTAssertTrue(app.navigationBars["批量管理"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["sidebar.batch"].exists)
+        let row = app.descendants(matching: .any).matching(identifier: "sidebar.conversation.57C0A79F-CF1B-45D2-B640-EF54E5C55391").firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 8))
+        row.press(forDuration: 0.8)
+        let selectMultiple = app.buttons["sidebar.selectMultiple"]
+        XCTAssertTrue(selectMultiple.waitForExistence(timeout: 5))
+        selectMultiple.tap()
+        XCTAssertTrue(app.navigationBars["选择任务"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["已选 1"].exists)
         let management = XCTAttachment(screenshot: app.screenshot())
         management.name = "Batch task management"
         management.lifetime = .keepAlways

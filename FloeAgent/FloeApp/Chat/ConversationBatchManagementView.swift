@@ -16,6 +16,12 @@ struct ConversationBatchManagementView: View {
     @State private var confirmingDelete = false
     @State private var confirmingArchive = false
 
+    init(center: ConversationCenter, initialConversation: ConversationRecord? = nil) {
+        self.center = center
+        _selected = State(initialValue: initialConversation.map { [$0.id] } ?? [])
+        _archived = State(initialValue: initialConversation?.archivedAt != nil)
+    }
+
     private var visible: [ConversationRecord] {
         conversations.filter {
             ($0.archivedAt != nil) == archived && (query.isEmpty || $0.title.localizedStandardContains(query))
@@ -50,7 +56,7 @@ struct ConversationBatchManagementView: View {
                     .accessibilityIdentifier("tasks.batch.row.\(conversation.id)")
                 }
             }
-            .navigationTitle("批量管理")
+            .navigationTitle("选择任务")
             .searchable(text: $query, prompt: "搜索任务")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("action.done") { dismiss() } }
