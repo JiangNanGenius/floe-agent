@@ -20,6 +20,8 @@
 
 首次素材测试对缩略图宽度的断言失败：SwiftUI 暴露的是父按钮边界。已查看截图和录屏，改为验证列表行/海报卡高度差，重测通过。
 
+iPhone 17 Pro / iOS 27 模拟器的长思考展开、更新、全屏与折叠交互测试通过。截图：[折叠](iphone-reasoning-folded.png)、[展开更新](iphone-reasoning-expanded.png)、[全屏](iphone-reasoning-fullscreen.png)。结果包：`/tmp/floe-workflow-iphone-20260909.xcresult`。
+
 ## 验证边界
 
 这些 UI 测试复核已有流程与本轮回归，不能证明 Word/Excel/PPT 已有完整可编辑前端。Office 原生构建、引擎接入、真机编辑、原格式重开仍未验收。跟随滚动和分页的代码/逻辑验证不能替代 100 轮绘画的真机性能记录。

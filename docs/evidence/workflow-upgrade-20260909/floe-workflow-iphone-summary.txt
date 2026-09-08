@@ -1,0 +1,12 @@
+Test Suite 'Selected tests' started at 2026-09-09 05:57:15.842.
+Test Suite 'FloeAgentUITests.xctest' started at 2026-09-09 05:57:15.918.
+Test Suite 'HomeChatVoiceIPhoneUITests' started at 2026-09-09 05:57:15.920.
+Test Case '-[FloeAgentUITests.HomeChatVoiceIPhoneUITests testExpandedLongReasoningRemainsInteractive]' started.
+Test Case '-[FloeAgentUITests.HomeChatVoiceIPhoneUITests testExpandedLongReasoningRemainsInteractive]' passed (98.801 seconds).
+Test Suite 'HomeChatVoiceIPhoneUITests' passed at 2026-09-09 05:58:54.747.
+	 Executed 1 test, with 0 failures (0 unexpected) in 98.801 (98.827) seconds
+Test Suite 'FloeAgentUITests.xctest' passed at 2026-09-09 05:58:54.759.
+	 Executed 1 test, with 0 failures (0 unexpected) in 98.801 (98.841) seconds
+Test Suite 'Selected tests' passed at 2026-09-09 05:58:54.768.
+	 Executed 1 test, with 0 failures (0 unexpected) in 98.801 (98.926) seconds
+** TEST EXECUTE SUCCEEDED **
