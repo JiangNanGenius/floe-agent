@@ -4,8 +4,23 @@
   "qualificationStatus": "pending-native-build-and-device-roundtrip",
   "documentation": "https://github.com/CollaboraOnline/online.mirror/blob/27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc/ios/README.md",
   "platform": "iphoneos-arm64",
-  "minimumFreeGiB": 150,
-  "minimumFreeGiBNote": "Conservative project build gate inherited from M0, not an upstream minimum requirement.",
-  "engineConfigureArguments": ["--with-distro=CPiOS", "--disable-debug", "--disable-dbgutil"],
-  "acceptance": ["native static engine build", "embedded Floe editor", "offline DOCX/XLSX/PPTX edits", "save and reopen", "charts and embedded attachment hashes", "layout and font checks", "license inventory", "physical iPad memory and responsiveness"]
+  "minimumFreeGiBNote": "12 GiB permits a bounded build attempt; stop the build at 6 GiB free. Historical 150 GiB is a recommendation, not an upstream minimum.",
+  "engineConfigureArguments": [
+    "--with-distro=CPiOS",
+    "--disable-debug",
+    "--disable-dbgutil"
+  ],
+  "acceptance": [
+    "native static engine build",
+    "embedded Floe editor",
+    "offline DOCX/XLSX/PPTX edits",
+    "save and reopen",
+    "charts and embedded attachment hashes",
+    "layout and font checks",
+    "license inventory",
+    "physical iPad memory and responsiveness"
+  ],
+  "recommendedFreeGiB": 150,
+  "minimumFreeGiB": 12,
+  "buildReserveGiB": 6
 }

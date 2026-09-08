@@ -25,8 +25,15 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
       - name: Prepare build tools
-        run: brew install autoconf automake libtool pkg-config
+        run: |
+          brew install autoconf automake libtool pkg-config
+          python3 -m venv "$RUNNER_TEMP/office-python"
+          "$RUNNER_TEMP/office-python/bin/pip" install polib==1.2.0 lxml==5.4.0
+          echo "$RUNNER_TEMP/office-python/bin" >> "$GITHUB_PATH"
       - name: Check or build engine
         env:
           BUILD_ENGINE: ${{ inputs.build_engine || false }}

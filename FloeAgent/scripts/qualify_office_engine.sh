@@ -16,7 +16,7 @@ sdk=subprocess.run(['xcrun','--sdk','iphoneos','--show-sdk-path'],capture_output
 report={'commit':lock['commit'],'freeGiB':round(free,2),'requiredFreeGiB':lock['minimumFreeGiB'],
  'missingTools':missing,'iphoneosSDKAvailable':sdk is not None and sdk.returncode==0,
  'nativeBuildPassed':False,'embeddedEditorPassed':False,'deviceRoundtripPassed':False,
- 'gateNote':lock['minimumFreeGiBNote']}
+ 'gateNote':lock['minimumFreeGiBNote'],'recommendedFreeGiB':lock['recommendedFreeGiB'],'buildReserveGiB':lock['buildReserveGiB']}
 report['preflightPassed']=not missing and report['iphoneosSDKAvailable'] and free>=lock['minimumFreeGiB']
 with open(os.path.join(root,'qualification.json'),'w') as f: json.dump(report,f,indent=2)
 print(json.dumps(report,indent=2))
@@ -35,19 +35,36 @@ fi
 [[ "$(git -C "$source_dir" rev-parse HEAD)" == "$commit" ]] || { echo 'Source commit mismatch' >&2; exit 3; }
 git -C "$source_dir" diff --quiet
 git -C "$source_dir" diff --cached --quiet
-(
-  cd "$source_dir/engine"
-  ./autogen.sh --with-distro=CPiOS --disable-debug --disable-dbgutil
-  make -j2
-)
-(
-  cd "$source_dir"
-  ./autogen.sh
-  ./configure --enable-iosapp --with-app-name='Floe Office Qualification' \
-    --with-app-package-name=org.floeagent.officequalification --enable-experimental \
-    --with-vendor=Floe --with-lo-builddir="$source_dir/engine"
-  make -j2
-)
+python3 - "$build_root" <<'PYBUILD'
+import json,os,shutil,signal,subprocess,sys,time
+root=sys.argv[1]; source=os.path.join(root,'source'); engine=os.path.join(source,'engine')
+report_path=os.path.join(root,'qualification.json'); report=json.load(open(report_path))
+commands=[('engine-configure',engine,['./autogen.sh','--with-distro=CPiOS','--disable-debug','--disable-dbgutil']),
+ ('engine-build',engine,['make','-j2']),('editor-autogen',source,['./autogen.sh']),
+ ('editor-configure',source,['./configure','--enable-iosapp','--with-app-name=Floe Office Qualification',
+ '--with-app-package-name=org.floeagent.officequalification','--enable-experimental','--with-vendor=Floe','--with-lo-builddir='+engine]),
+ ('editor-build',source,['make','-j2'])]
+def save():
+ with open(report_path,'w') as f: json.dump(report,f,indent=2)
+for stage,cwd,command in commands:
+ report['stage']=stage;save()
+ process=subprocess.Popen(command,cwd=cwd,start_new_session=True)
+ try:
+  while process.poll() is None:
+   free=shutil.disk_usage(root).free/1024**3
+   if free<report['buildReserveGiB']:
+    report['resourceStop']='disk reserve reached';report['freeGiB']=round(free,2);save()
+    raise RuntimeError('Native build stopped at the disk reserve; no app integration was enabled')
+   time.sleep(2)
+  if process.returncode:
+   report['failedStage']=stage;report['exitCode']=process.returncode;save()
+   raise SystemExit(process.returncode)
+ finally:
+  if process.poll() is None:
+   os.killpg(process.pid,signal.SIGTERM)
+   try: process.wait(timeout=20)
+   except subprocess.TimeoutExpired: os.killpg(process.pid,signal.SIGKILL);process.wait()
+PYBUILD
 python3 - "$build_root" <<'PY'
 import json,os,sys
 root=sys.argv[1]; path=os.path.join(root,'qualification.json')
