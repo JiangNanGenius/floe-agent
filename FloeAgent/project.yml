@@ -56,6 +56,15 @@ targets:
       properties:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: org.floeagent.canvas
+            UTTypeDescription: Floe Canvas
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - floecanvas
+              public.mime-type: application/vnd.floe.canvas
         FLOEGitHubOAuthClientID: $(FLOE_GITHUB_OAUTH_CLIENT_ID)
         ITSAppUsesNonExemptEncryption: false
         NSAppTransportSecurity:

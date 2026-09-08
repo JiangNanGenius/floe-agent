@@ -70,3 +70,4 @@
 - 已实现一批基础修改：工具/Skill 分页目录与多查询、归属和关联元数据、较旧官方内置包升级、聊天底部跟随和历史分页、素材缩略图及两种布局、二进制文件内嵌只读预览、HTTP 错误下载保护。大项保持未勾选，直到全部子项验收。
 - 已通过的测试和截图见 [本轮验证记录](evidence/workflow-upgrade-20260909/README.md)。没有新版本标签、TestFlight 上传或完整 Office 验收结果。
 - Office 云端原生构建修正继承的调试符号配置，并增加静态库与前端资源产物保存；当前构建任务为 [34268468731](https://github.com/JiangNanGenius/floe-agent/actions/runs/34268468731)，任务状态需继续核实。
+- 持续目标续跑：核实 Office 原生构建仍处于 `Check or build engine`，没有重启或重复启动。补齐 `org.floeagent.canvas` 的系统导出类型声明及 `.floecanvas` 扩展名，同时同步 XcodeGen 配置与实际 Info.plist；原有 iPhone/iPad 方向配置保持一致。此修复针对 UI 测试捕获的未声明文件类型告警，不能代替画布全部验收。
