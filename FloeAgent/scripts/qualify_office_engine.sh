@@ -10,7 +10,7 @@ mkdir -p "$build_root"
 python3 - "$lock_file" "$build_root" <<'PY'
 import json,os,shutil,subprocess,sys
 lock=json.load(open(sys.argv[1])); root=sys.argv[2]
-missing=[x for x in ['git','make','autoconf','automake','glibtool','pkg-config','node','xcrun'] if not shutil.which(x)]
+missing=[x for x in ['git','make','autoconf','automake','glibtool','pkg-config','node','perl','xcrun'] if not shutil.which(x)]
 free=shutil.disk_usage(root).free/1024**3
 sdk=subprocess.run(['xcrun','--sdk','iphoneos','--show-sdk-path'],capture_output=True,text=True) if shutil.which('xcrun') else None
 report={'commit':lock['commit'],'freeGiB':round(free,2),'requiredFreeGiB':lock['minimumFreeGiB'],
@@ -39,7 +39,7 @@ python3 - "$build_root" <<'PYBUILD'
 import json,os,shutil,signal,subprocess,sys,time
 root=sys.argv[1]; source=os.path.join(root,'source'); engine=os.path.join(source,'engine')
 report_path=os.path.join(root,'qualification.json'); report=json.load(open(report_path))
-commands=[('engine-configure',engine,['./autogen.sh','--with-distro=CPiOS','--disable-debug','--disable-dbgutil']),
+commands=[('engine-configure',engine,['perl','./autogen.sh','--with-distro=CPiOS','--disable-debug','--disable-dbgutil']),
  ('engine-build',engine,['make','-j2']),('editor-autogen',source,['./autogen.sh']),
  ('editor-configure',source,['./configure','--enable-iosapp','--with-app-name=Floe Office Qualification',
  '--with-app-package-name=org.floeagent.officequalification','--enable-experimental','--with-vendor=Floe','--with-lo-builddir='+engine]),
@@ -48,7 +48,9 @@ def save():
  with open(report_path,'w') as f: json.dump(report,f,indent=2)
 for stage,cwd,command in commands:
  report['stage']=stage;save()
- process=subprocess.Popen(command,cwd=cwd,start_new_session=True)
+ try: process=subprocess.Popen(command,cwd=cwd,start_new_session=True)
+ except OSError as error:
+  report['failedStage']=stage;report['launchError']=str(error);save();raise
  try:
   while process.poll() is None:
    free=shutil.disk_usage(root).free/1024**3
