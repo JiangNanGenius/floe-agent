@@ -1,0 +1,163 @@
+{
+  "runID": "34331257197",
+  "headSha": "ff4546d13430fee0f5ec7714c6832e896c5d08e8",
+  "status": "in_progress",
+  "conclusion": "",
+  "jobs": [
+    {
+      "name": "appstore-sdk-compatibility",
+      "status": "in_progress",
+      "conclusion": "",
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@v5",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install Xcode Metal toolchain",
+          "conclusion": "success"
+        },
+        {
+          "name": "Generate project and resolve dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Build App Store SDK branch",
+          "conclusion": ""
+        },
+        {
+          "name": "Post Run actions/checkout@v5",
+          "conclusion": ""
+        }
+      ]
+    },
+    {
+      "name": "build-test",
+      "status": "completed",
+      "conclusion": "success",
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@v5",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install Xcode Metal toolchain",
+          "conclusion": "success"
+        },
+        {
+          "name": "Generate Xcode project",
+          "conclusion": "success"
+        },
+        {
+          "name": "Resolve and pin-check dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Guardian real subprocess cancellation regressions",
+          "conclusion": "success"
+        },
+        {
+          "name": "Guardian real PTY lifecycle regressions",
+          "conclusion": "success"
+        },
+        {
+          "name": "Canvas, PiP, and timeline app regression tests",
+          "conclusion": "success"
+        },
+        {
+          "name": "SPM test (cross-platform targets)",
+          "conclusion": "success"
+        },
+        {
+          "name": "Secret scan",
+          "conclusion": "success"
+        },
+        {
+          "name": "SBOM",
+          "conclusion": "success"
+        },
+        {
+          "name": "License inventory",
+          "conclusion": "success"
+        },
+        {
+          "name": "Upload artifacts",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@v5",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "spm-linux-build",
+      "status": "completed",
+      "conclusion": "success",
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Initialize containers",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@v5",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install Linux build dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Resolve dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Build cross-platform targets",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@v5",
+          "conclusion": "success"
+        },
+        {
+          "name": "Stop containers",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "build-native-pandas",
+      "status": "completed",
+      "conclusion": "skipped",
+      "steps": []
+    },
+    {
+      "name": "publish-skill-hub",
+      "status": "completed",
+      "conclusion": "skipped",
+      "steps": []
+    }
+  ],
+  "latestNativeDrainSourceCovered": false,
+  "releasePassed": false
+}
