@@ -1095,7 +1095,7 @@ func registerCanvasAgentTools(environment: AppEnvironment, registry: ToolRunnerR
         },
         generateImages: { [weak environment] prompt, options, sourceImages, modelID, owner in
             guard let environment else { throw FloeError.internalError("Canvas environment unavailable") }
-            let route = try environment.conversationCenter.resolveAgentImageRoute(
+            let route = try await environment.conversationCenter.resolveAgentImageRoute(
                 operation: sourceImages.isEmpty ? .generate : .edit, modelID: modelID,
                 selection: ImageGenerationSelection(aspectRatio: options.aspectRatio, resolution: options.resolution,
                     quality: options.quality, nativeSizeOverride: options.size),
