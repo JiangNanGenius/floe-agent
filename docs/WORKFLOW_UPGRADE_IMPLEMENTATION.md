@@ -202,3 +202,5 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 - 完整构建 34333115646（415dad3）的原文件闭环已实际通过：安装主程序与原生组件均与签名包哈希一致；Word 右侧只读、全屏直接编辑、附件选择页停留 35 秒后插入、保存、关闭和新会话重开正常。工作区原文件附件 18 项检查通过，原字节一致，新会话副本与原文件 SHA 相同；见 [完整应用运行证据](evidence/workflow-upgrade-20260909/office-native-drain-fullbuild-runtime.json) 及五张截图。此证据仅覆盖该合成 Word 样本，不代替全部 Office、物理真机和 Microsoft Office 验收。Excel 导出修复 54bb4cb 的新宿主任务 34336959885 已通过导出器编译，原生组件链接中。
 
 - Excel 导出宿主 34336959885（54bb4cb）已成功，包含单对象编译、其他 167 个库成员保留验证、完整原生链接和 Swift 导入。产物 4,785 文件/178 目录本地核对通过并锁定；新增 filter patch/source/archive 校验，防止以后修改导出源码却继续打包旧宿主。见 [组件回执](evidence/workflow-upgrade-20260909/office-excel-filter-host-qualified.json)。接下来重建完整 Floe，实际 XLSX 附件及位置验收仍未通过。
+
+- Excel 新导出实际保存保留了附件原字节，但重开未识别对象：工作表 shapeId 与 VML 的 `_x005F_x0000_` 转义编号不匹配，shape type 也同样失联。已复用上游 VMLExport 的禁用 X-escape/恢复方式修复；arm64 编译与其他 167 成员保留校验、4 组关系图验证器变异测试通过。失败截图与 [运行证据](evidence/workflow-upgrade-20260909/office-excel-vml-id-runtime-failure.json) 已保存。新宿主及实际修复重开仍待验证，完整 Floe 34337602194 是首版导出构建，不包含此次关联修复。

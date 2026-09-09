@@ -1,0 +1,28 @@
+{
+  "hostRun": 34336959885,
+  "sourceCommit": "54bb4cb965995b3a5248ef01f7ded817f58418c7",
+  "sessionID": "999E981E-7226-4B0B-BC2D-AAA194081EB8",
+  "surface": "Mac Designed for iPad, independent native qualification app 17",
+  "selectedSheet": "Notes",
+  "selectedCell": "B5",
+  "insertedExportCount": 1,
+  "reopenedExportCount": 0,
+  "reopenedIconVisible": true,
+  "originalAttachmentBytesPreserved": true,
+  "worksheetShapeID": "1073741826",
+  "savedVMLShapeID": "_x005F_x0000_s1073741826",
+  "savedVMLTypeReference": "#_x005F_x0000_t75",
+  "declaredVMLTypeID": "_x0000_t75",
+  "cause": "OOXML X-escaping changes legacy VML identifiers, breaking both object and shape-type references.",
+  "fix": "Use setAllowXEscape(false) around shape start attributes, then restore true, matching pinned VMLExport::StartShape.",
+  "structuralChecksPassed": 17,
+  "structuralChecksTotal": 18,
+  "runtimeRoundtripPassed": false,
+  "fixedHostRuntimePassed": false,
+  "physicalDevicePassed": false,
+  "microsoftOfficeReopenPassed": false,
+  "screenshots": [
+    "office-xlsx-filter-inserted-mac.jpg",
+    "office-xlsx-filter-reopened-mac.jpg"
+  ]
+}

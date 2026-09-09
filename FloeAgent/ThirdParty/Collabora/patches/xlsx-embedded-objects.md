@@ -40,8 +40,12 @@ archive member. No class layout, virtual method table or token table is changed.
 The verified source archive is never modified; only an owned library is selected
 in the host's new linker list. Copy/preview errors propagate as failed saves.
 
-Current boundary: local arm64 compilation and archive preservation passed. Native
-linking, actual XLSX roundtrip and Microsoft Office validation are still pending.
+Current boundary: the first native host linked and preserved actual attachment
+bytes, but runtime reopen found no live object because X-escaping changed VML IDs
+and type references. The patch now follows pinned VMLExport::StartShape, disabling
+X-escaping only for the shape start attributes and restoring it afterward. Normal
+XML escaping remains active. The corrected arm64 compile and archive preservation
+passed; new host linking, runtime reopen and Microsoft Office validation remain pending.
 The pinned VML importer rounds offsets to integer pixels; its handling of the
 precise `objectPr` anchors needs runtime fidelity checks and potentially a follow-up
 importer patch. Grouped objects, linked OLE, absent previews, repeated saves and

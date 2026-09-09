@@ -4,7 +4,7 @@
 
 当前结论：Office 前端仍在实施，未完成。下表中的“局部验证”只对应明确记录的样本操作。现有上游菜单、UNO 命令或导出 API 的存在，均不能代替用户实际操作成功。
 
-最新关键结果：开发组件对照应用 Floe Agent 4（主应用 c6bb803 + 原生组件 9a5e6a4）在工作区附件选择页停留 35 秒后，Word 插入、保存返回、工作区原文件写回和新会话重开均通过；原文件附件 18 项检查通过且字节一致。完整重建 34333115646 已签名安装，相同 Word 工作区附件流程也已通过：原文件 18 项附件检查及新会话副本 SHA 核对通过，Excel 附件、图表保真、全部前端操作及真机门槛未关闭。见 [原文件闭环回执](evidence/workflow-upgrade-20260909/office-native-drain-full-app-control.json)。
+最新关键结果：完整 Floe 构建 34333115646 的 Word 附件插入、保存原文件及新会话重开已实测通过。Excel 新导出宿主 34336959885 能保存附件原字节，但 VML 编号被转义，重开只显示图标、不能识别为附件；已定位并完成修复的 arm64 编译，等待新宿主运行复测。PPT 图表工作簿保留、其他编辑操作及真机仍未通过。
 
 ## 统一操作与证据规则
 
@@ -142,3 +142,5 @@
 原生 `XclObjOle` 缺少 XML 导出的修复已实际编译为 arm64 对象；只替换 `libscfiltlo.a` 中的导出对象，另外 167 个成员哈希不变。新导出读取当前对象存储，关联工作表、附件、图标和锚点；不是保存后修改 ZIP。见 [回执](evidence/workflow-upgrade-20260909/office-excel-filter-overlay-compile.json) 和 [补丁边界](../FloeAgent/ThirdParty/Collabora/patches/xlsx-embedded-objects.md)。实际保存重开、导出字节、多个对象、撤销重做与位置保真仍待验收，不能将本次编译结果作为 A04 通过证据。
 
 完整应用 Word 证据：[415dad3 运行闭环](evidence/workflow-upgrade-20260909/office-native-drain-fullbuild-runtime.json)。已覆盖工作区选择停留 35 秒、插入、写回原文件与新会话重开；锚点/环绕调整、系统选择器和物理真机仍待验收。
+
+- 2026-09-09 Excel 新导出运行失败已缩小到关联编号：独立应用 17 在 Notes!B5 插入后导出 1 个附件，保存重开后导出 0 个；ZIP 内 65,539 字节及 Unicode 文件名完整，17/18 项通过，但 shape ID 和 type 被错误转义。采用上游 VMLExport 的 legacy-ID 序列化方式修复；新 arm64 编译和 167 个其他成员保留校验通过，4 组独立关系图变异测试包含这两种转义错误。见 [运行失败](evidence/workflow-upgrade-20260909/office-excel-vml-id-runtime-failure.json) 与 [修复编译](evidence/workflow-upgrade-20260909/office-excel-vml-id-fix-compile.json)。实际修复重开尚未验收，A04/F04 保持未通过。
