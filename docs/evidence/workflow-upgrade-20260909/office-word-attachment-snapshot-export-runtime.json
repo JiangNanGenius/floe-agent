@@ -1,0 +1,74 @@
+{
+  "hostRunID": "34317744039",
+  "sessionID": "66DF67B9-0273-40E5-A50C-634EBF5809E5",
+  "events": [
+    {
+      "detail": "docx",
+      "event": "fixtureCopied",
+      "time": "2026-09-09T06:37:59Z"
+    },
+    {
+      "detail": "zh-Hans-TW",
+      "event": "preferredLanguage",
+      "time": "2026-09-09T06:37:59Z"
+    },
+    {
+      "detail": "true; readonly=false",
+      "event": "opened",
+      "time": "2026-09-09T06:38:00Z"
+    },
+    {
+      "detail": "false",
+      "event": "workingPersistence",
+      "time": "2026-09-09T06:38:02Z"
+    },
+    {
+      "detail": "附件 测试 📎.bin",
+      "event": "attachmentRequested",
+      "time": "2026-09-09T06:38:35Z"
+    },
+    {
+      "detail": "success",
+      "event": "attachmentCompleted",
+      "time": "2026-09-09T06:38:35Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T06:38:36Z"
+    },
+    {
+      "detail": "1; readonly=false",
+      "event": "attachmentsListed",
+      "time": "2026-09-09T06:38:48Z"
+    },
+    {
+      "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/66DF67B9-0273-40E5-A50C-634EBF5809E5/attachment-exports/18A34A8F-E777-44F3-B92C-6A2DC25D4144/附件 测试 📎.bin",
+      "event": "attachmentExported",
+      "time": "2026-09-09T06:38:48Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T06:39:13Z"
+    },
+    {
+      "detail": "",
+      "event": "saveRequested",
+      "time": "2026-09-09T06:39:54Z"
+    }
+  ],
+  "exports": [
+    {
+      "name": "附件 测试 📎.bin",
+      "bytes": 65539,
+      "sha256": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05"
+    }
+  ],
+  "saveReopenExportPassed": false,
+  "undoAfterExportPassed": false,
+  "failure": "Clicking native Undo after export showed server connection lost; subsequent save remained pending. Cause not established.",
+  "scope": "Isolated native editor running as Designed for iPad on Mac; not full Floe or physical iPad.",
+  "nativeAttachmentExportPassed": true,
+  "fullFloeFrontendPassed": false
+}

@@ -269,6 +269,7 @@ static void ServerReady() {
 // FLOE_SAVE_RECEIPTS_BEGIN: compiled independently by the receipt-order harness.
 @interface FloeSaveReceiptJoiner : NSObject
 @property (nonatomic, copy) NSString *activeRequestID;
+@property (nonatomic) NSTimeInterval timeout;
 @property (nonatomic, copy) void (^completion)(BOOL);
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *requests;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *results;
@@ -281,6 +282,7 @@ static void ServerReady() {
 @implementation FloeSaveReceiptJoiner
 - (instancetype)init {
     if ((self = [super init])) {
+        _timeout = 90;
         _requests = [NSMutableDictionary dictionary];
         _results = [NSMutableDictionary dictionary];
     }
@@ -291,6 +293,9 @@ static void ServerReady() {
     if (self.activeRequestID || !requestID.length) return NO;
     self.activeRequestID = requestID;
     self.completion = completion;
+    __weak FloeSaveReceiptJoiner *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(self.timeout * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{ [weakSelf reject:requestID]; });
     return YES;
 }
 - (void)finish:(BOOL)success {
@@ -440,7 +445,7 @@ static void ServerReady() {
     NSData *encoded = [NSJSONSerialization dataWithJSONObject:@[requestID] options:0 error:nil];
     NSString *argument = [[NSString alloc] initWithData:encoded encoding:NSUTF8StringEncoding];
     NSString *script = [NSString stringWithFormat:
-        @"(() => { const map = window.app && window.app.map; if (!map || typeof map.save !== 'function') return false; map.save(false, false, (%@)[0]); return true; })()", argument];
+        @"(() => { const map = window.app && window.app.map; if (!map || typeof map.save !== 'function' || !window.app.socket || !window.app.socket.connected()) return false; map.save(false, false, (%@)[0]); return true; })()", argument];
     __weak FloeOfficeNativeViewController *weakSelf = self;
     [self.editor.webView evaluateJavaScript:script completionHandler:^(id value, NSError *error) {
         if (error || ![value isKindOfClass:NSNumber.class] || ![value boolValue])

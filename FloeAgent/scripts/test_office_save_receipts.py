@@ -26,6 +26,18 @@ def check():
 
 HARNESS = r'''
 int main() { @autoreleasepool {
+    FloeSaveReceiptJoiner *timed = [FloeSaveReceiptJoiner new];
+    timed.timeout = 0.02;
+    __block int expired = 0;
+    assert([timed begin:@"timeout" completion:^(BOOL result) { assert(!result); expired++; }]);
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:0.2];
+    while (!expired && [deadline timeIntervalSinceNow] > 0)
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:deadline];
+    assert(expired == 1 && timed.activeRequestID == nil);
+    [timed associate:@"late" requestID:@"timeout"];
+    [timed complete:@"late" success:YES];
+    assert(expired == 1);
+    puts("missing save receipts expire and late success cannot reverse failure");
     FloeSaveReceiptJoiner *joiner = [FloeSaveReceiptJoiner new];
     __block int completions = 0;
     __block BOOL last = NO;
