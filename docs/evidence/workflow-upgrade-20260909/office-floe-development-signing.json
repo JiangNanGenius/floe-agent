@@ -1,0 +1,32 @@
+{
+  "sourceRunID": "34321329601",
+  "developmentOnly": true,
+  "signatureVerified": true,
+  "bundles": [
+    {
+      "bundle": "Floe Screen Share.appex",
+      "requestedCapabilityKeys": [
+        "com.apple.security.application-groups"
+      ],
+      "allRequestedCapabilitiesPresent": true,
+      "profileAllowsMac": true,
+      "profileIncludesSigningCertificate": true
+    },
+    {
+      "bundle": "Floe Agent.app",
+      "requestedCapabilityKeys": [
+        "com.apple.developer.homekit",
+        "com.apple.developer.icloud-container-identifiers",
+        "com.apple.developer.icloud-services",
+        "com.apple.security.application-groups"
+      ],
+      "allRequestedCapabilitiesPresent": true,
+      "profileAllowsMac": true,
+      "profileIncludesSigningCertificate": true
+    }
+  ],
+  "runtimeVerified": false,
+  "ipaSHA256": "061dfc64356482329565510b73feb33aa60e33043dfe5f1afaed26cd932f49d6",
+  "ipaBytes": 228194071,
+  "testFlightUploaded": false
+}

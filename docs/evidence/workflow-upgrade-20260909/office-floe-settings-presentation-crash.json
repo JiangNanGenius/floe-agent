@@ -1,0 +1,33 @@
+{
+  "buildRunID": "34321329601",
+  "hostRunID": "34320630546",
+  "platform": "iOS application running on Apple Silicon Mac",
+  "scope": "Full Floe application, development signed; not physical iPhone/iPad",
+  "developmentSigningVerified": true,
+  "initialRootViewDisplayed": true,
+  "steps": [
+    "Launch full Floe application",
+    "Open Settings from sidebar"
+  ],
+  "settingsOpenPassed": false,
+  "captureTime": "2026-09-09 17:21:06.2059 +1000",
+  "exception": "EXC_BREAKPOINT",
+  "signal": "SIGTRAP",
+  "triggeredSymbols": [
+    "_assertionFailure(_:_:file:line:flags:)",
+    "specialized EnvironmentObject.error()",
+    "specialized EnvironmentObject.wrappedValue.getter",
+    "EnvironmentObject.wrappedValue.getter",
+    "SettingsRootView.detailView(for:)",
+    "closure #1 in closure #2 in closure #1 in SettingsRootView.body.getter",
+    "NavigationStack.init<>(root:)",
+    "closure #2 in closure #1 in SettingsRootView.body.getter",
+    "NavigationSplitView.init<>(columnVisibility:sidebar:detail:)",
+    "closure #1 in SettingsRootView.body.getter",
+    "Group.init(content:)",
+    "SettingsRootView.body.getter"
+  ],
+  "diagnosis": "SettingsRootView resolves an absent AppEnvironment EnvironmentObject while constructing its initial detail view.",
+  "fix": "Require AppEnvironment in SettingsRootView initializer at all three call sites; provide environment for child views and router at the settings sheet boundary.",
+  "fixRuntimeVerified": false
+}

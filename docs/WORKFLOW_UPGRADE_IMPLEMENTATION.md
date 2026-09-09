@@ -163,3 +163,5 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 - O04/P05：实际前台幻灯片位置/尺寸修改已保存并只读重开，指定坐标准确；独立检查新发现内嵌图表工作簿在保存中丢失，另有未改对象尺寸漂移和首柱预览缺失。已加入 Office 前端失败明细和截图，下一步追查引擎图表外部数据导出，不能把缓存数值保留当作可编辑图表保真。
 
 - O01 完整 Floe 构建 34321329601（f4518ba）已成功：应用实际编译、动态加载链、宿主及 4,780 个资源文件/174 目录校验通过，已归档 [载荷回执](evidence/workflow-upgrade-20260909/office-floe-save-host-integration.json)。这是未签名测试产物，仍显示既有 1.5.3/134 元数据，不是新版本发布或可用 TestFlight。完整 Floe 编辑交互、写回、保真和真机验收继续开放。
+
+- 完整 App 已从 34321329601 产物完成本地开发签名和安装；恢复了未签名归档导出遗漏的项目 App Group/iCloud/HomeKit 权限，证书、描述文件、Mac 设备许可和严格签名校验通过。实际启动能显示主界面，但打开设置触发 EnvironmentObject 缺失断言，见 [崩溃回执](evidence/workflow-upgrade-20260909/office-floe-settings-presentation-crash.json)。已将 SettingsRootView 改为显式依赖注入，三处入口同步更新并向后代传播环境；语法检查通过，完整重建和运行复测仍待验证。此发现是主应用验收失败，不能用独立 Office 程序成功覆盖。

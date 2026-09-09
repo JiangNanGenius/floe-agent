@@ -54,7 +54,7 @@ private struct MoreDestinationRouter: View {
         case .memory:
             MemoryView(center: viewModel.environment.memoryCenter)
         case .settings:
-            SettingsRootView()
+            SettingsRootView(environment: viewModel.environment)
         case .diagnostics:
             DiagnosticsAboutView(center: viewModel.environment.settingsCenter)
         }

@@ -73,7 +73,10 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
 struct SettingsRootView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var environment: AppEnvironment
+    // The settings sheet may be hosted outside the presenting view's
+    // environment. Require its dependency at every entry point instead of
+    // trapping while constructing the initial detail page.
+    @ObservedObject var environment: AppEnvironment
     @State private var selection: SettingsSection? = .general
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
@@ -130,6 +133,7 @@ struct SettingsRootView: View {
             }
         }
         }
+        .environmentObject(environment)
         .alert("配置未保存", isPresented: Binding(
             get: { environment.settingsCenter.settingsSaveError != nil },
             set: { if !$0 { environment.settingsCenter.clearSettingsSaveError() } }

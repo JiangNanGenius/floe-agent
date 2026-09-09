@@ -307,7 +307,8 @@ struct RootView: View {
             // Settings owns its regular-width split navigation. Wrapping that
             // split in another stack makes detail toolbar buttons and
             // NavigationLinks appear enabled while their taps are dropped.
-            SettingsRootView()
+            SettingsRootView(environment: environment)
+                .environmentObject(router)
                 .presentationSizing(.page)
         }
         .sheet(item: $batchStartingConversation) { conversation in
@@ -1078,7 +1079,7 @@ private struct MoreDestinationView: View {
                 MemoryView(center: environment.memoryCenter)
             }
         case .settings:
-            SettingsRootView()
+            SettingsRootView(environment: environment)
         case .diagnostics:
             DiagnosticsAboutView(center: environment.settingsCenter)
         }
