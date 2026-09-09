@@ -195,3 +195,6 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 - CI 34331257197（ff4546d）的 build-test 已成功，包括应用回归、SPM、子进程/PTY、安全扫描、SBOM 和许可清单，发现工具旧断言已不再阻断；Linux 构建通过，App Store SDK 在本次观察仍运行。见 [CI 状态](evidence/workflow-upgrade-20260909/office-ci-34331257197.json)。此 CI 不包含后续 9a5e6a4 原生通信修复，不能替代当前完整重建与运行验收。
 
 - 完整源码重建 34333115646（415dad3）已成功。下载后再次验证 34332381585 原生组件、4,780 资源文件/174 目录和实际应用动态加载关系；见 [完整构建回执](evidence/workflow-upgrade-20260909/office-floe-native-drain-integration.json)。开发签名已启动，安装和相同 Word 闭环复测仍待完成，不能将组件对照包的运行结果直接归到该完整构建。
+
+- Excel 附件保存缺失已补首版引擎导出：读取当前嵌入对象存储，写入工作表关系、VML 对象/图标与单元格锚点，并输出精确 EMU objectPr；数据或预览写入失败不再被当成成功保存。真实 arm64 对象编译及静态库替换校验通过，其余 167 个成员不变，见 [编译回执](evidence/workflow-upgrade-20260909/office-excel-filter-overlay-compile.json)。云端链接、保存重开和完整位置保真仍待实测；旧 VML 导入的整数像素取整也保留为待验，未勾选 A04/F04。
+- CI 34331257197（ff4546d）最终全部通过，包含 App Store SDK；此结果不覆盖后续通信或 Excel 导出修改。完整构建 34333115646 的开发签名包已生成且签名验证通过，完整包的运行闭环仍待复测，没有上传 TestFlight。

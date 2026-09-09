@@ -22,5 +22,8 @@
   "sourceRunID": "34333115646",
   "workflowCommit": "415dad302e5718f1e482baff3aed4e7b67b75e18",
   "developmentSigningStarted": true,
-  "testFlightUploaded": false
+  "testFlightUploaded": false,
+  "developmentSigningVerified": true,
+  "developmentIPA_SHA256": "33bffdb5e3e9d4a4540302de0be58b9d06c4061a11709083372be0f30c29c120",
+  "developmentOnly": true
 }

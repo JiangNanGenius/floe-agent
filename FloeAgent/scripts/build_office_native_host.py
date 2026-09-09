@@ -79,7 +79,7 @@ def framework_project(project, host_directory):
     return project
 
 
-def build_host(root, output, *, build=True):
+def build_host(root, output, *, build=True, filter_overlay=None):
     root, output = Path(root).resolve(), Path(output).resolve()
     base = qualify(root, output, build=False)
     report = {**base, 'kind': 'Floe native framework qualification', 'target': NAME,
@@ -103,6 +103,16 @@ def build_host(root, output, *, build=True):
         'CFBundleShortVersionString': '1.0', 'MinimumOSVersion': '26.0'}))
     project_path = output / 'source/ios/Mobile.xcodeproj/project.pbxproj'
     project = framework_project(plistlib.loads(project_path.read_bytes()), host)
+    if filter_overlay is not None:
+        from build_office_filter_overlay import select_linker_archive
+        linker, filter_report = select_linker_archive(root, filter_overlay, output)
+        report['filterOverlay'] = filter_report
+        for settings in (obj.get('buildSettings', {}) for obj in project['objects'].values()):
+            flags = settings.get('OTHER_LDFLAGS', [])
+            if '-filelist' in flags:
+                if flags.count('-filelist') != 1:
+                    raise ValueError('Ambiguous native host linker input list')
+                flags[flags.index('-filelist') + 1] = str(linker)
     project_path.write_bytes(plistlib.dumps(project))
     command = list(base['command'])
     command[command.index('-target') + 1] = NAME
@@ -165,6 +175,8 @@ if __name__ == '__main__':
     parser.add_argument('bundle', type=Path)
     parser.add_argument('output', type=Path)
     parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--filter-overlay', type=Path)
     args = parser.parse_args()
-    result = build_host(args.bundle, args.output, build=not args.prepare_only)
+    result = build_host(args.bundle, args.output, build=not args.prepare_only,
+                        filter_overlay=args.filter_overlay)
     print(json.dumps({key: value for key, value in result.items() if key != 'runtimeResourceSHA256'}, indent=2))

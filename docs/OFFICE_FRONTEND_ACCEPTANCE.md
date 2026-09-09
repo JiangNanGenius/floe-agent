@@ -4,7 +4,7 @@
 
 当前结论：Office 前端仍在实施，未完成。下表中的“局部验证”只对应明确记录的样本操作。现有上游菜单、UNO 命令或导出 API 的存在，均不能代替用户实际操作成功。
 
-最新关键结果：开发组件对照应用 Floe Agent 4（主应用 c6bb803 + 原生组件 9a5e6a4）在工作区附件选择页停留 35 秒后，Word 插入、保存返回、工作区原文件写回和新会话重开均通过；原文件附件 18 项检查通过且字节一致。完整重建 34333115646 尚在运行，Excel 附件、图表保真、全部前端操作及真机门槛未关闭。见 [原文件闭环回执](evidence/workflow-upgrade-20260909/office-native-drain-full-app-control.json)。
+最新关键结果：开发组件对照应用 Floe Agent 4（主应用 c6bb803 + 原生组件 9a5e6a4）在工作区附件选择页停留 35 秒后，Word 插入、保存返回、工作区原文件写回和新会话重开均通过；原文件附件 18 项检查通过且字节一致。完整重建 34333115646 已成功并生成开发签名包，完整包运行闭环尚待复测，Excel 附件、图表保真、全部前端操作及真机门槛未关闭。见 [原文件闭环回执](evidence/workflow-upgrade-20260909/office-native-drain-full-app-control.json)。
 
 ## 统一操作与证据规则
 
@@ -136,3 +136,7 @@
 - P07/P09 工作簿丢失已定位到锁定上游源码：`engine/oox/source/export/chartexport.cxx` 的 `ChartExport::exportExternalData` 在 2078 行只允许 DOCUMENT_DOCX，PPTX 直接返回。见 [源码与运行关联诊断](evidence/workflow-upgrade-20260909/office-ppt-chart-workbook-export-diagnosis.json)。修复需同时处理图表数据文件、关系和单元格引用，覆盖修改数据后的导出；只放开条件或只保留缓存/旧工作簿都不能满足可编辑图表要求。
 
 - 34327287597 新宿主在独立 Mac 应用 16 完成 Excel/PPT 附件对照：Excel 两组保存均丢失附件，PPT 保存及重开导出原字节一致，但插入后页面未即时显示。见 [运行记录](evidence/workflow-upgrade-20260909/office-drawing-attachment-runtime.json)、[Excel 直接保存失败](evidence/workflow-upgrade-20260909/office-excel-attachment-direct-structure.json)、[PPT 结构检查](evidence/workflow-upgrade-20260909/office-ppt-attachment-structure.json)。保存接口均完成，不能用该成功结果代替附件保真。新增对象选中/变更通知及全屏初次自动进入编辑的修复仍需新宿主运行验证。
+
+## Excel 导出修复进行中
+
+原生 `XclObjOle` 缺少 XML 导出的修复已实际编译为 arm64 对象；只替换 `libscfiltlo.a` 中的导出对象，另外 167 个成员哈希不变。新导出读取当前对象存储，关联工作表、附件、图标和锚点；不是保存后修改 ZIP。见 [回执](evidence/workflow-upgrade-20260909/office-excel-filter-overlay-compile.json) 和 [补丁边界](../FloeAgent/ThirdParty/Collabora/patches/xlsx-embedded-objects.md)。实际保存重开、导出字节、多个对象、撤销重做与位置保真仍待验收，不能将本次编译结果作为 A04 通过证据。

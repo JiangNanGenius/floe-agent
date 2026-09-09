@@ -1,163 +1,313 @@
 {
-  "runID": "34331257197",
+  "conclusion": "success",
   "headSha": "ff4546d13430fee0f5ec7714c6832e896c5d08e8",
-  "status": "in_progress",
-  "conclusion": "",
   "jobs": [
     {
+      "completedAt": "2026-09-09T09:26:06Z",
+      "conclusion": "success",
+      "databaseId": 102400222144,
       "name": "appstore-sdk-compatibility",
-      "status": "in_progress",
-      "conclusion": "",
+      "startedAt": "2026-09-09T08:50:07Z",
+      "status": "completed",
       "steps": [
         {
+          "completedAt": "2026-09-09T08:50:08Z",
+          "conclusion": "success",
           "name": "Set up job",
-          "conclusion": "success"
+          "number": 1,
+          "startedAt": "2026-09-09T08:50:07Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:50:13Z",
+          "conclusion": "success",
           "name": "Run actions/checkout@v5",
-          "conclusion": "success"
+          "number": 2,
+          "startedAt": "2026-09-09T08:50:08Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:50:23Z",
+          "conclusion": "success",
           "name": "Install Xcode Metal toolchain",
-          "conclusion": "success"
+          "number": 3,
+          "startedAt": "2026-09-09T08:50:13Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:58:06Z",
+          "conclusion": "success",
           "name": "Generate project and resolve dependencies",
-          "conclusion": "success"
+          "number": 4,
+          "startedAt": "2026-09-09T08:50:23Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T09:25:53Z",
+          "conclusion": "success",
           "name": "Build App Store SDK branch",
-          "conclusion": ""
+          "number": 5,
+          "startedAt": "2026-09-09T08:58:06Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T09:25:55Z",
+          "conclusion": "success",
           "name": "Post Run actions/checkout@v5",
-          "conclusion": ""
+          "number": 10,
+          "startedAt": "2026-09-09T09:25:53Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-09T09:25:59Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 11,
+          "startedAt": "2026-09-09T09:25:55Z",
+          "status": "completed"
         }
-      ]
+      ],
+      "url": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34331257197/job/102400222144"
     },
     {
+      "completedAt": "2026-09-09T09:17:41Z",
+      "conclusion": "success",
+      "databaseId": 102400222405,
       "name": "build-test",
+      "startedAt": "2026-09-09T08:50:03Z",
       "status": "completed",
-      "conclusion": "success",
       "steps": [
         {
+          "completedAt": "2026-09-09T08:50:05Z",
+          "conclusion": "success",
           "name": "Set up job",
-          "conclusion": "success"
+          "number": 1,
+          "startedAt": "2026-09-09T08:50:04Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:50:08Z",
+          "conclusion": "success",
           "name": "Run actions/checkout@v5",
-          "conclusion": "success"
+          "number": 2,
+          "startedAt": "2026-09-09T08:50:05Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:50:23Z",
+          "conclusion": "success",
           "name": "Install Xcode Metal toolchain",
-          "conclusion": "success"
+          "number": 3,
+          "startedAt": "2026-09-09T08:50:08Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:54:35Z",
+          "conclusion": "success",
           "name": "Generate Xcode project",
-          "conclusion": "success"
+          "number": 4,
+          "startedAt": "2026-09-09T08:50:23Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:56:06Z",
+          "conclusion": "success",
           "name": "Resolve and pin-check dependencies",
-          "conclusion": "success"
+          "number": 5,
+          "startedAt": "2026-09-09T08:54:35Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:56:07Z",
+          "conclusion": "success",
           "name": "Guardian real subprocess cancellation regressions",
-          "conclusion": "success"
+          "number": 6,
+          "startedAt": "2026-09-09T08:56:06Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:56:13Z",
+          "conclusion": "success",
           "name": "Guardian real PTY lifecycle regressions",
-          "conclusion": "success"
+          "number": 7,
+          "startedAt": "2026-09-09T08:56:07Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T09:10:01Z",
+          "conclusion": "success",
           "name": "Canvas, PiP, and timeline app regression tests",
-          "conclusion": "success"
+          "number": 8,
+          "startedAt": "2026-09-09T08:56:13Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T09:16:45Z",
+          "conclusion": "success",
           "name": "SPM test (cross-platform targets)",
-          "conclusion": "success"
+          "number": 9,
+          "startedAt": "2026-09-09T09:10:01Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T09:17:05Z",
+          "conclusion": "success",
           "name": "Secret scan",
-          "conclusion": "success"
+          "number": 10,
+          "startedAt": "2026-09-09T09:16:45Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T09:17:35Z",
+          "conclusion": "success",
           "name": "SBOM",
-          "conclusion": "success"
+          "number": 11,
+          "startedAt": "2026-09-09T09:17:05Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T09:17:35Z",
+          "conclusion": "success",
           "name": "License inventory",
-          "conclusion": "success"
+          "number": 12,
+          "startedAt": "2026-09-09T09:17:35Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T09:17:38Z",
+          "conclusion": "success",
           "name": "Upload artifacts",
-          "conclusion": "success"
+          "number": 13,
+          "startedAt": "2026-09-09T09:17:35Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T09:17:38Z",
+          "conclusion": "success",
           "name": "Post Run actions/checkout@v5",
-          "conclusion": "success"
+          "number": 26,
+          "startedAt": "2026-09-09T09:17:38Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T09:17:38Z",
+          "conclusion": "success",
           "name": "Complete job",
-          "conclusion": "success"
+          "number": 27,
+          "startedAt": "2026-09-09T09:17:38Z",
+          "status": "completed"
         }
-      ]
+      ],
+      "url": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34331257197/job/102400222405"
     },
     {
-      "name": "spm-linux-build",
-      "status": "completed",
+      "completedAt": "2026-09-09T08:53:55Z",
       "conclusion": "success",
+      "databaseId": 102400222768,
+      "name": "spm-linux-build",
+      "startedAt": "2026-09-09T08:49:59Z",
+      "status": "completed",
       "steps": [
         {
+          "completedAt": "2026-09-09T08:50:00Z",
+          "conclusion": "success",
           "name": "Set up job",
-          "conclusion": "success"
+          "number": 1,
+          "startedAt": "2026-09-09T08:50:00Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:50:28Z",
+          "conclusion": "success",
           "name": "Initialize containers",
-          "conclusion": "success"
+          "number": 2,
+          "startedAt": "2026-09-09T08:50:00Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:50:31Z",
+          "conclusion": "success",
           "name": "Run actions/checkout@v5",
-          "conclusion": "success"
+          "number": 3,
+          "startedAt": "2026-09-09T08:50:28Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:50:39Z",
+          "conclusion": "success",
           "name": "Install Linux build dependencies",
-          "conclusion": "success"
+          "number": 4,
+          "startedAt": "2026-09-09T08:50:31Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:51:49Z",
+          "conclusion": "success",
           "name": "Resolve dependencies",
-          "conclusion": "success"
+          "number": 5,
+          "startedAt": "2026-09-09T08:50:39Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:53:51Z",
+          "conclusion": "success",
           "name": "Build cross-platform targets",
-          "conclusion": "success"
+          "number": 6,
+          "startedAt": "2026-09-09T08:51:49Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:53:52Z",
+          "conclusion": "success",
           "name": "Post Run actions/checkout@v5",
-          "conclusion": "success"
+          "number": 11,
+          "startedAt": "2026-09-09T08:53:51Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:53:52Z",
+          "conclusion": "success",
           "name": "Stop containers",
-          "conclusion": "success"
+          "number": 12,
+          "startedAt": "2026-09-09T08:53:52Z",
+          "status": "completed"
         },
         {
+          "completedAt": "2026-09-09T08:53:52Z",
+          "conclusion": "success",
           "name": "Complete job",
-          "conclusion": "success"
+          "number": 13,
+          "startedAt": "2026-09-09T08:53:52Z",
+          "status": "completed"
         }
-      ]
+      ],
+      "url": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34331257197/job/102400222768"
     },
     {
+      "completedAt": "2026-09-09T08:49:56Z",
+      "conclusion": "skipped",
+      "databaseId": 102400223315,
       "name": "build-native-pandas",
+      "startedAt": "2026-09-09T08:49:57Z",
       "status": "completed",
-      "conclusion": "skipped",
-      "steps": []
+      "steps": [],
+      "url": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34331257197/job/102400223315"
     },
     {
-      "name": "publish-skill-hub",
-      "status": "completed",
+      "completedAt": "2026-09-09T08:49:56Z",
       "conclusion": "skipped",
-      "steps": []
+      "databaseId": 102400223384,
+      "name": "publish-skill-hub",
+      "startedAt": "2026-09-09T08:49:57Z",
+      "status": "completed",
+      "steps": [],
+      "url": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34331257197/job/102400223384"
     }
   ],
+  "status": "completed",
+  "url": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34331257197",
+  "runID": "34331257197",
+  "checkedAt": "2026-09-09T09:50:24.070882+00:00",
   "latestNativeDrainSourceCovered": false,
   "releasePassed": false
 }

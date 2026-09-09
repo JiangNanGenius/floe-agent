@@ -1,0 +1,19 @@
+{
+  "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+  "patch": "patches/xlsx-embedded-objects.patch",
+  "patchSHA256": "1562b51fa6e2dd6b1b490a7412c8ea208e7227c7968cf939df939c247210a26b",
+  "files": {
+    "engine/sc/source/filter/inc/xcl97rec.hxx": {
+      "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
+      "patchedSHA256": "025398a1044e4faf26cb113f11031cae2f19025d5f3b40221e04c86140d19b93"
+    },
+    "engine/sc/source/filter/xcl97/xcl97rec.cxx": {
+      "originalSHA256": "cfc6ad7262deb1ef682662c3c05e9b49c05b246796c637c4f7ed9d57164ce5b9",
+      "patchedSHA256": "3666f853db7cee9f43e54c5a6c34ab9f51d0fb6f32990b4b5ed09686107eae04"
+    }
+  },
+  "archive": "source/engine/instdir/program/libscfiltlo.a",
+  "originalArchiveSHA256": "a7e5961052e204adfb5694d584de17f8b7a7f0f6462a972303fd6baf78c11b77",
+  "member": "xcl97rec.o",
+  "qualificationStatus": "arm64-object-compiled-runtime-pending"
+}

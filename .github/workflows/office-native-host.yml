@@ -30,6 +30,7 @@ jobs:
           python3 FloeAgent/scripts/test_office_engine_bundle.py
           python3 FloeAgent/scripts/test_office_mobile_qualification.py
           python3 FloeAgent/scripts/test_office_native_host.py
+          python3 FloeAgent/scripts/test_office_filter_overlay.py
           python3 FloeAgent/scripts/test_office_save_receipts.py
           python3 FloeAgent/scripts/test_office_readonly.py
           python3 FloeAgent/scripts/test_office_fullscreen_edit.py
@@ -47,10 +48,33 @@ jobs:
           python3 FloeAgent/scripts/test_office_native_drain.py \
             --upstream "$RUNNER_TEMP/office-native-bundle/source/browser/js/global.js" \
             > "$RUNNER_TEMP/office-native-bundle/native-drain-contract.json"
+      - name: Prepare pinned Calc exporter sources
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, sys
+          sys.path.insert(0, 'FloeAgent/scripts')
+          from build_office_filter_overlay import SPARSE_PATHS, FILTER_LOCK
+          lock = json.loads(FILTER_LOCK.read_text())
+          source = pathlib.Path(os.environ['RUNNER_TEMP']) / 'office-filter-source'
+          source.mkdir()
+          def git(*args):
+              subprocess.run(['git', '-C', str(source), *args], check=True)
+          git('init')
+          git('remote', 'add', 'origin', 'https://github.com/CollaboraOnline/online.mirror.git')
+          git('sparse-checkout', 'set', '--no-cone', *SPARSE_PATHS)
+          git('fetch', '--depth=1', '--filter=blob:none', 'origin', lock['commit'])
+          git('checkout', '--detach', 'FETCH_HEAD')
+          PY
+      - name: Compile and verify the live XLSX embedded object exporter
+        run: |
+          python3 FloeAgent/scripts/build_office_filter_overlay.py \
+            "$RUNNER_TEMP/office-native-bundle" "$RUNNER_TEMP/office-filter-source" \
+            "$RUNNER_TEMP/office-filter-overlay"
       - name: Compile and link the native save protocol and host APIs
         run: |
           python3 FloeAgent/scripts/build_office_native_host.py \
-            "$RUNNER_TEMP/office-native-bundle" "$RUNNER_TEMP/office-native-host"
+            "$RUNNER_TEMP/office-native-bundle" "$RUNNER_TEMP/office-native-host" \
+            --filter-overlay "$RUNNER_TEMP/office-filter-overlay"
       - name: Preserve host qualification evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -59,6 +83,8 @@ jobs:
           path: |
             ${{ runner.temp }}/office-native-bundle/bundle-repair.json
             ${{ runner.temp }}/office-native-bundle/native-drain-contract.json
+            ${{ runner.temp }}/office-filter-overlay/filter-overlay.json
+            ${{ runner.temp }}/office-filter-overlay/compile.log
             ${{ runner.temp }}/office-native-host/qualification.json
             ${{ runner.temp }}/office-native-host/native-host.json
             ${{ runner.temp }}/office-native-host/native-host-build.log

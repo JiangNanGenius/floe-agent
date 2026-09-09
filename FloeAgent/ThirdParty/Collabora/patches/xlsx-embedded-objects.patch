@@ -1,0 +1,300 @@
+diff --git a/engine/sc/source/filter/inc/xcl97rec.hxx b/engine/sc/source/filter/inc/xcl97rec.hxx
+index 0eb5408..a5fdebd 100644
+--- a/engine/sc/source/filter/inc/xcl97rec.hxx
++++ b/engine/sc/source/filter/inc/xcl97rec.hxx
+@@ -251,6 +251,8 @@ public:
+                                 XclObjOle( XclExpObjectManager& rObjMgr, const SdrOle2Obj& rObj );
+     virtual                     ~XclObjOle() override;
+ 
++    const SdrOle2Obj& GetOleObject() const { return rOleObj; }
++
+     virtual void                Save( XclExpStream& rStrm ) override;
+ };
+ 
+diff --git a/engine/sc/source/filter/xcl97/xcl97rec.cxx b/engine/sc/source/filter/xcl97/xcl97rec.cxx
+index 0960883..e0ef981 100644
+--- a/engine/sc/source/filter/xcl97/xcl97rec.cxx
++++ b/engine/sc/source/filter/xcl97/xcl97rec.cxx
+@@ -76,6 +76,12 @@
+ #include <detfunc.hxx>
+ 
+ #include <memory>
++#include <cmath>
++#include <comphelper/storagehelper.hxx>
++#include <com/sun/star/container/XChild.hpp>
++#include <com/sun/star/embed/XEmbedPersist.hpp>
++#include <com/sun/star/embed/XEmbeddedObject.hpp>
++#include <com/sun/star/io/IOException.hpp>
+ 
+ using namespace ::com::sun::star;
+ using ::com::sun::star::uno::Reference;
+@@ -230,6 +236,215 @@ bool IsValidObject( const XclObj& rObj )
+     return true;
+ }
+ 
++// Floe: serialize live embedded objects through SpreadsheetML and its VML
++// fallback. Calc's importer registers worksheet OLE records against VML IDs;
++// a DrawingML picture alone is not an editable embedded object.
++struct XclOleXmlRecord
++{
++    const XclObjOle* pObject;
++    sal_Int32 nShapeId;
++    OUString aRelation;
++    OUString aProgId;
++    OUString aSheetImageRelation;
++};
++
++OUString GetOleProgId(const Reference<embed::XEmbeddedObject>& xObject)
++{
++    Reference<container::XChild> xChild(xObject, uno::UNO_QUERY_THROW);
++    Reference<beans::XPropertySet> xParent(xChild->getParent(), UNO_QUERY);
++    Reference<embed::XEmbedPersist> xPersist(xObject, UNO_QUERY);
++    cpo::uno::Sequence<beans::PropertyValue> aBag;
++    if (xParent && xPersist)
++    {
++        xParent->getPropertyValue(u"InteropGrabBag"_ustr) >>= aBag;
++        const OUString aEntry = xPersist->getEntryName();
++        for (const auto& rEntry : aBag)
++        {
++            if (rEntry.Name != "EmbeddedObjects")
++                continue;
++            cpo::uno::Sequence<beans::PropertyValue> aObjects;
++            rEntry.Value >>= aObjects;
++            for (const auto& rObject : aObjects)
++            {
++                if (rObject.Name != aEntry)
++                    continue;
++                cpo::uno::Sequence<beans::PropertyValue> aProperties;
++                rObject.Value >>= aProperties;
++                for (const auto& rProperty : aProperties)
++                {
++                    if (rProperty.Name == "ProgID")
++                    {
++                        OUString aProgId;
++                        rProperty.Value >>= aProgId;
++                        return aProgId;
++                    }
++                }
++            }
++        }
++    }
++    return {};
++}
++
++std::vector<XclOleXmlRecord> PrepareOleObjects(XclExpObjList& rList, XclExpXmlStream& rStrm)
++{
++    std::vector<XclOleXmlRecord> aRecords;
++    for (const auto& rxObject : rList)
++    {
++        const auto* pObject = dynamic_cast<const XclObjOle*>(rxObject.get());
++        if (!pObject)
++            continue;
++        const auto& rOle = pObject->GetOleObject();
++        const auto& xObject = rOle.GetObjRef();
++        if (!xObject.is())
++            throw io::IOException(u"Cannot save a spreadsheet embedded object without its data"_ustr);
++        OUString aProgId = GetOleProgId(xObject);
++        OUString aMediaType, aRelationType, aSuffix;
++        const char* pConvertedProgId = nullptr;
++        auto xInput = oox::GetOLEObjectStream(xObject, aProgId, aMediaType,
++                                            aRelationType, aSuffix, pConvertedProgId);
++        if (!xInput.is())
++            throw io::IOException(u"Cannot export spreadsheet embedded object data"_ustr);
++        if (pConvertedProgId)
++            aProgId = OUString::createFromAscii(pConvertedProgId);
++        const OUString aName = u"embeddings/oleObject"_ustr
++            + OUString::number(rStrm.getNewOLEUniqueId()) + u"."_ustr + aSuffix;
++        auto xOutput = rStrm.openFragmentStream(u"xl/"_ustr + aName, aMediaType);
++        // Propagate copy/close failures: never report a successful save that lost data.
++        comphelper::OStorageHelper::CopyInputToOutput(xInput, xOutput);
++        xOutput->closeOutput();
++        const OUString aRelation = rStrm.addRelation(rStrm.GetCurrentStream()->getOutputStream(),
++                                                     aRelationType, OUString(u"../"_ustr + aName));
++        const Graphic* pGraphic = rOle.GetGraphic();
++        if (!pGraphic || pGraphic->GetType() == GraphicType::NONE)
++            throw io::IOException(u"Cannot export spreadsheet embedded object preview"_ustr);
++        oox::drawingml::DrawingML aDrawing(rStrm.GetCurrentStream(), &rStrm,
++                                          oox::drawingml::DOCUMENT_XLSX);
++        const OUString aImage = aDrawing.writeGraphicToStorage(*pGraphic, true);
++        if (aImage.isEmpty())
++            throw io::IOException(u"Cannot write spreadsheet embedded object preview"_ustr);
++        // Keep these IDs outside legacy Escher/form-control numbering. The shared
++        // document allocator makes multiple sheets/objects unique in this range.
++        const sal_Int32 nUnique = rStrm.GetUniqueId();
++        if (nUnique < 0 || nUnique >= 0x40000000)
++            throw io::IOException(u"Spreadsheet drawing identifier range exhausted"_ustr);
++        aRecords.push_back({pObject, 0x40000000 + nUnique, aRelation, aProgId, aImage});
++    }
++    return aRecords;
++}
++
++void SaveOleVml(const std::vector<XclOleXmlRecord>& rRecords, XclExpXmlStream& rStrm)
++{
++    if (rRecords.empty())
++        return;
++    auto pXml = rStrm.GetCurrentStream();
++    pXml->write(VMLExport::GetVMLShapeTypeDefinition("75", true));
++    for (const auto& rRecord : rRecords)
++    {
++        const auto& rOle = rRecord.pObject->GetOleObject();
++        Reference<XShape> xShape = const_cast<SdrOle2Obj&>(rOle).getUnoShape();
++        if (!xShape.is())
++            throw io::IOException(u"Spreadsheet embedded object has no shape"_ustr);
++        const auto aPosition = xShape->getPosition();
++        const auto aSize = xShape->getSize();
++        const tools::Rectangle aRect(aPosition.X, aPosition.Y,
++                                    aPosition.X + aSize.Width, aPosition.Y + aSize.Height);
++        const auto& rDoc = rStrm.GetRoot().GetDoc();
++        const SCTAB nTab = rRecord.pObject->GetTab();
++        const ScRange aRange = rDoc.GetRange(nTab, aRect);
++        const tools::Rectangle aCellRect = rDoc.GetMMRect(aRange.aStart.Col(), aRange.aStart.Row(),
++                                                        aRange.aEnd.Col() - 1, aRange.aEnd.Row() - 1, nTab);
++        const auto toPixel = [](tools::Long nHmm) { return std::llround(nHmm * 96.0 / 2540.0); };
++        const OUString aAnchor = OUString::number(aRange.aStart.Col()) + u", "_ustr
++            + OUString::number(toPixel(aRect.Left() - aCellRect.Left())) + u", "_ustr
++            + OUString::number(aRange.aStart.Row()) + u", "_ustr
++            + OUString::number(toPixel(aRect.Top() - aCellRect.Top())) + u", "_ustr
++            + OUString::number(aRange.aEnd.Col()) + u", "_ustr
++            + OUString::number(toPixel(aRect.Right() - aCellRect.Right())) + u", "_ustr
++            + OUString::number(aRange.aEnd.Row()) + u", "_ustr
++            + OUString::number(toPixel(aRect.Bottom() - aCellRect.Bottom()));
++        const auto point = [](sal_Int32 nHmm) { return OUString::number(nHmm * 72.0 / 2540.0); };
++        const OUString aStyle = u"position:absolute;margin-left:"_ustr + point(aPosition.X)
++            + u"pt;margin-top:"_ustr + point(aPosition.Y) + u"pt;width:"_ustr + point(aSize.Width)
++            + u"pt;height:"_ustr + point(aSize.Height) + u"pt;z-index:1"_ustr;
++        oox::drawingml::DrawingML aDrawing(pXml, &rStrm, oox::drawingml::DOCUMENT_XLSX);
++        const OUString aImage = aDrawing.writeGraphicToStorage(*rOle.GetGraphic(), true);
++        if (aImage.isEmpty())
++            throw io::IOException(u"Cannot write spreadsheet embedded object VML preview"_ustr);
++        pXml->startElement(FSNS(XML_v, XML_shape), XML_id,
++            u"_x0000_s"_ustr + OUString::number(rRecord.nShapeId), XML_type, "#_x0000_t75",
++            XML_style, aStyle, FSNS(XML_o, XML_ole), "");
++        pXml->singleElement(FSNS(XML_v, XML_imagedata), FSNS(XML_r, XML_id), aImage,
++                            FSNS(XML_o, XML_title), rOle.GetName());
++        pXml->startElement(FSNS(XML_x, XML_ClientData), XML_ObjectType, "Pict");
++        const auto eAnchor = ScDrawLayer::GetAnchorType(rOle);
++        if (eAnchor != SCA_PAGE)
++            pXml->singleElement(FSNS(XML_x, XML_MoveWithCells));
++        if (eAnchor == SCA_CELL_RESIZE)
++            pXml->singleElement(FSNS(XML_x, XML_SizeWithCells));
++        XclXmlUtils::WriteElement(pXml, FSNS(XML_x, XML_Anchor), aAnchor.toUtf8());
++        XclXmlUtils::WriteElement(pXml, FSNS(XML_x, XML_AutoFill), "False");
++        XclXmlUtils::WriteElement(pXml, FSNS(XML_x, XML_PrintObject), rOle.IsPrintable() ? "True" : "False");
++        pXml->endElement(FSNS(XML_x, XML_ClientData));
++        pXml->endElement(FSNS(XML_v, XML_shape));
++    }
++}
++
++void SaveOleWorksheetObjects(const std::vector<XclOleXmlRecord>& rRecords, XclExpXmlStream& rStrm)
++{
++    if (rRecords.empty())
++        return;
++    auto pXml = rStrm.GetCurrentStream();
++    pXml->startElement(XML_oleObjects);
++    for (const auto& rRecord : rRecords)
++    {
++        const auto& rOle = rRecord.pObject->GetOleObject();
++        const bool bIcon = rOle.GetAspect() == embed::Aspects::MSOLE_ICON;
++        pXml->startElement(XML_oleObject, XML_progId, rRecord.aProgId,
++                          XML_dvAspect, bIcon ? "DVASPECT_ICON" : "DVASPECT_CONTENT",
++                          XML_shapeId, OString::number(rRecord.nShapeId),
++                          FSNS(XML_r, XML_id), rRecord.aRelation);
++        // The VML fallback is required by Calc's importer. objectPr additionally
++        // retains precise EMU anchors for Office's modern embedded-object UI.
++        // objectPr is absent from the pinned token table; keep the table ABI unchanged.
++        pXml->write("<objectPr defaultSize=\"0\" autoPict=\"0\" xmlns:xdr=\"");
++        pXml->writeEscaped(rStrm.getNamespaceURL(OOX_NS(dmlSpreadDr)));
++        pXml->write("\" r:id=\"");
++        pXml->writeEscaped(rRecord.aSheetImageRelation);
++        pXml->write("\">");
++        const auto eAnchor = ScDrawLayer::GetAnchorType(rOle);
++        pXml->startElement(XML_anchor, XML_moveWithCells, eAnchor != SCA_PAGE ? "1" : "0",
++                          XML_sizeWithCells, eAnchor == SCA_CELL_RESIZE ? "1" : "0");
++        Reference<XShape> xShape = const_cast<SdrOle2Obj&>(rOle).getUnoShape();
++        if (!xShape.is())
++            throw io::IOException(u"Spreadsheet embedded object has no shape"_ustr);
++        const auto aPos = xShape->getPosition();
++        const auto aSize = xShape->getSize();
++        const tools::Rectangle aRect(aPos.X, aPos.Y, aPos.X + aSize.Width, aPos.Y + aSize.Height);
++        const auto& rDoc = rStrm.GetRoot().GetDoc();
++        const SCTAB nTab = rRecord.pObject->GetTab();
++        const ScRange aRange = rDoc.GetRange(nTab, aRect);
++        const auto aCellRect = rDoc.GetMMRect(aRange.aStart.Col(), aRange.aStart.Row(),
++                                            aRange.aEnd.Col()-1, aRange.aEnd.Row()-1, nTab);
++        auto marker = [&](sal_Int32 nToken, sal_Int32 nCol, sal_Int32 nRow,
++                          tools::Long nX, tools::Long nY) {
++            pXml->startElement(nToken);
++            XclXmlUtils::WriteElement(pXml, FSNS(XML_xdr, XML_col), nCol);
++            XclXmlUtils::WriteElement(pXml, FSNS(XML_xdr, XML_colOff), oox::drawingml::convertHmmToEmu(nX));
++            XclXmlUtils::WriteElement(pXml, FSNS(XML_xdr, XML_row), nRow);
++            XclXmlUtils::WriteElement(pXml, FSNS(XML_xdr, XML_rowOff), oox::drawingml::convertHmmToEmu(nY));
++            pXml->endElement(nToken);
++        };
++        marker(XML_from, aRange.aStart.Col(), aRange.aStart.Row(),
++               aRect.Left()-aCellRect.Left(), aRect.Top()-aCellRect.Top());
++        marker(XML_to, aRange.aEnd.Col(), aRange.aEnd.Row(),
++               aRect.Right()-aCellRect.Right(), aRect.Bottom()-aCellRect.Bottom());
++        pXml->endElement(XML_anchor);
++        pXml->write("</objectPr>");
++        pXml->endElement(XML_oleObject);
++    }
++    pXml->endElement(XML_oleObjects);
++}
++
+ void SaveDrawingMLObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
+ {
+     std::vector<XclObj*> aList;
+@@ -241,7 +456,7 @@ void SaveDrawingMLObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
+     for (const auto& rxObj : rList)
+     {
+         // FIXME: Can DrawingML objects be grouped with VML or not valid objects?
+-        if (IsVmlObject(rxObj.get()) || !IsValidObject(*rxObj))
++        if (IsVmlObject(rxObj.get()) || dynamic_cast<const XclObjOle*>(rxObj.get()) || !IsValidObject(*rxObj))
+             continue;
+ 
+         const auto pObj = dynamic_cast<XclObjAny*>(rxObj.get());
+@@ -351,9 +566,10 @@ void SaveFormControlObjects(XclExpObjList& rList, XclExpXmlStream& rStrm)
+     rWorksheet->endElement(FSNS(XML_mc, XML_AlternateContent));
+ }
+ 
+-void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
++void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm,
++                     const std::vector<XclOleXmlRecord>& rOleRecords )
+ {
+-    if( GetVmlObjectCount( rList ) == 0 )
++    if( GetVmlObjectCount( rList ) == 0 && rOleRecords.empty() )
+         return;
+ 
+     sal_Int32 nDrawing = rStrm.getNewVMLUniqueId();
+@@ -374,7 +590,8 @@ void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
+             FSNS(XML_xmlns, XML_v),   rStrm.getNamespaceURL(OOX_NS(vml)).toUtf8(),
+             FSNS(XML_xmlns, XML_o),   rStrm.getNamespaceURL(OOX_NS(vmlOffice)).toUtf8(),
+             FSNS(XML_xmlns, XML_x),   rStrm.getNamespaceURL(OOX_NS(vmlExcel)).toUtf8(),
+-            FSNS(XML_xmlns, XML_w10), rStrm.getNamespaceURL(OOX_NS(vmlWord)).toUtf8() );
++            FSNS(XML_xmlns, XML_w10), rStrm.getNamespaceURL(OOX_NS(vmlWord)).toUtf8(),
++            FSNS(XML_xmlns, XML_r), rStrm.getNamespaceURL(OOX_NS(officeRel)).toUtf8() );
+ 
+     for ( const auto& rxObj : rList )
+     {
+@@ -392,6 +609,7 @@ void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
+         rxObj->SaveXml( rStrm );
+     }
+ 
++    SaveOleVml(rOleRecords, rStrm);
+     pVmlDrawing->endElement( XML_xml );
+ 
+     rStrm.PopStream();
+@@ -411,10 +629,12 @@ void XclExpObjList::SaveXml( XclExpXmlStream& rStrm )
+         return;
+     }
+ 
++    const auto aOleRecords = PrepareOleObjects(*this, rStrm);
+     SaveDrawingMLObjects( *this, rStrm );
+-    SaveVmlObjects( *this, rStrm );
++    SaveVmlObjects( *this, rStrm, aOleRecords );
+     if (m_pImgData)
+         m_pImgData->SaveXml(rStrm);
++    SaveOleWorksheetObjects(aOleRecords, rStrm);
+     SaveFormControlObjects( *this, rStrm );
+ }
+ 
