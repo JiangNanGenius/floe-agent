@@ -39,3 +39,12 @@ Current evidence and unresolved failures are recorded in
 [`docs/evidence/workflow-upgrade-20260909/README.md`](../../../docs/evidence/workflow-upgrade-20260909/README.md).
 Mac Designed for iPad, physical iPhone/iPad, full Floe frontend, Microsoft Office
 reopen, and original-file conflict/recovery checks remain separate acceptance scopes.
+
+For repeated XLSX saves, keep the first saved file, select **Edit again**, change
+only ordinary cell text, and save/reopen again. Run
+`verify_xlsx_repeated_layout.py FIRST_SAVE SECOND_SAVE --output REPORT.json`.
+It checks all sheets' default and explicit column widths plus OLE point geometry
+and agreement of modern anchor flags with the pinned VML import convention.
+Do not run this scenario after intentionally changing column widths or moving
+attachments. The payload verifier and geometry comparator are separate gates:
+30 successful attachment byte/type checks do not prove an untouched layout.

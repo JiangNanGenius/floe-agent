@@ -54,6 +54,15 @@ This avoids combining fresh VCL font/forced virtual-device measurements on expor
 with UNO descriptor/reference-device measurements on import. The local arm64 build
 and all 166 untouched archive members passed verification; a new host and actual
 repeated-save tests are required before calling the metric mismatch fixed.
+
+The repeated-save comparator also found VML and modern movement flags disagreed.
+The exporter now follows Excel's convention used by the pinned ClientDataContext:
+emit an empty MoveWithCells/SizeWithCells element to disable that behavior, omit it
+to enable it. Modern objectPr anchor booleans retain their positive meaning.
+This applies independently to page, cell-move and cell-resize anchors. See Microsoft's
+[MoveWithCells implementation note](https://learn.microsoft.com/en-us/openspecs/office_standards/ms-oi29500/40158516-bf23-46b1-b809-063618265082)
+and [SizeWithCells implementation note](https://learn.microsoft.com/en-us/openspecs/office_standards/ms-oi29500/f7349999-2b8b-434b-a3ca-650b7c61f2b5).
+Actual repeated-save verification of this combined candidate remains pending.
 The pinned VML importer rounds offsets to integer pixels; its handling of the
 precise `objectPr` anchors needs runtime fidelity checks and potentially a follow-up
 importer patch. Grouped objects, linked OLE, absent previews, repeated saves and

@@ -88,6 +88,9 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 
 ## 当前执行记录
 
+- 完整 Floe 34342408613（a102c45）已成功，含 34340935668 的附件重做修复；主程序加载链和 4,780 资源文件/174 目录核对通过，见 [构建回执](evidence/workflow-upgrade-20260909/office-floe-drawing-redo-integration.json)。仍为未签名开发载荷，没有新 TestFlight 发布结论。
+- 连续保存比较补齐全部工作表列宽及现代/VML 锚定一致性，旧实际样本明确失败：除列宽、几何外，固定页面附件在重开后变成随单元格移动和缩放。已核实 Excel 兼容性约定与锁定引擎读取代码，修正 VML 空标记/省略标记的反向含义；现代属性保持正向布尔值。合并字体度量及锚定修复的两个 arm64 对象编译通过，166 个其他对象未变。见 [旧样本严格比较](evidence/workflow-upgrade-20260909/office-xlsx-repeated-layout-baseline.json) 和 [合并编译证据](evidence/workflow-upgrade-20260909/office-xlsx-font-anchor-compile.json)。仅字体候选组件 34343980371 已构建成功；组合修复还需新的宿主及实际保存重开，不能用前一构建证明此项已修复。
+
 - Excel 连续保存保真修复候选：已将 XLSX 导出的默认字体度量改为与读取相同的 ReferenceDevice 和 ApiFontData 配置，保留二进制 XLS 原路径。两个 arm64 对象编译、166 个未改对象保留及实际链接清单选择校验通过，见 [编译证据](evidence/workflow-upgrade-20260909/office-xlsx-reference-font-compile.json)。新原生组件及多轮保存的列宽/附件几何仍待实际验证，不能据此标记保真通过；现有完整应用构建 34342408613 不含这一后续候选修复。
 
 - 2026-09-09：开始实施。工作树原有两项未跟踪 `.DS_Store` 保留。

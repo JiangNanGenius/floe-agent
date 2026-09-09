@@ -112,7 +112,7 @@ index 0eb5408..a5fdebd 100644
  };
  
 diff --git a/engine/sc/source/filter/xcl97/xcl97rec.cxx b/engine/sc/source/filter/xcl97/xcl97rec.cxx
-index 0960883..3cd90f7 100644
+index 0960883..6ebdc6e 100644
 --- a/engine/sc/source/filter/xcl97/xcl97rec.cxx
 +++ b/engine/sc/source/filter/xcl97/xcl97rec.cxx
 @@ -76,6 +76,12 @@
@@ -128,7 +128,7 @@ index 0960883..3cd90f7 100644
  
  using namespace ::com::sun::star;
  using ::com::sun::star::uno::Reference;
-@@ -230,6 +236,219 @@ bool IsValidObject( const XclObj& rObj )
+@@ -230,6 +236,222 @@ bool IsValidObject( const XclObj& rObj )
      return true;
  }
  
@@ -277,9 +277,12 @@ index 0960883..3cd90f7 100644
 +                            FSNS(XML_o, XML_title), rOle.GetName());
 +        pXml->startElement(FSNS(XML_x, XML_ClientData), XML_ObjectType, "Pict");
 +        const auto eAnchor = ScDrawLayer::GetAnchorType(rOle);
-+        if (eAnchor != SCA_PAGE)
++        // Excel's VML convention is inverse to the generic schema wording:
++        // a blank element disables movement/resize; an omitted element enables
++        // it. Match ClientDataContext and keep modern objectPr flags positive.
++        if (eAnchor == SCA_PAGE)
 +            pXml->singleElement(FSNS(XML_x, XML_MoveWithCells));
-+        if (eAnchor == SCA_CELL_RESIZE)
++        if (eAnchor != SCA_CELL_RESIZE)
 +            pXml->singleElement(FSNS(XML_x, XML_SizeWithCells));
 +        XclXmlUtils::WriteElement(pXml, FSNS(XML_x, XML_Anchor), aAnchor.toUtf8());
 +        XclXmlUtils::WriteElement(pXml, FSNS(XML_x, XML_AutoFill), "False");
@@ -348,7 +351,7 @@ index 0960883..3cd90f7 100644
  void SaveDrawingMLObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
  {
      std::vector<XclObj*> aList;
-@@ -241,7 +460,7 @@ void SaveDrawingMLObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
+@@ -241,7 +463,7 @@ void SaveDrawingMLObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
      for (const auto& rxObj : rList)
      {
          // FIXME: Can DrawingML objects be grouped with VML or not valid objects?
@@ -357,7 +360,7 @@ index 0960883..3cd90f7 100644
              continue;
  
          const auto pObj = dynamic_cast<XclObjAny*>(rxObj.get());
-@@ -351,9 +570,10 @@ void SaveFormControlObjects(XclExpObjList& rList, XclExpXmlStream& rStrm)
+@@ -351,9 +573,10 @@ void SaveFormControlObjects(XclExpObjList& rList, XclExpXmlStream& rStrm)
      rWorksheet->endElement(FSNS(XML_mc, XML_AlternateContent));
  }
  
@@ -370,7 +373,7 @@ index 0960883..3cd90f7 100644
          return;
  
      sal_Int32 nDrawing = rStrm.getNewVMLUniqueId();
-@@ -374,7 +594,8 @@ void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
+@@ -374,7 +597,8 @@ void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
              FSNS(XML_xmlns, XML_v),   rStrm.getNamespaceURL(OOX_NS(vml)).toUtf8(),
              FSNS(XML_xmlns, XML_o),   rStrm.getNamespaceURL(OOX_NS(vmlOffice)).toUtf8(),
              FSNS(XML_xmlns, XML_x),   rStrm.getNamespaceURL(OOX_NS(vmlExcel)).toUtf8(),
@@ -380,7 +383,7 @@ index 0960883..3cd90f7 100644
  
      for ( const auto& rxObj : rList )
      {
-@@ -392,6 +613,7 @@ void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
+@@ -392,6 +616,7 @@ void SaveVmlObjects( XclExpObjList& rList, XclExpXmlStream& rStrm )
          rxObj->SaveXml( rStrm );
      }
  
@@ -388,7 +391,7 @@ index 0960883..3cd90f7 100644
      pVmlDrawing->endElement( XML_xml );
  
      rStrm.PopStream();
-@@ -411,10 +633,12 @@ void XclExpObjList::SaveXml( XclExpXmlStream& rStrm )
+@@ -411,10 +636,12 @@ void XclExpObjList::SaveXml( XclExpXmlStream& rStrm )
          return;
      }
  

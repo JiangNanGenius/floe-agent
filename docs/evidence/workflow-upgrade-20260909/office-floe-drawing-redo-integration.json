@@ -1,0 +1,31 @@
+{
+  "hostRunID": "34340935668",
+  "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+  "hostExecutableSHA256": "396dd505b215dddcdda4ddc645084ce02390dc399d468054410cfa65b0eba4aa",
+  "verifiedResourceFiles": 4780,
+  "verifiedResourceDirectories": 174,
+  "appVersion": "1.5.3",
+  "appBuild": "134",
+  "unsignedPayloadVerified": true,
+  "engineOpened": false,
+  "embeddedEditorPassed": false,
+  "originalFileWritebackPassed": false,
+  "deviceRoundtripPassed": false,
+  "appCodeBinaryPath": "Floe Agent.debug.dylib",
+  "appCodeBinarySHA256": "cf4d6a6432eb908e22d5cf684bf705327f0c9dac667181bf1e71485cf93a8863",
+  "officeLoadChain": [
+    "Floe Agent",
+    "Floe Agent.debug.dylib",
+    "@rpath/FloeOfficeNative.framework/FloeOfficeNative"
+  ],
+  "appLinksOfficeHost": true,
+  "appExecutableSHA256": "cf0ab77cc83944c96b4ca39210ed686ccf7d44883fb43beb7432e315be6ad056",
+  "appPlatformLoadCommands": "/Users/runner/work/_temp/FloeOfficeIntegration/Build/Products/Debug-iphoneos/Floe Agent.app/Floe Agent:\nLoad command 11\n      cmd LC_BUILD_VERSION\n  cmdsize 32\n platform IOS\n    minos 26.0\n      sdk 27.0\n   ntools 1\n     tool LD\n  version 27037.1\n",
+  "floeSourceCommit": "a102c45df07d7b0167866d26290d3699f8f380be",
+  "workflowRunID": 34342408613,
+  "workflowConclusion": "success",
+  "evidenceArtifactID": 10100747080,
+  "unsignedArtifactID": 10100746089,
+  "testFlightUploaded": false,
+  "scope": "Complete Floe build including drawing redo metadata; excludes subsequent reference-font and VML anchor changes. No runtime or release claim."
+}
