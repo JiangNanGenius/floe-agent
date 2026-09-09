@@ -88,6 +88,9 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 
 ## 当前执行记录
 
+- 现代锚点原生宿主 [34354533462](https://github.com/JiangNanGenius/floe-agent/actions/runs/34354533462)（1038603）云端编译、链接和 Swift 导入成功；下载后校验并锁定新产物，[回执](evidence/workflow-upgrade-20260909/office-xlsx-modern-ole-anchor-host.json)。下一步原生三种锚定模式的保存重开与实际行列缩放，未宣称运行保真或发布。新增 [截图素材索引](OFFICE_SCREENSHOT_INDEX.md)，按操作阶段、版本和通过/失败边界组织现有原图，后续文档及 GitHub 描述可直接对应取用。
+
+
 - 最新完整 Floe 构建 [34352319115](https://github.com/JiangNanGenius/floe-agent/actions/runs/34352319115)（05d89709）成功，应用编译及原生组件/资源检查通过。该产物未签名，尚未上传 TestFlight，也不包含后续现代锚点读取候选。见 [构建状态](evidence/workflow-upgrade-20260909/office-floe-34352319115-build.json)。
 - Excel 精确现代锚点候选已通过 arm64 编译：按 objectPr 的 EMU 坐标读取完整 from/to，等待行列尺寸确定后创建对象，保留移动/缩放标记；缺失、重复、越界数据回退旧导入。新增记录改变 VmlDrawing 大小，已同时重编译其分配模块 worksheethelper；补齐上游 mdds 3.1.0 及相同补丁的哈希锁定头文件，原始输入包不变。主库替换 6 个对象、其余 162 个保留，附加库替换 1 个、其余 235 个保留。10 项归档/依赖测试与 17 项宿主校验测试通过；[编译证据](evidence/workflow-upgrade-20260909/office-xlsx-modern-ole-anchor-compile.json)。云端链接、原生三模式连续保存及真实行列缩放仍待验证。
 

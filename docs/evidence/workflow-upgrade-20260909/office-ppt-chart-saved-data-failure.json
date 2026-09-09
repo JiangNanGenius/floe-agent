@@ -1,0 +1,34 @@
+{
+  "sourceSHA256": "4ae05929c21c43be55b9c60c6080b46aaae9f7437786ad3955f34128810cbcec",
+  "checks": [
+    {
+      "name": "has chart fixtures",
+      "passed": true
+    },
+    {
+      "name": "ppt/charts/chart1.xml workbook payload",
+      "passed": false,
+      "error": "Chart has no externalData workbook relationship"
+    },
+    {
+      "name": "ppt/charts/chart1.xml range label 0",
+      "formula": "label 0",
+      "passed": false,
+      "error": "Internal model label is not an Excel range: label 0"
+    },
+    {
+      "name": "ppt/charts/chart1.xml range categories",
+      "formula": "categories",
+      "passed": false,
+      "error": "Internal model label is not an Excel range: categories"
+    },
+    {
+      "name": "ppt/charts/chart1.xml range 0",
+      "formula": "0",
+      "passed": false,
+      "error": "Internal model label is not an Excel range: 0"
+    }
+  ],
+  "allNamedChecksPassed": false,
+  "scope": "Embedded chart workbook relationships, resolvable rectangular cell ranges and cache agreement only; not full Office fidelity."
+}

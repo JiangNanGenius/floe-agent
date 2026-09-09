@@ -156,3 +156,7 @@
 - 参考设备实际修复：34348631751 的 Kit 导入与导出均使用虚拟参考设备，独立应用 22 两次保存重开后各表列宽不再缩小；附件撤销重做、三次导出字节一致，两份保存各 29 项结构检查通过。见 [运行记录](evidence/workflow-upgrade-20260909/office-xlsx-kit-device-runtime.json)。未修改的附件位置与页面锚定稳定，但宽/高仍减少 0.05/0.01 mm，A04/F04 精确保真保持未完成；PPT 图表数据、完整 Office 功能及物理设备验收未被此样本替代。
 
 - 三锚定模式实际验证：34350509488 的固定页面与仅移动样本经两轮文字修改、保存关闭重开后，原位置/60×18 mm 尺寸/列宽及模式保持一致；随单元格缩放样本仍首次变为 59.95×17.99 mm。六份保存各 29 项附件结构检查与六次原字节导出通过，详见 [三模式运行记录](evidence/workflow-upgrade-20260909/office-xlsx-precise-ole-runtime.json)。这只验证原文件的模式保持和文字修改保存，不代表已经实测行列调整触发的移动/缩放、对象拖动/旋转或物理设备。A04/F04 保持未完成。
+
+- PPT 数据引用补充检查：原始样本 5 项检查通过，实际保存文件同时缺少内嵌工作簿，且原 Sheet1!$B$1、Sheet1!$A$2:$A$3、Sheet1!$B$2:$B$3 变成 label 0、categories、0，已经不是 Excel 单元格引用。见 [源文件检查](evidence/workflow-upgrade-20260909/office-ppt-chart-source-data.json) 与 [保存失败检查](evidence/workflow-upgrade-20260909/office-ppt-chart-saved-data-failure.json)。新增只读语义验证器和 4 项故障注入测试：正确数据、旧工作簿、缺失载荷、错误引用；修复需要保留原数据文件并将编辑后的序列与实际单元格/公式对应，不能只补 relationship。
+
+截图集中索引：[Office 截图与文案素材](OFFICE_SCREENSHOT_INDEX.md)。最终版本复拍、iPhone/iPad 和完整功能操作图继续随验收补充。

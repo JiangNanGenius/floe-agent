@@ -1,0 +1,96 @@
+{
+  "runID": "34354533462",
+  "artifactName": "office-native-host-unsigned",
+  "artifactID": 10105275358,
+  "workflowCommit": "1038603eb6400be39289cb87a5ddaeec81f40dcb",
+  "archiveSHA256": "a23dede0fa245ab5b41120c04e9c709dbb9cdbcf2d135b37718a18f611996c42",
+  "executableSHA256": "b4c675d9de6135556467e9732830682dac7b5fb1734ca02c45283acad43396e9",
+  "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
+  "hostSourceSHA256": {
+    "FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
+    "FloeOfficeNative.mm": "3b01a57ef31a010170e6bdd40d87e69e3197701d8216850e5c88c9e9bc356840",
+    "FloeOfficeAttachment.cpp": "660402ee84b7a55c53fabdb7ae2f8ba1b12177e3058c39a90ec057892b5d4811",
+    "FloeOfficeAttachment.hxx": "6a3c976e41df1ec3c7d339c3762522c46b3cc8b23574522559f8b83e60e7088e"
+  },
+  "verifiedResourceFiles": 4780,
+  "verifiedResourceDirectories": 174,
+  "manifestSHA256": "b60ea4fde5add413542ead2d591ccada26af8f03cc7bd5e5fa684d63da004d7b",
+  "note": "Compiled, linked and Swift-imported pinned native host. Runtime roundtrip, full fidelity and physical-device acceptance remain separate gates.",
+  "filterOverlay": {
+    "patchSHA256": "2177e3a5b73d8182599f54ac06a2209c06b6f50364c3bbc114587d0a40dbd19f",
+    "sourceFiles": {
+      "engine/sc/source/filter/inc/xcl97rec.hxx": {
+        "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
+        "patchedSHA256": "025398a1044e4faf26cb113f11031cae2f19025d5f3b40221e04c86140d19b93"
+      },
+      "engine/sc/source/filter/xcl97/xcl97rec.cxx": {
+        "originalSHA256": "cfc6ad7262deb1ef682662c3c05e9b49c05b246796c637c4f7ed9d57164ce5b9",
+        "patchedSHA256": "bf3b6c8d6eab56610019ee4e445f06dc72e47941bb46a1fd71c6ddff0e5baed0"
+      },
+      "engine/sc/source/filter/excel/xlroot.cxx": {
+        "originalSHA256": "a03e6d3c8f5fc179dd1599d9dc2ea1012ac672ab839adaecaa6f72831052bc88",
+        "patchedSHA256": "c0dd1b923008fe76a62b40cd4fe4530548c54a5bc1387de144822c2ba0c91c9b"
+      },
+      "engine/sc/source/filter/inc/unitconverter.hxx": {
+        "originalSHA256": "22bd36bf192ea6d79145f5c3e68ebdaf88ef16aba2154b1e07f80225d20e663c",
+        "patchedSHA256": "7a50f88d0ac1011f4403d8ae2d86f722a50c16c4c7875b90d85d46843661d705"
+      },
+      "engine/sc/source/filter/oox/unitconverter.cxx": {
+        "originalSHA256": "baa3a9cba59b78637c14a46cf67d0be3d2a809c622732010030757f3ddd93eca",
+        "patchedSHA256": "7d2bd9fe65d966025ade2a8f96a365b9ccc3f7d986ccb1c80e09f8966c5906fa"
+      },
+      "engine/oox/source/vml/vmlshape.cxx": {
+        "originalSHA256": "7016e58713cc845b5ad73daca1b67d6bda64247d599cfe04f85c549805ba47ca",
+        "patchedSHA256": "9b9872562a4627a52aec2d24631ccfc7bda6dfca4b279ed63ba2918ed16ee48d"
+      },
+      "engine/sc/source/filter/oox/drawingfragment.cxx": {
+        "originalSHA256": "2a84bf22221574e078cf33c3b3867d00f1c4f32fe4301c0186e9b9a9ad85e48d",
+        "patchedSHA256": "5a75d6910a2c68831403b6c6a70e9117461942773443cbf970c91c62cdbad7b6"
+      },
+      "engine/sc/source/filter/inc/drawingfragment.hxx": {
+        "originalSHA256": "0fb5f7da89711cee297856ebf20d3107fac852840d7c2d285327458538726476",
+        "patchedSHA256": "75bb351c366524a7385135fbbadb88be929381c15c853b9580512e387cc98a0a"
+      },
+      "engine/sc/source/filter/oox/worksheetfragment.cxx": {
+        "originalSHA256": "8217b2d495cdf9f56b16129ad5461f1b232f296fe3d3dee21bf16d5742729090",
+        "patchedSHA256": "c12f61c50a9a58e5d448f854d4422f4df8878c344363abb11e7de939963a6fff"
+      },
+      "engine/sc/source/filter/oox/worksheethelper.cxx": {
+        "originalSHA256": "1f444b7b1d653f32251d80f8eaddf3d8cd4c89bba3a4158ff28572ed6d10e63f",
+        "patchedSHA256": "1f444b7b1d653f32251d80f8eaddf3d8cd4c89bba3a4158ff28572ed6d10e63f"
+      }
+    },
+    "archiveSHA256": "a63f251d9ccd87952c01d4589a6c216f9061b18bdeba265612f4ca62aeffc525",
+    "objectSHA256": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
+    "selectedArchiveSHA256": "a63f251d9ccd87952c01d4589a6c216f9061b18bdeba265612f4ca62aeffc525",
+    "headerDependencies": {
+      "mdds": {
+        "url": "https://dev-www.libreoffice.org/src/mdds-3.1.0.tar.xz",
+        "sha256": "ca295f4c86968a7eb1f5d503ff7ae180e6605210cfb26d01658be42048c0924c",
+        "root": "mdds-3.1.0",
+        "include": "include",
+        "patch": "patches/mdds-gcc12-upstream.patch",
+        "patchSHA256": "3411f0814815e06914ea1fbf50c5428af86cbed68c82c0481e09dd62bc8a22c6",
+        "upstreamPatch": "engine/external/mdds/gcc-12-silence-use-after-free.patch.1"
+      }
+    },
+    "additionalArchives": {
+      "libooxlo.a": {
+        "originalArchiveSHA256": "55120d505e2b6565e5b4c3b8a5df651537ed43d0117c3cf76d4c88bc104251e9",
+        "archiveSHA256": "1ee1992016fe8b19b8cd8e75e559ed65f39c24e508f0ff95ba4bb0fdd3f89de0",
+        "objectSHA256ByMember": {
+          "vmlshape.o": "2604ddfce94e017f396803e4a882b07230032bd1b637b22a0d1afdb309732f77"
+        },
+        "replacedMembers": [
+          "vmlshape.o"
+        ],
+        "preservedMemberCount": 235
+      }
+    },
+    "selectedArchiveSHA256ByName": {
+      "libscfiltlo.a": "a63f251d9ccd87952c01d4589a6c216f9061b18bdeba265612f4ca62aeffc525",
+      "libooxlo.a": "1ee1992016fe8b19b8cd8e75e559ed65f39c24e508f0ff95ba4bb0fdd3f89de0"
+    }
+  },
+  "validationBoundary": "Cloud compilation, linking, Swift import, and local artifact integrity only. Native three-mode save/reopen and row/column resizing remain pending."
+}

@@ -1,0 +1,53 @@
+{
+  "sourceSHA256": "a2e9c18c0811b988a8e7778f2ba95d8c86a203c9b8d25aa839f37a1c0988f6fb",
+  "checks": [
+    {
+      "name": "has chart fixtures",
+      "passed": true
+    },
+    {
+      "name": "ppt/charts/chart1.xml workbook payload",
+      "passed": true,
+      "sha256": "e7bd8165d31184e389fd143edd49eab01e6da96b4d9160fc131f6f758617462c"
+    },
+    {
+      "name": "ppt/charts/chart1.xml range Sheet1!$B$1",
+      "formula": "Sheet1!$B$1",
+      "passed": true,
+      "workbookValues": [
+        "Values"
+      ],
+      "cacheValues": [
+        "Values"
+      ]
+    },
+    {
+      "name": "ppt/charts/chart1.xml range Sheet1!$A$2:$A$3",
+      "formula": "Sheet1!$A$2:$A$3",
+      "passed": true,
+      "workbookValues": [
+        "Alpha",
+        "Beta"
+      ],
+      "cacheValues": [
+        "Alpha",
+        "Beta"
+      ]
+    },
+    {
+      "name": "ppt/charts/chart1.xml range Sheet1!$B$2:$B$3",
+      "formula": "Sheet1!$B$2:$B$3",
+      "passed": true,
+      "workbookValues": [
+        12.0,
+        24.0
+      ],
+      "cacheValues": [
+        12.0,
+        24.0
+      ]
+    }
+  ],
+  "allNamedChecksPassed": true,
+  "scope": "Embedded chart workbook relationships, resolvable rectangular cell ranges and cache agreement only; not full Office fidelity."
+}

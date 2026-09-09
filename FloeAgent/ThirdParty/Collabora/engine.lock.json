@@ -1,14 +1,14 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "xlsx-page-move-geometry-runtime-passed-cell-resize-precision-open",
+  "qualificationStatus": "xlsx-modern-ole-anchor-host-compiled-runtime-pending",
   "qualifiedHostArtifact": {
-    "runID": "34350509488",
+    "runID": "34354533462",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10103635716,
-    "workflowCommit": "e28e48dd36a6ae2546d8740f73c21cd40fdae2f0",
-    "archiveSHA256": "6b3cd0011c4899cd4dc510692e0f1c2017a5bdb88f63037c13053c9f782f3f0e",
-    "executableSHA256": "eafacb69dbf4e6c06adcbf2853646a9e61cfcb219c2c842862d9552b3688a614",
+    "artifactID": 10105275358,
+    "workflowCommit": "1038603eb6400be39289cb87a5ddaeec81f40dcb",
+    "archiveSHA256": "a23dede0fa245ab5b41120c04e9c709dbb9cdbcf2d135b37718a18f611996c42",
+    "executableSHA256": "b4c675d9de6135556467e9732830682dac7b5fb1734ca02c45283acad43396e9",
     "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
@@ -18,15 +18,15 @@
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "61417a61427290fe08b4c81241fdd8f52ef99833e408d06e1f3addd37dfd37ec",
+    "manifestSHA256": "b60ea4fde5add413542ead2d591ccada26af8f03cc7bd5e5fa684d63da004d7b",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
-      "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac"
+      "Info.plist": "e3b21fcb94865972fb8908dcce886fc39e73f28e20bf1439cbb70a0139a3ec00"
     },
-    "note": "Mac sample: page and move-only OLE positions, sizes, modes and column widths preserved across real text edits and repeated saves. Six attachment exports match original bytes. Cell-resizing mode still loses 0.05/0.01 mm on initial save. Full Floe, all Office features and physical-device acceptance remain open.",
+    "note": "Compiled, linked and Swift-imported pinned native host. Runtime roundtrip, full fidelity and physical-device acceptance remain separate gates.",
     "filterOverlay": {
-      "patchSHA256": "7634bb072a7f582df7c05a703c10a23e9655863399aa6dfba1abf84482d83e18",
+      "patchSHA256": "2177e3a5b73d8182599f54ac06a2209c06b6f50364c3bbc114587d0a40dbd19f",
       "sourceFiles": {
         "engine/sc/source/filter/inc/xcl97rec.hxx": {
           "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
@@ -50,22 +50,45 @@
         },
         "engine/oox/source/vml/vmlshape.cxx": {
           "originalSHA256": "7016e58713cc845b5ad73daca1b67d6bda64247d599cfe04f85c549805ba47ca",
-          "patchedSHA256": "140834ee400ed62b7fb2c77b0245bc83f8d3d8d6513a159b5ab8a019fe2669ad"
+          "patchedSHA256": "9b9872562a4627a52aec2d24631ccfc7bda6dfca4b279ed63ba2918ed16ee48d"
         },
         "engine/sc/source/filter/oox/drawingfragment.cxx": {
           "originalSHA256": "2a84bf22221574e078cf33c3b3867d00f1c4f32fe4301c0186e9b9a9ad85e48d",
-          "patchedSHA256": "16adf3bef5739a24186eced8e55798f9bad6909908820bba01f12ed821e7124a"
+          "patchedSHA256": "5a75d6910a2c68831403b6c6a70e9117461942773443cbf970c91c62cdbad7b6"
+        },
+        "engine/sc/source/filter/inc/drawingfragment.hxx": {
+          "originalSHA256": "0fb5f7da89711cee297856ebf20d3107fac852840d7c2d285327458538726476",
+          "patchedSHA256": "75bb351c366524a7385135fbbadb88be929381c15c853b9580512e387cc98a0a"
+        },
+        "engine/sc/source/filter/oox/worksheetfragment.cxx": {
+          "originalSHA256": "8217b2d495cdf9f56b16129ad5461f1b232f296fe3d3dee21bf16d5742729090",
+          "patchedSHA256": "c12f61c50a9a58e5d448f854d4422f4df8878c344363abb11e7de939963a6fff"
+        },
+        "engine/sc/source/filter/oox/worksheethelper.cxx": {
+          "originalSHA256": "1f444b7b1d653f32251d80f8eaddf3d8cd4c89bba3a4158ff28572ed6d10e63f",
+          "patchedSHA256": "1f444b7b1d653f32251d80f8eaddf3d8cd4c89bba3a4158ff28572ed6d10e63f"
         }
       },
-      "archiveSHA256": "43527d3918f8a2fab34448234a63936ce05c942ced4650c6e330140d292c23a7",
+      "archiveSHA256": "a63f251d9ccd87952c01d4589a6c216f9061b18bdeba265612f4ca62aeffc525",
       "objectSHA256": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
-      "selectedArchiveSHA256": "43527d3918f8a2fab34448234a63936ce05c942ced4650c6e330140d292c23a7",
+      "selectedArchiveSHA256": "a63f251d9ccd87952c01d4589a6c216f9061b18bdeba265612f4ca62aeffc525",
+      "headerDependencies": {
+        "mdds": {
+          "url": "https://dev-www.libreoffice.org/src/mdds-3.1.0.tar.xz",
+          "sha256": "ca295f4c86968a7eb1f5d503ff7ae180e6605210cfb26d01658be42048c0924c",
+          "root": "mdds-3.1.0",
+          "include": "include",
+          "patch": "patches/mdds-gcc12-upstream.patch",
+          "patchSHA256": "3411f0814815e06914ea1fbf50c5428af86cbed68c82c0481e09dd62bc8a22c6",
+          "upstreamPatch": "engine/external/mdds/gcc-12-silence-use-after-free.patch.1"
+        }
+      },
       "additionalArchives": {
         "libooxlo.a": {
           "originalArchiveSHA256": "55120d505e2b6565e5b4c3b8a5df651537ed43d0117c3cf76d4c88bc104251e9",
-          "archiveSHA256": "c8c7eda8ebc5b41e707ceda797be984080deca7b244496ad0e536477c504ee18",
+          "archiveSHA256": "1ee1992016fe8b19b8cd8e75e559ed65f39c24e508f0ff95ba4bb0fdd3f89de0",
           "objectSHA256ByMember": {
-            "vmlshape.o": "06f74f3ced0937e0144325caca56213c5af6e7ffd6075543d47c4a4d5f8f3d47"
+            "vmlshape.o": "2604ddfce94e017f396803e4a882b07230032bd1b637b22a0d1afdb309732f77"
           },
           "replacedMembers": [
             "vmlshape.o"
@@ -74,8 +97,8 @@
         }
       },
       "selectedArchiveSHA256ByName": {
-        "libscfiltlo.a": "43527d3918f8a2fab34448234a63936ce05c942ced4650c6e330140d292c23a7",
-        "libooxlo.a": "c8c7eda8ebc5b41e707ceda797be984080deca7b244496ad0e536477c504ee18"
+        "libscfiltlo.a": "a63f251d9ccd87952c01d4589a6c216f9061b18bdeba265612f4ca62aeffc525",
+        "libooxlo.a": "1ee1992016fe8b19b8cd8e75e559ed65f39c24e508f0ff95ba4bb0fdd3f89de0"
       }
     }
   },
