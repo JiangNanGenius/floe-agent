@@ -12,6 +12,16 @@ public struct DocumentRecoveryRecord: Identifiable, Sendable, Hashable {
     public let hasEngineCopies: Bool
 }
 
+public struct DocumentRecoveryVersion: Identifiable, Sendable, Hashable {
+    public enum Kind: String, Sendable { case current, lastSave, editor, previousEdit, export }
+    public let id: String
+    public let kind: Kind
+    public let fileURL: URL
+    public let updatedAt: Date
+    public let byteCount: Int
+    public let sha256: String
+}
+
 struct DocumentRecoveryManifest: Codable, Sendable {
     static let fileName = ".floe-session.json"
     var formatVersion = 1

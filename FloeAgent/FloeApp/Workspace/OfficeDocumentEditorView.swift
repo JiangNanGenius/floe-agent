@@ -241,6 +241,24 @@ final class OfficeFileSession: ObservableObject {
         } catch { fail(error) }
     }
 
+    func recoveryVersions() async throws -> [DocumentRecoveryVersion] {
+        guard canAct, readOnly, let workspace, let session else { throw CocoaError(.fileReadUnknown) }
+        return try await workspace.recoveryVersions(session)
+    }
+
+    func useRecoveryVersion(_ version: DocumentRecoveryVersion) async -> Bool {
+        guard canAct, readOnly, let workspace, let session else { return false }
+        operating = true
+        defer { finishOperation() }
+        do {
+            try await closeController()
+            try await workspace.restoreRecoveryVersion(version, in: session)
+            hasUncommittedChanges = try await workspace.hasUncommittedWorkingCopy(session)
+            try await activate(readOnly: true)
+            return true
+        } catch { fail(error); return false }
+    }
+
     private func finishOperation() {
         operating = false
         if releaseRequested {

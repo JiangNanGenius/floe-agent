@@ -52,6 +52,7 @@ private struct RecoveredOfficePreview: View {
     let record: DocumentRecoveryRecord
     @StateObject private var session = OfficeFileSession()
     @State private var editing = false
+    @State private var choosingVersion = false
     @Environment(\.dismiss) private var dismiss
 
     private var usesOfficeHost: Bool {
@@ -78,8 +79,10 @@ private struct RecoveredOfficePreview: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 if usesOfficeHost {
-                    Button("全屏编辑", systemImage: "square.and.pencil") { editing = true }
-                        .disabled(!session.canAct)
+                    HStack {
+                        Button("查看保留版本", systemImage: "clock.arrow.circlepath") { choosingVersion = true }
+                        Button("全屏编辑", systemImage: "square.and.pencil") { editing = true }
+                    }.disabled(!session.canAct)
                 }
             }
         }
@@ -93,8 +96,72 @@ private struct RecoveredOfficePreview: View {
                 OfficeDocumentEditorView(relativePath: record.displayName, session: session)
             }
         }
+        .sheet(isPresented: $choosingVersion) {
+            NavigationStack { DocumentRecoveryVersionsView(session: session) }
+        }
         .onDisappear {
-            if !editing { Task { await session.release() } }
+            if !editing && !choosingVersion { Task { await session.release() } }
+        }
+    }
+}
+
+private struct DocumentRecoveryVersionsView: View {
+    @ObservedObject var session: OfficeFileSession
+    @State private var versions: [DocumentRecoveryVersion] = []
+    @State private var loading = true
+    @State private var choosing = false
+    @State private var error: String?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        List {
+            Section {
+                Text("选择要恢复的内容。当前副本会保留为另一个版本，原文件不会改变。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            if loading { ProgressView() }
+            if let error { Text(error).foregroundStyle(.secondary) }
+            ForEach(versions) { version in
+                Button {
+                    choosing = true
+                    Task {
+                        if await session.useRecoveryVersion(version) { dismiss() }
+                        else { error = session.error }
+                        choosing = false
+                    }
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(title(version.kind)).foregroundStyle(.primary)
+                            Text(version.updatedAt, format: .dateTime.year().month().day().hour().minute().second())
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(version.byteCount), countStyle: .file))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if version.kind == .current { Image(systemName: "checkmark") }
+                    }
+                }.disabled(choosing || !session.canAct || version.kind == .current)
+            }
+        }
+        .navigationTitle("保留的版本")
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() }.disabled(choosing) }
+        }
+        .interactiveDismissDisabled(choosing)
+        .task {
+            defer { loading = false }
+            do { versions = try await session.recoveryVersions() }
+            catch { self.error = error.localizedDescription }
+        }
+    }
+    private func title(_ kind: DocumentRecoveryVersion.Kind) -> String {
+        switch kind {
+        case .current: "当前副本"
+        case .lastSave: "上次保存尝试"
+        case .editor: "编辑器保留的副本"
+        case .previousEdit: "之前的编辑"
+        case .export: "已准备的导出副本"
         }
     }
 }

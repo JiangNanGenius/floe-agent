@@ -48,6 +48,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     private var manifests: [UUID: DocumentRecoveryManifest] = [:]
     private var recoveryLeases: [UUID: DocumentRecoveryLease] = [:]
     private var exports: [UUID: DocumentExportSnapshot] = [:]
+    private var recoveryVersionsBySession: [UUID: [String: DocumentRecoveryVersion]] = [:]
 
     public init(root: URL? = nil, fileManager: FileManager = .default) throws {
         self.fileManager = fileManager
@@ -196,6 +197,90 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         return try Self.digest(session.workingURL) != saved
     }
 
+    /// List only recognized regular copies inside the registered session. The
+    /// digest also prevents restoring changed bytes from a stale version row.
+    public func recoveryVersions(_ session: DocumentSession) throws -> [DocumentRecoveryVersion] {
+        guard sessions[session.id] == session else {
+            throw FloeError.validationFailed("Document session is closed or belongs to another workspace")
+        }
+        let directory = session.workingURL.deletingLastPathComponent()
+        var candidates: [(URL, DocumentRecoveryVersion.Kind)] = [
+            (session.workingURL, .current), (session.recoveryURL, .lastSave)
+        ]
+        for (name, kind) in [("engine", DocumentRecoveryVersion.Kind.editor), ("revisions", .previousEdit), ("exports", .export)] {
+            let parent = directory.appendingPathComponent(name, isDirectory: true)
+            guard (try? parent.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == false else { continue }
+            for child in (try? fileManager.contentsOfDirectory(at: parent, includingPropertiesForKeys: [.isSymbolicLinkKey])) ?? [] {
+                guard UUID(uuidString: child.lastPathComponent) != nil,
+                      (try? child.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])).map({ $0.isSymbolicLink != true && $0.isDirectory == true }) == true else { continue }
+                // Enumeration can expand /var to /private/var. Reconstruct from
+                // our owned parent and the validated single directory name.
+                let ownedChild = parent.appendingPathComponent(child.lastPathComponent, isDirectory: true)
+                candidates.append((ownedChild.appendingPathComponent(name == "exports" ? session.originalURL.lastPathComponent : session.workingURL.lastPathComponent), kind))
+            }
+        }
+        var versions: [DocumentRecoveryVersion] = []
+        var seen = Set<String>()
+        for (file, kind) in candidates {
+            guard (try? requireOwnedRecoveryCopy(file, directory: directory)) != nil,
+                  let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+                  let digest = try? Self.digest(file) else { continue }
+            // Identical editor generations add no recoverable content. Current
+            // and last-save copies appear first so their identity wins ties.
+            guard seen.insert(digest).inserted else { continue }
+            let relative = String(file.path.dropFirst(directory.path.count + 1))
+            versions.append(DocumentRecoveryVersion(id: relative, kind: kind, fileURL: file,
+                updatedAt: values.contentModificationDate ?? .distantPast,
+                byteCount: values.fileSize ?? 0, sha256: digest))
+        }
+        recoveryVersionsBySession[session.id] = Dictionary(uniqueKeysWithValues: versions.map { ($0.id, $0) })
+        return versions.sorted { left, right in
+            if left.kind == .current { return right.kind != .current }
+            if right.kind == .current { return false }
+            return left.updatedAt > right.updatedAt
+        }
+    }
+
+    /// The host must close its editor first. Preserve the prior working bytes
+    /// as a selectable version; this never writes or rebases the original.
+    public func restoreRecoveryVersion(_ version: DocumentRecoveryVersion, in session: DocumentSession) throws {
+        guard sessions[session.id] == session,
+              recoveryVersionsBySession[session.id]?[version.id] == version else {
+            throw FloeError.validationFailed("Document recovery version is no longer available")
+        }
+        let directory = session.workingURL.deletingLastPathComponent()
+        try requireOwnedRecoveryCopy(version.fileURL, directory: directory)
+        guard try Self.digest(version.fileURL) == version.sha256 else {
+            throw FloeError.validationFailed("Document recovery version changed; refresh before choosing it")
+        }
+        if version.kind == .current { return }
+        let staging = directory.appendingPathComponent(".floe-restore-\(UUID())")
+        defer { try? fileManager.removeItem(at: staging) }
+        try fileManager.copyItem(at: version.fileURL, to: staging)
+        guard try Self.digest(staging) == version.sha256 else {
+            throw FloeError.validationFailed("Document recovery version changed while copying")
+        }
+        let oldDigest = try Self.digest(session.workingURL)
+        let previousDirectory = directory.appendingPathComponent("revisions", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        do {
+            try fileManager.createDirectory(at: previousDirectory, withIntermediateDirectories: true)
+            let previous = previousDirectory.appendingPathComponent(session.workingURL.lastPathComponent)
+            try fileManager.copyItem(at: session.workingURL, to: previous)
+            guard try Self.digest(previous) == oldDigest else { throw CocoaError(.fileWriteUnknown) }
+        } catch {
+            try? fileManager.removeItem(at: previousDirectory)
+            throw error
+        }
+        _ = try fileManager.replaceItemAt(session.workingURL, withItemAt: staging)
+        recoveryVersionsBySession[session.id] = nil
+        if var manifest = manifests[session.id] {
+            manifest.updatedAt = Date()
+            try manifest.write(to: directory)
+            manifests[session.id] = manifest
+        }
+    }
+
     /// Retained sessions only. An active editor in any workspace instance keeps
     /// its lease and is omitted; malformed records and all their files survive.
     public func recoveryRecords() throws -> [DocumentRecoveryRecord] {
@@ -280,6 +365,18 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         }
     }
 
+    private func requireOwnedRecoveryCopy(_ url: URL, directory: URL) throws {
+        guard url.path.hasPrefix(directory.path + "/") else { throw CocoaError(.fileReadNoPermission) }
+        var item = url
+        while item.path != directory.path {
+            guard try item.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else {
+                throw CocoaError(.fileReadNoPermission)
+            }
+            item.deleteLastPathComponent()
+        }
+        try requireRegularCopy(url)
+    }
+
     /// A normal close never discards edits. Dirty or unreadable copies remain
     /// in Application Support for recovery; explicit discard is separate. Native
     /// generations may be newer than workingURL when engine persistence failed.
@@ -308,6 +405,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         savedDigests[session.id] = nil
         manifests[session.id] = nil
         recoveryLeases[session.id] = nil
+        recoveryVersionsBySession[session.id] = nil
     }
 
     private func retire(_ directory: URL) {

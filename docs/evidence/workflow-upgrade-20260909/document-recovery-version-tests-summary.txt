@@ -1,0 +1,5 @@
+25 tests in 4 suites passed: DocumentRecoveryVersionTests, DocumentExportTests, DocumentRecoveryTests, DocumentWorkspaceTests.
+Passing log: /tmp/floe-document-version-tests-3.log
+Two preceding suite attempts failed to enumerate editor copies; a single-test diagnostic confirmed Foundation canonicalized enumerated paths from /var to /private/var. Fixed by reconstructing validated child names under the registered owned parent. Temporary diagnostic output removed.
+Covered: restoring native-generation bytes without changing original, retaining prior working bytes, external original conflict protection after restoration, stale version bytes rejected, foreign workspace rejected, identical version deduplication, leaf and ancestor aliases rejected.
+Core tests use synthetic bytes, not a running Office engine. Recovery list and shared Office UI syntax parse passed; actual UI, interruption behavior, OOXML structure and rendered fidelity remain unverified.
