@@ -32,7 +32,8 @@ class NativeHostProjectTests(unittest.TestCase):
         unchanged = copy.deepcopy(original)
         prepared = framework_project(original, Path('/owned host'))['objects']
         files = [prepared[prepared[key]['fileRef']]['path'] for key in prepared['sources']['files']]
-        self.assertEqual(set(files), {'CODocument.mm', 'DocumentViewController.mm', 'Kit.cpp', '/owned host/FloeOfficeNative.mm'})
+        self.assertEqual(set(files), {'CODocument.mm', 'DocumentViewController.mm', 'Kit.cpp',
+                                    '/owned host/FloeOfficeNative.mm', '/owned host/FloeOfficeAttachment.cpp'})
         self.assertEqual(original, unchanged)
         self.assertEqual(prepared['target']['productType'], 'com.apple.product-type.framework')
 

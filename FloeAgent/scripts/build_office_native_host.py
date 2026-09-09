@@ -37,7 +37,7 @@ def framework_project(project, host_directory):
                     removed.add(filename)
                 else:
                     kept.append(entry)
-            phase['files'] = kept + ['F10E00000000000000000002']
+            phase['files'] = kept + ['F10E00000000000000000002', 'F10E00000000000000000007']
         if phase['isa'] == 'PBXResourcesBuildPhase':
             phase['files'] = [entry for entry in phase['files']
                 if objects[objects[entry]['fileRef']].get('isa') != 'PBXVariantGroup'
@@ -55,6 +55,9 @@ def framework_project(project, host_directory):
             'settings': {'ATTRIBUTES': ['Public']}},
         'F10E00000000000000000005': {'isa': 'PBXHeadersBuildPhase', 'buildActionMask': 2147483647,
             'files': ['F10E00000000000000000004'], 'runOnlyForDeploymentPostprocessing': 0},
+        'F10E00000000000000000006': {'isa': 'PBXFileReference', 'lastKnownFileType': 'sourcecode.cpp.cpp',
+            'path': str(host_directory / 'FloeOfficeAttachment.cpp'), 'sourceTree': '<absolute>'},
+        'F10E00000000000000000007': {'isa': 'PBXBuildFile', 'fileRef': 'F10E00000000000000000006'},
     })
     target['buildPhases'].insert(0, 'F10E00000000000000000005')
     for key in objects[target['buildConfigurationList']]['buildConfigurations']:
@@ -91,7 +94,7 @@ def build_host(root, output, *, build=True):
     save()
     host = output / 'source/ios/Mobile'
     report['hostSourceSHA256'] = {}
-    for name in (NAME + '.h', NAME + '.mm', 'FloeOfficeAttachment.inc'):
+    for name in (NAME + '.h', NAME + '.mm', 'FloeOfficeAttachment.cpp', 'FloeOfficeAttachment.hxx'):
         shutil.copyfile(HOST / name, host / name)
         report['hostSourceSHA256'][name] = digest(host / name)
     (host / 'Info.plist').write_bytes(plistlib.dumps({

@@ -20,7 +20,7 @@
 #import "ProcUtil.hpp"
 #import "COOLWSD.hpp"
 #import "SetupKitEnvironment.hpp"
-#include "FloeOfficeAttachment.inc"
+#include "FloeOfficeAttachment.hxx"
 
 NSErrorDomain const FloeOfficeNativeErrorDomain = @"org.floeagent.office.native";
 NSNotificationName const FloeOfficeNativeRuntimeDidFailNotification = @"FloeOfficeNativeRuntimeDidFail";
@@ -493,11 +493,11 @@ static void ServerReady() {
             }
             if (!failure) {
                 try {
-                    FloeWriteAttachmentPackage(copy, package, name);
-                    SolarMutexGuard guard;
-                    DocumentData *data = DocumentData::getIfExists(documentID);
-                    if (!data || !data->loKitDocument) throw std::runtime_error("Document closed during attachment preparation.");
-                    FloeInsertWordAttachment(data->loKitDocument, package, icon, name);
+                    FloeImportWordAttachment([documentID]() -> COKitDocument * {
+                        DocumentData *data = DocumentData::getIfExists(documentID);
+                        return data ? data->loKitDocument : nullptr;
+                    }, copy.absoluteString.UTF8String, package.absoluteString.UTF8String,
+                       icon.absoluteString.UTF8String, name.UTF8String, folder.lastPathComponent.UTF8String);
                 } catch (...) {
                     failure = OfficeError(16, @"The attachment could not be inserted. Its copied file has been retained for recovery.");
                 }

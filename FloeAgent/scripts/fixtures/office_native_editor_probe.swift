@@ -122,6 +122,29 @@ import FloeOfficeNative
                     }
                 }
             })
+        if !readOnly && working.pathExtension == "docx" {
+            controller.navigationItem.leftBarButtonItem = UIBarButtonItem(
+                title: "Insert attachment",
+                primaryAction: UIAction { [weak self, weak controller] _ in
+                    guard let self, let controller else { return }
+                    do {
+                        // Intentionally use a Unicode name and arbitrary binary
+                        // bytes, not a document the engine can silently convert.
+                        let input = session.appendingPathComponent("附件 测试 📎.bin")
+                        let bytes = Data((0..<65539).map { UInt8(truncatingIfNeeded: $0) })
+                        try bytes.write(to: input, options: .atomic)
+                        controller.navigationItem.leftBarButtonItem?.isEnabled = false
+                        controller.navigationItem.rightBarButtonItem?.isEnabled = false
+                        self.record("attachmentRequested", detail: input.lastPathComponent)
+                        controller.insertAttachment(fromFileURL: input) { error in
+                            self.record("attachmentCompleted", detail: error?.localizedDescription ?? "success")
+                            controller.title = error?.localizedDescription ?? "Attachment inserted; not saved"
+                            controller.navigationItem.leftBarButtonItem?.isEnabled = true
+                            controller.navigationItem.rightBarButtonItem?.isEnabled = true
+                        }
+                    } catch { controller.title = error.localizedDescription }
+                })
+        }
         window?.rootViewController = UINavigationController(rootViewController: controller)
     }
 
