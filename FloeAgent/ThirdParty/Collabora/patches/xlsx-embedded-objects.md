@@ -82,3 +82,10 @@ The current patch forces the document virtual reference device for Kit import,
 matching existing Kit export; non-Kit property selection is unchanged. All three
 objects compile and 165 unrelated archive members remain identical. New-host
 repeated-save testing is still required; this is not yet a fidelity pass.
+
+Actual host 34348631751 testing confirms all import/export measurements remain
+8640 DPI / digit width 111 across two saves/reopens. Untouched column widths now
+remain stable (A stays 22); attachment bytes and fixed-page position/flags survive
+undo/redo and both saves. The comparator still rejects dimensions: 6000x1800
+becomes 5995x1799 hundredths of a millimeter. Exact attachment geometry is still
+open, as are broader Office and physical-device acceptance.

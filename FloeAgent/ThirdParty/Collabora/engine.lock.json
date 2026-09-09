@@ -1,14 +1,14 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "xlsx-device-mismatch-confirmed-fix-host-pending",
+  "qualificationStatus": "xlsx-kit-column-metrics-runtime-passed-precise-geometry-open",
   "qualifiedHostArtifact": {
-    "runID": "34346544476",
+    "runID": "34348631751",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10102054352,
-    "workflowCommit": "b664d8e5b0ee1c24679dfa1a666680c3b031d1a3",
-    "archiveSHA256": "266e6499a74184496ed9cb64d05cb990fb05f78bef8f424ddf746a58c243b973",
-    "executableSHA256": "7a88a820846bc5c1fcc3c80d91b0b6f4c6710fb5365c6896a8315ad41c689e81",
+    "artifactID": 10102861523,
+    "workflowCommit": "a3ff3704249dd49cea2130a8c1053a03d97aa95e",
+    "archiveSHA256": "d4cd5813a92c789cbc00a151e606b645d76b007ffd6760580ca97747375822f7",
+    "executableSHA256": "62a7cbf2f09d43ef76c2418011a6a2bcbffea0815e44e2831e2e73650c6513da",
     "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
@@ -18,15 +18,15 @@
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "20dd19bc8989dd6b8545b5eacf53e87eff58079671bd53b75c57fb2e5dd9c069",
+    "manifestSHA256": "2152cf44918371ae149df39ae1dd327bc45a34332465b4491c4b092f706f711a",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
-      "Info.plist": "e3b21fcb94865972fb8908dcce886fc39e73f28e20bf1439cbb70a0139a3ec00"
+      "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac"
     },
-    "note": "Diagnostic host confirmed repeated-save column drift and import/export reference-device mismatch on Mac. Not release-qualified. New Kit import fix requires a newly qualified artifact.",
+    "note": "Mac native XLSX sample passes repeated-save column stability, fixed-page position/flags, attachment payloads and redo metadata. Width/height still drift by 0.05/0.01 mm. Complete Office and physical-device validation remain open; not release-qualified.",
     "filterOverlay": {
-      "patchSHA256": "d946d312777857a10e5b94bcc20d4561670e2653a9fc39d27928e567529de185",
+      "patchSHA256": "b5f67fa7928912e2fb6fbc1f2b8b91067d8c62ebf500fdde0a21ac908e5c49f1",
       "sourceFiles": {
         "engine/sc/source/filter/inc/xcl97rec.hxx": {
           "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
@@ -46,12 +46,12 @@
         },
         "engine/sc/source/filter/oox/unitconverter.cxx": {
           "originalSHA256": "baa3a9cba59b78637c14a46cf67d0be3d2a809c622732010030757f3ddd93eca",
-          "patchedSHA256": "cbd0998189d52a87004706fea207362893b2602fa7a96edb71095e0dce013848"
+          "patchedSHA256": "7d2bd9fe65d966025ade2a8f96a365b9ccc3f7d986ccb1c80e09f8966c5906fa"
         }
       },
-      "archiveSHA256": "7357c1de7f3a74e1205759695aa57b0b48ff030ce8d0e7bd8a32e7b3f3cceda0",
+      "archiveSHA256": "479410fd477a822603f36ed9d78f01f23c1ccf3a067e66463a6f9ff09ed488f4",
       "objectSHA256": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
-      "selectedArchiveSHA256": "7357c1de7f3a74e1205759695aa57b0b48ff030ce8d0e7bd8a32e7b3f3cceda0"
+      "selectedArchiveSHA256": "479410fd477a822603f36ed9d78f01f23c1ccf3a067e66463a6f9ff09ed488f4"
     }
   },
   "qualifiedNativeArtifact": {

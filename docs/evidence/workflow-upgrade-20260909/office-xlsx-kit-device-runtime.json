@@ -1,0 +1,900 @@
+{
+  "hostRunID": "34348631751",
+  "workflowCommit": "a3ff3704249dd49cea2130a8c1053a03d97aa95e",
+  "probeSessionID": "C3C2F70A-06CA-4DA0-BEDA-9725F874A26E",
+  "appLabel": "Floe Office Qualification 22",
+  "runtime": "Mac Designed for iPad; no physical device certification",
+  "installedBinariesMatchSignedPayload": true,
+  "signedPayload": {
+    "purpose": "Independent native XLSX runtime qualification, not a full Floe release",
+    "hostRunID": "34348631751",
+    "signaturePassed": true,
+    "runtimePassed": false,
+    "mainSHA256": "c23c48625f5ff3f9ac75b235dc99497a9272b87f51bc881954890d329a732a7d",
+    "nativeSHA256": "1e655969182817301ed20204f57d037f53d37935c879b0c2655d577d868534b1"
+  },
+  "verifiedHostFiles": 4785,
+  "verifiedHostDirectories": 178,
+  "saveAndReopenCount": 2,
+  "attachmentExportCount": 3,
+  "allExportedAttachmentHashesMatch": true,
+  "attachmentSHA256": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+  "attachmentBytes": 65539,
+  "attachmentStructuralChecksPerSave": 29,
+  "allAttachmentStructuralChecksPassed": true,
+  "unchangedColumnWidthsStableAcrossTwoSaves": true,
+  "columnAWidthFirstSave": "22",
+  "columnAWidthSecondSave": "22",
+  "allActualImportExportMeasurementsMatch": true,
+  "secondEditCell": "Notes!C10",
+  "secondEditTextPersisted": "Second save verification",
+  "allGeometryPassed": false,
+  "remainingGeometry": {
+    "firstSave": [
+      {
+        "hmm": {
+          "margin-left": 1699,
+          "margin-top": 2117,
+          "width": 6000,
+          "height": 1800
+        },
+        "moveWithCells": false,
+        "sizeWithCells": false,
+        "vmlImportedMoveWithCells": false,
+        "vmlImportedSizeWithCells": false
+      }
+    ],
+    "secondSave": [
+      {
+        "hmm": {
+          "margin-left": 1699,
+          "margin-top": 2117,
+          "width": 5995,
+          "height": 1799
+        },
+        "moveWithCells": false,
+        "sizeWithCells": false,
+        "vmlImportedMoveWithCells": false,
+        "vmlImportedSizeWithCells": false
+      }
+    ]
+  },
+  "physicalDevicePassed": false,
+  "fullFloeRuntimePassed": false,
+  "testFlightUploaded": false,
+  "trace": [
+    {
+      "phase": "import-reference",
+      "measuredDigitWidth": 111,
+      "requested": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 0,
+        "family": 5,
+        "charset": 0,
+        "pitch": 0,
+        "characterWidth": 100,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": false,
+        "wordLineMode": false
+      },
+      "effective": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 0,
+        "family": 5,
+        "charset": 76,
+        "pitch": 0,
+        "characterWidth": 100,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": false,
+        "wordLineMode": false
+      },
+      "deviceFont": {
+        "name": "Segoe UI;Tahoma;Arial Unicode MS;Lucida Sans Unicode;DejaVu Sans;Albany AMT;Albany;Arial;Nimbus Sans L;Interface User;Geneva;Dialog;Lucida;Helvetica;Helmet;Interface System;Sans Serif",
+        "style": "",
+        "height": 11,
+        "width": 0,
+        "family": 5,
+        "charset": 76,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": true,
+        "wordLineMode": false
+      },
+      "deviceMetric": {
+        "name": "Segoe UI;Tahoma;Arial Unicode MS;Lucida Sans Unicode;DejaVu Sans;Albany AMT;Albany;Arial;Nimbus Sans L;Interface User;Geneva;Dialog;Lucida;Helvetica;Helmet;Interface System;Sans Serif",
+        "style": "",
+        "height": 11,
+        "width": 11,
+        "family": 5,
+        "charset": -1,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": true,
+        "wordLineMode": false
+      },
+      "dpiX": 8640,
+      "dpiY": 8640,
+      "layoutMode": 0,
+      "mapUnit": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "deviceDigitsWidth": 59,
+      "individualDigitWidths": [
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111
+      ]
+    },
+    {
+      "phase": "export-reference-control",
+      "measuredDigitWidth": 107,
+      "requested": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 0,
+        "family": 5,
+        "charset": 0,
+        "pitch": 0,
+        "characterWidth": 100,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": false,
+        "wordLineMode": false
+      },
+      "effective": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 0,
+        "family": 5,
+        "charset": 0,
+        "pitch": 0,
+        "characterWidth": 100,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": false,
+        "wordLineMode": false
+      },
+      "deviceFont": {
+        "name": "",
+        "style": "",
+        "height": 0,
+        "width": 0,
+        "family": 0,
+        "charset": 0,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 0,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": true,
+        "wordLineMode": false
+      },
+      "deviceMetric": {
+        "name": "",
+        "style": "",
+        "height": 423,
+        "width": 423,
+        "family": 0,
+        "charset": -1,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 0,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": true,
+        "wordLineMode": false
+      },
+      "dpiX": 96,
+      "dpiY": 96,
+      "layoutMode": 0,
+      "mapUnit": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "deviceDigitsWidth": 2354,
+      "individualDigitWidths": [
+        107,
+        107,
+        107,
+        107,
+        107,
+        107,
+        107,
+        107,
+        107,
+        107
+      ]
+    },
+    {
+      "phase": "export-legacy",
+      "measuredDigitWidth": 111,
+      "deviceFont": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 0,
+        "family": 5,
+        "charset": 0,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": true,
+        "wordLineMode": false
+      },
+      "deviceMetric": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 220,
+        "family": 5,
+        "charset": -1,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": true,
+        "wordLineMode": false
+      },
+      "dpiX": 8640,
+      "dpiY": 8640,
+      "layoutMode": 0,
+      "mapUnit": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "deviceDigitsWidth": 1115,
+      "individualDigitWidths": [
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111
+      ]
+    },
+    {
+      "phase": "import-reference",
+      "measuredDigitWidth": 111,
+      "requested": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 0,
+        "family": 5,
+        "charset": 0,
+        "pitch": 0,
+        "characterWidth": 100,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": false,
+        "wordLineMode": false
+      },
+      "effective": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 0,
+        "family": 5,
+        "charset": 76,
+        "pitch": 0,
+        "characterWidth": 100,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": false,
+        "wordLineMode": false
+      },
+      "deviceFont": {
+        "name": "Segoe UI;Tahoma;Arial Unicode MS;Lucida Sans Unicode;DejaVu Sans;Albany AMT;Albany;Arial;Nimbus Sans L;Interface User;Geneva;Dialog;Lucida;Helvetica;Helmet;Interface System;Sans Serif",
+        "style": "",
+        "height": 11,
+        "width": 0,
+        "family": 5,
+        "charset": 76,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": true,
+        "wordLineMode": false
+      },
+      "deviceMetric": {
+        "name": "Segoe UI;Tahoma;Arial Unicode MS;Lucida Sans Unicode;DejaVu Sans;Albany AMT;Albany;Arial;Nimbus Sans L;Interface User;Geneva;Dialog;Lucida;Helvetica;Helmet;Interface System;Sans Serif",
+        "style": "",
+        "height": 11,
+        "width": 11,
+        "family": 5,
+        "charset": -1,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": true,
+        "wordLineMode": false
+      },
+      "dpiX": 8640,
+      "dpiY": 8640,
+      "layoutMode": 0,
+      "mapUnit": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "deviceDigitsWidth": 59,
+      "individualDigitWidths": [
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111
+      ]
+    },
+    {
+      "phase": "import-reference",
+      "measuredDigitWidth": 111,
+      "requested": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 0,
+        "family": 5,
+        "charset": 0,
+        "pitch": 0,
+        "characterWidth": 100,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": false,
+        "wordLineMode": false
+      },
+      "effective": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 0,
+        "family": 5,
+        "charset": 76,
+        "pitch": 0,
+        "characterWidth": 100,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": false,
+        "wordLineMode": false
+      },
+      "deviceFont": {
+        "name": "Segoe UI;Tahoma;Arial Unicode MS;Lucida Sans Unicode;DejaVu Sans;Albany AMT;Albany;Arial;Nimbus Sans L;Interface User;Geneva;Dialog;Lucida;Helvetica;Helmet;Interface System;Sans Serif",
+        "style": "",
+        "height": 11,
+        "width": 0,
+        "family": 5,
+        "charset": 76,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": true,
+        "wordLineMode": false
+      },
+      "deviceMetric": {
+        "name": "Segoe UI;Tahoma;Arial Unicode MS;Lucida Sans Unicode;DejaVu Sans;Albany AMT;Albany;Arial;Nimbus Sans L;Interface User;Geneva;Dialog;Lucida;Helvetica;Helmet;Interface System;Sans Serif",
+        "style": "",
+        "height": 11,
+        "width": 11,
+        "family": 5,
+        "charset": -1,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": true,
+        "wordLineMode": false
+      },
+      "dpiX": 8640,
+      "dpiY": 8640,
+      "layoutMode": 0,
+      "mapUnit": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "deviceDigitsWidth": 59,
+      "individualDigitWidths": [
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111
+      ]
+    },
+    {
+      "phase": "export-reference-control",
+      "measuredDigitWidth": 112,
+      "requested": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 0,
+        "family": 5,
+        "charset": 0,
+        "pitch": 0,
+        "characterWidth": 100,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": false,
+        "wordLineMode": false
+      },
+      "effective": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 0,
+        "family": 5,
+        "charset": 0,
+        "pitch": 0,
+        "characterWidth": 100,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": false,
+        "wordLineMode": false
+      },
+      "deviceFont": {
+        "name": "Calibri",
+        "style": "",
+        "height": 15,
+        "width": 0,
+        "family": 5,
+        "charset": 0,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": false,
+        "wordLineMode": false
+      },
+      "deviceMetric": {
+        "name": "Calibri",
+        "style": "",
+        "height": 15,
+        "width": 15,
+        "family": 5,
+        "charset": -1,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": false,
+        "wordLineMode": false
+      },
+      "dpiX": 96,
+      "dpiY": 96,
+      "layoutMode": 0,
+      "mapUnit": 10,
+      "scaleX": 1,
+      "scaleY": 1,
+      "deviceDigitsWidth": 80,
+      "individualDigitWidths": [
+        112,
+        112,
+        112,
+        112,
+        112,
+        112,
+        112,
+        112,
+        112,
+        112
+      ]
+    },
+    {
+      "phase": "export-legacy",
+      "measuredDigitWidth": 111,
+      "deviceFont": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 0,
+        "family": 5,
+        "charset": 0,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": true,
+        "wordLineMode": false
+      },
+      "deviceMetric": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 220,
+        "family": 5,
+        "charset": -1,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": true,
+        "wordLineMode": false
+      },
+      "dpiX": 8640,
+      "dpiY": 8640,
+      "layoutMode": 0,
+      "mapUnit": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "deviceDigitsWidth": 1115,
+      "individualDigitWidths": [
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111
+      ]
+    },
+    {
+      "phase": "import-reference",
+      "measuredDigitWidth": 111,
+      "requested": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 0,
+        "family": 5,
+        "charset": 0,
+        "pitch": 0,
+        "characterWidth": 100,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": false,
+        "wordLineMode": false
+      },
+      "effective": {
+        "name": "Calibri",
+        "style": "",
+        "height": 220,
+        "width": 0,
+        "family": 5,
+        "charset": 76,
+        "pitch": 0,
+        "characterWidth": 100,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": false,
+        "wordLineMode": false
+      },
+      "deviceFont": {
+        "name": "Segoe UI;Tahoma;Arial Unicode MS;Lucida Sans Unicode;DejaVu Sans;Albany AMT;Albany;Arial;Nimbus Sans L;Interface User;Geneva;Dialog;Lucida;Helvetica;Helmet;Interface System;Sans Serif",
+        "style": "",
+        "height": 11,
+        "width": 0,
+        "family": 5,
+        "charset": 76,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": true,
+        "wordLineMode": false
+      },
+      "deviceMetric": {
+        "name": "Segoe UI;Tahoma;Arial Unicode MS;Lucida Sans Unicode;DejaVu Sans;Albany AMT;Albany;Arial;Nimbus Sans L;Interface User;Geneva;Dialog;Lucida;Helvetica;Helmet;Interface System;Sans Serif",
+        "style": "",
+        "height": 11,
+        "width": 11,
+        "family": 5,
+        "charset": -1,
+        "pitch": 0,
+        "characterWidth": 0,
+        "weight": 100,
+        "slant": 0,
+        "underline": 0,
+        "strikeout": 0,
+        "orientation": 0,
+        "kerning": true,
+        "wordLineMode": false
+      },
+      "dpiX": 8640,
+      "dpiY": 8640,
+      "layoutMode": 0,
+      "mapUnit": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "deviceDigitsWidth": 59,
+      "individualDigitWidths": [
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111,
+        111
+      ]
+    }
+  ],
+  "events": [
+    {
+      "detail": "xlsx",
+      "event": "fixtureCopied",
+      "time": "2026-09-09T12:09:38Z"
+    },
+    {
+      "detail": "zh-Hans-TW",
+      "event": "preferredLanguage",
+      "time": "2026-09-09T12:09:38Z"
+    },
+    {
+      "detail": "font-metrics.jsonl",
+      "event": "fontMetricTracingEnabled",
+      "time": "2026-09-09T12:09:38Z"
+    },
+    {
+      "detail": "true; readonly=false",
+      "event": "opened",
+      "time": "2026-09-09T12:09:39Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T12:09:41Z"
+    },
+    {
+      "detail": "附件 测试 📎.bin",
+      "event": "attachmentRequested",
+      "time": "2026-09-09T12:09:59Z"
+    },
+    {
+      "detail": "success",
+      "event": "attachmentCompleted",
+      "time": "2026-09-09T12:09:59Z"
+    },
+    {
+      "detail": "1; readonly=false",
+      "event": "attachmentsListed",
+      "time": "2026-09-09T12:10:11Z"
+    },
+    {
+      "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/C3C2F70A-06CA-4DA0-BEDA-9725F874A26E/attachment-exports/DFA666D2-8BDB-4722-804D-51359ADADD69/附件 测试 📎.bin",
+      "event": "attachmentExported",
+      "time": "2026-09-09T12:10:11Z"
+    },
+    {
+      "detail": "",
+      "event": "saveRequested",
+      "time": "2026-09-09T12:10:22Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T12:10:22Z"
+    },
+    {
+      "detail": "success",
+      "event": "saveCompleted",
+      "time": "2026-09-09T12:10:22Z"
+    },
+    {
+      "detail": "success",
+      "event": "editingClosed",
+      "time": "2026-09-09T12:10:22Z"
+    },
+    {
+      "detail": "true; readonly=true",
+      "event": "opened",
+      "time": "2026-09-09T12:10:22Z"
+    },
+    {
+      "detail": "1; readonly=true",
+      "event": "attachmentsListed",
+      "time": "2026-09-09T12:10:47Z"
+    },
+    {
+      "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/C3C2F70A-06CA-4DA0-BEDA-9725F874A26E/attachment-exports/4A6D53B1-D2BE-4FD4-A725-7C67BCE59F29/附件 测试 📎.bin",
+      "event": "attachmentExported",
+      "time": "2026-09-09T12:10:47Z"
+    },
+    {
+      "detail": "",
+      "event": "resumeEditingRequested",
+      "time": "2026-09-09T12:10:47Z"
+    },
+    {
+      "detail": "success",
+      "event": "previewClosedForEditing",
+      "time": "2026-09-09T12:10:47Z"
+    },
+    {
+      "detail": "true; readonly=false",
+      "event": "opened",
+      "time": "2026-09-09T12:10:47Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T12:10:48Z"
+    },
+    {
+      "detail": "",
+      "event": "saveRequested",
+      "time": "2026-09-09T12:11:15Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T12:11:15Z"
+    },
+    {
+      "detail": "success",
+      "event": "saveCompleted",
+      "time": "2026-09-09T12:11:15Z"
+    },
+    {
+      "detail": "success",
+      "event": "editingClosed",
+      "time": "2026-09-09T12:11:15Z"
+    },
+    {
+      "detail": "true; readonly=true",
+      "event": "opened",
+      "time": "2026-09-09T12:11:16Z"
+    },
+    {
+      "detail": "1; readonly=true",
+      "event": "attachmentsListed",
+      "time": "2026-09-09T12:11:48Z"
+    },
+    {
+      "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/C3C2F70A-06CA-4DA0-BEDA-9725F874A26E/attachment-exports/870F6A9F-83AD-4D15-AE1E-B767D0AC7D42/附件 测试 📎.bin",
+      "event": "attachmentExported",
+      "time": "2026-09-09T12:11:48Z"
+    }
+  ],
+  "priorAttempt": {
+    "session": "189CF664-F143-44C3-8900-F6E858FA1235",
+    "events": [
+      {
+        "detail": "xlsx",
+        "event": "fixtureCopied",
+        "time": "2026-09-09T12:08:09Z"
+      },
+      {
+        "detail": "zh-Hans-TW",
+        "event": "preferredLanguage",
+        "time": "2026-09-09T12:08:09Z"
+      },
+      {
+        "detail": "font-metrics.jsonl",
+        "event": "fontMetricTracingEnabled",
+        "time": "2026-09-09T12:08:09Z"
+      },
+      {
+        "detail": "true; readonly=false",
+        "event": "opened",
+        "time": "2026-09-09T12:08:10Z"
+      },
+      {
+        "detail": "true",
+        "event": "workingPersistence",
+        "time": "2026-09-09T12:08:11Z"
+      },
+      {
+        "detail": "true",
+        "event": "unexpectedClose",
+        "time": "2026-09-09T12:08:22Z"
+      }
+    ],
+    "outcome": "Editor closed unexpectedly during AX-based sheet/name-box interaction. Same binary restarted; screenshot-grounded coordinate sequence completed. Cause not confirmed and not dismissed as fixed."
+  }
+}
