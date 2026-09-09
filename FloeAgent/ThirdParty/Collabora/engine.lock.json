@@ -1,30 +1,30 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "attachment-undo-and-encoding-fixes-pending-qualification",
+  "qualificationStatus": "attachment-undo-view-ownership-fix-pending-qualification",
   "qualifiedHostArtifact": {
-    "runID": "34311790525",
+    "runID": "34312836612",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10088709622,
-    "workflowCommit": "da2a453fe004b803d23d91b591712ac2e8afde31",
-    "archiveSHA256": "c6a70814264a384b5e600d3e8ed31ca63d4d376e52788b12cd3a559c345a5fc6",
-    "executableSHA256": "e5cd3b7bfe64d40738d190a81e19472abf6a16081aa1d11a4304dfd318b3de7e",
+    "artifactID": 10089040812,
+    "workflowCommit": "8acabb248b30ad5becfad5100e3e091865a3d0ad",
+    "archiveSHA256": "b9a649151b7c7e67ba9f76f0cd404c1986fea0f4912467e83b2ef5d3aee783d2",
+    "executableSHA256": "3511980d547c832e13233dd1f8b34d0be0e9f6f863a44d37a699f79cda283ddf",
     "overlaySHA256": "600f480a2ccfde4e7d8d9641332197556a4dc79466860943e207c6c2fd7618fd",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "34e84db6dc3408c4eacf54331f034af9e8062a86403ffb8fea5fb74804dfaba1",
       "FloeOfficeNative.mm": "5a291fa6447b033986b90b831e01d8f6417f8db54b4791c578b965370029ff38",
-      "FloeOfficeAttachment.cpp": "734280f55e32d6646d50bb0dda2335664a8f9309d24a209a11b332295e190de0",
+      "FloeOfficeAttachment.cpp": "483a51b049e75cbefe0fed0fa5adafe0983eee49efe99f7dff59973be45bd7a4",
       "FloeOfficeAttachment.hxx": "c9f5afb7fa500698d7372e5303d609fab2b865f0c2a1fae573e0009daeaaf6e5"
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "ad0f31788f47eea65f2beb5c05151b58f6141599c9d0303080be21acb599e6a8",
+    "manifestSHA256": "c885940a942fc954835cda4192b07cf3c4ae3c25fa7d070b8bf63903e7df148a",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "34e84db6dc3408c4eacf54331f034af9e8062a86403ffb8fea5fb74804dfaba1",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
       "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac"
     },
-    "note": "Compiled, linked and Swift-imported Word attachment host. Attachment insertion, extraction, undo, complete fidelity and physical-device acceptance remain separate pending gates."
+    "note": "Compiled, linked and Swift-imported attachment undo/encoding fixes; runtime and complete frontend acceptance remain separate pending gates."
   },
   "qualifiedNativeArtifact": {
     "runID": "34268468731",

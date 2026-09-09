@@ -17,11 +17,9 @@
 #include <comphelper/propertyvalue.hxx>
 #include <comphelper/processfactory.hxx>
 #include <comphelper/embeddedobjectcontainer.hxx>
-#include <cppuhelper/implbase.hxx>
+#include <svl/undo.hxx>
 #include <cppuhelper/weakref.hxx>
 #include <com/sun/star/document/XEmbeddedObjectResolver.hpp>
-#include <com/sun/star/document/XUndoManagerSupplier.hpp>
-#include <com/sun/star/document/XUndoAction.hpp>
 #include <com/sun/star/embed/XEmbeddedObject.hpp>
 #include <com/sun/star/container/XNameAccess.hpp>
 #include <com/sun/star/lang/XMultiServiceFactory.hpp>
@@ -101,16 +99,18 @@ static void FloeWriteAttachmentPackage(const std::string &sourceURL, const std::
 // its DOCX exporter looks up ProgID by the current storage name. Keep that
 // metadata attached to this object after redo. Weak references avoid retaining
 // a closed document through its own undo stack.
-class FloeAttachmentInteropUndo final : public cppu::WeakImplHelper<com::sun::star::document::XUndoAction> {
+class FloeAttachmentInteropUndo final : public SfxUndoAction {
     cpo::uno::WeakReferenceHelper model;
     cpo::uno::WeakReferenceHelper object;
+    ViewShellId viewID;
 public:
     FloeAttachmentInteropUndo(const css::uno::Reference<css::frame::XModel> &owner,
-                              const css::uno::Reference<css::embed::XEmbeddedObject> &attachment)
-        : model(owner), object(attachment) {}
-    OUString getTitle() override { return u"Insert attachment"_ustr; }
-    void undo() override {} // The grouped Writer action removes the object.
-    void redo() override {
+                              const css::uno::Reference<css::embed::XEmbeddedObject> &attachment, ViewShellId view)
+        : model(owner), object(attachment), viewID(view) {}
+    OUString GetComment() const override { return u"Insert attachment"_ustr; }
+    ViewShellId GetViewShellId() const override { return viewID; }
+    void Undo() override {} // The grouped Writer action removes the object.
+    void Redo() override {
         SolarMutexGuard guard;
         css::uno::Reference<css::frame::XModel> owner(model.get(), css::uno::UNO_QUERY);
         css::uno::Reference<css::embed::XEmbeddedObject> attachment(object.get(), css::uno::UNO_QUERY);
@@ -145,9 +145,13 @@ static void FloeInsertWordAttachment(COKitDocument *document, const std::string 
     css::uno::Reference<css::document::XEmbeddedObjectResolver> resolver(
         factory->createInstance(u"com.sun.star.document.ImportEmbeddedObjectResolver"_ustr), css::uno::UNO_QUERY_THROW);
     css::uno::Reference<css::lang::XComponent> resolverLifetime(resolver, css::uno::UNO_QUERY_THROW);
-    css::uno::Reference<css::document::XUndoManagerSupplier> undoSupplier(model, css::uno::UNO_QUERY_THROW);
-    auto undo = undoSupplier->getUndoManager();
-    undo->enterUndoContext(u"Insert attachment"_ustr);
+    // UNO enterUndoContext creates an unowned (-1) list action, which the
+    // collaborative engine refuses to undo from this editor. Use the document's
+    // native manager and explicitly tag both group and metadata with this view.
+    SfxUndoManager *undo = shell->GetObjectShell()->GetUndoManager();
+    if (!undo || !undo->IsUndoEnabled()) throw std::runtime_error("Document undo is unavailable.");
+    const ViewShellId viewID = shell->GetViewShellId();
+    undo->EnterListAction(u"Insert attachment"_ustr, u"Insert attachment"_ustr, 0, viewID);
     bool undoContextOpen = true;
     try {
         const OUString objectID = u"FloeAttachment"_ustr + FloeUNOString(identifier);
@@ -182,14 +186,14 @@ static void FloeInsertWordAttachment(COKitDocument *document, const std::string 
         cursor->getText()->insertTextContent(cursor, content, false);
         css::uno::Reference<css::embed::XEmbeddedObject> embedded(
             properties->getPropertyValue(u"EmbeddedObject"_ustr), css::uno::UNO_QUERY_THROW);
-        rtl::Reference<FloeAttachmentInteropUndo> metadata = new FloeAttachmentInteropUndo(model, embedded);
-        metadata->redo();
-        undo->addUndoAction(metadata);
+        auto metadata = std::make_unique<FloeAttachmentInteropUndo>(model, embedded, viewID);
+        metadata->Redo();
+        undo->AddUndoAction(std::move(metadata));
         undoContextOpen = false;
-        undo->leaveUndoContext();
+        undo->LeaveListAction();
         try { resolverLifetime->dispose(); } catch (...) { /* Insertion already succeeded. */ }
     } catch (...) {
-        if (undoContextOpen) { try { undo->leaveUndoContext(); } catch (...) {} }
+        if (undoContextOpen) { try { undo->LeaveListAction(); } catch (...) {} }
         try { resolverLifetime->dispose(); } catch (...) { /* Preserve insertion error. */ }
         throw;
     }
