@@ -22,6 +22,13 @@ public struct DocumentSession: Sendable, Identifiable, Hashable {
     }
 }
 
+/// Immutable bytes handed to the system's Save a Copy picker. Exporting does
+/// not change the original file or the session's conflict-detection baseline.
+public struct DocumentExportSnapshot: Sendable, Identifiable, Hashable {
+    public let id: UUID
+    public let fileURL: URL
+}
+
 public protocol DocumentWorkspace: Sendable {
     func open(securityScopedURL: URL) async throws -> DocumentSession
     func save(_ session: DocumentSession) async throws
@@ -40,6 +47,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     private var savedDigests: [UUID: String] = [:]
     private var manifests: [UUID: DocumentRecoveryManifest] = [:]
     private var recoveryLeases: [UUID: DocumentRecoveryLease] = [:]
+    private var exports: [UUID: DocumentExportSnapshot] = [:]
 
     public init(root: URL? = nil, fileManager: FileManager = .default) throws {
         self.fileManager = fileManager
@@ -139,6 +147,53 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         try manifest.write(to: session.workingURL.deletingLastPathComponent())
         manifests[session.id] = manifest
         try? fileManager.removeItem(at: session.recoveryURL)
+    }
+
+    /// Call only after the native editor acknowledges persistence to workingURL.
+    /// Copy and verify before exposing the URL; later autosaves cannot mutate it.
+    public func prepareExport(_ session: DocumentSession) throws -> DocumentExportSnapshot {
+        guard sessions[session.id] == session else {
+            throw FloeError.validationFailed("Document session is closed or belongs to another workspace")
+        }
+        try requireRegularCopy(session.workingURL)
+        let expected = try Self.digest(session.workingURL)
+        let id = UUID()
+        let directory = session.workingURL.deletingLastPathComponent()
+            .appendingPathComponent("exports", isDirectory: true).appendingPathComponent(id.uuidString, isDirectory: true)
+        let copy = directory.appendingPathComponent(session.originalURL.lastPathComponent)
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try fileManager.copyItem(at: session.workingURL, to: copy)
+            guard try Self.digest(copy) == expected else {
+                throw FloeError.validationFailed("Editor is still writing; finish the edit before exporting")
+            }
+            let snapshot = DocumentExportSnapshot(id: id, fileURL: copy)
+            exports[id] = snapshot
+            return snapshot
+        } catch {
+            try? fileManager.removeItem(at: directory)
+            throw error
+        }
+    }
+
+    /// The picker has finished reading this exact snapshot, on success or cancel.
+    /// Working/recovery copies remain available regardless of export outcome.
+    public func finishExport(_ snapshot: DocumentExportSnapshot) {
+        guard exports[snapshot.id] == snapshot else { return }
+        exports[snapshot.id] = nil
+        let directory = snapshot.fileURL.deletingLastPathComponent()
+        try? fileManager.removeItem(at: directory)
+        let parent = directory.deletingLastPathComponent()
+        if (try? fileManager.contentsOfDirectory(atPath: parent.path).isEmpty) == true {
+            try? fileManager.removeItem(at: parent)
+        }
+    }
+
+    public func hasUncommittedWorkingCopy(_ session: DocumentSession) throws -> Bool {
+        guard sessions[session.id] == session, let saved = savedDigests[session.id] else {
+            throw FloeError.validationFailed("Document session is closed or belongs to another workspace")
+        }
+        return try Self.digest(session.workingURL) != saved
     }
 
     /// Retained sessions only. An active editor in any workspace instance keeps

@@ -1,0 +1,9 @@
+21 Swift tests in 3 suites passed: DocumentExportTests, DocumentRecoveryTests, DocumentWorkspaceTests.
+Command: DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test --package-path FloeAgent --jobs 2 --enable-swift-testing --filter 'DocumentExportTests|DocumentRecoveryTests|DocumentWorkspaceTests'
+Passing log: /tmp/floe-document-export-tests-2.log
+First attempt: test fixture passed FileManager across an actor boundary in a way rejected by Swift concurrency. Fixed fixture ownership; first failed attempt not counted as pass.
+Export tests: independent immutable bytes, subsequent autosave, original CAS unchanged, picker lifetime across normal close, owning-workspace cleanup, corrupt snapshot rejection.
+OfficeDocumentEditorView.swift syntax parse passed. Actual device application build and native picker interaction for this latest UI remain unverified.
+System API reference: https://developer.apple.com/documentation/uikit/uidocumentpickerviewcontroller/init(forexporting:ascopy:)
+Native editor -> working file persistence still uses the qualified correlated save callback. Tests here use fixture file bytes, not actual Office documents or engine UI execution.
+Current separate app workflow 34301236609 builds earlier bb6b2ce and does not include this export UI.

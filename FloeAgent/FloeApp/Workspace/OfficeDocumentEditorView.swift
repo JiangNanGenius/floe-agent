@@ -14,6 +14,7 @@ final class OfficeFileSession: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var controller: UIViewController?
     @Published private(set) var readOnly = true
+    @Published private(set) var hasUncommittedChanges = false
     @Published var error: String?
     private var workspace: SecurityScopedDocumentWorkspace?
     private var session: DocumentSession?
@@ -22,6 +23,8 @@ final class OfficeFileSession: ObservableObject {
     private var expectedClose = false
     private var runtimeFailed = false
     private var runtimeFailureObservation: AnyCancellable?
+    private var exportSnapshot: DocumentExportSnapshot?
+    private var exportWorkspace: SecurityScopedDocumentWorkspace?
 
     init() {
         #if canImport(FloeOfficeNative)
@@ -67,12 +70,14 @@ final class OfficeFileSession: ObservableObject {
             let opened = try await files.open(securityScopedURL: url)
             workspace = files
             session = opened
+            hasUncommittedChanges = false
             try await activate(readOnly: true)
         } catch { fail(error) }
     }
 
     func enterEditing() async {
         guard !operating, session != nil else { return }
+        if !readOnly, controller != nil, phase == .ready { return }
         operating = true
         defer { finishOperation() }
         do {
@@ -98,6 +103,7 @@ final class OfficeFileSession: ObservableObject {
                 }
             }
             try await workspace.save(session)
+            hasUncommittedChanges = try await workspace.hasUncommittedWorkingCopy(session)
             try await closeController()
             readOnly = true
             phase = .idle
@@ -120,6 +126,74 @@ final class OfficeFileSession: ObservableObject {
             try await closeController()
             await workspace.discardChangesAndClose(session)
             self.session = try await workspace.open(securityScopedURL: session.originalURL)
+            hasUncommittedChanges = false
+            readOnly = true
+            phase = .idle
+            return true
+        } catch { fail(error); return false }
+    }
+
+    func prepareSaveCopy() async -> DocumentExportSnapshot? {
+        guard canAct, !readOnly, exportSnapshot == nil, let workspace, let session else { return nil }
+        operating = true
+        defer { finishOperation() }
+        phase = .saving
+        error = nil
+        do {
+            #if canImport(FloeOfficeNative)
+            guard let native = controller as? FloeOfficeNativeViewController else { throw CocoaError(.fileWriteUnknown) }
+            native.view.isUserInteractionEnabled = false
+            defer { native.view.isUserInteractionEnabled = true }
+            try await withCheckedThrowingContinuation { (receipt: CheckedContinuation<Void, Error>) in
+                native.saveWorkingCopy { error in
+                    if let error { receipt.resume(throwing: error) } else { receipt.resume() }
+                }
+            }
+            let copy = try await workspace.prepareExport(session)
+            exportSnapshot = copy
+            exportWorkspace = workspace
+            phase = .ready
+            return copy
+            #else
+            throw CocoaError(.featureUnsupported)
+            #endif
+        } catch {
+            self.error = error.localizedDescription
+            phase = runtimeFailed || controller == nil ? .failed : .ready
+            return nil
+        }
+    }
+
+    func finishSaveCopy() async {
+        guard let copy = exportSnapshot else { return }
+        exportSnapshot = nil
+        let owner = exportWorkspace
+        exportWorkspace = nil
+        await owner?.finishExport(copy)
+    }
+
+    func keepChangesAndReturn() async -> Bool {
+        guard !operating, session != nil else { return false }
+        operating = true
+        defer { finishOperation() }
+        do {
+            // Persist the current editor contents when possible, but never
+            // force a conflicting original writeback merely to leave the view.
+            #if canImport(FloeOfficeNative)
+            if let native = controller as? FloeOfficeNativeViewController, !readOnly, !runtimeFailed {
+                native.view.isUserInteractionEnabled = false
+                defer { native.view.isUserInteractionEnabled = true }
+                try await withCheckedThrowingContinuation { (receipt: CheckedContinuation<Void, Error>) in
+                    native.saveWorkingCopy { error in
+                        if let error { receipt.resume(throwing: error) } else { receipt.resume() }
+                    }
+                }
+            }
+            #endif
+            try await closeController()
+            if let session, let workspace {
+                hasUncommittedChanges = try await workspace.hasUncommittedWorkingCopy(session)
+            }
             readOnly = true
             phase = .idle
             return true
@@ -152,6 +226,7 @@ final class OfficeFileSession: ObservableObject {
             let recovered = try await files.resumeRecovery(id: id)
             workspace = files
             session = recovered
+            hasUncommittedChanges = try await files.hasUncommittedWorkingCopy(recovered)
             try await activate(readOnly: true)
         } catch { fail(error) }
     }
@@ -264,6 +339,14 @@ struct OfficeDocumentSurface: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(FloeTheme.readingSurface)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if session.readOnly && session.hasUncommittedChanges {
+                Label("有未写回原文件的修改", systemImage: "doc.badge.clock")
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(8)
+                    .background(.regularMaterial)
+            }
+        }
     }
 }
 
@@ -273,6 +356,9 @@ struct OfficeDocumentEditorView: View {
     var onSaved: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var confirmingDiscard = false
+    @State private var export: DocumentExportSnapshot?
+    @State private var savedCopyNotice = false
+    @State private var exportSucceeded = false
 
     var body: some View {
         OfficeDocumentSurface(session: session)
@@ -292,6 +378,12 @@ struct OfficeDocumentEditorView: View {
                         Button("保存并返回") {
                             Task { if await session.saveAndReturn() { onSaved?(); dismiss() } }
                         }
+                        Button("另存副本…", systemImage: "doc.on.doc") {
+                            Task { export = await session.prepareSaveCopy() }
+                        }
+                        Button("保留修改并返回") {
+                            Task { if await session.keepChangesAndReturn() { dismiss() } }
+                        }
                         Button("放弃修改", role: .destructive) { confirmingDiscard = true }
                     } label: { Image(systemName: "ellipsis.circle") }
                     .disabled(!session.canAct)
@@ -300,10 +392,31 @@ struct OfficeDocumentEditorView: View {
             }
             .interactiveDismissDisabled()
             .task { await session.enterEditing() }
+            .sheet(item: $export, onDismiss: {
+                Task { await session.finishSaveCopy() }
+                savedCopyNotice = exportSucceeded
+                exportSucceeded = false
+            }) { snapshot in
+                OfficeCopyDestinationPicker(url: snapshot.fileURL) { saved in
+                    exportSucceeded = saved
+                    export = nil
+                }
+            }
+            .alert("副本已保存", isPresented: $savedCopyNotice) {
+                Button("好", role: .cancel) {}
+            } message: { Text("当前编辑仍对应原文件。") }
             .alert("未能保存", isPresented: Binding(
                 get: { session.error != nil && session.phase == .ready },
                 set: { if !$0 { session.error = nil } })) {
                     Button("继续编辑", role: .cancel) { session.error = nil }
+                    Button("另存副本…") {
+                        session.error = nil
+                        Task { export = await session.prepareSaveCopy() }
+                    }
+                    Button("保留修改并返回") {
+                        session.error = nil
+                        Task { if await session.keepChangesAndReturn() { dismiss() } }
+                    }
                 } message: { Text(session.error ?? "") }
             .confirmationDialog("放弃未保存的修改？", isPresented: $confirmingDiscard, titleVisibility: .visible) {
                 Button("放弃修改", role: .destructive) {
@@ -311,6 +424,35 @@ struct OfficeDocumentEditorView: View {
                 }
                 Button("继续编辑", role: .cancel) {}
             }
+    }
+}
+
+private struct OfficeCopyDestinationPicker: UIViewControllerRepresentable {
+    let url: URL
+    let completion: (Bool) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
+        picker.delegate = context.coordinator
+        picker.shouldShowFileExtensions = true
+        return picker
+    }
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(completion: completion) }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let completion: (Bool) -> Void
+        private var finished = false
+        init(completion: @escaping (Bool) -> Void) { self.completion = completion }
+        private func finish(_ saved: Bool) {
+            guard !finished else { return }
+            finished = true
+            completion(saved)
+        }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            finish(!urls.isEmpty)
+        }
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { finish(false) }
     }
 }
 #endif
