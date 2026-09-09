@@ -1,0 +1,35 @@
+{
+  "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+  "patchSHA256": "2aad51e312326439a36b0e1a7bbb23bf9929f5a501c8a14fcd9972b745746f07",
+  "originalArchiveSHA256": "a7e5961052e204adfb5694d584de17f8b7a7f0f6462a972303fd6baf78c11b77",
+  "compilePassed": true,
+  "archiveReplacementPassed": true,
+  "runtimeRoundtripPassed": false,
+  "sourceFiles": {
+    "engine/sc/source/filter/inc/xcl97rec.hxx": {
+      "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
+      "patchedSHA256": "025398a1044e4faf26cb113f11031cae2f19025d5f3b40221e04c86140d19b93"
+    },
+    "engine/sc/source/filter/xcl97/xcl97rec.cxx": {
+      "originalSHA256": "cfc6ad7262deb1ef682662c3c05e9b49c05b246796c637c4f7ed9d57164ce5b9",
+      "patchedSHA256": "2013f58b8ed6e9e4ec6fbbba30cc73e7b1b88b9b6ee0977e85db05f7c613049f"
+    },
+    "engine/sc/source/filter/excel/xlroot.cxx": {
+      "originalSHA256": "a03e6d3c8f5fc179dd1599d9dc2ea1012ac672ab839adaecaa6f72831052bc88",
+      "patchedSHA256": "93d47f925747054e16e82c41362f8beb5202a4b8345a80c53c4aabd3d86be2fd"
+    }
+  },
+  "objectSHA256ByMember": {
+    "xcl97rec.o": "4f38e6a2e1507cee47c718132a5421738e50aac02792c3b529716f426c26980f",
+    "xlroot.o": "b0d7c1232589e74b56b03fd88b2d69b2dcad9f46239fec45ad015a9322721322"
+  },
+  "archiveSHA256": "e54d9122dc3e6c41b45109e36418818b318d61c13e391847cca41b0d33a57a13",
+  "replacedMembers": [
+    "xcl97rec.o",
+    "xlroot.o"
+  ],
+  "preservedMemberCount": 166,
+  "selectedArchiveSHA256": "e54d9122dc3e6c41b45109e36418818b318d61c13e391847cca41b0d33a57a13",
+  "linkerInputsChecked": 369,
+  "scope": "Local arm64 iOS compile, archive-member hashes and selection in relocated original linker list; actual reference-font repeated-save behavior awaits a new native host."
+}

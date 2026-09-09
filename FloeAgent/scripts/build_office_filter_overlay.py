@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the pinned Calc exporter and replace exactly one archive member.
+"""Compile pinned Calc filters and replace only explicitly locked archive members.
 
 Uses a sparse checkout of the exact engine commit plus verified embedding inputs.
 The original bundle remains unchanged. A receipt is not runtime qualification.
@@ -18,6 +18,7 @@ FILTER_LOCK = DEFAULT_LOCK.parent / 'filter-overlay.lock.json'
 SPARSE_PATHS = [
     '/engine/sc/inc/', '/engine/sc/source/filter/inc/',
     '/engine/sc/source/filter/xcl97/xcl97rec.cxx', '/engine/oox/inc/',
+    '/engine/sc/source/filter/excel/xlroot.cxx', '/engine/sc/source/ui/inc/',
     '/engine/officecfg/registry/cppheader.xsl',
     '/engine/officecfg/registry/component-schema.dtd',
     '/engine/officecfg/registry/schema/org/openoffice/Office/Common.xcs',
@@ -70,10 +71,14 @@ def archive_members(path):
 
 
 def verify_replacement(before, after, name, object_hash):
-    if set(before) != set(after) or name not in before:
+    verify_replacements(before, after, {name: object_hash})
+
+
+def verify_replacements(before, after, objects):
+    if not objects or set(before) != set(after) or not set(objects) <= set(before):
         raise ValueError('Archive membership changed')
     changed = {key for key in before if before[key] != after[key]}
-    if changed != {name} or after[name] != object_hash:
+    if changed != set(objects) or any(after[name] != checksum for name, checksum in objects.items()):
         raise ValueError('Replacement changed an unexpected archive member')
 
 
@@ -91,8 +96,11 @@ def select_linker_archive(bundle, overlay, destination):
             or digest(original) != lock['originalArchiveSHA256']
             or digest(replacement) != report.get('archiveSHA256')):
         raise ValueError('Filter overlay is not the current verified build')
-    verify_replacement(archive_members(original), archive_members(replacement),
-                       lock['member'], report['objectSHA256'])
+    expected = set(lock.get('members', {lock['member']: ''}))
+    objects = report.get('objectSHA256ByMember', {lock['member']: report['objectSHA256']})
+    if set(objects) != expected:
+        raise ValueError('Filter overlay does not contain every locked replacement')
+    verify_replacements(archive_members(original), archive_members(replacement), objects)
     lines = (bundle / 'prepared/ios-all-static-libs.list').read_text().splitlines()
     matches = [i for i, line in enumerate(lines) if Path(line).resolve() == original.resolve()]
     if len(matches) != 1:
@@ -184,32 +192,44 @@ def build(bundle, source, output):
                '-O2', '-fPIC', '-fvisibility=hidden', '-fvisibility-inlines-hidden', '-DNDEBUG']
     includes = [engine / 'config_host', engine / 'include', generated,
                 source / 'engine/sc/inc', source / 'engine/sc/source/filter/inc',
+                source / 'engine/sc/source/ui/inc',
                 source / 'engine/oox/inc',
                 engine / 'workdir/UnoApiHeadersTarget/udkapi/comprehensive',
                 engine / 'workdir/UnoApiHeadersTarget/offapi/comprehensive',
                 engine / 'workdir/UnpackedTarball/boost']
     for include in includes:
         command += ['-I', str(include)]
-    replacement = output / lock['member']
-    command += [str(source / 'engine/sc/source/filter/xcl97/xcl97rec.cxx'), '-o', str(replacement)]
-    report['compileCommand'] = command
-    save()
-    with (output / 'compile.log').open('w') as log:
-        run(command, stdout=log, stderr=subprocess.STDOUT)
-    report.update(compilePassed=True, objectSHA256=digest(replacement))
+    members = lock.get('members', {lock['member']: 'engine/sc/source/filter/xcl97/xcl97rec.cxx'})
+    report['compileCommands'] = {}
+    replacements = []
+    for name, source_file in members.items():
+        if Path(name).name != name or source_file not in lock['files']:
+            raise ValueError('Unpinned filter replacement source')
+        replacement = output / name
+        compile_command = command + [str(source / source_file), '-o', str(replacement)]
+        report['compileCommands'][name] = compile_command
+        if name == lock['member']:
+            report['compileCommand'] = compile_command
+        save()
+        with (output / (name + '.compile.log')).open('w') as log:
+            run(compile_command, stdout=log, stderr=subprocess.STDOUT)
+        replacements.append(replacement)
+    objects = {p.name: digest(p) for p in replacements}
+    report.update(compilePassed=True, objectSHA256=objects[lock['member']],
+                  objectSHA256ByMember=objects)
     save()
     before = archive_members(archive)
     patched_archive = output / archive.name
     shutil.copyfile(archive, patched_archive)
-    run(['xcrun', 'ar', '-r', patched_archive, replacement])
+    run(['xcrun', 'ar', '-r', patched_archive, *replacements])
     run(['xcrun', 'ranlib', patched_archive])
     after = archive_members(patched_archive)
-    verify_replacement(before, after, lock['member'], digest(replacement))
+    verify_replacements(before, after, objects)
     if digest(archive) != lock['originalArchiveSHA256']:
         raise ValueError('Original archive was modified')
     report.update(archiveReplacementPassed=True, archiveSHA256=digest(patched_archive),
                   archive=str(patched_archive), replacedMember=lock['member'],
-                  preservedMemberCount=len(before) - 1)
+                  replacedMembers=list(members), preservedMemberCount=len(before) - len(members))
     save()
     return report
 

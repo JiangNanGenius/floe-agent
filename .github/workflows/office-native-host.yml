@@ -85,6 +85,7 @@ jobs:
             ${{ runner.temp }}/office-native-bundle/native-drain-contract.json
             ${{ runner.temp }}/office-filter-overlay/filter-overlay.json
             ${{ runner.temp }}/office-filter-overlay/compile.log
+            ${{ runner.temp }}/office-filter-overlay/*.compile.log
             ${{ runner.temp }}/office-native-host/qualification.json
             ${{ runner.temp }}/office-native-host/native-host.json
             ${{ runner.temp }}/office-native-host/native-host-build.log

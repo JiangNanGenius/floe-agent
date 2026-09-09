@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from build_office_filter_overlay import archive_members, verify_replacement
+from build_office_filter_overlay import archive_members, verify_replacement, verify_replacements
 
 
 def member(name, payload):
@@ -44,6 +44,19 @@ class ArchiveReplacementTests(unittest.TestCase):
                         {'export.o': 'new'}, {**before, 'extra.o': 'extra'}, before):
             with self.subTest(after=invalid), self.assertRaises(ValueError):
                 verify_replacement(before, invalid, 'export.o', 'new')
+
+    def test_multiple_replacements_cannot_hide_missing_or_unrelated_changes(self):
+        before = {'export.o': 'old', 'metrics.o': 'old-metrics', 'other.o': 'same'}
+        objects = {'export.o': 'new', 'metrics.o': 'new-metrics'}
+        after = {**before, **objects}
+        verify_replacements(before, after, objects)
+        for invalid in (before, {**after, 'metrics.o': 'old-metrics'},
+                        {**after, 'other.o': 'changed'},
+                        {**after, 'metrics.o': 'wrong'}, {**after, 'extra.o': 'extra'}):
+            with self.subTest(after=invalid), self.assertRaises(ValueError):
+                verify_replacements(before, invalid, objects)
+        with self.assertRaises(ValueError):
+            verify_replacements(before, before, {})
 
 
 if __name__ == '__main__':

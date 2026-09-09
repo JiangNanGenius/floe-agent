@@ -1,7 +1,7 @@
 {
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "patch": "patches/xlsx-embedded-objects.patch",
-  "patchSHA256": "23a98229f5595a3b54e6a290cf663891847a4725613a2dce8c1e6ce2b089ab5b",
+  "patchSHA256": "2aad51e312326439a36b0e1a7bbb23bf9929f5a501c8a14fcd9972b745746f07",
   "files": {
     "engine/sc/source/filter/inc/xcl97rec.hxx": {
       "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
@@ -10,10 +10,18 @@
     "engine/sc/source/filter/xcl97/xcl97rec.cxx": {
       "originalSHA256": "cfc6ad7262deb1ef682662c3c05e9b49c05b246796c637c4f7ed9d57164ce5b9",
       "patchedSHA256": "2013f58b8ed6e9e4ec6fbbba30cc73e7b1b88b9b6ee0977e85db05f7c613049f"
+    },
+    "engine/sc/source/filter/excel/xlroot.cxx": {
+      "originalSHA256": "a03e6d3c8f5fc179dd1599d9dc2ea1012ac672ab839adaecaa6f72831052bc88",
+      "patchedSHA256": "93d47f925747054e16e82c41362f8beb5202a4b8345a80c53c4aabd3d86be2fd"
     }
   },
   "archive": "source/engine/instdir/program/libscfiltlo.a",
   "originalArchiveSHA256": "a7e5961052e204adfb5694d584de17f8b7a7f0f6462a972303fd6baf78c11b77",
   "member": "xcl97rec.o",
-  "qualificationStatus": "vml-identifier-fix-runtime-pending"
+  "qualificationStatus": "xlsx-reference-font-candidate-runtime-pending",
+  "members": {
+    "xcl97rec.o": "engine/sc/source/filter/xcl97/xcl97rec.cxx",
+    "xlroot.o": "engine/sc/source/filter/excel/xlroot.cxx"
+  }
 }

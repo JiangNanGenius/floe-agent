@@ -1,3 +1,103 @@
+diff --git a/engine/sc/source/filter/excel/xlroot.cxx b/engine/sc/source/filter/excel/xlroot.cxx
+index dd58d60..c387a7e 100644
+--- a/engine/sc/source/filter/excel/xlroot.cxx
++++ b/engine/sc/source/filter/excel/xlroot.cxx
+@@ -21,7 +21,11 @@
+ #include <utility>
+ #include <xlroot.hxx>
+ #include <sal/log.hxx>
++#include <rtl/tencinfo.h>
+ #include <com/sun/star/awt/XDevice.hpp>
++#include <com/sun/star/awt/XFont.hpp>
++#include <com/sun/star/awt/FontFamily.hpp>
++#include <com/sun/star/awt/FontWeight.hpp>
+ #include <com/sun/star/frame/Desktop.hpp>
+ #include <com/sun/star/frame/XFrame.hpp>
+ #include <com/sun/star/i18n/ScriptType.hpp>
+@@ -62,6 +66,7 @@
+ #include <comphelper/configuration.hxx>
+ #include <unotools/useroptions.hxx>
+ #include <root.hxx>
++#include <stylesbuffer.hxx>
+ 
+ namespace ApiScriptType = ::com::sun::star::i18n::ScriptType;
+ 
+@@ -215,6 +220,75 @@ void XclRoot::SetTextEncoding( rtl_TextEncoding eTextEnc )
+ 
+ void XclRoot::SetCharWidth( const XclFontData& rFontData )
+ {
++    // XLSX widths are digit counts. Measure the font that the XML importer
++    // will reconstruct, on the same document ReferenceDevice. The legacy
++    // fresh vcl::Font / forced virtual-device path does not use the importer's
++    // width, posture and device settings, causing repeated saves to rescale
++    // columns even when no column was edited.
++    if (mrData.mbExport && mrData.meOutput == EXC_OUTPUT_XML_2007)
++    {
++        try
++        {
++            ScModelObj* pModel = GetDocModelObj();
++            Reference<XDevice> xDevice;
++            if (pModel)
++                pModel->getPropertyValue(u"ReferenceDevice"_ustr) >>= xDevice;
++            if (xDevice.is())
++            {
++                oox::xls::ApiFontData aData;
++                auto& rDesc = aData.maDesc;
++                // Match XclXmlUtils::WriteFontData's serialized font name.
++                rDesc.Name = rFontData.maName;
++                if (rDesc.Name.getLength() > 31)
++                {
++                    rDesc.Name = rDesc.Name.copy(0, 31);
++                    if (rFontData.maName[31] != ';')
++                    {
++                        const sal_Int32 nSeparator = rDesc.Name.lastIndexOf(';');
++                        if (nSeparator != -1)
++                            rDesc.Name = rDesc.Name.copy(0, nSeparator);
++                    }
++                }
++                rDesc.Height = static_cast<sal_Int16>(rFontData.mnHeight);
++                // OOXML family numbers differ from the VCL FontFamily enum.
++                switch (rFontData.mnFamily)
++                {
++                    case EXC_FONTFAM_ROMAN: rDesc.Family = awt::FontFamily::ROMAN; break;
++                    case EXC_FONTFAM_SWISS: rDesc.Family = awt::FontFamily::SWISS; break;
++                    case EXC_FONTFAM_MODERN: rDesc.Family = awt::FontFamily::MODERN; break;
++                    case EXC_FONTFAM_SCRIPT: rDesc.Family = awt::FontFamily::SCRIPT; break;
++                    case EXC_FONTFAM_DECORATIVE: rDesc.Family = awt::FontFamily::DECORATIVE; break;
++                    default: break;
++                }
++                rDesc.CharSet = static_cast<sal_Int16>(
++                    rtl_getTextEncodingFromWindowsCharset(rFontData.mnCharSet));
++                rDesc.Weight = rFontData.mnWeight > 400
++                    ? awt::FontWeight::BOLD : awt::FontWeight::NORMAL;
++                rDesc.Slant = rFontData.GetApiPosture();
++                rDesc.Underline = rFontData.GetApiUnderline();
++                rDesc.Strikeout = rFontData.GetApiStrikeout();
++                Reference<awt::XFont> xFont = xDevice->getFont(rDesc);
++                if (xFont.is())
++                {
++                    tools::Long nDigitWidth = 0;
++                    for (sal_Unicode cChar = '0'; cChar <= '9'; ++cChar)
++                        nDigitWidth = std::max(nDigitWidth,
++                            static_cast<tools::Long>(xFont->getCharWidth(cChar)));
++                    const tools::Long nSpaceWidth = xFont->getCharWidth(' ');
++                    if (nDigitWidth > 0 && nSpaceWidth > 0)
++                    {
++                        mrData.mnCharWidth = nDigitWidth;
++                        mrData.mnSpaceWidth = nSpaceWidth;
++                        return;
++                    }
++                }
++            }
++        }
++        catch (const Exception&)
++        {
++            SAL_WARN("sc", "XLSX reference-font measurement unavailable");
++        }
++    }
+     mrData.mnCharWidth = 0;
+     bool bIsKit = comphelper::COKit::isActive();
+     if( OutputDevice* pPrinter = GetPrinter( bIsKit ) )
 diff --git a/engine/sc/source/filter/inc/xcl97rec.hxx b/engine/sc/source/filter/inc/xcl97rec.hxx
 index 0eb5408..a5fdebd 100644
 --- a/engine/sc/source/filter/inc/xcl97rec.hxx

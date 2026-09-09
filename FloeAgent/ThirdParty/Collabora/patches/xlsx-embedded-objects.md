@@ -35,17 +35,25 @@ Build and qualification:
    delete, export and multiple-sheet/object cases. Compare original payload bytes.
 
 The build regenerates headers using the exact upstream generators. It compiles
-one translation unit and checks that replacing `xcl97rec.o` preserves every other
+two translation units and checks that replacing `xcl97rec.o` and `xlroot.o` preserves every other
 archive member. No class layout, virtual method table or token table is changed.
 The verified source archive is never modified; only an owned library is selected
 in the host's new linker list. Copy/preview errors propagate as failed saves.
 
-Current boundary: the first native host linked and preserved actual attachment
-bytes, but runtime reopen found no live object because X-escaping changed VML IDs
-and type references. The patch now follows pinned VMLExport::StartShape, disabling
-X-escaping only for the shape start attributes and restoring it afterward. Normal
-XML escaping remains active. The corrected arm64 compile and archive preservation
-passed; new host linking, runtime reopen and Microsoft Office validation remain pending.
+The VML identifier fix follows pinned VMLExport::StartShape, disabling X-escaping
+only for shape start attributes and restoring it afterward. Normal XML escaping
+remains active. Actual attachment insert, undo/redo and two saves/reopens now retain
+the original payload and Package metadata. Microsoft Office validation remains pending.
+
+Repeated saves still shrank default column widths and untouched attachment geometry.
+The XLSX-only `XclRoot::SetCharWidth` candidate now uses the document ReferenceDevice
+and the importer's ApiFontData descriptor defaults, matching the serialized name,
+family, charset, bold, italic, underline and strikeout settings. Binary XLS retains
+its existing metric path; unavailable reference-font metrics use the existing fallback.
+This avoids combining fresh VCL font/forced virtual-device measurements on export
+with UNO descriptor/reference-device measurements on import. The local arm64 build
+and all 166 untouched archive members passed verification; a new host and actual
+repeated-save tests are required before calling the metric mismatch fixed.
 The pinned VML importer rounds offsets to integer pixels; its handling of the
 precise `objectPr` anchors needs runtime fidelity checks and potentially a follow-up
 importer patch. Grouped objects, linked OLE, absent previews, repeated saves and
