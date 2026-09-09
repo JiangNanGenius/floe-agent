@@ -24,7 +24,9 @@
 
 Floe Agent turns a model conversation into a durable task. Each message continues the same task, while every model execution becomes a separate run with its own progress, tool evidence, approvals, checkpoints, and recovery state. A task can use an app-managed private workspace or an explicitly selected project workspace.
 
-## Current upgrade — in development
+## Current upgrade — 1.6.0 beta candidate
+
+**1.6.0 (135)** is being prepared for release; installation availability requires separate TestFlight verification. See the [beta notes](docs/RELEASE_NOTES_1.6.0.md), [code audit](docs/RELEASE_CODE_AUDIT_20260909.md) and [Office interaction screenshots](docs/OFFICE_SCREENSHOT_INDEX.md). PPTX chart export still has data-fidelity issues; recognized damaged exports are rejected while retaining recovery copies.
 
 This round covers editing correctness and everyday workflows: the plugin marketplace, task selection from a long-press menu, all-workspace management, inline PDF reading, iPhone canvas support, live execution feedback, long-reasoning reading, and reliable long-text tool calls. Word, Excel, and PowerPoint share the Office tool group; PDF stays separate. The native Office engine and frontend are integrated on the development branch and remain under qualification; complete editing functionality has not yet passed acceptance.
 
@@ -44,7 +46,7 @@ The [detailed Office acceptance matrix](docs/OFFICE_FRONTEND_ACCEPTANCE.md) trac
 - **Connect standard MCP servers.** Add optional Streamable HTTP servers for ordinary Agent runs; every remote tool remains namespaced, locally policy-checked, and disabled for canvas by default.
 - **Manage source without leaving the workspace.** Inspect changes and diffs, initialize a repository, stage, commit, branch, fetch, fast-forward pull, push, and connect GitHub from a lightweight native source-control surface.
 - **Convert existing documents directly.** Convert Markdown, Word, HTML, RTF and text files, with PDF input/output. The model supplies paths instead of rewriting the body; source files remain intact and scanned-page/format limits are reported.
-- **Create and revise Office files.** Build DOCX, XLSX and PPTX files locally, preview them first, then open Floe's basic native editor for manual text, cell/formula, slide and speaker-note changes without uploading the document.
+- **Create and revise Office files.** Build DOCX, XLSX and PPTX locally, inspect read-only inline previews, then enter fullscreen to edit document pages, spreadsheet cells and slide objects with the local Office engine. Full functionality and layout fidelity remain under qualification; documents need not be uploaded.
 - **Approve consequential actions.** Task policies narrow file, network, browser, upload, credential, and remote-execution authority. Sensitive actions still require explicit confirmation.
 - **Resume honestly.** Checkpoints, notifications, and background coordination preserve safe progress. iOS suspension and uncertain side effects are reported instead of hidden.
 - **Extend with audited skills.** Skill Creator and Skill Finder install validated instruction and knowledge packages. A skill may bundle bounded UTF-8 Python scripts and exact-version pure-Python wheels: Floe audits them once at creation or installation, then permits only identical script and dependency fingerprints to run without repeated prompts. Native code, install hooks, changed code, and silent tool grants remain blocked.
