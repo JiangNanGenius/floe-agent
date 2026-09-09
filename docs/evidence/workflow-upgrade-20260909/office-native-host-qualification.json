@@ -1,0 +1,20 @@
+{
+  "runID": "34292622779",
+  "workflowCommit": "afdb2213648e8053daa39aa692e0bf78de20cb27",
+  "archiveSHA256": "8b0080decac73b6ee75dc43404935637a18596934d33c72acc3db47c712255d1",
+  "executableSHA256": "ada12d13a2067aa834acd58f563acf2e8c0d198b21f9c223e6ee71480ff542a1",
+  "verifiedResourceFiles": 4780,
+  "verifiedResourceDirectories": 174,
+  "verifiedPublicHeader": true,
+  "hostCompilePassed": true,
+  "hostLinkPassed": true,
+  "swiftModuleImportPassed": true,
+  "embeddedEditorPassed": false,
+  "originalFileWritebackPassed": false,
+  "deviceRoundtripPassed": false,
+  "overlaySHA256": "7f034b606318e26672c1fcb6fc84092899a434c82b205420bafb8143d727c8af",
+  "hostSourceSHA256": {
+    "FloeOfficeNative.h": "55bc616fc6ac3b61b5209ec94262881752d214efa8439eb48e56379683513adc",
+    "FloeOfficeNative.mm": "bf3d283191b3c2f2a203b228b6414634c36fae27956f244e16c0c01f35a98822"
+  }
+}

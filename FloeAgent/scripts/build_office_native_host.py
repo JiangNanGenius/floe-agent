@@ -79,7 +79,8 @@ def framework_project(project, host_directory):
 def build_host(root, output, *, build=True):
     root, output = Path(root).resolve(), Path(output).resolve()
     base = qualify(root, output, build=False)
-    report = {**base, 'stage': 'prepare-host', 'hostCompilePassed': False,
+    report = {**base, 'kind': 'Floe native framework qualification', 'target': NAME,
+              'stage': 'prepare-host', 'hostCompilePassed': False,
               'hostLinkPassed': False, 'swiftModuleImportPassed': False,
               'originalFileWritebackPassed': False}
     receipt = output / 'native-host.json'
@@ -116,6 +117,7 @@ def build_host(root, output, *, build=True):
     executable = framework / NAME
     passed = result.returncode == 0 and executable.is_file()
     report.update(exitCode=result.returncode, hostCompilePassed=passed, hostLinkPassed=passed,
+                  nativeCompilePassed=passed, nativeLinkPassed=passed,
                   stage='host-built' if passed else 'host-build-failed')
     save()
     if not passed:
@@ -141,7 +143,8 @@ def build_host(root, output, *, build=True):
     save()
     sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
     probe = output / 'ImportProbe.swift'
-    probe.write_text('import FloeOfficeNative\nimport UIKit\nlet runtime: FloeOfficeNativeRuntime = .shared\n')
+    shutil.copyfile(Path(__file__).resolve().parent / 'fixtures/office_native_host_api.swift', probe)
+    report['swiftProbeSHA256'] = digest(probe)
     module_command = ['xcrun', 'swiftc', '-typecheck', '-sdk', sdk, '-target', 'arm64-apple-ios26.0',
         '-F', str(framework.parent), str(probe)]
     with (output / 'swift-import.log').open('w') as log:

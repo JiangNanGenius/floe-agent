@@ -1,7 +1,23 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "mobile-built-pending-floe-embedding-and-device-roundtrip",
+  "qualificationStatus": "native-host-built-pending-floe-ui-writeback-and-device-roundtrip",
+  "qualifiedHostArtifact": {
+    "runID": "34292622779",
+    "artifactName": "office-native-host-unsigned",
+    "artifactID": 10081997277,
+    "workflowCommit": "afdb2213648e8053daa39aa692e0bf78de20cb27",
+    "archiveSHA256": "8b0080decac73b6ee75dc43404935637a18596934d33c72acc3db47c712255d1",
+    "executableSHA256": "ada12d13a2067aa834acd58f563acf2e8c0d198b21f9c223e6ee71480ff542a1",
+    "overlaySHA256": "7f034b606318e26672c1fcb6fc84092899a434c82b205420bafb8143d727c8af",
+    "hostSourceSHA256": {
+      "FloeOfficeNative.h": "55bc616fc6ac3b61b5209ec94262881752d214efa8439eb48e56379683513adc",
+      "FloeOfficeNative.mm": "bf3d283191b3c2f2a203b228b6414634c36fae27956f244e16c0c01f35a98822"
+    },
+    "verifiedResourceFiles": 4780,
+    "verifiedResourceDirectories": 174,
+    "note": "Complete Floe native host framework compiled and linked for arm64 iphoneos; Swift module import passed. Retrieved binary, public header and all resources match the cloud receipt. Unsigned framework plus main-bundle resources only; Floe UI integration, original writeback, device editing and fidelity remain unverified."
+  },
   "qualifiedNativeArtifact": {
     "runID": "34268468731",
     "artifactName": "office-engine-ios-arm64",

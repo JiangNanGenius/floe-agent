@@ -89,6 +89,17 @@ or frontend rendering. `DocumentWorkspace.close` retains the session whenever
 native generations, recovery data, or unknown sidecars exist, even when the
 working file's digest is unchanged; only explicit discard removes those files.
 
+Host qualification run **34292622779** succeeded for source `afdb221`. Its
+unsigned framework and main-bundle resources are pinned under
+`qualifiedHostArtifact` in `engine.lock.json`; all 4,780 resource files and 174
+directories were checked after retrieval. A local iphoneos Swift typecheck also
+used the actual retrieved framework to call startup, the throwing document
+initializer, and all three lifecycle callbacks. This is compile-time API
+integration only. That historical raw host receipt inherited two false Mobile
+prepare-only flags; the `hostCompilePassed`, `hostLinkPassed`, and
+`swiftModuleImportPassed` fields record the host result. New receipts identify
+the framework target and keep those generic native flags consistent.
+
 Twenty-two synthetic packaging/preparation/repair tests pass. The overlay also applies to
 the actual pinned source hashes, and its public keyboard helper passes an
 iphoneos arm64 Objective-C syntax check. This is not a full controller compile,

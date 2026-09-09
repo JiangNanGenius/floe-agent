@@ -2,6 +2,25 @@
 
 这是 `codex/office-workflow-upgrade` 工作分支的阶段证据，**不是整轮验收或发布声明**。素材与任务均为合成测试数据。
 
+## 最新 Office 原生宿主进度
+
+[宿主构建 34292622779](https://github.com/JiangNanGenius/floe-agent/actions/runs/34292622779)
+已成功编译、链接并通过 Swift 导入。取回的未签名框架、公开头文件、
+4,780 个资源文件和 174 个目录已逐项验证，见
+[宿主产物回执](office-native-host-qualification.json)。首次宿主构建 34292156866
+因缺少显式 Apple framework 链接失败，后续已补齐。
+
+[7 项原生打开片段检查](office-native-copy-open-tests.json)、
+[8 项保存/关闭片段检查](office-native-host-lifecycle.json)和
+[11 项文件会话回归](office-native-session-retention-tests-summary.txt)已通过。
+这些记录不证明 Floe UI 已接通、原文件已安全写回、真机可编辑或 Office 排版保真。
+右侧只读、全屏编辑、保存关联、恢复和发布验收继续保留为未完成。
+
+取回框架还通过了本地 iphoneos Swift API 类型检查：实际调用运行时准备、
+带错误处理的文档初始化与打开/保存/关闭回调，使用
+[API 探针](../../../FloeAgent/scripts/fixtures/office_native_host_api.swift)。
+它没有执行引擎或打开真实 UI。
+
 ## 已验证
 
 - 46 项工具/数据层回归通过：多查询搜索、目录分页、内置升级来源策略、跟随状态、历史事件分页、HTTP 下载失败不覆盖目的文件。
