@@ -138,6 +138,29 @@ public:
     }
 };
 
+// Calc/Impress can move the object into a differently named storage during
+// undo/redo. Restore the Package metadata after the native action has restored
+// the object, looking up its current PersistName rather than the original name.
+// SdrUndoNewObj owns the same object throughout the native undo lifecycle;
+// the document reference remains weak to avoid a document/undo-stack cycle.
+class FloeDrawingAttachmentUndo final : public SdrUndoNewObj {
+    cpo::uno::WeakReferenceHelper model;
+public:
+    FloeDrawingAttachmentUndo(SdrObject &object, const css::uno::Reference<css::frame::XModel> &owner)
+        : SdrUndoNewObj(object), model(owner) {}
+    void Redo() override {
+        SolarMutexGuard guard;
+        SdrUndoNewObj::Redo();
+        css::uno::Reference<css::frame::XModel> owner(model.get(), css::uno::UNO_QUERY);
+        if (!owner || !mxObj || !mxObj->IsInserted()) return;
+        css::uno::Reference<css::beans::XPropertySet> properties(mxObj->getUnoShape(), css::uno::UNO_QUERY_THROW);
+        OUString currentName;
+        properties->getPropertyValue(u"PersistName"_ustr) >>= currentName;
+        if (currentName.isEmpty()) throw std::runtime_error("Restored attachment storage is unavailable.");
+        oox::ole::SaveInteropProperties(owner, currentName, nullptr, u"Package"_ustr);
+    }
+};
+
 // Must run under SolarMutex with the selected document view active. Use the
 // existing engine import resolver and Writer object insertion/undo machinery;
 // never rewrite the DOCX archive behind an open editor.
@@ -316,7 +339,7 @@ static void FloeInsertDrawingAttachment(COKitDocument *document, const std::stri
         oox::ole::SaveInteropProperties(model, streamName, nullptr, u"Package"_ustr);
         // XDrawPage.add() deliberately has no undo. The native new-object
         // action retains the shape/storage and gets the selected view ID.
-        auto action = SdrUndoFactory::CreateUndoNewObject(*object);
+        auto action = std::make_unique<FloeDrawingAttachmentUndo>(*object, model);
         undo->AddUndoAction(std::move(action));
         committed = true;
         owner->SetModified();

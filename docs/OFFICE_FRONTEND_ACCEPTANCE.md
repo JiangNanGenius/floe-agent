@@ -146,3 +146,5 @@
 - 2026-09-09 Excel 新导出运行失败已缩小到关联编号：独立应用 17 在 Notes!B5 插入后导出 1 个附件，保存重开后导出 0 个；ZIP 内 65,539 字节及 Unicode 文件名完整，17/18 项通过，但 shape ID 和 type 被错误转义。采用上游 VMLExport 的 legacy-ID 序列化方式修复；新 arm64 编译和 167 个其他成员保留校验通过，4 组独立关系图变异测试包含这两种转义错误。见 [运行失败](evidence/workflow-upgrade-20260909/office-excel-vml-id-runtime-failure.json) 与 [修复编译](evidence/workflow-upgrade-20260909/office-excel-vml-id-fix-compile.json)。实际修复重开尚未验收，A04/F04 保持未通过。
 
 - Excel 关联编号修复取得实际通过结果：宿主 34339384837 的原生框架/全部资源校验通过；独立应用 18 的安装二进制匹配签名包。Notes!B5 插入后导出、保存关闭、只读重开、再次导出成功，两次 65,539 字节原哈希一致，工作表/VML/type/image/锚点等 29 项检查通过。见 [运行证据](evidence/workflow-upgrade-20260909/office-excel-vml-fixed-runtime.json) 与 [结构检查](evidence/workflow-upgrade-20260909/office-xlsx-vml-fixed-structure.json)。仅证明该实际样本，A04 的移动/尺寸/随单元格行为及完整原文件界面仍待验。
+
+- 新组件的撤销重做保存仍失败：应用 18 第二个独立样本中附件数量为撤销 0、重做 1、重开 1，导出字节一致，但 XLSX 的 progId 为空，结构检查未通过。此前直接保存的 29 项通过结果不替代这个样本。新修复继承原生 SdrUndoNewObj，在原生 Redo 后使用当前 PersistName 恢复 Package 元数据；公开头文件实际语法检查、arm64 对象编译及 3 项宿主工程检查通过，待新宿主链接和运行复测。见 [失败证据](evidence/workflow-upgrade-20260909/office-excel-redo-metadata-failure.json)。

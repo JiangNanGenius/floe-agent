@@ -209,3 +209,5 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 - 新增 Mac 退出问题：Floe Agent 5 已完成 Word 保存重开后执行退出，实际崩溃栈涉及 COOLWSDServer/SocketPoll 静态析构及生命周期 watchdog；已保存脱敏 [符号证据](evidence/workflow-upgrade-20260909/office-mac-quit-finalizer-failure.json)。完整根因与有序关闭仍待验证，未据此修改保存策略；此前 Word 实际持久化结果与退出问题分别记录。
 
 - Excel 编号修复宿主 34339384837 已成功并锁定，4,785 文件/178 目录校验通过；独立应用 18 实际完成 Notes!B5 附件插入、保存关闭、只读重开及再次导出，29 项检查和原字节哈希通过。见 [运行证据](evidence/workflow-upgrade-20260909/office-excel-vml-fixed-runtime.json)。下一步撤销重做保存及完整 Floe 重建；精确位置保真、多个对象、PPT 工作簿等完整要求仍保留。
+
+- 完整 Floe [34340370943](https://github.com/JiangNanGenius/floe-agent/actions/runs/34340370943)（aa891e9）正在构建已通过直接保存的 Excel 编号修复。另一个撤销重做样本发现附件内容仍在但 progId 为空，已补当前存储名的原生 Redo 元数据恢复；见 [失败记录](evidence/workflow-upgrade-20260909/office-excel-redo-metadata-failure.json)。这个后续修复不在 34340370943 中，不能将该构建或直接保存样本当成撤销重做通过。

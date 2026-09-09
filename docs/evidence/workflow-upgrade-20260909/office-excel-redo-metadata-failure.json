@@ -1,0 +1,106 @@
+{
+  "hostRunID": "34339384837",
+  "sessionID": "BACFA80D-01E5-41B4-969A-921950AAC1EB",
+  "surface": "Mac Designed for iPad, independent app 18",
+  "undoAttachmentCount": 0,
+  "redoAttachmentCount": 1,
+  "reopenedAttachmentCount": 1,
+  "exportedBytes": 65539,
+  "exportedBytesPreserved": true,
+  "savedProgID": "",
+  "structurePassed": false,
+  "sourceFinding": "Native drawing undo restores the object with a current storage name that has no matching InteropGrabBag ProgID.",
+  "fix": "Subclass native SdrUndoNewObj and restore Package metadata against the restored live shape PersistName after native Redo. Preserve inherited native undo and view ownership.",
+  "fixedRuntimePassed": false,
+  "events": [
+    {
+      "event": "fixtureCopied",
+      "detail": "xlsx",
+      "time": "2026-09-09T10:28:30Z"
+    },
+    {
+      "event": "preferredLanguage",
+      "detail": "zh-Hans-TW",
+      "time": "2026-09-09T10:28:30Z"
+    },
+    {
+      "event": "opened",
+      "detail": "true; readonly=false",
+      "time": "2026-09-09T10:28:30Z"
+    },
+    {
+      "event": "workingPersistence",
+      "detail": "true",
+      "time": "2026-09-09T10:28:32Z"
+    },
+    {
+      "event": "attachmentRequested",
+      "detail": "附件 测试 📎.bin",
+      "time": "2026-09-09T10:28:51Z"
+    },
+    {
+      "event": "attachmentCompleted",
+      "detail": "success",
+      "time": "2026-09-09T10:28:51Z"
+    },
+    {
+      "event": "workingPersistence",
+      "detail": "true",
+      "time": "2026-09-09T10:29:05Z"
+    },
+    {
+      "event": "attachmentsListed",
+      "detail": "0; readonly=false",
+      "time": "2026-09-09T10:29:12Z"
+    },
+    {
+      "event": "attachmentsListed",
+      "detail": "1; readonly=false",
+      "time": "2026-09-09T10:29:33Z"
+    },
+    {
+      "event": "attachmentExported",
+      "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "time": "2026-09-09T10:29:33Z"
+    },
+    {
+      "event": "saveRequested",
+      "detail": "",
+      "time": "2026-09-09T10:29:41Z"
+    },
+    {
+      "event": "workingPersistence",
+      "detail": "true",
+      "time": "2026-09-09T10:29:41Z"
+    },
+    {
+      "event": "saveCompleted",
+      "detail": "success",
+      "time": "2026-09-09T10:29:41Z"
+    },
+    {
+      "event": "editingClosed",
+      "detail": "success",
+      "time": "2026-09-09T10:29:41Z"
+    },
+    {
+      "event": "opened",
+      "detail": "true; readonly=true",
+      "time": "2026-09-09T10:29:42Z"
+    },
+    {
+      "event": "attachmentsListed",
+      "detail": "1; readonly=true",
+      "time": "2026-09-09T10:30:04Z"
+    },
+    {
+      "event": "attachmentExported",
+      "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "time": "2026-09-09T10:30:04Z"
+    }
+  ],
+  "screenshots": [
+    "office-xlsx-vml-fixed-undone-mac.jpg",
+    "office-xlsx-vml-fixed-undo-reopened-mac.jpg"
+  ]
+}
