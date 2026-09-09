@@ -357,13 +357,15 @@ final class OfficeFileSession: ObservableObject {
         let native = try FloeOfficeNativeViewController(
             workingFileURL: session.workingURL,
             sessionDirectory: session.workingURL.deletingLastPathComponent(), readOnly: readOnly)
+        runtimeFailed = false
         native.onWorkingCopyOpened = { [weak self, weak native] success in
-            guard let self, let native, self.controller === native else { return }
+            guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
             if success { self.phase = .ready }
             else { self.fail(CocoaError(.fileReadCorruptFile)) }
         }
         native.onClosed = { [weak self, weak native] _ in
             guard let self, let native, self.controller === native, !self.expectedClose else { return }
+            self.runtimeFailed = true
             self.error = "文档已关闭，编辑副本已保留。"
             self.phase = .failed
         }

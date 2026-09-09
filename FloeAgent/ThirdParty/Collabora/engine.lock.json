@@ -1,30 +1,30 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "attachment-export-cloud-qualified-runtime-pending",
+  "qualificationStatus": "attachment-compound-type-host-qualified-runtime-pending",
   "qualifiedHostArtifact": {
-    "runID": "34315555634",
+    "runID": "34316463516",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10089982979,
-    "workflowCommit": "5a2d34206661aa3e2cfb1f7da191fbbe57fb0a78",
-    "archiveSHA256": "c05aebfcdfbf199340a9242325f0fe6ab65bf8760a8119c4a2114490f45efebf",
-    "executableSHA256": "b30bf5a3500e45f40119a4e8f2ad96cfb7d9beda570f1fb9fe902db7004e8b61",
+    "artifactID": 10090340681,
+    "workflowCommit": "91d4628b541565d4355f067e812486979284f494",
+    "archiveSHA256": "05aeb52f80f988eee91621ff8d56794c6b4cd5e48918f073daf93fc80af8d2f6",
+    "executableSHA256": "046fdf64db754692fee96947f1fc2ee5cc3069b5fea42d38179e9e99a3538ff4",
     "overlaySHA256": "600f480a2ccfde4e7d8d9641332197556a4dc79466860943e207c6c2fd7618fd",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "a76833ac808cfa759c39886defbef81fccd4fde66f59dfbbe9a659d1d339a660",
       "FloeOfficeNative.mm": "d64d58a0fc5b6ebf2af6370a7ec738341498d5934a5dc0993b9048ce9c53d128",
-      "FloeOfficeAttachment.cpp": "1d8134d0701bf7880b39304d578653554df8af09238ed17752b9cc9252074d81",
+      "FloeOfficeAttachment.cpp": "58b623cb1126a3ec9f5b6af4d1f2e24e94cfc795ec03d7fcbc9b8a92fb8b81bb",
       "FloeOfficeAttachment.hxx": "4deb33492f38047211492686b94153bef5748248342c16d5c7485bd127a0f6c3"
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "208d19b5b13f6c9fef39be9c636d28615dd0587715b79b1f97a96acea5226381",
+    "manifestSHA256": "d7dd03f1b94f6601360077b0097fdd67ed8db4ec7ec5899e59777b4e6cf739ff",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "a76833ac808cfa759c39886defbef81fccd4fde66f59dfbbe9a659d1d339a660",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
       "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac"
     },
-    "note": "34315555634 compiled, linked and Swift-imported native Word attachment listing and extraction. Runtime extraction, full Floe workspace selection, complete Office editing and physical-device acceptance remain pending."
+    "note": "34316463516 compiled, linked and Swift-imported Package attachment detection from its actual compound storage. Native export runtime and full Floe frontend acceptance remain pending."
   },
   "qualifiedNativeArtifact": {
     "runID": "34268468731",

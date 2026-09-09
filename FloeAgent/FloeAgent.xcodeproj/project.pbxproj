@@ -37,6 +37,7 @@
 		1025E15EE1084740B1DB0D0A /* ApprovalCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B2CC51635FB2F20F5C41CA1 /* ApprovalCardView.swift */; };
 		105AC73175A8E056421FBECF /* _common.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DCF2579C6FC7C3307B6747CA /* _common.xcframework */; };
 		107D9B448A471CEDBE9E0FF6 /* PrivacySecurityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A18EF17B949C9C5817F9DCE9 /* PrivacySecurityView.swift */; };
+		108B2AB067E26680B33DC7CC /* OfficeWorkspaceAttachmentPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CEE00648E38D86422DF1B1F /* OfficeWorkspaceAttachmentPicker.swift */; };
 		1108F93F3CEE73E9893D390B /* DiffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05CD3FCDF6CC1F08B06B9119 /* DiffView.swift */; };
 		11A8872D302E2CA8A8E4F628 /* SkillsCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C7A649C2A6EC1875B18948E /* SkillsCenter.swift */; };
 		12A74443BD1FC0A4931E3858 /* _heapq.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0C8D36E30CA45FCB1EA234B4 /* _heapq.xcframework */; };
@@ -389,6 +390,7 @@
 		CC44EFAFC16BB15E726B3333 /* PDFUnlockTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AA5FE75929315E529714A75 /* PDFUnlockTool.swift */; };
 		CCBED0E2E783C82F6A6D4CFA /* mmap.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = BBD2144374FF4E9AD173B157 /* mmap.xcframework */; };
 		CCBF6AC11B7FB893FB5A60A5 /* lapack_lite.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 176A2DE26290AB545E404ADE /* lapack_lite.xcframework */; };
+		CD1194126440A9ED929AC910 /* OfficeAttachmentListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC3E986891CA3776E2C72939 /* OfficeAttachmentListView.swift */; };
 		CD5540C1DFBBDA6417E25427 /* binascii.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = E25201278D78378B37FF1BBD /* binascii.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		CD6A7E5B11E0E3CB9A32061C /* _contextvars.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 46C5D94B0311C71146C0A52C /* _contextvars.xcframework */; };
 		CEB9C5AFF1E17132712C5FC8 /* _codecs_jp.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0C0EB0E2170C0184EF6D463A /* _codecs_jp.xcframework */; };
@@ -671,6 +673,7 @@
 		1078C97511E013940FBDC94D /* _sfc64.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _sfc64.xcframework; path = Vendor/PythonExtensions/_sfc64.xcframework; sourceTree = "<group>"; };
 		11A3C519D44D0DD95F0EA208 /* _bisect.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _bisect.xcframework; path = Vendor/PythonExtensions/_bisect.xcframework; sourceTree = "<group>"; };
 		1202B558B5346402D1ABD69D /* VideoProviderAdapterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoProviderAdapterTests.swift; sourceTree = "<group>"; };
+		129A22985CBD64DE5DB664FF /* native-host.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "native-host.xcconfig"; sourceTree = "<group>"; };
 		12C202262489FD354A0B595A /* _random.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _random.xcframework; path = Vendor/PythonExtensions/_random.xcframework; sourceTree = "<group>"; };
 		1453302FBF5B4F00ABFE7DEE /* pandas__libs_tslibs_dtypes.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_dtypes.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_dtypes.xcframework; sourceTree = "<group>"; };
 		14B115F54C03CD39CDBDCABC /* SettingsActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsActions.swift; sourceTree = "<group>"; };
@@ -757,6 +760,7 @@
 		4B364052541A17BBD46A6C70 /* FloeAgent */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeAgent; path = .; sourceTree = SOURCE_ROOT; };
 		4C7A649C2A6EC1875B18948E /* SkillsCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsCenter.swift; sourceTree = "<group>"; };
 		4CD49501E4174D08D4F1932D /* pandas__libs_tslibs_timedeltas.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_timedeltas.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_timedeltas.xcframework; sourceTree = "<group>"; };
+		4CEE00648E38D86422DF1B1F /* OfficeWorkspaceAttachmentPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeWorkspaceAttachmentPicker.swift; sourceTree = "<group>"; };
 		4D024B3D67773355FF600C6D /* pandas__libs_tslibs_vectorized.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_vectorized.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_vectorized.xcframework; sourceTree = "<group>"; };
 		5043AD7DE6FDAD5AD4A95D1A /* GitHubSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubSettingsView.swift; sourceTree = "<group>"; };
 		50BA473C0A70CA3815EF338B /* SettingsRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsRootView.swift; sourceTree = "<group>"; };
@@ -946,6 +950,7 @@
 		DAE9694DEA1FE25E7468F008 /* WorkspaceCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceCenter.swift; sourceTree = "<group>"; };
 		DB97B6031201DC2B9654F686 /* ProviderEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderEditorView.swift; sourceTree = "<group>"; };
 		DC33B8AF239E339094A7D999 /* BrowserURLPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserURLPolicy.swift; sourceTree = "<group>"; };
+		DC3E986891CA3776E2C72939 /* OfficeAttachmentListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeAttachmentListView.swift; sourceTree = "<group>"; };
 		DC74E9DDD5C02BD49675B239 /* DataManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataManagementView.swift; sourceTree = "<group>"; };
 		DCC42125AA4BA415183B6A85 /* _ctypes.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _ctypes.xcframework; path = Vendor/PythonExtensions/_ctypes.xcframework; sourceTree = "<group>"; };
 		DCF2579C6FC7C3307B6747CA /* _common.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _common.xcframework; path = Vendor/PythonExtensions/_common.xcframework; sourceTree = "<group>"; };
@@ -1269,7 +1274,9 @@
 				42E25ED52EAD56B5234BCA43 /* FileTreeView.swift */,
 				86BFC8770B049F008476B6C8 /* FileTreeViewModel.swift */,
 				50D138AAA4EB06E0A19CE9B5 /* InlinePDFReader.swift */,
+				DC3E986891CA3776E2C72939 /* OfficeAttachmentListView.swift */,
 				D196A6882F00C663F4186CF1 /* OfficeDocumentEditorView.swift */,
+				4CEE00648E38D86422DF1B1F /* OfficeWorkspaceAttachmentPicker.swift */,
 				FC62543B8E16BD9E21CD6C00 /* SourceControlCenter.swift */,
 				1BED50B2B524010095D18E24 /* SourceControlView.swift */,
 				A9882EA32564305D017F2566 /* TextFileEditorView.swift */,
@@ -1451,6 +1458,14 @@
 			path = Home;
 			sourceTree = "<group>";
 		};
+		720958BD2C9027118B338717 /* Office */ = {
+			isa = PBXGroup;
+			children = (
+				129A22985CBD64DE5DB664FF /* native-host.xcconfig */,
+			);
+			path = Office;
+			sourceTree = "<group>";
+		};
 		7496B22C8D4B5D5368CCE94A /* Providers */ = {
 			isa = PBXGroup;
 			children = (
@@ -1538,6 +1553,7 @@
 				D38FE95FA512115C4664ECFE /* Packages */,
 				662EB09365DAD3DF8603C700 /* Tests */,
 				81D9D572716013B7E9483B58 /* ThirdParty */,
+				EA90B7E60C0E917B5EF5D615 /* Vendor */,
 				8A4A949589D4B5E4B2D18F79 /* Frameworks */,
 				D2F4766B4780E506300D05AC /* Products */,
 			);
@@ -1831,6 +1847,14 @@
 			path = Design;
 			sourceTree = "<group>";
 		};
+		EA90B7E60C0E917B5EF5D615 /* Vendor */ = {
+			isa = PBXGroup;
+			children = (
+				720958BD2C9027118B338717 /* Office */,
+			);
+			path = Vendor;
+			sourceTree = "<group>";
+		};
 		EB3F3DF9DADE5E378FE9D27A /* js-packages */ = {
 			isa = PBXGroup;
 			children = (
@@ -2106,6 +2130,8 @@
 				"$(SRCROOT)/ThirdParty/Collabora/engine.lock.json",
 				"$(SRCROOT)/ThirdParty/Collabora/FloeOfficeNative/FloeOfficeNative.h",
 				"$(SRCROOT)/ThirdParty/Collabora/FloeOfficeNative/FloeOfficeNative.mm",
+				"$(SRCROOT)/ThirdParty/Collabora/FloeOfficeNative/FloeOfficeAttachment.cpp",
+				"$(SRCROOT)/ThirdParty/Collabora/FloeOfficeNative/FloeOfficeAttachment.hxx",
 				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Info.plist",
 			);
 			name = "Embed verified native Office host";
@@ -2216,7 +2242,9 @@
 				30F0B2510C03DF07A93756F1 /* MoreView.swift in Sources */,
 				42924454C7187541E75FE29D /* MoreViewModel.swift in Sources */,
 				2EB4F0026F6D3C7036234EB2 /* NetworkStatusMonitor.swift in Sources */,
+				CD1194126440A9ED929AC910 /* OfficeAttachmentListView.swift in Sources */,
 				0D61B284A930FFB5055E0D1E /* OfficeDocumentEditorView.swift in Sources */,
+				108B2AB067E26680B33DC7CC /* OfficeWorkspaceAttachmentPicker.swift in Sources */,
 				9F178F696416A4E7191F56FB /* OnboardingView.swift in Sources */,
 				5D9232A405C85062BDDB69D8 /* OnboardingViewModel.swift in Sources */,
 				EFBF97EFFC3734AFBAA2BDE6 /* PDFContentEditor.swift in Sources */,
@@ -2391,6 +2419,7 @@
 		};
 		06D6A3B826D9F96AE81F4773 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 129A22985CBD64DE5DB664FF /* native-host.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -2410,7 +2439,7 @@
 				);
 				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/Vendor/Office/34296658499/OfficeNativeHost",
+					"$(FLOE_OFFICE_HOST_DIR)",
 				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FloeApp/Resources/Info.plist;
@@ -2707,6 +2736,7 @@
 		};
 		B42180383A323CEE990BB7DA /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 129A22985CBD64DE5DB664FF /* native-host.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -2725,7 +2755,7 @@
 				);
 				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/Vendor/Office/34296658499/OfficeNativeHost",
+					"$(FLOE_OFFICE_HOST_DIR)",
 				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FloeApp/Resources/Info.plist;

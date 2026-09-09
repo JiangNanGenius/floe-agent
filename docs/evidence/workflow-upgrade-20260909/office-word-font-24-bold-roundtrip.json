@@ -1,0 +1,112 @@
+{
+  "session": "88B30292-D59B-4625-92A8-767690531A60",
+  "hostRun": "34315555634",
+  "savedSHA256": "5b5f2aff1b4b02a53d5894ac9fbab04f387dbd824f4b0e0aa9c693d2938fcec2",
+  "paragraphRuns": [
+    [
+      {
+        "text": "Floe Office ",
+        "halfPoints": null,
+        "bold": false,
+        "color": null
+      },
+      {
+        "text": "原生编辑验证",
+        "halfPoints": null,
+        "bold": false,
+        "color": null
+      }
+    ],
+    [
+      {
+        "text": "ROUNDTRIP_WORD — edit this paragraph using the native editor.",
+        "halfPoints": null,
+        "bold": false,
+        "color": null
+      }
+    ],
+    [
+      {
+        "text": "蓝色文字 ",
+        "halfPoints": "36",
+        "bold": false,
+        "color": "165DBE"
+      },
+      {
+        "text": "· 18 pt · format must ",
+        "halfPoints": "36",
+        "bold": false,
+        "color": "165DBE"
+      },
+      {
+        "text": "survive",
+        "halfPoints": "48",
+        "bold": true,
+        "color": "165DBE"
+      }
+    ]
+  ],
+  "events": [
+    {
+      "detail": "docx",
+      "event": "fixtureCopied",
+      "time": "2026-09-09T05:50:41Z"
+    },
+    {
+      "detail": "zh-Hans-TW",
+      "event": "preferredLanguage",
+      "time": "2026-09-09T05:50:41Z"
+    },
+    {
+      "detail": "true; readonly=false",
+      "event": "opened",
+      "time": "2026-09-09T05:50:41Z"
+    },
+    {
+      "detail": "false",
+      "event": "workingPersistence",
+      "time": "2026-09-09T05:50:43Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T05:53:01Z"
+    },
+    {
+      "detail": "",
+      "event": "saveRequested",
+      "time": "2026-09-09T05:53:34Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T05:53:35Z"
+    },
+    {
+      "detail": "success",
+      "event": "saveCompleted",
+      "time": "2026-09-09T05:53:35Z"
+    },
+    {
+      "detail": "success",
+      "event": "editingClosed",
+      "time": "2026-09-09T05:53:35Z"
+    },
+    {
+      "detail": "true; readonly=true",
+      "event": "opened",
+      "time": "2026-09-09T05:53:35Z"
+    }
+  ],
+  "completeWordFormattingPassed": false,
+  "selectedWord24ptBoldBluePassed": true,
+  "otherBlueRun18ptPreserved": true,
+  "inputSHA256": "a9591001a09a0f3cedda7d8a1212385caf146dadb4983a8f63b3f07eb23644be",
+  "baselineBlueParagraph": {
+    "text": "蓝色文字 · 18 pt · format must survive",
+    "halfPoints": "36",
+    "color": "165DBE"
+  },
+  "boldSingleUndoRedoObserved": true,
+  "inputAutomationNote": "Clipboard paste into size field timed out; typing appended to existing value. AX setValue then Return corrected it to 24 before final save. This does not qualify every input method."
+}
