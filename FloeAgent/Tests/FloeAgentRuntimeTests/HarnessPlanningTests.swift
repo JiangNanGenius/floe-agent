@@ -92,6 +92,44 @@ struct HarnessPlanningTests {
         }
     }
 
+    @Test("Accepted plans retain later requirements, full detail, assumptions and mitigations")
+    func acceptedPlanDoesNotSilentlyLoseRequirements() {
+        let detail = String(repeating: "Long specification. ", count: 30) + "Preserve attachment position exactly."
+        let plan = PlanDraft(conversationID: UUID(), status: .accepted, title: "Complete upgrade", summary: "All work",
+            sections: (0..<12).reversed().map { PlanSection(title: "Section \($0)", body: detail, order: $0) },
+            assumptions: [PlanAssumption(text: "Account availability", isAccepted: false)],
+            risks: [PlanRisk(text: "Concurrent original edit", mitigation: "Preserve both copies", severity: .high)],
+            acceptanceCriteria: (0..<12).map { PlanCriterion(text: "Criterion \($0)", verification: "Check \($0)") })
+        for local in [false, true] {
+            let prompt = AgentPromptComposer.compose(mode: .chat, runtimeContext: "", activePlan: plan, compactForLocal: local)
+            #expect(prompt.contains("Accepted plan state"))
+            #expect(prompt.contains("Section 11: \(detail)"))
+            #expect(prompt.contains("Criterion 11 — verify: Check 11"))
+            #expect(prompt.contains("[unconfirmed] Account availability"))
+            #expect(prompt.contains("[high] Concurrent original edit — mitigation: Preserve both copies"))
+            #expect(prompt.range(of: "Section 0:")!.lowerBound < prompt.range(of: "Section 11:")!.lowerBound)
+        }
+    }
+
+    @Test("Unaccepted and retired plans cannot imply execution approval")
+    func draftIsNotAcceptance() {
+        for status: PlanStatus in [.drafting, .awaitingInput, .ready, .accepted, .superseded, .archived] {
+            let plan = PlanDraft(conversationID: UUID(), status: status, title: "Stored draft marker", summary: "Context")
+            for local in [false, true] {
+                let prompt = AgentPromptComposer.compose(mode: .chat, runtimeContext: "", activePlan: plan, compactForLocal: local)
+                if status == .archived || status == .superseded {
+                    #expect(!prompt.contains("Stored draft marker"))
+                } else if status == .accepted {
+                    #expect(prompt.contains("Continue this accepted plan within the current mode"))
+                } else {
+                    #expect(prompt.contains("Stored plan draft (not accepted)"))
+                    #expect(prompt.contains("not execution authorization"))
+                    #expect(!prompt.contains("Continue this accepted plan"))
+                }
+            }
+        }
+    }
+
     @Test("Local composition shortens reusable rules while preserving dynamic state")
     func localCompositionPreservesGoalWorkspaceAndGuideContext() {
         let goal = ConversationGoal(conversationID: UUID(), objective: "Finish invoice migration",

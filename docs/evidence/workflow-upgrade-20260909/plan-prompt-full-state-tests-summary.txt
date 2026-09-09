@@ -1,0 +1,8 @@
+Command: DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test --enable-swift-testing --jobs 2 --filter HarnessPlanningTests
+Source: AgentPromptComposer and HarnessPlanningTests after 0a9c611
+Scope: deterministic composition and runtime tests; no live provider request or efficiency claim.
+◇ Test "Accepted plans retain later requirements, full detail, assumptions and mitigations" started.
+◇ Test "Unaccepted and retired plans cannot imply execution approval" started.
+✔ Test "Accepted plans retain later requirements, full detail, assumptions and mitigations" passed after 0.046 seconds.
+✔ Test "Unaccepted and retired plans cannot imply execution approval" passed after 0.046 seconds.
+✔ Test run with 37 tests in 1 suite passed after 0.271 seconds.
