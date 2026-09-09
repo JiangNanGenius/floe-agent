@@ -2,6 +2,7 @@
 // Does not use Floe app groups, original user files, or distribution signing.
 import UIKit
 import FloeOfficeNative
+import CryptoKit
 
 @main final class OfficeEditorProbe: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
@@ -144,6 +145,42 @@ import FloeOfficeNative
                         }
                     } catch { controller.title = error.localizedDescription }
                 })
+        }
+        if working.pathExtension == "docx" {
+            var buttons = controller.navigationItem.leftBarButtonItems ?? []
+            buttons.append(UIBarButtonItem(title: "Export attachments", primaryAction: UIAction { [weak self, weak controller] _ in
+                guard let self, let controller else { return }
+                controller.navigationItem.leftBarButtonItems?.forEach { $0.isEnabled = false }
+                controller.navigationItem.rightBarButtonItem?.isEnabled = false
+                controller.listAttachments { attachments, error in
+                    func finish(_ detail: String) {
+                        controller.title = detail
+                        controller.navigationItem.leftBarButtonItems?.forEach { $0.isEnabled = true }
+                        controller.navigationItem.rightBarButtonItem?.isEnabled = true
+                    }
+                    if let error { self.record("attachmentListFailed", detail: error.localizedDescription); finish(error.localizedDescription); return }
+                    let items = attachments ?? []
+                    self.record("attachmentsListed", detail: "\(items.count); readonly=\(readOnly)")
+                    func export(_ index: Int) {
+                        guard index < items.count else { finish("Exported \(items.count) embedded attachments"); return }
+                        let item = items[index]
+                        controller.exportAttachment(withIdentifier: item.identifier) { url, error in
+                            guard let url, error == nil else {
+                                self.record("attachmentExportFailed", detail: error?.localizedDescription ?? "missing URL")
+                                finish("Attachment export failed"); return
+                            }
+                            do {
+                                let bytes = try Data(contentsOf: url)
+                                let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+                                self.record("attachmentExported", detail: "name=\(item.name); bytes=\(bytes.count); declared=\(item.byteCount); sha256=\(hash); path=\(url.path)")
+                                export(index + 1)
+                            } catch { self.record("attachmentExportFailed", detail: error.localizedDescription); finish(error.localizedDescription) }
+                        }
+                    }
+                    export(0)
+                }
+            }))
+            controller.navigationItem.leftBarButtonItems = buttons
         }
         window?.rootViewController = UINavigationController(rootViewController: controller)
     }

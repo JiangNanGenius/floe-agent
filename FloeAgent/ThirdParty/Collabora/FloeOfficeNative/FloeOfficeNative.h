@@ -6,6 +6,12 @@ NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT NSErrorDomain const FloeOfficeNativeErrorDomain;
 FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotification;
 
+@interface FloeOfficeAttachmentInfo : NSObject
+@property (nonatomic, copy, readonly) NSString *identifier;
+@property (nonatomic, copy, readonly) NSString *name;
+@property (nonatomic, readonly) unsigned long long byteCount;
+@end
+
 /// Process-wide native engine. All completions and controller APIs use the main queue.
 /// The app must copy the qualified editor and engine resources into its main bundle.
 @interface FloeOfficeNativeRuntime : NSObject
@@ -40,6 +46,12 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 /// the authorized input into this private session; completion is insertion,
 /// not original-file save. Other document types are rejected until implemented.
 - (void)insertAttachmentFromFileURL:(NSURL *)fileURL completion:(void (^)(NSError * _Nullable error))completion;
+/// Enumerates live Word Package attachments. Other embedded Office objects are
+/// not represented as original-file attachments. Does not modify the document.
+- (void)listAttachmentsWithCompletion:(void (^)(NSArray<FloeOfficeAttachmentInfo *> * _Nullable attachments, NSError * _Nullable error))completion;
+/// Extract the current embedded bytes into a private export copy. Never opens
+/// or executes the attachment; the caller chooses preview or a destination.
+- (void)exportAttachmentWithIdentifier:(NSString *)identifier completion:(void (^)(NSURL * _Nullable fileURL, NSError * _Nullable error))completion;
 /// Settle the native document before releasing its view. This does not request
 /// an engine save or remove any files; save first when committing user edits.
 - (void)closeWorkingCopyWithCompletion:(void (^)(NSError * _Nullable error))completion;

@@ -11,7 +11,7 @@ import FloeOfficeNative
 
 @MainActor
 final class OfficeFileSession: ObservableObject {
-    enum Phase { case idle, loading, ready, insertingAttachment, saving, closing, failed }
+    enum Phase { case idle, loading, ready, insertingAttachment, readingAttachments, saving, closing, failed }
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var controller: UIViewController?
     @Published private(set) var readOnly = true
@@ -72,6 +72,51 @@ final class OfficeFileSession: ObservableObject {
             }
         }
         hasUncommittedChanges = true
+        #else
+        throw CocoaError(.featureUnsupported)
+        #endif
+    }
+
+    func listAttachments() async throws -> [OfficeAttachmentItem] {
+        guard canAct else { throw CocoaError(.featureUnsupported) }
+        operating = true
+        phase = .readingAttachments
+        defer {
+            phase = runtimeFailed || controller == nil ? .failed : .ready
+            finishOperation()
+        }
+        #if canImport(FloeOfficeNative)
+        guard let native = controller as? FloeOfficeNativeViewController else { throw CocoaError(.featureUnsupported) }
+        return try await withCheckedThrowingContinuation { receipt in
+            native.listAttachments { attachments, error in
+                if let error { receipt.resume(throwing: error) }
+                else if let attachments {
+                    receipt.resume(returning: attachments.map { OfficeAttachmentItem(id: $0.identifier, name: $0.name, byteCount: $0.byteCount) })
+                } else { receipt.resume(throwing: CocoaError(.fileReadUnknown)) }
+            }
+        }
+        #else
+        throw CocoaError(.featureUnsupported)
+        #endif
+    }
+
+    func exportAttachment(id: String) async throws -> URL {
+        guard canAct else { throw CocoaError(.featureUnsupported) }
+        operating = true
+        phase = .readingAttachments
+        defer {
+            phase = runtimeFailed || controller == nil ? .failed : .ready
+            finishOperation()
+        }
+        #if canImport(FloeOfficeNative)
+        guard let native = controller as? FloeOfficeNativeViewController else { throw CocoaError(.featureUnsupported) }
+        return try await withCheckedThrowingContinuation { receipt in
+            native.exportAttachment(withIdentifier: id) { url, error in
+                if let error { receipt.resume(throwing: error) }
+                else if let url { receipt.resume(returning: url) }
+                else { receipt.resume(throwing: CocoaError(.fileReadUnknown)) }
+            }
+        }
         #else
         throw CocoaError(.featureUnsupported)
         #endif
@@ -376,7 +421,7 @@ struct OfficeDocumentSurface: View {
                     }
                 }
             } else if session.phase != .ready {
-                ProgressView(session.phase == .saving ? "正在保存…" : session.phase == .closing ? "正在关闭…" : session.phase == .insertingAttachment ? "正在插入附件…" : "正在打开文档…")
+                ProgressView(session.phase == .saving ? "正在保存…" : session.phase == .closing ? "正在关闭…" : session.phase == .insertingAttachment ? "正在插入附件…" : session.phase == .readingAttachments ? "正在读取附件…" : "正在打开文档…")
                     .padding(16)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
             }
@@ -399,11 +444,14 @@ struct OfficeDocumentEditorView: View {
     @ObservedObject var session: OfficeFileSession
     var onSaved: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var environment: AppEnvironment
     @State private var confirmingDiscard = false
     @State private var export: DocumentExportSnapshot?
     @State private var savedCopyNotice = false
     @State private var exportSucceeded = false
     @State private var choosingAttachment = false
+    @State private var choosingWorkspaceAttachment = false
+    @State private var showingAttachments = false
     @State private var attachmentError: String?
 
     var body: some View {
@@ -413,7 +461,12 @@ struct OfficeDocumentEditorView: View {
             .toolbar {
                 if session.supportsAttachmentInsertion {
                     ToolbarItem(placement: .primaryAction) {
-                        Button("插入附件", systemImage: "paperclip") { choosingAttachment = true }
+                        Menu {
+                            Button("从工作区选择", systemImage: "folder") { choosingWorkspaceAttachment = true }
+                            Button("从文件选择", systemImage: "doc") { choosingAttachment = true }
+                            Divider()
+                            Button("查看文档附件", systemImage: "paperclip") { showingAttachments = true }
+                        } label: { Label("附件", systemImage: "paperclip") }
                             .disabled(!session.canAct)
                             .accessibilityIdentifier("office.editor.insertAttachment")
                     }
@@ -445,6 +498,12 @@ struct OfficeDocumentEditorView: View {
             }
             .interactiveDismissDisabled()
             .task { await session.enterEditing() }
+            .sheet(isPresented: $choosingWorkspaceAttachment) {
+                OfficeWorkspaceAttachmentPicker(environment: environment) { url in
+                    try await session.insertAttachment(url)
+                }
+            }
+            .sheet(isPresented: $showingAttachments) { OfficeAttachmentListView(session: session) }
             .fileImporter(isPresented: $choosingAttachment, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
                 switch result {
                 case .success(let urls):
@@ -499,7 +558,7 @@ struct OfficeDocumentEditorView: View {
     }
 }
 
-private struct OfficeCopyDestinationPicker: UIViewControllerRepresentable {
+struct OfficeCopyDestinationPicker: UIViewControllerRepresentable {
     let url: URL
     let completion: (Bool) -> Void
 

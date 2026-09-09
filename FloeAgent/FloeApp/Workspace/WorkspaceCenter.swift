@@ -617,7 +617,7 @@ final class WorkspaceCenter: ObservableObject {
     /// Lists either a local directory or a linked cloud directory. Cloud
     /// links stay live: the UI asks the remote helper through the verified
     /// SSH tunnel instead of displaying stale local marker contents.
-    func listDirectory(relativePath: String) async throws -> DirectoryPage {
+    func listDirectory(relativePath: String, pageToken: String? = nil) async throws -> DirectoryPage {
         let normalized = normalizedInspectorPath(relativePath)
         if normalized == "Network" {
             return DirectoryPage(
@@ -665,8 +665,8 @@ final class WorkspaceCenter: ObservableObject {
         guard let service = fileService else {
             throw FloeError.validationFailed("No workspace is open")
         }
-        var page = try service.listDirectory(relativePath, pageToken: nil)
-        if normalized.isEmpty || normalized == ".", !networkWorkspaceMounts.isEmpty,
+        var page = try service.listDirectory(relativePath, pageToken: pageToken)
+        if pageToken == nil, normalized.isEmpty || normalized == ".", !networkWorkspaceMounts.isEmpty,
            !page.entries.contains(where: { $0.name == "Network" }) {
             page.entries.insert(
                 FileNode(name: "Network", relativePath: "Network", isDirectory: true, size: 0),

@@ -24,6 +24,11 @@
 #include <com/sun/star/container/XNameAccess.hpp>
 #include <com/sun/star/lang/XMultiServiceFactory.hpp>
 #include <com/sun/star/text/XTextDocument.hpp>
+#include <com/sun/star/text/XTextEmbeddedObjectsSupplier.hpp>
+#include <com/sun/star/embed/XStorage.hpp>
+#include <com/sun/star/embed/ElementModes.hpp>
+#include <com/sun/star/io/XStream.hpp>
+#include <unotools/ucbstreamhelper.hxx>
 #include <com/sun/star/text/XTextViewCursorSupplier.hpp>
 #include <com/sun/star/text/XTextContent.hpp>
 #include <com/sun/star/text/TextContentAnchorType.hpp>
@@ -208,4 +213,136 @@ void FloeImportWordAttachment(const std::function<COKitDocument *()> &lookupDocu
     COKitDocument *document = lookupDocument();
     if (!document) throw std::runtime_error("Document closed during attachment preparation.");
     FloeInsertWordAttachment(document, packageURL, iconURL, displayName, identifier);
+}
+
+namespace {
+struct FloePackageContents {
+    OUString name;
+    sal_uInt64 offset;
+    sal_uInt32 size;
+};
+
+// Bound every length before seeking or allocating. Filenames are metadata,
+// never trusted filesystem paths. Reuse SotStorage for compound-file parsing.
+FloePackageContents FloeReadPackageHeader(SvStream &stream) {
+    const auto end = stream.TellEnd();
+    stream.Seek(0);
+    sal_uInt32 total = 0;
+    sal_uInt16 flags = 0;
+    stream.ReadUInt32(total).ReadUInt16(flags);
+    if (stream.GetError() || total > end - std::min<sal_uInt64>(end, 4) || flags != 2)
+        throw std::runtime_error("Unsupported or damaged attachment package.");
+    const sal_uInt64 packageEnd = sal_uInt64(total) + 4;
+    auto ansi = [&]() {
+        std::string value;
+        while (value.size() < 32768 && stream.Tell() < packageEnd) {
+            sal_uInt8 ch = 0; stream.ReadUChar(ch);
+            if (stream.GetError()) break;
+            if (!ch) return OUString(value.c_str(), value.size(), RTL_TEXTENCODING_MS_1252);
+            value.push_back(static_cast<char>(ch));
+        }
+        throw std::runtime_error("Damaged attachment filename.");
+    };
+    const OUString label = ansi();
+    const OUString filename = ansi();
+    sal_uInt16 flags2 = 0, reserved = 0;
+    sal_uInt32 commandBytes = 0, size = 0;
+    stream.ReadUInt16(flags2).ReadUInt16(reserved).ReadUInt32(commandBytes);
+    if (!commandBytes || commandBytes > 32768 || stream.Tell() > packageEnd || commandBytes > packageEnd - stream.Tell())
+        throw std::runtime_error("Damaged attachment command metadata.");
+    stream.Seek(stream.Tell() + commandBytes);
+    stream.ReadUInt32(size);
+    const auto offset = stream.Tell();
+    if (stream.GetError() || offset > packageEnd || size > packageEnd - offset)
+        throw std::runtime_error("Truncated attachment content.");
+    OUString name = filename.isEmpty() ? label : filename;
+    stream.Seek(offset + size);
+    if (stream.Tell() < packageEnd) {
+        // Package Unicode extension: command, label, original filename.
+        for (int field = 0; field < 3; ++field) {
+            sal_uInt32 length = 0; stream.ReadUInt32(length);
+            if (stream.GetError() || length > 32768 || stream.Tell() > packageEnd || length * 2 > packageEnd - stream.Tell())
+                throw std::runtime_error("Damaged attachment Unicode metadata.");
+            std::u16string value(length, u'\0');
+            for (auto &ch : value) { sal_uInt16 unit = 0; stream.ReadUInt16(unit); ch = unit; }
+            if (field == 2 && length) name = OUString(value);
+        }
+    }
+    if (stream.GetError()) throw std::runtime_error("Attachment metadata read failed.");
+    return {name, offset, size};
+}
+
+SfxObjectShell *FloeWordShell(const std::function<COKitDocument *()> &lookupDocument) {
+    auto document = lookupDocument();
+    std::vector<int> views;
+    if (!document || document->getDocumentType() != COKitDocumentType::TEXT ||
+        !document->getViewIds(views) || views.size() != 1)
+        throw std::runtime_error("A single active Word view is required.");
+    document->setView(views.front());
+    auto shell = SfxViewShell::Current();
+    if (!shell || !shell->GetObjectShell()) throw std::runtime_error("The Word view is unavailable.");
+    return shell->GetObjectShell();
+}
+
+std::vector<OUString> FloeLiveWordPackages(SfxObjectShell *shell) {
+    css::uno::Reference<css::text::XTextEmbeddedObjectsSupplier> supplier(shell->GetModel(), css::uno::UNO_QUERY_THROW);
+    auto objects = supplier->getEmbeddedObjects();
+    std::vector<OUString> result;
+    for (const auto &name : objects->getElementNames()) {
+        css::uno::Reference<css::beans::XPropertySet> properties(objects->getByName(name), css::uno::UNO_QUERY_THROW);
+        css::uno::Reference<css::embed::XEmbeddedObject> embedded(properties->getPropertyValue(u"EmbeddedObject"_ustr), css::uno::UNO_QUERY);
+        if (!embedded) continue;
+        const SvGlobalName classID(embedded->getClassID());
+        if (classID != SvGlobalName(0x0003000c, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46)) continue;
+        const auto storageName = shell->GetEmbeddedObjectContainer().GetEmbeddedObjectName(embedded);
+        if (!storageName.isEmpty()) result.push_back(storageName);
+    }
+    return result;
+}
+
+FloeWordAttachment FloeReadWordPackage(SfxObjectShell *shell, const OUString &identifier,
+                                      const std::string *destinationURL) {
+    auto stream = shell->GetStorage()->openStreamElement(identifier, css::embed::ElementModes::READ);
+    auto input = utl::UcbStreamHelper::CreateStream(stream->getInputStream());
+    if (!input) throw std::runtime_error("Attachment storage is unavailable.");
+    rtl::Reference<SotStorage> storage = new SotStorage(*input);
+    auto native = storage->OpenSotStream(u"\001Ole10Native"_ustr, StreamMode::READ);
+    if (storage->GetError() || !native || native->GetError()) throw std::runtime_error("Attachment package is unavailable.");
+    auto contents = FloeReadPackageHeader(*native);
+    if (destinationURL) {
+        SvFileStream output(FloeUNOString(*destinationURL), StreamMode::WRITE | StreamMode::TRUNC);
+        native->Seek(contents.offset);
+        sal_uInt64 remaining = contents.size;
+        std::array<char, 65536> buffer;
+        while (remaining) {
+            const auto count = static_cast<std::size_t>(std::min<sal_uInt64>(remaining, buffer.size()));
+            if (native->ReadBytes(buffer.data(), count) != count || output.WriteBytes(buffer.data(), count) != count)
+                throw std::runtime_error("Attachment export did not finish.");
+            remaining -= count;
+        }
+        output.Flush();
+        if (native->GetError() || output.GetError()) throw std::runtime_error("Attachment export could not be saved.");
+    }
+    return {OUStringToOString(identifier, RTL_TEXTENCODING_UTF8).getStr(),
+            OUStringToOString(contents.name, RTL_TEXTENCODING_UTF8).getStr(), contents.size};
+}
+}
+
+std::vector<FloeWordAttachment> FloeListWordAttachments(const std::function<COKitDocument *()> &lookupDocument) {
+    SolarMutexGuard guard;
+    auto shell = FloeWordShell(lookupDocument);
+    std::vector<FloeWordAttachment> result;
+    for (const auto &name : FloeLiveWordPackages(shell)) result.push_back(FloeReadWordPackage(shell, name, nullptr));
+    return result;
+}
+
+void FloeExportWordAttachment(const std::function<COKitDocument *()> &lookupDocument,
+                             const std::string &identifier, const std::string &destinationURL) {
+    SolarMutexGuard guard;
+    auto shell = FloeWordShell(lookupDocument);
+    const auto names = FloeLiveWordPackages(shell);
+    const auto name = FloeUNOString(identifier);
+    if (std::find(names.begin(), names.end(), name) == names.end())
+        throw std::runtime_error("This attachment is no longer present. Refresh the attachment list.");
+    FloeReadWordPackage(shell, name, &destinationURL);
 }

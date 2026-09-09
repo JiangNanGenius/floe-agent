@@ -24,6 +24,13 @@
 
 NSErrorDomain const FloeOfficeNativeErrorDomain = @"org.floeagent.office.native";
 NSNotificationName const FloeOfficeNativeRuntimeDidFailNotification = @"FloeOfficeNativeRuntimeDidFail";
+@interface FloeOfficeAttachmentInfo ()
+@property (nonatomic, copy, readwrite) NSString *identifier;
+@property (nonatomic, copy, readwrite) NSString *name;
+@property (nonatomic, readwrite) unsigned long long byteCount;
+@end
+@implementation FloeOfficeAttachmentInfo
+@end
 // The framework excludes upstream AppDelegate.mm, which normally owns these.
 NSString *app_locale;
 NSString *app_text_direction;
@@ -520,6 +527,84 @@ static void ServerReady() {
     [self.saveReceipts cancel];
     self.editor.view.userInteractionEnabled = NO;
     [self.editor bye];
+}
+- (void)listAttachmentsWithCompletion:(void (^)(NSArray<FloeOfficeAttachmentInfo *> *, NSError *))completion {
+    NSAssert(NSThread.isMainThread, @"Office attachment requests are main-queue owned");
+    if (self.closing || self.closed || self.insertingAttachment || self.saveReceipts.activeRequestID || !self.editor.webView) {
+        completion(nil, OfficeError(17, @"Finish the current document operation first.")); return;
+    }
+    self.insertingAttachment = YES;
+    self.editor.view.userInteractionEnabled = NO;
+    const unsigned documentID = self.editor.document->appDocId;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @autoreleasepool {
+            NSError *failure = nil;
+            NSMutableArray<FloeOfficeAttachmentInfo *> *items = [NSMutableArray array];
+            try {
+                auto attachments = FloeListWordAttachments([documentID]() -> COKitDocument * {
+                    auto data = DocumentData::getIfExists(documentID);
+                    return data ? data->loKitDocument : nullptr;
+                });
+                for (const auto &attachment : attachments) {
+                    FloeOfficeAttachmentInfo *item = [FloeOfficeAttachmentInfo new];
+                    item.identifier = [NSString stringWithUTF8String:attachment.identifier.c_str()];
+                    item.name = [NSString stringWithUTF8String:attachment.name.c_str()] ?: @"Attachment";
+                    item.byteCount = attachment.byteCount;
+                    [items addObject:item];
+                }
+            } catch (...) { failure = OfficeError(18, @"The document attachments could not be read."); }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.insertingAttachment = NO;
+                if (!self.closed && !self.closing) self.editor.view.userInteractionEnabled = YES;
+                completion(failure ? nil : [items copy], failure);
+            });
+        }
+    });
+}
+- (void)exportAttachmentWithIdentifier:(NSString *)identifier completion:(void (^)(NSURL *, NSError *))completion {
+    NSAssert(NSThread.isMainThread, @"Office attachment requests are main-queue owned");
+    if (self.closing || self.closed || self.insertingAttachment || self.saveReceipts.activeRequestID || !self.editor.webView) {
+        completion(nil, OfficeError(17, @"Finish the current document operation first.")); return;
+    }
+    self.insertingAttachment = YES;
+    self.editor.view.userInteractionEnabled = NO;
+    const unsigned documentID = self.editor.document->appDocId;
+    NSURL *folder = [[[self.workingFileURL URLByDeletingLastPathComponent]
+        URLByAppendingPathComponent:@"attachment-exports" isDirectory:YES]
+        URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @autoreleasepool {
+            NSError *failure = nil;
+            NSURL *file = nil;
+            try {
+                auto lookup = [documentID]() -> COKitDocument * {
+                    auto data = DocumentData::getIfExists(documentID);
+                    return data ? data->loKitDocument : nullptr;
+                };
+                const auto attachments = FloeListWordAttachments(lookup);
+                for (const auto &attachment : attachments) {
+                    if (attachment.identifier != identifier.UTF8String) continue;
+                    NSString *name = [NSString stringWithUTF8String:attachment.name.c_str()] ?: @"Attachment";
+                    // Embedded names may contain original Windows paths. Never
+                    // allow them to escape this private export directory.
+                    name = [[name stringByReplacingOccurrencesOfString:@"\\" withString:@"/"] lastPathComponent];
+                    if (!name.length || [@[@".", @"..", @"/"] containsObject:name]) name = @"Attachment";
+                    file = [folder URLByAppendingPathComponent:name];
+                    break;
+                }
+                if (!file) failure = OfficeError(19, @"This attachment is no longer present. Refresh the list.");
+                else if ([NSFileManager.defaultManager createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:&failure]) {
+                    FloeExportWordAttachment(lookup, identifier.UTF8String, file.absoluteString.UTF8String);
+                }
+            } catch (...) { failure = OfficeError(20, @"The attachment could not be exported. The document has not been changed."); }
+            if (failure) [NSFileManager.defaultManager removeItemAtURL:folder error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.insertingAttachment = NO;
+                if (!self.closed && !self.closing) self.editor.view.userInteractionEnabled = YES;
+                completion(failure ? nil : file, failure);
+            });
+        }
+    });
 }
 - (void)viewDidLoad {
     [super viewDidLoad];
