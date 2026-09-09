@@ -24,9 +24,9 @@
 
 Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送都会在同一任务中创建新的 Run，并保留历史消息、工具证据、用户决策、计划、目标、记忆、权限和恢复检查点。任务可以使用 App 内部的私有工作区，也可以归属于用户明确选择的项目工作区。
 
-## 本轮升级（1.6.0 测试候选）
+## 本轮升级（1.6.1 测试候选）
 
-新候选版本为 **1.6.0（135）**，正在准备发布；可安装状态以 TestFlight 核验为准。参见[测试版说明](docs/RELEASE_NOTES_1.6.0.md)、[代码审计](docs/RELEASE_CODE_AUDIT_20260909.md)和 [Office 操作截图](docs/OFFICE_SCREENSHOT_INDEX.md)。PPTX 图表导出仍有数据保真问题，已识别的损坏导出会被拦截并保留恢复副本。
+新候选版本为 **1.6.1（136）**，正在准备发布；可安装状态以 TestFlight 核验为准。参见[测试版说明](docs/RELEASE_NOTES_1.6.1.md)、[代码审计](docs/RELEASE_CODE_AUDIT_20260909.md)和 [Office 操作截图](docs/OFFICE_SCREENSHOT_INDEX.md)。PPTX 图表导出仍有数据保真问题，已识别的损坏导出会被拦截并保留恢复副本。
 
 这一轮围绕完整编辑能力和日常工作流程展开：插件市场、长按多选任务、全部工作区管理、右侧 PDF 阅读、iPhone 画布，以及持续更新的执行状态、长思考阅读和长文写入可靠性。Word、Excel、PowerPoint 统一归入 Office，PDF 独立；原生 Office 引擎及前端已接入开发分支，完整编辑功能仍在逐项验收。新增本地文档互转，并更新火山 Seedance 2.5、Seedream 5.0 Pro/Lite 与阿里 Wan 3.0 参数，详见[模型核对记录](docs/MEDIA_MODEL_CATALOG_2026-09-08.md)。
 

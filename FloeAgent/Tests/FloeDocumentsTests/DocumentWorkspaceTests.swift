@@ -211,17 +211,27 @@ struct DocumentWorkspaceTests {
         let (root, workspace) = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }
         let original = root.appendingPathComponent("slides.pptx")
-        try Data("one".utf8).write(to: original)
-        let session = try await workspace.open(securityScopedURL: original)
-        for value in ["two", "three"] {
-            try Data(value.utf8).write(to: session.workingURL)
-            try await workspace.save(session)
-            #expect(try Data(contentsOf: original) == Data(value.utf8))
-            #expect(try Data(contentsOf: session.workingURL) == Data(value.utf8))
+        func presentation(_ title: String) throws -> Data {
+            let fixture = root.appendingPathComponent(UUID().uuidString + ".pptx")
+            defer { try? FileManager.default.removeItem(at: fixture) }
+            try OfficeDocumentBuilder.createPresentation(at: fixture, title: title,
+                slides: [.init(title: title, bullets: ["Repeated save fixture"])])
+            return try Data(contentsOf: fixture)
         }
-        try Data("discard".utf8).write(to: session.workingURL)
+        try presentation("one").write(to: original)
+        let session = try await workspace.open(securityScopedURL: original)
+        var lastSaved = try Data(contentsOf: original)
+        for value in ["two", "three"] {
+            let payload = try presentation(value)
+            try payload.write(to: session.workingURL)
+            try await workspace.save(session)
+            #expect(try Data(contentsOf: original) == payload)
+            #expect(try Data(contentsOf: session.workingURL) == payload)
+            lastSaved = payload
+        }
+        try presentation("discard").write(to: session.workingURL)
         await workspace.discardChangesAndClose(session)
-        #expect(try Data(contentsOf: original) == Data("three".utf8))
+        #expect(try Data(contentsOf: original) == lastSaved)
         #expect(!FileManager.default.fileExists(atPath: session.workingURL.path))
     }
 

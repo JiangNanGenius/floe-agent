@@ -1,0 +1,113 @@
+warning: 'zipfoundation': /Volumes/TECLAST/IOS AI AGENT/FloeAgent/.build/checkouts/ZIPFoundation/Package@swift-5.9.swift:23:61: warning: 'v4' is deprecated: watchOS 9.0 is the oldest supported version [#DeprecatedDeclaration]
+21 |     name: "ZIPFoundation",
+22 |     platforms: [
+23 |         .macOS(.v10_13), .iOS(.v12), .tvOS(.v12), .watchOS(.v4), .visionOS(.v1)
+   |                                                             `- warning: 'v4' is deprecated: watchOS 9.0 is the oldest supported version [#DeprecatedDeclaration]
+24 |     ],
+25 |     products: [
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+Building for debugging...
+[Computing dependencies]
+[Pre-planning 1 / 213]
+[Planning deferred tasks]
+[62 / 121] ZIPFoundation_ZIPFoundation
+[67 / 121]
+[71 / 121]
+[72 / 121]
+[75 / 124] Crypto
+[76 / 205]
+[79 / 205]
+[81 / 205]
+[85 / 217]
+[89 / 217]
+[93 / 217]
+[97 / 217]
+[102 / 217]
+[107 / 217]
+[111 / 217]
+[115 / 217]
+[120 / 217]
+[123 / 217]
+[126 / 217]
+[131 / 217]
+[133 / 217]
+[136 / 217]
+[137 / 217]
+[141 / 217]
+[142 / 217]
+[143 / 217]
+[146 / 217]
+[147 / 217]
+[148 / 217]
+[151 / 217] Crypto
+[154 / 217] Crypto
+[166 / 217] ZIPFoundation
+[173 / 217] ZIPFoundation
+[175 / 217] ZIPFoundation
+[177 / 217] FloeCore
+[179 / 217] Crypto
+[179 / 217] ZIPFoundation
+[181 / 217] Crypto
+[184 / 217] Crypto-product
+[186 / 217] Crypto-product
+[188 / 217] FloeDocuments
+[190 / 217] FloeDocuments
+[193 / 218] FloeDocuments
+[197 / 229]
+[201 / 229] FloeDocuments
+[203 / 229] FloeDocuments
+[209 / 229] FloeDocuments
+[210 / 229] FloeDocuments
+[212 / 229] FloeDocuments
+[219 / 230] FloeDocumentsTests-product
+[220 / 236]
+[224 / 236] FloeDocumentsTests-product
+[226 / 236] FloeDocumentsTests-product
+[230 / 236] FloeDocumentsTests-product
+[232 / 236] FloeDocumentsTests-product
+[235 / 236] FloeDocumentsTests-product
+Build complete! (18.09秒)
+Test Suite 'All tests' started at 2026-09-10 00:14:49.174.
+Test Suite 'All tests' passed at 2026-09-10 00:14:49.176.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.002) seconds
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "FloeDocuments.NativeSaveValidation" started.
+◇ Suite "FloeDocuments.DocumentWorkspace" started.
+◇ Test "lost workbook and internal model references are rejected" started.
+◇ Test "Save replaces the original through a private working copy" started.
+◇ Test "Failed or inconsistent recovery refresh preserves the previous recovery bytes" started.
+◇ Test "Only explicit discard may remove a native generation before it reaches the working file" started.
+◇ Test "Close is idempotent and releases the working copy" started.
+◇ Test "failed native export preserves original and recovery and cannot be exported as saved" started.
+◇ Test "Security-scoped bookmark round-trip resolves back to the original" started.
+◇ Test "A later autosave cannot change the snapshot committed by an earlier save" started.
+◇ Test "Conflict-safe writeback leaves a recovery copy when the original vanished" started.
+◇ Test "Normal close preserves unsettled engine generations even when the working file is unchanged" started.
+◇ Test "Forged session paths cannot direct writeback or cleanup" started.
+◇ Test "embedded chart data and namespace aliases remain saveable" started.
+◇ Test "Opening a non-file URL throws validationFailed" started.
+◇ Test "Repeated saves advance the baseline and explicit discard preserves the original" started.
+◇ Test case passing 1 argument fault → .changedCopy to "Failed or inconsistent recovery refresh preserves the previous recovery bytes" started.
+◇ Test "External same-size changes survive save conflicts and normal close" started.
+◇ Test case passing 1 argument fault → .copyFailure to "Failed or inconsistent recovery refresh preserves the previous recovery bytes" started.
+✔ Test "lost workbook and internal model references are rejected" passed after 0.045 seconds.
+✔ Test "Only explicit discard may remove a native generation before it reaches the working file" passed after 0.045 seconds.
+✔ Test "Close is idempotent and releases the working copy" passed after 0.045 seconds.
+✔ Test "Failed or inconsistent recovery refresh preserves the previous recovery bytes" with 2 test cases passed after 0.045 seconds.
+✔ Test "failed native export preserves original and recovery and cannot be exported as saved" passed after 0.046 seconds.
+✔ Test "Forged session paths cannot direct writeback or cleanup" passed after 0.046 seconds.
+✔ Test "Opening a non-file URL throws validationFailed" passed after 0.046 seconds.
+✔ Test "Normal close preserves unsettled engine generations even when the working file is unchanged" passed after 0.046 seconds.
+✔ Test "embedded chart data and namespace aliases remain saveable" passed after 0.047 seconds.
+✔ Suite "FloeDocuments.NativeSaveValidation" passed after 0.048 seconds.
+✔ Test "Conflict-safe writeback leaves a recovery copy when the original vanished" passed after 0.050 seconds.
+✔ Test "External same-size changes survive save conflicts and normal close" passed after 0.065 seconds.
+✔ Test "Security-scoped bookmark round-trip resolves back to the original" passed after 0.071 seconds.
+✔ Test "Save replaces the original through a private working copy" passed after 0.071 seconds.
+✔ Test "A later autosave cannot change the snapshot committed by an earlier save" passed after 0.071 seconds.
+✔ Test "Repeated saves advance the baseline and explicit discard preserves the original" passed after 0.080 seconds.
+✔ Suite "FloeDocuments.DocumentWorkspace" passed after 0.080 seconds.
+✔ Test run with 15 tests in 2 suites passed after 0.081 seconds.

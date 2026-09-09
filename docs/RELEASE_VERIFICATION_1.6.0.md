@@ -1,5 +1,9 @@
 # 1.6.0（135）发布核验
 
+**最终状态：发布失败，未上传 Apple。** 工作流 34360581442 在 Swift 测试阶段被旧 `repeatedSaveAndDiscard` 样本拦住：普通文本冒充 PPTX，新增 ZIP 校验返回 `missingEndOfCentralDirectoryRecord`。保存保护测试本身通过。样本已改用实际 OOXML builder 生成的 PPTX，原有两次保存及丢弃断言保留；生产代码隔离回归 15/15 通过。后续发布改用 1.6.1（136），不改写本标签。
+
+以下为失败前的阶段记录，不能用作已发布证明。
+
 ## 发布提交
 
 - 标签：`v1.6.0`

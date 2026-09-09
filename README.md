@@ -24,9 +24,9 @@
 
 Floe Agent turns a model conversation into a durable task. Each message continues the same task, while every model execution becomes a separate run with its own progress, tool evidence, approvals, checkpoints, and recovery state. A task can use an app-managed private workspace or an explicitly selected project workspace.
 
-## Current upgrade — 1.6.0 beta candidate
+## Current upgrade — 1.6.1 beta candidate
 
-**1.6.0 (135)** is being prepared for release; installation availability requires separate TestFlight verification. See the [beta notes](docs/RELEASE_NOTES_1.6.0.md), [code audit](docs/RELEASE_CODE_AUDIT_20260909.md) and [Office interaction screenshots](docs/OFFICE_SCREENSHOT_INDEX.md). PPTX chart export still has data-fidelity issues; recognized damaged exports are rejected while retaining recovery copies.
+**1.6.1 (136)** is being prepared for release; installation availability requires separate TestFlight verification. See the [beta notes](docs/RELEASE_NOTES_1.6.1.md), [code audit](docs/RELEASE_CODE_AUDIT_20260909.md) and [Office interaction screenshots](docs/OFFICE_SCREENSHOT_INDEX.md). PPTX chart export still has data-fidelity issues; recognized damaged exports are rejected while retaining recovery copies.
 
 This round covers editing correctness and everyday workflows: the plugin marketplace, task selection from a long-press menu, all-workspace management, inline PDF reading, iPhone canvas support, live execution feedback, long-reasoning reading, and reliable long-text tool calls. Word, Excel, and PowerPoint share the Office tool group; PDF stays separate. The native Office engine and frontend are integrated on the development branch and remain under qualification; complete editing functionality has not yet passed acceptance.
 
