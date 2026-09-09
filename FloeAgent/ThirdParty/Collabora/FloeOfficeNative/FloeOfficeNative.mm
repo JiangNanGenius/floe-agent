@@ -20,6 +20,7 @@
 #import "ProcUtil.hpp"
 #import "COOLWSD.hpp"
 #import "SetupKitEnvironment.hpp"
+#include "FloeOfficeAttachment.inc"
 
 NSErrorDomain const FloeOfficeNativeErrorDomain = @"org.floeagent.office.native";
 NSNotificationName const FloeOfficeNativeRuntimeDidFailNotification = @"FloeOfficeNativeRuntimeDidFail";
@@ -342,6 +343,7 @@ static void ServerReady() {
 @property (nonatomic, strong) FloeSaveReceiptJoiner *saveReceipts;
 @property (nonatomic) BOOL closing;
 @property (nonatomic) BOOL closed;
+@property (nonatomic) BOOL insertingAttachment;
 @property (nonatomic, strong) NSMutableArray *closeWaiters;
 @end
 
@@ -408,7 +410,7 @@ static void ServerReady() {
 }
 - (void)saveWorkingCopyWithCompletion:(void (^)(NSError *))completion {
     NSAssert(NSThread.isMainThread, @"Office saves are main-queue owned");
-    if (self.readOnly || self.closing || self.closed || !self.editor.webView || self.editor.document->fakeClientFd < 0) {
+    if (self.readOnly || self.closing || self.closed || self.insertingAttachment || !self.editor.webView || self.editor.document->fakeClientFd < 0) {
         completion(OfficeError(7, @"Open the document for editing before saving."));
         return;
     }
@@ -432,8 +434,85 @@ static void ServerReady() {
 - (void)cancelPendingSave {
     [self.saveReceipts cancel];
 }
+- (void)insertAttachmentFromFileURL:(NSURL *)fileURL completion:(void (^)(NSError *))completion {
+    NSAssert(NSThread.isMainThread, @"Office attachment requests are main-queue owned");
+    if (self.readOnly || self.closing || self.closed || self.insertingAttachment || self.saveReceipts.activeRequestID ||
+        !self.editor.webView || !fileURL.isFileURL) {
+        completion(OfficeError(12, @"Open the document for editing and finish the current operation first."));
+        return;
+    }
+    if (![@[@"docx", @"doc", @"odt", @"rtf"] containsObject:self.workingFileURL.pathExtension.lowercaseString]) {
+        completion(OfficeError(13, @"Attachment insertion for this document type is not available yet."));
+        return;
+    }
+    self.insertingAttachment = YES;
+    self.editor.view.userInteractionEnabled = NO;
+    NSString *name = fileURL.lastPathComponent;
+    NSURL *folder = [[[self.workingFileURL URLByDeletingLastPathComponent]
+        URLByAppendingPathComponent:@"attachments" isDirectory:YES]
+        URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
+    // Keep user filenames separate from generated package and preview names.
+    NSURL *sourceFolder = [folder URLByAppendingPathComponent:@"source" isDirectory:YES];
+    NSURL *copy = [sourceFolder URLByAppendingPathComponent:name];
+    NSURL *package = [folder URLByAppendingPathComponent:@"embedded-object.bin"];
+    NSURL *icon = [folder URLByAppendingPathComponent:@"attachment-preview.png"];
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(300, 90)];
+    NSData *iconData = UIImagePNGRepresentation([renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        [UIColor.whiteColor setFill]; UIRectFill(CGRectMake(0, 0, 300, 90));
+        UIImage *symbol = [[UIImage systemImageNamed:@"doc.fill"] imageWithTintColor:UIColor.systemBlueColor renderingMode:UIImageRenderingModeAlwaysOriginal];
+        [symbol drawInRect:CGRectMake(10, 20, 40, 48)];
+        NSMutableParagraphStyle *style = [NSMutableParagraphStyle new]; style.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        [name drawInRect:CGRectMake(60, 31, 230, 45) withAttributes:@{
+            NSFontAttributeName: [UIFont systemFontOfSize:16], NSForegroundColorAttributeName: UIColor.blackColor,
+            NSParagraphStyleAttributeName: style}];
+    }]);
+    const unsigned documentID = self.editor.document->appDocId;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @autoreleasepool {
+            NSError *failure = nil;
+            BOOL scoped = [fileURL startAccessingSecurityScopedResource];
+            if (![NSFileManager.defaultManager createDirectoryAtURL:sourceFolder withIntermediateDirectories:YES attributes:nil error:&failure]) {
+                // Report below, without touching the original document.
+            } else {
+                NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
+                __block NSError *copyFailure = nil;
+                NSError *coordinationFailure = nil;
+                [coordinator coordinateReadingItemAtURL:fileURL options:0 error:&coordinationFailure byAccessor:^(NSURL *source) {
+                    NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:source.path error:&copyFailure];
+                    if (!attributes) return;
+                    if (![attributes[NSFileType] isEqualToString:NSFileTypeRegular]) {
+                        copyFailure = OfficeError(14, @"Choose a regular file to attach."); return;
+                    }
+                    [NSFileManager.defaultManager copyItemAtURL:source toURL:copy error:&copyFailure];
+                }];
+                failure = coordinationFailure ?: copyFailure;
+            }
+            if (scoped) [fileURL stopAccessingSecurityScopedResource];
+            if (!failure && ![iconData writeToURL:icon options:NSDataWritingAtomic error:&failure]) {
+                if (!failure) failure = OfficeError(15, @"The attachment preview could not be created.");
+            }
+            if (!failure) {
+                try {
+                    FloeWriteAttachmentPackage(copy, package, name);
+                    SolarMutexGuard guard;
+                    DocumentData *data = DocumentData::getIfExists(documentID);
+                    if (!data || !data->loKitDocument) throw std::runtime_error("Document closed during attachment preparation.");
+                    FloeInsertWordAttachment(data->loKitDocument, package, icon, name);
+                } catch (...) {
+                    failure = OfficeError(16, @"The attachment could not be inserted. Its copied file has been retained for recovery.");
+                }
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.insertingAttachment = NO;
+                if (!self.closed && !self.closing) self.editor.view.userInteractionEnabled = YES;
+                completion(failure);
+            });
+        }
+    });
+}
 - (void)closeWorkingCopyWithCompletion:(void (^)(NSError *))completion {
     NSAssert(NSThread.isMainThread, @"Office closes are main-queue owned");
+    if (self.insertingAttachment) { completion(OfficeError(11, @"Finish inserting the attachment before closing.")); return; }
     if (self.closed) { completion(nil); return; }
     [self.closeWaiters addObject:[completion copy]];
     if (self.closing) return;

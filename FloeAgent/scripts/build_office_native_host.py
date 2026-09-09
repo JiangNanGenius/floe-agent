@@ -91,7 +91,7 @@ def build_host(root, output, *, build=True):
     save()
     host = output / 'source/ios/Mobile'
     report['hostSourceSHA256'] = {}
-    for name in (NAME + '.h', NAME + '.mm'):
+    for name in (NAME + '.h', NAME + '.mm', 'FloeOfficeAttachment.inc'):
         shutil.copyfile(HOST / name, host / name)
         report['hostSourceSHA256'][name] = digest(host / name)
     (host / 'Info.plist').write_bytes(plistlib.dumps({

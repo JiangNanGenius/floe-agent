@@ -36,6 +36,10 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 /// Stop waiting for an explicit save. An already running engine save may still
 /// finish in its private files; this never cancels or commits the original file.
 - (void)cancelPendingSave;
+/// Insert a file as an embedded Word attachment at the current cursor. Copies
+/// the authorized input into this private session; completion is insertion,
+/// not original-file save. Other document types are rejected until implemented.
+- (void)insertAttachmentFromFileURL:(NSURL *)fileURL completion:(void (^)(NSError * _Nullable error))completion;
 /// Settle the native document before releasing its view. This does not request
 /// an engine save or remove any files; save first when committing user edits.
 - (void)closeWorkingCopyWithCompletion:(void (^)(NSError * _Nullable error))completion;
