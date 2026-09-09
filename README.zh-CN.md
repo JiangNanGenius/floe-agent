@@ -34,7 +34,7 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 [完整实施与验收清单](docs/WORKFLOW_UPGRADE_IMPLEMENTATION.md)明确 Office 前端目标：真实文档页面、电子表格网格和幻灯片对象，右侧只读，进入全屏才能编辑。工具与 Skill 目录、多查询搜索、内置插件升级和聊天历史分页同步实施。[本轮测试证据与截图](docs/evidence/workflow-upgrade-20260909/README.md)分别记录已验证流程和待验收内容。
 
-[Office 逐项验收表](docs/OFFICE_FRONTEND_ACCEPTANCE.md)分别跟踪附件插入、打开、导出、替换、对象操作和原格式保存。独立原生 Word 测试已验证真实附件嵌入、重复单次撤销/重做，以及保存后提取原附件字节一致；完整 Floe 文件选择/写回、Excel/PPT 附件和真机仍待完成。
+[Office 逐项验收表](docs/OFFICE_FRONTEND_ACCEPTANCE.md)分别跟踪附件插入、打开、导出、替换、对象操作和原格式保存。Word 附件嵌入、撤销/重做和字节一致性已有操作证据，包括完整 Floe 工作区选择、保存原文件和新会话重开。Excel 附件保存重开已有组件证据；精确布局、完整操作覆盖与物理真机验收仍开放。
 
 ## 为什么使用 Floe Agent
 

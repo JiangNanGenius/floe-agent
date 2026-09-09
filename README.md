@@ -34,7 +34,7 @@ See the [upgrade scope, verification status, and interaction screenshots](docs/W
 
 The [implementation checklist](docs/WORKFLOW_UPGRADE_IMPLEMENTATION.md) defines the full Office frontend: document pages, spreadsheet grids and slide objects, with read-only inspection and editing only in fullscreen. Tool/skill directories, multi-query discovery, bundled plugin upgrades and paged chat history are being implemented alongside it. [Current test evidence and screenshots](docs/evidence/workflow-upgrade-20260909/README.md) distinguish verified flows from outstanding acceptance work.
 
-The [detailed Office acceptance matrix](docs/OFFICE_FRONTEND_ACCEPTANCE.md) tracks attachment insertion, opening, export, replacement, object manipulation and original-format saving separately. Isolated native Word tests now cover real embedded attachments, repeated single-step undo/redo and saved-file extraction with matching bytes. Full Floe file selection/writeback, Excel/PowerPoint attachments and physical-device acceptance remain open.
+The [detailed Office acceptance matrix](docs/OFFICE_FRONTEND_ACCEPTANCE.md) tracks attachment insertion, opening, export, replacement, object manipulation and original-format saving separately. Word attachment insertion, undo/redo and matching-byte extraction have operation evidence, including a full Floe workspace selection, original-file save and new-session reopen. Excel attachment roundtrips have component evidence; exact layout, complete operation coverage and physical-device acceptance remain open.
 
 ## Why Floe Agent
 
