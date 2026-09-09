@@ -1,0 +1,40 @@
+{
+  "runID": 34362667080,
+  "headSHA": "342f668e28e1be793318ca0e7881dd98f66a1d82",
+  "workflowConclusion": "success",
+  "requiredJobs": {
+    "build-test": "success",
+    "appstore-sdk-compatibility": "success",
+    "spm-linux-build": "success"
+  },
+  "appRegressionTests": 127,
+  "logSHA256": "5bb6eca102f95ca2dd9caad0cf7f6a77ca8fade3a8ba5420805a5c0dcecb6907",
+  "passedLogExtracts": [
+    "2026-09-09T14:48:14.8265270Z ✔ Test \"An image model directory retains complete parameter JSON\" passed after 0.005 seconds.",
+    "2026-09-09T14:48:16.2990690Z ✔ Test \"Reopening a long timeline retains history and pages through reconnect gaps\" passed after 1.541 seconds.",
+    "2026-09-09T14:48:19.9649950Z ✔ Test run with 127 tests in 9 suites passed after 104.619 seconds.",
+    "2026-09-09T14:59:03.0704430Z ✔ Test run with 59 tests in 4 suites passed after 0.311 seconds.",
+    "2026-09-09T14:59:03.0733670Z ✔ Test run with 17 tests in 3 suites passed after 3.062 seconds.",
+    "2026-09-09T14:59:03.9278880Z ✔ Test run with 32 tests in 3 suites passed after 0.035 seconds.",
+    "2026-09-09T14:59:03.9298520Z ✔ Test run with 13 tests in 5 suites passed after 0.412 seconds.",
+    "2026-09-09T14:59:03.9373590Z ✔ Test run with 39 tests in 4 suites passed after 0.125 seconds.",
+    "2026-09-09T14:59:04.5073270Z ✔ Test run with 83 tests in 11 suites passed after 0.299 seconds.",
+    "2026-09-09T14:59:04.5083360Z ✔ Test run with 8 tests in 2 suites passed after 0.018 seconds.",
+    "2026-09-09T14:59:04.9108330Z ✔ Test run with 93 tests in 9 suites passed after 0.288 seconds.",
+    "2026-09-09T14:59:15.5595900Z ✔ Test run with 131 tests in 29 suites passed after 10.308 seconds.",
+    "2026-09-09T14:59:15.5677610Z ✔ Test run with 9 tests in 2 suites passed after 0.017 seconds.",
+    "2026-09-09T14:59:17.4766930Z ✔ Test run with 29 tests in 1 suite passed after 0.300 seconds.",
+    "2026-09-09T14:59:17.5719710Z ✔ Test run with 38 tests in 2 suites passed after 0.420 seconds.",
+    "2026-09-09T14:59:17.7022410Z ✔ Test run with 17 tests in 3 suites passed after 0.434 seconds.",
+    "2026-09-09T14:59:17.7038890Z ✔ Test run with 4 tests in 2 suites passed after 0.080 seconds.",
+    "2026-09-09T14:59:20.4748460Z ✔ Test run with 116 tests in 22 suites passed after 1.725 seconds.",
+    "2026-09-09T14:59:20.4886580Z ✔ Test \"Repeated saves advance the baseline and explicit discard preserves the original\" passed after 0.765 seconds.",
+    "2026-09-09T14:59:20.4950280Z ✔ Suite \"FloeDocuments.NativeSaveValidation\" passed after 0.789 seconds.",
+    "2026-09-09T14:59:20.5015070Z ✔ Test run with 39 tests in 7 suites passed after 0.792 seconds.",
+    "2026-09-09T14:59:23.4156760Z ✔ Test run with 113 tests in 16 suites passed after 1.786 seconds.",
+    "2026-09-09T14:59:26.3726990Z ✔ Test run with 219 tests in 19 suites passed after 3.908 seconds.",
+    "2026-09-09T14:59:50.0723340Z ✔ Test run with 12 tests in 1 suite passed after 0.516 seconds.",
+    "2026-09-09T15:00:09.6865110Z ✔ Test run with 12 tests in 1 suite passed after 0.544 seconds."
+  ],
+  "boundary": "CI and app regression evidence only. Does not prove upload, Apple processing, tester visibility, physical-device UX, or full Office fidelity."
+}
