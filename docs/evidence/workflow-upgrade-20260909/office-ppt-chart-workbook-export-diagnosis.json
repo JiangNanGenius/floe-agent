@@ -1,0 +1,15 @@
+{
+  "upstreamRepository": "CollaboraOnline/online.mirror",
+  "upstreamCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+  "sourcePath": "engine/oox/source/export/chartexport.cxx",
+  "sourceSHA256": "80d8b329acd92d386f49ead2c38da51f40df2fb8d7fe29fc41a62bd1950afd02",
+  "function": "ChartExport::exportExternalData",
+  "lines": [
+    2073,
+    2083
+  ],
+  "finding": "The pinned exporter returns for every document type other than DOCUMENT_DOCX before adding the chart external-data relationship. The runtime PPTX loses its embedded XLSX and retains cached values. Simply removing the condition would not create the missing workbook payload or update chart data references.",
+  "runtimeEvidence": "office-ppt-position-size-structure.json",
+  "requiredFix": "Implement complete chart workbook preservation/export including package data, chart relationships and references; validate both unchanged and edited data. Do not only preserve cached values or copy an obsolete source workbook after edits.",
+  "fixed": false
+}
