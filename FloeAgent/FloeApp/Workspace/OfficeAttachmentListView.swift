@@ -80,7 +80,7 @@ struct OfficeAttachmentListView: View {
             let url = try await session.exportAttachment(id: attachment.id)
             presentation = Presentation(url: url, preview: preview)
             error = nil
-        } catch { error = error.localizedDescription }
+        } catch { self.error = error.localizedDescription }
     }
 }
 #endif
