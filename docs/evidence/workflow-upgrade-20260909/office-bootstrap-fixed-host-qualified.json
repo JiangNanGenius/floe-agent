@@ -1,0 +1,46 @@
+{
+  "verifiedFiles": 4785,
+  "verifiedDirectories": 178,
+  "runID": "34304546841",
+  "archiveSHA256": "b0cff288ffae6291b07af1b14ecafcf5eee9f8552df7f317605b582d51cac377",
+  "pin": {
+    "runID": "34304546841",
+    "artifactName": "office-native-host-unsigned",
+    "artifactID": 10086234278,
+    "workflowCommit": "0a9c6119f3cc0b43a74d937b62662ef6be01e6af",
+    "archiveSHA256": "b0cff288ffae6291b07af1b14ecafcf5eee9f8552df7f317605b582d51cac377",
+    "executableSHA256": "a548b8392d384a0ff4376180dbc3a7a55f75ceb58e72be8c4336b234796905fd",
+    "overlaySHA256": "8f948017d130e6646c055960eb4989c628059f035b77f78aa35ace57e2bbe95d",
+    "hostSourceSHA256": {
+      "FloeOfficeNative.h": "ef44f6d2948a0dedacb1e0077f06bd9f73660697ebb8bb1936d7f0f06c6eb32c",
+      "FloeOfficeNative.mm": "f0d9b9c295114526299cc64104074067c1639c0700c4e4e6e0162436c2c7fd86"
+    },
+    "verifiedResourceFiles": 4780,
+    "verifiedResourceDirectories": 174,
+    "note": "Explicit main-bundle resource bootstrap, isolated profile and mobile server configuration compiled and linked; Swift import passed. No unmodified app runtime, original writeback, physical-device editing or fidelity claim.",
+    "manifestSHA256": "8d467a8c01254c113bc8b3b078e56a769aa0aecb598bb4a3daa26d53e11aa6b9",
+    "frameworkAuxiliarySHA256": {
+      "Headers/FloeOfficeNative.h": "ef44f6d2948a0dedacb1e0077f06bd9f73660697ebb8bb1936d7f0f06c6eb32c",
+      "Info.plist": "e3b21fcb94865972fb8908dcce886fc39e73f28e20bf1439cbb70a0139a3ec00",
+      "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83"
+    }
+  },
+  "hostCompilePassed": true,
+  "hostLinkPassed": true,
+  "swiftModuleImportPassed": true,
+  "engineOpenedWithoutDebugger": true,
+  "originalFileWritebackPassed": false,
+  "physicalDevicePassed": false,
+  "backendReadyWithoutDebugger": true,
+  "wordFixtureRendered": true,
+  "readOnlyEnforcementPassed": false,
+  "fullFloeAppRuntimePassed": false,
+  "runtimePlatform": "Mac Designed for iPad; separate signed qualification app",
+  "nativeRuntimePatchedByDebugger": false,
+  "fixture": "Synthetic docx: Chinese title, English sentence, blue Chinese sentence, one page; 33 words / 100 characters shown",
+  "readOnlyRegression": "The native readOnly controller opens readonly, but the browser Edit document button enters edit UI. No original file writeback was performed; must enforce backend permission as well as UI entry.",
+  "screenshots": [
+    "office-native-word-readonly-mac.jpg",
+    "office-native-readonly-edit-entry-bug.jpg"
+  ]
+}
