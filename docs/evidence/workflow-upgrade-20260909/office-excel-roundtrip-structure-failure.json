@@ -1,0 +1,166 @@
+{
+  "format": ".xlsx",
+  "sourceSHA256": "c3c1105c85deddd4f601577fead882d477957b8c51118e719f9e43b0b29de6cd",
+  "savedSHA256": "a4a59ae011123ba0ff836446240b6c344cf27bc5876dd558fac927e604782d20",
+  "checks": [
+    {
+      "name": "sheet order",
+      "expected": [
+        "Quarterly",
+        "Notes"
+      ],
+      "actual": [
+        "Quarterly",
+        "Notes"
+      ],
+      "passed": true
+    },
+    {
+      "name": "edited B2 value",
+      "expected": 36,
+      "actual": 36,
+      "passed": true
+    },
+    {
+      "name": "C2 formula",
+      "expected": "=B2*2",
+      "actual": "=B2*2",
+      "passed": true
+    },
+    {
+      "name": "C2 recalculated cache",
+      "expected": 72,
+      "actual": 72,
+      "passed": true
+    },
+    {
+      "name": "A1 value preserved",
+      "expected": "Item",
+      "actual": "Item",
+      "passed": true
+    },
+    {
+      "name": "B1 value preserved",
+      "expected": "Value",
+      "actual": "Value",
+      "passed": true
+    },
+    {
+      "name": "C1 value preserved",
+      "expected": "Double",
+      "actual": "Double",
+      "passed": true
+    },
+    {
+      "name": "A2 value preserved",
+      "expected": "Alpha",
+      "actual": "Alpha",
+      "passed": true
+    },
+    {
+      "name": "A3 value preserved",
+      "expected": "Beta",
+      "actual": "Beta",
+      "passed": true
+    },
+    {
+      "name": "B3 value preserved",
+      "expected": 24,
+      "actual": 24,
+      "passed": true
+    },
+    {
+      "name": "C3 value preserved",
+      "expected": "=B3*2",
+      "actual": "=B3*2",
+      "passed": true
+    },
+    {
+      "name": "A1 number format",
+      "expected": "General",
+      "actual": "ge\\ner\"al\"",
+      "passed": false
+    },
+    {
+      "name": "B2 number format",
+      "expected": "General",
+      "actual": "ge\\ner\"al\"",
+      "passed": false
+    },
+    {
+      "name": "B3 number format",
+      "expected": "General",
+      "actual": "ge\\ner\"al\"",
+      "passed": false
+    },
+    {
+      "name": "C2 number format",
+      "expected": "General",
+      "actual": "ge\\ner\"al\"",
+      "passed": false
+    },
+    {
+      "name": "C3 number format",
+      "expected": "General",
+      "actual": "ge\\ner\"al\"",
+      "passed": false
+    },
+    {
+      "name": "header size",
+      "expected": 14.0,
+      "actual": 14.0,
+      "passed": true
+    },
+    {
+      "name": "header weight",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "header fill RGB",
+      "expected": "165DBE",
+      "actual": "165DBE",
+      "passed": true
+    },
+    {
+      "name": "column A width",
+      "expected": 22.0,
+      "actual": 22.0,
+      "passed": true
+    },
+    {
+      "name": "chart count",
+      "expected": 1,
+      "actual": 1,
+      "passed": true
+    },
+    {
+      "name": "chart anchor",
+      "expected": [
+        4,
+        1,
+        0,
+        0
+      ],
+      "actual": [
+        4,
+        1,
+        0,
+        0
+      ],
+      "passed": true
+    },
+    {
+      "name": "notes sheet content",
+      "expected": "ROUNDTRIP_EXCEL — preserve sheets and formulas",
+      "actual": "ROUNDTRIP_EXCEL — preserve sheets and formulas",
+      "passed": true
+    }
+  ],
+  "allNamedChecksPassed": false,
+  "completeVisualFidelityPassed": false,
+  "originalFileWritebackPassed": false,
+  "microsoftOfficeReopenPassed": false,
+  "physicalDevicePassed": false
+}

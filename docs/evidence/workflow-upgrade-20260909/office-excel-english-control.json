@@ -1,0 +1,80 @@
+{
+  "hostRunID": "34306039335",
+  "environment": "Mac Designed for iPad; process-only AppleLanguages en-US; system preferences unchanged",
+  "operation": "open original synthetic XLSX, enter edit, save without changing cells, close and reopen readonly",
+  "numberFormats": {
+    "A1": "General",
+    "B2": "General",
+    "B3": "General",
+    "C2": "General",
+    "C3": "General"
+  },
+  "savedSHA256": "5674bb1667974f9e898acd99c7f324264e4cdbeb6669b45ef85991a782715d43",
+  "generalFormatsPreserved": true,
+  "changedValueRoundtripTest": false,
+  "fixtureLanguageCombinationFailureResolved": false,
+  "rootCauseConfirmed": false,
+  "events": [
+    {
+      "detail": "xlsx",
+      "event": "fixtureCopied",
+      "time": "2026-09-09T03:41:36Z"
+    },
+    {
+      "detail": "en-US",
+      "event": "preferredLanguage",
+      "time": "2026-09-09T03:41:36Z"
+    },
+    {
+      "detail": "true; readonly=false",
+      "event": "opened",
+      "time": "2026-09-09T03:41:36Z"
+    },
+    {
+      "detail": "false",
+      "event": "workingPersistence",
+      "time": "2026-09-09T03:41:38Z"
+    },
+    {
+      "detail": "",
+      "event": "saveRequested",
+      "time": "2026-09-09T03:42:08Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T03:42:08Z"
+    },
+    {
+      "detail": "success",
+      "event": "saveCompleted",
+      "time": "2026-09-09T03:42:08Z"
+    },
+    {
+      "detail": "success",
+      "event": "editingClosed",
+      "time": "2026-09-09T03:42:08Z"
+    },
+    {
+      "detail": "true",
+      "event": "unexpectedClose",
+      "time": "2026-09-09T03:42:08Z"
+    },
+    {
+      "detail": "true; readonly=true",
+      "event": "opened",
+      "time": "2026-09-09T03:42:08Z"
+    },
+    {
+      "detail": "success",
+      "event": "previewClosed",
+      "time": "2026-09-09T03:43:39Z"
+    },
+    {
+      "detail": "true",
+      "event": "unexpectedClose",
+      "time": "2026-09-09T03:43:39Z"
+    }
+  ],
+  "probeCaveat": "unexpectedClose at editing-close timestamp was an old-controller callback misclassified by the test probe; new readonly controller opened and rendered. Source now checks current-controller identity."
+}

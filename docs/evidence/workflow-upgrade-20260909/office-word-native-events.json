@@ -1,0 +1,47 @@
+[
+  {
+    "detail": "docx",
+    "event": "fixtureCopied",
+    "time": "2026-09-09T03:24:33Z"
+  },
+  {
+    "detail": "true; readonly=false",
+    "event": "opened",
+    "time": "2026-09-09T03:24:34Z"
+  },
+  {
+    "detail": "false",
+    "event": "workingPersistence",
+    "time": "2026-09-09T03:24:35Z"
+  },
+  {
+    "detail": "",
+    "event": "saveRequested",
+    "time": "2026-09-09T03:25:29Z"
+  },
+  {
+    "detail": "true",
+    "event": "workingPersistence",
+    "time": "2026-09-09T03:25:29Z"
+  },
+  {
+    "detail": "success",
+    "event": "saveCompleted",
+    "time": "2026-09-09T03:25:29Z"
+  },
+  {
+    "detail": "success",
+    "event": "editingClosed",
+    "time": "2026-09-09T03:25:29Z"
+  },
+  {
+    "detail": "true; readonly=true",
+    "event": "opened",
+    "time": "2026-09-09T03:25:30Z"
+  },
+  {
+    "detail": "success",
+    "event": "previewClosed",
+    "time": "2026-09-09T03:26:13Z"
+  }
+]

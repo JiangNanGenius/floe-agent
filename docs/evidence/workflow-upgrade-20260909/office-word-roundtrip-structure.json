@@ -1,0 +1,136 @@
+{
+  "format": ".docx",
+  "sourceSHA256": "a9591001a09a0f3cedda7d8a1212385caf146dadb4983a8f63b3f07eb23644be",
+  "savedSHA256": "602185ed2d4922ffd38aa874b96f29b73bfbd981d5eed178f65239eb797a796c",
+  "checks": [
+    {
+      "name": "paragraph count",
+      "expected": 3,
+      "actual": 3,
+      "passed": true
+    },
+    {
+      "name": "title preserved",
+      "expected": "Floe Office 原生编辑验证",
+      "actual": "Floe Office 原生编辑验证",
+      "passed": true
+    },
+    {
+      "name": "precise pasted marker retained",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "existing paragraph retained",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "blue text preserved",
+      "expected": "蓝色文字 · 18 pt · format must survive",
+      "actual": "蓝色文字 · 18 pt · format must survive",
+      "passed": true
+    },
+    {
+      "name": "blue font sizes",
+      "expected": [
+        18.0
+      ],
+      "actual": [
+        18.0
+      ],
+      "passed": true
+    },
+    {
+      "name": "blue font colors",
+      "expected": [
+        "165DBE"
+      ],
+      "actual": [
+        "165DBE"
+      ],
+      "passed": true
+    },
+    {
+      "name": "table contents",
+      "expected": [
+        [
+          "项目",
+          "数值"
+        ],
+        [
+          "Alpha",
+          "12"
+        ],
+        [
+          "Beta",
+          "24"
+        ]
+      ],
+      "actual": [
+        [
+          "项目",
+          "数值"
+        ],
+        [
+          "Alpha",
+          "12"
+        ],
+        [
+          "Beta",
+          "24"
+        ]
+      ],
+      "passed": true
+    },
+    {
+      "name": "header",
+      "expected": "Synthetic header — preserve position",
+      "actual": "Synthetic header — preserve position",
+      "passed": true
+    },
+    {
+      "name": "page_width",
+      "expected": 7772400,
+      "actual": 7772400,
+      "passed": true
+    },
+    {
+      "name": "page_height",
+      "expected": 10058400,
+      "actual": 10058400,
+      "passed": true
+    },
+    {
+      "name": "top_margin",
+      "expected": 914400,
+      "actual": 914400,
+      "passed": true
+    },
+    {
+      "name": "bottom_margin",
+      "expected": 914400,
+      "actual": 914400,
+      "passed": true
+    },
+    {
+      "name": "left_margin",
+      "expected": 1143000,
+      "actual": 1143000,
+      "passed": true
+    },
+    {
+      "name": "right_margin",
+      "expected": 1143000,
+      "actual": 1143000,
+      "passed": true
+    }
+  ],
+  "allNamedChecksPassed": true,
+  "completeVisualFidelityPassed": false,
+  "originalFileWritebackPassed": false,
+  "microsoftOfficeReopenPassed": false,
+  "physicalDevicePassed": false
+}

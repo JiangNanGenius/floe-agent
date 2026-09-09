@@ -4,6 +4,9 @@
 
 ## 当前 Office 证据摘要
 
+- **真实编辑往返新增结果**：Word 在独立原生界面编辑、保存 DOCX 并关闭重开成功，[15 项结构检查](office-word-roundtrip-structure.json)通过；见[编辑前后保存画面](office-word-edit-before-save-mac.jpg)、[重开画面](office-word-reopened-mac.jpg)和[原生事件](office-word-native-events.json)。这不是全部 Word 功能或原用户文件写回验收。
+- **Excel 仍然失败**：B2 修改为 36、C2 重算为 72，保存及重开成功；[23 项检查](office-excel-roundtrip-structure-failure.json)中五项数字格式失败，General 被改为异常自定义格式，见[重开异常截图](office-excel-number-format-regression-mac.jpg)。[英语进程原样保存对照](office-excel-english-control.json)保持 General，见[对照截图](office-excel-english-control-reopened-mac.jpg)。仅定位到语言相关差异，尚未修复。
+- Mac 辅助功能操作分别触发 Excel/PPT 的 WebContent 数组越界，见[失败摘要](office-editor-accessibility-failures.json)。坐标交互完成 Excel 修改不代表崩溃修复。PPT 原生对象编辑往返、两种图表首点显示仍待验证。
 - [只读修复宿主 34306039335](https://github.com/JiangNanGenius/floe-agent/actions/runs/34306039335) 完整编译、链接和 Swift 导入成功；取回后校验 4,785 个文件与 178 个目录。运行使用的源码/补丁和产物均已锁定。
 - 独立签名应用在 Mac Designed for iPad 中显示真实 Word 页面。预览不再出现编辑入口，菜单保留只读操作；全选后输入不修改内容，显式保存被拒绝，工作文件和引擎副本均与合成源文件逐字节一致。见 [运行回执](office-readonly-runtime-check.json) 和 [截图](office-native-readonly-save-rejected-mac.jpg)。粘贴自动化超时，未据此声称粘贴完整验收。
 - 完整 Floe 应用较早的构建 34301236609 和 34302444252 已成功，前者取回并复核加载链及资源；它们使用旧框架，不证明当前只读修复已在完整 Floe 中运行。

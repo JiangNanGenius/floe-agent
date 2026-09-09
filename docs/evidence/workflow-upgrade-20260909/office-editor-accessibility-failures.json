@@ -1,0 +1,20 @@
+{
+  "environment": "macOS 27.0 (26A5378n), Designed for iPad, isolated native editor probe",
+  "hostRunID": "34306039335",
+  "excel": {
+    "trigger": "AX Name Box interaction after entering edit",
+    "webContentPID": 60288,
+    "log": "Swift/SwiftNativeNSArray.swift:78: Fatal error: Array index out of range",
+    "terminatedReason": "Crash",
+    "subsequentCoordinateEditAndSavePassed": true
+  },
+  "powerpoint": {
+    "trigger": "AX Position and Size interaction after selecting a shape",
+    "webContentPID": 60924,
+    "log": "Swift/SwiftNativeNSArray.swift:78: Fatal error: Array index out of range",
+    "terminatedReason": "Crash"
+  },
+  "rootCauseResolved": false,
+  "physicalDeviceReproduced": false,
+  "probeUnexpectedCloseDisplay": "Added to source after failures; requires next probe build"
+}

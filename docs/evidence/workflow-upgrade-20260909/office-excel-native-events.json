@@ -1,0 +1,52 @@
+[
+  {
+    "detail": "xlsx",
+    "event": "fixtureCopied",
+    "time": "2026-09-09T03:29:25Z"
+  },
+  {
+    "detail": "true; readonly=false",
+    "event": "opened",
+    "time": "2026-09-09T03:29:26Z"
+  },
+  {
+    "detail": "false",
+    "event": "workingPersistence",
+    "time": "2026-09-09T03:29:33Z"
+  },
+  {
+    "detail": "true",
+    "event": "workingPersistence",
+    "time": "2026-09-09T03:31:15Z"
+  },
+  {
+    "detail": "",
+    "event": "saveRequested",
+    "time": "2026-09-09T03:31:31Z"
+  },
+  {
+    "detail": "true",
+    "event": "workingPersistence",
+    "time": "2026-09-09T03:31:31Z"
+  },
+  {
+    "detail": "success",
+    "event": "saveCompleted",
+    "time": "2026-09-09T03:31:31Z"
+  },
+  {
+    "detail": "success",
+    "event": "editingClosed",
+    "time": "2026-09-09T03:31:31Z"
+  },
+  {
+    "detail": "true; readonly=true",
+    "event": "opened",
+    "time": "2026-09-09T03:31:32Z"
+  },
+  {
+    "detail": "success",
+    "event": "previewClosed",
+    "time": "2026-09-09T03:34:41Z"
+  }
+]
