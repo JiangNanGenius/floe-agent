@@ -1,30 +1,30 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "attachment-snapshot-host-qualified-runtime-pending",
+  "qualificationStatus": "save-timeout-host-compiled-runtime-retest-pending",
   "qualifiedHostArtifact": {
-    "runID": "34317744039",
+    "runID": "34320630546",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10090743517,
-    "workflowCommit": "df72efea7b1d1b7446d61d332aab04602f9eb944",
-    "archiveSHA256": "2a0053141b605acfbf3eca3b0aeaebd7fbe1e8ef9b631b5f4ad318bfa6cfd743",
-    "executableSHA256": "576fe96990db234b85a8c3cb1ffe6c0fcf13bc6bcb65983a359a3859c898d700",
+    "artifactID": 10091791418,
+    "workflowCommit": "a93725cbf75c1961e110386b2ca29480406e8809",
+    "archiveSHA256": "c5c29a565e18f4630e550b8a6fc9525270c2b49649ea0685dda594db88f3b23d",
+    "executableSHA256": "80b6ddba14a631a2b21cee90a603147a9bde7daa1c628ec8c2a8e508512b5594",
     "overlaySHA256": "600f480a2ccfde4e7d8d9641332197556a4dc79466860943e207c6c2fd7618fd",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "a76833ac808cfa759c39886defbef81fccd4fde66f59dfbbe9a659d1d339a660",
-      "FloeOfficeNative.mm": "b9824225aca6be95281d7267f29d93bef54d2dcac7229d57daffeb538d7d1a87",
+      "FloeOfficeNative.mm": "2bd8cbcc01aa84a8be7ddcdc0f3d69d12060c04e22d7bc3b677a1f984d0202b8",
       "FloeOfficeAttachment.cpp": "e50775ecd18738550dda1c888cc72886d3f069b213661bada80fac2773ca1a68",
       "FloeOfficeAttachment.hxx": "4deb33492f38047211492686b94153bef5748248342c16d5c7485bd127a0f6c3"
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "9473211849ef70f2e5daacb774a2179efbcf39cb1d78a4ed733e3ad243be1711",
+    "manifestSHA256": "5e797f5a863d473a23162e2de56b3b5fe7eb6fd3aafa956214f19c03a4d25753",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "a76833ac808cfa759c39886defbef81fccd4fde66f59dfbbe9a659d1d339a660",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
       "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac"
     },
-    "note": "Compiled, linked and Swift-imported native host using flushed embedded storage snapshots for attachment listing and export. Runtime byte fidelity and complete Office frontend acceptance remain pending."
+    "note": "Compiled, linked and Swift-imported attachment snapshot and bounded-save host. Runtime save timeout, full Floe roundtrip, fidelity and physical-device acceptance remain pending."
   },
   "qualifiedNativeArtifact": {
     "runID": "34268468731",
