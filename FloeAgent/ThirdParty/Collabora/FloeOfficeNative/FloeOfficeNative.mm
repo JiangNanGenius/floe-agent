@@ -8,6 +8,7 @@
 #include <i18nlangtag/languagetag.hxx>
 #include <common/LangUtil.hpp>
 #include <rtl/bootstrap.hxx>
+#include <Poco/Util/LayeredConfiguration.h>
 #include <exception>
 #include <string>
 #import "ios.h"
@@ -151,13 +152,15 @@ static void ServerReady() {
             try {
                 ProcUtil::setThreadName("floe-office");
                 std::string executable(bundle.executablePath.UTF8String);
-                std::string cacheOption("--override=cache_files.path=");
-                cacheOption += cache.path.UTF8String;
-                char *arguments[] = {executable.data(), cacheOption.data(), nullptr};
+                char *arguments[] = {executable.data(), nullptr};
                 // Keep native server lifetime process-wide. Upstream shutdown
                 // destructors are not qualified for restarting inside another app.
                 auto server = new COOLWSD();
-                server->run(2, arguments);
+                // Mobile defineOptions deliberately registers no CLI options.
+                // Configure this owned cache directly instead of passing the
+                // desktop --override switch, which aborts mobile startup.
+                server->config().setString("cache_files.path", cache.path.UTF8String);
+                server->run(1, arguments);
             } catch (...) {
                 // No abort/_Exit and no document cleanup on backend failure.
             }
