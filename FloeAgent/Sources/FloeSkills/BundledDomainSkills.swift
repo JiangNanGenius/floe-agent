@@ -107,7 +107,7 @@ public enum BundledDomainSkills {
             id: "floe-data-code",
             name: "Data & Code Execution",
             description: "On-device JavaScript, the compatibility evaluator, canvas mutations, and generate-tool boundaries.",
-            version: "1.0.0",
+            version: "1.0.1",
             exposed: false,
             markdown: """
             ## Data & code execution (on-device)
