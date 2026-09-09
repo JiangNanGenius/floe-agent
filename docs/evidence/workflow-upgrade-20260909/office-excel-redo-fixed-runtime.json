@@ -1,0 +1,201 @@
+{
+  "hostRunID": "34340935668",
+  "sourceCommit": "69da4ce523c0ab3a1c0d249fcef9c24436730452",
+  "surface": "Mac Designed for iPad, independent native app 19",
+  "sessionID": "2C6788A9-77BE-4017-BFD4-CF6989F4EAA1",
+  "signature": {
+    "purpose": "Independent native XLSX runtime qualification, not a full Floe release",
+    "hostRunID": "34340935668",
+    "signaturePassed": true,
+    "runtimePassed": false,
+    "mainSHA256": "d3544982198c977e9b48278c23a2ca339028eae635336999affd6b11a6402c26",
+    "nativeSHA256": "c929641dea79c37b7b583b6388d3ce9c3d0ecdf88d5acbbcc409149e84a90f8a",
+    "installedApplication": "Floe Office Qualification 19",
+    "installedBinaryMatches": true
+  },
+  "selectedSheet": "Notes",
+  "attachmentInsertionCell": "B5",
+  "undoAttachmentCount": 0,
+  "redoAttachmentCount": 1,
+  "reopenedExportCounts": [
+    1,
+    1
+  ],
+  "structuralChecksPassedPerSave": [
+    30,
+    30
+  ],
+  "attachmentSHA256": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+  "allThreeExportBytesMatch": true,
+  "secondEdit": {
+    "cell": "C10",
+    "value": "Second save verification",
+    "savedXMLValueVerified": true
+  },
+  "saveSHA256": [
+    "be9ae527330d1c1b2aabc02577763f36e21d4b4ef940bb9caa0c26911165877d",
+    "8096b58a62675b7d1c8233be9de4cdb9451d2b7ce326cb4edec1c4abea85e59d"
+  ],
+  "geometryHmmBeforeAndAfter": [
+    {
+      "margin-left": 1699,
+      "margin-top": 2117,
+      "width": 6000,
+      "height": 1800,
+      "defaultColWidth": "8.6796875"
+    },
+    {
+      "margin-left": 1639,
+      "margin-top": 2117,
+      "width": 5815,
+      "height": 1799,
+      "defaultColWidth": "8.37109375"
+    }
+  ],
+  "geometryFidelityPassed": false,
+  "fullFloeRuntimePassed": false,
+  "microsoftOfficeReopenPassed": false,
+  "physicalDevicePassed": false,
+  "events": [
+    {
+      "event": "fixtureCopied",
+      "detail": "xlsx",
+      "time": "2026-09-09T10:41:06Z"
+    },
+    {
+      "event": "preferredLanguage",
+      "detail": "zh-Hans-TW",
+      "time": "2026-09-09T10:41:06Z"
+    },
+    {
+      "event": "opened",
+      "detail": "true; readonly=false",
+      "time": "2026-09-09T10:41:06Z"
+    },
+    {
+      "event": "workingPersistence",
+      "detail": "true",
+      "time": "2026-09-09T10:41:08Z"
+    },
+    {
+      "event": "attachmentRequested",
+      "detail": "附件 测试 📎.bin",
+      "time": "2026-09-09T10:41:37Z"
+    },
+    {
+      "event": "attachmentCompleted",
+      "detail": "success",
+      "time": "2026-09-09T10:41:37Z"
+    },
+    {
+      "event": "attachmentsListed",
+      "detail": "0; readonly=false",
+      "time": "2026-09-09T10:42:00Z"
+    },
+    {
+      "event": "attachmentsListed",
+      "detail": "1; readonly=false",
+      "time": "2026-09-09T10:42:14Z"
+    },
+    {
+      "event": "attachmentExported",
+      "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "time": "2026-09-09T10:42:14Z"
+    },
+    {
+      "event": "saveRequested",
+      "detail": "",
+      "time": "2026-09-09T10:42:34Z"
+    },
+    {
+      "event": "workingPersistence",
+      "detail": "true",
+      "time": "2026-09-09T10:42:35Z"
+    },
+    {
+      "event": "saveCompleted",
+      "detail": "success",
+      "time": "2026-09-09T10:42:35Z"
+    },
+    {
+      "event": "editingClosed",
+      "detail": "success",
+      "time": "2026-09-09T10:42:35Z"
+    },
+    {
+      "event": "opened",
+      "detail": "true; readonly=true",
+      "time": "2026-09-09T10:42:35Z"
+    },
+    {
+      "event": "attachmentsListed",
+      "detail": "1; readonly=true",
+      "time": "2026-09-09T10:42:47Z"
+    },
+    {
+      "event": "attachmentExported",
+      "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "time": "2026-09-09T10:42:47Z"
+    },
+    {
+      "event": "resumeEditingRequested",
+      "detail": "",
+      "time": "2026-09-09T10:43:25Z"
+    },
+    {
+      "event": "previewClosedForEditing",
+      "detail": "success",
+      "time": "2026-09-09T10:43:25Z"
+    },
+    {
+      "event": "opened",
+      "detail": "true; readonly=false",
+      "time": "2026-09-09T10:43:25Z"
+    },
+    {
+      "event": "workingPersistence",
+      "detail": "true",
+      "time": "2026-09-09T10:43:27Z"
+    },
+    {
+      "event": "saveRequested",
+      "detail": "",
+      "time": "2026-09-09T10:44:32Z"
+    },
+    {
+      "event": "workingPersistence",
+      "detail": "true",
+      "time": "2026-09-09T10:44:32Z"
+    },
+    {
+      "event": "saveCompleted",
+      "detail": "success",
+      "time": "2026-09-09T10:44:32Z"
+    },
+    {
+      "event": "editingClosed",
+      "detail": "success",
+      "time": "2026-09-09T10:44:32Z"
+    },
+    {
+      "event": "opened",
+      "detail": "true; readonly=true",
+      "time": "2026-09-09T10:44:32Z"
+    },
+    {
+      "event": "attachmentsListed",
+      "detail": "1; readonly=true",
+      "time": "2026-09-09T10:44:47Z"
+    },
+    {
+      "event": "attachmentExported",
+      "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "time": "2026-09-09T10:44:47Z"
+    }
+  ],
+  "screenshots": [
+    "office-xlsx-redo-fixed-before-save-mac.jpg",
+    "office-xlsx-redo-fixed-reopened-mac.jpg",
+    "office-xlsx-redo-fixed-second-save-mac.jpg"
+  ]
+}

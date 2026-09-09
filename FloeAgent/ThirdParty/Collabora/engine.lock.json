@@ -1,24 +1,24 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "xlsx-vml-identifier-host-compiled-runtime-pending",
+  "qualificationStatus": "drawing-redo-metadata-host-compiled-runtime-pending",
   "qualifiedHostArtifact": {
-    "runID": "34339384837",
+    "runID": "34340935668",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10099185847,
-    "workflowCommit": "5be99172fc4a3960a0cf545171d148ed84ed72d0",
-    "archiveSHA256": "a7518054a25202bcefcffa127fdc6f498af19ab9d71125129c018fd3e27ec6e0",
-    "executableSHA256": "d589c81de88efd989b57d2d9883bba35dfd3548c675a0b01266c4df4ed0aa568",
+    "artifactID": 10099788215,
+    "workflowCommit": "69da4ce523c0ab3a1c0d249fcef9c24436730452",
+    "archiveSHA256": "c5dbf8c59150fe1205524dcc82086ac947c87652d6eb3788d649420eff15ef7a",
+    "executableSHA256": "396dd505b215dddcdda4ddc645084ce02390dc399d468054410cfa65b0eba4aa",
     "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
       "FloeOfficeNative.mm": "3b01a57ef31a010170e6bdd40d87e69e3197701d8216850e5c88c9e9bc356840",
-      "FloeOfficeAttachment.cpp": "1265ec61e2144a8e5fc8e715c000cfc6254de2588f228b29d4bbb045fc29cfa6",
+      "FloeOfficeAttachment.cpp": "660402ee84b7a55c53fabdb7ae2f8ba1b12177e3058c39a90ec057892b5d4811",
       "FloeOfficeAttachment.hxx": "6a3c976e41df1ec3c7d339c3762522c46b3cc8b23574522559f8b83e60e7088e"
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "e1850038e48c2e498ffb2aea5c42325284cad5bbc72102348de0d77341e6903d",
+    "manifestSHA256": "2a02fc40a61207b936d1648a6200577de06b7469fe07cd5bff929af290ae28d9",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
@@ -37,9 +37,9 @@
           "patchedSHA256": "2013f58b8ed6e9e4ec6fbbba30cc73e7b1b88b9b6ee0977e85db05f7c613049f"
         }
       },
-      "archiveSHA256": "70fb126672ba7d0d15f014050e00dd7248e5bfee8fd737621fd0c58993de8d1e",
+      "archiveSHA256": "1e6d582211acb017222ddd97cbdc30a22143dfb58c5e2bae97e6835952ead1a7",
       "objectSHA256": "4f38e6a2e1507cee47c718132a5421738e50aac02792c3b529716f426c26980f",
-      "selectedArchiveSHA256": "70fb126672ba7d0d15f014050e00dd7248e5bfee8fd737621fd0c58993de8d1e"
+      "selectedArchiveSHA256": "1e6d582211acb017222ddd97cbdc30a22143dfb58c5e2bae97e6835952ead1a7"
     }
   },
   "qualifiedNativeArtifact": {

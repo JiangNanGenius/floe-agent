@@ -1,0 +1,26 @@
+{
+  "scope": "Untouched attachment geometry across two actual XLSX saves; only C10 text was edited on the second pass",
+  "beforeHmmAndColumnWidth": {
+    "margin-left": 1699,
+    "margin-top": 2117,
+    "width": 6000,
+    "height": 1800,
+    "defaultColWidth": "8.6796875"
+  },
+  "afterHmmAndColumnWidth": {
+    "margin-left": 1639,
+    "margin-top": 2117,
+    "width": 5815,
+    "height": 1799,
+    "defaultColWidth": "8.37109375"
+  },
+  "geometryPassed": false,
+  "verifiedImporterSource": "ShapeBase::calcShapeRectangle prioritizes VmlDrawing::convertClientAnchor, reconstructing geometry from cell widths and integer pixel offsets even for page-anchored OLE.",
+  "verifiedColumnWidthChange": true,
+  "columnWidthRootCauseProven": false,
+  "nextInvestigation": [
+    "XclRoot::SetCharWidth versus UnitConverter::finalizeImport reference-device digit metrics",
+    "XclExpColinfoBuffer default width serialization and explicit column widths",
+    "Preserve precise fixed-page OLE geometry without breaking cell movement/resize semantics"
+  ]
+}

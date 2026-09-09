@@ -122,10 +122,10 @@ def inspect(saved, attachment, part, expected_cell=None):
                 continue
             xml = ET.fromstring(document.read(name))
             for item in xml.iter(f'{{{namespace}}}{tag}'):
-                if item.get('progId') == 'Package':
-                    objects.append((name, item))
-        check('one live Package attachment', 1, len(objects))
+                objects.append((name, item))
+        check('one embedded object in attachment fixture', 1, len(objects))
         for index, (name, item) in enumerate(objects):
+            check(f'{index} declared Package type', 'Package', item.get('progId'))
             check(f'{index} attachment in selected sheet or slide', selected, name)
             relation_path = posixpath.join(posixpath.dirname(name), '_rels', posixpath.basename(name) + '.rels')
             relations = {x.attrib['Id']: x.attrib for x in ET.fromstring(document.read(relation_path))}

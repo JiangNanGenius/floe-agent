@@ -188,6 +188,27 @@ import CryptoKit
                   }
                 }
             }))
+            if readOnly {
+                buttons.append(UIBarButtonItem(title: "Edit again", primaryAction: UIAction { [weak self, weak controller] _ in
+                    guard let self, let controller else { return }
+                    controller.navigationItem.leftBarButtonItems?.forEach { $0.isEnabled = false }
+                    controller.navigationItem.rightBarButtonItem?.isEnabled = false
+                    self.expectedClose = true
+                    self.record("resumeEditingRequested")
+                    controller.closeWorkingCopy { error in
+                        self.expectedClose = false
+                        self.record("previewClosedForEditing", detail: error?.localizedDescription ?? "success")
+                        if let error {
+                            controller.title = error.localizedDescription
+                            controller.navigationItem.leftBarButtonItems?.forEach { $0.isEnabled = true }
+                            controller.navigationItem.rightBarButtonItem?.isEnabled = true
+                            return
+                        }
+                        do { try self.open(readOnly: false) }
+                        catch { controller.title = error.localizedDescription }
+                    }
+                }))
+            }
             controller.navigationItem.leftBarButtonItems = buttons
         }
         window?.rootViewController = UINavigationController(rootViewController: controller)

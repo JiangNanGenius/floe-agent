@@ -211,3 +211,5 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 - Excel 编号修复宿主 34339384837 已成功并锁定，4,785 文件/178 目录校验通过；独立应用 18 实际完成 Notes!B5 附件插入、保存关闭、只读重开及再次导出，29 项检查和原字节哈希通过。见 [运行证据](evidence/workflow-upgrade-20260909/office-excel-vml-fixed-runtime.json)。下一步撤销重做保存及完整 Floe 重建；精确位置保真、多个对象、PPT 工作簿等完整要求仍保留。
 
 - 完整 Floe [34340370943](https://github.com/JiangNanGenius/floe-agent/actions/runs/34340370943)（aa891e9）正在构建已通过直接保存的 Excel 编号修复。另一个撤销重做样本发现附件内容仍在但 progId 为空，已补当前存储名的原生 Redo 元数据恢复；见 [失败记录](evidence/workflow-upgrade-20260909/office-excel-redo-metadata-failure.json)。这个后续修复不在 34340370943 中，不能将该构建或直接保存样本当成撤销重做通过。
+
+- 宿主 34340935668 的 Excel 重做修复已实际通过：独立应用 19 两次保存重开各 30 项检查通过，三次附件导出原字节一致，新增 C10 文本保存正确。见 [运行记录](evidence/workflow-upgrade-20260909/office-excel-redo-fixed-runtime.json)。连续保存仍暴露未修改附件的横向位置/尺寸以及默认列宽漂移；内容和类型通过不等于保真，A04/F04 保持开放。完整 Floe 34340370943（aa891e9）现已构建成功，但不含该重做修复，最终完整集成仍待新 pin 重建。
