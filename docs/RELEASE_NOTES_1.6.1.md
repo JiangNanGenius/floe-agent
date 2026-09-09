@@ -12,7 +12,7 @@
 - 内置插件随软件更新检查版本，并保留用户修改；同步整理内部提示词、技能说明、素材预览和运行反馈。
 - 延续上一版的本地 Markdown / Word / HTML / RTF / 文本 / PDF 转换、长文本写入、PDF 右侧阅读、长按批量管理和 iPhone 画布改进。
 
-**已知限制：** PPTX 图表原生保存仍可能丢失数据关系；本版会拦截已识别的损坏导出并保留编辑副本，相关文件可能无法保存或导出。复杂图表、附件旋转/组合、随单元格变化和精确布局尚未全部验收。附件插入若中途失败，可能已产生部分修改，界面会提示检查或撤销后再试。完整 Office 功能目标保持开放，不把本次测试版描述为全部完成。
+**已知限制：** PPTX 图表原生保存仍可能丢失数据关系；Floe 的保存及“另存副本”会拦截已识别的损坏导出并保留编辑副本，相关文件可能无法保存或导出。此校验尚未覆盖 Office 内部的格式导出菜单，测试时请使用 Floe 的“另存副本”。复杂图表、附件旋转/组合、随单元格变化和精确布局尚未全部验收。附件插入若中途失败，可能已产生部分修改，界面会提示检查或撤销后再试。完整 Office 功能目标保持开放，不把本次测试版描述为全部完成。
 
 **测试时保存文档：** 请使用 Floe 顶部“返回”或“保存并返回”提交原文件。当前 Office 内部工具栏的保存只持久化编辑副本；统一两处保存行为仍在完善。独立 Mac 测试程序曾在无障碍/剪贴板操作中发生 WebContent 崩溃，保留了工作副本，物理 iPhone/iPad 是否受影响尚未确认。
 
@@ -30,7 +30,7 @@ This beta delivers the current large upgrade for device testing. Signed upload, 
 - Reconcile bundled plugin updates while preserving user edits; revise internal prompts, skill descriptions, asset previews and activity feedback.
 - Retain the previous beta's local Markdown / DOCX / HTML / RTF / text / PDF conversion, long-text writing, inline PDF reading, long-press bulk management and iPhone canvas improvements.
 
-**Known limitations:** native PPTX chart export can lose data relationships. The app rejects recognized damaged exports and retains recovery copies, so affected presentations may not save/export. Complex charts, attachment rotation/grouping, cell-dependent positioning and exact layout remain under qualification. Attachment insertion may leave partial changes on failure; the UI asks users to inspect or undo before retrying. Full Office acceptance remains open.
+**Known limitations:** native PPTX chart export can lose data relationships. Floe's save and Save a Copy actions reject recognized damaged exports and retain recovery copies, so affected presentations may not save/export. That check does not yet cover the Office engine's own format-export menu; use Floe's Save a Copy during testing. Complex charts, attachment rotation/grouping, cell-dependent positioning and exact layout remain under qualification. Attachment insertion may leave partial changes on failure; the UI asks users to inspect or undo before retrying. Full Office acceptance remains open.
 
 **Saving during testing:** use Floe's top Back or Save and Return action to commit the original file. The Office toolbar currently persists the editing copy; unifying both save actions remains outstanding. An independent Mac probe encountered a WebContent crash during accessibility/clipboard interaction and retained working copies; physical iPhone/iPad impact is unconfirmed.
 
