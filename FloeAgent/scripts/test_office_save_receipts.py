@@ -11,21 +11,32 @@ def check():
     source = Path(__file__).resolve().parent.parent / 'ThirdParty/Collabora/FloeOfficeNative/FloeOfficeNative.mm'
     text = source.read_text()
     fragment = text.split('// FLOE_SAVE_RECEIPTS_BEGIN:', 1)[1].split('\n', 1)[1].split('// FLOE_SAVE_RECEIPTS_END', 1)[0]
+    patch = source.parent.parent / 'patches/ios-embedding-boundaries.patch'
+    engine_fragment = patch.read_text().split('+// FLOE_ENGINE_SAVE_RESULT_BEGIN\n', 1)[1].split('+// FLOE_ENGINE_SAVE_RESULT_END', 1)[0]
+    engine_fragment = '\n'.join(line[1:] for line in engine_fragment.splitlines() if line.startswith('+'))
     with tempfile.TemporaryDirectory(prefix='floe-save-receipts-') as temporary:
         root = Path(temporary)
         program = root / 'receipts.mm'
-        program.write_text('#import <Foundation/Foundation.h>\n#include <cassert>\n#include <cstdio>\n' + fragment + HARNESS)
+        program.write_text('#import <Foundation/Foundation.h>\n#include <cassert>\n#include <cstdio>\n#include <string>\n' + engine_fragment + '\n' + fragment + HARNESS)
         subprocess.run(['xcrun', '--sdk', 'macosx', 'clang++', '-std=c++20', '-fobjc-arc', '-fblocks',
             '-Wall', '-Werror', '-framework', 'Foundation', str(program), '-o', str(root / 'receipts')],
             check=True, capture_output=True, text=True)
         result = subprocess.run([str(root / 'receipts')], check=True, capture_output=True, text=True, timeout=20)
-    return {'hostImplementationSHA256': digest(source), 'checksPassed': result.stdout.splitlines(),
+    return {'hostImplementationSHA256': digest(source), 'engineOverlaySHA256': digest(patch), 'checksPassed': result.stdout.splitlines(),
         'kind': 'compiled actual save joiner with controlled event order',
         'nativeProtocolCompiled': False, 'realEngineSavePassed': False, 'originalFileWritebackPassed': False}
 
 
 HARNESS = r'''
 int main() { @autoreleasepool {
+    assert(FloeEngineSaveHasPersistentContent(true, "", ""));
+    assert(FloeEngineSaveHasPersistentContent(false, "string", "unmodified"));
+    assert(!FloeEngineSaveHasPersistentContent(false, "", ""));
+    assert(!FloeEngineSaveHasPersistentContent(false, "string", "failed"));
+    assert(!FloeEngineSaveHasPersistentContent(false, "boolean", "unmodified"));
+    assert(!FloeEngineSaveHasPersistentContent(false, "", "unmodified"));
+    assert(!FloeEngineSaveHasPersistentContent(false, "string", "Unmodified"));
+    puts("unchanged engine saves still require persistence; missing or failed results stay rejected");
     FloeSaveReceiptJoiner *timed = [FloeSaveReceiptJoiner new];
     timed.timeout = 0.02;
     __block int expired = 0;

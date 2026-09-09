@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "drawing-attachment-host-compiled-runtime-retest-pending",
+  "qualificationStatus": "unmodified-save-result-fix-native-rebuild-pending",
   "qualifiedHostArtifact": {
     "runID": "34325295925",
     "artifactName": "office-native-host-unsigned",
@@ -88,7 +88,7 @@
   "sourcePatchSHA256": "09517b9a2dd4002a767491976762410d4cefd45172ea8cf401196268f5817ad7",
   "embeddingOverlay": {
     "patch": "patches/ios-embedding-boundaries.patch",
-    "sha256": "600f480a2ccfde4e7d8d9641332197556a4dc79466860943e207c6c2fd7618fd",
+    "sha256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "requiredFrameworks": [
       "GameController"
     ],
@@ -111,7 +111,7 @@
       },
       "kit/ChildSession.cpp": {
         "originalSHA256": "66ec2517f99b6535e626d2a1f377bea12c04f9f83efd7bed7211303bce8e578b",
-        "preparedSHA256": "a0506843c09c022625b80bd290ff666f147df388de3127302988b9c0b62582b6"
+        "preparedSHA256": "8d359e3c9057e50bcfb3d83932251762ea79060731b7e9126e53dcef90cea2e1"
       },
       "ios/Mobile/CODocument.mm": {
         "originalSHA256": "4a283c74308e8eec41eb736b731b787f7055e4d61adb4a177b2e1d5cc046df65",

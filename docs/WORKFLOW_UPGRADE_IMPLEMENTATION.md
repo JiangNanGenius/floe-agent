@@ -173,3 +173,6 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 
 - 完整 Floe 设置修复已实际安装复测：34323674863 新签名载荷与安装的代码哈希一致；设置、文件设置、导入合成工作区、全工作区列表均可操作，Word 在应用内直接预览并进入原生全屏工具栏。从工作区插入 Excel 附件后，私有 working.docx 的 18 项结构/原字节校验通过，但两次“保存并返回”均报错，原文件未提交；已保留成功和失败截图与 [运行回执](evidence/workflow-upgrade-20260909/office-floe-settings-fixed-runtime.json)。发现桥接层未接受引擎 unmodified 保存结果，后续修复与完整运行回归仍需完成。
 - Excel/PPT 附件宿主 34325295925（2fc5422）编译、链接、Swift 导入通过，载荷 4,785 文件/178 目录核对完成并锁定。新增独立 XLSX/PPTX 附件校验器能拒绝无附件文件；新宿主的实际插入、保存、撤销和导出尚未验收。
+
+- F04 保存结果修复：桥接层现按上游 DocumentBroker 语义接收 success=true 或 type=string/value=unmodified；后者仍必须完成对应 UIDocument 持久化与请求序号关联，错误/缺失结果不放行。新增实际 C++ 判定及回执编译回归共 10 组检查通过；22 项归档校验、7 项原生准备、3 项宿主结构与 18 项语言检查通过。当前宿主产物尚未包含新 overlay，需重新编译及实测，不能据此声称原文件写回修复。
+- CI 34323990305：App Store SDK 和跨平台构建通过；125 项应用回归有 1 项失败，新增设置测试错误依赖未挂载 UIHostingController 的 UIKit 子视图数量。实际新 App 设置页已成功打开。回归测试改为挂载独立 UIWindow 并检查 SwiftUI onAppear 与 window 归属，仍不注入 AppEnvironment；待云端重新运行，其他后续 CI 门槛未完成。

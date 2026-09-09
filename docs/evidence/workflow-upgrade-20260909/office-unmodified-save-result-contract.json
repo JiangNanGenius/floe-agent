@@ -1,0 +1,20 @@
+{
+  "hostImplementationSHA256": "56e7e6a8cafc8378e551fca9bfed4fe9e4768a782e2269dcfddf8b039d96aae6",
+  "engineOverlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
+  "checksPassed": [
+    "unchanged engine saves still require persistence; missing or failed results stay rejected",
+    "missing save receipts expire and late success cannot reverse failure",
+    "older autosave and duplicate admission cannot complete or replace the active save",
+    "request identity arriving first waits for its matching native persistence result",
+    "duplicate matched receipts cannot complete twice",
+    "native persistence arriving first waits for association and preserves failure",
+    "broker rejection affects only its own active request",
+    "late completion after cancellation cannot satisfy a later save",
+    "missing receipt halves stay bounded and fail instead of assuming success",
+    "conflicting identity or persistence halves fail instead of replacing evidence"
+  ],
+  "kind": "compiled actual save joiner with controlled event order",
+  "nativeProtocolCompiled": false,
+  "realEngineSavePassed": false,
+  "originalFileWritebackPassed": false
+}

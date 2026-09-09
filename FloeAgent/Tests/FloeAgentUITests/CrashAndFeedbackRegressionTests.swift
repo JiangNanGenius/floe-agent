@@ -15,6 +15,11 @@ import FloeProviders
 import FloeLocalModels
 @testable import FloeApp
 
+@MainActor
+private final class SettingsAppearanceProbe {
+    var didAppear = false
+}
+
 private actor ContinuedProcessingExpirationTestGate {
     private var persistenceStarted = false
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
@@ -48,19 +53,30 @@ private actor ContinuedProcessingExpirationTestGate {
 struct CrashAndFeedbackRegressionTests {
     @MainActor
     @Test("Settings renders in a separate regular-width host without an inherited environment object")
-    func settingsPresentationOwnsItsEnvironment() {
+    func settingsPresentationOwnsItsEnvironment() async throws {
         let environment = AppEnvironment.preview()
+        let appearance = SettingsAppearanceProbe()
         let controller = UIHostingController(rootView:
             SettingsRootView(environment: environment)
-                .environment(\.horizontalSizeClass, .regular))
+                .environment(\.horizontalSizeClass, .regular)
+                .onAppear { appearance.didAppear = true })
         // Model the independent sheet host from the full-app crash. Do not
         // inject AppEnvironment on the hosting controller: SettingsRootView
         // must receive and propagate its explicitly supplied dependency.
-        controller.loadViewIfNeeded()
-        controller.view.frame = CGRect(x: 0, y: 0, width: 1024, height: 768)
-        controller.view.setNeedsLayout()
+        // A detached hosting view may defer SwiftUI rendering and legitimately
+        // have zero UIKit children. Mount it as a real sheet-like host and
+        // observe appearance instead of relying on private subview structure.
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
+        window.rootViewController = controller
+        window.isHidden = false
+        defer { window.isHidden = true; window.rootViewController = nil }
         controller.view.layoutIfNeeded()
-        #expect(!controller.view.subviews.isEmpty)
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !appearance.didAppear, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(appearance.didAppear)
+        #expect(controller.view.window === window)
     }
 
     @MainActor

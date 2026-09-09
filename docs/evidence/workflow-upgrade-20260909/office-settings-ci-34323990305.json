@@ -1,0 +1,14 @@
+{
+  "runID": "34323990305",
+  "sourceCommit": "8596152",
+  "conclusion": "failure",
+  "applicationTests": 125,
+  "issues": 1,
+  "failedTest": "settingsPresentationOwnsItsEnvironment",
+  "failure": "Detached UIHostingController had zero UIKit subviews",
+  "appStoreSDKBuildPassed": true,
+  "linuxBuildPassed": true,
+  "settingsActualAppPresentationPassed": true,
+  "testHarnessCorrected": true,
+  "retestPassed": false
+}

@@ -311,7 +311,27 @@
  
  #include "ChildSession.hpp"
  
-@@ -4243,7 +4244,7 @@
+@@ -75,6 +76,19 @@
+ using Poco::JSON::Object;
+ using Poco::JSON::Parser;
+ using Poco::URI;
++
++#if defined(IOS)
++// FLOE_ENGINE_SAVE_RESULT_BEGIN
++static bool FloeEngineSaveHasPersistentContent(bool saved, const std::string& resultType,
++                                                const std::string& resultValue)
++{
++    // Match DocumentBroker::handleSaveResponse: an unmodified result means
++    // the engine file already contains the current document. UIDocument must
++    // still persist that file and complete its own matching save receipt.
++    return saved || (resultType == "string" && resultValue == "unmodified");
++}
++// FLOE_ENGINE_SAVE_RESULT_END
++#endif
+ 
+ using namespace COOLProtocol;
+ 
+@@ -4243,7 +4257,7 @@
      {
          Parser parser;
          Poco::Dynamic::Var var = parser.parse(payload);
@@ -320,7 +340,7 @@
  
          auto commandName = object->get("commandName");
          auto success = object->get("success");
-@@ -4265,27 +4266,39 @@
+@@ -4265,27 +4279,45 @@
                  // After the document has been saved (into the temporary copy that we set up in
                  // -[CODocument loadFromContents:ofType:error:]), save it also using the system API so
                  // that file provider extensions notice.
@@ -331,7 +351,13 @@
 -                        DocumentData::get(_docManager->getMobileAppDocId()).coDocument;
 +                CODocument* document =
 +                    DocumentData::get(_docManager->getMobileAppDocId()).coDocument;
-+                const bool engineSaved = !success.isEmpty() && success.toString() == "true";
++                const auto result = object->getObject("result");
++                const std::string resultType = result && result->has("type")
++                    ? result->get("type").toString() : std::string();
++                const std::string resultValue = result && result->has("value")
++                    ? result->get("value").toString() : std::string();
++                const bool engineSaved = FloeEngineSaveHasPersistentContent(
++                    !success.isEmpty() && success.toString() == "true", resultType, resultValue);
 +                static std::atomic<unsigned long long> floeSequenceCounter(1);
 +                const std::string floeSequence = std::to_string(floeSequenceCounter++);
 +                object->set("floeSaveSequence", floeSequence);
@@ -374,7 +400,7 @@
              }
          }
  
-@@ -4314,7 +4327,16 @@
+@@ -4314,7 +4346,16 @@
              break;
          }
  
