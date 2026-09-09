@@ -1,0 +1,110 @@
+{
+  "hostRunID": "34320630546",
+  "session": "04C551B2-5A8C-44BC-8C96-B0937279EB0E",
+  "scope": "Independent iOS-on-Mac native probe; foreground coordinate clicks for edit, undo, redo and save. Not full Floe UI or physical iOS.",
+  "events": [
+    {
+      "detail": "docx",
+      "event": "fixtureCopied",
+      "time": "2026-09-09T06:58:32Z"
+    },
+    {
+      "detail": "zh-Hans-TW",
+      "event": "preferredLanguage",
+      "time": "2026-09-09T06:58:32Z"
+    },
+    {
+      "detail": "true; readonly=false",
+      "event": "opened",
+      "time": "2026-09-09T06:58:33Z"
+    },
+    {
+      "detail": "false",
+      "event": "workingPersistence",
+      "time": "2026-09-09T06:58:34Z"
+    },
+    {
+      "detail": "附件 测试 📎.bin",
+      "event": "attachmentRequested",
+      "time": "2026-09-09T06:58:54Z"
+    },
+    {
+      "detail": "success",
+      "event": "attachmentCompleted",
+      "time": "2026-09-09T06:58:54Z"
+    },
+    {
+      "detail": "1; readonly=false",
+      "event": "attachmentsListed",
+      "time": "2026-09-09T06:59:01Z"
+    },
+    {
+      "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/04C551B2-5A8C-44BC-8C96-B0937279EB0E/attachment-exports/14C1F22F-0304-4BE1-B2C9-C087EC175506/附件 测试 📎.bin",
+      "event": "attachmentExported",
+      "time": "2026-09-09T06:59:01Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T06:59:09Z"
+    },
+    {
+      "detail": "",
+      "event": "saveRequested",
+      "time": "2026-09-09T06:59:28Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T06:59:28Z"
+    },
+    {
+      "detail": "success",
+      "event": "saveCompleted",
+      "time": "2026-09-09T06:59:28Z"
+    },
+    {
+      "detail": "success",
+      "event": "editingClosed",
+      "time": "2026-09-09T06:59:28Z"
+    },
+    {
+      "detail": "true; readonly=true",
+      "event": "opened",
+      "time": "2026-09-09T06:59:28Z"
+    },
+    {
+      "detail": "1; readonly=true",
+      "event": "attachmentsListed",
+      "time": "2026-09-09T06:59:40Z"
+    },
+    {
+      "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/04C551B2-5A8C-44BC-8C96-B0937279EB0E/attachment-exports/D0C19748-20D8-408D-9198-B216F4F414B1/附件 测试 📎.bin",
+      "event": "attachmentExported",
+      "time": "2026-09-09T06:59:40Z"
+    }
+  ],
+  "exports": [
+    {
+      "name": "附件 测试 📎.bin",
+      "bytes": 65539,
+      "sha256": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "matchesInput": true
+    },
+    {
+      "name": "附件 测试 📎.bin",
+      "bytes": 65539,
+      "sha256": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "matchesInput": true
+    }
+  ],
+  "sourceSHA256": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+  "savedSHA256": "675ce1df664c07dfb2a15dd201f9491991d40f3b65927d41aba9be5a3e6d8430",
+  "foregroundUndoRedoObserved": true,
+  "saveCloseReadonlyReopenPassed": true,
+  "beforeAndAfterReopenExportsMatchInput": true,
+  "backgroundAXDisconnectResolved": false,
+  "fullFloeFrontendPassed": false,
+  "physicalDevicePassed": false,
+  "saveTimeoutRuntimePassed": false
+}
