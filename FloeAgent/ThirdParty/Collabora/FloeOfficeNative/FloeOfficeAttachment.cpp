@@ -306,6 +306,13 @@ static void FloeInsertDrawingAttachment(COKitDocument *document, const std::stri
         page->add(shape);
         auto object = SdrObject::getSdrObjectFromXShape(shape);
         if (!object || !object->IsInserted()) throw std::runtime_error("The attachment object was not inserted.");
+        // UNO insertion must also reach the active view. In Impress an
+        // unselected newly added OLE shape otherwise waits for a later repaint.
+        // Selection uses the normal native object handles for move/resize.
+        css::uno::Reference<css::view::XSelectionSupplier> selection(controller, css::uno::UNO_QUERY_THROW);
+        if (!selection->select(cpo::uno::Any(shape)))
+            throw std::runtime_error("The inserted attachment could not be selected.");
+        object->BroadcastObjectChange();
         oox::ole::SaveInteropProperties(model, streamName, nullptr, u"Package"_ustr);
         // XDrawPage.add() deliberately has no undo. The native new-object
         // action retains the shape/storage and gets the selected view ID.

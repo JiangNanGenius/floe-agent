@@ -112,6 +112,38 @@ static NSString *FloeReadOnlyScript() {
 }
 // FLOE_READONLY_SCRIPT_END
 
+// FLOE_FULLSCREEN_EDIT_SCRIPT_BEGIN
+static NSString *FloeFullScreenEditScript() {
+    return [NSString stringWithUTF8String:R"FLOE_JS(
+(() => {
+    const install = () => {
+        const proto = window.L && window.L.Map && window.L.Map.prototype;
+        if (!proto || typeof proto.setPermission !== 'function' || proto.floeFullScreenEditInstalled) return;
+        proto.floeFullScreenEditInstalled = true;
+        const setPermission = proto.setPermission;
+        proto.setPermission = function (permission) {
+            const firstOpen = this._permission === undefined;
+            const result = setPermission.apply(this, arguments);
+            // Floe's fullscreen entry is already an explicit edit action. Honor
+            // the initial engine grant via the normal mobile entry point, which
+            // retains edit-password checks. Never relax a readonly grant, a
+            // protected format, or a subsequent permission change.
+            if (firstOpen && permission === 'edit' && this._permission === 'readonly' &&
+                window.ThisIsAMobileApp && typeof this._shouldStartReadOnly === 'function' &&
+                !(window.app && window.app.file && window.app.file.fileBasedView) &&
+                !this._shouldStartReadOnly() && typeof this._switchToEditMode === 'function')
+                this._switchToEditMode();
+            return result;
+        };
+    };
+    if (document.readyState === 'loading')
+        document.addEventListener('DOMContentLoaded', install, { once: true });
+    else install();
+})();
+)FLOE_JS"];
+}
+// FLOE_FULLSCREEN_EDIT_SCRIPT_END
+
 typedef NS_ENUM(NSUInteger, FloeRuntimeState) {
     FloeRuntimeIdle, FloeRuntimeStarting, FloeRuntimeReady, FloeRuntimeFailed
 };
@@ -629,13 +661,12 @@ static void ServerReady() {
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     [self addChildViewController:self.editor];
     UIView *content = self.editor.view;
-    if (self.readOnly) {
-        // Add before viewWillAppear opens the document. At document start the
-        // listener precedes the bundled editor's DOMContentLoaded callbacks.
-        WKUserScript *script = [[WKUserScript alloc] initWithSource:FloeReadOnlyScript()
-            injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES];
-        [self.editor.webView.configuration.userContentController addUserScript:script];
-    }
+    // Add before viewWillAppear opens the document. At document start the
+    // listener precedes the bundled editor's DOMContentLoaded callbacks.
+    WKUserScript *script = [[WKUserScript alloc]
+        initWithSource:self.readOnly ? FloeReadOnlyScript() : FloeFullScreenEditScript()
+        injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES];
+    [self.editor.webView.configuration.userContentController addUserScript:script];
     content.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:content];
     [NSLayoutConstraint activateConstraints:@[

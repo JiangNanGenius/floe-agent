@@ -32,6 +32,7 @@ jobs:
           python3 FloeAgent/scripts/test_office_native_host.py
           python3 FloeAgent/scripts/test_office_save_receipts.py
           python3 FloeAgent/scripts/test_office_readonly.py
+          python3 FloeAgent/scripts/test_office_fullscreen_edit.py
           python3 FloeAgent/scripts/test_office_editor_language.py
       - name: Reuse complete qualified engine inputs
         env:

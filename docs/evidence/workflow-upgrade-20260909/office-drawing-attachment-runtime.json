@@ -1,0 +1,278 @@
+{
+  "nativeHostRun": "34327287597",
+  "installedApplication": "Floe Office Qualification 16",
+  "environment": "Mac running developer-signed iOS qualification app",
+  "sessions": [
+    {
+      "test": "excel-undo-redo",
+      "sessionID": "047DD7E3-5926-4671-80E6-79AE2B9DF62E",
+      "events": [
+        {
+          "detail": "xlsx",
+          "event": "fixtureCopied",
+          "time": "2026-09-09T08:18:12Z"
+        },
+        {
+          "detail": "zh-Hans-TW",
+          "event": "preferredLanguage",
+          "time": "2026-09-09T08:18:12Z"
+        },
+        {
+          "detail": "true; readonly=false",
+          "event": "opened",
+          "time": "2026-09-09T08:18:12Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T08:18:14Z"
+        },
+        {
+          "detail": "附件 测试 📎.bin",
+          "event": "attachmentRequested",
+          "time": "2026-09-09T08:19:01Z"
+        },
+        {
+          "detail": "success",
+          "event": "attachmentCompleted",
+          "time": "2026-09-09T08:19:02Z"
+        },
+        {
+          "detail": "1; readonly=false",
+          "event": "attachmentsListed",
+          "time": "2026-09-09T08:19:14Z"
+        },
+        {
+          "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/047DD7E3-5926-4671-80E6-79AE2B9DF62E/attachment-exports/DA8CDB23-67E0-4D58-BC4D-0A719D877887/附件 测试 📎.bin",
+          "event": "attachmentExported",
+          "time": "2026-09-09T08:19:14Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T08:19:30Z"
+        },
+        {
+          "detail": "0; readonly=false",
+          "event": "attachmentsListed",
+          "time": "2026-09-09T08:19:41Z"
+        },
+        {
+          "detail": "",
+          "event": "saveRequested",
+          "time": "2026-09-09T08:20:04Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T08:20:04Z"
+        },
+        {
+          "detail": "success",
+          "event": "saveCompleted",
+          "time": "2026-09-09T08:20:04Z"
+        },
+        {
+          "detail": "success",
+          "event": "editingClosed",
+          "time": "2026-09-09T08:20:04Z"
+        },
+        {
+          "detail": "true; readonly=true",
+          "event": "opened",
+          "time": "2026-09-09T08:20:04Z"
+        },
+        {
+          "detail": "0; readonly=true",
+          "event": "attachmentsListed",
+          "time": "2026-09-09T08:20:24Z"
+        },
+        {
+          "detail": "success",
+          "event": "previewClosed",
+          "time": "2026-09-09T08:20:47Z"
+        }
+      ],
+      "savedSHA256": "d9564ee5c1277bf5f6e7e6a3c89ba05125727956e52aed1cbcacfb3cbb800d0f",
+      "embeddedParts": []
+    },
+    {
+      "test": "excel-direct",
+      "sessionID": "783C6308-1C72-4DAB-9FA9-CF22C6FFD074",
+      "events": [
+        {
+          "detail": "xlsx",
+          "event": "fixtureCopied",
+          "time": "2026-09-09T08:21:01Z"
+        },
+        {
+          "detail": "zh-Hans-TW",
+          "event": "preferredLanguage",
+          "time": "2026-09-09T08:21:01Z"
+        },
+        {
+          "detail": "true; readonly=false",
+          "event": "opened",
+          "time": "2026-09-09T08:21:01Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T08:21:02Z"
+        },
+        {
+          "detail": "附件 测试 📎.bin",
+          "event": "attachmentRequested",
+          "time": "2026-09-09T08:21:24Z"
+        },
+        {
+          "detail": "success",
+          "event": "attachmentCompleted",
+          "time": "2026-09-09T08:21:24Z"
+        },
+        {
+          "detail": "1; readonly=false",
+          "event": "attachmentsListed",
+          "time": "2026-09-09T08:21:37Z"
+        },
+        {
+          "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/783C6308-1C72-4DAB-9FA9-CF22C6FFD074/attachment-exports/65E0133C-1F85-43AE-A526-0F38E7AC490C/附件 测试 📎.bin",
+          "event": "attachmentExported",
+          "time": "2026-09-09T08:21:37Z"
+        },
+        {
+          "detail": "",
+          "event": "saveRequested",
+          "time": "2026-09-09T08:22:02Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T08:22:02Z"
+        },
+        {
+          "detail": "success",
+          "event": "saveCompleted",
+          "time": "2026-09-09T08:22:02Z"
+        },
+        {
+          "detail": "success",
+          "event": "editingClosed",
+          "time": "2026-09-09T08:22:02Z"
+        },
+        {
+          "detail": "true; readonly=true",
+          "event": "opened",
+          "time": "2026-09-09T08:22:02Z"
+        },
+        {
+          "detail": "success",
+          "event": "previewClosed",
+          "time": "2026-09-09T08:24:40Z"
+        }
+      ],
+      "savedSHA256": "92e18403f5fb61dc23e4c2dbac440ec48c26a29385c81e8d4c3bba2cf94d067f",
+      "embeddedParts": []
+    },
+    {
+      "test": "ppt-direct",
+      "sessionID": "A919657D-6ED2-481C-BB93-CBA868D808F4",
+      "events": [
+        {
+          "detail": "pptx",
+          "event": "fixtureCopied",
+          "time": "2026-09-09T08:24:54Z"
+        },
+        {
+          "detail": "zh-Hans-TW",
+          "event": "preferredLanguage",
+          "time": "2026-09-09T08:24:54Z"
+        },
+        {
+          "detail": "true; readonly=false",
+          "event": "opened",
+          "time": "2026-09-09T08:24:55Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T08:24:56Z"
+        },
+        {
+          "detail": "附件 测试 📎.bin",
+          "event": "attachmentRequested",
+          "time": "2026-09-09T08:26:01Z"
+        },
+        {
+          "detail": "success",
+          "event": "attachmentCompleted",
+          "time": "2026-09-09T08:26:02Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T08:26:02Z"
+        },
+        {
+          "detail": "1; readonly=false",
+          "event": "attachmentsListed",
+          "time": "2026-09-09T08:26:15Z"
+        },
+        {
+          "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/A919657D-6ED2-481C-BB93-CBA868D808F4/attachment-exports/78EDDF08-D719-464A-A5E1-389EA2CB1D61/附件 测试 📎.bin",
+          "event": "attachmentExported",
+          "time": "2026-09-09T08:26:15Z"
+        },
+        {
+          "detail": "",
+          "event": "saveRequested",
+          "time": "2026-09-09T08:26:30Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T08:26:30Z"
+        },
+        {
+          "detail": "success",
+          "event": "saveCompleted",
+          "time": "2026-09-09T08:26:30Z"
+        },
+        {
+          "detail": "success",
+          "event": "editingClosed",
+          "time": "2026-09-09T08:26:30Z"
+        },
+        {
+          "detail": "true; readonly=true",
+          "event": "opened",
+          "time": "2026-09-09T08:26:31Z"
+        },
+        {
+          "detail": "1; readonly=true",
+          "event": "attachmentsListed",
+          "time": "2026-09-09T08:27:04Z"
+        },
+        {
+          "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/A919657D-6ED2-481C-BB93-CBA868D808F4/attachment-exports/6B6785A6-CF46-459B-AC7C-462CCE1141ED/附件 测试 📎.bin",
+          "event": "attachmentExported",
+          "time": "2026-09-09T08:27:04Z"
+        }
+      ],
+      "savedSHA256": "0de2b8abcb21b93a1b179b459d7925ef44e0ea7accdf50371e52368ad19da2b0",
+      "embeddedParts": [
+        "ppt/embeddings/oleObject1.bin"
+      ]
+    }
+  ],
+  "excelSaveReopenPassed": false,
+  "excelUndoRedoVisuallyPassed": true,
+  "excelFailure": "Both direct-save and undo-redo controls lose the attachment on XLSX export; saved files contain no embedding part. The second-sheet B5 insertion was visible and pre-save export matched the input bytes.",
+  "pptSavedPackageBytesPassed": true,
+  "pptFreshInsertionVisible": false,
+  "pptReopenVisible": true,
+  "pptFailure": "Inserted object did not appear on current slide until save and reopen. Reopened payload is correct and native export matches input.",
+  "fullFloeOriginalWritebackPassed": false,
+  "physicalDevicePassed": false,
+  "microsoftOfficePassed": false
+}

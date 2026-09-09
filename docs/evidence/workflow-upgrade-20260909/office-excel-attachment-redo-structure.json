@@ -1,0 +1,25 @@
+{
+  "sourceAttachmentSHA256": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+  "savedSHA256": "d9564ee5c1277bf5f6e7e6a3c89ba05125727956e52aed1cbcacfb3cbb800d0f",
+  "checks": [
+    {
+      "name": "selected sheet or slide exists",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "one live Package attachment",
+      "expected": 1,
+      "actual": 0,
+      "passed": false
+    }
+  ],
+  "allNamedChecksPassed": false,
+  "geometryPassed": false,
+  "visualFidelityPassed": false,
+  "undoRedoPassed": false,
+  "microsoftOfficeReopenPassed": false,
+  "originalFileWritebackPassed": false,
+  "physicalDevicePassed": false
+}

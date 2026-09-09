@@ -1,0 +1,109 @@
+{
+  "sourceAttachmentSHA256": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+  "savedSHA256": "0de2b8abcb21b93a1b179b459d7925ef44e0ea7accdf50371e52368ad19da2b0",
+  "checks": [
+    {
+      "name": "selected sheet or slide exists",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "one live Package attachment",
+      "expected": 1,
+      "actual": 1,
+      "passed": true
+    },
+    {
+      "name": "0 attachment in selected sheet or slide",
+      "expected": "ppt/slides/slide2.xml",
+      "actual": "ppt/slides/slide2.xml",
+      "passed": true
+    },
+    {
+      "name": "0 embedded object relationship",
+      "expected": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject",
+      "actual": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject",
+      "passed": true
+    },
+    {
+      "name": "0 not an external link",
+      "expected": false,
+      "actual": false,
+      "passed": true
+    },
+    {
+      "name": "0 payload inside document",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 embedded not linked",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 icon presentation",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 Package compound class",
+      "expected": "0003000C-0000-0000-C000-000000000046",
+      "actual": "0003000C-0000-0000-C000-000000000046",
+      "passed": true
+    },
+    {
+      "name": "0 embedded bytes not a link",
+      "expected": false,
+      "actual": false,
+      "passed": true
+    },
+    {
+      "name": "0 original byte length",
+      "expected": 65539,
+      "actual": 65539,
+      "passed": true
+    },
+    {
+      "name": "0 original byte hash",
+      "expected": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "actual": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "passed": true
+    },
+    {
+      "name": "0 Unicode command",
+      "expected": "附件 测试 📎.bin",
+      "actual": "附件 测试 📎.bin",
+      "passed": true
+    },
+    {
+      "name": "0 Unicode label",
+      "expected": "附件 测试 📎.bin",
+      "actual": "附件 测试 📎.bin",
+      "passed": true
+    },
+    {
+      "name": "0 Unicode filename",
+      "expected": "附件 测试 📎.bin",
+      "actual": "附件 测试 📎.bin",
+      "passed": true
+    },
+    {
+      "name": "0 complete native stream parsed",
+      "expected": "",
+      "actual": "",
+      "passed": true
+    }
+  ],
+  "allNamedChecksPassed": true,
+  "geometryPassed": false,
+  "visualFidelityPassed": false,
+  "undoRedoPassed": false,
+  "microsoftOfficeReopenPassed": false,
+  "originalFileWritebackPassed": false,
+  "physicalDevicePassed": false
+}

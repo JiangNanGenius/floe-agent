@@ -1,0 +1,11 @@
+{
+  "checksPassed": [
+    "initial native edit grant uses the normal mobile entry once",
+    "readonly and view grants cannot be elevated",
+    "later permission changes remain authoritative",
+    "protected format, PDF view and non-native context stay unchanged",
+    "normal entry retains edit-password challenge",
+    "deferred and repeated script installation is safe"
+  ],
+  "actualFullscreenUIRetestPassed": false
+}

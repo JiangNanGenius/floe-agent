@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "unmodified-save-and-drawing-attachment-host-compiled-runtime-retest-pending",
+  "qualificationStatus": "fullscreen-entry-and-drawing-selection-rebuild-pending",
   "qualifiedHostArtifact": {
     "runID": "34327287597",
     "artifactName": "office-native-host-unsigned",
