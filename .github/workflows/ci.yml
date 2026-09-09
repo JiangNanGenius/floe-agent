@@ -119,6 +119,9 @@ jobs:
       - name: Guardian real PTY lifecycle regressions
         run: python3 scripts/test_remote_shell.py
 
+      - name: Office explicit save bridge contracts
+        run: python3 scripts/test_office_explicit_save.py
+
       # `test` builds the universal iPhone/iPad app and its test host once.
       # Two preceding build-only destinations compiled the identical target.
       - name: Canvas, PiP, and timeline app regression tests
