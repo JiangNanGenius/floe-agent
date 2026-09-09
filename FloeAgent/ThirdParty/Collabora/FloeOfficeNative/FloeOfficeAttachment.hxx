@@ -8,18 +8,18 @@ struct COKitDocument;
 
 // Engine-only implementation stays outside the UIKit translation unit. The
 // lookup runs under SolarMutex so a concurrent close cannot invalidate the view.
-void FloeImportWordAttachment(const std::function<COKitDocument *()> &lookupDocument,
+void FloeImportAttachment(const std::function<COKitDocument *()> &lookupDocument,
                               const std::string &sourceURL, const std::string &packageURL,
                               const std::string &iconURL, const std::string &displayName,
                               const std::string &identifier);
 
-struct FloeWordAttachment {
+struct FloeEmbeddedAttachment {
     std::string identifier;
     std::string name;
     std::uint64_t byteCount;
 };
-// Read only live Package objects in the current Word document. Export reads
+// Read only live Package objects in the current Office document. Export reads
 // the actual embedded bytes, never the original import/recovery sidecar.
-std::vector<FloeWordAttachment> FloeListWordAttachments(const std::function<COKitDocument *()> &lookupDocument);
-void FloeExportWordAttachment(const std::function<COKitDocument *()> &lookupDocument,
+std::vector<FloeEmbeddedAttachment> FloeListAttachments(const std::function<COKitDocument *()> &lookupDocument);
+void FloeExportAttachment(const std::function<COKitDocument *()> &lookupDocument,
                              const std::string &identifier, const std::string &destinationURL);

@@ -42,11 +42,12 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 /// Stop waiting for an explicit save. An already running engine save may still
 /// finish in its private files; this never cancels or commits the original file.
 - (void)cancelPendingSave;
-/// Insert a file as an embedded Word attachment at the current cursor. Copies
+/// Insert an attachment at the Word cursor, selected Excel cell, or centre of
+/// the active PowerPoint slide. Copies
 /// the authorized input into this private session; completion is insertion,
-/// not original-file save. Other document types are rejected until implemented.
+/// not original-file save.
 - (void)insertAttachmentFromFileURL:(NSURL *)fileURL completion:(void (^)(NSError * _Nullable error))completion;
-/// Enumerates live Word Package attachments. Other embedded Office objects are
+/// Enumerates live Office Package attachments. Other embedded Office objects are
 /// not represented as original-file attachments. Does not modify the document.
 - (void)listAttachmentsWithCompletion:(void (^)(NSArray<FloeOfficeAttachmentInfo *> * _Nullable attachments, NSError * _Nullable error))completion;
 /// Extract the current embedded bytes into a private export copy. Never opens

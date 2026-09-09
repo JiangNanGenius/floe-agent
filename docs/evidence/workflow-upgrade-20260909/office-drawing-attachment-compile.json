@@ -1,0 +1,11 @@
+{
+  "kind": "Native attachment source syntax against pinned engine headers",
+  "sourceSHA256": "ca6b286b0acf27741a8a6d018c3bb52bbf2f42c6426a8f397bc4a78cb0c9999d",
+  "target": "arm64-apple-ios26.0",
+  "syntaxCompiled": true,
+  "nativeLinked": false,
+  "runtimeInsertionPassed": false,
+  "saveReopenPassed": false,
+  "undoRedoPassed": false,
+  "physicalDevicePassed": false
+}

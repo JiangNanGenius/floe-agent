@@ -53,7 +53,7 @@ final class OfficeFileSession: ObservableObject {
     var canAct: Bool { phase == .ready && !operating }
     var supportsAttachmentInsertion: Bool {
         guard !readOnly, let session else { return false }
-        return ["docx", "doc", "odt", "rtf"].contains(session.workingURL.pathExtension.lowercased())
+        return ["docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp"].contains(session.workingURL.pathExtension.lowercased())
     }
 
     func insertAttachment(_ url: URL) async throws {

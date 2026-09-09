@@ -18,6 +18,9 @@
 #include <comphelper/processfactory.hxx>
 #include <comphelper/embeddedobjectcontainer.hxx>
 #include <svl/undo.hxx>
+#include <svx/svdobj.hxx>
+#include <svx/svdpage.hxx>
+#include <svx/svdundo.hxx>
 #include <cppuhelper/weakref.hxx>
 #include <com/sun/star/document/XEmbeddedObjectResolver.hpp>
 #include <com/sun/star/embed/XEmbeddedObject.hpp>
@@ -35,6 +38,14 @@
 #include <com/sun/star/beans/XPropertySet.hpp>
 #include <com/sun/star/graphic/GraphicProvider.hpp>
 #include <com/sun/star/io/XOutputStream.hpp>
+#include <com/sun/star/drawing/XDrawView.hpp>
+#include <com/sun/star/drawing/XDrawPageSupplier.hpp>
+#include <com/sun/star/drawing/XDrawPagesSupplier.hpp>
+#include <com/sun/star/drawing/XShapes.hpp>
+#include <com/sun/star/sheet/XSpreadsheetView.hpp>
+#include <com/sun/star/sheet/XCellRangeAddressable.hpp>
+#include <com/sun/star/view/XSelectionSupplier.hpp>
+#include <com/sun/star/embed/Aspects.hpp>
 #include <array>
 #include <algorithm>
 #include <limits>
@@ -204,7 +215,125 @@ static void FloeInsertWordAttachment(COKitDocument *document, const std::string 
     }
 }
 
-void FloeImportWordAttachment(const std::function<COKitDocument *()> &lookupDocument,
+// Calc and Impress own attachments as drawing objects. Insert into the active
+// sheet/slide, using the engine object and undo stack rather than editing ZIP
+// parts behind the live document. Calc positions the icon at the selected cell;
+// Impress centres it on the active slide, where the normal handles can move it.
+static void FloeInsertDrawingAttachment(COKitDocument *document, const std::string &packageURL,
+                                        const std::string &iconURL, const std::string &displayName,
+                                        const std::string &identifier) {
+    SolarMutexGuard guard;
+    std::vector<int> views;
+    if (!document || !document->getViewIds(views) || views.size() != 1)
+        throw std::runtime_error("A single active Office view is required for attachment insertion.");
+    document->setView(views.front());
+    auto shell = SfxViewShell::Current();
+    if (!shell || !shell->GetObjectShell()) throw std::runtime_error("The Office view is unavailable.");
+    auto owner = shell->GetObjectShell();
+    auto model = owner->GetModel();
+    auto controller = model->getCurrentController();
+    css::uno::Reference<css::drawing::XDrawPage> page;
+    css::awt::Point position;
+    css::awt::Size size(6000, 1800);
+    if (document->getDocumentType() == COKitDocumentType::SPREADSHEET) {
+        css::uno::Reference<css::sheet::XSpreadsheetView> view(controller, css::uno::UNO_QUERY_THROW);
+        auto sheet = view->getActiveSheet();
+        css::uno::Reference<css::drawing::XDrawPageSupplier> supplier(sheet, css::uno::UNO_QUERY_THROW);
+        page = supplier->getDrawPage();
+        css::uno::Reference<css::view::XSelectionSupplier> selection(controller, css::uno::UNO_QUERY_THROW);
+        css::uno::Reference<css::sheet::XCellRangeAddressable> range(selection->getSelection(), css::uno::UNO_QUERY_THROW);
+        const auto address = range->getRangeAddress();
+        css::uno::Reference<css::beans::XPropertySet> cell(
+            sheet->getCellByPosition(address.StartColumn, address.StartRow), css::uno::UNO_QUERY_THROW);
+        if (!(cell->getPropertyValue(u"Position"_ustr) >>= position))
+            throw std::runtime_error("Select the cell where the attachment should be inserted.");
+    } else if (document->getDocumentType() == COKitDocumentType::PRESENTATION) {
+        css::uno::Reference<css::drawing::XDrawView> view(controller, css::uno::UNO_QUERY_THROW);
+        page = view->getCurrentPage();
+        css::uno::Reference<css::beans::XPropertySet> properties(page, css::uno::UNO_QUERY_THROW);
+        sal_Int32 width = 0, height = 0;
+        if (!(properties->getPropertyValue(u"Width"_ustr) >>= width) ||
+            !(properties->getPropertyValue(u"Height"_ustr) >>= height) || width <= 0 || height <= 0)
+            throw std::runtime_error("The active slide dimensions are unavailable.");
+        size.Width = std::min(size.Width, width);
+        size.Height = std::min(size.Height, height);
+        position = css::awt::Point((width - size.Width) / 2, (height - size.Height) / 2);
+    } else {
+        throw std::runtime_error("This document does not support embedded attachments.");
+    }
+    if (!page) throw std::runtime_error("The active sheet or slide is unavailable.");
+    auto undo = owner->GetUndoManager();
+    if (!undo || !undo->IsUndoEnabled()) throw std::runtime_error("Document undo is unavailable.");
+    css::uno::Reference<css::lang::XMultiServiceFactory> factory(model, css::uno::UNO_QUERY_THROW);
+    auto graphics = css::graphic::GraphicProvider::create(comphelper::getProcessComponentContext());
+    auto graphic = graphics->queryGraphic({comphelper::makePropertyValue(u"URL"_ustr, FloeUNOString(iconURL))});
+    if (!graphic) throw std::runtime_error("The attachment preview could not be read.");
+    css::uno::Reference<css::document::XEmbeddedObjectResolver> resolver(
+        factory->createInstance(u"com.sun.star.document.ImportEmbeddedObjectResolver"_ustr), css::uno::UNO_QUERY_THROW);
+    css::uno::Reference<css::lang::XComponent> lifetime(resolver, css::uno::UNO_QUERY_THROW);
+    css::uno::Reference<css::drawing::XShape> shape;
+    OUString streamName;
+    bool committed = false;
+    try {
+        const OUString objectID = u"FloeAttachment"_ustr + FloeUNOString(identifier);
+        css::uno::Reference<css::container::XNameAccess> names(resolver, css::uno::UNO_QUERY_THROW);
+        css::uno::Reference<css::io::XOutputStream> output(names->getByName(objectID), css::uno::UNO_QUERY_THROW);
+        SvFileStream input(FloeUNOString(packageURL), StreamMode::READ);
+        sal_uInt64 remaining = input.TellEnd(); input.Seek(0);
+        while (remaining) {
+            cpo::uno::Sequence<sal_Int8> bytes(static_cast<sal_Int32>(std::min<sal_uInt64>(remaining, 65536)));
+            if (input.ReadBytes(bytes.getArray(), bytes.getLength()) != static_cast<std::size_t>(bytes.getLength()))
+                throw std::runtime_error("Attachment package read failed.");
+            output->writeBytes(bytes); remaining -= bytes.getLength();
+        }
+        output->closeOutput();
+        const OUString resolved = resolver->resolveEmbeddedObjectURL(objectID);
+        const OUString prefix = u"vnd.sun.star.EmbeddedObject:"_ustr;
+        if (!resolved.startsWith(prefix) || resolved.getLength() == prefix.getLength())
+            throw std::runtime_error("Attachment was not stored in the document.");
+        streamName = resolved.copy(prefix.getLength());
+        shape.set(factory->createInstance(u"com.sun.star.drawing.OLE2Shape"_ustr), css::uno::UNO_QUERY_THROW);
+        css::uno::Reference<css::beans::XPropertySet> properties(shape, css::uno::UNO_QUERY_THROW);
+        // Before add(), SvxShape caches properties and applies them while it
+        // creates the underlying SdrOle2Obj. No separate property undo entries
+        // are emitted before the single insertion action below.
+        properties->setPropertyValue(u"PersistName"_ustr, cpo::uno::Any(streamName));
+        properties->setPropertyValue(u"Aspect"_ustr, cpo::uno::Any(sal_Int64(css::embed::Aspects::MSOLE_ICON)));
+        properties->setPropertyValue(u"Graphic"_ustr, cpo::uno::Any(graphic));
+        properties->setPropertyValue(u"Title"_ustr, cpo::uno::Any(FloeUNOString(displayName)));
+        shape->setPosition(position);
+        shape->setSize(size);
+        page->add(shape);
+        auto object = SdrObject::getSdrObjectFromXShape(shape);
+        if (!object || !object->IsInserted()) throw std::runtime_error("The attachment object was not inserted.");
+        oox::ole::SaveInteropProperties(model, streamName, nullptr, u"Package"_ustr);
+        // XDrawPage.add() deliberately has no undo. The native new-object
+        // action retains the shape/storage and gets the selected view ID.
+        auto action = SdrUndoFactory::CreateUndoNewObject(*object);
+        undo->AddUndoAction(std::move(action));
+        committed = true;
+        owner->SetModified();
+        try { lifetime->dispose(); } catch (...) { /* Insertion already succeeded. */ }
+    } catch (...) {
+        if (!committed) {
+            // Remove only this provisional object. XDrawPage.remove() would
+            // create an unrelated Delete undo entry, so use the object list.
+            if (shape) {
+                if (auto object = SdrObject::getSdrObjectFromXShape(shape)) {
+                    if (auto list = object->getParentSdrObjListFromSdrObject())
+                        list->RemoveObject(object->GetOrdNum());
+                }
+            }
+            if (!streamName.isEmpty()) {
+                try { owner->GetEmbeddedObjectContainer().RemoveEmbeddedObject(streamName, false); } catch (...) {}
+            }
+        }
+        try { lifetime->dispose(); } catch (...) { /* Preserve insertion error. */ }
+        throw;
+    }
+}
+
+void FloeImportAttachment(const std::function<COKitDocument *()> &lookupDocument,
                               const std::string &sourceURL, const std::string &packageURL,
                               const std::string &iconURL, const std::string &displayName,
                               const std::string &identifier) {
@@ -212,7 +341,10 @@ void FloeImportWordAttachment(const std::function<COKitDocument *()> &lookupDocu
     SolarMutexGuard guard;
     COKitDocument *document = lookupDocument();
     if (!document) throw std::runtime_error("Document closed during attachment preparation.");
-    FloeInsertWordAttachment(document, packageURL, iconURL, displayName, identifier);
+    if (document->getDocumentType() == COKitDocumentType::TEXT)
+        FloeInsertWordAttachment(document, packageURL, iconURL, displayName, identifier);
+    else
+        FloeInsertDrawingAttachment(document, packageURL, iconURL, displayName, identifier);
 }
 
 namespace {
@@ -272,28 +404,49 @@ FloePackageContents FloeReadPackageHeader(SvStream &stream) {
     return {name, offset, size};
 }
 
-SfxObjectShell *FloeWordShell(const std::function<COKitDocument *()> &lookupDocument) {
+SfxObjectShell *FloeOfficeShell(const std::function<COKitDocument *()> &lookupDocument) {
     auto document = lookupDocument();
     std::vector<int> views;
-    if (!document || document->getDocumentType() != COKitDocumentType::TEXT ||
-        !document->getViewIds(views) || views.size() != 1)
-        throw std::runtime_error("A single active Word view is required.");
+    if (!document || !document->getViewIds(views) || views.size() != 1)
+        throw std::runtime_error("A single active Office view is required.");
     document->setView(views.front());
     auto shell = SfxViewShell::Current();
-    if (!shell || !shell->GetObjectShell()) throw std::runtime_error("The Word view is unavailable.");
+    if (!shell || !shell->GetObjectShell()) throw std::runtime_error("The Office view is unavailable.");
     return shell->GetObjectShell();
 }
 
-std::vector<OUString> FloeLiveWordPackages(SfxObjectShell *shell) {
-    css::uno::Reference<css::text::XTextEmbeddedObjectsSupplier> supplier(shell->GetModel(), css::uno::UNO_QUERY_THROW);
-    auto objects = supplier->getEmbeddedObjects();
+std::vector<OUString> FloeLivePackages(SfxObjectShell *shell) {
+    std::vector<OUString> liveNames;
+    css::uno::Reference<css::text::XTextEmbeddedObjectsSupplier> supplier(shell->GetModel(), css::uno::UNO_QUERY);
+    if (supplier) {
+        auto objects = supplier->getEmbeddedObjects();
+        for (const auto &name : objects->getElementNames()) {
+            css::uno::Reference<css::beans::XPropertySet> properties(objects->getByName(name), css::uno::UNO_QUERY_THROW);
+            css::uno::Reference<css::embed::XEmbeddedObject> embedded(properties->getPropertyValue(u"EmbeddedObject"_ustr), css::uno::UNO_QUERY);
+            if (embedded) liveNames.push_back(shell->GetEmbeddedObjectContainer().GetEmbeddedObjectName(embedded));
+        }
+    } else {
+        css::uno::Reference<css::drawing::XDrawPagesSupplier> pagesSupplier(shell->GetModel(), css::uno::UNO_QUERY_THROW);
+        auto pages = pagesSupplier->getDrawPages();
+        std::function<void(const css::uno::Reference<css::drawing::XShapes> &)> collect;
+        collect = [&](const css::uno::Reference<css::drawing::XShapes> &shapes) {
+            for (sal_Int32 index = 0; index < shapes->getCount(); ++index) {
+                auto item = shapes->getByIndex(index);
+                css::uno::Reference<css::drawing::XShapes> children(item, css::uno::UNO_QUERY);
+                if (children) collect(children);
+                css::uno::Reference<css::beans::XPropertySet> properties(item, css::uno::UNO_QUERY);
+                if (!properties || !properties->getPropertySetInfo()->hasPropertyByName(u"PersistName"_ustr)) continue;
+                OUString name;
+                if (properties->getPropertyValue(u"PersistName"_ustr) >>= name) liveNames.push_back(name);
+            }
+        };
+        for (sal_Int32 index = 0; index < pages->getCount(); ++index)
+            collect(css::uno::Reference<css::drawing::XShapes>(pages->getByIndex(index), css::uno::UNO_QUERY_THROW));
+    }
     std::vector<OUString> result;
-    for (const auto &name : objects->getElementNames()) {
-        css::uno::Reference<css::beans::XPropertySet> properties(objects->getByName(name), css::uno::UNO_QUERY_THROW);
-        css::uno::Reference<css::embed::XEmbeddedObject> embedded(properties->getPropertyValue(u"EmbeddedObject"_ustr), css::uno::UNO_QUERY);
-        if (!embedded) continue;
-        const auto storageName = shell->GetEmbeddedObjectContainer().GetEmbeddedObjectName(embedded);
+    for (const auto &storageName : liveNames) {
         if (storageName.isEmpty() || !shell->GetStorage()->isStreamElement(storageName)) continue;
+        if (std::find(result.begin(), result.end(), storageName) != result.end()) continue;
         // On mobile the UNO object may be a generic foreign-object wrapper.
         // Identify Package from its actual compound storage, not that wrapper's
         // class ID. Native charts/subdocuments use their own storage types.
@@ -310,7 +463,7 @@ std::vector<OUString> FloeLiveWordPackages(SfxObjectShell *shell) {
     return result;
 }
 
-FloeWordAttachment FloeReadWordPackage(SfxObjectShell *shell, const OUString &identifier,
+FloeEmbeddedAttachment FloeReadPackage(SfxObjectShell *shell, const OUString &identifier,
                                       const std::string *destinationURL) {
     auto stream = shell->GetStorage()->cloneStreamElement(identifier);
     auto input = utl::UcbStreamHelper::CreateStream(stream->getInputStream());
@@ -338,21 +491,21 @@ FloeWordAttachment FloeReadWordPackage(SfxObjectShell *shell, const OUString &id
 }
 }
 
-std::vector<FloeWordAttachment> FloeListWordAttachments(const std::function<COKitDocument *()> &lookupDocument) {
+std::vector<FloeEmbeddedAttachment> FloeListAttachments(const std::function<COKitDocument *()> &lookupDocument) {
     SolarMutexGuard guard;
-    auto shell = FloeWordShell(lookupDocument);
-    std::vector<FloeWordAttachment> result;
-    for (const auto &name : FloeLiveWordPackages(shell)) result.push_back(FloeReadWordPackage(shell, name, nullptr));
+    auto shell = FloeOfficeShell(lookupDocument);
+    std::vector<FloeEmbeddedAttachment> result;
+    for (const auto &name : FloeLivePackages(shell)) result.push_back(FloeReadPackage(shell, name, nullptr));
     return result;
 }
 
-void FloeExportWordAttachment(const std::function<COKitDocument *()> &lookupDocument,
+void FloeExportAttachment(const std::function<COKitDocument *()> &lookupDocument,
                              const std::string &identifier, const std::string &destinationURL) {
     SolarMutexGuard guard;
-    auto shell = FloeWordShell(lookupDocument);
-    const auto names = FloeLiveWordPackages(shell);
+    auto shell = FloeOfficeShell(lookupDocument);
+    const auto names = FloeLivePackages(shell);
     const auto name = FloeUNOString(identifier);
     if (std::find(names.begin(), names.end(), name) == names.end())
         throw std::runtime_error("This attachment is no longer present. Refresh the attachment list.");
-    FloeReadWordPackage(shell, name, &destinationURL);
+    FloeReadPackage(shell, name, &destinationURL);
 }

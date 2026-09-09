@@ -462,7 +462,7 @@ static void ServerReady() {
         completion(OfficeError(12, @"Open the document for editing and finish the current operation first."));
         return;
     }
-    if (![@[@"docx", @"doc", @"odt", @"rtf"] containsObject:self.workingFileURL.pathExtension.lowercaseString]) {
+    if (![@[@"docx", @"doc", @"odt", @"rtf", @"xlsx", @"xls", @"ods", @"pptx", @"ppt", @"odp"] containsObject:self.workingFileURL.pathExtension.lowercaseString]) {
         completion(OfficeError(13, @"Attachment insertion for this document type is not available yet."));
         return;
     }
@@ -514,7 +514,7 @@ static void ServerReady() {
             }
             if (!failure) {
                 try {
-                    FloeImportWordAttachment([documentID]() -> COKitDocument * {
+                    FloeImportAttachment([documentID]() -> COKitDocument * {
                         DocumentData *data = DocumentData::getIfExists(documentID);
                         return data ? data->loKitDocument : nullptr;
                     }, copy.absoluteString.UTF8String, package.absoluteString.UTF8String,
@@ -555,7 +555,7 @@ static void ServerReady() {
             NSError *failure = nil;
             NSMutableArray<FloeOfficeAttachmentInfo *> *items = [NSMutableArray array];
             try {
-                auto attachments = FloeListWordAttachments([documentID]() -> COKitDocument * {
+                auto attachments = FloeListAttachments([documentID]() -> COKitDocument * {
                     auto data = DocumentData::getIfExists(documentID);
                     return data ? data->loKitDocument : nullptr;
                 });
@@ -597,7 +597,7 @@ static void ServerReady() {
                     auto data = DocumentData::getIfExists(documentID);
                     return data ? data->loKitDocument : nullptr;
                 };
-                const auto attachments = FloeListWordAttachments(lookup);
+                const auto attachments = FloeListAttachments(lookup);
                 for (const auto &attachment : attachments) {
                     if (attachment.identifier != identifier.UTF8String) continue;
                     NSString *name = [NSString stringWithUTF8String:attachment.name.c_str()] ?: @"Attachment";
@@ -610,7 +610,7 @@ static void ServerReady() {
                 }
                 if (!file) failure = OfficeError(19, @"This attachment is no longer present. Refresh the list.");
                 else if ([NSFileManager.defaultManager createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:&failure]) {
-                    FloeExportWordAttachment(lookup, identifier.UTF8String, file.absoluteString.UTF8String);
+                    FloeExportAttachment(lookup, identifier.UTF8String, file.absoluteString.UTF8String);
                 }
             } catch (const std::exception &error) {
                 failure = OfficeAttachmentReadError(20, @"The attachment could not be exported. The document has not been changed.", error);

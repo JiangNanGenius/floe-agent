@@ -167,3 +167,6 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 - 完整 App 已从 34321329601 产物完成本地开发签名和安装；恢复了未签名归档导出遗漏的项目 App Group/iCloud/HomeKit 权限，证书、描述文件、Mac 设备许可和严格签名校验通过。实际启动能显示主界面，但打开设置触发 EnvironmentObject 缺失断言，见 [崩溃回执](evidence/workflow-upgrade-20260909/office-floe-settings-presentation-crash.json)。已将 SettingsRootView 改为显式依赖注入，三处入口同步更新并向后代传播环境；语法检查通过，完整重建和运行复测仍待验证。此发现是主应用验收失败，不能用独立 Office 程序成功覆盖。
 
 - 设置弹窗回归覆盖已加入 CrashAndFeedbackRegressionTests：在没有继承 AppEnvironment 的独立常规宽度 UIHostingController 中渲染设置页，验证显式依赖与后代环境。完整应用重建 34323674863（0540688）和完整 CI 34323990305（8596152）均已启动，尚待结果。当前旧验证包通过系统文件选择器导入合成 Word 到草稿，截图已存 [完整 App 文件导入](evidence/workflow-upgrade-20260909/office-floe-draft-file-import-mac.jpg)；没有发送模型请求，草稿导入不等于右侧预览或编辑写回验收。
+
+- A04/A05 原生附件路径已扩展到 Excel/PPT：复用引擎 Package 存储和 OLE2Shape，按当前工作表选区/当前幻灯片定位，原生新增对象撤销，递归枚举所有工作表/幻灯片中的实际附件并从文档存储导出；失败删除本次暂存对象，不生成无关删除撤销。前端与独立探针的附件入口同步扩展。针对锁定引擎头文件的 arm64 iOS 编译检查、3 项宿主结构测试、9 项保存回执测试及 6 项只读脚本检查通过；尚待云端链接和实际编辑/保存/撤销/导出验收，未更新宿主产物锁定。见 [编译边界](evidence/workflow-upgrade-20260909/office-drawing-attachment-compile.json)。
+- 设置页显式依赖修复的完整 Floe 构建 34323674863 已成功，运行复测仍待安装新包；完整 CI 34323990305 仍运行，不能把单独构建成功等同完整发布验收。

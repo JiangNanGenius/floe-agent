@@ -123,7 +123,7 @@ import CryptoKit
                     }
                 }
             })
-        if !readOnly && working.pathExtension == "docx" {
+        if !readOnly && ["docx", "xlsx", "pptx"].contains(working.pathExtension) {
             controller.navigationItem.leftBarButtonItem = UIBarButtonItem(
                 title: "Insert attachment",
                 primaryAction: UIAction { [weak self, weak controller] _ in
@@ -146,7 +146,7 @@ import CryptoKit
                     } catch { controller.title = error.localizedDescription }
                 })
         }
-        if working.pathExtension == "docx" {
+        if ["docx", "xlsx", "pptx"].contains(working.pathExtension) {
             var buttons = controller.navigationItem.leftBarButtonItems ?? []
             buttons.append(UIBarButtonItem(title: "Export attachments", primaryAction: UIAction { [weak self, weak controller] _ in
                 guard let self, let controller else { return }
