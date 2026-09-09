@@ -51,7 +51,13 @@ import Darwin
         let label = UILabel()
         label.text = "Native Office roundtrip · \(Locale.preferredLanguages.first ?? "unknown")"
         stack.addArrangedSubview(label)
-        for (name, ext) in [("Word", "docx"), ("Excel", "xlsx"), ("PowerPoint", "pptx")] {
+        var fixtures = [("Word", "docx", "fixture"), ("Excel", "xlsx", "fixture"), ("PowerPoint", "pptx", "fixture")]
+        #if FLOE_OLE_ANCHOR_PROBE
+        fixtures += [("Excel page anchor", "xlsx", "fixture-anchor-page"),
+                     ("Excel move anchor", "xlsx", "fixture-anchor-move"),
+                     ("Excel resize anchor", "xlsx", "fixture-anchor-resize")]
+        #endif
+        for (name, ext, resource) in fixtures {
             let button = UIButton(type: .system)
             button.setTitle("Edit synthetic \(name)", for: .normal)
             button.addAction(UIAction { [weak self] _ in
@@ -60,7 +66,7 @@ import Darwin
                     guard let self else { return }
                     if let error { label.text = error.localizedDescription; return }
                     do {
-                        guard let input = Bundle.main.url(forResource: "fixture", withExtension: ext) else {
+                        guard let input = Bundle.main.url(forResource: resource, withExtension: ext) else {
                             throw CocoaError(.fileNoSuchFile)
                         }
                         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -72,6 +78,7 @@ import Darwin
                         self.working = file
                         self.events = []
                         self.record("fixtureCopied", detail: ext)
+                        self.record("fixtureResource", detail: resource)
                         self.record("preferredLanguage", detail: Locale.preferredLanguages.first ?? "unknown")
                         #if FLOE_FONT_METRICS_PROBE
                         let trace = root.appendingPathComponent("font-metrics.jsonl")

@@ -1,0 +1,82 @@
+{
+  "manifest": {
+    "sourceSHA256": "29d5a640ea930ab039729e9dc27babb37c960f0ce88cd09330deb5579c8e0f37",
+    "purpose": "Synthetic native-editor regression inputs only",
+    "variants": {
+      "page": {
+        "file": "fixture-anchor-page.xlsx",
+        "moveWithCells": false,
+        "sizeWithCells": false,
+        "sha256": "985ff3929bd5b85a65b26bb67f9ec1054824c806c32250a09a7c5a4b455d0adb"
+      },
+      "move": {
+        "file": "fixture-anchor-move.xlsx",
+        "moveWithCells": true,
+        "sizeWithCells": false,
+        "sha256": "179717f004b546fab1ca2246bc4d7c401452f209a934e63ab09a42008a3b754c"
+      },
+      "resize": {
+        "file": "fixture-anchor-resize.xlsx",
+        "moveWithCells": true,
+        "sizeWithCells": true,
+        "sha256": "0e48deb7eb24b314269d6ac21a6772b942e0b5da17ea303d84b6fed597edac84"
+      }
+    }
+  },
+  "preRuntimeChecks": {
+    "page": {
+      "structureChecks": 29,
+      "allStructureChecksPassed": true,
+      "geometryAndModes": [
+        {
+          "hmm": {
+            "margin-left": 1699,
+            "margin-top": 2117,
+            "width": 6000,
+            "height": 1800
+          },
+          "moveWithCells": false,
+          "sizeWithCells": false,
+          "vmlImportedMoveWithCells": false,
+          "vmlImportedSizeWithCells": false
+        }
+      ]
+    },
+    "move": {
+      "structureChecks": 29,
+      "allStructureChecksPassed": true,
+      "geometryAndModes": [
+        {
+          "hmm": {
+            "margin-left": 1699,
+            "margin-top": 2117,
+            "width": 6000,
+            "height": 1800
+          },
+          "moveWithCells": true,
+          "sizeWithCells": false,
+          "vmlImportedMoveWithCells": true,
+          "vmlImportedSizeWithCells": false
+        }
+      ]
+    },
+    "resize": {
+      "structureChecks": 29,
+      "allStructureChecksPassed": true,
+      "geometryAndModes": [
+        {
+          "hmm": {
+            "margin-left": 1699,
+            "margin-top": 2117,
+            "width": 6000,
+            "height": 1800
+          },
+          "moveWithCells": true,
+          "sizeWithCells": true,
+          "vmlImportedMoveWithCells": true,
+          "vmlImportedSizeWithCells": true
+        }
+      ]
+    }
+  }
+}
