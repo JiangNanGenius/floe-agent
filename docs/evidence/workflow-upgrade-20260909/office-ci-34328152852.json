@@ -1,0 +1,24 @@
+{
+  "runID": "34328152852",
+  "sourceCommit": "c6bb8038db08042e31c816cc54cd4211372c02a4",
+  "buildTestJob": "failure",
+  "appRegressionTests": {
+    "total": 125,
+    "passed": 125
+  },
+  "runtimeSuite": {
+    "tests": 218,
+    "issues": 1,
+    "failure": "AgentRuntimeTests.discoveryThenExecution expected only tools.search; actual catalog correctly contains tools.search and tools.list.",
+    "candidateFix": "Expect both discovery entry points while still requiring test.echo to remain deferred."
+  },
+  "linuxBuild": "success",
+  "appStoreSDK": "running-at-observation",
+  "remainingChecks": [
+    "test candidate regression",
+    "remaining SwiftPM suites",
+    "secret scan",
+    "SBOM",
+    "license inventory"
+  ]
+}

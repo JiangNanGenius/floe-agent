@@ -1,0 +1,42 @@
+{
+  "buildRunID": "34328151744",
+  "sourceCommit": "c6bb8038db08042e31c816cc54cd4211372c02a4",
+  "nativeHostRun": "34327287597",
+  "installedApplication": "Floe Agent 3",
+  "installedCodeAndFrameworkMatchSignedPayload": true,
+  "developmentSigningReceipt": {
+    "sourceRunID": "34328151744",
+    "developmentOnly": true,
+    "signatureVerified": true,
+    "bundles": [
+      {
+        "bundle": "Floe Screen Share.appex",
+        "allRequestedCapabilitiesPresent": true,
+        "profileAllowsMac": true,
+        "profileIncludesSigningCertificate": true
+      },
+      {
+        "bundle": "Floe Agent.app",
+        "allRequestedCapabilitiesPresent": true,
+        "profileAllowsMac": true,
+        "profileIncludesSigningCertificate": true
+      }
+    ],
+    "ipaSHA256": "41b6db1350b7e32be782df5d6b251298248e77f3d2c4cbc1aabff38e5db0cf38",
+    "runtimeVerified": false
+  },
+  "sessionID": "C39BC96F-AD3B-4642-9DF0-D96AD918058F",
+  "settingsAndWorkspaceNavigationPassed": true,
+  "inlineWordPreviewRendered": true,
+  "fullscreenNativeEditOpened": true,
+  "workspaceAttachmentInserted": true,
+  "failure": "Editor displayed server connection lost after the workspace attachment picker returned. Save and return failed with retained document copies.",
+  "saveAndReturnPassed": false,
+  "originalSHA256": "a9591001a09a0f3cedda7d8a1212385caf146dadb4983a8f63b3f07eb23644be",
+  "originalUnchanged": true,
+  "workingSHA256": "ba5ed09005f83143e074bdf0c97597fb49e5454043f820f051f1c692832be109",
+  "workingAttachmentStructuralChecksPassed": 18,
+  "disconnectRootCauseConfirmed": false,
+  "physicalDevicePassed": false,
+  "originalFileWritebackPassed": false
+}
