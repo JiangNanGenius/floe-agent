@@ -1,0 +1,26 @@
+{
+  "hostRunID": "34332381585",
+  "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+  "hostExecutableSHA256": "bc45744887a9f30c993a0dd8b5608ad39e2f5d1537296386e198968830352a83",
+  "verifiedResourceFiles": 4780,
+  "verifiedResourceDirectories": 174,
+  "appVersion": "1.5.3",
+  "appBuild": "134",
+  "unsignedPayloadVerified": true,
+  "engineOpened": false,
+  "embeddedEditorPassed": false,
+  "originalFileWritebackPassed": false,
+  "deviceRoundtripPassed": false,
+  "appCodeBinaryPath": "Floe Agent.debug.dylib",
+  "appCodeBinarySHA256": "cf4d6a6432eb908e22d5cf684bf705327f0c9dac667181bf1e71485cf93a8863",
+  "officeLoadChain": [
+    "Floe Agent",
+    "Floe Agent.debug.dylib",
+    "@rpath/FloeOfficeNative.framework/FloeOfficeNative"
+  ],
+  "appLinksOfficeHost": true,
+  "sourceRunID": "34333115646",
+  "workflowCommit": "415dad302e5718f1e482baff3aed4e7b67b75e18",
+  "developmentSigningStarted": true,
+  "testFlightUploaded": false
+}

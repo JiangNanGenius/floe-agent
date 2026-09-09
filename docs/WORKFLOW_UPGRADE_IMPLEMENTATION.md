@@ -193,3 +193,5 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 - 断连修复取得实际完整应用组件对照结果：Floe Agent 4 使用 c6bb803 主应用与 9a5e6a4 原生组件，安装二进制与签名载荷一致；新合成 Word 的右侧只读、全屏直接编辑、工作区选择停留 35 秒后插入、保存返回、原文件写回以及关闭后新会话重开全部通过。原文件附件 18/18 检查通过，7,167 字节与输入 SHA 一致，重开副本与原文件 SHA 相同。五张截图及 [闭环证据](evidence/workflow-upgrade-20260909/office-native-drain-full-app-control.json) 已保留。此包是开发组件对照，不是完整源码重建或发布；415dad3 的完整重建 34333115646 仍在运行。Excel 附件导出、PPT 图表工作簿、完整操作矩阵和真机验收继续推进。
 
 - CI 34331257197（ff4546d）的 build-test 已成功，包括应用回归、SPM、子进程/PTY、安全扫描、SBOM 和许可清单，发现工具旧断言已不再阻断；Linux 构建通过，App Store SDK 在本次观察仍运行。见 [CI 状态](evidence/workflow-upgrade-20260909/office-ci-34331257197.json)。此 CI 不包含后续 9a5e6a4 原生通信修复，不能替代当前完整重建与运行验收。
+
+- 完整源码重建 34333115646（415dad3）已成功。下载后再次验证 34332381585 原生组件、4,780 资源文件/174 目录和实际应用动态加载关系；见 [完整构建回执](evidence/workflow-upgrade-20260909/office-floe-native-drain-integration.json)。开发签名已启动，安装和相同 Word 闭环复测仍待完成，不能将组件对照包的运行结果直接归到该完整构建。
