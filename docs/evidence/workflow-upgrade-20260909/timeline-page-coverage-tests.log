@@ -1,0 +1,40 @@
+Building for debugging...
+[Pre-planning 1 / 66]
+[Planning deferred tasks]
+[12 / 50]
+[28 / 51]
+[29 / 55]
+[32 / 55] FloeCore
+[40 / 55] FloeCoreTests-product
+[45 / 56]
+[47 / 76]
+[49 / 76]
+[52 / 76]
+[53 / 76]
+[55 / 76]
+[57 / 76]
+[59 / 76]
+[61 / 76]
+[62 / 76]
+[64 / 76] FloeCoreTests-product
+[66 / 76] FloeCoreTests-product
+[72 / 76] AllIncludingTests
+[74 / 76] FloeCoreTests-product
+Build complete! (12.65秒)
+Test Suite 'All tests' started at 2026-09-09 23:39:03.489.
+Test Suite 'All tests' passed at 2026-09-09 23:39:03.503.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.014) seconds
+◇ Test run started.
+↳ Testing Library Version: 2077
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite TimelinePageCoverageTests started.
+◇ Test newSnapshotDuringEarlierPageFetchKeepsBothGaps() started.
+◇ Test nonConsecutiveKeysAreNotAssumedToBeMissing() started.
+◇ Test reconnectGapLoadsBeforeOlderHistory() started.
+◇ Test completeOldHistoryDoesNotHideNewGap() started.
+✔ Test newSnapshotDuringEarlierPageFetchKeepsBothGaps() passed after 0.001 seconds.
+✔ Test completeOldHistoryDoesNotHideNewGap() passed after 0.001 seconds.
+✔ Test nonConsecutiveKeysAreNotAssumedToBeMissing() passed after 0.001 seconds.
+✔ Test reconnectGapLoadsBeforeOlderHistory() passed after 0.001 seconds.
+✔ Suite TimelinePageCoverageTests passed after 0.001 seconds.
+✔ Test run with 4 tests in 1 suite passed after 0.002 seconds.
