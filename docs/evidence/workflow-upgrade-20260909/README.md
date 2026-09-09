@@ -2,7 +2,14 @@
 
 这是 `codex/office-workflow-upgrade` 工作分支的阶段证据，**不是整轮验收或发布声明**。素材与任务均为合成测试数据。
 
-## 最新 Office 原生宿主进度
+## 当前 Office 证据摘要
+
+- [只读修复宿主 34306039335](https://github.com/JiangNanGenius/floe-agent/actions/runs/34306039335) 完整编译、链接和 Swift 导入成功；取回后校验 4,785 个文件与 178 个目录。运行使用的源码/补丁和产物均已锁定。
+- 独立签名应用在 Mac Designed for iPad 中显示真实 Word 页面。预览不再出现编辑入口，菜单保留只读操作；全选后输入不修改内容，显式保存被拒绝，工作文件和引擎副本均与合成源文件逐字节一致。见 [运行回执](office-readonly-runtime-check.json) 和 [截图](office-native-readonly-save-rejected-mac.jpg)。粘贴自动化超时，未据此声称粘贴完整验收。
+- 完整 Floe 应用较早的构建 34301236609 和 34302444252 已成功，前者取回并复核加载链及资源；它们使用旧框架，不证明当前只读修复已在完整 Floe 中运行。
+- 全屏真实编辑/原文件写回/重开保真、强制后端修改命令、物理设备及 TestFlight 仍待验证。下面保留的是历次阶段证据，不能将不同版本的检查拼成整轮完成。
+
+## 早期 Office 原生宿主进度
 
 [宿主构建 34292622779](https://github.com/JiangNanGenius/floe-agent/actions/runs/34292622779)
 已成功编译、链接并通过 Swift 导入。取回的未签名框架、公开头文件、

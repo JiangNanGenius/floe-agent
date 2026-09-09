@@ -1,0 +1,28 @@
+{
+  "hostRunID": "34306039335",
+  "environment": "Mac Designed for iPad, isolated signed qualification application",
+  "uiObserved": {
+    "wordRendered": true,
+    "editEntryAbsent": true,
+    "editMenuOnlyReadOperations": true,
+    "selectAllAndTypingDidNotModifyVisibleContent": true,
+    "saveRejected": true
+  },
+  "pasteAttempt": "CUA paste timed out waiting for clipboard read; AX selection/content unchanged, so direct paste dispatch is not independently proven",
+  "files": [
+    {
+      "relativePath": "working.docx",
+      "sha256": "d2443e68679feb45dd363db472be499e7baf0a6fcf92a4675d331bb0781d9777",
+      "byteIdenticalToFixture": true
+    },
+    {
+      "relativePath": "engine/46699801-F256-455D-9BB6-1A3867066937/working.docx",
+      "sha256": "d2443e68679feb45dd363db472be499e7baf0a6fcf92a4675d331bb0781d9777",
+      "byteIdenticalToFixture": true
+    }
+  ],
+  "backendForcedCommandTestPassed": false,
+  "fullFloeFrontendPassed": false,
+  "originalWritebackPassed": false,
+  "physicalDevicePassed": false
+}

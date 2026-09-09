@@ -1,28 +1,28 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "save-receipt-overlay-pending-native-requalification",
+  "qualificationStatus": "readonly-host-compiled-isolated-mac-preview-checked",
   "qualifiedHostArtifact": {
-    "runID": "34304546841",
+    "runID": "34306039335",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10086234278,
-    "workflowCommit": "0a9c6119f3cc0b43a74d937b62662ef6be01e6af",
-    "archiveSHA256": "b0cff288ffae6291b07af1b14ecafcf5eee9f8552df7f317605b582d51cac377",
-    "executableSHA256": "a548b8392d384a0ff4376180dbc3a7a55f75ceb58e72be8c4336b234796905fd",
-    "overlaySHA256": "8f948017d130e6646c055960eb4989c628059f035b77f78aa35ace57e2bbe95d",
+    "artifactID": 10086728988,
+    "workflowCommit": "0c3006975dfc9d76c6fcee162c3e4ef4cfd90da8",
+    "archiveSHA256": "46df1fe2687474216339822f9abdf908d73a14af0856c2aec4bbee6c6075d376",
+    "executableSHA256": "800ea33718b89b6db623ad6c26495d1ee3e37823683df64fea27b8e5d5fe9857",
+    "overlaySHA256": "600f480a2ccfde4e7d8d9641332197556a4dc79466860943e207c6c2fd7618fd",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "ef44f6d2948a0dedacb1e0077f06bd9f73660697ebb8bb1936d7f0f06c6eb32c",
-      "FloeOfficeNative.mm": "f0d9b9c295114526299cc64104074067c1639c0700c4e4e6e0162436c2c7fd86"
+      "FloeOfficeNative.mm": "18b7612abc3567394a3078ac65a2d3aba9e109fa6af52a436bc73503aa6dcb3a"
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "note": "Bootstrap-fixed framework compiled, linked, Swift-imported and retrieved with complete inventory verification. Unmodified signed qualification app initialized the engine and rendered a synthetic Word page on Mac Designed for iPad. Readonly mode still exposes an editing entry and needs enforcement; full Floe, original writeback and physical-device fidelity remain unverified.",
-    "manifestSHA256": "8d467a8c01254c113bc8b3b078e56a769aa0aecb598bb4a3daa26d53e11aa6b9",
+    "manifestSHA256": "758791b39af44a2fc48a6acc5ddce15f3d5487d721e95dfafad0d2190ba68ae2",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "ef44f6d2948a0dedacb1e0077f06bd9f73660697ebb8bb1936d7f0f06c6eb32c",
-      "Info.plist": "e3b21fcb94865972fb8908dcce886fc39e73f28e20bf1439cbb70a0139a3ec00",
+      "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83"
-    }
+    },
+    "note": "Compiled, linked, Swift-imported and retrieved with complete inventory verification. Isolated signed Mac Designed for iPad Word preview hid edit entry, preserved selection under typing, rejected host save, and retained byte-identical working and engine files. Paste dispatch, forced backend commands, full Floe, editable roundtrip and physical-device fidelity remain unverified."
   },
   "qualifiedNativeArtifact": {
     "runID": "34268468731",
