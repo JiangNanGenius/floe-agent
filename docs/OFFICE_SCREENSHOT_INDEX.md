@@ -13,6 +13,7 @@
 | Excel：固定页面附件与两次文字保存 | [只读重开](evidence/workflow-upgrade-20260909/office-xlsx-precise-page-reopened-mac.jpg) | 独立测试应用 23；宿主 34350509488；[三模式记录](evidence/workflow-upgrade-20260909/office-xlsx-precise-ole-runtime.json) | 回归证据；独立应用外壳不作为最终产品宣传图 |
 | Excel：随单元格移动的附件 | [只读重开](evidence/workflow-upgrade-20260909/office-xlsx-precise-move-reopened-mac.jpg) | 同上；原尺寸、位置和列宽在文字修改保存中保持 | 未验收实际调整行列后的移动行为 |
 | Excel：随单元格缩放的附件 | [只读重开](evidence/workflow-upgrade-20260909/office-xlsx-precise-resize-reopened-mac.jpg) | 同上；保存后尺寸仍偏差 0.05 / 0.01 mm | **失败记录**；不可描述为精确保真通过 |
+| Excel：最新组件的检查中断 | [编辑页关闭](evidence/workflow-upgrade-20260909/office-modern-ole-unexpected-close.png) | 独立测试应用 24 / 宿主 34354533462；[运行记录](evidence/workflow-upgrade-20260909/office-modern-ole-interrupted-runtime.json) | **失败现场**：AX/键盘输入阶段 WebContent 崩溃；未完成保存重开，不作产品宣传或尺寸通过证据 |
 | PPT：对象位置/尺寸编辑与重开 | [保存前](evidence/workflow-upgrade-20260909/office-ppt-position-size-before-commit-mac.jpg)、[重开](evidence/workflow-upgrade-20260909/office-ppt-position-size-reopened-mac.jpg) | 宿主 34320630546；[运行记录](evidence/workflow-upgrade-20260909/office-ppt-position-size-runtime.json) | 对象指定位置/尺寸通过；图表首柱缺失、内嵌数据丢失，**整体失败记录** |
 
 ## 后续每项操作的留图方式

@@ -1,0 +1,68 @@
+{
+  "status": "interrupted-before-save-and-reopen",
+  "appLabel": "Floe Office Qualification 24",
+  "hostRunID": "34354533462",
+  "platform": "Mac Designed for iPad; not physical iPhone/iPad",
+  "sessionID": "38AB21DD-C2F7-40F3-BD8D-B5AAB2B48A82",
+  "events": [
+    {
+      "detail": "xlsx",
+      "event": "fixtureCopied",
+      "time": "2026-09-09T14:41:05Z"
+    },
+    {
+      "detail": "fixture-anchor-resize",
+      "event": "fixtureResource",
+      "time": "2026-09-09T14:41:05Z"
+    },
+    {
+      "detail": "zh-Hans-TW",
+      "event": "preferredLanguage",
+      "time": "2026-09-09T14:41:05Z"
+    },
+    {
+      "detail": "font-metrics.jsonl",
+      "event": "fontMetricTracingEnabled",
+      "time": "2026-09-09T14:41:05Z"
+    },
+    {
+      "detail": "true; readonly=false",
+      "event": "opened",
+      "time": "2026-09-09T14:41:05Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T14:41:11Z"
+    },
+    {
+      "detail": "true",
+      "event": "unexpectedClose",
+      "time": "2026-09-09T14:41:24Z"
+    }
+  ],
+  "sequence": [
+    "Open synthetic Excel resize anchor",
+    "Read loaded grid and attachment",
+    "Click name box, Command-A, attempt paste C10",
+    "Clipboard operation timed out; next observation showed editor closed"
+  ],
+  "runtimePassed": false,
+  "scope": "No explicit Save and reopen was reached; precision qualification remains pending. No original user file was used.",
+  "failureEvidence": "WebContent reported Swift/SwiftNativeNSArray.swift:78 Fatal error: Array index out of range immediately after AXRuntime stringWithAXAttribute error; WebKit process termination reason Crash. Trigger/root cause not isolated.",
+  "binaries": {
+    "Floe Office Qualification": "6a38e719f5b0aaa920953d3b5f45c3463be3cc0f8a0777d6e0e15cd110e10df5",
+    "Frameworks/FloeOfficeNative.framework/FloeOfficeNative": "d55c999b69daf9678d194049c022ee2c0cd5176074701e598c02d761cf048bd0"
+  },
+  "retainedFiles": {
+    "working.xlsx": {
+      "bytes": 19107,
+      "sha256": "0e48deb7eb24b314269d6ac21a6772b942e0b5da17ea303d84b6fed597edac84"
+    },
+    "engine/1C2211D8-A6AD-4979-ADEE-1064E1FB51D5/working.xlsx": {
+      "bytes": 19107,
+      "sha256": "0e48deb7eb24b314269d6ac21a6772b942e0b5da17ea303d84b6fed597edac84"
+    }
+  },
+  "screenshot": "office-modern-ole-unexpected-close.png"
+}
