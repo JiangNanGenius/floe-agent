@@ -1,0 +1,37 @@
+{
+  "runID": "34339384837",
+  "artifactName": "office-native-host-unsigned",
+  "artifactID": 10099185847,
+  "workflowCommit": "5be99172fc4a3960a0cf545171d148ed84ed72d0",
+  "archiveSHA256": "a7518054a25202bcefcffa127fdc6f498af19ab9d71125129c018fd3e27ec6e0",
+  "executableSHA256": "d589c81de88efd989b57d2d9883bba35dfd3548c675a0b01266c4df4ed0aa568",
+  "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
+  "hostSourceSHA256": {
+    "FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
+    "FloeOfficeNative.mm": "3b01a57ef31a010170e6bdd40d87e69e3197701d8216850e5c88c9e9bc356840",
+    "FloeOfficeAttachment.cpp": "1265ec61e2144a8e5fc8e715c000cfc6254de2588f228b29d4bbb045fc29cfa6",
+    "FloeOfficeAttachment.hxx": "6a3c976e41df1ec3c7d339c3762522c46b3cc8b23574522559f8b83e60e7088e"
+  },
+  "verifiedResourceFiles": 4780,
+  "verifiedResourceDirectories": 174,
+  "manifestSHA256": "e1850038e48c2e498ffb2aea5c42325284cad5bbc72102348de0d77341e6903d",
+  "note": "Compiled, linked and Swift-imported pinned native host. Runtime roundtrip, full fidelity and physical-device acceptance remain separate gates.",
+  "filterOverlay": {
+    "patchSHA256": "23a98229f5595a3b54e6a290cf663891847a4725613a2dce8c1e6ce2b089ab5b",
+    "sourceFiles": {
+      "engine/sc/source/filter/inc/xcl97rec.hxx": {
+        "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
+        "patchedSHA256": "025398a1044e4faf26cb113f11031cae2f19025d5f3b40221e04c86140d19b93"
+      },
+      "engine/sc/source/filter/xcl97/xcl97rec.cxx": {
+        "originalSHA256": "cfc6ad7262deb1ef682662c3c05e9b49c05b246796c637c4f7ed9d57164ce5b9",
+        "patchedSHA256": "2013f58b8ed6e9e4ec6fbbba30cc73e7b1b88b9b6ee0977e85db05f7c613049f"
+      }
+    },
+    "archiveSHA256": "70fb126672ba7d0d15f014050e00dd7248e5bfee8fd737621fd0c58993de8d1e",
+    "objectSHA256": "4f38e6a2e1507cee47c718132a5421738e50aac02792c3b529716f426c26980f",
+    "selectedArchiveSHA256": "70fb126672ba7d0d15f014050e00dd7248e5bfee8fd737621fd0c58993de8d1e"
+  },
+  "verifiedFiles": 4785,
+  "verifiedDirectories": 178
+}

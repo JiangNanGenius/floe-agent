@@ -1,0 +1,34 @@
+{
+  "hostRunID": "34339384837",
+  "sourceCommit": "5be9917",
+  "surface": "Mac Designed for iPad, independent native app 18",
+  "sessionID": "88109DBA-C101-4CFC-B17A-17B2D5D9FA9B",
+  "selectedSheet": "Notes",
+  "selectedCell": "B5",
+  "insertPassed": true,
+  "saveCloseReopenPassed": true,
+  "reopenedAttachmentExportPassed": true,
+  "exportedBytes": 65539,
+  "sourceAndBothExportSHA256": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+  "savedSHA256": "65d95346ce4440bcfb5664d13c773200e54b235f11d55a6f95165c8f42b5eacc",
+  "structuralChecksPassed": 29,
+  "signature": {
+    "purpose": "Independent native XLSX runtime qualification, not a full Floe release",
+    "hostRunID": "34339384837",
+    "signaturePassed": true,
+    "runtimePassed": false,
+    "mainSHA256": "c7b4ad6d9c92242a71f2f133fd7f7854a5ee70db7dfbc111453e2a632c0f84ff",
+    "nativeSHA256": "264ea32ecf85c226d4fc3147fb9ea40f5727bbc398e57de858f37d43a7bac0e0",
+    "installedApplication": "Floe Office Qualification 18",
+    "installedBinaryMatches": true
+  },
+  "geometryFidelityPassed": false,
+  "undoRedoRoundtripPassed": false,
+  "fullFloeRoundtripPassed": false,
+  "physicalDevicePassed": false,
+  "microsoftOfficeReopenPassed": false,
+  "screenshots": [
+    "office-xlsx-vml-fixed-inserted-mac.jpg",
+    "office-xlsx-vml-fixed-reopened-mac.jpg"
+  ]
+}
