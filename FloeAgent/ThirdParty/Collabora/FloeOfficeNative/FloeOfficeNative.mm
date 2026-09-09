@@ -32,6 +32,54 @@ static NSError *OfficeError(NSInteger code, NSString *description) {
                           userInfo:@{NSLocalizedDescriptionKey: description}];
 }
 
+// FLOE_READONLY_SCRIPT_BEGIN
+static NSString *FloeReadOnlyScript() {
+    return [NSString stringWithUTF8String:R"FLOE_JS(
+(() => {
+    // Native preview permission cannot be relaxed by the mobile edit button,
+    // a menu, or a later server presentation update. Backend session permission
+    // and UIDocument persistence independently enforce the same boundary.
+    const install = () => {
+        const proto = window.L && window.L.Map && window.L.Map.prototype;
+        if (!proto || typeof proto.setPermission !== 'function' ||
+            typeof proto._enterReadOnlyMode !== 'function') return;
+        const setPermission = proto.setPermission;
+        const enterReadOnly = proto._enterReadOnlyMode;
+        const hideEditEntry = () => {
+            const button = document.getElementById('mobile-edit-button');
+            if (button) {
+                button.hidden = true;
+                button.setAttribute('aria-hidden', 'true');
+                button.setAttribute('tabindex', '-1');
+            }
+        };
+        const style = document.createElement('style');
+        style.textContent = '#mobile-edit-button { display: none !important; }';
+        document.head.appendChild(style);
+        proto.setPermission = function () {
+            const result = setPermission.call(this, 'readonly');
+            hideEditEntry();
+            return result;
+        };
+        proto._enterEditMode = function () {
+            const result = enterReadOnly.call(this, 'readonly');
+            hideEditEntry();
+            return result;
+        };
+        proto._switchToEditMode = proto._proceedEditMode = function () {
+            hideEditEntry();
+            return false;
+        };
+        hideEditEntry();
+    };
+    if (document.readyState === 'loading')
+        document.addEventListener('DOMContentLoaded', install, { once: true });
+    else install();
+})();
+)FLOE_JS"];
+}
+// FLOE_READONLY_SCRIPT_END
+
 typedef NS_ENUM(NSUInteger, FloeRuntimeState) {
     FloeRuntimeIdle, FloeRuntimeStarting, FloeRuntimeReady, FloeRuntimeFailed
 };
@@ -384,6 +432,13 @@ static void ServerReady() {
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     [self addChildViewController:self.editor];
     UIView *content = self.editor.view;
+    if (self.readOnly) {
+        // Add before viewWillAppear opens the document. At document start the
+        // listener precedes the bundled editor's DOMContentLoaded callbacks.
+        WKUserScript *script = [[WKUserScript alloc] initWithSource:FloeReadOnlyScript()
+            injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES];
+        [self.editor.webView.configuration.userContentController addUserScript:script];
+    }
     content.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:content];
     [NSLayoutConstraint activateConstraints:@[

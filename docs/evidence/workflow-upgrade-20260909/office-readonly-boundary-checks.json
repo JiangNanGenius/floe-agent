@@ -1,0 +1,12 @@
+{
+  "checksPassed": [
+    "native URL preserves special file names and unrelated query values",
+    "readonly permission is unique; editable sessions clear stale permission",
+    "later permission messages cannot enable editing",
+    "all mobile edit entry points remain readonly",
+    "readonly selection and copy methods remain available",
+    "document-start installation waits for the editor prototype"
+  ],
+  "nativeBackendEnforcementPassed": false,
+  "realEditorReadonlyPassed": false
+}

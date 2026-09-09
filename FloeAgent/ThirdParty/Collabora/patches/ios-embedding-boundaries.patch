@@ -10,7 +10,7 @@
  
  #import <poll.h>
  #import <sys/stat.h>
-@@ -39,52 +38,25 @@
+@@ -39,52 +38,37 @@
  @interface DocumentViewController() <WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIScrollViewDelegate, UIDocumentPickerDelegate, UIFontPickerViewControllerDelegate> {
      int closeNotificationPipeForForwardingThread[2];
      NSURL *downloadAsTmpURL;
@@ -56,8 +56,21 @@
 -    }
 -
 -    return externalKeyboardAttached;
+-}
 +    return [GCKeyboard coalescedKeyboard] != nil;
- }
++}
++
++// FLOE_READONLY_HANDSHAKE_BEGIN
++static NSURL *FloeDocumentHandshakeURL(NSURL *fileURL, BOOL readOnly) {
++    NSURLComponents *components = [NSURLComponents componentsWithURL:fileURL resolvingAgainstBaseURL:NO];
++    NSMutableArray<NSURLQueryItem *> *items = [NSMutableArray array];
++    for (NSURLQueryItem *item in components.queryItems ?: @[])
++        if (![item.name isEqualToString:@"permission"]) [items addObject:item];
++    if (readOnly) [items addObject:[NSURLQueryItem queryItemWithName:@"permission" value:@"readonly"]];
++    components.queryItems = items.count ? items : nil;
++    return components.URL;
++}
++// FLOE_READONLY_HANDSHAKE_END
  
  @implementation DocumentViewController
 -
@@ -70,7 +83,7 @@
  
      WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
      WKUserContentController *userContentController = [[WKUserContentController alloc] init];
-@@ -129,61 +101,8 @@
+@@ -129,61 +113,8 @@
      self.webView.navigationDelegate = self;
      self.webView.UIDelegate = self;
  
@@ -134,7 +147,7 @@
  
      WKWebView *webViewP = self.webView;
      NSDictionary *views = NSDictionaryOfVariableBindings(webViewP);
-@@ -257,18 +176,31 @@
+@@ -257,18 +188,31 @@
  }
  
  - (IBAction)dismissDocumentViewController {
@@ -178,7 +191,19 @@
      }];
  }
  
-@@ -605,20 +537,19 @@
+@@ -429,7 +373,10 @@
+ 
+             // First we simply send the Online C++ parts the URL and the appDocId. This corresponds
+             // to the GET request with Upgrade to WebSocket.
+-            std::string url([[self.document->copyFileURL absoluteString] UTF8String]);
++            // Native preview authority belongs to the backend session too. The
++            // HTML query alone only controls the initial browser presentation.
++            NSURL *sessionURL = FloeDocumentHandshakeURL(self.document->copyFileURL, self.document->readOnly);
++            std::string url(sessionURL.absoluteString.UTF8String);
+ 
+             // This is read in the code in ClientRequestDispatcher::handleIncomingMessage()
+             std::string message(url + " " + std::to_string(self.document->appDocId));
+@@ -605,20 +552,19 @@
  }
  
  - (void)bye {
@@ -369,7 +394,7 @@
              _docManager->handleSaveMessage(saveMessage);
 --- a/ios/Mobile/CODocument.mm
 +++ b/ios/Mobile/CODocument.mm
-@@ -48,6 +48,13 @@
+@@ -48,7 +48,18 @@
  
  @implementation CODocument
  
@@ -381,9 +406,14 @@
 +}
 +
  - (id)contentsForType:(NSString*)typeName error:(NSError **)errorPtr {
++    if (readOnly) {
++        if (errorPtr) *errorPtr = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteNoPermissionError userInfo:nil];
++        return nil;
++    }
      return [NSData dataWithContentsOfFile:[copyFileURL path] options:0 error:errorPtr];
  }
-@@ -65,24 +72,35 @@
+ 
+@@ -65,24 +76,35 @@
      if (fakeClientFd >= 0)
          return YES;
  
@@ -668,3 +698,22 @@
      return idToDocDataMap.size();
  }
  
+--- a/wsd/DocumentBroker.cpp
++++ b/wsd/DocumentBroker.cpp
+@@ -1170,7 +1170,15 @@
+             _isViewFileExtension = COOLWSD::IsViewFileExtension(localStorage->getFileExtension());
+             if (session)
+             {
+-                if (_isViewFileExtension)
++                // Preserve the native embedder's immutable preview permission.
++                // Local files being writable does not authorize this session to
++                // edit, add comments, or switch setviewreadonly back to false.
++                if (Util::isMobileApp() && !session->getWritePermission())
++                {
++                    session->setWritable(false);
++                    session->sendFileMode(true, false, false);
++                }
++                else if (_isViewFileExtension)
+                 {
+                     LOG_DBG("Setting session [" << sessionId << "] as readonly");
+                     session->setReadOnly(true);

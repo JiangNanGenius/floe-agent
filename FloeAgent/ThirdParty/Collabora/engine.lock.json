@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "native-word-rendered-readonly-enforcement-pending",
+  "qualificationStatus": "save-receipt-overlay-pending-native-requalification",
   "qualifiedHostArtifact": {
     "runID": "34304546841",
     "artifactName": "office-native-host-unsigned",
@@ -86,14 +86,14 @@
   "sourcePatchSHA256": "09517b9a2dd4002a767491976762410d4cefd45172ea8cf401196268f5817ad7",
   "embeddingOverlay": {
     "patch": "patches/ios-embedding-boundaries.patch",
-    "sha256": "8f948017d130e6646c055960eb4989c628059f035b77f78aa35ace57e2bbe95d",
+    "sha256": "600f480a2ccfde4e7d8d9641332197556a4dc79466860943e207c6c2fd7618fd",
     "requiredFrameworks": [
       "GameController"
     ],
     "files": {
       "ios/Mobile/DocumentViewController.mm": {
         "originalSHA256": "7dab7a3c15e7fbf45a3b5227007ad523397f9984800ef6ed16f99c5ffdbbbeba",
-        "preparedSHA256": "0acb4c7dc83d816a4544860ddcfdef741c1062466415ce13b30664931d99f9c4"
+        "preparedSHA256": "8a625cee30620604f2fdaf3219444c3575d07d4834e9cae99259f15e740320b3"
       },
       "ios/Mobile/AppDelegate.mm": {
         "originalSHA256": "cd6f02a0c5aa2125245ada862ed7abe69422232f4485f3c2dbadea75464dd2e1",
@@ -113,7 +113,7 @@
       },
       "ios/Mobile/CODocument.mm": {
         "originalSHA256": "4a283c74308e8eec41eb736b731b787f7055e4d61adb4a177b2e1d5cc046df65",
-        "preparedSHA256": "e14c7d6fd6a299243bb30070d4386bc6b36ae24d2c7e663f956f7aca6bd6b49c"
+        "preparedSHA256": "68d3f4ad1b1dfe56e335403cdbf1efd553fa755b7fb53387c72e078346b65318"
       },
       "ios/ios.h": {
         "originalSHA256": "3bc138bf62d95b68ad2102c33e78a85cf614d9899b1c57328a1ae8e964860bc1",
@@ -142,6 +142,10 @@
       "common/MobileApp.cpp": {
         "originalSHA256": "36237045258b3fea991010dc24fd6e8383625b58c9c72cd0bea3a290ce018f38",
         "preparedSHA256": "c87d8ea59e6f53c368dd201eb4197a6d3b89bca06000c3a17042b9be7e0893d2"
+      },
+      "wsd/DocumentBroker.cpp": {
+        "originalSHA256": "d03af6c0e81836166bf32db02b182fe4adce40389728c69a39ef7c1da4da36c7",
+        "preparedSHA256": "0600a9e698b9993f1d4bc2f3272f849d9c593395f568023b4df9acb4b8bc6371"
       }
     }
   }

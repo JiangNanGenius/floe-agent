@@ -22,12 +22,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Validate native input and framework tooling
         run: |
           python3 FloeAgent/scripts/test_office_engine_bundle.py
           python3 FloeAgent/scripts/test_office_mobile_qualification.py
           python3 FloeAgent/scripts/test_office_native_host.py
           python3 FloeAgent/scripts/test_office_save_receipts.py
+          python3 FloeAgent/scripts/test_office_readonly.py
       - name: Reuse complete qualified engine inputs
         env:
           GH_TOKEN: ${{ github.token }}
