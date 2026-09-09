@@ -1,0 +1,44 @@
+{
+  "sourceRunID": "34323674863",
+  "developmentOnly": true,
+  "signatureVerified": true,
+  "bundles": [
+    {
+      "bundle": "Floe Screen Share.appex",
+      "allRequestedCapabilitiesPresent": true,
+      "profileAllowsMac": true,
+      "profileIncludesSigningCertificate": true
+    },
+    {
+      "bundle": "Floe Agent.app",
+      "allRequestedCapabilitiesPresent": true,
+      "profileAllowsMac": true,
+      "profileIncludesSigningCertificate": true
+    }
+  ],
+  "ipaSHA256": "eeb23eea87483a54c5697e679cb6784ce67425bf4611ac85b5d31cb22e900fbe",
+  "runtimeVerified": false,
+  "installedApplicationCodeMatchesSignedPayload": true,
+  "settingsPresentationPassed": true,
+  "filesSettingsNavigationPassed": true,
+  "workspaceFolderImportPassed": true,
+  "allWorkspacesListingPassed": true,
+  "officePreviewPassed": true,
+  "officeOriginalFileWritebackPassed": false,
+  "physicalDevicePassed": false,
+  "testFlightPublished": false,
+  "officeFullscreenOpened": true,
+  "initialFullscreenNeedsExtraEditTap": true,
+  "baselineSHA256": {
+    "fixture.docx": "a9591001a09a0f3cedda7d8a1212385caf146dadb4983a8f63b3f07eb23644be",
+    "fixture.xlsx": "c3c1105c85deddd4f601577fead882d477957b8c51118e719f9e43b0b29de6cd",
+    "fixture.pptx": "a2e9c18c0811b988a8e7778f2ba95d8c86a203c9b8d25aa839f37a1c0988f6fb"
+  },
+  "officeWorkspaceAttachmentInserted": true,
+  "explicitSaveAttempts": 2,
+  "explicitSavePassed": false,
+  "saveFailure": "Office could not complete this save. Your document copies have been retained.",
+  "originalUnchangedAfterFailure": true,
+  "privateWorkingCopyContainsAttachment": true,
+  "possibleCause": "Native bridge rejects unmodified save result that upstream DocumentBroker treats as persisted; requires runtime retest after fix."
+}
