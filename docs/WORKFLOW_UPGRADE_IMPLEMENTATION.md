@@ -198,3 +198,7 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 
 - Excel 附件保存缺失已补首版引擎导出：读取当前嵌入对象存储，写入工作表关系、VML 对象/图标与单元格锚点，并输出精确 EMU objectPr；数据或预览写入失败不再被当成成功保存。真实 arm64 对象编译及静态库替换校验通过，其余 167 个成员不变，见 [编译回执](evidence/workflow-upgrade-20260909/office-excel-filter-overlay-compile.json)。云端链接、保存重开和完整位置保真仍待实测；旧 VML 导入的整数像素取整也保留为待验，未勾选 A04/F04。
 - CI 34331257197（ff4546d）最终全部通过，包含 App Store SDK；此结果不覆盖后续通信或 Excel 导出修改。完整构建 34333115646 的开发签名包已生成且签名验证通过，完整包的运行闭环仍待复测，没有上传 TestFlight。
+
+- 完整构建 34333115646（415dad3）的原文件闭环已实际通过：安装主程序与原生组件均与签名包哈希一致；Word 右侧只读、全屏直接编辑、附件选择页停留 35 秒后插入、保存、关闭和新会话重开正常。工作区原文件附件 18 项检查通过，原字节一致，新会话副本与原文件 SHA 相同；见 [完整应用运行证据](evidence/workflow-upgrade-20260909/office-native-drain-fullbuild-runtime.json) 及五张截图。此证据仅覆盖该合成 Word 样本，不代替全部 Office、物理真机和 Microsoft Office 验收。Excel 导出修复 54bb4cb 的新宿主任务 34336959885 已通过导出器编译，原生组件链接中。
+
+- Excel 导出宿主 34336959885（54bb4cb）已成功，包含单对象编译、其他 167 个库成员保留验证、完整原生链接和 Swift 导入。产物 4,785 文件/178 目录本地核对通过并锁定；新增 filter patch/source/archive 校验，防止以后修改导出源码却继续打包旧宿主。见 [组件回执](evidence/workflow-upgrade-20260909/office-excel-filter-host-qualified.json)。接下来重建完整 Floe，实际 XLSX 附件及位置验收仍未通过。

@@ -1,0 +1,120 @@
+{
+  "sourceAttachmentSHA256": "c3c1105c85deddd4f601577fead882d477957b8c51118e719f9e43b0b29de6cd",
+  "savedSHA256": "1d36fb3001f7f67d5dcfb9e379a9f646720184d4f5e0455a6c3d0e22d86d8161",
+  "checks": [
+    {
+      "name": "one embedded display object",
+      "expected": 1,
+      "actual": 1,
+      "passed": true
+    },
+    {
+      "name": "object in selected paragraph",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 OLE declaration",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 embedded not linked",
+      "expected": "Embed",
+      "actual": "Embed",
+      "passed": true
+    },
+    {
+      "name": "0 package class",
+      "expected": "Package",
+      "actual": "Package",
+      "passed": true
+    },
+    {
+      "name": "0 icon presentation",
+      "expected": "Icon",
+      "actual": "Icon",
+      "passed": true
+    },
+    {
+      "name": "0 internal relationship",
+      "expected": false,
+      "actual": false,
+      "passed": true
+    },
+    {
+      "name": "0 embedded payload part",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 Package compound class",
+      "expected": "0003000C-0000-0000-C000-000000000046",
+      "actual": "0003000C-0000-0000-C000-000000000046",
+      "passed": true
+    },
+    {
+      "name": "0 file is embedded",
+      "expected": false,
+      "actual": false,
+      "passed": true
+    },
+    {
+      "name": "0 original byte length",
+      "expected": 7167,
+      "actual": 7167,
+      "passed": true
+    },
+    {
+      "name": "0 original byte hash",
+      "expected": "c3c1105c85deddd4f601577fead882d477957b8c51118e719f9e43b0b29de6cd",
+      "actual": "c3c1105c85deddd4f601577fead882d477957b8c51118e719f9e43b0b29de6cd",
+      "passed": true
+    },
+    {
+      "name": "0 legacy filename fallback",
+      "expected": "fixture.xlsx",
+      "actual": "fixture.xlsx",
+      "passed": true
+    },
+    {
+      "name": "0 Unicode command",
+      "expected": "fixture.xlsx",
+      "actual": "fixture.xlsx",
+      "passed": true
+    },
+    {
+      "name": "0 Unicode label",
+      "expected": "fixture.xlsx",
+      "actual": "fixture.xlsx",
+      "passed": true
+    },
+    {
+      "name": "0 Unicode filename",
+      "expected": "fixture.xlsx",
+      "actual": "fixture.xlsx",
+      "passed": true
+    },
+    {
+      "name": "0 complete native stream parsed",
+      "expected": "",
+      "actual": "",
+      "passed": true
+    },
+    {
+      "name": "0 icon image stored",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    }
+  ],
+  "allNamedChecksPassed": true,
+  "undoRedoPassed": false,
+  "visualFidelityPassed": false,
+  "microsoftOfficeReopenPassed": false,
+  "originalFileWritebackPassed": false,
+  "physicalDevicePassed": false
+}

@@ -1,0 +1,116 @@
+{
+  "runID": "34336959885",
+  "workflowCommit": "54bb4cb965995b3a5248ef01f7ded817f58418c7",
+  "hostCompilePassed": true,
+  "hostLinkPassed": true,
+  "swiftModuleImportPassed": true,
+  "filterOverlay": {
+    "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+    "patchSHA256": "1562b51fa6e2dd6b1b490a7412c8ea208e7227c7968cf939df939c247210a26b",
+    "originalArchiveSHA256": "a7e5961052e204adfb5694d584de17f8b7a7f0f6462a972303fd6baf78c11b77",
+    "compilePassed": true,
+    "archiveReplacementPassed": true,
+    "runtimeRoundtripPassed": false,
+    "sourceFiles": {
+      "engine/sc/source/filter/inc/xcl97rec.hxx": {
+        "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
+        "patchedSHA256": "025398a1044e4faf26cb113f11031cae2f19025d5f3b40221e04c86140d19b93"
+      },
+      "engine/sc/source/filter/xcl97/xcl97rec.cxx": {
+        "originalSHA256": "cfc6ad7262deb1ef682662c3c05e9b49c05b246796c637c4f7ed9d57164ce5b9",
+        "patchedSHA256": "3666f853db7cee9f43e54c5a6c34ab9f51d0fb6f32990b4b5ed09686107eae04"
+      }
+    },
+    "compileCommand": [
+      "xcrun",
+      "--sdk",
+      "iphoneos",
+      "clang++",
+      "-std=c++20",
+      "-c",
+      "-target",
+      "arm64-apple-ios26.0",
+      "-isysroot",
+      "/Applications/Xcode_27_beta_6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS27.0.sdk",
+      "-DLIBO_INTERNAL_ONLY",
+      "-DCPPU_ENV=gcc3",
+      "-DIOS",
+      "-DDISABLE_DYNLOADING=1",
+      "-O2",
+      "-fPIC",
+      "-fvisibility=hidden",
+      "-fvisibility-inlines-hidden",
+      "-DNDEBUG",
+      "-I",
+      "/Users/runner/work/_temp/office-native-bundle/source/engine/config_host",
+      "-I",
+      "/Users/runner/work/_temp/office-native-bundle/source/engine/include",
+      "-I",
+      "/Users/runner/work/_temp/office-filter-overlay/generated",
+      "-I",
+      "/Users/runner/work/_temp/office-filter-source/engine/sc/inc",
+      "-I",
+      "/Users/runner/work/_temp/office-filter-source/engine/sc/source/filter/inc",
+      "-I",
+      "/Users/runner/work/_temp/office-filter-source/engine/oox/inc",
+      "-I",
+      "/Users/runner/work/_temp/office-native-bundle/source/engine/workdir/UnoApiHeadersTarget/udkapi/comprehensive",
+      "-I",
+      "/Users/runner/work/_temp/office-native-bundle/source/engine/workdir/UnoApiHeadersTarget/offapi/comprehensive",
+      "-I",
+      "/Users/runner/work/_temp/office-native-bundle/source/engine/workdir/UnpackedTarball/boost",
+      "/Users/runner/work/_temp/office-filter-source/engine/sc/source/filter/xcl97/xcl97rec.cxx",
+      "-o",
+      "/Users/runner/work/_temp/office-filter-overlay/xcl97rec.o"
+    ],
+    "objectSHA256": "ed29fbc95d72c0ce958b5e31a1aa4e3b6085f7a53052198e9891c833396eefd5",
+    "archiveSHA256": "0256521bf5ee0e96d9467b8b1554df7b91baecd806442642fde43e6f9ab2dd61",
+    "archive": "/Users/runner/work/_temp/office-filter-overlay/libscfiltlo.a",
+    "replacedMember": "xcl97rec.o",
+    "preservedMemberCount": 167,
+    "selectedArchive": "/Users/runner/work/_temp/office-native-host/libscfiltlo.a",
+    "selectedArchiveSHA256": "0256521bf5ee0e96d9467b8b1554df7b91baecd806442642fde43e6f9ab2dd61",
+    "linkerListSHA256": "33d945fb179f261b631f5916504db3ffe931eb04b4a4a8c4be3666e3c8162481"
+  },
+  "xlsxRuntimePassed": false,
+  "nativePin": {
+    "runID": "34336959885",
+    "artifactName": "office-native-host-unsigned",
+    "artifactID": 10098195593,
+    "workflowCommit": "54bb4cb965995b3a5248ef01f7ded817f58418c7",
+    "archiveSHA256": "8366d623b240fb7106f10612d504ab5945ac577ec76923f1418d1444e37aafd8",
+    "executableSHA256": "8c99b575d21928b7d63a34f1f827d5624de6203c208e7bc9f83cee0b3f3d8c96",
+    "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
+    "hostSourceSHA256": {
+      "FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
+      "FloeOfficeNative.mm": "3b01a57ef31a010170e6bdd40d87e69e3197701d8216850e5c88c9e9bc356840",
+      "FloeOfficeAttachment.cpp": "1265ec61e2144a8e5fc8e715c000cfc6254de2588f228b29d4bbb045fc29cfa6",
+      "FloeOfficeAttachment.hxx": "6a3c976e41df1ec3c7d339c3762522c46b3cc8b23574522559f8b83e60e7088e"
+    },
+    "verifiedResourceFiles": 4780,
+    "verifiedResourceDirectories": 174,
+    "manifestSHA256": "63c841e5de983bbd4067be3d25c359af8e75a4c573b638fd0c157815c1f742ec",
+    "frameworkAuxiliarySHA256": {
+      "Headers/FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
+      "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
+      "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac"
+    },
+    "note": "Compiled, linked and Swift-imported native receive and live XLSX embedded object exporter. Actual XLSX save/reopen, precise anchors and full Office acceptance remain pending.",
+    "filterOverlay": {
+      "patchSHA256": "1562b51fa6e2dd6b1b490a7412c8ea208e7227c7968cf939df939c247210a26b",
+      "sourceFiles": {
+        "engine/sc/source/filter/inc/xcl97rec.hxx": {
+          "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
+          "patchedSHA256": "025398a1044e4faf26cb113f11031cae2f19025d5f3b40221e04c86140d19b93"
+        },
+        "engine/sc/source/filter/xcl97/xcl97rec.cxx": {
+          "originalSHA256": "cfc6ad7262deb1ef682662c3c05e9b49c05b246796c637c4f7ed9d57164ce5b9",
+          "patchedSHA256": "3666f853db7cee9f43e54c5a6c34ab9f51d0fb6f32990b4b5ed09686107eae04"
+        }
+      },
+      "archiveSHA256": "0256521bf5ee0e96d9467b8b1554df7b91baecd806442642fde43e6f9ab2dd61",
+      "objectSHA256": "ed29fbc95d72c0ce958b5e31a1aa4e3b6085f7a53052198e9891c833396eefd5",
+      "selectedArchiveSHA256": "0256521bf5ee0e96d9467b8b1554df7b91baecd806442642fde43e6f9ab2dd61"
+    }
+  }
+}

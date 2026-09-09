@@ -1,14 +1,14 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "native-drain-host-compiled-full-app-runtime-retest-pending",
+  "qualificationStatus": "xlsx-embedded-object-host-compiled-runtime-pending",
   "qualifiedHostArtifact": {
-    "runID": "34332381585",
+    "runID": "34336959885",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10096397232,
-    "workflowCommit": "9a5e6a46349c9579080a981980452fb53ebf656d",
-    "archiveSHA256": "eb2d4ee9ce2c34a382d698683e16fefbe39aaaab78e745f6f2c13cb665b90d5e",
-    "executableSHA256": "bc45744887a9f30c993a0dd8b5608ad39e2f5d1537296386e198968830352a83",
+    "artifactID": 10098195593,
+    "workflowCommit": "54bb4cb965995b3a5248ef01f7ded817f58418c7",
+    "archiveSHA256": "8366d623b240fb7106f10612d504ab5945ac577ec76923f1418d1444e37aafd8",
+    "executableSHA256": "8c99b575d21928b7d63a34f1f827d5624de6203c208e7bc9f83cee0b3f3d8c96",
     "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
@@ -18,13 +18,29 @@
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "e6fa5464c139bd7a8753349599d4f27a9581f4d92a72dd33f2f8658c5bb9678b",
+    "manifestSHA256": "63c841e5de983bbd4067be3d25c359af8e75a4c573b638fd0c157815c1f742ec",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
       "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac"
     },
-    "note": "Compiled, linked and Swift-imported native notification coalescing, fullscreen entry and attachment selection host. Full-app attachment/save retest and full Office fidelity remain pending."
+    "note": "Compiled, linked and Swift-imported native receive and live XLSX embedded object exporter. Actual XLSX save/reopen, precise anchors and full Office acceptance remain pending.",
+    "filterOverlay": {
+      "patchSHA256": "1562b51fa6e2dd6b1b490a7412c8ea208e7227c7968cf939df939c247210a26b",
+      "sourceFiles": {
+        "engine/sc/source/filter/inc/xcl97rec.hxx": {
+          "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
+          "patchedSHA256": "025398a1044e4faf26cb113f11031cae2f19025d5f3b40221e04c86140d19b93"
+        },
+        "engine/sc/source/filter/xcl97/xcl97rec.cxx": {
+          "originalSHA256": "cfc6ad7262deb1ef682662c3c05e9b49c05b246796c637c4f7ed9d57164ce5b9",
+          "patchedSHA256": "3666f853db7cee9f43e54c5a6c34ab9f51d0fb6f32990b4b5ed09686107eae04"
+        }
+      },
+      "archiveSHA256": "0256521bf5ee0e96d9467b8b1554df7b91baecd806442642fde43e6f9ab2dd61",
+      "objectSHA256": "ed29fbc95d72c0ce958b5e31a1aa4e3b6085f7a53052198e9891c833396eefd5",
+      "selectedArchiveSHA256": "0256521bf5ee0e96d9467b8b1554df7b91baecd806442642fde43e6f9ab2dd61"
+    }
   },
   "qualifiedNativeArtifact": {
     "runID": "34268468731",

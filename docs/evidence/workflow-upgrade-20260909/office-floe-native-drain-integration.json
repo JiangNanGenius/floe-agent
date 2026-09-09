@@ -7,9 +7,9 @@
   "appVersion": "1.5.3",
   "appBuild": "134",
   "unsignedPayloadVerified": true,
-  "engineOpened": false,
+  "engineOpened": true,
   "embeddedEditorPassed": false,
-  "originalFileWritebackPassed": false,
+  "originalFileWritebackPassed": true,
   "deviceRoundtripPassed": false,
   "appCodeBinaryPath": "Floe Agent.debug.dylib",
   "appCodeBinarySHA256": "cf4d6a6432eb908e22d5cf684bf705327f0c9dac667181bf1e71485cf93a8863",
@@ -25,5 +25,7 @@
   "testFlightUploaded": false,
   "developmentSigningVerified": true,
   "developmentIPA_SHA256": "33bffdb5e3e9d4a4540302de0be58b9d06c4061a11709083372be0f30c29c120",
-  "developmentOnly": true
+  "developmentOnly": true,
+  "wordWorkspaceAttachmentSamplePassed": true,
+  "runtimeEvidence": "office-native-drain-fullbuild-runtime.json"
 }

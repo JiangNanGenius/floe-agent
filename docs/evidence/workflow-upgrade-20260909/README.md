@@ -119,3 +119,9 @@ Office 接入补丁的 [锁定源码检查](office-native-overlay-check.json) �
 对照：[旧未匹配语言的无编辑保存](office-excel-unmatched-language-control.json) 仍产生乱码；[简体中文旧宿主对照](office-excel-zhcn-controls.json) 保持 General。[修复后无编辑截图](office-excel-language-fixed-control-mac.jpg) 和 [编辑重开截图](office-excel-language-fixed-edited-mac.jpg)已保存。编辑样本 [23 项结构检查](office-excel-language-fixed-edited-structure.json)通过 22 项；列 A 宽度 22→21.21 仍失败，图表首点显示异常也未解决。
 
 这些只证明局部 Excel 回归。完整编辑功能仍未完成，尤其通用附件导入/嵌入通道缺失。用户要求的真实操作与断点见 [Office 前端逐项验收](../../OFFICE_FRONTEND_ACCEPTANCE.md)。不以原生界面或简单文字/数字编辑成功代替完整 Word/Excel/PPT，也不代表 Floe 原文件写回、真机、Microsoft Office 重开或新版本发布通过。
+
+### 完整应用 Word 断连修复与 Excel 导出补丁
+
+- [完整 Floe Word 插入、原文件保存及新会话重开](office-native-drain-fullbuild-runtime.json)：来源 415dad3；Mac 上运行 iPad 应用。35 秒选择器停留通过，18 项原文件附件检查通过，五张截图已保存；不代表物理设备或全部 Office 验收。
+- [Excel 导出器对象编译](office-excel-filter-overlay-compile.json) 与 [原生宿主编译链接](office-excel-filter-host-qualified.json)：来源 54bb4cb，修复当前对象存储的 XLSX 导出缺失；实际保存/重开/完整位置验证继续进行。
+- [生图设置文案截图](image-autonomy-fullbuild-labels-mac.jpg)：完整应用正确显示“生图配置”和图片理解模型空状态，开关保持关闭；不代表实际生图请求验收。

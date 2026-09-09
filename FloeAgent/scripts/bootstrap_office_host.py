@@ -40,6 +40,15 @@ def checked_lock(lock_path):
         relative(name)
         if digest(lock_path.parent / 'FloeOfficeNative' / name) != checksum:
             raise ValueError('Native host must be rebuilt for its changed public or implementation source')
+    if 'filterOverlay' in pin:
+        filters = json.loads((lock_path.parent / 'filter-overlay.lock.json').read_text())
+        selected = pin['filterOverlay']
+        patch = lock_path.parent / relative(filters['patch'])
+        if (filters['commit'] != lock['commit']
+                or selected['patchSHA256'] != filters['patchSHA256']
+                or selected['sourceFiles'] != filters['files']
+                or digest(patch) != filters['patchSHA256']):
+            raise ValueError('Native host must be rebuilt for the current engine filter patch')
     return lock, pin
 
 
@@ -52,6 +61,11 @@ def inventory(folder, lock, pin):
             or report['hostSourceSHA256'] != pin['hostSourceSHA256']
             or not all(report.get(key) is True for key in ['hostCompilePassed', 'hostLinkPassed', 'swiftModuleImportPassed'])):
         raise ValueError('Native Office qualification does not match this build')
+    if 'filterOverlay' in pin:
+        selected = report.get('filterOverlay', {})
+        if (not selected.get('compilePassed') or not selected.get('archiveReplacementPassed')
+                or any(selected.get(key) != value for key, value in pin['filterOverlay'].items())):
+            raise ValueError('Native Office filter qualification does not match its pin')
     files = {'native-host.json': pin['manifestSHA256'],
              FRAMEWORK + '/FloeOfficeNative': pin['executableSHA256']}
     files.update({FRAMEWORK + '/' + str(relative(name)): checksum

@@ -63,6 +63,27 @@ class OfficeHostBootstrapTests(unittest.TestCase):
         self.assertEqual(self.install(), first)
         self.assertEqual(digest(self.archive), self.pin['archiveSHA256'])
 
+    def test_changed_filter_patch_requires_a_rebuilt_host(self):
+        patch = self.root / 'filter.patch'
+        patch.write_text('qualified filter source')
+        filters = {'commit': 'pinned-source', 'patch': 'filter.patch',
+                   'patchSHA256': digest(patch), 'files': {'source.cpp': {'patchedSHA256': 'known'}}}
+        (self.root / 'filter-overlay.lock.json').write_text(json.dumps(filters))
+        value = json.loads(self.lock.read_text())
+        value['qualifiedHostArtifact']['filterOverlay'] = {
+            'patchSHA256': filters['patchSHA256'], 'sourceFiles': filters['files']}
+        self.lock.write_text(json.dumps(value))
+        checked_lock(self.lock)
+        patch.write_text('uncompiled replacement')
+        with self.assertRaisesRegex(ValueError, 'engine filter patch'):
+            checked_lock(self.lock)
+
+    def test_host_without_filter_build_evidence_cannot_claim_filter_pin(self):
+        lock, pin = checked_lock(self.lock)
+        pin['filterOverlay'] = {'patchSHA256': 'expected'}
+        with self.assertRaisesRegex(ValueError, 'filter qualification'):
+            verify_installed(self.host, lock, pin)
+
     def test_xcode_input_list_remains_bounded_after_full_payload_verification(self):
         self.install()
         output = self.root / 'inputs.xcfilelist'

@@ -1,0 +1,33 @@
+{
+  "sourceRunID": "34333115646",
+  "workflowCommit": "415dad302e5718f1e482baff3aed4e7b67b75e18",
+  "hostRunID": "34332381585",
+  "scope": "Complete Floe build running on Mac Designed for iPad; one synthetic Word workspace attachment sample",
+  "checkedAt": "2026-09-09T09:54:29.944695+00:00",
+  "installedMatchesSignedPayload": true,
+  "installedBinarySHA256": {
+    "Floe Agent.debug.dylib": "8cd2b61bb09f7022b595218d978f3f3eb4c054162941279510b3c9320219ca3c",
+    "Frameworks/FloeOfficeNative.framework/FloeOfficeNative": "b9cb46f738d1e97ac59509aaab1b4edc1fe4e374bcc12679ea11778808cff3e0"
+  },
+  "readOnlyPreviewPassed": true,
+  "fullscreenDirectEditPassed": true,
+  "workspacePickerIdleSeconds": 35,
+  "returnedWithoutDisconnect": true,
+  "originalFileWritebackPassed": true,
+  "originalPath": "/Volumes/TECLAST/FloeOfficeBuilds/34323674863/ui-fixtures/native-drain-full-build.docx",
+  "originalSHA256": "1d36fb3001f7f67d5dcfb9e379a9f646720184d4f5e0455a6c3d0e22d86d8161",
+  "freshSessionID": "ADF72D80-0F11-457E-A6B6-5E9C2E6E0F07",
+  "reopenedWorkingSHA256": "1d36fb3001f7f67d5dcfb9e379a9f646720184d4f5e0455a6c3d0e22d86d8161",
+  "reopenedAttachmentVisible": true,
+  "attachmentChecksPassed": 18,
+  "physicalDevicePassed": false,
+  "microsoftOfficeReopenPassed": false,
+  "fullOfficeAcceptancePassed": false,
+  "screenshots": [
+    "office-drain-fullbuild-preview-mac.jpg",
+    "office-drain-fullbuild-edit-mac.jpg",
+    "office-drain-fullbuild-insert-mac.jpg",
+    "office-drain-fullbuild-saved-mac.jpg",
+    "office-drain-fullbuild-reopened-mac.jpg"
+  ]
+}
