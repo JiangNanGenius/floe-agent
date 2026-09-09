@@ -47,6 +47,23 @@ private actor ContinuedProcessingExpirationTestGate {
 @Suite("FloeApp crash and feedback regressions")
 struct CrashAndFeedbackRegressionTests {
     @MainActor
+    @Test("Settings renders in a separate regular-width host without an inherited environment object")
+    func settingsPresentationOwnsItsEnvironment() {
+        let environment = AppEnvironment.preview()
+        let controller = UIHostingController(rootView:
+            SettingsRootView(environment: environment)
+                .environment(\.horizontalSizeClass, .regular))
+        // Model the independent sheet host from the full-app crash. Do not
+        // inject AppEnvironment on the hosting controller: SettingsRootView
+        // must receive and propagate its explicitly supplied dependency.
+        controller.loadViewIfNeeded()
+        controller.view.frame = CGRect(x: 0, y: 0, width: 1024, height: 768)
+        controller.view.setNeedsLayout()
+        controller.view.layoutIfNeeded()
+        #expect(!controller.view.subviews.isEmpty)
+    }
+
+    @MainActor
     @Test("Auxiliary local LLMs use the device adapter, never a cloud HTTP adapter")
     func auxiliaryAdapterFollowsExecutionLocation() {
         let environment = AppEnvironment.preview()
