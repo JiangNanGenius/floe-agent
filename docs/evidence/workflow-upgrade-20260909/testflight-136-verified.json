@@ -1,0 +1,18 @@
+{
+  "version": "1.6.1",
+  "build": "136",
+  "sourceSHA": "342f668e28e1be793318ca0e7881dd98f66a1d82",
+  "verifiedAtUTC": "2026-09-09T16:42:37Z",
+  "workflowRunID": 34378401799,
+  "buildID": "1a3bc980-b852-4b50-9591-58f88c4b1789",
+  "processingState": "VALID",
+  "betaGroupCount": 1,
+  "group": {
+    "name": "Floe QA",
+    "isInternalGroup": true,
+    "publicLinkEnabled": null
+  },
+  "unexpectedGroupCount": 0,
+  "testerGroupVisibilityVerified": true,
+  "physicalDeviceInstallationVerified": false
+}
