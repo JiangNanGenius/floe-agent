@@ -108,6 +108,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         // Preserve the user's edit before attempting any writeback. The engine
         // must finish writing its private copy before invoking this method.
         try preserveRecoveryCopy(session, expectedDigest: newDigest)
+        try OfficeNativeSaveValidation.validate(session.recoveryURL)
         guard var manifest = manifests[session.id] else {
             throw FloeError.validationFailed("Document recovery record is unavailable")
         }
@@ -168,6 +169,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
             guard try Self.digest(copy) == expected else {
                 throw FloeError.validationFailed("Editor is still writing; finish the edit before exporting")
             }
+            try OfficeNativeSaveValidation.validate(copy)
             let snapshot = DocumentExportSnapshot(id: id, fileURL: copy)
             exports[id] = snapshot
             return snapshot
