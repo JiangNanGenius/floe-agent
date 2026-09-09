@@ -64,6 +64,88 @@ static NSString *FloeEditorLanguage(NSArray<NSString *> *preferences) {
 }
 // FLOE_EDITOR_LANGUAGE_END
 
+// FLOE_NATIVE_DRAIN_SCRIPT_BEGIN
+static NSString *FloeNativeDrainScript() {
+    return [NSString stringWithUTF8String:R"FLOE_JS(
+(() => {
+    // Native queues own the bytes. Notifications only ask us to drain them:
+    // a burst must not become concurrent proxy polls and a false idle timeout.
+    const install = socket => {
+        if (!window.ThisIsTheiOSApp || !socket || socket.floeNativeDrainState ||
+            typeof socket.uri !== 'string' || !socket.uri.startsWith('cool:/cool/mobilesocket') ||
+            typeof socket.getEndPoint !== 'function' || typeof socket.parseIncomingArray !== 'function') return socket;
+        const state = socket.floeNativeDrainState = {
+            requests: 0, responses: 0, failures: 0, pending: false, active: false
+        };
+        const drain = () => {
+            if (socket.unloading || socket.readyState === 3) { state.pending = false; return; }
+            if (state.active || socket.msgInflight > 0 || socket.readyState !== 1) return;
+            state.pending = false;
+            state.active = true;
+            socket.msgInflight++;
+            state.requests++;
+            const request = new XMLHttpRequest();
+            let failed = false;
+            const fail = () => {
+                if (failed) return;
+                failed = true;
+                state.failures++;
+                state.pending = false;
+                if (!socket.unloading && socket.readyState !== 3) socket._signalErrorClose();
+            };
+            request.addEventListener('load', () => {
+                if (socket.unloading || socket.readyState === 3) return;
+                if (request.status !== 200) { fail(); return; }
+                state.responses++;
+                socket.lastDataTimestamp = performance.now();
+                socket.parseIncomingArray(new Uint8Array(request.response));
+            });
+            const finish = () => {
+                if (!state.active) return;
+                state.active = false;
+                socket.msgInflight = Math.max(0, socket.msgInflight - 1);
+                if (!failed && state.pending) drain();
+            };
+            request.addEventListener('loadend', finish);
+            for (const event of ['error', 'abort', 'timeout']) request.addEventListener(event, fail);
+            try {
+                request.open('POST', socket.getEndPoint('write'));
+                request.responseType = 'arraybuffer';
+                // Mobile commands travel through postMobileMessage, never this
+                // receive request. Keep the upstream framing terminator.
+                request.send('.');
+            } catch (_) { fail(); finish(); }
+        };
+        socket.doSend = () => { state.pending = true; drain(); };
+        const onopen = socket.onopen;
+        socket.onopen = function () {
+            const result = typeof onopen === 'function' ? onopen.apply(this, arguments) : undefined;
+            if (state.pending) drain();
+            return result;
+        };
+        // A request started by the original socket before document-end may
+        // still be in flight. Once it ends, replay only the drain notification.
+        const resume = () => {
+            if (socket.unloading || socket.readyState === 3) return;
+            if (socket.msgInflight > 0 && !state.active) { setTimeout(resume, 25); return; }
+            if (state.pending) drain();
+        };
+        if (socket.msgInflight > 0) setTimeout(resume, 25);
+        return socket;
+    };
+    if (!window.ThisIsTheiOSApp) return;
+    install(window.socket);
+    const create = window.createWebSocket;
+    if (typeof create === 'function' && !create.floeNativeDrainInstalled) {
+        const wrapped = function () { return install(create.apply(this, arguments)); };
+        wrapped.floeNativeDrainInstalled = true;
+        window.createWebSocket = wrapped;
+    }
+})();
+)FLOE_JS"];
+}
+// FLOE_NATIVE_DRAIN_SCRIPT_END
+
 // FLOE_READONLY_SCRIPT_BEGIN
 static NSString *FloeReadOnlyScript() {
     return [NSString stringWithUTF8String:R"FLOE_JS(
@@ -667,6 +749,9 @@ static void ServerReady() {
         initWithSource:self.readOnly ? FloeReadOnlyScript() : FloeFullScreenEditScript()
         injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES];
     [self.editor.webView.configuration.userContentController addUserScript:script];
+    WKUserScript *drainScript = [[WKUserScript alloc] initWithSource:FloeNativeDrainScript()
+        injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:YES];
+    [self.editor.webView.configuration.userContentController addUserScript:drainScript];
     content.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:content];
     [NSLayoutConstraint activateConstraints:@[

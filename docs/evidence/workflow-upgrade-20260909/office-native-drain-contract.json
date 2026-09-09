@@ -1,0 +1,16 @@
+{
+  "checksPassed": [
+    "1000 idle-burst notifications coalesce without dropping response bytes",
+    "notifications during an active response trigger a subsequent drain",
+    "HTTP, error, abort and timeout fail without automatic replay",
+    "unload does not report a spurious failure",
+    "initial open and in-flight preinstallation requests retain notifications",
+    "remote sockets stay untouched and installation is idempotent",
+    "future native sockets receive the same protection"
+  ],
+  "upstreamFalseDisconnectReproduced": true,
+  "actualFullAppAttachmentRetestPassed": false,
+  "nativeCompilationPassed": false,
+  "scriptSHA256": "de2f7c4b8d7d9fdde2923531e5fcadf9ec2a4f5b20ba7cbd74923f6abfa2bc8f",
+  "upstreamSHA256": "dca8dfc71c2a50c937edea0bf48bf71bfa21f5273af9bc652a734e0aa0d5ff79"
+}

@@ -33,6 +33,7 @@ jobs:
           python3 FloeAgent/scripts/test_office_save_receipts.py
           python3 FloeAgent/scripts/test_office_readonly.py
           python3 FloeAgent/scripts/test_office_fullscreen_edit.py
+          python3 FloeAgent/scripts/test_office_native_drain.py
           python3 FloeAgent/scripts/test_office_editor_language.py
       - name: Reuse complete qualified engine inputs
         env:
@@ -43,6 +44,9 @@ jobs:
           python3 FloeAgent/scripts/repair_office_embedding_bundle.py \
             "$RUNNER_TEMP/complete-office-inputs/office-engine-ios-arm64.tar.gz" \
             "$RUNNER_TEMP/office-native-bundle"
+          python3 FloeAgent/scripts/test_office_native_drain.py \
+            --upstream "$RUNNER_TEMP/office-native-bundle/source/browser/js/global.js" \
+            > "$RUNNER_TEMP/office-native-bundle/native-drain-contract.json"
       - name: Compile and link the native save protocol and host APIs
         run: |
           python3 FloeAgent/scripts/build_office_native_host.py \
@@ -54,6 +58,7 @@ jobs:
           name: office-native-host-evidence
           path: |
             ${{ runner.temp }}/office-native-bundle/bundle-repair.json
+            ${{ runner.temp }}/office-native-bundle/native-drain-contract.json
             ${{ runner.temp }}/office-native-host/qualification.json
             ${{ runner.temp }}/office-native-host/native-host.json
             ${{ runner.temp }}/office-native-host/native-host-build.log

@@ -185,3 +185,5 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 
 - 完整应用 34328151744 已开发签名安装为 Floe Agent 3，安装代码/宿主哈希与签名载荷一致。Word 右侧预览、全屏编辑及工作区附件插入可操作，但选择器返回后显示连接断开，保存并返回仍失败；原文件哈希未变，私有副本附件 18/18 结构检查通过。见 [运行失败回执](evidence/workflow-upgrade-20260909/office-floe-unmodified-host-runtime.json) 和断连截图。unmodified 判定修复不能覆盖此断连问题；原文件写回门槛继续开放。
 - CI 34328152852 的 125 项应用回归全部通过；后续运行时 218 项测试中 1 项使用旧目录断言，只期望 tools.search，实际正确包含新增 tools.list。断言已更新为两种常驻发现入口，仍保证 test.echo 延迟加载；待新提交重跑。Linux 构建通过，App Store SDK 在观察时仍运行，发布后续扫描与清单未执行。
+
+- Office 断连继续定位：使用锁定 `browser/js/global.js` 中实际 ProxySocket/MobileSocket 复现空闲后通知突发触发代理 30 秒误断连。原生接收新增顺序合并读取，当前请求结束后补读待处理通知，保留原帧解析与原生命令发送；HTTP/错误/取消仍失败且不自动重放。实际脚本 7 组契约通过，包含 1,000 次通知、完整两帧、初次连接、旧在途请求及远程连接隔离；见 [通信契约](evidence/workflow-upgrade-20260909/office-native-drain-contract.json)。该结果证明源码风险及定向修复，尚不能认定完整应用附件故障同根或已经解决；新宿主编译、工作区选择返回及原文件保存重开仍待实测。CI 34328152852 的 App Store SDK 最终也通过，34331257197 仍在验证更新后的发现工具断言。

@@ -16,7 +16,8 @@ def check():
     added = '\n'.join(line[1:] for line in patch.splitlines() if line.startswith('+'))
     helper = added.split('// FLOE_READONLY_HANDSHAKE_BEGIN', 1)[1].split('// FLOE_READONLY_HANDSHAKE_END', 1)[0]
     host = (ROOT / 'FloeOfficeNative/FloeOfficeNative.mm').read_text()
-    script = host.split('R"FLOE_JS(', 1)[1].split(')FLOE_JS"', 1)[0]
+    source = host.split('// FLOE_READONLY_SCRIPT_BEGIN', 1)[1].split('// FLOE_READONLY_SCRIPT_END', 1)[0]
+    script = source.split('R"FLOE_JS(', 1)[1].split(')FLOE_JS"', 1)[0]
     with tempfile.TemporaryDirectory(prefix='floe-readonly-') as folder:
         root = Path(folder)
         program = root / 'permissions.mm'
