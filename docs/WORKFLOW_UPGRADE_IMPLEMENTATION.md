@@ -204,3 +204,6 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 - Excel 导出宿主 34336959885（54bb4cb）已成功，包含单对象编译、其他 167 个库成员保留验证、完整原生链接和 Swift 导入。产物 4,785 文件/178 目录本地核对通过并锁定；新增 filter patch/source/archive 校验，防止以后修改导出源码却继续打包旧宿主。见 [组件回执](evidence/workflow-upgrade-20260909/office-excel-filter-host-qualified.json)。接下来重建完整 Floe，实际 XLSX 附件及位置验收仍未通过。
 
 - Excel 新导出实际保存保留了附件原字节，但重开未识别对象：工作表 shapeId 与 VML 的 `_x005F_x0000_` 转义编号不匹配，shape type 也同样失联。已复用上游 VMLExport 的禁用 X-escape/恢复方式修复；arm64 编译与其他 167 成员保留校验、4 组关系图验证器变异测试通过。失败截图与 [运行证据](evidence/workflow-upgrade-20260909/office-excel-vml-id-runtime-failure.json) 已保存。新宿主及实际修复重开仍待验证，完整 Floe 34337602194 是首版导出构建，不包含此次关联修复。
+
+- 完整应用 34337602194（91e0de7，首版 Excel 导出）已成功，云端实际主程序加载链和 4,780 资源文件/174 目录校验通过，见 [构建回执](evidence/workflow-upgrade-20260909/office-floe-xlsx-first-export-integration.json)。它不包含后续编号修复；新宿主 [34339384837](https://github.com/JiangNanGenius/floe-agent/actions/runs/34339384837)（5be9917）已启动并核实运行中，继续等待同一任务，不重复构建。
+- 新增 Mac 退出问题：Floe Agent 5 已完成 Word 保存重开后执行退出，实际崩溃栈涉及 COOLWSDServer/SocketPoll 静态析构及生命周期 watchdog；已保存脱敏 [符号证据](evidence/workflow-upgrade-20260909/office-mac-quit-finalizer-failure.json)。完整根因与有序关闭仍待验证，未据此修改保存策略；此前 Word 实际持久化结果与退出问题分别记录。
