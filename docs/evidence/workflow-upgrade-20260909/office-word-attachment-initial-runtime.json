@@ -1,0 +1,30 @@
+{
+  "runID": "34311790525",
+  "environment": "Mac Designed for iPad, developer signed isolated qualification app 9",
+  "systemLanguage": "zh-Hans-TW",
+  "editorLanguage": "zh-CN",
+  "sourceAttachmentBytes": 65539,
+  "sourceAttachmentSHA256": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+  "noUndoSession": "47DF1E15-3AAD-4457-AACF-A8A872318C65",
+  "undoRedoSession": "BE14A638-0D48-4760-98BC-2662D165F5E4",
+  "observed": {
+    "nativeInsertAtCurrentCursor": true,
+    "iconVisibleAfterReopen": true,
+    "sourcePayloadHashPreserved": true,
+    "expectedParagraphPreserved": true,
+    "singleUndoRemovesAttachment": false,
+    "twoUndosRemoveAttachment": true,
+    "twoRedosRestoreAttachment": true,
+    "packageProgIDWithoutUndo": "Package",
+    "packageProgIDAfterUndoRedo": "",
+    "legacyFilenameEncodingCompatible": false
+  },
+  "remaining": [
+    "single-operation undo grouping",
+    "ProgID restoration after Writer renames undo storage",
+    "ASCII legacy name and verified Unicode original name",
+    "system and workspace picker actual operation",
+    "complete Floe writeback and physical-device acceptance"
+  ],
+  "completeAttachmentAccepted": false
+}

@@ -1,0 +1,96 @@
+{
+  "sourceAttachmentSHA256": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+  "savedSHA256": "88e8da62fcbf1e1604b3f5423781dbe009c458c3cb89437601d2fed58160be12",
+  "checks": [
+    {
+      "name": "one embedded display object",
+      "expected": 1,
+      "actual": 1,
+      "passed": true
+    },
+    {
+      "name": "object in selected paragraph",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 OLE declaration",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 embedded not linked",
+      "expected": "Embed",
+      "actual": "Embed",
+      "passed": true
+    },
+    {
+      "name": "0 package class",
+      "expected": "Package",
+      "actual": "Package",
+      "passed": true
+    },
+    {
+      "name": "0 icon presentation",
+      "expected": "Icon",
+      "actual": "Icon",
+      "passed": true
+    },
+    {
+      "name": "0 internal relationship",
+      "expected": false,
+      "actual": false,
+      "passed": true
+    },
+    {
+      "name": "0 embedded payload part",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 Package compound class",
+      "expected": "0003000C-0000-0000-C000-000000000046",
+      "actual": "0003000C-0000-0000-C000-000000000046",
+      "passed": true
+    },
+    {
+      "name": "0 file is embedded",
+      "expected": false,
+      "actual": false,
+      "passed": true
+    },
+    {
+      "name": "0 original byte length",
+      "expected": 65539,
+      "actual": 65539,
+      "passed": true
+    },
+    {
+      "name": "0 original byte hash",
+      "expected": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "actual": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "passed": true
+    },
+    {
+      "name": "0 original filename",
+      "expected": "附件 测试 📎.bin",
+      "actual": "éä»¶ æµè¯ ð.bin",
+      "passed": false
+    },
+    {
+      "name": "0 icon image stored",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    }
+  ],
+  "allNamedChecksPassed": false,
+  "undoRedoPassed": false,
+  "visualFidelityPassed": false,
+  "microsoftOfficeReopenPassed": false,
+  "originalFileWritebackPassed": false,
+  "physicalDevicePassed": false
+}

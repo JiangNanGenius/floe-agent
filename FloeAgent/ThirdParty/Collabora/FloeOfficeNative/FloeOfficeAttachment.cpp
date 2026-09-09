@@ -16,7 +16,13 @@
 #include <oox/ole/oleobjecthelper.hxx>
 #include <comphelper/propertyvalue.hxx>
 #include <comphelper/processfactory.hxx>
+#include <comphelper/embeddedobjectcontainer.hxx>
+#include <cppuhelper/implbase.hxx>
+#include <cppuhelper/weakref.hxx>
 #include <com/sun/star/document/XEmbeddedObjectResolver.hpp>
+#include <com/sun/star/document/XUndoManagerSupplier.hpp>
+#include <com/sun/star/document/XUndoAction.hpp>
+#include <com/sun/star/embed/XEmbeddedObject.hpp>
 #include <com/sun/star/container/XNameAccess.hpp>
 #include <com/sun/star/lang/XMultiServiceFactory.hpp>
 #include <com/sun/star/text/XTextDocument.hpp>
@@ -27,7 +33,9 @@
 #include <com/sun/star/graphic/GraphicProvider.hpp>
 #include <com/sun/star/io/XOutputStream.hpp>
 #include <array>
+#include <algorithm>
 #include <limits>
+#include <stdexcept>
 
 static OUString FloeUNOString(const std::string &text) {
     return OUString::fromUtf8(text);
@@ -43,7 +51,17 @@ static void FloeWriteAttachmentPackage(const std::string &sourceURL, const std::
     storage->SetClass(SvGlobalName(0x0003000c, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46),
                       SotClipboardFormatId::NONE, u"Package"_ustr);
     auto native = storage->OpenSotStream(u"\001Ole10Native"_ustr);
-    const OString name(displayName.c_str());
+    // Legacy Package names are ANSI. Give old readers an unambiguous ASCII
+    // fallback; the Unicode extension below retains the full original name.
+    std::string legacyName = displayName;
+    if (std::any_of(legacyName.begin(), legacyName.end(), [](unsigned char c) { return c >= 128; })) {
+        const auto dot = displayName.find_last_of('.');
+        const std::string extension = dot == std::string::npos ? "" : displayName.substr(dot);
+        legacyName = "Attachment";
+        if (std::all_of(extension.begin(), extension.end(), [](unsigned char c) { return c < 128; }))
+            legacyName += extension;
+    }
+    const OString name(legacyName.c_str());
     const OUString unicodeName = FloeUNOString(displayName);
     native->WriteUInt32(0); // Backfilled after streaming; excludes this DWORD.
     native->WriteUInt16(2);
@@ -79,6 +97,31 @@ static void FloeWriteAttachmentPackage(const std::string &sourceURL, const std::
         throw std::runtime_error("Attachment package could not be persisted.");
 }
 
+// Writer renames objects when restoring their temporary undo storage, while
+// its DOCX exporter looks up ProgID by the current storage name. Keep that
+// metadata attached to this object after redo. Weak references avoid retaining
+// a closed document through its own undo stack.
+class FloeAttachmentInteropUndo final : public cppu::WeakImplHelper<com::sun::star::document::XUndoAction> {
+    cpo::uno::WeakReferenceHelper model;
+    cpo::uno::WeakReferenceHelper object;
+public:
+    FloeAttachmentInteropUndo(const css::uno::Reference<css::frame::XModel> &owner,
+                              const css::uno::Reference<css::embed::XEmbeddedObject> &attachment)
+        : model(owner), object(attachment) {}
+    OUString getTitle() override { return u"Insert attachment"_ustr; }
+    void undo() override {} // The grouped Writer action removes the object.
+    void redo() override {
+        SolarMutexGuard guard;
+        css::uno::Reference<css::frame::XModel> owner(model.get(), css::uno::UNO_QUERY);
+        css::uno::Reference<css::embed::XEmbeddedObject> attachment(object.get(), css::uno::UNO_QUERY);
+        if (!owner || !attachment) return;
+        SfxObjectShell *shell = SfxObjectShell::GetShellFromComponent(owner);
+        if (!shell) return;
+        const OUString name = shell->GetEmbeddedObjectContainer().GetEmbeddedObjectName(attachment);
+        if (!name.isEmpty()) oox::ole::SaveInteropProperties(owner, name, nullptr, u"Package"_ustr);
+    }
+};
+
 // Must run under SolarMutex with the selected document view active. Use the
 // existing engine import resolver and Writer object insertion/undo machinery;
 // never rewrite the DOCX archive behind an open editor.
@@ -102,6 +145,10 @@ static void FloeInsertWordAttachment(COKitDocument *document, const std::string 
     css::uno::Reference<css::document::XEmbeddedObjectResolver> resolver(
         factory->createInstance(u"com.sun.star.document.ImportEmbeddedObjectResolver"_ustr), css::uno::UNO_QUERY_THROW);
     css::uno::Reference<css::lang::XComponent> resolverLifetime(resolver, css::uno::UNO_QUERY_THROW);
+    css::uno::Reference<css::document::XUndoManagerSupplier> undoSupplier(model, css::uno::UNO_QUERY_THROW);
+    auto undo = undoSupplier->getUndoManager();
+    undo->enterUndoContext(u"Insert attachment"_ustr);
+    bool undoContextOpen = true;
     try {
         const OUString objectID = u"FloeAttachment"_ustr + FloeUNOString(identifier);
         css::uno::Reference<css::container::XNameAccess> names(resolver, css::uno::UNO_QUERY_THROW);
@@ -131,11 +178,18 @@ static void FloeInsertWordAttachment(COKitDocument *document, const std::string 
         auto graphics = css::graphic::GraphicProvider::create(comphelper::getProcessComponentContext());
         auto graphic = graphics->queryGraphic({comphelper::makePropertyValue(u"URL"_ustr, FloeUNOString(iconURL))});
         properties->setPropertyValue(u"Graphic"_ustr, cpo::uno::Any(graphic));
-        oox::ole::SaveInteropProperties(model, streamName, nullptr, u"Package"_ustr);
         css::uno::Reference<css::text::XTextContent> content(object, css::uno::UNO_QUERY_THROW);
         cursor->getText()->insertTextContent(cursor, content, false);
-        resolverLifetime->dispose();
+        css::uno::Reference<css::embed::XEmbeddedObject> embedded(
+            properties->getPropertyValue(u"EmbeddedObject"_ustr), css::uno::UNO_QUERY_THROW);
+        rtl::Reference<FloeAttachmentInteropUndo> metadata = new FloeAttachmentInteropUndo(model, embedded);
+        metadata->redo();
+        undo->addUndoAction(metadata);
+        undoContextOpen = false;
+        undo->leaveUndoContext();
+        try { resolverLifetime->dispose(); } catch (...) { /* Insertion already succeeded. */ }
     } catch (...) {
+        if (undoContextOpen) { try { undo->leaveUndoContext(); } catch (...) {} }
         try { resolverLifetime->dispose(); } catch (...) { /* Preserve insertion error. */ }
         throw;
     }

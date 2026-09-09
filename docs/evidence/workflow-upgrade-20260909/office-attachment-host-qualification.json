@@ -1,0 +1,24 @@
+{
+  "runID": "34311790525",
+  "sourceCommit": "da2a453fe004b803d23d91b591712ac2e8afde31",
+  "hostCompilePassed": true,
+  "hostLinkPassed": true,
+  "swiftModuleImportPassed": true,
+  "hostSourceSHA256": {
+    "FloeOfficeNative.h": "34e84db6dc3408c4eacf54331f034af9e8062a86403ffb8fea5fb74804dfaba1",
+    "FloeOfficeNative.mm": "5a291fa6447b033986b90b831e01d8f6417f8db54b4791c578b965370029ff38",
+    "FloeOfficeAttachment.cpp": "734280f55e32d6646d50bb0dda2335664a8f9309d24a209a11b332295e190de0",
+    "FloeOfficeAttachment.hxx": "c9f5afb7fa500698d7372e5303d609fab2b865f0c2a1fae573e0009daeaaf6e5"
+  },
+  "installation": {
+    "verifiedFiles": 4785,
+    "verifiedDirectories": 178,
+    "runID": "34311790525",
+    "archiveSHA256": "c6a70814264a384b5e600d3e8ed31ca63d4d376e52788b12cd3a559c345a5fc6"
+  },
+  "nativeAttachmentRuntimePassed": false,
+  "fullFloeFrontendPassed": false,
+  "physicalDevicePassed": false,
+  "priorFailedRun": "34311448140",
+  "priorFailure": "UIKit MacTypes conflict with engine Point/Size/TimeValue; isolate engine implementation in C++."
+}

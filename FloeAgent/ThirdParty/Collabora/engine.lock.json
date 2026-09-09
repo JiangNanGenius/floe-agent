@@ -1,28 +1,30 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "attachment-host-source-pending-compile-and-runtime-qualification",
+  "qualificationStatus": "attachment-undo-and-encoding-fixes-pending-qualification",
   "qualifiedHostArtifact": {
-    "runID": "34309184148",
+    "runID": "34311790525",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10087788175,
-    "workflowCommit": "bef6849f0b4e23fb18ed009cbed44978ef9e14bc",
-    "archiveSHA256": "c7a5c91a8eba45fc801ec0560ad97ea92a78723a226e83c8533b2c03f8bfbeb8",
-    "executableSHA256": "20e851c3a60a68b6271237e22be719f728fd41b342dcad9d2322469fc12ad839",
+    "artifactID": 10088709622,
+    "workflowCommit": "da2a453fe004b803d23d91b591712ac2e8afde31",
+    "archiveSHA256": "c6a70814264a384b5e600d3e8ed31ca63d4d376e52788b12cd3a559c345a5fc6",
+    "executableSHA256": "e5cd3b7bfe64d40738d190a81e19472abf6a16081aa1d11a4304dfd318b3de7e",
     "overlaySHA256": "600f480a2ccfde4e7d8d9641332197556a4dc79466860943e207c6c2fd7618fd",
     "hostSourceSHA256": {
-      "FloeOfficeNative.h": "ef44f6d2948a0dedacb1e0077f06bd9f73660697ebb8bb1936d7f0f06c6eb32c",
-      "FloeOfficeNative.mm": "0d460926c0d2a6d7687418fb2470df69f33feeead4183ed9d10bbe7fb2c42963"
+      "FloeOfficeNative.h": "34e84db6dc3408c4eacf54331f034af9e8062a86403ffb8fea5fb74804dfaba1",
+      "FloeOfficeNative.mm": "5a291fa6447b033986b90b831e01d8f6417f8db54b4791c578b965370029ff38",
+      "FloeOfficeAttachment.cpp": "734280f55e32d6646d50bb0dda2335664a8f9309d24a209a11b332295e190de0",
+      "FloeOfficeAttachment.hxx": "c9f5afb7fa500698d7372e5303d609fab2b865f0c2a1fae573e0009daeaaf6e5"
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "dc65e3d2c28c08a77b5dc657daeea22b2b88982d7df2f065bd725983134a3d95",
+    "manifestSHA256": "ad0f31788f47eea65f2beb5c05151b58f6141599c9d0303080be21acb599e6a8",
     "frameworkAuxiliarySHA256": {
-      "Headers/FloeOfficeNative.h": "ef44f6d2948a0dedacb1e0077f06bd9f73660697ebb8bb1936d7f0f06c6eb32c",
+      "Headers/FloeOfficeNative.h": "34e84db6dc3408c4eacf54331f034af9e8062a86403ffb8fea5fb74804dfaba1",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
       "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac"
     },
-    "note": "Compiled, linked, Swift-imported and retrieved with full inventory verification. Isolated Mac native Excel under original zh-Hans-TW preferences resolves to zh-CN; unchanged and edited saves preserve General and formulas. Edited sample passes 22/23 named checks, but column width, chart rendering, attachments, complete frontend, original-file commit and physical-device acceptance remain incomplete."
+    "note": "Compiled, linked and Swift-imported Word attachment host. Attachment insertion, extraction, undo, complete fidelity and physical-device acceptance remain separate pending gates."
   },
   "qualifiedNativeArtifact": {
     "runID": "34268468731",

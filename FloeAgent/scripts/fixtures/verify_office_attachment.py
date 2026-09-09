@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import posixpath
+import struct
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -55,11 +56,26 @@ def inspect(saved, attachment, paragraph_index):
                 continue
             with olefile.OleFileIO(io.BytesIO(doc.read(target))) as storage:
                 check(f'{index} Package compound class', '0003000C-0000-0000-C000-000000000046', storage.root.clsid.upper())
-                native = OleNativeStream(storage.openstream('\x01Ole10Native').read())
+                stream = io.BytesIO(storage.openstream('\x01Ole10Native').read())
+                native = OleNativeStream(stream)
+                payload = stream.read(native.actual_size)
                 check(f'{index} file is embedded', False, native.is_link)
                 check(f'{index} original byte length', len(expected_bytes), native.actual_size)
-                check(f'{index} original byte hash', expected_sha, hashlib.sha256(native.data or b'').hexdigest())
-                check(f'{index} original filename', attachment.name, native.filename)
+                check(f'{index} original byte hash', expected_sha, hashlib.sha256(payload).hexdigest())
+                legacy_name = attachment.name if attachment.name.isascii() else 'Attachment' + (attachment.suffix if attachment.suffix.isascii() else '')
+                check(f'{index} legacy filename fallback', legacy_name, native.filename)
+                # oletools extracts the payload but intentionally ignores the
+                # Package Unicode extension. Read its three length-prefixed
+                # UTF-16LE fields (MS-OLEDS / Apache POI Ole10Native) separately.
+                for field in ['command', 'label', 'filename']:
+                    length = struct.unpack('<I', stream.read(4))[0]
+                    if length > 1024:
+                        raise ValueError('Unexpected synthetic attachment name length')
+                    name_bytes = stream.read(length * 2)
+                    if len(name_bytes) != length * 2:
+                        raise ValueError('Truncated Unicode attachment name')
+                    check(f'{index} Unicode {field}', attachment.name, name_bytes.decode('utf-16le'))
+                check(f'{index} complete native stream parsed', b''.hex(), stream.read().hex())
             image = item.find('.//v:imagedata', NS)
             image_relation = relations.get(image.get('{%s}id' % NS['r']) if image is not None else None, {})
             image_path = posixpath.normpath(posixpath.join('word', image_relation.get('Target', '')))
