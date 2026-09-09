@@ -1,0 +1,24 @@
+{
+  "hostRunID": "34296658499",
+  "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+  "hostExecutableSHA256": "1636a01b7526cd5e7d51b932ce74a8e16ee0f3fe2aa335e39d7feb74d2c0a3c5",
+  "verifiedResourceFiles": 4780,
+  "verifiedResourceDirectories": 174,
+  "appVersion": null,
+  "appBuild": null,
+  "unsignedPayloadVerified": true,
+  "engineOpened": false,
+  "embeddedEditorPassed": false,
+  "originalFileWritebackPassed": false,
+  "deviceRoundtripPassed": false,
+  "appCodeBinaryPath": "Probe.debug.dylib",
+  "appCodeBinarySHA256": "688f0f92e60e8fb244e7db55bbffe704ccc8e8669364a3fb70f3cb8abd0fa1fa",
+  "officeLoadChain": [
+    "Probe",
+    "Probe.debug.dylib",
+    "@rpath/FloeOfficeNative.framework/FloeOfficeNative"
+  ],
+  "appLinksOfficeHost": true,
+  "appExecutableSHA256": "fe61bc12ba62b66fbcbac9bfeb6d174e468da21faa36a70b15cb06d0b94b2d11",
+  "appPlatformLoadCommands": "/Volumes/TECLAST/FloeOfficeBuilds/debug-load-chain-probe/derived/Build/Products/Debug-iphoneos/Probe.app/Probe:\nLoad command 11\n      cmd LC_BUILD_VERSION\n  cmdsize 32\n platform IOS\n    minos 26.0\n      sdk 27.0\n   ntools 1\n     tool LD\n  version 27037.0\n"
+}

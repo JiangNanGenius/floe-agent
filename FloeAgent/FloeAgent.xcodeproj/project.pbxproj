@@ -154,6 +154,7 @@
 		51277E317713B043EF7FA65F /* pandas__libs_tslibs_np_datetime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5E34F31E16DFEC4CB4FAE639 /* pandas__libs_tslibs_np_datetime.xcframework */; };
 		51FC0B9E3FDE98C725F6BA0E /* ConversationListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66624FE4F8480041F7602716 /* ConversationListViewModel.swift */; };
 		53B0B28D58E300B08FE02EF0 /* GeneralSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E788D879DCEB044587CF121 /* GeneralSettingsView.swift */; };
+		53B27391A46184754D48D72B /* DocumentRecoveryListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36E68916820B033030E49814 /* DocumentRecoveryListView.swift */; };
 		53BAF834CD561BC043B376D4 /* _imagingft.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F5ECABBE2BD25105411AD392 /* _imagingft.xcframework */; };
 		53C5DF929A29A202B41358EA /* ApprovalModelBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 436B2C5C853B7C60DCEF2059 /* ApprovalModelBackend.swift */; };
 		53ECC4DE41C67E62C0003C63 /* _bounded_integers.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9B83A57D75B2264625E7B8B6 /* _bounded_integers.xcframework */; };
@@ -721,6 +722,7 @@
 		34D4C7AAC317C256EEB4AFAD /* HostEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorViewModel.swift; sourceTree = "<group>"; };
 		35BE65ADB5F2AA44F63AFCDB /* marked.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = marked.min.js; sourceTree = "<group>"; };
 		35C112647BD8DF8C99E18D89 /* SampleHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleHandler.swift; sourceTree = "<group>"; };
+		36E68916820B033030E49814 /* DocumentRecoveryListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentRecoveryListView.swift; sourceTree = "<group>"; };
 		37342E477B47F8A9B76D15B6 /* CPythonLocalRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CPythonLocalRuntime.swift; sourceTree = "<group>"; };
 		37ADB29366F2D423D0507E05 /* ConversationSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSearchView.swift; sourceTree = "<group>"; };
 		37BB930D0175C1FF7EE714EE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -1384,6 +1386,7 @@
 				DC74E9DDD5C02BD49675B239 /* DataManagementView.swift */,
 				67421D0E0C3D4BF46F4ACE46 /* DiagnosticsAboutView.swift */,
 				CB4807D41A6BD7259F8D0356 /* DiagnosticsExporter.swift */,
+				36E68916820B033030E49814 /* DocumentRecoveryListView.swift */,
 				1C801E16B941B45C62C279A9 /* ExecutionEnvironmentView.swift */,
 				533B35B37CF7B7268AEB05B9 /* FeedbackReportView.swift */,
 				F154C825E0923E5172D956C7 /* FeedbackTokenStore.swift */,
@@ -2164,6 +2167,7 @@
 				1108F93F3CEE73E9893D390B /* DiffView.swift in Sources */,
 				D75EF5BED6075C184EC0EC41 /* DocumentConversionTool.swift in Sources */,
 				0FC797D1A81F3651D0D3BFBF /* DocumentPickerView.swift in Sources */,
+				53B27391A46184754D48D72B /* DocumentRecoveryListView.swift in Sources */,
 				640A6E1C865CD29BBC93B547 /* DomainSkillLibrary.swift in Sources */,
 				C7F85CE15D1A3A53A80ED1CF /* DraftTaskPermissionsSheet.swift in Sources */,
 				7E68D5161A58FBD3F6C55FAF /* ErrorEventView.swift in Sources */,

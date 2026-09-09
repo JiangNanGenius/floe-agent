@@ -44,6 +44,12 @@ struct AllWorkspacesFilesView: View {
                 Text("聊天").tag(2)
                 Text("已归档").tag(3)
             }.pickerStyle(.segmented)
+            NavigationLink {
+                DocumentRecoveryListView()
+            } label: {
+                Label("保留的文档", systemImage: "doc.badge.clock")
+            }
+            .accessibilityIdentifier("files.recovery.open")
             if pendingCleanupCount > 0 {
                 Section {
                     Text("\(pendingCleanupCount) 个已删除任务的文件尚未清理")

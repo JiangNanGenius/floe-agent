@@ -28,9 +28,11 @@ jobs:
           brew install xcodegen cmake
           xcodebuild -downloadComponent MetalToolchain
           python3 scripts/test_office_host_bootstrap.py
+          python3 scripts/test_office_app_load_chain.py
           scripts/bootstrap_python_runtime.sh
           scripts/gen_project.sh
       - name: Build Floe with shared native Office preview and fullscreen editing
+        id: build_app
         run: |
           set -o pipefail
           xcodebuild -project FloeAgent.xcodeproj -scheme FloeAgent \
@@ -46,11 +48,14 @@ jobs:
             "$RUNNER_TEMP/FloeOfficeIntegration/Build/Products/Debug-iphoneos/Floe Agent.app" \
             --output "$RUNNER_TEMP/FloeOfficeIntegration-receipt.json"
       - name: Package the unsigned app for further qualification
+        id: package_app
+        if: always() && steps.build_app.outcome == 'success'
         run: |
           ditto -c -k --keepParent \
             "$RUNNER_TEMP/FloeOfficeIntegration/Build/Products/Debug-iphoneos/Floe Agent.app" \
             "$RUNNER_TEMP/FloeOfficeIntegration-unsigned.zip"
       - uses: actions/upload-artifact@v4
+        if: always() && steps.package_app.outcome == 'success'
         with:
           name: office-floe-device-app-unsigned
           path: ${{ runner.temp }}/FloeOfficeIntegration-unsigned.zip

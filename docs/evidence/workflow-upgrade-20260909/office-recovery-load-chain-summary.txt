@@ -1,0 +1,12 @@
+Source: working tree after d2e75c4, 2026-09-09.
+Actual Floe app run 34298780735: app build succeeded; payload verifier failed on main-only dylib assumption. No app archive retained by that prior workflow.
+Updated verifier: follows a real main -> Xcode Debug dylib -> pinned framework load chain with resolved LC_RPATH. Stray, missing, aliased, and incorrectly searched code binaries fail.
+7 Python load-chain tests passed; 12 host bootstrap/payload tests passed.
+Real small iphoneos app: DebugLoadChainProbe, Xcode beta SDK 27.0, minimum iOS 26.0, build succeeded. Actual pinned Office framework imported/linked/copied; full payload and debug load chain verification passed.
+Local build log: /tmp/floe-debug-load-chain-probe.log
+Local receipt: /Volumes/TECLAST/FloeOfficeBuilds/debug-load-chain-probe/receipt.json
+This probe does not execute Office or qualify the full Floe UI.
+Document workspace: 17 tests in 2 suites passed, including retained-edit resume, original revision conflicts, pending-commit journal reconciliation, independent-instance locks, and unsafe recovery records.
+Local test log: /tmp/floe-durable-recovery-tests.log
+UI syntax parse passed for recovery list, shared Office session, and all-workspaces files view. Full app typecheck/build pending next cloud run.
+Recovery completeness, engine-generation selection, save-as, native toolbar original writeback, fidelity, physical device acceptance, final prompt audit, and release remain open.

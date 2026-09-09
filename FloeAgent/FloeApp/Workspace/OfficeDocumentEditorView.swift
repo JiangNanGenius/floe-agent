@@ -136,8 +136,34 @@ final class OfficeFileSession: ObservableObject {
     }
 
     func retryPreview() async {
-        guard readOnly, let url = session?.originalURL else { return }
-        await open(url)
+        guard readOnly else { return }
+        await previewCurrent()
+    }
+
+    func resumeRecovery(id: UUID) async {
+        guard !operating else { return }
+        operating = true
+        defer { finishOperation() }
+        phase = .loading
+        error = nil
+        do {
+            if session != nil { try await releaseCurrent() }
+            let files = try SecurityScopedDocumentWorkspace()
+            let recovered = try await files.resumeRecovery(id: id)
+            workspace = files
+            session = recovered
+            try await activate(readOnly: true)
+        } catch { fail(error) }
+    }
+
+    func previewCurrent() async {
+        guard !operating, session != nil else { return }
+        operating = true
+        defer { finishOperation() }
+        do {
+            try await closeController()
+            try await activate(readOnly: true)
+        } catch { fail(error) }
     }
 
     private func finishOperation() {

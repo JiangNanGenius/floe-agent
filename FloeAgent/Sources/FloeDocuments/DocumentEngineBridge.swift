@@ -29,7 +29,7 @@ public protocol DocumentWorkspace: Sendable {
     func discardChangesAndClose(_ session: DocumentSession) async
 }
 
-/// Safe file lifecycle used by the future Collabora adapter. Editors always
+/// Safe file lifecycle used by the native Collabora adapter. Editors always
 /// mutate a private working copy; save coordinates replacement and leaves a
 /// recovery copy if replacement fails.
 public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
@@ -38,12 +38,18 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     private var scopedSessions: Set<UUID> = []
     private var sessions: [UUID: DocumentSession] = [:]
     private var savedDigests: [UUID: String] = [:]
+    private var manifests: [UUID: DocumentRecoveryManifest] = [:]
+    private var recoveryLeases: [UUID: DocumentRecoveryLease] = [:]
 
     public init(root: URL? = nil, fileManager: FileManager = .default) throws {
         self.fileManager = fileManager
         let base = root ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("FloeDocuments", isDirectory: true)
         self.root = base
         try fileManager.createDirectory(at: base, withIntermediateDirectories: true)
+    }
+
+    deinit {
+        for id in scopedSessions { sessions[id]?.originalURL.stopAccessingSecurityScopedResource() }
     }
 
     public func open(securityScopedURL url: URL) async throws -> DocumentSession {
@@ -57,6 +63,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         let recovery = directory.appendingPathComponent("recovery").appendingPathExtension(url.pathExtension)
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            let lease = try DocumentRecoveryLease(directory: directory)
             var coordinationError: NSError?
             var copyError: Error?
             NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { source in
@@ -66,7 +73,14 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
             if let coordinationError { throw coordinationError }
             if let copyError { throw copyError }
             let session = DocumentSession(id: id, originalURL: url, workingURL: working, recoveryURL: recovery)
-            savedDigests[id] = try Self.digest(working)
+            let manifest = DocumentRecoveryManifest(id: id,
+                originalBookmark: try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil),
+                displayName: url.lastPathComponent, fileExtension: url.pathExtension,
+                committedDigest: try Self.digest(working), updatedAt: Date())
+            try manifest.write(to: directory)
+            manifests[id] = manifest
+            recoveryLeases[id] = lease
+            savedDigests[id] = manifest.committedDigest
             sessions[id] = session
             if scoped { scopedSessions.insert(id) }
             return session
@@ -85,6 +99,16 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         // Preserve the user's edit before attempting any writeback. The engine
         // must finish writing its private copy before invoking this method.
         try preserveRecoveryCopy(session, expectedDigest: newDigest)
+        guard var manifest = manifests[session.id] else {
+            throw FloeError.validationFailed("Document recovery record is unavailable")
+        }
+        // Journal the intended bytes before touching the original. If the app
+        // terminates after replacement, resumption can reconcile this digest.
+        manifest.committedDigest = expectedDigest
+        manifest.pendingDigest = newDigest
+        manifest.updatedAt = Date()
+        try manifest.write(to: session.workingURL.deletingLastPathComponent())
+        manifests[session.id] = manifest
 
         var coordinationError: NSError?
         var replacementError: Error?
@@ -109,7 +133,96 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         if let coordinationError { throw coordinationError }
         if let replacementError { throw replacementError }
         savedDigests[session.id] = newDigest
+        manifest.committedDigest = newDigest
+        manifest.pendingDigest = nil
+        manifest.updatedAt = Date()
+        try manifest.write(to: session.workingURL.deletingLastPathComponent())
+        manifests[session.id] = manifest
         try? fileManager.removeItem(at: session.recoveryURL)
+    }
+
+    /// Retained sessions only. An active editor in any workspace instance keeps
+    /// its lease and is omitted; malformed records and all their files survive.
+    public func recoveryRecords() throws -> [DocumentRecoveryRecord] {
+        let directories = try fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isSymbolicLinkKey])
+        var records: [DocumentRecoveryRecord] = []
+        for directory in directories {
+            guard let id = UUID(uuidString: directory.lastPathComponent), sessions[id] == nil else { continue }
+            do {
+                let (manifest, lease) = try loadRecovery(id)
+                let copy = manifest.session(originalURL: directory, directory: directory)
+                try requireRegularCopy(copy.workingURL)
+                let modified = try? copy.workingURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+                records.append(DocumentRecoveryRecord(id: id, displayName: manifest.displayName,
+                    updatedAt: max(manifest.updatedAt, modified ?? manifest.updatedAt),
+                    workingURL: copy.workingURL, recoveryURL: copy.recoveryURL,
+                    hasEngineCopies: fileManager.fileExists(atPath: copy.engineCopyDirectory.path)))
+                withExtendedLifetime(lease) {}
+            } catch { continue }
+        }
+        return records.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    public func resumeRecovery(id: UUID) throws -> DocumentSession {
+        guard sessions[id] == nil else {
+            throw FloeError.validationFailed("This document recovery session is already open")
+        }
+        var (manifest, lease) = try loadRecovery(id)
+        let directory = root.appendingPathComponent(id.uuidString, isDirectory: true)
+        var stale = false
+        let original = try URL(resolvingBookmarkData: manifest.originalBookmark,
+            options: [.withoutUI, .withoutMounting], relativeTo: nil, bookmarkDataIsStale: &stale)
+        guard original.isFileURL else { throw CocoaError(.fileReadUnsupportedScheme) }
+        let scoped = original.startAccessingSecurityScopedResource()
+        do {
+            let session = manifest.session(originalURL: original, directory: directory)
+            try requireRegularCopy(session.workingURL)
+            if let intended = manifest.pendingDigest {
+                var current: String?
+                var coordinationError: NSError?
+                NSFileCoordinator().coordinate(readingItemAt: original, options: [], error: &coordinationError) { source in
+                    current = try? Self.digest(source)
+                }
+                // Never adopt an unrelated external revision as our baseline.
+                if coordinationError == nil, current == intended {
+                    manifest.committedDigest = intended
+                    manifest.pendingDigest = nil
+                }
+            }
+            if stale {
+                manifest.originalBookmark = try original.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+            }
+            manifest.updatedAt = Date()
+            try manifest.write(to: directory)
+            sessions[id] = session
+            savedDigests[id] = manifest.committedDigest
+            manifests[id] = manifest
+            recoveryLeases[id] = lease
+            if scoped { scopedSessions.insert(id) }
+            return session
+        } catch {
+            if scoped { original.stopAccessingSecurityScopedResource() }
+            throw error
+        }
+    }
+
+    private func loadRecovery(_ id: UUID) throws -> (DocumentRecoveryManifest, DocumentRecoveryLease) {
+        let directory = root.appendingPathComponent(id.uuidString, isDirectory: true)
+        let values = try directory.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+        guard values.isDirectory == true, values.isSymbolicLink != true,
+              directory.resolvingSymlinksInPath().deletingLastPathComponent().path == root.resolvingSymlinksInPath().path else {
+            throw FloeError.validationFailed("Recovery directory is outside its document workspace")
+        }
+        _ = try DocumentRecoveryManifest.read(from: directory)
+        let lease = try DocumentRecoveryLease(directory: directory)
+        return (try DocumentRecoveryManifest.read(from: directory), lease)
+    }
+
+    private func requireRegularCopy(_ url: URL) throws {
+        let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw FloeError.validationFailed("Recovery working copy is missing or unsafe")
+        }
     }
 
     /// A normal close never discards edits. Dirty or unreadable copies remain
@@ -122,21 +235,34 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         let entries = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         // Conservatively retain native generations, recovery files, and unknown
         // sidecars. The editor must settle them before ordinary cleanup is safe.
-        let onlyWorkingCopy = entries.map { $0.allSatisfy { $0.lastPathComponent == session.workingURL.lastPathComponent } } ?? false
+        let ownedNames: Set<String> = [session.workingURL.lastPathComponent, DocumentRecoveryManifest.fileName, DocumentRecoveryLease.fileName]
+        let onlyWorkingCopy = entries.map { $0.allSatisfy { ownedNames.contains($0.lastPathComponent) } } ?? false
+        if clean && onlyWorkingCopy { retire(directory) }
         release(session)
-        if clean && onlyWorkingCopy { try? fileManager.removeItem(at: directory) }
     }
 
     public func discardChangesAndClose(_ session: DocumentSession) async {
         guard sessions[session.id] == session else { return }
+        retire(session.workingURL.deletingLastPathComponent())
         release(session)
-        try? fileManager.removeItem(at: session.workingURL.deletingLastPathComponent())
     }
 
     private func release(_ session: DocumentSession) {
         if scopedSessions.remove(session.id) != nil { session.originalURL.stopAccessingSecurityScopedResource() }
         sessions[session.id] = nil
         savedDigests[session.id] = nil
+        manifests[session.id] = nil
+        recoveryLeases[session.id] = nil
+    }
+
+    private func retire(_ directory: URL) {
+        // Rename while the session lock is held. A concurrent recovery request
+        // cannot acquire a newly-created lock inside a half-deleted directory.
+        let retired = root.appendingPathComponent(".closed-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try fileManager.moveItem(at: directory, to: retired)
+            try fileManager.removeItem(at: retired)
+        } catch { /* Retain anything that could not be cleaned up safely. */ }
     }
 
     private func preserveRecoveryCopy(_ session: DocumentSession, expectedDigest: String) throws {
