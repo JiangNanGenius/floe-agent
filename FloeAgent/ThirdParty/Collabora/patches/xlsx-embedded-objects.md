@@ -73,3 +73,12 @@ The pinned VML importer rounds offsets to integer pixels; its handling of the
 precise `objectPr` anchors needs runtime fidelity checks and potentially a follow-up
 importer patch. Grouped objects, linked OLE, absent previews, repeated saves and
 protected documents are not yet qualified. Do not mark Office A04 or F04 complete.
+
+The diagnostic host 34346544476 confirmed the actual mismatch: first import and
+legacy Kit export use the 8640-DPI MSO1 virtual reference device (digit width 111),
+but subsequent imports use a 96-DPI printer via the model ReferenceDevice property
+(digit width 107). This changes column A from 22 to 21.21 on a text-only second save.
+The current patch forces the document virtual reference device for Kit import,
+matching existing Kit export; non-Kit property selection is unchanged. All three
+objects compile and 165 unrelated archive members remain identical. New-host
+repeated-save testing is still required; this is not yet a fidelity pass.

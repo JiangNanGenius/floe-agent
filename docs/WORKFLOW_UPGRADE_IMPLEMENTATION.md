@@ -88,6 +88,8 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 
 ## 当前执行记录
 
+- 新诊断宿主 34346544476 在独立应用 21 完成两次保存重开。实际日志确认：首次读取使用 8640 DPI、数字宽度 111，重开变成 96 DPI、数字宽度 107，而 Kit 导出始终为 8640 DPI/111；只修改 B5 文字就使未修改列 A 从 22 缩至 21.21。见 [真实测量](evidence/workflow-upgrade-20260909/office-xlsx-device-mismatch-runtime.json)、[连续保存失败](evidence/workflow-upgrade-20260909/office-xlsx-device-mismatch-layout.json) 和 [重开截图](evidence/workflow-upgrade-20260909/office-xlsx-device-mismatch-second-reopened-mac.jpg)。新补丁仅令 Kit 导入强制使用与原导出相同的文档虚拟参考设备，保留非 Kit 行为；三个 arm64 对象编译、165 个未改成员校验及 8 项验证器测试通过。云端新组件与实际修复重开仍待验收，A04/F04 未完成。
+
 - 字体度量诊断准备：失败的 ReferenceDevice 导出候选已从实际计算路径撤回，继续保留已通过的 VML 锚定修复。新增默认关闭的合成文件测量记录，采集读取、参考测量对照与原导出路径的请求/实际字体、数字宽度、DPI 和缩放；不记录正文、单元格内容或文档路径。三个 arm64 对象编译与 165 个未改对象保留检查通过，见 [诊断编译证据](evidence/workflow-upgrade-20260909/office-xlsx-font-metrics-trace-compile.json)。真实测量数据仍待新组件运行，列宽问题继续开放。
 
 - 组合候选 34344605828（3ae718e）已完成云端构建及 4,785 文件/178 目录实物校验，安装独立应用 20 后实际执行撤销/重做、两次保存重开及三次导出。每次附件 29 项结构检查通过，原始 65,539 字节一致，固定页面锚定标记两轮均正确；见 [实际运行记录](evidence/workflow-upgrade-20260909/office-xlsx-font-anchor-runtime.json) 和三张截图。**字体度量候选未通过**：列 A 从源文件 22 → 首次 22.82 → 第二次 21.8，默认列宽 9.00390625 → 8.6015625；附件横向位置稳定，但宽/高仍有 5/1 个百分之一毫米漂移。已将宿主资格状态明确标为字体度量运行失败，未启动该候选的完整发布。接下来保留已验证的锚定修复，记录读取/导出的实际字体和设备度量，再替换失败候选；不能把附件原字节和锚定通过当成 Office 保真通过。

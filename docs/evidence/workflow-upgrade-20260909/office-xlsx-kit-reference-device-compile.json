@@ -1,8 +1,11 @@
 {
-  "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "patch": "patches/xlsx-embedded-objects.patch",
+  "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "patchSHA256": "b5f67fa7928912e2fb6fbc1f2b8b91067d8c62ebf500fdde0a21ac908e5c49f1",
-  "files": {
+  "originalArchiveSHA256": "a7e5961052e204adfb5694d584de17f8b7a7f0f6462a972303fd6baf78c11b77",
+  "compilePassed": true,
+  "archiveReplacementPassed": true,
+  "runtimeRoundtripPassed": false,
+  "sourceFiles": {
     "engine/sc/source/filter/inc/xcl97rec.hxx": {
       "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
       "patchedSHA256": "025398a1044e4faf26cb113f11031cae2f19025d5f3b40221e04c86140d19b93"
@@ -24,13 +27,17 @@
       "patchedSHA256": "7d2bd9fe65d966025ade2a8f96a365b9ccc3f7d986ccb1c80e09f8966c5906fa"
     }
   },
-  "archive": "source/engine/instdir/program/libscfiltlo.a",
-  "originalArchiveSHA256": "a7e5961052e204adfb5694d584de17f8b7a7f0f6462a972303fd6baf78c11b77",
-  "member": "xcl97rec.o",
-  "qualificationStatus": "xlsx-kit-reference-device-fix-compile-runtime-pending",
-  "members": {
-    "xcl97rec.o": "engine/sc/source/filter/xcl97/xcl97rec.cxx",
-    "xlroot.o": "engine/sc/source/filter/excel/xlroot.cxx",
-    "unitconverter.o": "engine/sc/source/filter/oox/unitconverter.cxx"
-  }
+  "objectSHA256ByMember": {
+    "xcl97rec.o": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
+    "xlroot.o": "3fbca52897617167217f09cbff137f982482d1a8987e261bf856986454c644e4",
+    "unitconverter.o": "0a3ced07db81ae2967126e0fcf2bb466a85b604069d811521c8a11edb1c9d738"
+  },
+  "archiveSHA256": "f49d5615d5821cb5470e465b65636c6e60553557a2e7822c5854b1d047dfb59c",
+  "replacedMembers": [
+    "xcl97rec.o",
+    "xlroot.o",
+    "unitconverter.o"
+  ],
+  "preservedMemberCount": 165,
+  "scope": "Local arm64 compilation of Kit-only import virtual reference-device fix. All 165 unrelated archive members preserved. Four archive-integrity tests and four repeated-layout comparator tests passed. Actual fixed runtime is pending."
 }

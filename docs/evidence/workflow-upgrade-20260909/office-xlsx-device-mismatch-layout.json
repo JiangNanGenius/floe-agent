@@ -1,0 +1,196 @@
+{
+  "beforeSHA256": "9d9fe93361081be51350e497b00e6fba299463e871fce7761c2e03dbf2f636d9",
+  "afterSHA256": "b8b6bac83e85af3519586d5aa617bdd2f63124aa53a317fd75bd792826ec46cb",
+  "before": {
+    "Quarterly": {
+      "defaultWidth": "8.6796875",
+      "baseWidth": "8",
+      "columns": [
+        [
+          1,
+          1,
+          "22"
+        ],
+        [
+          2,
+          3,
+          "14"
+        ]
+      ],
+      "objects": []
+    },
+    "Notes": {
+      "defaultWidth": "8.6796875",
+      "baseWidth": "8",
+      "columns": [],
+      "objects": [
+        {
+          "hmm": {
+            "margin-left": 1699,
+            "margin-top": 2117,
+            "width": 6000,
+            "height": 1800
+          },
+          "moveWithCells": false,
+          "sizeWithCells": false,
+          "vmlImportedMoveWithCells": false,
+          "vmlImportedSizeWithCells": false
+        }
+      ]
+    }
+  },
+  "after": {
+    "Quarterly": {
+      "defaultWidth": "8.37109375",
+      "baseWidth": "8",
+      "columns": [
+        [
+          1,
+          1,
+          "21.21"
+        ],
+        [
+          2,
+          3,
+          "13.49"
+        ]
+      ],
+      "objects": []
+    },
+    "Notes": {
+      "defaultWidth": "8.37109375",
+      "baseWidth": "8",
+      "columns": [],
+      "objects": [
+        {
+          "hmm": {
+            "margin-left": 1639,
+            "margin-top": 2117,
+            "width": 5815,
+            "height": 1799
+          },
+          "moveWithCells": false,
+          "sizeWithCells": false,
+          "vmlImportedMoveWithCells": false,
+          "vmlImportedSizeWithCells": false
+        }
+      ]
+    }
+  },
+  "checks": [
+    {
+      "name": "sheet order",
+      "expected": [
+        "Quarterly",
+        "Notes"
+      ],
+      "actual": [
+        "Quarterly",
+        "Notes"
+      ],
+      "passed": true
+    },
+    {
+      "name": "Quarterly default column width",
+      "expected": "8.6796875",
+      "actual": "8.37109375",
+      "passed": false
+    },
+    {
+      "name": "Quarterly base column width",
+      "expected": "8",
+      "actual": "8",
+      "passed": true
+    },
+    {
+      "name": "Quarterly columns 1-1 width",
+      "expected": "22",
+      "actual": "21.21",
+      "passed": false
+    },
+    {
+      "name": "Quarterly columns 2-3 width",
+      "expected": "14",
+      "actual": "13.49",
+      "passed": false
+    },
+    {
+      "name": "Quarterly columns 4-16384 width",
+      "expected": "8.6796875",
+      "actual": "8.37109375",
+      "passed": false
+    },
+    {
+      "name": "Quarterly ordered attachment geometry and movement",
+      "expected": [],
+      "actual": [],
+      "passed": true
+    },
+    {
+      "name": "Notes default column width",
+      "expected": "8.6796875",
+      "actual": "8.37109375",
+      "passed": false
+    },
+    {
+      "name": "Notes base column width",
+      "expected": "8",
+      "actual": "8",
+      "passed": true
+    },
+    {
+      "name": "Notes columns 1-16384 width",
+      "expected": "8.6796875",
+      "actual": "8.37109375",
+      "passed": false
+    },
+    {
+      "name": "Notes ordered attachment geometry and movement",
+      "expected": [
+        {
+          "hmm": {
+            "margin-left": 1699,
+            "margin-top": 2117,
+            "width": 6000,
+            "height": 1800
+          },
+          "moveWithCells": false,
+          "sizeWithCells": false,
+          "vmlImportedMoveWithCells": false,
+          "vmlImportedSizeWithCells": false
+        }
+      ],
+      "actual": [
+        {
+          "hmm": {
+            "margin-left": 1639,
+            "margin-top": 2117,
+            "width": 5815,
+            "height": 1799
+          },
+          "moveWithCells": false,
+          "sizeWithCells": false,
+          "vmlImportedMoveWithCells": false,
+          "vmlImportedSizeWithCells": false
+        }
+      ],
+      "passed": false
+    },
+    {
+      "name": "Notes attachment 0 VML and modern movement agree",
+      "expected": [
+        false,
+        false
+      ],
+      "actual": [
+        false,
+        false
+      ],
+      "passed": true
+    }
+  ],
+  "allNamedChecksPassed": false,
+  "visualFidelityPassed": false,
+  "microsoftOfficeReopenPassed": false,
+  "scope": "Untouched widths and ordered OLE geometry between two XLSX saves only"
+}
