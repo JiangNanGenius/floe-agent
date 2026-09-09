@@ -176,3 +176,5 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 
 - F04 保存结果修复：桥接层现按上游 DocumentBroker 语义接收 success=true 或 type=string/value=unmodified；后者仍必须完成对应 UIDocument 持久化与请求序号关联，错误/缺失结果不放行。新增实际 C++ 判定及回执编译回归共 10 组检查通过；22 项归档校验、7 项原生准备、3 项宿主结构与 18 项语言检查通过。当前宿主产物尚未包含新 overlay，需重新编译及实测，不能据此声称原文件写回修复。
 - CI 34323990305：App Store SDK 和跨平台构建通过；125 项应用回归有 1 项失败，新增设置测试错误依赖未挂载 UIHostingController 的 UIKit 子视图数量。实际新 App 设置页已成功打开。回归测试改为挂载独立 UIWindow 并检查 SwiftUI onAppear 与 window 归属，仍不注入 AppEnvironment；待云端重新运行，其他后续 CI 门槛未完成。
+
+- F04 原生保存修复宿主 34327287597（137109b）已通过编译、链接与 Swift 导入，已取回核对源码/overlay/二进制和 4,785 文件、178 目录，并更新应用锁定引用。13 项引导与 7 项加载链测试通过。CI 34327290652 在项目生成时被旧宿主与新 overlay 不一致拦截，应用测试尚未运行；Linux 构建通过。见 [宿主校验回执](evidence/workflow-upgrade-20260909/office-unmodified-save-host-qualified.json)。下一步重跑完整应用及 CI，原文件保存和 Excel/PPT 附件实际闭环仍未验收。

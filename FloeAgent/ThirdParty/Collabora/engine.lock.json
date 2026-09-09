@@ -1,15 +1,15 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "unmodified-save-result-fix-native-rebuild-pending",
+  "qualificationStatus": "unmodified-save-and-drawing-attachment-host-compiled-runtime-retest-pending",
   "qualifiedHostArtifact": {
-    "runID": "34325295925",
+    "runID": "34327287597",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10093591174,
-    "workflowCommit": "2fc5422",
-    "archiveSHA256": "ae6a1052e7a31ee723fc87b987b86058df4122515061986aef474f16783ea923",
-    "executableSHA256": "06da74683a967b74f0cda225a092b754dd47284ee6e729b3cf7decb82846b238",
-    "overlaySHA256": "600f480a2ccfde4e7d8d9641332197556a4dc79466860943e207c6c2fd7618fd",
+    "artifactID": 10094360954,
+    "workflowCommit": "137109b01965eaa93151e944704636d420de0b95",
+    "archiveSHA256": "2165f49738e65bc83c5b847a37d54cab268ee492b8d01e7227a8ffc21b82c630",
+    "executableSHA256": "806d6970b674498095a4640f306dc71d00610a2d09669e72e693bf987b6f1ea2",
+    "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
       "FloeOfficeNative.mm": "56e7e6a8cafc8378e551fca9bfed4fe9e4768a782e2269dcfddf8b039d96aae6",
@@ -18,13 +18,13 @@
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "718306fbf53ee55ce8c9d4ce4d54d98c9f968f0582814d818b6c40ffb7f681ce",
+    "manifestSHA256": "440052b6978ae5a52365757939b6593a75b04c7b471d69df61a2d45df9daef5b",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
       "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac"
     },
-    "note": "Compiled, linked and Swift-imported Word/Excel/PPT attachment host. New drawing attachment runtime, save-reopen, undo, complete fidelity and physical-device acceptance remain pending."
+    "note": "Compiled, linked and Swift-imported host with unmodified save-result handling and Word/Excel/PPT Package attachments. Full Floe original-file save, format fidelity and physical-device acceptance remain pending."
   },
   "qualifiedNativeArtifact": {
     "runID": "34268468731",
