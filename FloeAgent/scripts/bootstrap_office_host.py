@@ -114,11 +114,13 @@ def install(archive, destination, lock_path=LOCK):
 
 
 def write_project_inputs(folder, output, project_root=ROOT, lock_path=LOCK):
-    """Declare every verified payload input for Xcode's script sandbox."""
+    """Keep build dependency declarations bounded; verification checks every file."""
     lock, pin = checked_lock(lock_path)
     verify_installed(folder, lock, pin)
     folder, project_root, output = Path(folder), Path(project_root), Path(output)
-    paths = [folder] + sorted(folder.rglob('*'))
+    # Per-file definitions overflow the script process argument/environment
+    # limit. The dedicated copy phase validates the entire pinned directory.
+    paths = [folder]
     lines = []
     for path in paths:
         name = str(path.relative_to(project_root))

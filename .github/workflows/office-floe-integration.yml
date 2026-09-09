@@ -45,6 +45,16 @@ jobs:
           python3 scripts/verify_office_app_embedding.py \
             "$RUNNER_TEMP/FloeOfficeIntegration/Build/Products/Debug-iphoneos/Floe Agent.app" \
             --output "$RUNNER_TEMP/FloeOfficeIntegration-receipt.json"
+      - name: Package the unsigned app for further qualification
+        run: |
+          ditto -c -k --keepParent \
+            "$RUNNER_TEMP/FloeOfficeIntegration/Build/Products/Debug-iphoneos/Floe Agent.app" \
+            "$RUNNER_TEMP/FloeOfficeIntegration-unsigned.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: office-floe-device-app-unsigned
+          path: ${{ runner.temp }}/FloeOfficeIntegration-unsigned.zip
+          compression-level: 0
       - name: Preserve device-app build evidence
         if: always()
         uses: actions/upload-artifact@v4

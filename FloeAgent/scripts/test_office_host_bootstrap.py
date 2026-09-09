@@ -63,15 +63,15 @@ class OfficeHostBootstrapTests(unittest.TestCase):
         self.assertEqual(self.install(), first)
         self.assertEqual(digest(self.archive), self.pin['archiveSHA256'])
 
-    def test_xcode_input_list_explicitly_includes_files_and_empty_directories(self):
+    def test_xcode_input_list_remains_bounded_after_full_payload_verification(self):
         self.install()
         output = self.root / 'inputs.xcfilelist'
         write_project_inputs(self.destination, output, self.root, self.lock)
         lines = set(output.read_text().splitlines())
-        self.assertIn('$(SRCROOT)/installed/OfficeNativeHost/native-host.json', lines)
-        self.assertIn('$(SRCROOT)/installed/OfficeNativeHost/OfficeRuntimeResources/cool.html', lines)
-        self.assertIn('$(SRCROOT)/installed/OfficeNativeHost/OfficeRuntimeResources/config', lines)
-        self.assertEqual(len(lines), 1 + len(list(self.destination.rglob('*'))))
+        self.assertEqual(lines, {'$(SRCROOT)/installed/OfficeNativeHost'})
+        (self.destination / 'OfficeRuntimeResources/cool.html').write_text('changed')
+        with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+            write_project_inputs(self.destination, output, self.root, self.lock)
 
     def test_changed_binary_is_rejected_without_overwriting_it(self):
         self.install()

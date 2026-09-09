@@ -1,0 +1,18 @@
+{
+  "hostRunID": "34296658499",
+  "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+  "hostExecutableSHA256": "1636a01b7526cd5e7d51b932ce74a8e16ee0f3fe2aa335e39d7feb74d2c0a3c5",
+  "verifiedResourceFiles": 4780,
+  "verifiedResourceDirectories": 174,
+  "appVersion": null,
+  "appBuild": null,
+  "unsignedPayloadVerified": true,
+  "engineOpened": false,
+  "embeddedEditorPassed": false,
+  "originalFileWritebackPassed": false,
+  "deviceRoundtripPassed": false,
+  "kind": "Minimal iphoneos build using the actual verified Office embedding script",
+  "actualFloeApplicationBuilt": false,
+  "appLinksOfficeHost": false,
+  "buildSucceeded": true
+}

@@ -124,8 +124,11 @@ runtime bootstrap invokes it with a developer gh login or a read-only Actions
 token. No runtime executable download is added to the app.
 
 The app's generated Xcode project links the framework only for `iphoneos` and
-copies its main-bundle resources in a sandboxed post-build phase with explicit
-input/output paths. Simulator has no native engine slice and skips embedding;
+copies its main-bundle resources in a verified post-build phase with bounded
+input/output declarations. The Floe target has only this script and disables
+Xcode's script dependency sandbox for its recursive copy/signing; other targets
+retain that sandbox. Every input is still hash-checked and output paths remain
+restricted to the generated Floe app. Simulator has no native engine slice and skips embedding;
 Simulator success cannot certify Office. Signing-enabled builds sign the copied
 framework; unsigned qualification builds leave it unsigned. The host was built
 with SDK 27 targeting iOS 26, so accepted-SDK packaging and Apple validation
@@ -134,17 +137,29 @@ remain separate release gates.
 `verify_office_app_embedding.py` checks the actual unsigned Floe app's native
 payload against the pin, preserves required empty directories, and requires a
 real Office load command in the Floe executable. Its receipt keeps runtime open,
-UI editing, original writeback and device fidelity false. Eleven bootstrap and
+UI editing, original writeback and device fidelity false. Twelve bootstrap and
 copy/verification tests cover tampering, missing assets/directories, aliases,
 changed source, repeat installation, and preservation of unrelated app resources.
 
 Actual Floe device build `34294036299` reached the post-build phase and failed
 because XcodeGen ignored the unsupported `inputPaths` YAML key, generating an
 empty script input list. The project now uses `inputFiles`; the generated PBX
-contains all six declared script/metadata inputs. Bootstrap also emits a file
-list covering every verified payload file and directory. Twelve bootstrap tests
-pass. Script sandboxing remains enabled; a fresh actual app build must verify
-this correction after the new native save protocol is qualified and pinned.
+contains all six declared script/metadata inputs. The first correction also
+emitted a file list covering every payload entry and retained script sandboxing.
+Twelve bootstrap tests passed, but the next actual app build exposed a separate
+system argument limit, recorded below.
+
+Run `34296994732` then compiled the actual Floe UI but could not spawn
+sandbox-exec because ~5,000 file declarations exceeded the argument limit.
+Small iphoneos build probes confirmed that recursive inputs can be enabled but
+directory outputs still grant literal access only; nested writes were denied.
+This matches [Swift Build's sandbox implementation](https://github.com/swiftlang/swift-build/blob/main/Sources/SWBTaskConstruction/TaskProducerSandboxing.swift).
+The bounded declaration / target setting above replaces that unsuccessful
+configuration. A minimal app build using the actual embed script now succeeds,
+and its copied framework plus 4,780 resources / 174 directories pass payload
+verification. Twelve bootstrap regressions also pass. That probe is not the
+actual Floe executable or a runtime/editor test; a fresh full app build remains
+required. The cloud job now also retains an unsigned app for further qualification.
 
 Twenty-two synthetic packaging/preparation/repair tests pass. The overlay also applies to
 the actual pinned source hashes, and its public keyboard helper passes an

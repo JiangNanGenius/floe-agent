@@ -440,7 +440,10 @@ targets:
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
-        ENABLE_USER_SCRIPT_SANDBOXING: YES
+        # This target has one script: verified Office framework/resource copy.
+        # Xcode only grants literal output paths; listing ~5,000 files exceeds
+        # the process argument limit. Other targets keep their script sandbox.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
         ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
         "FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]":
           - $(inherited)
