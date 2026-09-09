@@ -1,0 +1,46 @@
+{
+  "runID": "34313654241",
+  "sourceCommit": "5ae367c0464e8c0c4aa8be7dafde88f6aebd6851",
+  "environment": "Mac Designed for iPad; developer-signed isolated qualification app 11",
+  "sessionID": "DEDF8032-22B9-4331-BE71-D7459464E5DC",
+  "hostCompilePassed": true,
+  "hostLinkPassed": true,
+  "swiftModuleImportPassed": true,
+  "hostSourceSHA256": {
+    "FloeOfficeNative.h": "34e84db6dc3408c4eacf54331f034af9e8062a86403ffb8fea5fb74804dfaba1",
+    "FloeOfficeNative.mm": "5a291fa6447b033986b90b831e01d8f6417f8db54b4791c578b965370029ff38",
+    "FloeOfficeAttachment.cpp": "eaf194d05f2ba1e1899c37b1f6e695fc476650d1f47f1a8df74d8d1944da976b",
+    "FloeOfficeAttachment.hxx": "c9f5afb7fa500698d7372e5303d609fab2b865f0c2a1fae573e0009daeaaf6e5"
+  },
+  "installation": {
+    "verifiedFiles": 4785,
+    "verifiedDirectories": 178,
+    "runID": "34313654241",
+    "archiveSHA256": "5953109e9ce885dde0b10313c105837653a9ac7d6d09abfa528eb9a3b0567382"
+  },
+  "actualUI": {
+    "nativeInsertAtCursor": true,
+    "firstSingleUndoRemovedAttachment": true,
+    "firstSingleRedoRestoredAttachment": true,
+    "secondSingleUndoRemovedAttachment": true,
+    "secondSingleRedoRestoredAttachment": true,
+    "multiUserConflictAbsent": true,
+    "savedAndReopenedReadonly": true,
+    "reopenedIconVisible": true
+  },
+  "structureCheckCount": 18,
+  "allNamedStructureChecksPassed": true,
+  "sourceAttachmentSHA256": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+  "savedDocumentSHA256": "71facc03cad31bb35d1b2ab040569d41a905db45c52267c3357a8660979b5292",
+  "remaining": [
+    "Floe system and workspace picker actual operation",
+    "attachment open/export/replace and full object manipulation",
+    "complete original-file writeback and recovery",
+    "Excel/PowerPoint attachment implementation",
+    "existing embedded object preservation",
+    "Microsoft Office reopening",
+    "physical iPhone/iPad acceptance"
+  ],
+  "completeOfficeAccepted": false,
+  "completeAttachmentFrontendAccepted": false
+}

@@ -26,11 +26,13 @@ Floe Agent turns a model conversation into a durable task. Each message continue
 
 ## Current upgrade — in development
 
-This round covers editing correctness and everyday workflows: the plugin marketplace, task selection from a long-press menu, all-workspace management, inline PDF reading, iPhone canvas support, live execution feedback, long-reasoning reading, and reliable long-text tool calls. Word, Excel, and PowerPoint share the Office tool group; PDF stays separate. The advanced Office engine is still undergoing qualification and has not been integrated.
+This round covers editing correctness and everyday workflows: the plugin marketplace, task selection from a long-press menu, all-workspace management, inline PDF reading, iPhone canvas support, live execution feedback, long-reasoning reading, and reliable long-text tool calls. Word, Excel, and PowerPoint share the Office tool group; PDF stays separate. The native Office engine and frontend are integrated on the development branch and remain under qualification; complete editing functionality has not yet passed acceptance.
 
 See the [upgrade scope, verification status, and interaction screenshots](docs/WORKFLOW_UPGRADE.md). These changes describe the development branch; TestFlight availability is verified separately.
 
 The [implementation checklist](docs/WORKFLOW_UPGRADE_IMPLEMENTATION.md) defines the full Office frontend: document pages, spreadsheet grids and slide objects, with read-only inspection and editing only in fullscreen. Tool/skill directories, multi-query discovery, bundled plugin upgrades and paged chat history are being implemented alongside it. [Current test evidence and screenshots](docs/evidence/workflow-upgrade-20260909/README.md) distinguish verified flows from outstanding acceptance work.
+
+The [detailed Office acceptance matrix](docs/OFFICE_FRONTEND_ACCEPTANCE.md) tracks attachment insertion, opening, export, replacement, object manipulation and original-format saving separately. Isolated native Word tests now cover real embedded attachments, repeated single-step undo/redo and saved-file extraction with matching bytes. Full Floe file selection/writeback, Excel/PowerPoint attachments and physical-device acceptance remain open.
 
 ## Why Floe Agent
 
@@ -142,9 +144,11 @@ Floe includes Python 3.13 for local scripts, files, archives, JSON, SQLite, and 
 
 Skills may carry bounded `.py` files plus exact pure-Python package requirements. Floe validates script paths and source, resolves and inspects universal wheels at install time, and records the approved script/package fingerprints. Later runs may reuse only that exact audited code with changing task input passed separately as JSON; edits, dependency changes, privileged operations, destructive file changes, credentials and external side effects return to the normal approval path.
 
-### Native Office documents
+### Native Office documents — published 1.5.3 baseline
 
 Floe can create DOCX documents, multi-sheet XLSX workbooks with values and formulas, and 16:9 PPTX decks with slide notes. The document package is generated and checked locally, without a web editor or office-cloud upload. Opening an Office file keeps the system preview as the first layer; **Edit Office document** enters a separate basic editor for manual Word text, spreadsheet cells/formulas, PowerPoint text and speaker notes. Saving applies only changed semantic fields, rewrites the OOXML package atomically, and preserves untouched package parts such as styles, media and relationships. Advanced layout fidelity, charts, macros, ActiveX and full desktop Office parity are not claimed.
+
+The development branch replaces this basic editor with the native Office frontend described in the upgrade section above. Its complete acceptance remains in progress.
 
 For statistics without external packages, `exec.localNumerical` implements bounded R-, Stata- and MATLAB/Octave-compatible expressions, descriptive statistics, quantiles, correlation and simple OLS. It does not claim to bundle the proprietary Stata runtime: PyStata requires a licensed Stata installation, and native-extension packages such as `pyreadstat` must run on a configured host rather than inside the pure-Python iOS package sandbox.
 

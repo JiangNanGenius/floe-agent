@@ -26,11 +26,13 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## 本轮升级（开发中）
 
-这一轮围绕完整编辑能力和日常工作流程展开：插件市场、长按多选任务、全部工作区管理、右侧 PDF 阅读、iPhone 画布，以及持续更新的执行状态、长思考阅读和长文写入可靠性。Word、Excel、PowerPoint 统一归入 Office，PDF 独立；高级 Office 引擎仍在资格验证，尚未完成集成。新增本地文档互转，并更新火山 Seedance 2.5、Seedream 5.0 Pro/Lite 与阿里 Wan 3.0 参数，详见[模型核对记录](docs/MEDIA_MODEL_CATALOG_2026-09-08.md)。
+这一轮围绕完整编辑能力和日常工作流程展开：插件市场、长按多选任务、全部工作区管理、右侧 PDF 阅读、iPhone 画布，以及持续更新的执行状态、长思考阅读和长文写入可靠性。Word、Excel、PowerPoint 统一归入 Office，PDF 独立；原生 Office 引擎及前端已接入开发分支，完整编辑功能仍在逐项验收。新增本地文档互转，并更新火山 Seedance 2.5、Seedream 5.0 Pro/Lite 与阿里 Wan 3.0 参数，详见[模型核对记录](docs/MEDIA_MODEL_CATALOG_2026-09-08.md)。
 
 [查看更新范围、验证状态与操作截图](docs/WORKFLOW_UPGRADE.md)。这里描述的是当前开发分支，TestFlight 可用性另行确认。
 
 [完整实施与验收清单](docs/WORKFLOW_UPGRADE_IMPLEMENTATION.md)明确 Office 前端目标：真实文档页面、电子表格网格和幻灯片对象，右侧只读，进入全屏才能编辑。工具与 Skill 目录、多查询搜索、内置插件升级和聊天历史分页同步实施。[本轮测试证据与截图](docs/evidence/workflow-upgrade-20260909/README.md)分别记录已验证流程和待验收内容。
+
+[Office 逐项验收表](docs/OFFICE_FRONTEND_ACCEPTANCE.md)分别跟踪附件插入、打开、导出、替换、对象操作和原格式保存。独立原生 Word 测试已验证真实附件嵌入、重复单次撤销/重做，以及保存后提取原附件字节一致；完整 Floe 文件选择/写回、Excel/PPT 附件和真机仍待完成。
 
 ## 为什么使用 Floe Agent
 
@@ -142,9 +144,11 @@ Floe 内置适合日常脚本、文件、压缩包、JSON、SQLite 和基础数�
 
 技能可以附带受限的 `.py` 文件和锁定版本的纯 Python 依赖。Floe 在创建或安装技能时验证脚本路径与源码、解析并检查通用 wheel，并记录获准的脚本和依赖指纹。后续运行只能复用这份完全相同的已审计代码，变化的任务数据通过 JSON 单独传入；修改脚本或依赖、提权、危险文件改动、凭据和外部副作用仍回到正常审批流程。
 
-### 原生 Office 文档
+### 原生 Office 文档——已发布 1.5.3 的能力
 
 Floe 可以创建 DOCX 文档、包含多张工作表及值/公式的 XLSX，以及带演讲者备注的 16:9 PPTX。文档包在本机生成并校验，不依赖网页编辑器，也不会上传到 Office 云端。打开 Office 文件时仍先使用系统预览；点击**编辑 Office 文档**后，进入独立的基础编辑器，可手工修改 Word 文字、表格单元格/公式、PowerPoint 文字和备注。保存时只更新发生变化的语义字段，原子重写 OOXML，并保留未修改的样式、媒体和关系。它不宣称支持桌面 Office 的全部高级排版、图表、宏、ActiveX 或像素级兼容。
+
+开发分支正在以上方升级说明中的原生 Office 前端替换这套基础编辑器，完整验收仍在进行。
 
 ### 归档与凭据同步
 
