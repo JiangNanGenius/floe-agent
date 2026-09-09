@@ -18,7 +18,7 @@ class OfficeHostBootstrapTests(unittest.TestCase):
         self.host = self.root / 'OfficeNativeHost'
         native = self.root / 'FloeOfficeNative'
         native.mkdir()
-        for name in ['FloeOfficeNative.h', 'FloeOfficeNative.mm']:
+        for name in ['FloeOfficeNative.h', 'FloeOfficeNative.mm', 'FloeOfficeAttachment.cpp', 'FloeOfficeAttachment.hxx']:
             (native / name).write_text('source-' + name)
         files = {'FloeOfficeNative.framework/FloeOfficeNative': 'native binary fixture',
                  'FloeOfficeNative.framework/Headers/FloeOfficeNative.h': 'public header',
@@ -102,10 +102,15 @@ class OfficeHostBootstrapTests(unittest.TestCase):
             self.install()
 
     def test_source_change_requires_a_new_binary_before_installation(self):
-        (self.root / 'FloeOfficeNative/FloeOfficeNative.mm').write_text('new implementation')
-        with self.assertRaisesRegex(ValueError, 'must be rebuilt'):
-            self.install()
-        self.assertFalse(self.destination.exists())
+        for name in self.pin['hostSourceSHA256']:
+            with self.subTest(source=name):
+                source = self.root / 'FloeOfficeNative' / name
+                original = source.read_bytes()
+                source.write_text('new implementation')
+                with self.assertRaisesRegex(ValueError, 'must be rebuilt'):
+                    self.install()
+                self.assertFalse(self.destination.exists())
+                source.write_bytes(original)
 
     def test_archive_mismatch_is_rejected_before_destination_is_created(self):
         self.archive.write_bytes(b'changed archive')

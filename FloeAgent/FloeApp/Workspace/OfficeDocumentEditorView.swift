@@ -2,6 +2,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import Combine
 import FloeDocuments
 #if canImport(FloeOfficeNative)
@@ -10,7 +11,7 @@ import FloeOfficeNative
 
 @MainActor
 final class OfficeFileSession: ObservableObject {
-    enum Phase { case idle, loading, ready, saving, closing, failed }
+    enum Phase { case idle, loading, ready, insertingAttachment, saving, closing, failed }
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var controller: UIViewController?
     @Published private(set) var readOnly = true
@@ -50,6 +51,31 @@ final class OfficeFileSession: ObservableObject {
         #endif
     }
     var canAct: Bool { phase == .ready && !operating }
+    var supportsAttachmentInsertion: Bool {
+        guard !readOnly, let session else { return false }
+        return ["docx", "doc", "odt", "rtf"].contains(session.workingURL.pathExtension.lowercased())
+    }
+
+    func insertAttachment(_ url: URL) async throws {
+        guard canAct, supportsAttachmentInsertion else { throw CocoaError(.featureUnsupported) }
+        operating = true
+        phase = .insertingAttachment
+        defer {
+            phase = runtimeFailed || controller == nil ? .failed : .ready
+            finishOperation()
+        }
+        #if canImport(FloeOfficeNative)
+        guard let native = controller as? FloeOfficeNativeViewController else { throw CocoaError(.featureUnsupported) }
+        try await withCheckedThrowingContinuation { (receipt: CheckedContinuation<Void, Error>) in
+            native.insertAttachment(fromFileURL: url) { error in
+                if let error { receipt.resume(throwing: error) } else { receipt.resume() }
+            }
+        }
+        hasUncommittedChanges = true
+        #else
+        throw CocoaError(.featureUnsupported)
+        #endif
+    }
 
     func open(_ url: URL) async {
         guard !operating else { return }
@@ -350,7 +376,7 @@ struct OfficeDocumentSurface: View {
                     }
                 }
             } else if session.phase != .ready {
-                ProgressView(session.phase == .saving ? "正在保存…" : session.phase == .closing ? "正在关闭…" : "正在打开文档…")
+                ProgressView(session.phase == .saving ? "正在保存…" : session.phase == .closing ? "正在关闭…" : session.phase == .insertingAttachment ? "正在插入附件…" : "正在打开文档…")
                     .padding(16)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
             }
@@ -377,12 +403,21 @@ struct OfficeDocumentEditorView: View {
     @State private var export: DocumentExportSnapshot?
     @State private var savedCopyNotice = false
     @State private var exportSucceeded = false
+    @State private var choosingAttachment = false
+    @State private var attachmentError: String?
 
     var body: some View {
         OfficeDocumentSurface(session: session)
             .navigationTitle((relativePath as NSString).lastPathComponent)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if session.supportsAttachmentInsertion {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("插入附件", systemImage: "paperclip") { choosingAttachment = true }
+                            .disabled(!session.canAct)
+                            .accessibilityIdentifier("office.editor.insertAttachment")
+                    }
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("返回") {
                         if session.phase == .failed { dismiss() }
@@ -410,6 +445,25 @@ struct OfficeDocumentEditorView: View {
             }
             .interactiveDismissDisabled()
             .task { await session.enterEditing() }
+            .fileImporter(isPresented: $choosingAttachment, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    Task {
+                        do { try await session.insertAttachment(url) }
+                        catch { attachmentError = error.localizedDescription }
+                    }
+                case .failure(let error):
+                    let failure = error as NSError
+                    if failure.domain != NSCocoaErrorDomain || failure.code != NSUserCancelledError {
+                        attachmentError = error.localizedDescription
+                    }
+                }
+            }
+            .alert("未能插入附件", isPresented: Binding(
+                get: { attachmentError != nil }, set: { if !$0 { attachmentError = nil } })) {
+                    Button("好", role: .cancel) { attachmentError = nil }
+                } message: { Text(attachmentError ?? "") }
             .sheet(item: $export, onDismiss: {
                 Task { await session.finishSaveCopy() }
                 savedCopyNotice = exportSucceeded
