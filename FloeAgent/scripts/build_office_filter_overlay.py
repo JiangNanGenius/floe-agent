@@ -7,10 +7,11 @@ The original bundle remains unchanged. A receipt is not runtime qualification.
 import argparse
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import sys
+import tarfile
 
 from prepare_office_native_sources import DEFAULT_LOCK
 
@@ -21,6 +22,8 @@ SPARSE_PATHS = [
     '/engine/sc/source/filter/excel/xlroot.cxx', '/engine/sc/source/ui/inc/',
     '/engine/sc/source/filter/oox/unitconverter.cxx',
     '/engine/sc/source/filter/oox/drawingfragment.cxx',
+    '/engine/sc/source/filter/oox/worksheetfragment.cxx',
+    '/engine/sc/source/filter/oox/worksheethelper.cxx',
     '/engine/oox/source/vml/vmlshape.cxx',
     '/engine/officecfg/registry/cppheader.xsl',
     '/engine/officecfg/registry/component-schema.dtd',
@@ -95,11 +98,15 @@ def select_linker_archive(bundle, overlay, destination):
             or report.get('patchSHA256') != lock['patchSHA256']
             or digest(FILTER_LOCK.parent / lock['patch']) != lock['patchSHA256']
             or report.get('sourceFiles') != lock['files']
+            or report.get('headerDependencies', {}) != lock.get('headerDependencies', {})
             or not report.get('compilePassed') or not report.get('archiveReplacementPassed')
             or digest(original) != lock['originalArchiveSHA256']
             or digest(replacement) != report.get('archiveSHA256')):
         raise ValueError('Filter overlay is not the current verified build')
     expected = set(lock.get('members', {lock['member']: ''}))
+    for spec in lock.get('headerDependencies', {}).values():
+        if digest(FILTER_LOCK.parent / spec['patch']) != spec['patchSHA256']:
+            raise ValueError('Filter header dependency patch differs from lock')
     objects = report.get('objectSHA256ByMember', {lock['member']: report['objectSHA256']})
     if set(objects) != expected:
         raise ValueError('Filter overlay does not contain every locked replacement')
@@ -144,6 +151,61 @@ def select_linker_archive(bundle, overlay, destination):
 
 def run(command, **kwargs):
     return subprocess.run(list(map(str, command)), check=True, **kwargs)
+
+
+def extract_header_archive(archive, output, spec):
+    """Extract a hash-pinned, bounded header tree without archive links or traversal."""
+    if digest(archive) != spec['sha256']:
+        raise ValueError('Header dependency archive differs from lock')
+    root = PurePosixPath(spec['root'])
+    if root.is_absolute() or len(root.parts) != 1 or root.name in ('', '.', '..'):
+        raise ValueError('Invalid header archive root')
+    with tarfile.open(archive, 'r:*') as stream:
+        members = stream.getmembers()
+        if len(members) > 10000 or sum(item.size for item in members) > 32 * 1024 * 1024:
+            raise ValueError('Header archive exceeds extraction limit')
+        names = set()
+        for item in members:
+            path = PurePosixPath(item.name)
+            if (path.is_absolute() or '..' in path.parts or not path.parts
+                    or path.parts[0] != root.name or path in names
+                    or not (item.isfile() or item.isdir())):
+                raise ValueError('Unsafe header archive member')
+            names.add(path)
+        output.mkdir(parents=True, exist_ok=False)
+        # All members checked before writing, including hard links and symlinks.
+        for item in members:
+            target = output / item.name
+            if item.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with stream.extractfile(item) as source, target.open('xb') as destination:
+                    shutil.copyfileobj(source, destination)
+    return output / root.name
+
+
+def prepare_header_dependencies(lock, output):
+    includes = []
+    for name, spec in lock.get('headerDependencies', {}).items():
+        if Path(name).name != name or name in ('', '.', '..'):
+            raise ValueError('Invalid header dependency name')
+        if not spec['url'].startswith('https://'):
+            raise ValueError('Header dependency requires HTTPS')
+        patch = FILTER_LOCK.parent / spec['patch']
+        if digest(patch) != spec['patchSHA256']:
+            raise ValueError('Header dependency patch differs from lock')
+        archive = output / (name + '.tar.xz')
+        run(['curl', '--fail', '--location', '--proto', '=https', '--proto-redir', '=https',
+             '--retry', '2', '--max-time', '90', '--max-filesize', str(4 * 1024 * 1024),
+             '--output', archive, spec['url']])
+        root = extract_header_archive(archive, output / ('headers-' + name), spec)
+        run(['patch', '--batch', '--forward', '-p1', '-i', patch.resolve()], cwd=root)
+        include = root / spec['include']
+        if not include.is_dir() or not include.resolve().is_relative_to(root.resolve()):
+            raise ValueError('Header dependency include directory is invalid')
+        includes.append(include)
+    return includes
 
 
 def generate_headers(source, generated):
@@ -213,6 +275,9 @@ def build(bundle, source, output):
         if digest(source / name) != hashes['patchedSHA256']:
             raise ValueError('Patched filter source differs from lock: ' + name)
     report['sourceFiles'] = lock['files']
+    header_includes = prepare_header_dependencies(lock, output)
+    report['headerDependencies'] = lock.get('headerDependencies', {})
+    save()
     generated = output / 'generated'
     generate_headers(source, generated)
     engine = bundle / 'source/engine'
@@ -228,7 +293,7 @@ def build(bundle, source, output):
                 engine / 'workdir/UnoApiHeadersTarget/udkapi/comprehensive',
                 engine / 'workdir/UnoApiHeadersTarget/offapi/comprehensive',
                 engine / 'workdir/UnpackedTarball/boost']
-    for include in includes:
+    for include in includes + header_includes:
         command += ['-I', str(include)]
     members = lock.get('members', {lock['member']: 'engine/sc/source/filter/xcl97/xcl97rec.cxx'})
     all_members = dict(members)

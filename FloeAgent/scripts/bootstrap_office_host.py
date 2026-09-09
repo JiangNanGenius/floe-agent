@@ -47,8 +47,12 @@ def checked_lock(lock_path):
         if (filters['commit'] != lock['commit']
                 or selected['patchSHA256'] != filters['patchSHA256']
                 or selected['sourceFiles'] != filters['files']
+                or selected.get('headerDependencies', {}) != filters.get('headerDependencies', {})
                 or digest(patch) != filters['patchSHA256']):
             raise ValueError('Native host must be rebuilt for the current engine filter patch')
+        for spec in filters.get('headerDependencies', {}).values():
+            if digest(lock_path.parent / spec['patch']) != spec['patchSHA256']:
+                raise ValueError('Native host header dependency patch differs from its lock')
         extras = filters.get('additionalArchives', {})
         if extras:
             actual = selected.get('additionalArchives', {})

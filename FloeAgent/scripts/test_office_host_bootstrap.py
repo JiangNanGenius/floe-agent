@@ -84,6 +84,28 @@ class OfficeHostBootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'filter qualification'):
             verify_installed(self.host, lock, pin)
 
+    def test_header_dependency_changes_require_rebuilt_host(self):
+        patch = self.root / 'filter.patch'
+        patch.write_text('filter')
+        header_patch = self.root / 'headers.patch'
+        header_patch.write_text('upstream patch')
+        spec = {'patch': header_patch.name, 'patchSHA256': digest(header_patch), 'sha256': 'archive'}
+        filters = {'commit': 'pinned-source', 'patch': patch.name,
+                   'patchSHA256': digest(patch), 'files': {}, 'headerDependencies': {'mdds': spec}}
+        (self.root / 'filter-overlay.lock.json').write_text(json.dumps(filters))
+        value = json.loads(self.lock.read_text())
+        selected = {'patchSHA256': digest(patch), 'sourceFiles': {}}
+        value['qualifiedHostArtifact']['filterOverlay'] = selected
+        self.lock.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'engine filter patch'):
+            checked_lock(self.lock)
+        selected['headerDependencies'] = filters['headerDependencies']
+        self.lock.write_text(json.dumps(value))
+        checked_lock(self.lock)
+        header_patch.write_text('uncompiled change')
+        with self.assertRaisesRegex(ValueError, 'header dependency patch'):
+            checked_lock(self.lock)
+
     def test_additional_filter_archive_must_be_present_and_bound_to_selection(self):
         patch = self.root / 'filter.patch'
         patch.write_text('two archives')

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Fail closed on archive corruption or accidental changes to other engine code."""
 import hashlib
+import io
 import json
 from pathlib import Path
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 
-from build_office_filter_overlay import archive_members, verify_replacement, verify_replacements, select_linker_archive
+from build_office_filter_overlay import archive_members, verify_replacement, verify_replacements, select_linker_archive, extract_header_archive
 
 
 def member(name, payload):
@@ -17,6 +19,46 @@ def member(name, payload):
               + '0'.ljust(6) + '0'.ljust(6) + '100644'.ljust(8)
               + str(len(data)).ljust(10) + '`\n').encode()
     return header + data + (b'\n' if len(data) % 2 else b'')
+
+
+class HeaderDependencyTests(unittest.TestCase):
+    def fixture(self, base, name='mdds/include/example.hpp', link=False):
+        archive = base / 'headers.tar.xz'
+        with tarfile.open(archive, 'w:xz') as stream:
+            item = tarfile.TarInfo(name)
+            if link:
+                item.type, item.linkname = tarfile.SYMTYPE, '/tmp'
+                stream.addfile(item)
+            else:
+                item.size = 6
+                stream.addfile(item, io.BytesIO(b'header'))
+        return archive, {'root': 'mdds', 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest()}
+
+    def test_verified_archive_extracts_headers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            archive, spec = self.fixture(base)
+            result = extract_header_archive(archive, base / 'output', spec)
+            self.assertEqual((result / 'include/example.hpp').read_bytes(), b'header')
+
+    def test_corruption_rejected_before_any_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            archive, spec = self.fixture(base)
+            archive.write_bytes(archive.read_bytes() + b'changed')
+            with self.assertRaisesRegex(ValueError, 'differs from lock'):
+                extract_header_archive(archive, base / 'output', spec)
+            self.assertFalse((base / 'output').exists())
+
+    def test_links_traversal_and_wrong_root_rejected_before_output(self):
+        for name, link in [('mdds/link', True), ('mdds/../../escaped', False),
+                           ('/absolute', False), ('unexpected/include/a', False)]:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                archive, spec = self.fixture(base, name, link)
+                with self.assertRaisesRegex(ValueError, 'Unsafe'):
+                    extract_header_archive(archive, base / 'output', spec)
+                self.assertFalse((base / 'output').exists())
 
 
 class ArchiveReplacementTests(unittest.TestCase):

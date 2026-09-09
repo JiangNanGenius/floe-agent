@@ -1,7 +1,7 @@
 {
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "patch": "patches/xlsx-embedded-objects.patch",
-  "patchSHA256": "7634bb072a7f582df7c05a703c10a23e9655863399aa6dfba1abf84482d83e18",
+  "patchSHA256": "2177e3a5b73d8182599f54ac06a2209c06b6f50364c3bbc114587d0a40dbd19f",
   "files": {
     "engine/sc/source/filter/inc/xcl97rec.hxx": {
       "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
@@ -25,22 +25,36 @@
     },
     "engine/oox/source/vml/vmlshape.cxx": {
       "originalSHA256": "7016e58713cc845b5ad73daca1b67d6bda64247d599cfe04f85c549805ba47ca",
-      "patchedSHA256": "140834ee400ed62b7fb2c77b0245bc83f8d3d8d6513a159b5ab8a019fe2669ad"
+      "patchedSHA256": "9b9872562a4627a52aec2d24631ccfc7bda6dfca4b279ed63ba2918ed16ee48d"
     },
     "engine/sc/source/filter/oox/drawingfragment.cxx": {
       "originalSHA256": "2a84bf22221574e078cf33c3b3867d00f1c4f32fe4301c0186e9b9a9ad85e48d",
-      "patchedSHA256": "16adf3bef5739a24186eced8e55798f9bad6909908820bba01f12ed821e7124a"
+      "patchedSHA256": "5a75d6910a2c68831403b6c6a70e9117461942773443cbf970c91c62cdbad7b6"
+    },
+    "engine/sc/source/filter/inc/drawingfragment.hxx": {
+      "originalSHA256": "0fb5f7da89711cee297856ebf20d3107fac852840d7c2d285327458538726476",
+      "patchedSHA256": "75bb351c366524a7385135fbbadb88be929381c15c853b9580512e387cc98a0a"
+    },
+    "engine/sc/source/filter/oox/worksheetfragment.cxx": {
+      "originalSHA256": "8217b2d495cdf9f56b16129ad5461f1b232f296fe3d3dee21bf16d5742729090",
+      "patchedSHA256": "c12f61c50a9a58e5d448f854d4422f4df8878c344363abb11e7de939963a6fff"
+    },
+    "engine/sc/source/filter/oox/worksheethelper.cxx": {
+      "originalSHA256": "1f444b7b1d653f32251d80f8eaddf3d8cd4c89bba3a4158ff28572ed6d10e63f",
+      "patchedSHA256": "1f444b7b1d653f32251d80f8eaddf3d8cd4c89bba3a4158ff28572ed6d10e63f"
     }
   },
   "archive": "source/engine/instdir/program/libscfiltlo.a",
   "originalArchiveSHA256": "a7e5961052e204adfb5694d584de17f8b7a7f0f6462a972303fd6baf78c11b77",
   "member": "xcl97rec.o",
-  "qualificationStatus": "xlsx-precise-nonresizing-ole-import-compile-runtime-pending",
+  "qualificationStatus": "xlsx-modern-ole-anchor-import-compile-runtime-pending",
   "members": {
     "xcl97rec.o": "engine/sc/source/filter/xcl97/xcl97rec.cxx",
     "xlroot.o": "engine/sc/source/filter/excel/xlroot.cxx",
     "unitconverter.o": "engine/sc/source/filter/oox/unitconverter.cxx",
-    "drawingfragment.o": "engine/sc/source/filter/oox/drawingfragment.cxx"
+    "drawingfragment.o": "engine/sc/source/filter/oox/drawingfragment.cxx",
+    "worksheetfragment.o": "engine/sc/source/filter/oox/worksheetfragment.cxx",
+    "worksheethelper.o": "engine/sc/source/filter/oox/worksheethelper.cxx"
   },
   "additionalArchives": {
     "libooxlo.a": {
@@ -49,6 +63,17 @@
       "members": {
         "vmlshape.o": "engine/oox/source/vml/vmlshape.cxx"
       }
+    }
+  },
+  "headerDependencies": {
+    "mdds": {
+      "url": "https://dev-www.libreoffice.org/src/mdds-3.1.0.tar.xz",
+      "sha256": "ca295f4c86968a7eb1f5d503ff7ae180e6605210cfb26d01658be42048c0924c",
+      "root": "mdds-3.1.0",
+      "include": "include",
+      "patch": "patches/mdds-gcc12-upstream.patch",
+      "patchSHA256": "3411f0814815e06914ea1fbf50c5428af86cbed68c82c0481e09dd62bc8a22c6",
+      "upstreamPatch": "engine/external/mdds/gcc-12-silence-use-after-free.patch.1"
     }
   }
 }

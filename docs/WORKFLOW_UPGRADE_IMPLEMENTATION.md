@@ -88,6 +88,10 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 
 ## 当前执行记录
 
+- 最新完整 Floe 构建 [34352319115](https://github.com/JiangNanGenius/floe-agent/actions/runs/34352319115)（05d89709）成功，应用编译及原生组件/资源检查通过。该产物未签名，尚未上传 TestFlight，也不包含后续现代锚点读取候选。见 [构建状态](evidence/workflow-upgrade-20260909/office-floe-34352319115-build.json)。
+- Excel 精确现代锚点候选已通过 arm64 编译：按 objectPr 的 EMU 坐标读取完整 from/to，等待行列尺寸确定后创建对象，保留移动/缩放标记；缺失、重复、越界数据回退旧导入。新增记录改变 VmlDrawing 大小，已同时重编译其分配模块 worksheethelper；补齐上游 mdds 3.1.0 及相同补丁的哈希锁定头文件，原始输入包不变。主库替换 6 个对象、其余 162 个保留，附加库替换 1 个、其余 235 个保留。10 项归档/依赖测试与 17 项宿主校验测试通过；[编译证据](evidence/workflow-upgrade-20260909/office-xlsx-modern-ole-anchor-compile.json)。云端链接、原生三模式连续保存及真实行列缩放仍待验证。
+
+
 - 精确尺寸候选已实际验证两种模式：宿主 34350509488（e28e48d）云端编译/链接成功，4,785 文件及 178 目录校验通过；独立应用 23 分别运行固定页面、仅移动、随单元格缩放三份合成文件。固定页面和仅移动两轮实际文字修改后，位置、60×18 mm 尺寸、列宽和各自锚定标记全部与输入一致；六次附件导出原字节一致，六份保存各 29 项附件结构检查通过。随单元格缩放的输入在首次保存仍变成 59.95×17.99 mm，第二次稳定，因此该模式精确保真继续失败。见 [三模式运行记录](evidence/workflow-upgrade-20260909/office-xlsx-precise-ole-runtime.json)、各模式两轮布局/结构记录和三张 `office-xlsx-precise-*-reopened-mac.jpg`。输入未落入 C11 的一次中间保存已单列并保留，补做的实际文字保存已检查重开和 XML；这不替代一般键盘输入验收。行列实际调整、拖动/旋转、多个或分组对象、Microsoft Office 与真机仍待验；下一步补齐随单元格缩放对象的精确锚点读取，A04/F04 未完成。
 
 - 精确尺寸导入候选：原生 VML 导入在创建/旋转对象前，为不随单元格缩放的 OLE 对象读取明确的绝对尺寸；固定页面对象还保留绝对位置和零坐标，随单元格移动者继续从单元格锚点取位置。另修复 move-only 锚点被无条件升级为 resize 的逻辑；分组/缺少有效尺寸/按单元格缩放者沿用原有导入。涉及 `libscfiltlo.a` 的 4 个对象和 `libooxlo.a` 的 1 个对象，分别 164/235 个其他对象哈希未变；新增双库链接、篡改/缺失/重复输入拒绝和宿主锁定检查，23 项测试通过。见 [编译证据](evidence/workflow-upgrade-20260909/office-xlsx-precise-ole-import-compile.json)。实际尺寸和三种锚定行为仍需新宿主验证，不能以编译通过完成 A04/F04。

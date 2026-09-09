@@ -1,8 +1,8 @@
 diff --git a/engine/oox/source/vml/vmlshape.cxx b/engine/oox/source/vml/vmlshape.cxx
-index 1e69133..9dab8ef 100644
+index 1e69133..ca5bd8d 100644
 --- a/engine/oox/source/vml/vmlshape.cxx
 +++ b/engine/oox/source/vml/vmlshape.cxx
-@@ -540,6 +540,44 @@ awt::Rectangle ShapeBase::calcShapeRectangle( const ShapeParentAnchor* pParentAn
+@@ -540,6 +540,56 @@ awt::Rectangle ShapeBase::calcShapeRectangle( const ShapeParentAnchor* pParentAn
      const ClientData* pClientData = getClientData();
      if( !pClientData || !mrDrawing.convertClientAnchor( aShapeRect, pClientData->maAnchor ) )
          aShapeRect = getRectangle( pParentAnchor );
@@ -43,6 +43,18 @@ index 1e69133..9dab8ef 100644
 +                }
 +            }
 +        }
++    }
++    if (!pParentAnchor && pClientData && pClientData->maAnchor.isEmpty()
++        && mrDrawing.getOleObjectInfo(getShapeId()) && maTypeModel.maPosition == "absolute")
++    {
++        // Modern worksheet anchors can start at exactly zero. The historical
++        // Word-oriented absolute style fallback shifts zero X to one model unit.
++        const GraphicHelper& rHelper = mrDrawing.getFilter().getGraphicHelper();
++        sal_Int32 nLeft;
++        if (!o3tl::checked_add<sal_Int32>(
++                ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maLeft, 0, true, true),
++                ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maMarginLeft, 0, true, true), nLeft))
++            aShapeRect.X = nLeft;
 +    }
      return aShapeRect;
  }
@@ -153,6 +165,45 @@ index dd58d60..a795c15 100644
  }
  
  sal_Int32 XclRoot::GetHmmFromPixelX( double fPixelX ) const
+diff --git a/engine/sc/source/filter/inc/drawingfragment.hxx b/engine/sc/source/filter/inc/drawingfragment.hxx
+index fa49d43..641fea5 100644
+--- a/engine/sc/source/filter/inc/drawingfragment.hxx
++++ b/engine/sc/source/filter/inc/drawingfragment.hxx
+@@ -20,6 +20,7 @@
+ #pragma once
+ 
+ #include <memory>
++#include <unordered_map>
+ #include <oox/drawingml/shapegroupcontext.hxx>
+ #include <oox/drawingml/color.hxx>
+ #include <oox/ole/axcontrol.hxx>
+@@ -148,6 +149,18 @@ public:
+     using NoteShapesMap = std::unordered_map<std::pair<sal_Int32,sal_Int32>, const ::oox::vml::ShapeBase*, NoteShapesMapHash>;
+ 
+     explicit            VmlDrawing( const WorksheetHelper& rHelper );
++    virtual ~VmlDrawing() override;
++
++    struct OleAnchorRecord
++    {
++        std::shared_ptr<ShapeAnchor> anchor;
++        sal_Int32 column = 0;
++        sal_Int32 row = 0;
++        bool moveWithCells = false;
++        bool sizeWithCells = false;
++    };
++    void registerOleAnchor(const OUString& rShapeId, OleAnchorRecord aRecord);
++    void applyOleAnchors();
+ 
+     /** Returns the drawing shape for a cell note at the specified position. */
+     const ::oox::vml::ShapeBase* getNoteShape( const ScAddress& rPos ) const;
+@@ -198,6 +211,7 @@ private:
+ private:
+     ::oox::ole::ControlConverter maControlConv;
+     ::oox::vml::TextFontModel maListBoxFont;
++    std::unordered_map<OUString, OleAnchorRecord> maPreciseOleAnchors;
+ };
+ 
+ class VmlDrawingFragment final : public ::oox::vml::DrawingFragment, public WorksheetHelper
 diff --git a/engine/sc/source/filter/inc/unitconverter.hxx b/engine/sc/source/filter/inc/unitconverter.hxx
 index 6149962..761116a 100644
 --- a/engine/sc/source/filter/inc/unitconverter.hxx
@@ -195,10 +246,70 @@ index 0eb5408..a5fdebd 100644
  };
  
 diff --git a/engine/sc/source/filter/oox/drawingfragment.cxx b/engine/sc/source/filter/oox/drawingfragment.cxx
-index 859e321..d41bb05 100644
+index 859e321..90676d4 100644
 --- a/engine/sc/source/filter/oox/drawingfragment.cxx
 +++ b/engine/sc/source/filter/oox/drawingfragment.cxx
-@@ -863,7 +863,8 @@ void VmlDrawing::notifyXShapeInserted( const Reference< XShape >& rxShape,
+@@ -535,6 +535,59 @@ VmlDrawing::VmlDrawing( const WorksheetHelper& rHelper ) :
+     maListBoxFont.monSize = 160;
+ }
+ 
++VmlDrawing::~VmlDrawing() = default;
++
++void VmlDrawing::registerOleAnchor(const OUString& rShapeId, OleAnchorRecord aRecord)
++{
++    const auto [it, inserted] = maPreciseOleAnchors.emplace(rShapeId, std::move(aRecord));
++    // Duplicate shape identifiers are ambiguous. Keep a tombstone so a later
++    // duplicate cannot silently revive a conflicting geometry record.
++    if (!inserted)
++        it->second.anchor.reset();
++}
++
++void VmlDrawing::applyOleAnchors()
++{
++    // Styles are projected only after row/column metrics and VML templates are
++    // loaded, and before shape creation/rotation. No saved ZIP is rewritten.
++    for (const auto& xShape : getShapes().getAllShapes())
++    {
++        const auto it = maPreciseOleAnchors.find(xShape->getShapeId());
++        if (it == maPreciseOleAnchors.end() || !it->second.anchor
++            || !getOleObjectInfo(xShape->getShapeId()))
++            continue;
++        auto& rModel = xShape->getShapeModel();
++        if (!rModel.mxClientData)
++            continue;
++        const auto& rAnchor = it->second;
++        const Rectangle aRect = rAnchor.anchor->calcAnchorRectHmm(getDrawPageSize());
++        if (aRect.X < 0 || aRect.Y < 0 || aRect.Width <= 0 || aRect.Height <= 0
++            || sal_Int64(aRect.X) + aRect.Width > SAL_MAX_INT32
++            || sal_Int64(aRect.Y) + aRect.Height > SAL_MAX_INT32)
++            continue;
++        auto& rType = xShape->getTypeModel();
++        const auto measure = [](sal_Int32 n) { return OUString::number(double(n) / 100.0) + u"mm"_ustr; };
++        rType.maLeft = measure(aRect.X);
++        rType.maTop = measure(aRect.Y);
++        rType.maMarginLeft = u"0"_ustr;
++        rType.maMarginTop = u"0"_ustr;
++        rType.maWidth = measure(aRect.Width);
++        rType.maHeight = measure(aRect.Height);
++        rType.maWidthPercent.clear();
++        rType.maHeightPercent.clear();
++        rType.maPosition = u"absolute"_ustr;
++        auto& rClient = *rModel.mxClientData;
++        // The modern EMU coordinates are now represented by exact model units.
++        // Avoid reparsing the obsolete integer-pixel anchor during creation.
++        rClient.maAnchor.clear();
++        rClient.mnCol = rAnchor.column;
++        rClient.mnRow = rAnchor.row;
++        rClient.mbMoveWithCells = rAnchor.moveWithCells;
++        rClient.mbSizeWithCells = rAnchor.sizeWithCells;
++    }
++    maPreciseOleAnchors.clear();
++}
++
+ const ::oox::vml::ShapeBase* VmlDrawing::getNoteShape( const ScAddress& rPos ) const
+ {
+     return getShapes().findShape( VmlFindNoteFunc( rPos ) );
+@@ -863,7 +916,8 @@ void VmlDrawing::notifyXShapeInserted( const Reference< XShape >& rxShape,
                  o3tl::getToken(pClientData->maAnchor, 0, ',', nIndex);
                  nRow = o3tl::toInt32(o3tl::getToken(pClientData->maAnchor, 0, ',', nIndex));
  
@@ -208,6 +319,14 @@ index 859e321..d41bb05 100644
              }
  
              if ( nCol >= 0 && nRow >= 0 )
+@@ -999,6 +1053,7 @@ VmlDrawingFragment::VmlDrawingFragment( const WorksheetHelper& rHelper, const OU
+ void VmlDrawingFragment::finalizeImport()
+ {
+     ::oox::vml::DrawingFragment::finalizeImport();
++    getVmlDrawing().applyOleAnchors();
+     getVmlDrawing().convertAndInsert();
+ }
+ 
 diff --git a/engine/sc/source/filter/oox/unitconverter.cxx b/engine/sc/source/filter/oox/unitconverter.cxx
 index 0922569..6f84642 100644
 --- a/engine/sc/source/filter/oox/unitconverter.cxx
@@ -339,6 +458,175 @@ index 0922569..6f84642 100644
  }
  
  void UnitConverter::finalizeNullDate( const util::Date& rNullDate )
+diff --git a/engine/sc/source/filter/oox/worksheetfragment.cxx b/engine/sc/source/filter/oox/worksheetfragment.cxx
+index 4f33af4..5374871 100644
+--- a/engine/sc/source/filter/oox/worksheetfragment.cxx
++++ b/engine/sc/source/filter/oox/worksheetfragment.cxx
+@@ -22,6 +22,7 @@
+ 
+ #include <osl/diagnose.h>
+ #include <oox/core/filterbase.hxx>
++#include <oox/core/contexthandler.hxx>
+ #include <oox/core/relations.hxx>
+ #include <oox/helper/attributelist.hxx>
+ #include <oox/token/namespaces.hxx>
+@@ -71,6 +72,144 @@ const sal_Int32 BIFF12_OLEOBJECT_ALWAYS     = 1;
+ const sal_uInt16 BIFF12_OLEOBJECT_LINKED    = 0x0001;
+ const sal_uInt16 BIFF12_OLEOBJECT_AUTOLOAD  = 0x0002;
+ 
++// objectPr is intentionally handled by name: extending the global fast-token
++// table would renumber tokens throughout the precompiled engine.
++class OleObjectAnchorContext final : public ContextHandler
++{
++    enum class Part { Object, Properties, Anchor, From, To, Value };
++    struct State
++    {
++        VmlDrawing::OleAnchorRecord record;
++        OUString shapeId;
++        unsigned fields = 0;
++        unsigned containers = 0;
++        bool invalid = false;
++    };
++    std::shared_ptr<State> mxState;
++    VmlDrawing& mrDrawing;
++    Part mePart;
++    unsigned mnField = 0;
++    OUString maText;
++
++    OleObjectAnchorContext(const OleObjectAnchorContext& rParent, Part ePart, unsigned nField = 0)
++        : ContextHandler(rParent), mxState(rParent.mxState), mrDrawing(rParent.mrDrawing),
++          mePart(ePart), mnField(nField) {}
++
++public:
++    OleObjectAnchorContext(const ContextHandler& rParent, const WorksheetHelper& rHelper, sal_Int32 nShapeId)
++        : ContextHandler(rParent), mxState(std::make_shared<State>()),
++          mrDrawing(rHelper.getVmlDrawing()), mePart(Part::Object)
++    {
++        ::oox::vml::OleObjectInfo aInfo;
++        aInfo.setShapeId(nShapeId);
++        mxState->shapeId = aInfo.maShapeId;
++        mxState->invalid = nShapeId <= 0;
++        mxState->record.anchor = std::make_shared<ShapeAnchor>(rHelper);
++    }
++
++    css::uno::Reference<css::xml::sax::XFastContextHandler> createUnknownChildContext(
++        const OUString& rNamespace, const OUString& rName,
++        const css::uno::Reference<css::xml::sax::XFastAttributeList>&) override
++    {
++        if (mePart == Part::Object && rName == "objectPr"
++            && (rNamespace == "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
++                || rNamespace == "http://purl.oclc.org/ooxml/spreadsheetml/main"))
++        {
++            if (mxState->containers & 1U) mxState->invalid = true;
++            mxState->containers |= 1U;
++            return new OleObjectAnchorContext(*this, Part::Properties);
++        }
++        return nullptr;
++    }
++
++    css::uno::Reference<css::xml::sax::XFastContextHandler> createFastChildContext(
++        sal_Int32 nElement,
++        const css::uno::Reference<css::xml::sax::XFastAttributeList>& rxAttributes) override
++    {
++        if (mePart == Part::Properties && nElement == XLS_TOKEN(anchor))
++        {
++            if (mxState->containers & 2U) mxState->invalid = true;
++            mxState->containers |= 2U;
++            AttributeList aAttributes(rxAttributes);
++            mxState->record.anchor->importAnchor(XDR_TOKEN(twoCellAnchor), aAttributes);
++            mxState->record.moveWithCells = aAttributes.getBool(XML_moveWithCells, false);
++            mxState->record.sizeWithCells = aAttributes.getBool(XML_sizeWithCells, false);
++            return new OleObjectAnchorContext(*this, Part::Anchor);
++        }
++        if (mePart == Part::Anchor && (nElement == XLS_TOKEN(from) || nElement == XLS_TOKEN(to)))
++        {
++            const bool bFrom = nElement == XLS_TOKEN(from);
++            const unsigned nMask = bFrom ? 4U : 8U;
++            if (mxState->containers & nMask) mxState->invalid = true;
++            mxState->containers |= nMask;
++            return new OleObjectAnchorContext(*this, bFrom ? Part::From : Part::To);
++        }
++        if (mePart == Part::From || mePart == Part::To)
++        {
++            unsigned nField;
++            switch (nElement)
++            {
++                case XDR_TOKEN(col): nField = 0; break;
++                case XDR_TOKEN(colOff): nField = 1; break;
++                case XDR_TOKEN(row): nField = 2; break;
++                case XDR_TOKEN(rowOff): nField = 3; break;
++                default: return nullptr;
++            }
++            return new OleObjectAnchorContext(*this, Part::Value, nField + (mePart == Part::To ? 4 : 0));
++        }
++        return nullptr;
++    }
++
++    void characters(const OUString& rText) override
++    {
++        if (mePart != Part::Value) return;
++        if (rText.getLength() > 64 || maText.getLength() > 64 - rText.getLength())
++            mxState->invalid = true;
++        else
++            maText += rText;
++    }
++
++    void endFastElement(sal_Int32) override
++    {
++        if (mePart == Part::Value)
++        {
++            const unsigned nMask = 1U << mnField;
++            if (mxState->fields & nMask) mxState->invalid = true;
++            mxState->fields |= nMask;
++            OUString aValue = maText.trim();
++            sal_Int32 nIndex = 0;
++            bool bNegative = false;
++            if (!aValue.isEmpty() && (aValue[0] == '-' || aValue[0] == '+'))
++            {
++                bNegative = aValue[0] == '-';
++                ++nIndex;
++            }
++            if (nIndex == aValue.getLength()) { mxState->invalid = true; return; }
++            const unsigned nKind = mnField % 4;
++            const sal_Int64 nLimit = nKind == 0 ? 16383 : nKind == 2 ? 1048575 : sal_Int64(SAL_MAX_INT32) * 360;
++            sal_Int64 nValue = 0;
++            for (; nIndex < aValue.getLength(); ++nIndex)
++            {
++                const sal_Int32 nDigit = aValue[nIndex] - '0';
++                if (nDigit < 0 || nDigit > 9 || nValue > (nLimit - nDigit) / 10)
++                { mxState->invalid = true; return; }
++                nValue = nValue * 10 + nDigit;
++            }
++            if (bNegative) nValue = -nValue;
++            if ((nKind == 0 || nKind == 2) && nValue < 0)
++            { mxState->invalid = true; return; }
++            static constexpr sal_Int32 aTokens[] = {XDR_TOKEN(col), XDR_TOKEN(colOff), XDR_TOKEN(row), XDR_TOKEN(rowOff)};
++            mxState->record.anchor->setCellPos(aTokens[nKind], mnField < 4 ? XDR_TOKEN(from) : XDR_TOKEN(to), OUString::number(nValue));
++            if (mnField == 0) mxState->record.column = static_cast<sal_Int32>(nValue);
++            if (mnField == 2) mxState->record.row = static_cast<sal_Int32>(nValue);
++        }
++        else if (mePart == Part::Object && mxState->fields == 255U
++                 && mxState->containers == 15U && !mxState->invalid
++                 && mxState->record.anchor->isAnchorValid())
++            mrDrawing.registerOleAnchor(mxState->shapeId, mxState->record);
++    }
++};
++
+ } // namespace
+ 
+ void DataValidationsContextBase::SetValidation( WorksheetHelper& rTarget )
+@@ -478,7 +617,11 @@ ContextHandlerRef WorksheetFragment::onCreateContext( sal_Int32 nElement, const
+             if( isMCEStateEmpty() || getMCEState() == MCE_STATE::Started )
+             {
+                 if ( getCurrentElement() == XLS_TOKEN( oleObjects ) )
++                {
+                     importOleObject( rAttribs );
++                    if (nElement == XLS_TOKEN(oleObject))
++                        return new OleObjectAnchorContext(*this, *this, rAttribs.getInteger(XML_shapeId, 0));
++                }
+                 else
+                     importControl( rAttribs );
+             }
 diff --git a/engine/sc/source/filter/xcl97/xcl97rec.cxx b/engine/sc/source/filter/xcl97/xcl97rec.cxx
 index 0960883..6ebdc6e 100644
 --- a/engine/sc/source/filter/xcl97/xcl97rec.cxx

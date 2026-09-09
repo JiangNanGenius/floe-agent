@@ -1,0 +1,100 @@
+{
+  "conclusion": "success",
+  "headSha": "05d89709ca13323abbb1b31b536cbd88c5cf7d63",
+  "jobs": [
+    {
+      "completedAt": "2026-09-09T12:54:22Z",
+      "conclusion": "success",
+      "databaseId": 102468363298,
+      "name": "device-app",
+      "startedAt": "2026-09-09T12:39:53Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-09T12:39:54Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-09T12:39:53Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-09T12:39:57Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v5",
+          "number": 2,
+          "startedAt": "2026-09-09T12:39:54Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-09T12:44:31Z",
+          "conclusion": "success",
+          "name": "Prepare pinned native runtimes",
+          "number": 3,
+          "startedAt": "2026-09-09T12:39:57Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-09T12:53:42Z",
+          "conclusion": "success",
+          "name": "Build Floe with shared native Office preview and fullscreen editing",
+          "number": 4,
+          "startedAt": "2026-09-09T12:44:31Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-09T12:53:47Z",
+          "conclusion": "success",
+          "name": "Verify the copied native framework and main-bundle editor resources",
+          "number": 5,
+          "startedAt": "2026-09-09T12:53:42Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-09T12:54:07Z",
+          "conclusion": "success",
+          "name": "Package the unsigned app for further qualification",
+          "number": 6,
+          "startedAt": "2026-09-09T12:53:47Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-09T12:54:11Z",
+          "conclusion": "success",
+          "name": "Run actions/upload-artifact@v4",
+          "number": 7,
+          "startedAt": "2026-09-09T12:54:07Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-09T12:54:12Z",
+          "conclusion": "success",
+          "name": "Preserve device-app build evidence",
+          "number": 8,
+          "startedAt": "2026-09-09T12:54:11Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-09T12:54:13Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v5",
+          "number": 16,
+          "startedAt": "2026-09-09T12:54:12Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-09T12:54:14Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 17,
+          "startedAt": "2026-09-09T12:54:13Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34352319115/job/102468363298"
+    }
+  ],
+  "status": "completed",
+  "url": "https://github.com/JiangNanGenius/floe-agent/actions/runs/34352319115",
+  "releaseBoundary": "Unsigned complete Floe build only; no TestFlight upload or physical-device acceptance; does not include the uncommitted modern-anchor importer."
+}
