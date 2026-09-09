@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import zipfile
-from bootstrap_office_host import digest, install, relative, checked_lock, verify_installed
+from bootstrap_office_host import digest, install, relative, checked_lock, verify_installed, write_project_inputs
 from embed_office_host import embed
 from verify_office_app_embedding import verify_payload
 
@@ -62,6 +62,16 @@ class OfficeHostBootstrapTests(unittest.TestCase):
         self.assertEqual(first['verifiedFiles'], 6)
         self.assertEqual(self.install(), first)
         self.assertEqual(digest(self.archive), self.pin['archiveSHA256'])
+
+    def test_xcode_input_list_explicitly_includes_files_and_empty_directories(self):
+        self.install()
+        output = self.root / 'inputs.xcfilelist'
+        write_project_inputs(self.destination, output, self.root, self.lock)
+        lines = set(output.read_text().splitlines())
+        self.assertIn('$(SRCROOT)/installed/OfficeNativeHost/native-host.json', lines)
+        self.assertIn('$(SRCROOT)/installed/OfficeNativeHost/OfficeRuntimeResources/cool.html', lines)
+        self.assertIn('$(SRCROOT)/installed/OfficeNativeHost/OfficeRuntimeResources/config', lines)
+        self.assertEqual(len(lines), 1 + len(list(self.destination.rglob('*'))))
 
     def test_changed_binary_is_rejected_without_overwriting_it(self):
         self.install()

@@ -36,7 +36,7 @@ def check(root):
     bye = controller[start:controller.index("\n- (void)exportFileURL:", start)]
     start = kit.index("                dispatch_async(dispatch_get_main_queue(), ^{", kit.index("const bool engineSaved ="))
     save = kit[start:kit.index("\n#elif defined(__ANDROID__)", start)]
-    harness = HEADER + "\nstatic void Save(CODocument *document, bool engineSaved) {\n" + save + "\n}\n"
+    harness = HEADER + "\nstatic void Save(CODocument *document, bool engineSaved) {\nNSString *floeSaveSequence = @\"fixture-sequence\";\n" + save + "\n}\n"
     harness += "@implementation DocumentViewController\n" + close + bye + CONTROLLER_END + MAIN
     with tempfile.TemporaryDirectory(prefix="floe-native-lifecycle-") as temporary:
         folder = Path(temporary)
@@ -89,6 +89,7 @@ static void fakeSocketClose(int descriptor) { assert(closedFD == -1); closedFD =
 }
 @property NSURL *fileURL;
 @property (copy) void (^floeSaveCompletion)(BOOL);
+@property (copy) void (^floeSaveSequenceCompletion)(NSString *, BOOL);
 @property (copy) void (^savePending)(BOOL);
 @property (copy) void (^closePending)(BOOL);
 @property NSInteger saveCount;

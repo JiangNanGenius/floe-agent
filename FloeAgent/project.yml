@@ -414,11 +414,15 @@ targets:
       - name: Embed verified native Office host
         script: /usr/bin/python3 -B "${SRCROOT}/scripts/embed_office_host.py"
         basedOnDependencyAnalysis: false
-        inputPaths:
-          - $(SRCROOT)/Vendor/Office/34292622779/OfficeNativeHost
-          - $(SRCROOT)/ThirdParty/Collabora
-          - $(SRCROOT)/scripts
+        inputFiles:
+          - $(SRCROOT)/scripts/embed_office_host.py
+          - $(SRCROOT)/scripts/bootstrap_office_host.py
+          - $(SRCROOT)/ThirdParty/Collabora/engine.lock.json
+          - $(SRCROOT)/ThirdParty/Collabora/FloeOfficeNative/FloeOfficeNative.h
+          - $(SRCROOT)/ThirdParty/Collabora/FloeOfficeNative/FloeOfficeNative.mm
           - $(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Info.plist
+        inputFileLists:
+          - $(SRCROOT)/Vendor/Office/native-host-inputs.xcfilelist
         outputFileLists:
           - $(SRCROOT)/scripts/office_host_outputs.xcfilelist
     settings:

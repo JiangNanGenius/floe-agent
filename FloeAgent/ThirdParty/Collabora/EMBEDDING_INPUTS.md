@@ -66,9 +66,13 @@ or editable permission. It only accepts a file inside a supplied persistent
 session directory. Each engine open creates a new UUID child; failed opens and
 later generations never erase previous copies. The open event means UIDocument
 loaded its copy, not that the frontend rendered. Save events include autosaves
-and are explicitly not correlated explicit-save or original-writeback receipts.
-Original-file CAS, save correlation, close recovery and the SwiftUI inspector /
-fullscreen session transition remain integration gates.
+and are explicitly not original-writeback receipts. A separate explicit-save
+API now associates a request ID with a kit save sequence and waits for that
+sequence's UIDocument persistence result. Earlier autosaves, reordered receipts,
+late results after cancellation and broker rejection cannot satisfy another
+request. Eight compiled joiner checks pass; the changed native protocol still
+needs full framework qualification and a real engine save. Original-file CAS,
+close recovery and the SwiftUI inspector/fullscreen transition remain gates.
 
 `build_office_native_host.py` transforms the verified Mobile project into a
 framework, replacing its six app/browser/template source files with Floe's host
@@ -124,6 +128,14 @@ real Office load command in the Floe executable. Its receipt keeps runtime open,
 UI editing, original writeback and device fidelity false. Eleven bootstrap and
 copy/verification tests cover tampering, missing assets/directories, aliases,
 changed source, repeat installation, and preservation of unrelated app resources.
+
+Actual Floe device build `34294036299` reached the post-build phase and failed
+because XcodeGen ignored the unsupported `inputPaths` YAML key, generating an
+empty script input list. The project now uses `inputFiles`; the generated PBX
+contains all six declared script/metadata inputs. Bootstrap also emits a file
+list covering every verified payload file and directory. Twelve bootstrap tests
+pass. Script sandboxing remains enabled; a fresh actual app build must verify
+this correction after the new native save protocol is qualified and pinned.
 
 Twenty-two synthetic packaging/preparation/repair tests pass. The overlay also applies to
 the actual pinned source hashes, and its public keyboard helper passes an

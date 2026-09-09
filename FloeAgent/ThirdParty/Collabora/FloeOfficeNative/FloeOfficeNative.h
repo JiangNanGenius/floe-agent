@@ -29,6 +29,13 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 @property (nonatomic, copy, nullable) void (^onWorkingCopySaved)(BOOL success);
 /// Native close completed. The caller still owns writeback and recovery retention.
 @property (nonatomic, copy, nullable) void (^onClosed)(BOOL success);
+/// Force a normal engine save and wait for this request's native working-file
+/// persistence result. The caller still coordinates original-file writeback.
+/// Only one explicit request is admitted at a time; no autosave can complete it.
+- (void)saveWorkingCopyWithCompletion:(void (^)(NSError * _Nullable error))completion;
+/// Stop waiting for an explicit save. An already running engine save may still
+/// finish in its private files; this never cancels or commits the original file.
+- (void)cancelPendingSave;
 - (nullable instancetype)initWithWorkingFileURL:(NSURL *)workingFileURL
                              sessionDirectory:(NSURL *)sessionDirectory
                                      readOnly:(BOOL)readOnly

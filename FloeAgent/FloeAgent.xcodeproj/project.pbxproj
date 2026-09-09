@@ -2095,8 +2095,15 @@
 			files = (
 			);
 			inputFileListPaths = (
+				"$(SRCROOT)/Vendor/Office/native-host-inputs.xcfilelist",
 			);
 			inputPaths = (
+				"$(SRCROOT)/scripts/embed_office_host.py",
+				"$(SRCROOT)/scripts/bootstrap_office_host.py",
+				"$(SRCROOT)/ThirdParty/Collabora/engine.lock.json",
+				"$(SRCROOT)/ThirdParty/Collabora/FloeOfficeNative/FloeOfficeNative.h",
+				"$(SRCROOT)/ThirdParty/Collabora/FloeOfficeNative/FloeOfficeNative.mm",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Info.plist",
 			);
 			name = "Embed verified native Office host";
 			outputFileListPaths = (

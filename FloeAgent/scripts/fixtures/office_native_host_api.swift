@@ -9,5 +9,7 @@ func verifyOfficeHostAPI(file: URL, directory: URL) throws -> FloeOfficeNativeVi
     editor.onWorkingCopyOpened = { opened in _ = opened }
     editor.onWorkingCopySaved = { saved in _ = saved }
     editor.onClosed = { closed in _ = closed }
+    editor.saveWorkingCopy { error in _ = error }
+    editor.cancelPendingSave()
     return editor
 }

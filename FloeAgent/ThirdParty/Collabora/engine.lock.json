@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "native-host-built-pending-floe-ui-writeback-and-device-roundtrip",
+  "qualificationStatus": "save-receipt-overlay-pending-native-requalification",
   "qualifiedHostArtifact": {
     "runID": "34292622779",
     "artifactName": "office-native-host-unsigned",
@@ -86,7 +86,7 @@
   "sourcePatchSHA256": "09517b9a2dd4002a767491976762410d4cefd45172ea8cf401196268f5817ad7",
   "embeddingOverlay": {
     "patch": "patches/ios-embedding-boundaries.patch",
-    "sha256": "7f034b606318e26672c1fcb6fc84092899a434c82b205420bafb8143d727c8af",
+    "sha256": "b63ec15247773dfb07cb780bf88b1b4ae4d4f54c34861348796e3832516cf79d",
     "requiredFrameworks": [
       "GameController"
     ],
@@ -105,11 +105,11 @@
       },
       "ios/Mobile/CODocument.h": {
         "originalSHA256": "1b46b5557c315949f61345c130c3c1f78cd239b01552b6305c84a1a780c59c8e",
-        "preparedSHA256": "55191cfb6f95e5bf6902d579baede71f1b607c19cb63ab1ffc3fc1de57b675c3"
+        "preparedSHA256": "45c959def255828322457dc78de3ff01029bdcfcfc217d100ec1c42be951ed2e"
       },
       "kit/ChildSession.cpp": {
         "originalSHA256": "66ec2517f99b6535e626d2a1f377bea12c04f9f83efd7bed7211303bce8e578b",
-        "preparedSHA256": "51db32e32a2bb59942df6a814bad6a6a5ad6ce1ef697fc7c77e9025389a01704"
+        "preparedSHA256": "4c1d31ca022d46cdbecfb6a39204c56ef409fd40a145f576966790fff77e1e70"
       },
       "ios/Mobile/CODocument.mm": {
         "originalSHA256": "4a283c74308e8eec41eb736b731b787f7055e4d61adb4a177b2e1d5cc046df65",
@@ -126,6 +126,22 @@
       "wsd/COOLWSD.cpp": {
         "originalSHA256": "85c90ccfe758200843b6fe659a7944847bf6234e5d331a970a0ce7597ef83786",
         "preparedSHA256": "b913176634edc140e673a772a5b14b830aab03ac125c5bac9865dceb52168278"
+      },
+      "wsd/ClientSession.cpp": {
+        "originalSHA256": "2d36958e81dafa3189aef458b73668efa989f955000426d05c4f4cf008332da4",
+        "preparedSHA256": "e25527cfa89a088c4ba84c989741f71531b6997377725238c9059a14aba8d37a"
+      },
+      "wsd/DocumentBroker.hpp": {
+        "originalSHA256": "4de47bd1034fc4811e74e7ee7416499579c8fca038330fc21213dee7d43806d0",
+        "preparedSHA256": "d459cca250f73898532bdb42f0fda01ae213f89651eff8abfd94401fa917a53d"
+      },
+      "common/MobileApp.hpp": {
+        "originalSHA256": "9956a535f39793b4096161434a3dfc33ba09ad263d6f23eee71655fc464f9517",
+        "preparedSHA256": "761834cb23c83afe7cff9b80a75db67367dc55c0468b1fc35d3a5f491c2dcca9"
+      },
+      "common/MobileApp.cpp": {
+        "originalSHA256": "36237045258b3fea991010dc24fd6e8383625b58c9c72cd0bea3a290ce018f38",
+        "preparedSHA256": "c87d8ea59e6f53c368dd201eb4197a6d3b89bca06000c3a17042b9be7e0893d2"
       }
     }
   }

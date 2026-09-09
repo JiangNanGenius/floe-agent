@@ -27,6 +27,7 @@ jobs:
           python3 FloeAgent/scripts/test_office_engine_bundle.py
           python3 FloeAgent/scripts/test_office_mobile_qualification.py
           python3 FloeAgent/scripts/test_office_native_host.py
+          python3 FloeAgent/scripts/test_office_save_receipts.py
       - name: Reuse complete qualified engine inputs
         env:
           GH_TOKEN: ${{ github.token }}

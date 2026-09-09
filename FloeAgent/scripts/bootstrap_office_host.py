@@ -113,6 +113,22 @@ def install(archive, destination, lock_path=LOCK):
     return result
 
 
+def write_project_inputs(folder, output, project_root=ROOT, lock_path=LOCK):
+    """Declare every verified payload input for Xcode's script sandbox."""
+    lock, pin = checked_lock(lock_path)
+    verify_installed(folder, lock, pin)
+    folder, project_root, output = Path(folder), Path(project_root), Path(output)
+    paths = [folder] + sorted(folder.rglob('*'))
+    lines = []
+    for path in paths:
+        name = str(path.relative_to(project_root))
+        if any(char in name for char in '\n\r$'):
+            raise ValueError('Office source cannot be represented in an Xcode input list')
+        lines.append('$(SRCROOT)/' + name)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text('\n'.join(lines) + '\n')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--archive', type=Path, help='Use an already downloaded, hash-locked archive')
@@ -121,18 +137,24 @@ def main():
     args = parser.parse_args()
     lock, pin = checked_lock(LOCK)
     destination = args.destination or ROOT / 'Vendor/Office' / pin['runID'] / 'OfficeNativeHost'
+
+    def finish(result):
+        if args.destination is None:
+            write_project_inputs(destination, ROOT / 'Vendor/Office/native-host-inputs.xcfilelist')
+        print(json.dumps(result, indent=2))
+
     if destination.exists() or destination.is_symlink() or args.verify_only:
-        print(json.dumps(verify_installed(destination, lock, pin), indent=2))
+        finish(verify_installed(destination, lock, pin))
         return
     if args.archive:
-        print(json.dumps(install(args.archive, destination), indent=2))
+        finish(install(args.archive, destination))
         return
     # gh uses the developer's existing login or the CI job's read-only token.
     # Credentials never enter the command, artifact, or application resources.
     with tempfile.TemporaryDirectory(prefix='floe-office-download-') as temporary:
         subprocess.run(['gh', 'run', 'download', pin['runID'], '--repo', 'JiangNanGenius/floe-agent',
                         '--name', pin['artifactName'], '--dir', temporary], check=True)
-        print(json.dumps(install(Path(temporary) / 'OfficeNativeHost.zip', destination), indent=2))
+        finish(install(Path(temporary) / 'OfficeNativeHost.zip', destination))
 
 
 if __name__ == '__main__':

@@ -172,10 +172,97 @@ static void ServerReady() {
 }
 @end
 
+// FLOE_SAVE_RECEIPTS_BEGIN: compiled independently by the receipt-order harness.
+@interface FloeSaveReceiptJoiner : NSObject
+@property (nonatomic, copy) NSString *activeRequestID;
+@property (nonatomic, copy) void (^completion)(BOOL);
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *requests;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *results;
+- (BOOL)begin:(NSString *)requestID completion:(void (^)(BOOL))completion;
+- (void)associate:(NSString *)sequence requestID:(NSString *)requestID;
+- (void)complete:(NSString *)sequence success:(BOOL)success;
+- (void)reject:(NSString *)requestID;
+- (void)cancel;
+@end
+@implementation FloeSaveReceiptJoiner
+- (instancetype)init {
+    if ((self = [super init])) {
+        _requests = [NSMutableDictionary dictionary];
+        _results = [NSMutableDictionary dictionary];
+    }
+    return self;
+}
+- (BOOL)begin:(NSString *)requestID completion:(void (^)(BOOL))completion {
+    NSAssert(NSThread.isMainThread, @"Save receipts are main-queue owned");
+    if (self.activeRequestID || !requestID.length) return NO;
+    self.activeRequestID = requestID;
+    self.completion = completion;
+    return YES;
+}
+- (void)finish:(BOOL)success {
+    void (^completion)(BOOL) = self.completion;
+    self.completion = nil;
+    self.activeRequestID = nil;
+    if (completion) completion(success);
+}
+- (void)join:(NSString *)sequence {
+    NSString *request = self.requests[sequence];
+    NSNumber *result = self.results[sequence];
+    if (request != nil && result != nil) {
+        [self.requests removeObjectForKey:sequence];
+        [self.results removeObjectForKey:sequence];
+        if ([request isEqualToString:self.activeRequestID]) [self finish:result.boolValue];
+    }
+    if (self.requests.count + self.results.count > 64) {
+        // Missing protocol halves must fail an active request, never complete
+        // it with a later result. Keep file recovery separate from this cache.
+        [self.requests removeAllObjects];
+        [self.results removeAllObjects];
+        [self finish:NO];
+    }
+}
+- (void)associate:(NSString *)sequence requestID:(NSString *)requestID {
+    NSAssert(NSThread.isMainThread, @"Save receipts are main-queue owned");
+    if (!sequence.length) return;
+    NSString *previous = self.requests[sequence];
+    if (previous && ![previous isEqualToString:requestID ?: @""]) {
+        [self.requests removeObjectForKey:sequence];
+        [self.results removeObjectForKey:sequence];
+        [self finish:NO];
+        return;
+    }
+    self.requests[sequence] = requestID ?: @"";
+    [self join:sequence];
+}
+- (void)complete:(NSString *)sequence success:(BOOL)success {
+    NSAssert(NSThread.isMainThread, @"Save receipts are main-queue owned");
+    if (!sequence.length) return;
+    NSNumber *previous = self.results[sequence];
+    if (previous && previous.boolValue != success) {
+        [self.requests removeObjectForKey:sequence];
+        [self.results removeObjectForKey:sequence];
+        [self finish:NO];
+        return;
+    }
+    self.results[sequence] = @(success);
+    [self join:sequence];
+}
+- (void)reject:(NSString *)requestID {
+    NSAssert(NSThread.isMainThread, @"Save receipts are main-queue owned");
+    if ([requestID isEqualToString:self.activeRequestID]) [self finish:NO];
+}
+- (void)cancel {
+    NSAssert(NSThread.isMainThread, @"Save receipts are main-queue owned");
+    [self finish:NO];
+}
+@end
+// FLOE_SAVE_RECEIPTS_END
+
 @interface FloeOfficeNativeViewController ()
 @property (nonatomic, readwrite, getter=isReadOnly) BOOL readOnly;
 @property (nonatomic, copy, readwrite) NSURL *workingFileURL;
 @property DocumentViewController *editor;
+@property (nonatomic, strong) FloeSaveReceiptJoiner *saveReceipts;
 @end
 
 @implementation FloeOfficeNativeViewController
@@ -198,6 +285,7 @@ static void ServerReady() {
     if ((self = [super initWithNibName:nil bundle:nil])) {
         _readOnly = readOnly;
         _workingFileURL = file;
+        _saveReceipts = [FloeSaveReceiptJoiner new];
         _editor = [[DocumentViewController alloc] initWithNibName:nil bundle:nil];
         FloeOfficeDocument *document = [[FloeOfficeDocument alloc] initWithFileURL:file];
         document->readOnly = readOnly;
@@ -213,12 +301,48 @@ static void ServerReady() {
             FloeOfficeNativeViewController *host = weakSelf;
             if (host.onWorkingCopySaved) host.onWorkingCopySaved(success);
         };
+        document.floeSaveSequenceCompletion = ^(NSString *sequence, BOOL success) {
+            [weakSelf.saveReceipts complete:sequence success:success];
+        };
+        document.floeSaveSequenceAssociation = ^(NSString *sequence, NSString *requestID) {
+            [weakSelf.saveReceipts associate:sequence requestID:requestID];
+        };
+        document.floeSaveRequestRejected = ^(NSString *requestID) {
+            [weakSelf.saveReceipts reject:requestID];
+        };
         _editor.floeCloseCompletion = ^(BOOL success) {
             FloeOfficeNativeViewController *host = weakSelf;
+            [host.saveReceipts cancel];
             if (host.onClosed) host.onClosed(success);
         };
     }
     return self;
+}
+- (void)saveWorkingCopyWithCompletion:(void (^)(NSError *))completion {
+    NSAssert(NSThread.isMainThread, @"Office saves are main-queue owned");
+    if (self.readOnly || !self.editor.webView || self.editor.document->fakeClientFd < 0) {
+        completion(OfficeError(7, @"Open the document for editing before saving."));
+        return;
+    }
+    NSString *requestID = [@"floe-save:" stringByAppendingString:NSUUID.UUID.UUIDString];
+    if (![self.saveReceipts begin:requestID completion:^(BOOL success) {
+        completion(success ? nil : OfficeError(8, @"Office could not complete this save. Your document copies have been retained."));
+    }]) {
+        completion(OfficeError(9, @"An Office save is already in progress."));
+        return;
+    }
+    NSData *encoded = [NSJSONSerialization dataWithJSONObject:@[requestID] options:0 error:nil];
+    NSString *argument = [[NSString alloc] initWithData:encoded encoding:NSUTF8StringEncoding];
+    NSString *script = [NSString stringWithFormat:
+        @"(() => { const map = window.app && window.app.map; if (!map || typeof map.save !== 'function') return false; map.save(false, false, (%@)[0]); return true; })()", argument];
+    __weak FloeOfficeNativeViewController *weakSelf = self;
+    [self.editor.webView evaluateJavaScript:script completionHandler:^(id value, NSError *error) {
+        if (error || ![value isKindOfClass:NSNumber.class] || ![value boolValue])
+            [weakSelf.saveReceipts reject:requestID];
+    }];
+}
+- (void)cancelPendingSave {
+    [self.saveReceipts cancel];
 }
 - (void)viewDidLoad {
     [super viewDidLoad];

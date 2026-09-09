@@ -256,7 +256,7 @@
  
  @class DocumentViewController;
  
-@@ -27,6 +26,13 @@
+@@ -27,6 +26,19 @@
  
  @property (weak) DocumentViewController *viewController;
  
@@ -267,12 +267,26 @@
 +// writing fileURL, not that Floe committed the original or verified layout.
 +@property (copy, nullable) void (^floeSaveCompletion)(BOOL success);
 +
++// Join broker request identity with the matching native persistence result.
++// Sequence IDs identify engine results; they never imply original-file writeback.
++@property (copy, nullable) void (^floeSaveSequenceCompletion)(NSString *sequence, BOOL success);
++@property (copy, nullable) void (^floeSaveSequenceAssociation)(NSString *sequence, NSString *requestID);
++@property (copy, nullable) void (^floeSaveRequestRejected)(NSString *requestID);
++
  - (void)send2JS:(const char*)buffer length:(int)length;
  
  @end
 --- a/kit/ChildSession.cpp
 +++ b/kit/ChildSession.cpp
-@@ -4265,27 +4265,31 @@
+@@ -15,6 +15,7 @@
+  */
+ 
+ #include <config.h>
++#include <atomic>
+ 
+ #include "ChildSession.hpp"
+ 
+@@ -4265,27 +4266,39 @@
                  // After the document has been saved (into the temporary copy that we set up in
                  // -[CODocument loadFromContents:ofType:error:]), save it also using the system API so
                  // that file provider extensions notice.
@@ -284,10 +298,16 @@
 +                CODocument* document =
 +                    DocumentData::get(_docManager->getMobileAppDocId()).coDocument;
 +                const bool engineSaved = !success.isEmpty() && success.toString() == "true";
++                static std::atomic<unsigned long long> floeSequenceCounter(1);
++                const std::string floeSequence = std::to_string(floeSequenceCounter++);
++                object->set("floeSaveSequence", floeSequence);
++                NSString *floeSaveSequence = [NSString stringWithUTF8String:floeSequence.c_str()];
 +                dispatch_async(dispatch_get_main_queue(), ^{
 +                    if (!engineSaved) {
 +                        if (document.floeSaveCompletion)
 +                            document.floeSaveCompletion(NO);
++                        if (document.floeSaveSequenceCompletion)
++                            document.floeSaveSequenceCompletion(floeSaveSequence, NO);
 +                        return;
 +                    }
                      [document saveToURL:[document fileURL]
@@ -307,6 +327,8 @@
 +                          dispatch_async(dispatch_get_main_queue(), ^{
 +                              if (document.floeSaveCompletion)
 +                                  document.floeSaveCompletion(saved);
++                              if (document.floeSaveSequenceCompletion)
++                                  document.floeSaveSequenceCompletion(floeSaveSequence, saved);
 +                          });
                          }];
 +                });
@@ -318,6 +340,24 @@
              }
          }
  
+@@ -4314,7 +4327,16 @@
+             break;
+         }
+ 
+-        const std::string saveMessage = "unocommandresult: " + payload;
++        std::string floeForwardedPayload = payload;
++#if defined(IOS)
++        if (object->has("floeSaveSequence"))
++        {
++            std::ostringstream encoded;
++            object->stringify(encoded);
++            floeForwardedPayload = encoded.str();
++        }
++#endif
++        const std::string saveMessage = "unocommandresult: " + floeForwardedPayload;
+         sendTextFrame(saveMessage);
+         if (saveCommand)
+             _docManager->handleSaveMessage(saveMessage);
 --- a/ios/Mobile/CODocument.mm
 +++ b/ios/Mobile/CODocument.mm
 @@ -48,6 +48,13 @@
@@ -417,3 +457,204 @@
  #if !MOBILEAPP
      _admin.start();
  #endif
+--- a/wsd/ClientSession.cpp
++++ b/wsd/ClientSession.cpp
+@@ -27,6 +27,9 @@
+ #include <common/JsonUtil.hpp>
+ #if defined(QTAPP) || defined(MACOSAPP)
+ #include <common/SettingsStorage.hpp>
++#endif
++#if defined(IOS)
++#include <common/MobileApp.hpp>
+ #endif
+ #include <common/NumUtil.hpp>
+ #include <common/Log.hpp>
+@@ -69,6 +72,21 @@
+ #include <string>
+ #include <string_view>
+ #include <unordered_map>
++
++#if defined(IOS)
++static void floeRejectSaveRequest(const std::shared_ptr<DocumentBroker>& broker,
++                                  const std::string& requestID)
++{
++    if (requestID.size() > 128 || requestID.rfind("floe-save:", 0) != 0)
++        return;
++    CODocument *document = DocumentData::getDocument(broker->getMobileAppDocId());
++    NSString *nativeID = [NSString stringWithUTF8String:requestID.c_str()] ?: @"";
++    dispatch_async(dispatch_get_main_queue(), ^{
++        if (document.floeSaveRequestRejected)
++            document.floeSaveRequestRejected(nativeID);
++    });
++}
++#endif
+ 
+ using namespace COOLProtocol;
+ 
+@@ -1020,7 +1038,11 @@
+         }
+         return sendCombinedTiles(buffer, length, tokens, docBroker);
+     }
+-    else if (tokens.equals(0, "save"))
++    else if (tokens.equals(0, "save")
++#if defined(IOS)
++             || (tokens.equals(0, "uno") && tokens.equals(1, ".uno:Save"))
++#endif
++             )
+     {
+         // If we can't write to Storage, there is no point in saving.
+         if (!isWritable())
+@@ -1028,12 +1050,26 @@
+             LOG_WRN("Session [" << getId() << "] on document [" << docBroker->getDocKey()
+                                 << "] has no write permissions in Storage and cannot save.");
+             sendTextFrameAndLogError("error: cmd=save kind=savefailed");
++#if defined(IOS)
++            std::string requestID;
++            getTokenString(tokens, "extendedData", requestID);
++            floeRejectSaveRequest(docBroker, Uri::decode(requestID));
++#endif
+         }
+         else
+         {
+             // Don't save unmodified docs by default.
+             int dontSaveIfUnmodified = 1;
+             int dontTerminateEdit = 1;
++#if defined(IOS)
++            // Every frontend Save must go through broker admission. Otherwise
++            // an untracked UNO save could steal another request's receipt.
++            if (tokens.equals(0, "uno"))
++            {
++                dontSaveIfUnmodified = 0;
++                dontTerminateEdit = 0;
++            }
++#endif
+             std::string extendedData;
+ 
+             // We expect at most 3 arguments.
+@@ -1056,6 +1092,9 @@
+ 
+             if (isLockedByPassword())
+             {
++#if defined(IOS)
++                floeRejectSaveRequest(docBroker, extendedData);
++#endif
+                 // This view has no changes of its own, so the save is answered like a save of
+                 // an unmodified document.
+                 LOG_INF("Session [" << getId() << "] on document [" << docBroker->getDocKey()
+@@ -1067,8 +1106,14 @@
+             }
+             else
+             {
+-                docBroker->manualSave(client_from_this(), dontTerminateEdit != 0,
++                const bool accepted = docBroker->manualSave(client_from_this(), dontTerminateEdit != 0,
+                                       dontSaveIfUnmodified != 0, extendedData);
++#if defined(IOS)
++                if (!accepted)
++                    floeRejectSaveRequest(docBroker, extendedData);
++#else
++                (void)accepted;
++#endif
+             }
+         }
+     }
+@@ -3011,6 +3056,25 @@
+                     const bool isAutosave = docBroker->isNextSaveAutosave();
+                     object->set("isAutosave", isAutosave);
+ 
++#if defined(IOS)
++                    // Capture request identity before handleSaveResponse resets it.
++                    // Join it with the native persistence callback by engine result
++                    // sequence, never by callback arrival order or "next save".
++                    std::string sequence;
++                    JsonUtil::findJSONValue(object, "floeSaveSequence", sequence);
++                    const std::string request = docBroker->floeActiveSaveRequestID();
++                    if (!sequence.empty() && sequence.size() <= 32)
++                    {
++                        CODocument *document = DocumentData::getDocument(docBroker->getMobileAppDocId());
++                        NSString *nativeSequence = [NSString stringWithUTF8String:sequence.c_str()];
++                        NSString *nativeRequest = request.size() <= 128 && request.rfind("floe-save:", 0) == 0
++                            ? ([NSString stringWithUTF8String:request.c_str()] ?: @"") : @"";
++                        dispatch_async(dispatch_get_main_queue(), ^{
++                            if (document.floeSaveSequenceAssociation)
++                                document.floeSaveSequenceAssociation(nativeSequence, nativeRequest);
++                        });
++                    }
++#endif
+                     // Save to Storage and log result.
+                     docBroker->handleSaveResponse(client_from_this(), object);
+ 
+--- a/wsd/DocumentBroker.hpp
++++ b/wsd/DocumentBroker.hpp
+@@ -361,6 +361,13 @@
+ 
+     /// Get whether the next save operation is an autosave.
+     bool isNextSaveAutosave() const;
++#ifdef IOS
++    std::string floeActiveSaveRequestID() const
++    {
++        return _docState.activity() == DocumentState::Activity::Save
++            ? _nextStorageAttrs.getExtendedData() : std::string();
++    }
++#endif
+ 
+     /// Handle the save response from Core and upload to storage as necessary.
+     /// Also notifies clients of the result.
+--- a/common/MobileApp.hpp
++++ b/common/MobileApp.hpp
+@@ -57,6 +57,10 @@
+     static DocumentData *getIfExists(unsigned docId);
+     static void deallocate(unsigned docId);
+     static int count();
++#ifdef IOS
++    // Retain the Objective-C document while holding the registry lock.
++    static CODocument *getDocument(unsigned docId);
++#endif
+ 
+ #ifdef IOS
+     CODocument *coDocument;
+--- a/common/MobileApp.cpp
++++ b/common/MobileApp.cpp
+@@ -54,22 +54,35 @@
+     return it != idToDocDataMap.end() ? it->second : nullptr;
+ }
+ 
++#ifdef IOS
++CODocument *DocumentData::getDocument(unsigned docId)
++{
++    const std::lock_guard<std::mutex> lock(idToDocDataMapMutex);
++    auto it = idToDocDataMap.find(docId);
++    CODocument *document = it == idToDocDataMap.end() ? nil : it->second->coDocument;
++    return document;
++}
++#endif
++
+ void DocumentData::deallocate(unsigned docId)
+ {
+-    if (idToDocDataMap.find(docId) == idToDocDataMap.end())
++    DocumentData *removed = nullptr;
+     {
+-        // FIXME: Something is wrong, whatever.
+-        return;
++        const std::lock_guard<std::mutex> lock(idToDocDataMapMutex);
++        auto it = idToDocDataMap.find(docId);
++        if (it == idToDocDataMap.end())
++            return;
++        removed = it->second;
++        idToDocDataMap.erase(it);
+     }
+-    // Does get() really need to called during the destructor?
+-    get(docId);
+-    auto p = idToDocDataMap.find(docId);
+-    delete p->second;
+-    idToDocDataMap.erase(docId);
++    // Releasing the retained UIDocument can re-enter host code; do it outside
++    // the registry lock after new lookups can no longer find this generation.
++    delete removed;
+ }
+ 
+ int DocumentData::count()
+ {
++    const std::lock_guard<std::mutex> lock(idToDocDataMapMutex);
+     return idToDocDataMap.size();
+ }
+ 
