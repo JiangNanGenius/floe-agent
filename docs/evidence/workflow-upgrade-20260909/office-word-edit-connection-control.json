@@ -1,0 +1,35 @@
+{
+  "hostRunID": "34317744039",
+  "sessionID": "2CBFF082-7495-4EA6-B6ED-F5B1D26CB7F1",
+  "events": [
+    {
+      "detail": "docx",
+      "event": "fixtureCopied",
+      "time": "2026-09-09T06:45:31Z"
+    },
+    {
+      "detail": "zh-Hans-TW",
+      "event": "preferredLanguage",
+      "time": "2026-09-09T06:45:31Z"
+    },
+    {
+      "detail": "true; readonly=false",
+      "event": "opened",
+      "time": "2026-09-09T06:45:31Z"
+    },
+    {
+      "detail": "false",
+      "event": "workingPersistence",
+      "time": "2026-09-09T06:45:33Z"
+    },
+    {
+      "detail": "false",
+      "event": "workingPersistence",
+      "time": "2026-09-09T06:46:11Z"
+    }
+  ],
+  "control": "Fresh Word fixture; clicked Edit document before inserting or reading any attachments. UI reported connection lost and reconnecting.",
+  "attachmentOperationPerformed": false,
+  "rootCauseConfirmed": false,
+  "physicalDeviceTest": false
+}

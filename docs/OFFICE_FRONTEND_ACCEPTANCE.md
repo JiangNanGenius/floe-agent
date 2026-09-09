@@ -124,3 +124,5 @@
 
 - `34317744039` 独立 Mac 编辑器实际枚举并导出 1 个中文名附件，65,539 字节，SHA-256 与原文件一致，见 [运行证据](evidence/workflow-upgrade-20260909/office-word-attachment-snapshot-export-runtime.json)。随后点击撤销出现服务连接中断，保存持续等待；不能把导出局部成功记作完整保存/撤销通过。
 - 对保存持续等待补齐两个失败出口：发送前检查编辑器连接；90 秒内未收到匹配回执则明确失败并保留副本。9 项实际编译的回执顺序/超时检查通过，见 [回执测试](evidence/workflow-upgrade-20260909/office-save-timeout-contract.json)。新宿主运行仍待验证。
+
+- 新建未插入/读取附件的 Word 对照会话也在点击“编辑文档”后出现连接中断，说明该故障并非只发生在附件导出之后；尚不能归因于附件读取。见 [对照证据](evidence/workflow-upgrade-20260909/office-word-edit-connection-control.json) 和配套截图。下一步继续区分后台/辅助功能点击与前台直接操作，并验证实际 iOS 会话。
