@@ -2,6 +2,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import UIKit
+import Combine
 import FloeDocuments
 #if canImport(FloeOfficeNative)
 import FloeOfficeNative
@@ -19,6 +20,24 @@ final class OfficeFileSession: ObservableObject {
     private var operating = false
     private var releaseRequested = false
     private var expectedClose = false
+    private var runtimeFailed = false
+    private var runtimeFailureObservation: AnyCancellable?
+
+    init() {
+        #if canImport(FloeOfficeNative)
+        runtimeFailureObservation = NotificationCenter.default.publisher(for: .FloeOfficeNativeRuntimeDidFail)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.runtimeFailed = true
+                    (self.controller as? FloeOfficeNativeViewController)?.cancelPendingSave()
+                    self.error = "文档服务已停止响应，编辑副本已保留。"
+                    self.phase = .failed
+                }
+            }
+        #endif
+    }
 
     static var available: Bool {
         #if canImport(FloeOfficeNative)
@@ -37,6 +56,12 @@ final class OfficeFileSession: ObservableObject {
         phase = .loading
         error = nil
         do {
+            // Fullscreen has finished dismissing before the inspector mounts
+            // this next controller. Retain the existing file/CAS session.
+            if session?.originalURL == url, controller == nil {
+                try await activate(readOnly: true)
+                return
+            }
             if session != nil { try await releaseCurrent() }
             let files = try SecurityScopedDocumentWorkspace()
             let opened = try await files.open(securityScopedURL: url)
@@ -74,14 +99,15 @@ final class OfficeFileSession: ObservableObject {
             }
             try await workspace.save(session)
             try await closeController()
-            try await activate(readOnly: true)
+            readOnly = true
+            phase = .idle
             return true
             #else
             throw CocoaError(.featureUnsupported)
             #endif
         } catch {
             self.error = error.localizedDescription
-            phase = controller == nil ? .failed : .ready
+            phase = runtimeFailed || controller == nil ? .failed : .ready
             return false
         }
     }
@@ -94,7 +120,8 @@ final class OfficeFileSession: ObservableObject {
             try await closeController()
             await workspace.discardChangesAndClose(session)
             self.session = try await workspace.open(securityScopedURL: session.originalURL)
-            try await activate(readOnly: true)
+            readOnly = true
+            phase = .idle
             return true
         } catch { fail(error); return false }
     }
@@ -141,12 +168,12 @@ final class OfficeFileSession: ObservableObject {
             workingFileURL: session.workingURL,
             sessionDirectory: session.workingURL.deletingLastPathComponent(), readOnly: readOnly)
         native.onWorkingCopyOpened = { [weak self, weak native] success in
-            guard let self, self.controller === native else { return }
+            guard let self, let native, self.controller === native else { return }
             if success { self.phase = .ready }
             else { self.fail(CocoaError(.fileReadCorruptFile)) }
         }
         native.onClosed = { [weak self, weak native] _ in
-            guard let self, self.controller === native, !self.expectedClose else { return }
+            guard let self, let native, self.controller === native, !self.expectedClose else { return }
             self.error = "文档已关闭，编辑副本已保留。"
             self.phase = .failed
         }
@@ -157,6 +184,9 @@ final class OfficeFileSession: ObservableObject {
     }
     private func closeController() async throws {
         guard let controller else { return }
+        // No view means the upstream viewWillAppear has not opened a document.
+        // Do not load a WebView merely to close an abandoned preview request.
+        guard controller.isViewLoaded else { self.controller = nil; return }
         phase = .closing
         expectedClose = true
         defer { expectedClose = false }

@@ -4,6 +4,7 @@ import FloeOfficeNative
 @MainActor
 func verifyOfficeHostAPI(file: URL, directory: URL) throws -> FloeOfficeNativeViewController {
     let runtime = FloeOfficeNativeRuntime.shared
+    let _: Notification.Name = .FloeOfficeNativeRuntimeDidFail
     runtime.prepare { error in _ = error }
     let editor = try FloeOfficeNativeViewController(workingFileURL: file, sessionDirectory: directory, readOnly: true)
     editor.onWorkingCopyOpened = { opened in _ = opened }
