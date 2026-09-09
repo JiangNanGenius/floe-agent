@@ -1,0 +1,31 @@
+{
+  "qualifiedArtifact": {
+    "runID": "34329608612",
+    "artifactName": "office-native-host-unsigned",
+    "artifactID": 10095340686,
+    "workflowCommit": "ed983428c6626977c44a8d0fcff29653c99d167c",
+    "archiveSHA256": "29425213e6ce01cef1aea02e33b7c1904bcf198ef36f9b944390d80b4d47e360",
+    "executableSHA256": "48901855ce0f09fe3d62daa292033669bb5a914af650729951c73ae5dc8af3a8",
+    "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
+    "hostSourceSHA256": {
+      "FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
+      "FloeOfficeNative.mm": "f1723eb2eb1e54cdce99d20147d53916106dec97091b607d7f0688a0ff1cdb6a",
+      "FloeOfficeAttachment.cpp": "1265ec61e2144a8e5fc8e715c000cfc6254de2588f228b29d4bbb045fc29cfa6",
+      "FloeOfficeAttachment.hxx": "6a3c976e41df1ec3c7d339c3762522c46b3cc8b23574522559f8b83e60e7088e"
+    },
+    "verifiedResourceFiles": 4780,
+    "verifiedResourceDirectories": 174,
+    "manifestSHA256": "1d30f108409f7deb36e0b491201d900ee7844bfa2d48b46057c7450e7d0b9b27",
+    "frameworkAuxiliarySHA256": {
+      "Headers/FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
+      "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
+      "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac"
+    },
+    "note": "Compiled, linked and Swift-imported host with explicit fullscreen edit entry and native attachment selection notification. XLSX attachment serialization is still failing; native UI and original-file roundtrip remain separate acceptance gates."
+  },
+  "bootstrap": {
+    "verifiedFiles": 4785,
+    "verifiedDirectories": 178
+  },
+  "runtimeRetestPassed": false
+}

@@ -1,0 +1,35 @@
+{
+  "repository": "CollaboraOnline/online.mirror",
+  "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+  "sources": [
+    {
+      "path": "engine/sc/source/filter/xcl97/xcl97esc.cxx",
+      "sha256": "36c23b8db0ace27b27c292c70437416a59fe12dd67d260b1947f99b5b1c26c7f"
+    },
+    {
+      "path": "engine/sc/source/filter/xcl97/xcl97rec.cxx",
+      "sha256": "cfc6ad7262deb1ef682662c3c05e9b49c05b246796c637c4f7ed9d57164ce5b9"
+    },
+    {
+      "path": "engine/sc/source/filter/inc/xcl97rec.hxx",
+      "sha256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f"
+    },
+    {
+      "path": "engine/sc/source/filter/excel/xeescher.cxx",
+      "sha256": "efeee5ce0a507a6a2c6e08b0f053f9e1318a3fd5fbf94d64adc0744ab012ecb1"
+    },
+    {
+      "path": "engine/oox/source/export/shapes.cxx",
+      "sha256": "025fd73bd88ea82ae0f81e092e62f1dc36d9ab37f9c5ed38482b9e197c3bcb03"
+    }
+  ],
+  "observed": "Two native XLSX attachment sessions lost their OLE parts on save; PPTX saved the identical Package payload.",
+  "sourceFindings": [
+    "XclEscherEx::StartShape routes a non-chart SdrOle2Obj to XclObjOle.",
+    "XclObjOle declares binary Save/WriteSubRecs but no SaveXml override; XclObj also declares no SaveXml override.",
+    "SaveDrawingMLObjects calls SaveXml on collected objects; the XLSX result has an empty drawing part and no embedded part.",
+    "Shared ShapeExport::WriteOLE2Shape writes presentation OLE markup; using it unchanged is not a valid SpreadsheetML OLE export."
+  ],
+  "assessment": "Strong evidence of missing XLSX OLE serialization in the pinned filter. A fix must emit worksheet oleObjects, embedded payload relations, matching shape identifiers and icon/anchor geometry; keep native model edits and preserve existing attachments. This source review is not proof of a implemented fix.",
+  "xlsxFixImplemented": false
+}
