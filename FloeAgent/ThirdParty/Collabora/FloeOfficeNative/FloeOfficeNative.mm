@@ -40,6 +40,15 @@ static NSError *OfficeError(NSInteger code, NSString *description) {
                           userInfo:@{NSLocalizedDescriptionKey: description}];
 }
 
+static NSError *OfficeAttachmentReadError(NSInteger code, NSString *description, const std::exception &failure) {
+    // Engine-only attachment readers throw fixed format/IO diagnostics, never
+    // document contents. Keep them for qualification without changing UI copy.
+    return [NSError errorWithDomain:FloeOfficeNativeErrorDomain code:code userInfo:@{
+        NSLocalizedDescriptionKey: description,
+        NSDebugDescriptionErrorKey: [NSString stringWithUTF8String:failure.what()] ?: @"Attachment read failed"
+    }];
+}
+
 // FLOE_EDITOR_LANGUAGE_BEGIN
 static NSString *FloeEditorLanguage(NSArray<NSString *> *preferences) {
     // Match the engine's --with-lang resources, respecting the user's script
@@ -552,6 +561,8 @@ static void ServerReady() {
                     item.byteCount = attachment.byteCount;
                     [items addObject:item];
                 }
+            } catch (const std::exception &error) {
+                failure = OfficeAttachmentReadError(18, @"The document attachments could not be read.", error);
             } catch (...) { failure = OfficeError(18, @"The document attachments could not be read."); }
             dispatch_async(dispatch_get_main_queue(), ^{
                 self.insertingAttachment = NO;
@@ -596,6 +607,8 @@ static void ServerReady() {
                 else if ([NSFileManager.defaultManager createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:&failure]) {
                     FloeExportWordAttachment(lookup, identifier.UTF8String, file.absoluteString.UTF8String);
                 }
+            } catch (const std::exception &error) {
+                failure = OfficeAttachmentReadError(20, @"The attachment could not be exported. The document has not been changed.", error);
             } catch (...) { failure = OfficeError(20, @"The attachment could not be exported. The document has not been changed."); }
             if (failure) [NSFileManager.defaultManager removeItemAtURL:folder error:nil];
             dispatch_async(dispatch_get_main_queue(), ^{

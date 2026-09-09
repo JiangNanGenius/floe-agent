@@ -160,7 +160,10 @@ import CryptoKit
                         controller.navigationItem.leftBarButtonItems?.forEach { $0.isEnabled = true }
                         controller.navigationItem.rightBarButtonItem?.isEnabled = true
                     }
-                    if let error { self.record("attachmentListFailed", detail: error.localizedDescription); finish(error.localizedDescription); return }
+                    if let error {
+                        let detail = (error as NSError).userInfo[NSDebugDescriptionErrorKey] as? String ?? error.localizedDescription
+                        self.record("attachmentListFailed", detail: detail); finish(error.localizedDescription); return
+                    }
                     self.record("attachmentsListed", detail: "\(items.count); readonly=\(readOnly)")
                     func export(_ index: Int) {
                         guard index < items.count else { finish("Exported \(items.count) embedded attachments"); return }
@@ -168,7 +171,8 @@ import CryptoKit
                         controller.exportAttachment(withIdentifier: item.identifier) { url, error in
                           MainActor.assumeIsolated {
                             guard let url, error == nil else {
-                                self.record("attachmentExportFailed", detail: error?.localizedDescription ?? "missing URL")
+                                let detail = (error as NSError?)?.userInfo[NSDebugDescriptionErrorKey] as? String ?? error?.localizedDescription ?? "missing URL"
+                                self.record("attachmentExportFailed", detail: detail)
                                 finish("Attachment export failed"); return
                             }
                             do {

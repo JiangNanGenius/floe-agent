@@ -297,7 +297,9 @@ std::vector<OUString> FloeLiveWordPackages(SfxObjectShell *shell) {
         // On mobile the UNO object may be a generic foreign-object wrapper.
         // Identify Package from its actual compound storage, not that wrapper's
         // class ID. Native charts/subdocuments use their own storage types.
-        auto stream = shell->GetStorage()->openStreamElement(storageName, css::embed::ElementModes::READ);
+        // A loaded embedded object can own the live writable stream. Clone the
+        // engine's flushed content without acquiring a second stream owner.
+        auto stream = shell->GetStorage()->cloneStreamElement(storageName);
         auto input = utl::UcbStreamHelper::CreateStream(stream->getInputStream());
         if (!input || !SotStorage::IsStorageFile(input.get())) continue;
         rtl::Reference<SotStorage> storage = new SotStorage(*input);
@@ -310,7 +312,7 @@ std::vector<OUString> FloeLiveWordPackages(SfxObjectShell *shell) {
 
 FloeWordAttachment FloeReadWordPackage(SfxObjectShell *shell, const OUString &identifier,
                                       const std::string *destinationURL) {
-    auto stream = shell->GetStorage()->openStreamElement(identifier, css::embed::ElementModes::READ);
+    auto stream = shell->GetStorage()->cloneStreamElement(identifier);
     auto input = utl::UcbStreamHelper::CreateStream(stream->getInputStream());
     if (!input) throw std::runtime_error("Attachment storage is unavailable.");
     rtl::Reference<SotStorage> storage = new SotStorage(*input);
