@@ -385,6 +385,7 @@
 		CA9BF8F68A6F0E40E85CDE9E /* binascii.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E25201278D78378B37FF1BBD /* binascii.xcframework */; };
 		CACC526CA057A90BF71B28F5 /* pandas__libs_arrays.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C4933430B71290D5D6717191 /* pandas__libs_arrays.xcframework */; };
 		CAE63F5744AF0BB4C645C3F0 /* pandas__libs_properties.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A3378D2005DD1D0F55D2457D /* pandas__libs_properties.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		CB7295DE2A5C7C6004B32A6D /* OfficeExplicitSaveBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DC88801BD9F456C4B11FB97 /* OfficeExplicitSaveBridge.swift */; };
 		CB853D9A7EFA7AD992621BC4 /* pandas__libs_sparse.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 87012024D0AFCF4EB416D0E3 /* pandas__libs_sparse.xcframework */; };
 		CC3A849E9F7335BCB97424A1 /* _sqlite3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5F1F13207E326EE5DC28108D /* _sqlite3.xcframework */; };
 		CC44EFAFC16BB15E726B3333 /* PDFUnlockTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AA5FE75929315E529714A75 /* PDFUnlockTool.swift */; };
@@ -782,6 +783,7 @@
 		5A836CC647019173A92D3490 /* dayjs.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = dayjs.min.js; sourceTree = "<group>"; };
 		5B5E8E25AC8A39F499A6A9BA /* pandas__libs_pandas_datetime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_pandas_datetime.xcframework; path = Vendor/PythonExtensions/pandas__libs_pandas_datetime.xcframework; sourceTree = "<group>"; };
 		5BA323DAAD3913411F1D5340 /* VNCViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VNCViewModel.swift; sourceTree = "<group>"; };
+		5DC88801BD9F456C4B11FB97 /* OfficeExplicitSaveBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeExplicitSaveBridge.swift; sourceTree = "<group>"; };
 		5E1C6CDF2484A37A543FEFD5 /* pandas__libs_tslibs_conversion.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_conversion.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_conversion.xcframework; sourceTree = "<group>"; };
 		5E34F31E16DFEC4CB4FAE639 /* pandas__libs_tslibs_np_datetime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pandas__libs_tslibs_np_datetime.xcframework; path = Vendor/PythonExtensions/pandas__libs_tslibs_np_datetime.xcframework; sourceTree = "<group>"; };
 		5F1F13207E326EE5DC28108D /* _sqlite3.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = _sqlite3.xcframework; path = Vendor/PythonExtensions/_sqlite3.xcframework; sourceTree = "<group>"; };
@@ -1276,6 +1278,7 @@
 				50D138AAA4EB06E0A19CE9B5 /* InlinePDFReader.swift */,
 				DC3E986891CA3776E2C72939 /* OfficeAttachmentListView.swift */,
 				D196A6882F00C663F4186CF1 /* OfficeDocumentEditorView.swift */,
+				5DC88801BD9F456C4B11FB97 /* OfficeExplicitSaveBridge.swift */,
 				4CEE00648E38D86422DF1B1F /* OfficeWorkspaceAttachmentPicker.swift */,
 				FC62543B8E16BD9E21CD6C00 /* SourceControlCenter.swift */,
 				1BED50B2B524010095D18E24 /* SourceControlView.swift */,
@@ -2244,6 +2247,7 @@
 				2EB4F0026F6D3C7036234EB2 /* NetworkStatusMonitor.swift in Sources */,
 				CD1194126440A9ED929AC910 /* OfficeAttachmentListView.swift in Sources */,
 				0D61B284A930FFB5055E0D1E /* OfficeDocumentEditorView.swift in Sources */,
+				CB7295DE2A5C7C6004B32A6D /* OfficeExplicitSaveBridge.swift in Sources */,
 				108B2AB067E26680B33DC7CC /* OfficeWorkspaceAttachmentPicker.swift in Sources */,
 				9F178F696416A4E7191F56FB /* OnboardingView.swift in Sources */,
 				5D9232A405C85062BDDB69D8 /* OnboardingViewModel.swift in Sources */,
