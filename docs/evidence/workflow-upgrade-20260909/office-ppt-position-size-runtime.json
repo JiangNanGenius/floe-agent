@@ -1,0 +1,77 @@
+{
+  "hostRunID": "34320630546",
+  "session": "F7EF1C36-292B-49AD-8D27-37154F3A074E",
+  "scope": "Independent iOS-on-Mac native probe; foreground editing. Not full Floe or physical iOS.",
+  "requestedGeometryCM": {
+    "x": 3,
+    "y": 5.08,
+    "width": 8,
+    "height": 6
+  },
+  "savedEditedShapeGeometryEMU": {
+    "x": 1080000,
+    "y": 1828800,
+    "width": 2880000,
+    "height": 2160000
+  },
+  "requestedGeometryPassed": true,
+  "saveCloseReadonlyReopenPassed": true,
+  "positionSizeDialogForegroundPassed": true,
+  "directTextInputConfirmed": false,
+  "numericSteppersPassed": true,
+  "chartValuesPreserved": true,
+  "chartWorkbookPreserved": false,
+  "visualFirstChartPointVisible": false,
+  "allNamedChecksPassed": false,
+  "namedChecksPassed": 24,
+  "namedChecksTotal": 32,
+  "events": [
+    {
+      "detail": "pptx",
+      "event": "fixtureCopied",
+      "time": "2026-09-09T07:01:12Z"
+    },
+    {
+      "detail": "zh-Hans-TW",
+      "event": "preferredLanguage",
+      "time": "2026-09-09T07:01:12Z"
+    },
+    {
+      "detail": "true; readonly=false",
+      "event": "opened",
+      "time": "2026-09-09T07:01:12Z"
+    },
+    {
+      "detail": "false",
+      "event": "workingPersistence",
+      "time": "2026-09-09T07:01:14Z"
+    },
+    {
+      "detail": "",
+      "event": "saveRequested",
+      "time": "2026-09-09T07:03:33Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T07:03:34Z"
+    },
+    {
+      "detail": "success",
+      "event": "saveCompleted",
+      "time": "2026-09-09T07:03:34Z"
+    },
+    {
+      "detail": "success",
+      "event": "editingClosed",
+      "time": "2026-09-09T07:03:34Z"
+    },
+    {
+      "detail": "true; readonly=true",
+      "event": "opened",
+      "time": "2026-09-09T07:03:34Z"
+    }
+  ],
+  "fullFloeFrontendPassed": false,
+  "physicalDevicePassed": false
+}

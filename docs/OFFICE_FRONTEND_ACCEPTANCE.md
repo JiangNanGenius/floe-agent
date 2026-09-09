@@ -128,3 +128,5 @@
 - 新建未插入/读取附件的 Word 对照会话也在点击“编辑文档”后出现连接中断，说明该故障并非只发生在附件导出之后；尚不能归因于附件读取。见 [对照证据](evidence/workflow-upgrade-20260909/office-word-edit-connection-control.json) 和配套截图。下一步继续区分后台/辅助功能点击与前台直接操作，并验证实际 iOS 会话。
 
 - `34320630546` 宿主已校验并接入；前台坐标操作成功完成 Word 插入、导出、撤销/重做、保存关闭、只读重开及再次导出，两次 65,539 字节均与原文件一致，18/18 文档结构检查通过。见 [运行回执](evidence/workflow-upgrade-20260909/office-word-attachment-foreground-runtime.json)、[结构检查](evidence/workflow-upgrade-20260909/office-word-attachment-foreground-structure.json) 和 [重开截图](evidence/workflow-upgrade-20260909/office-word-attachment-foreground-reopen-export-mac.jpg)。该对照未复现后台 AX 断连，但不证明其修复；保存超时保护只通过编译/单元检查，故障场景运行验证仍待完成。
+
+- P05 前台对照：宿主 34320630546 实际打开位置/尺寸对话框，通过数值增减设置 X=3 cm、Y=5.08 cm、宽=8 cm、高=6 cm，保存关闭和只读重开后四项 EMU 坐标精确一致。直接输入没有确认生效，不能视为已通过。新增 [运行回执](evidence/workflow-upgrade-20260909/office-ppt-position-size-runtime.json)、[严格结构检查](evidence/workflow-upgrade-20260909/office-ppt-position-size-structure.json) 和输入/重开截图。检查同时确认：保存后图表缓存的 Alpha=12、Beta=24 保留，但原内嵌 Excel 数据文件及对应关系从 1 变 0；预览仍缺首柱。未修改标题/图表/第二页对象宽高各有 360 EMU（0.01 mm）漂移，页面宽有 1 EMU 取整差异。以上全部保持失败，不勾选完整 PPT/保真通过。

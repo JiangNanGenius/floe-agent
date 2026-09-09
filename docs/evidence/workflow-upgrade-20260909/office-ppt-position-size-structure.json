@@ -1,0 +1,226 @@
+{
+  "format": ".pptx",
+  "sourceSHA256": "a2e9c18c0811b988a8e7778f2ba95d8c86a203c9b8d25aa839f37a1c0988f6fb",
+  "savedSHA256": "4ae05929c21c43be55b9c60c6080b46aaae9f7437786ad3955f34128810cbcec",
+  "checks": [
+    {
+      "name": "chart embedded workbook relationships",
+      "expected": 1,
+      "actual": 0,
+      "passed": false
+    },
+    {
+      "name": "slide count",
+      "expected": 2,
+      "actual": 2,
+      "passed": true
+    },
+    {
+      "name": "slide width",
+      "expected": 12191999,
+      "actual": 12192000,
+      "passed": false
+    },
+    {
+      "name": "slide height",
+      "expected": 6858000,
+      "actual": 6858000,
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape count",
+      "expected": 3,
+      "actual": 3,
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 1 text",
+      "expected": "ROUNDTRIP_POWERPOINT · 原生编辑验证",
+      "actual": "ROUNDTRIP_POWERPOINT · 原生编辑验证",
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 1 left",
+      "expected": 640080,
+      "actual": 640080,
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 1 top",
+      "expected": 457200,
+      "actual": 457200,
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 1 width",
+      "expected": 10972800,
+      "actual": 10972440,
+      "passed": false
+    },
+    {
+      "name": "slide 1 shape 1 height",
+      "expected": 640080,
+      "actual": 639720,
+      "passed": false
+    },
+    {
+      "name": "slide 1 shape 1 chart presence",
+      "expected": false,
+      "actual": false,
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 2 text",
+      "expected": "Move or resize this object",
+      "actual": "Move or resize this object",
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 2 left",
+      "expected": 1080000,
+      "actual": 1080000,
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 2 top",
+      "expected": 1828800,
+      "actual": 1828800,
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 2 width",
+      "expected": 2880000,
+      "actual": 2880000,
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 2 height",
+      "expected": 2160000,
+      "actual": 2160000,
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 2 chart presence",
+      "expected": false,
+      "actual": false,
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 3 text",
+      "expected": "",
+      "actual": "",
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 3 left",
+      "expected": 4572000,
+      "actual": 4572000,
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 3 top",
+      "expected": 1645920,
+      "actual": 1645920,
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 3 width",
+      "expected": 6400800,
+      "actual": 6400440,
+      "passed": false
+    },
+    {
+      "name": "slide 1 shape 3 height",
+      "expected": 4114800,
+      "actual": 4114440,
+      "passed": false
+    },
+    {
+      "name": "slide 1 shape 3 chart presence",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 3 chart categories",
+      "expected": [
+        "Alpha",
+        "Beta"
+      ],
+      "actual": [
+        "Alpha",
+        "Beta"
+      ],
+      "passed": true
+    },
+    {
+      "name": "slide 1 shape 3 chart series",
+      "expected": [
+        [
+          "Values",
+          [
+            12.0,
+            24.0
+          ]
+        ]
+      ],
+      "actual": [
+        [
+          "Values",
+          [
+            12.0,
+            24.0
+          ]
+        ]
+      ],
+      "passed": true
+    },
+    {
+      "name": "slide 2 shape count",
+      "expected": 1,
+      "actual": 1,
+      "passed": true
+    },
+    {
+      "name": "slide 2 shape 1 text",
+      "expected": "Second slide — preserve ordering",
+      "actual": "Second slide — preserve ordering",
+      "passed": true
+    },
+    {
+      "name": "slide 2 shape 1 left",
+      "expected": 914400,
+      "actual": 914400,
+      "passed": true
+    },
+    {
+      "name": "slide 2 shape 1 top",
+      "expected": 914400,
+      "actual": 914400,
+      "passed": true
+    },
+    {
+      "name": "slide 2 shape 1 width",
+      "expected": 9144000,
+      "actual": 9143640,
+      "passed": false
+    },
+    {
+      "name": "slide 2 shape 1 height",
+      "expected": 1828800,
+      "actual": 1828440,
+      "passed": false
+    },
+    {
+      "name": "slide 2 shape 1 chart presence",
+      "expected": false,
+      "actual": false,
+      "passed": true
+    }
+  ],
+  "allNamedChecksPassed": false,
+  "completeVisualFidelityPassed": false,
+  "originalFileWritebackPassed": false,
+  "microsoftOfficeReopenPassed": false,
+  "physicalDevicePassed": false
+}
