@@ -1,8 +1,7 @@
 {
-  "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "patch": "patches/xlsx-embedded-objects.patch",
+  "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "patchSHA256": "7634bb072a7f582df7c05a703c10a23e9655863399aa6dfba1abf84482d83e18",
-  "files": {
+  "sourceFiles": {
     "engine/sc/source/filter/inc/xcl97rec.hxx": {
       "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
       "patchedSHA256": "025398a1044e4faf26cb113f11031cae2f19025d5f3b40221e04c86140d19b93"
@@ -32,23 +31,39 @@
       "patchedSHA256": "16adf3bef5739a24186eced8e55798f9bad6909908820bba01f12ed821e7124a"
     }
   },
-  "archive": "source/engine/instdir/program/libscfiltlo.a",
-  "originalArchiveSHA256": "a7e5961052e204adfb5694d584de17f8b7a7f0f6462a972303fd6baf78c11b77",
-  "member": "xcl97rec.o",
-  "qualificationStatus": "xlsx-precise-nonresizing-ole-import-compile-runtime-pending",
-  "members": {
-    "xcl97rec.o": "engine/sc/source/filter/xcl97/xcl97rec.cxx",
-    "xlroot.o": "engine/sc/source/filter/excel/xlroot.cxx",
-    "unitconverter.o": "engine/sc/source/filter/oox/unitconverter.cxx",
-    "drawingfragment.o": "engine/sc/source/filter/oox/drawingfragment.cxx"
+  "compilePassed": true,
+  "archiveReplacementPassed": true,
+  "archiveSHA256": "568fbd071d52d4698dc4ed10bc92fd301b41590382268400ece43545a154c652",
+  "objectSHA256ByMember": {
+    "xcl97rec.o": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
+    "xlroot.o": "3fbca52897617167217f09cbff137f982482d1a8987e261bf856986454c644e4",
+    "unitconverter.o": "0a3ced07db81ae2967126e0fcf2bb466a85b604069d811521c8a11edb1c9d738",
+    "drawingfragment.o": "9c4d6bdb09c6d25706d2a89c7954d2516f1c60ac883bf907cf27328ddfa09b12"
   },
+  "replacedMembers": [
+    "xcl97rec.o",
+    "xlroot.o",
+    "unitconverter.o",
+    "drawingfragment.o"
+  ],
+  "preservedMemberCount": 164,
   "additionalArchives": {
     "libooxlo.a": {
-      "archive": "source/engine/instdir/program/libooxlo.a",
       "originalArchiveSHA256": "55120d505e2b6565e5b4c3b8a5df651537ed43d0117c3cf76d4c88bc104251e9",
-      "members": {
-        "vmlshape.o": "engine/oox/source/vml/vmlshape.cxx"
-      }
+      "archiveSHA256": "d6958d73c5f4d35ed5b65edd8cfb69e8c1d7721f03dc359bb6cb53cda4e40606",
+      "objectSHA256ByMember": {
+        "vmlshape.o": "06f74f3ced0937e0144325caca56213c5af6e7ffd6075543d47c4a4d5f8f3d47"
+      },
+      "replacedMembers": [
+        "vmlshape.o"
+      ],
+      "preservedMemberCount": 235
     }
-  }
+  },
+  "runtimePassed": false,
+  "tests": {
+    "archiveAndLinkerIntegrity": 7,
+    "hostBootstrap": 16
+  },
+  "scope": "Arm64 compilation and archive integrity only. VML OLE non-resizing precision and move-only mode fixes require actual runtime and full application acceptance."
 }

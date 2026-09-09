@@ -35,9 +35,9 @@ Build and qualification:
    delete, export and multiple-sheet/object cases. Compare original payload bytes.
 
 The build regenerates headers using the exact upstream generators. It compiles
-three translation units and checks that replacing `xcl97rec.o`, `xlroot.o` and
-`unitconverter.o` preserves every other
-archive member. No class layout, virtual method table or token table is changed.
+five translation units: four locked members in `libscfiltlo.a` and
+`vmlshape.o` in `libooxlo.a`. All 164/235 unrelated archive members remain
+identical; both owned archives must appear exactly once in the linker list. No class layout, virtual method table or token table is changed.
 The verified source archive is never modified; only an owned library is selected
 in the host's new linker list. Copy/preview errors propagate as failed saves.
 
@@ -89,3 +89,12 @@ remain stable (A stays 22); attachment bytes and fixed-page position/flags survi
 undo/redo and both saves. The comparator still rejects dimensions: 6000x1800
 becomes 5995x1799 hundredths of a millimeter. Exact attachment geometry is still
 open, as are broader Office and physical-device acceptance.
+
+The precise non-resizing OLE import candidate reads explicit absolute VML sizes
+before object creation and rotation. Fixed-page position preserves zero exactly;
+move-only objects retain their cell-derived position. Cell-resizing, grouped or
+missing/invalid explicit-size cases keep their existing anchor calculation. The
+Calc importer no longer upgrades move-only anchors to resizing merely because
+the anchor contains a row and column. Runtime coverage of all three anchor modes
+is required. The pipeline now verifies both Calc and shared OOXML archive inputs
+and rejects an omitted, corrupt, duplicated or stale companion archive.

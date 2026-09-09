@@ -84,6 +84,29 @@ class OfficeHostBootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'filter qualification'):
             verify_installed(self.host, lock, pin)
 
+    def test_additional_filter_archive_must_be_present_and_bound_to_selection(self):
+        patch = self.root / 'filter.patch'
+        patch.write_text('two archives')
+        filters = {'commit': 'pinned-source', 'patch': 'filter.patch',
+                   'patchSHA256': digest(patch), 'files': {}, 'additionalArchives': {
+                       'libooxlo.a': {'originalArchiveSHA256': 'original', 'members': {'shape.o': 'shape.cpp'}}}}
+        (self.root / 'filter-overlay.lock.json').write_text(json.dumps(filters))
+        value = json.loads(self.lock.read_text())
+        selected = {'patchSHA256': filters['patchSHA256'], 'sourceFiles': {}}
+        value['qualifiedHostArtifact']['filterOverlay'] = selected
+        self.lock.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'missing qualified additional'):
+            checked_lock(self.lock)
+        selected.update(additionalArchives={'libooxlo.a': {'originalArchiveSHA256': 'original',
+            'archiveSHA256': 'new', 'objectSHA256ByMember': {'shape.o': 'object'}}},
+            selectedArchiveSHA256ByName={'libscfiltlo.a': 'calc', 'libooxlo.a': 'new'})
+        self.lock.write_text(json.dumps(value))
+        checked_lock(self.lock)
+        selected['selectedArchiveSHA256ByName']['libooxlo.a'] = 'stale'
+        self.lock.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'differs from its lock'):
+            checked_lock(self.lock)
+
     def test_xcode_input_list_remains_bounded_after_full_payload_verification(self):
         self.install()
         output = self.root / 'inputs.xcfilelist'

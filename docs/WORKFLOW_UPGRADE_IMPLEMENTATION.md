@@ -88,6 +88,8 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 
 ## 当前执行记录
 
+- 精确尺寸导入候选：原生 VML 导入在创建/旋转对象前，为不随单元格缩放的 OLE 对象读取明确的绝对尺寸；固定页面对象还保留绝对位置和零坐标，随单元格移动者继续从单元格锚点取位置。另修复 move-only 锚点被无条件升级为 resize 的逻辑；分组/缺少有效尺寸/按单元格缩放者沿用原有导入。涉及 `libscfiltlo.a` 的 4 个对象和 `libooxlo.a` 的 1 个对象，分别 164/235 个其他对象哈希未变；新增双库链接、篡改/缺失/重复输入拒绝和宿主锁定检查，23 项测试通过。见 [编译证据](evidence/workflow-upgrade-20260909/office-xlsx-precise-ole-import-compile.json)。实际尺寸和三种锚定行为仍需新宿主验证，不能以编译通过完成 A04/F04。
+
 - Kit 参考设备修复取得实际改善：34348631751 原生组件校验通过并安装独立应用 22；完成附件插入、撤销/重做、两次保存重开和三次原字节导出。所有实际读取/原导出均保持 8640 DPI/111；列 A 两轮均为 22，所有工作表未改列宽稳定，C10 文字修改已保存，两个保存文件各 29 项附件结构检查通过。但附件宽/高仍从 60.00×18.00 mm 变为 59.95×17.99 mm，故精确几何及 A04/F04 继续开放。见 [运行证据](evidence/workflow-upgrade-20260909/office-xlsx-kit-device-runtime.json)、[逐项比较](evidence/workflow-upgrade-20260909/office-xlsx-kit-device-repeated-layout.json) 和三张 `office-xlsx-kit-device-*-mac.jpg` 截图。前一次 AX 操作期间意外关闭另行保留；重启同一二进制后按实屏坐标操作通过，未据此宣称关闭问题修复。下一步修正固定页面附件使用整数像素锚点导入导致的尺寸舍入；仍需完整 Floe 与物理设备验证，未发布。
 
 - 新诊断宿主 34346544476 在独立应用 21 完成两次保存重开。实际日志确认：首次读取使用 8640 DPI、数字宽度 111，重开变成 96 DPI、数字宽度 107，而 Kit 导出始终为 8640 DPI/111；只修改 B5 文字就使未修改列 A 从 22 缩至 21.21。见 [真实测量](evidence/workflow-upgrade-20260909/office-xlsx-device-mismatch-runtime.json)、[连续保存失败](evidence/workflow-upgrade-20260909/office-xlsx-device-mismatch-layout.json) 和 [重开截图](evidence/workflow-upgrade-20260909/office-xlsx-device-mismatch-second-reopened-mac.jpg)。新补丁仅令 Kit 导入强制使用与原导出相同的文档虚拟参考设备，保留非 Kit 行为；三个 arm64 对象编译、165 个未改成员校验及 8 项验证器测试通过。云端新组件与实际修复重开仍待验收，A04/F04 未完成。

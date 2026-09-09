@@ -49,6 +49,17 @@ def checked_lock(lock_path):
                 or selected['sourceFiles'] != filters['files']
                 or digest(patch) != filters['patchSHA256']):
             raise ValueError('Native host must be rebuilt for the current engine filter patch')
+        extras = filters.get('additionalArchives', {})
+        if extras:
+            actual = selected.get('additionalArchives', {})
+            hashes = selected.get('selectedArchiveSHA256ByName', {})
+            if set(actual) != set(extras) or set(hashes) != {'libscfiltlo.a', *extras}:
+                raise ValueError('Native host is missing qualified additional filter archives')
+            for name, spec in extras.items():
+                if (actual[name].get('originalArchiveSHA256') != spec['originalArchiveSHA256']
+                        or set(actual[name].get('objectSHA256ByMember', {})) != set(spec['members'])
+                        or hashes[name] != actual[name].get('archiveSHA256')):
+                    raise ValueError('Native host additional filter archive differs from its lock')
     return lock, pin
 
 

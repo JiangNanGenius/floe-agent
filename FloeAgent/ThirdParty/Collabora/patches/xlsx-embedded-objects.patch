@@ -1,3 +1,52 @@
+diff --git a/engine/oox/source/vml/vmlshape.cxx b/engine/oox/source/vml/vmlshape.cxx
+index 1e69133..9dab8ef 100644
+--- a/engine/oox/source/vml/vmlshape.cxx
++++ b/engine/oox/source/vml/vmlshape.cxx
+@@ -540,6 +540,44 @@ awt::Rectangle ShapeBase::calcShapeRectangle( const ShapeParentAnchor* pParentAn
+     const ClientData* pClientData = getClientData();
+     if( !pClientData || !mrDrawing.convertClientAnchor( aShapeRect, pClientData->maAnchor ) )
+         aShapeRect = getRectangle( pParentAnchor );
++    else if (!pParentAnchor && mrDrawing.getOleObjectInfo(getShapeId())
++             && (!pClientData->mbMoveWithCells || !pClientData->mbSizeWithCells)
++             && maTypeModel.maPosition == "absolute"
++             && !maTypeModel.maWidth.isEmpty() && !maTypeModel.maHeight.isEmpty()
++             && maTypeModel.maWidthPercent.isEmpty() && maTypeModel.maHeightPercent.isEmpty())
++    {
++        // Legacy cell anchors quantize offsets to whole pixels. For an OLE
++        // object that does not resize with cells, retain its explicit VML
++        // dimensions before applying rotations and inserting the live shape.
++        // A moving object still takes its position from the cell anchor.
++        const GraphicHelper& rHelper = mrDrawing.getFilter().getGraphicHelper();
++        const sal_Int32 nWidth = ConversionHelper::decodeMeasureToHmm(
++            rHelper, maTypeModel.maWidth, -1, true, true);
++        const sal_Int32 nHeight = ConversionHelper::decodeMeasureToHmm(
++            rHelper, maTypeModel.maHeight, -1, false, true);
++        if (nWidth > 0 && nHeight > 0)
++        {
++            aShapeRect.Width = nWidth;
++            aShapeRect.Height = nHeight;
++            if (!pClientData->mbMoveWithCells)
++            {
++                sal_Int32 nLeft, nTop;
++                // Unlike Word's getAbsRectangle fallback, a worksheet may
++                // place the object exactly at zero; do not add a model unit.
++                const bool bOverflowX = o3tl::checked_add<sal_Int32>(
++                    ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maLeft, 0, true, true),
++                    ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maMarginLeft, 0, true, true), nLeft);
++                const bool bOverflowY = o3tl::checked_add<sal_Int32>(
++                    ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maTop, 0, false, true),
++                    ConversionHelper::decodeMeasureToHmm(rHelper, maTypeModel.maMarginTop, 0, false, true), nTop);
++                if (!bOverflowX && !bOverflowY)
++                {
++                    aShapeRect.X = nLeft;
++                    aShapeRect.Y = nTop;
++                }
++            }
++        }
++    }
+     return aShapeRect;
+ }
+ 
 diff --git a/engine/sc/source/filter/excel/xlroot.cxx b/engine/sc/source/filter/excel/xlroot.cxx
 index dd58d60..a795c15 100644
 --- a/engine/sc/source/filter/excel/xlroot.cxx
@@ -145,6 +194,20 @@ index 0eb5408..a5fdebd 100644
      virtual void                Save( XclExpStream& rStrm ) override;
  };
  
+diff --git a/engine/sc/source/filter/oox/drawingfragment.cxx b/engine/sc/source/filter/oox/drawingfragment.cxx
+index 859e321..d41bb05 100644
+--- a/engine/sc/source/filter/oox/drawingfragment.cxx
++++ b/engine/sc/source/filter/oox/drawingfragment.cxx
+@@ -863,7 +863,8 @@ void VmlDrawing::notifyXShapeInserted( const Reference< XShape >& rxShape,
+                 o3tl::getToken(pClientData->maAnchor, 0, ',', nIndex);
+                 nRow = o3tl::toInt32(o3tl::getToken(pClientData->maAnchor, 0, ',', nIndex));
+ 
+-                bResizeWithCell = true;
++                // Keep the explicit VML SizeWithCells mode. Having a cell
++                // anchor does not turn a move-only object into a resizing one.
+             }
+ 
+             if ( nCol >= 0 && nRow >= 0 )
 diff --git a/engine/sc/source/filter/oox/unitconverter.cxx b/engine/sc/source/filter/oox/unitconverter.cxx
 index 0922569..6f84642 100644
 --- a/engine/sc/source/filter/oox/unitconverter.cxx

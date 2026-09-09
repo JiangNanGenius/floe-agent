@@ -20,6 +20,8 @@ SPARSE_PATHS = [
     '/engine/sc/source/filter/xcl97/xcl97rec.cxx', '/engine/oox/inc/',
     '/engine/sc/source/filter/excel/xlroot.cxx', '/engine/sc/source/ui/inc/',
     '/engine/sc/source/filter/oox/unitconverter.cxx',
+    '/engine/sc/source/filter/oox/drawingfragment.cxx',
+    '/engine/oox/source/vml/vmlshape.cxx',
     '/engine/officecfg/registry/cppheader.xsl',
     '/engine/officecfg/registry/component-schema.dtd',
     '/engine/officecfg/registry/schema/org/openoffice/Office/Common.xcs',
@@ -84,7 +86,7 @@ def verify_replacements(before, after, objects):
 
 
 def select_linker_archive(bundle, overlay, destination):
-    """Revalidate the receipt and select one owned library in a new linker list."""
+    """Revalidate every locked archive before selecting owned linker inputs."""
     bundle, overlay, destination = (Path(p).resolve() for p in (bundle, overlay, destination))
     lock = json.loads(FILTER_LOCK.read_text())
     report = json.loads((overlay / 'filter-overlay.json').read_text())
@@ -102,18 +104,42 @@ def select_linker_archive(bundle, overlay, destination):
     if set(objects) != expected:
         raise ValueError('Filter overlay does not contain every locked replacement')
     verify_replacements(archive_members(original), archive_members(replacement), objects)
+    additional = report.get('additionalArchives', {})
+    if set(additional) != set(lock.get('additionalArchives', {})):
+        raise ValueError('Filter overlay additional archive set differs from lock')
+    selections = [(original, replacement, 'libscfiltlo.a')]
+    for name, spec in lock.get('additionalArchives', {}).items():
+        if Path(name).name != name or name == 'libscfiltlo.a':
+            raise ValueError('Invalid additional archive name')
+        current = additional[name]
+        source_archive, patched_archive = bundle / spec['archive'], overlay / name
+        if (digest(source_archive) != spec['originalArchiveSHA256']
+                or digest(patched_archive) != current.get('archiveSHA256')
+                or set(current.get('objectSHA256ByMember', {})) != set(spec['members'])):
+            raise ValueError('Additional archive is not the locked verified build')
+        verify_replacements(archive_members(source_archive), archive_members(patched_archive),
+                            current['objectSHA256ByMember'])
+        selections.append((source_archive, patched_archive, name))
     lines = (bundle / 'prepared/ios-all-static-libs.list').read_text().splitlines()
-    matches = [i for i, line in enumerate(lines) if Path(line).resolve() == original.resolve()]
-    if len(matches) != 1:
-        raise ValueError('Expected exactly one original Calc filter linker input')
+    replacements = []
+    for source_archive, patched_archive, name in selections:
+        matches = [i for i, line in enumerate(lines) if Path(line).resolve() == source_archive.resolve()]
+        if len(matches) != 1:
+            raise ValueError('Expected exactly one original filter linker input: ' + name)
+        replacements.append((matches[0], patched_archive, destination / name))
     # Own the selected archive so later work in the build directory cannot change it.
+    selected_hashes = {}
+    for index, patched_archive, owned in replacements:
+        shutil.copyfile(patched_archive, owned)
+        lines[index] = str(owned)
+        selected_hashes[owned.name] = digest(owned)
     owned = destination / 'libscfiltlo.a'
-    shutil.copyfile(replacement, owned)
-    lines[matches[0]] = str(owned)
     linker = destination / 'ios-filter-static-libs.list'
     linker.write_text('\n'.join(lines) + '\n')
     return linker, {**report, 'selectedArchive': str(owned),
-                    'selectedArchiveSHA256': digest(owned), 'linkerListSHA256': digest(linker)}
+                    'selectedArchiveSHA256': digest(owned),
+                    'selectedArchiveSHA256ByName': selected_hashes,
+                    'linkerListSHA256': digest(linker)}
 
 
 def run(command, **kwargs):
@@ -163,6 +189,10 @@ def build(bundle, source, output):
     archive = bundle / lock['archive']
     if digest(archive) != lock['originalArchiveSHA256']:
         raise ValueError('Unexpected original filter archive')
+    for name, spec in lock.get('additionalArchives', {}).items():
+        if (Path(name).name != name or name == archive.name
+                or digest(bundle / spec['archive']) != spec['originalArchiveSHA256']):
+            raise ValueError('Unexpected additional filter archive')
     # Never apply onto unrelated source edits or silently double-apply a patch.
     for name, hashes in lock['files'].items():
         if digest(source / name) != hashes['originalSHA256']:
@@ -201,9 +231,14 @@ def build(bundle, source, output):
     for include in includes:
         command += ['-I', str(include)]
     members = lock.get('members', {lock['member']: 'engine/sc/source/filter/xcl97/xcl97rec.cxx'})
+    all_members = dict(members)
+    for spec in lock.get('additionalArchives', {}).values():
+        if set(all_members) & set(spec['members']):
+            raise ValueError('Ambiguous object names across archives')
+        all_members.update(spec['members'])
     report['compileCommands'] = {}
     replacements = []
-    for name, source_file in members.items():
+    for name, source_file in all_members.items():
         if Path(name).name != name or source_file not in lock['files']:
             raise ValueError('Unpinned filter replacement source')
         replacement = output / name
@@ -215,22 +250,41 @@ def build(bundle, source, output):
         with (output / (name + '.compile.log')).open('w') as log:
             run(compile_command, stdout=log, stderr=subprocess.STDOUT)
         replacements.append(replacement)
-    objects = {p.name: digest(p) for p in replacements}
+    all_objects = {p.name: digest(p) for p in replacements}
+    objects = {name: all_objects[name] for name in members}
     report.update(compilePassed=True, objectSHA256=objects[lock['member']],
                   objectSHA256ByMember=objects)
     save()
     before = archive_members(archive)
     patched_archive = output / archive.name
     shutil.copyfile(archive, patched_archive)
-    run(['xcrun', 'ar', '-r', patched_archive, *replacements])
+    run(['xcrun', 'ar', '-r', patched_archive, *(output / name for name in members)])
     run(['xcrun', 'ranlib', patched_archive])
     after = archive_members(patched_archive)
     verify_replacements(before, after, objects)
     if digest(archive) != lock['originalArchiveSHA256']:
         raise ValueError('Original archive was modified')
-    report.update(archiveReplacementPassed=True, archiveSHA256=digest(patched_archive),
+    report.update(archiveSHA256=digest(patched_archive),
                   archive=str(patched_archive), replacedMember=lock['member'],
                   replacedMembers=list(members), preservedMemberCount=len(before) - len(members))
+    report['additionalArchives'] = {}
+    for name, spec in lock.get('additionalArchives', {}).items():
+        original = bundle / spec['archive']
+        patched = output / name
+        extra_objects = {member: all_objects[member] for member in spec['members']}
+        before_extra = archive_members(original)
+        shutil.copyfile(original, patched)
+        run(['xcrun', 'ar', '-r', patched, *(output / member for member in spec['members'])])
+        run(['xcrun', 'ranlib', patched])
+        verify_replacements(before_extra, archive_members(patched), extra_objects)
+        if digest(original) != spec['originalArchiveSHA256']:
+            raise ValueError('Original additional archive was modified')
+        report['additionalArchives'][name] = {
+            'originalArchiveSHA256': spec['originalArchiveSHA256'],
+            'archiveSHA256': digest(patched), 'objectSHA256ByMember': extra_objects,
+            'replacedMembers': list(extra_objects),
+            'preservedMemberCount': len(before_extra) - len(extra_objects)}
+    report['archiveReplacementPassed'] = True
     save()
     return report
 
