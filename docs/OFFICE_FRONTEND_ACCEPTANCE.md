@@ -143,6 +143,8 @@
 
 最新补查（2026-09-09 14:41 UTC）：独立应用 24 使用宿主 34354533462，已打开随单元格缩放样本并显示附件。操作名称框及剪贴板时，WebContent 在 AX 属性读取错误后报告 Swift 数组越界并以 Crash 原因终止；容器记录 `unexpectedClose`，两个工作副本仍存在且哈希一致。未进入显式保存重开，不能将此样本计为位置/尺寸通过；触发根因及物理设备影响尚未隔离。见[运行记录](evidence/workflow-upgrade-20260909/office-modern-ole-interrupted-runtime.json)、[系统日志摘录](evidence/workflow-upgrade-20260909/office-modern-ole-webkit-failure.log)和[截图](evidence/workflow-upgrade-20260909/office-modern-ole-unexpected-close.png)。该独立 Mac 检查不代替正式 Floe 的 CI 或真机测试。
 
+对应正式 App 处理链已复核：上游 `webViewWebContentProcessDidTerminate` 调用 `bye`，补丁保留引擎副本并在关闭完成后通知宿主；`OfficeFileSession.activate` 的 `onClosed` 将非预期关闭置为 `runtimeFailed` / `.failed`，提示“文档已关闭，编辑副本已保留。”，`canAct` 不再允许保存等正常操作。此处为源码审阅，未把独立程序的崩溃现场当成正式 App 的恢复实测。
+
 原生 `XclObjOle` 缺少 XML 导出的修复已实际编译为 arm64 对象；只替换 `libscfiltlo.a` 中的导出对象，另外 167 个成员哈希不变。新导出读取当前对象存储，关联工作表、附件、图标和锚点；不是保存后修改 ZIP。见 [回执](evidence/workflow-upgrade-20260909/office-excel-filter-overlay-compile.json) 和 [补丁边界](../FloeAgent/ThirdParty/Collabora/patches/xlsx-embedded-objects.md)。实际保存重开、导出字节、多个对象、撤销重做与位置保真仍待验收，不能将本次编译结果作为 A04 通过证据。
 
 完整应用 Word 证据：[415dad3 运行闭环](evidence/workflow-upgrade-20260909/office-native-drain-fullbuild-runtime.json)。已覆盖工作区选择停留 35 秒、插入、写回原文件与新会话重开；锚点/环绕调整、系统选择器和物理真机仍待验收。
