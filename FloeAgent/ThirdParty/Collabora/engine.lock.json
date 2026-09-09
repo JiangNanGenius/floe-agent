@@ -1,26 +1,26 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "save-receipt-overlay-pending-native-requalification",
+  "qualificationStatus": "native-host-save-close-qualified-floe-ui-pending",
   "qualifiedHostArtifact": {
-    "runID": "34292622779",
+    "runID": "34296658499",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10081997277,
-    "workflowCommit": "afdb2213648e8053daa39aa692e0bf78de20cb27",
-    "archiveSHA256": "8b0080decac73b6ee75dc43404935637a18596934d33c72acc3db47c712255d1",
-    "executableSHA256": "ada12d13a2067aa834acd58f563acf2e8c0d198b21f9c223e6ee71480ff542a1",
-    "overlaySHA256": "7f034b606318e26672c1fcb6fc84092899a434c82b205420bafb8143d727c8af",
+    "artifactID": 10083436806,
+    "workflowCommit": "3b5308f5305c8beaa06b17a4c8af1080f57a19b9",
+    "archiveSHA256": "f738393919d358d18f5fb243c4e5649c68425f64191993dd0041b57d599a999a",
+    "executableSHA256": "1636a01b7526cd5e7d51b932ce74a8e16ee0f3fe2aa335e39d7feb74d2c0a3c5",
+    "overlaySHA256": "8f948017d130e6646c055960eb4989c628059f035b77f78aa35ace57e2bbe95d",
     "hostSourceSHA256": {
-      "FloeOfficeNative.h": "55bc616fc6ac3b61b5209ec94262881752d214efa8439eb48e56379683513adc",
-      "FloeOfficeNative.mm": "bf3d283191b3c2f2a203b228b6414634c36fae27956f244e16c0c01f35a98822"
+      "FloeOfficeNative.h": "ef44f6d2948a0dedacb1e0077f06bd9f73660697ebb8bb1936d7f0f06c6eb32c",
+      "FloeOfficeNative.mm": "a59de22df2df3df21e53c35222d37e97ac37184d0bc683ee89dd5d8045eeb00c"
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
     "note": "Complete Floe native host framework compiled and linked for arm64 iphoneos; Swift module import passed. Retrieved binary, public header and all resources match the cloud receipt. Unsigned framework plus main-bundle resources only; Floe UI integration, original writeback, device editing and fidelity remain unverified.",
-    "manifestSHA256": "deaedc135b813a37a1d66ce9e84a673f93b4e17d6675525876a6cc3352b04d35",
+    "manifestSHA256": "9b5ac51f3bc92ff5f7201ed79c572f6ab6382a33e69cfa1221b2789806678247",
     "frameworkAuxiliarySHA256": {
-      "Headers/FloeOfficeNative.h": "55bc616fc6ac3b61b5209ec94262881752d214efa8439eb48e56379683513adc",
-      "Info.plist": "e3b21fcb94865972fb8908dcce886fc39e73f28e20bf1439cbb70a0139a3ec00",
+      "Headers/FloeOfficeNative.h": "ef44f6d2948a0dedacb1e0077f06bd9f73660697ebb8bb1936d7f0f06c6eb32c",
+      "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83"
     }
   },

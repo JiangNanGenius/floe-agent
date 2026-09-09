@@ -29,6 +29,8 @@ struct FilePreviewView: View {
     var allowsIDEExpansion = true
 
     @StateObject private var remotePreview = RemoteFilePreviewCopy()
+    @StateObject private var officeSession = OfficeFileSession()
+    @State private var nativeOfficeURL: URL?
     @State private var content: FileContent?
     @State private var pdfURL: URL?
     @State private var binaryPreviewURL: URL?
@@ -45,6 +47,12 @@ struct FilePreviewView: View {
                     Label("inspector.preview.error", systemImage: "exclamationmark.triangle")
                 } description: {
                     Text(loadError)
+                }
+            } else if nativeOfficeURL != nil {
+                if isOfficeEditorPresented {
+                    ContentUnavailableView("正在全屏编辑", systemImage: "doc.richtext")
+                } else {
+                    OfficeDocumentSurface(session: officeSession)
                 }
             } else if let pdfURL {
                 InlinePDFReader(url: pdfURL, validateRead: {
@@ -83,12 +91,15 @@ struct FilePreviewView: View {
             QuickLookView(url: url)
                 .ignoresSafeArea()
         }
-        .sheet(isPresented: $isOfficeEditorPresented) {
+        .fullScreenCover(isPresented: $isOfficeEditorPresented, onDismiss: {
+            Task { await load() }
+        }) {
             NavigationStack {
-                OfficeDocumentEditorView(relativePath: relativePath, center: center) {
-                    Task { await load() }
-                }
+                OfficeDocumentEditorView(relativePath: relativePath, session: officeSession)
             }
+        }
+        .onDisappear {
+            if !isOfficeEditorPresented { Task { await officeSession.release() } }
         }
         .alert("无法预览文件", isPresented: Binding(
             get: { previewError != nil },
@@ -124,6 +135,7 @@ struct FilePreviewView: View {
 
     private var officeEditingAvailable: Bool {
         isOfficeDocument
+            && OfficeFileSession.available
             && !center.isCloudWorkspacePath(relativePath)
             && !center.isNetworkWorkspacePath(relativePath)
             && center.fileService != nil
@@ -163,7 +175,7 @@ struct FilePreviewView: View {
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("在编辑器中打开")
             }
-            if !isTextual, quickLookAvailable {
+            if !isTextual, nativeOfficeURL == nil, quickLookAvailable {
                 Button {
                     presentQuickLook()
                 } label: {
@@ -180,6 +192,7 @@ struct FilePreviewView: View {
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("office.editor.open")
+                .disabled(!officeSession.canAct)
             }
         }
     }
@@ -251,6 +264,7 @@ struct FilePreviewView: View {
         content = nil
         pdfURL = nil
         binaryPreviewURL = nil
+        nativeOfficeURL = nil
         remotePreview.clear()
         if center.fileService == nil, let conversationID {
             do {
@@ -262,6 +276,23 @@ struct FilePreviewView: View {
         }
         guard center.fileService != nil else {
             loadError = String(localized: "inspector.no_workspace")
+            return
+        }
+        if isOfficeDocument, OfficeFileSession.available, let service = center.fileService {
+            do {
+                let url: URL
+                if center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) {
+                    let bytes = try await center.readRemotePreview(relativePath: relativePath)
+                    try Task.checkCancellation()
+                    url = try remotePreview.store(bytes, fileName: fileName)
+                } else {
+                    url = try service.guardResolver.resolve(relativePath)
+                    try service.guardResolver.assertReadableSize(url)
+                }
+                nativeOfficeURL = url
+                await officeSession.open(url)
+                await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
+            } catch { loadError = error.localizedDescription }
             return
         }
         if isPDF, let service = center.fileService {

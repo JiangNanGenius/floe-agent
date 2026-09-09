@@ -11355,20 +11355,6 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法编辑此 Office 文件" } }
       }
     },
-    "office.editor.fields": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Editable fields" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "可编辑字段" } }
-      }
-    },
-    "office.editor.format": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Format" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "格式" } }
-      }
-    },
     "office.editor.loading": {
       "extractionState": "manual",
       "localizations": {
@@ -11379,8 +11365,8 @@
     "office.editor.open": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Edit Office document" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "编辑 Office 文档" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Edit in full screen" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "全屏编辑" } }
       }
     },
     "office.editor.save": {
@@ -11388,20 +11374,6 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Save" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "保存" } }
-      }
-    },
-    "office.editor.saved": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Saved and verified" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已保存并验证" } }
-      }
-    },
-    "office.editor.scope_hint": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Basic editing changes document text, slide text and spreadsheet cells. Themes, layouts, images and other untouched parts are preserved." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "基础编辑可修改文档文字、幻灯片文字和表格单元格；主题、版式、图片及其他未编辑内容会原样保留。" } }
       }
     },
     "state.stopped": {

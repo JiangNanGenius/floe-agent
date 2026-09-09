@@ -444,7 +444,7 @@ targets:
         ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
         "FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]":
           - $(inherited)
-          - $(PROJECT_DIR)/Vendor/Office/34292622779/OfficeNativeHost
+          - $(PROJECT_DIR)/Vendor/Office/34296658499/OfficeNativeHost
         "OTHER_LDFLAGS[sdk=iphoneos*]":
           - $(inherited)
           - -framework

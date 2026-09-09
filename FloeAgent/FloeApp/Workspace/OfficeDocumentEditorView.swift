@@ -1,183 +1,260 @@
-// FloeApp — basic native Office editor for bounded OOXML text and cells.
-
+// FloeApp — shared native Office preview and fullscreen editing session.
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import UIKit
 import FloeDocuments
-import FloeCore
+#if canImport(FloeOfficeNative)
+import FloeOfficeNative
+#endif
+
+@MainActor
+final class OfficeFileSession: ObservableObject {
+    enum Phase { case idle, loading, ready, saving, closing, failed }
+    @Published private(set) var phase: Phase = .idle
+    @Published private(set) var controller: UIViewController?
+    @Published private(set) var readOnly = true
+    @Published var error: String?
+    private var workspace: SecurityScopedDocumentWorkspace?
+    private var session: DocumentSession?
+    private var operating = false
+    private var releaseRequested = false
+    private var expectedClose = false
+
+    static var available: Bool {
+        #if canImport(FloeOfficeNative)
+        true
+        #else
+        false
+        #endif
+    }
+    var canAct: Bool { phase == .ready && !operating }
+
+    func open(_ url: URL) async {
+        guard !operating else { return }
+        if session?.originalURL == url, controller != nil, phase != .failed { return }
+        operating = true
+        defer { finishOperation() }
+        phase = .loading
+        error = nil
+        do {
+            if session != nil { try await releaseCurrent() }
+            let files = try SecurityScopedDocumentWorkspace()
+            let opened = try await files.open(securityScopedURL: url)
+            workspace = files
+            session = opened
+            try await activate(readOnly: true)
+        } catch { fail(error) }
+    }
+
+    func enterEditing() async {
+        guard !operating, session != nil else { return }
+        operating = true
+        defer { finishOperation() }
+        do {
+            try await closeController()
+            try await activate(readOnly: false)
+        } catch { fail(error) }
+    }
+
+    func saveAndReturn() async -> Bool {
+        guard canAct, !readOnly, let workspace, let session else { return false }
+        operating = true
+        defer { finishOperation() }
+        phase = .saving
+        error = nil
+        do {
+            #if canImport(FloeOfficeNative)
+            guard let native = controller as? FloeOfficeNativeViewController else { throw CocoaError(.fileWriteUnknown) }
+            native.view.isUserInteractionEnabled = false
+            defer { native.view.isUserInteractionEnabled = true }
+            try await withCheckedThrowingContinuation { (receipt: CheckedContinuation<Void, Error>) in
+                native.saveWorkingCopy { error in
+                    if let error { receipt.resume(throwing: error) } else { receipt.resume() }
+                }
+            }
+            try await workspace.save(session)
+            try await closeController()
+            try await activate(readOnly: true)
+            return true
+            #else
+            throw CocoaError(.featureUnsupported)
+            #endif
+        } catch {
+            self.error = error.localizedDescription
+            phase = controller == nil ? .failed : .ready
+            return false
+        }
+    }
+
+    func discardAndReturn() async -> Bool {
+        guard !operating, let session, let workspace else { return false }
+        operating = true
+        defer { finishOperation() }
+        do {
+            try await closeController()
+            await workspace.discardChangesAndClose(session)
+            self.session = try await workspace.open(securityScopedURL: session.originalURL)
+            try await activate(readOnly: true)
+            return true
+        } catch { fail(error); return false }
+    }
+
+    /// View removal never deletes an unsettled edit or pretends it was saved.
+    func release() async {
+        guard !operating else { releaseRequested = true; return }
+        operating = true
+        defer { finishOperation() }
+        do { try await releaseCurrent(); phase = .idle }
+        catch { fail(error) }
+    }
+
+    func retryPreview() async {
+        guard readOnly, let url = session?.originalURL else { return }
+        await open(url)
+    }
+
+    private func finishOperation() {
+        operating = false
+        if releaseRequested {
+            releaseRequested = false
+            Task { await release() }
+        }
+    }
+    private func releaseCurrent() async throws {
+        try await closeController()
+        if let session, let workspace { await workspace.close(session) }
+        session = nil
+        workspace = nil
+    }
+    private func activate(readOnly: Bool) async throws {
+        guard let session else { throw CocoaError(.fileReadUnknown) }
+        self.readOnly = readOnly
+        phase = .loading
+        error = nil
+        #if canImport(FloeOfficeNative)
+        try await withCheckedThrowingContinuation { (ready: CheckedContinuation<Void, Error>) in
+            FloeOfficeNativeRuntime.shared.prepare { error in
+                if let error { ready.resume(throwing: error) } else { ready.resume() }
+            }
+        }
+        let native = try FloeOfficeNativeViewController(
+            workingFileURL: session.workingURL,
+            sessionDirectory: session.workingURL.deletingLastPathComponent(), readOnly: readOnly)
+        native.onWorkingCopyOpened = { [weak self, weak native] success in
+            guard let self, self.controller === native else { return }
+            if success { self.phase = .ready }
+            else { self.fail(CocoaError(.fileReadCorruptFile)) }
+        }
+        native.onClosed = { [weak self, weak native] _ in
+            guard let self, self.controller === native, !self.expectedClose else { return }
+            self.error = "文档已关闭，编辑副本已保留。"
+            self.phase = .failed
+        }
+        controller = native
+        #else
+        throw CocoaError(.featureUnsupported)
+        #endif
+    }
+    private func closeController() async throws {
+        guard let controller else { return }
+        phase = .closing
+        expectedClose = true
+        defer { expectedClose = false }
+        #if canImport(FloeOfficeNative)
+        if let native = controller as? FloeOfficeNativeViewController {
+            try await withCheckedThrowingContinuation { (closed: CheckedContinuation<Void, Error>) in
+                native.closeWorkingCopy { error in
+                    if let error { closed.resume(throwing: error) } else { closed.resume() }
+                }
+            }
+        }
+        #endif
+        self.controller = nil
+    }
+    private func fail(_ error: Error) {
+        self.error = error.localizedDescription
+        phase = .failed
+    }
+}
+
+private struct OfficeControllerSurface: UIViewControllerRepresentable {
+    let controller: UIViewController
+    func makeUIViewController(context: Context) -> UIViewController { controller }
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
+}
+
+struct OfficeDocumentSurface: View {
+    @ObservedObject var session: OfficeFileSession
+    var body: some View {
+        ZStack {
+            if let controller = session.controller {
+                OfficeControllerSurface(controller: controller)
+                    .id(ObjectIdentifier(controller))
+                    .accessibilityIdentifier(session.readOnly ? "office.preview.native" : "office.editor.native")
+            }
+            if session.phase == .failed {
+                ContentUnavailableView {
+                    Label("无法打开文档", systemImage: "doc.badge.ellipsis")
+                } description: { Text(session.error ?? "请稍后重试。") } actions: {
+                    if session.readOnly {
+                        Button("重试") { Task { await session.retryPreview() } }
+                    }
+                }
+            } else if session.phase != .ready {
+                ProgressView(session.phase == .saving ? "正在保存…" : session.phase == .closing ? "正在关闭…" : "正在打开文档…")
+                    .padding(16)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(FloeTheme.readingSurface)
+    }
+}
 
 struct OfficeDocumentEditorView: View {
     let relativePath: String
-    @ObservedObject var center: WorkspaceCenter
+    @ObservedObject var session: OfficeFileSession
     var onSaved: (() -> Void)?
-
     @Environment(\.dismiss) private var dismiss
-    @State private var snapshot: OfficeDocumentSnapshot?
-    @State private var original: [String: String] = [:]
-    @State private var values: [String: String] = [:]
-    @State private var loadError: String?
-    @State private var isSaving = false
-    @State private var saveNotice: String?
-    @State private var saveError: String?
     @State private var confirmingDiscard = false
 
     var body: some View {
-        Group {
-            if let loadError {
-                ContentUnavailableView {
-                    Label("office.editor.error", systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(loadError)
+        OfficeDocumentSurface(session: session)
+            .navigationTitle((relativePath as NSString).lastPathComponent)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("返回") {
+                        if session.phase == .failed { dismiss() }
+                        else { Task { if await session.saveAndReturn() { onSaved?(); dismiss() } } }
+                    }
+                    .disabled(!session.canAct && session.phase != .failed)
+                    .accessibilityHint(session.phase == .failed ? "保留编辑副本并关闭" : "保存文档并返回预览")
                 }
-            } else if let snapshot {
-                List {
-                    summary(snapshot)
-                    ForEach(grouped(snapshot), id: \.section) { group in
-                        Section(group.section) {
-                            ForEach(group.fields) { field in
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(field.label)
-                                        .font(FloeTheme.Typography.metadata)
-                                        .foregroundStyle(.secondary)
-                                    TextField(
-                                        field.label,
-                                        text: binding(for: field.id),
-                                        axis: .vertical
-                                    )
-                                    .lineLimit(1...10)
-                                    .textInputAutocapitalization(.sentences)
-                                    .autocorrectionDisabled(snapshot.kind == .workbook)
-                                    .font(snapshot.kind == .workbook
-                                        ? FloeTheme.Typography.evidence
-                                        : FloeTheme.Typography.body)
-                                }
-                                .padding(.vertical, 3)
-                            }
+                ToolbarItem(placement: .confirmationAction) {
+                    Menu {
+                        Button("保存并返回") {
+                            Task { if await session.saveAndReturn() { onSaved?(); dismiss() } }
                         }
-                    }
+                        Button("放弃修改", role: .destructive) { confirmingDiscard = true }
+                    } label: { Image(systemName: "ellipsis.circle") }
+                    .disabled(!session.canAct)
+                    .accessibilityLabel("文档操作")
                 }
-                .overlay(alignment: .bottom) {
-                    if let saveNotice {
-                        Label(saveNotice, systemImage: "checkmark.circle.fill")
-                            .font(FloeTheme.Typography.metadata)
-                            .foregroundStyle(FloeTheme.success)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(.regularMaterial, in: Capsule())
-                            .padding(.bottom, 12)
-                    }
+            }
+            .interactiveDismissDisabled()
+            .task { await session.enterEditing() }
+            .alert("未能保存", isPresented: Binding(
+                get: { session.error != nil && session.phase == .ready },
+                set: { if !$0 { session.error = nil } })) {
+                    Button("继续编辑", role: .cancel) { session.error = nil }
+                } message: { Text(session.error ?? "") }
+            .confirmationDialog("放弃未保存的修改？", isPresented: $confirmingDiscard, titleVisibility: .visible) {
+                Button("放弃修改", role: .destructive) {
+                    Task { if await session.discardAndReturn() { dismiss() } }
                 }
-            } else {
-                ProgressView("office.editor.loading")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Button("继续编辑", role: .cancel) {}
             }
-        }
-        .navigationTitle((relativePath as NSString).lastPathComponent)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("office.editor.close") {
-                    if changedValues.isEmpty { dismiss() } else { confirmingDiscard = true }
-                }.disabled(isSaving)
-            }
-            ToolbarItem(placement: .confirmationAction) {
-                Button {
-                    Task { await save() }
-                } label: {
-                    if isSaving { ProgressView() } else { Text("office.editor.save") }
-                }
-                .disabled(isSaving || changedValues.isEmpty || snapshot == nil)
-            }
-        }
-        .alert("未能保存", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
-            Button("继续编辑", role: .cancel) { saveError = nil }
-        } message: { Text(saveError ?? "") }
-        .confirmationDialog("放弃未保存的修改？", isPresented: $confirmingDiscard, titleVisibility: .visible) {
-            Button("放弃修改", role: .destructive) { dismiss() }
-            Button("继续编辑", role: .cancel) {}
-        }
-        .interactiveDismissDisabled(isSaving || !changedValues.isEmpty)
-        .task(id: relativePath) { await load() }
-    }
-
-    @ViewBuilder
-    private func summary(_ snapshot: OfficeDocumentSnapshot) -> some View {
-        Section {
-            LabeledContent("office.editor.format", value: snapshot.kind.rawValue.uppercased())
-            LabeledContent("office.editor.fields", value: String(snapshot.fields.count))
-        } footer: {
-            Text("office.editor.scope_hint")
-        }
-    }
-
-    private func grouped(_ snapshot: OfficeDocumentSnapshot) -> [(section: String, fields: [OfficeEditableField])] {
-        var order: [String] = []
-        var groups: [String: [OfficeEditableField]] = [:]
-        for field in snapshot.fields {
-            if groups[field.section] == nil { order.append(field.section) }
-            groups[field.section, default: []].append(field)
-        }
-        return order.map { ($0, groups[$0] ?? []) }
-    }
-
-    private func binding(for id: String) -> Binding<String> {
-        Binding(
-            get: { values[id] ?? "" },
-            set: { values[id] = $0; saveNotice = nil }
-        )
-    }
-
-    private var changedValues: [String: String] {
-        values.reduce(into: [:]) { result, item in
-            if original[item.key] != item.value { result[item.key] = item.value }
-        }
-    }
-
-    private func localURL() throws -> URL {
-        guard !center.isCloudWorkspacePath(relativePath) else {
-            throw OfficeDocumentError.unsupportedFormat
-        }
-        guard let service = center.fileService else {
-            throw FloeError.validationFailed("No workspace is open")
-        }
-        return try service.guardResolver.resolve(relativePath)
-    }
-
-    @MainActor
-    private func load() async {
-        loadError = nil
-        do {
-            let url = try localURL()
-            let loaded = try await Task.detached {
-                try OfficeDocumentService.inspect(url: url)
-            }.value
-            snapshot = loaded
-            original = Dictionary(uniqueKeysWithValues: loaded.fields.map { ($0.id, $0.text) })
-            values = original
-        } catch {
-            loadError = error.localizedDescription
-        }
-    }
-
-    @MainActor
-    private func save() async {
-        let updates = changedValues
-        guard !updates.isEmpty else { return }
-        isSaving = true
-        defer { isSaving = false }
-        do {
-            let url = try localURL()
-            let revision = snapshot?.sha256
-            let updated = try await Task.detached {
-                try OfficeDocumentService.update(sourceURL: url, updates: updates, expectedSHA256: revision)
-            }.value
-            snapshot = updated
-            original = Dictionary(uniqueKeysWithValues: updated.fields.map { ($0.id, $0.text) })
-            values = original
-            saveNotice = String(localized: "office.editor.saved")
-            onSaved?()
-        } catch {
-            saveError = error.localizedDescription
-        }
     }
 }
 #endif

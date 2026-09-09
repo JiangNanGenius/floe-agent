@@ -2406,7 +2406,7 @@
 				);
 				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/Vendor/Office/34292622779/OfficeNativeHost",
+					"$(PROJECT_DIR)/Vendor/Office/34296658499/OfficeNativeHost",
 				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FloeApp/Resources/Info.plist;
@@ -2721,7 +2721,7 @@
 				);
 				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/Vendor/Office/34292622779/OfficeNativeHost",
+					"$(PROJECT_DIR)/Vendor/Office/34296658499/OfficeNativeHost",
 				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FloeApp/Resources/Info.plist;

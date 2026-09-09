@@ -30,7 +30,7 @@ jobs:
           python3 scripts/test_office_host_bootstrap.py
           scripts/bootstrap_python_runtime.sh
           scripts/gen_project.sh
-      - name: Build the actual Floe device app with Office framework and resources
+      - name: Build Floe with shared native Office preview and fullscreen editing
         run: |
           set -o pipefail
           xcodebuild -project FloeAgent.xcodeproj -scheme FloeAgent \

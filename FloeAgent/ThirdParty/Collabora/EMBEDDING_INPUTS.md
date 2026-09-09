@@ -70,8 +70,9 @@ and are explicitly not original-writeback receipts. A separate explicit-save
 API now associates a request ID with a kit save sequence and waits for that
 sequence's UIDocument persistence result. Earlier autosaves, reordered receipts,
 late results after cancellation and broker rejection cannot satisfy another
-request. Eight compiled joiner checks pass; the changed native protocol still
-needs full framework qualification and a real engine save. Original-file CAS,
+request. Eight compiled joiner checks pass; run `34296658499` also compiled and
+linked the full protocol and imported its save/close APIs from Swift. A real
+engine save is still unverified. Original-file CAS,
 close recovery and the SwiftUI inspector/fullscreen transition remain gates.
 
 `build_office_native_host.py` transforms the verified Mobile project into a
@@ -105,6 +106,14 @@ prepare-only flags; the `hostCompilePassed`, `hostLinkPassed`, and
 the framework target and keep those generic native flags consistent.
 
 ## Floe device-app packaging
+
+The current qualified host is run `34296658499`, source `3b5308f`. Retrieved
+payload verification checks 4,785 files and 178 directories, including the
+public save/close API, executable and main-bundle resources. The new SwiftUI
+session owns readonly inspector and fullscreen editor generations, requests a
+correlated private save before coordinated original writeback, and waits for
+native close before returning. Its actual app build, reading-position handoff,
+recovery UI, save-as and real editing/fidelity acceptance are still pending.
 
 `scripts/bootstrap_office_host.py` installs the pinned archive into the ignored,
 versioned `Vendor/Office/<runID>/OfficeNativeHost` directory. It checks the archive,
