@@ -1,0 +1,138 @@
+{
+  "hostRunID": "34306039335",
+  "environment": "Isolated Mac Designed for iPad, process-only zh-CN; no system preference changes",
+  "nativeHostLanguageFixApplied": false,
+  "sessions": {
+    "unchanged": {
+      "operation": "open, enter native edit, save, close, reopen readonly",
+      "savedSHA256": "e64db2640d1f5bcf02af8bc2826b860916ea9dbc205c777b047f272c04cad00e",
+      "numberFormats": {
+        "A1": "General",
+        "B2": "General",
+        "B3": "General",
+        "C2": "General",
+        "C3": "General"
+      },
+      "columnAWidth": 22.0,
+      "events": [
+        {
+          "detail": "xlsx",
+          "event": "fixtureCopied",
+          "time": "2026-09-09T03:52:40Z"
+        },
+        {
+          "detail": "zh-CN",
+          "event": "preferredLanguage",
+          "time": "2026-09-09T03:52:40Z"
+        },
+        {
+          "detail": "true; readonly=false",
+          "event": "opened",
+          "time": "2026-09-09T03:52:41Z"
+        },
+        {
+          "detail": "false",
+          "event": "workingPersistence",
+          "time": "2026-09-09T03:52:42Z"
+        },
+        {
+          "detail": "",
+          "event": "saveRequested",
+          "time": "2026-09-09T03:52:57Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T03:52:57Z"
+        },
+        {
+          "detail": "success",
+          "event": "saveCompleted",
+          "time": "2026-09-09T03:52:57Z"
+        },
+        {
+          "detail": "success",
+          "event": "editingClosed",
+          "time": "2026-09-09T03:52:57Z"
+        },
+        {
+          "detail": "true; readonly=true",
+          "event": "opened",
+          "time": "2026-09-09T03:52:58Z"
+        },
+        {
+          "detail": "success",
+          "event": "previewClosed",
+          "time": "2026-09-09T03:53:30Z"
+        }
+      ]
+    },
+    "edited": {
+      "operation": "open, enter native edit, paste 36 into B2 formula bar, accept, save, close, reopen readonly",
+      "savedSHA256": "35e7550ea8febb047ef717cae93b8c331c2c77f6a05a6b0faa5a2a0805f2d4bc",
+      "numberFormats": {
+        "A1": "General",
+        "B2": "General",
+        "B3": "General",
+        "C2": "General",
+        "C3": "General"
+      },
+      "columnAWidth": 21.21,
+      "events": [
+        {
+          "detail": "xlsx",
+          "event": "fixtureCopied",
+          "time": "2026-09-09T03:53:35Z"
+        },
+        {
+          "detail": "zh-CN",
+          "event": "preferredLanguage",
+          "time": "2026-09-09T03:53:35Z"
+        },
+        {
+          "detail": "true; readonly=false",
+          "event": "opened",
+          "time": "2026-09-09T03:53:35Z"
+        },
+        {
+          "detail": "false",
+          "event": "workingPersistence",
+          "time": "2026-09-09T03:53:35Z"
+        },
+        {
+          "detail": "",
+          "event": "saveRequested",
+          "time": "2026-09-09T03:56:04Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T03:56:04Z"
+        },
+        {
+          "detail": "success",
+          "event": "saveCompleted",
+          "time": "2026-09-09T03:56:04Z"
+        },
+        {
+          "detail": "success",
+          "event": "editingClosed",
+          "time": "2026-09-09T03:56:04Z"
+        },
+        {
+          "detail": "true; readonly=true",
+          "event": "opened",
+          "time": "2026-09-09T03:56:05Z"
+        }
+      ]
+    }
+  },
+  "fullFidelityPassed": false,
+  "physicalDevicePassed": false,
+  "limitations": [
+    "Edited sample passed 22 of 23 named structural checks; column A width changed from 22 to 21.21.",
+    "First chart point remains visually absent.",
+    "Keyboard automation initially failed to focus; cancelled without committing. Formula-bar paste was then visibly accepted as 36 and C2 recalculated to 72.",
+    "These controls do not establish physical-device acceptance or original-file CAS."
+  ]
+}

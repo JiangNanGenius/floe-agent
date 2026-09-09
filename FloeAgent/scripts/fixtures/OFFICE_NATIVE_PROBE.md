@@ -28,7 +28,9 @@ Do not replace a failed format check with a value-only check. PPT and complete
 visual fidelity are deliberately not marked passed by this script.
 
 For a process-only English language control, compile with
-`FLOE_ENGLISH_PROBE`. The ordinary build uses actual preferred languages; optional
+`FLOE_ENGLISH_PROBE`; use `FLOE_SIMPLIFIED_CHINESE_PROBE` or
+`FLOE_TRADITIONAL_CHINESE_PROBE` for zh-CN or zh-TW controls. Select only one
+language condition per build. The ordinary build uses actual preferred languages; optional
 `FloeProbeLanguage` in a test Info.plist also supplies a process-only override.
 The volatile preference does not alter system or persistent language settings.
 Record the observed language in `events.json`; do not infer it from build intent.

@@ -16,6 +16,10 @@ import FloeOfficeNative
         // Never changes the user's system or persistent language preferences.
         #if FLOE_ENGLISH_PROBE
         let language: String? = "en-US"
+        #elseif FLOE_SIMPLIFIED_CHINESE_PROBE
+        let language: String? = "zh-CN"
+        #elseif FLOE_TRADITIONAL_CHINESE_PROBE
+        let language: String? = "zh-TW"
         #else
         let language = Bundle.main.object(forInfoDictionaryKey: "FloeProbeLanguage") as? String
         #endif

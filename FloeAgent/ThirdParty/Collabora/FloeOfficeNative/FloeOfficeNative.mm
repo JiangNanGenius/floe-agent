@@ -32,6 +32,21 @@ static NSError *OfficeError(NSInteger code, NSString *description) {
                           userInfo:@{NSLocalizedDescriptionKey: description}];
 }
 
+// FLOE_EDITOR_LANGUAGE_BEGIN
+static NSString *FloeEditorLanguage(NSArray<NSString *> *preferences) {
+    // Match the engine's --with-lang resources, respecting the user's script
+    // and preference order. Apple can supply zh-Hans-TW: passing that unmatched
+    // tag through the kit loses UI translations and corrupts General on XLSX
+    // export. Foundation correctly selects zh-CN for Hans, zh-TW for Hant.
+    // This selects the editor language; it does not rewrite document styles,
+    // number-format locales, or the user's persistent language preferences.
+    NSArray<NSString *> *supported = @[@"en-US", @"zh-CN", @"zh-TW"];
+    NSString *language = [NSBundle preferredLocalizationsFromArray:supported
+                                                  forPreferences:preferences].firstObject;
+    return [supported containsObject:language] ? language : @"en-US";
+}
+// FLOE_EDITOR_LANGUAGE_END
+
 // FLOE_READONLY_SCRIPT_BEGIN
 static NSString *FloeReadOnlyScript() {
     return [NSString stringWithUTF8String:R"FLOE_JS(
@@ -172,7 +187,7 @@ static void ServerReady() {
     try {
         setupKitEnvironment(UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad ? "notebookbar" : "");
         Log::initialize("FloeOffice", "warning");
-        app_locale = NSLocale.preferredLanguages.firstObject ?: @"en-US";
+        app_locale = FloeEditorLanguage(NSLocale.preferredLanguages);
         app_text_direction = LangUtil::isRtlLanguage(std::string(app_locale.UTF8String)) ? @"rtl" : @"";
         // The kit's null-path fallback uses the image containing lo_initialize.
         // In an embedded framework that is Frameworks/FloeOfficeNative.framework,
