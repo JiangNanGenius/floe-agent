@@ -131,6 +131,19 @@ def write_project_inputs(folder, output, project_root=ROOT, lock_path=LOCK):
     output.write_text('\n'.join(lines) + '\n')
 
 
+def write_project_configuration(folder, output, project_root=ROOT, lock_path=LOCK):
+    """Use the same verified host for Swift import, linking and resource copy."""
+    lock, pin = checked_lock(lock_path)
+    verify_installed(folder, lock, pin)
+    name = str(Path(folder).relative_to(project_root))
+    if any(char in name for char in '\n\r$#="') or '//' in name:
+        raise ValueError('Office source cannot be represented in an Xcode configuration')
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text('// Generated from the verified native Office qualification pin.\n'
+                      'FLOE_OFFICE_HOST_DIR = $(PROJECT_DIR)/' + name + '\n')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--archive', type=Path, help='Use an already downloaded, hash-locked archive')
@@ -143,6 +156,7 @@ def main():
     def finish(result):
         if args.destination is None:
             write_project_inputs(destination, ROOT / 'Vendor/Office/native-host-inputs.xcfilelist')
+            write_project_configuration(destination, ROOT / 'Vendor/Office/native-host.xcconfig')
         print(json.dumps(result, indent=2))
 
     if destination.exists() or destination.is_symlink() or args.verify_only:

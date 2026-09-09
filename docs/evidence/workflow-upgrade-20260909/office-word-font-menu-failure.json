@@ -1,0 +1,24 @@
+{
+  "date": "2026-09-09",
+  "environment": "Isolated Mac Designed for iPad qualification app 11; host 34313654241",
+  "wordFontMenu": {
+    "session": "587690CA-17C5-4A18-A78B-A5D2F4DA5FEC",
+    "steps": [
+      "Open synthetic Word",
+      "Enter edit mode",
+      "Activate font dropdown using accessibility click"
+    ],
+    "result": "WebContent process closed and editor called unexpectedClose; working copy retained",
+    "systemLog": "2026-09-09 15:38:24.752 WebProcessProxy::didClose [PID=81932] (web process 0 crash)",
+    "memoryPressureBeforeFailure": "UIKit reported normal; this alone does not identify the crash cause",
+    "screenshot": "office-word-font-menu-closed-mac.jpg"
+  },
+  "reopenControl": {
+    "session": "A15E8EEC-FDD0-47EA-B8B7-D21342DFC102",
+    "result": "Entering edit mode displayed server connection lost; no format edit claimed",
+    "screenshot": "office-word-edit-connection-lost-mac.jpg"
+  },
+  "completeOfficePassed": false,
+  "physicalDevicePassed": false,
+  "rootCauseConfirmed": false
+}

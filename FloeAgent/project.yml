@@ -27,6 +27,9 @@ packages:
 targets:
   FloeAgent:
     type: application
+    configFiles:
+      Debug: Vendor/Office/native-host.xcconfig
+      Release: Vendor/Office/native-host.xcconfig
     productName: Floe Agent
     platform: iOS
     deploymentTarget: "26.0"
@@ -420,6 +423,8 @@ targets:
           - $(SRCROOT)/ThirdParty/Collabora/engine.lock.json
           - $(SRCROOT)/ThirdParty/Collabora/FloeOfficeNative/FloeOfficeNative.h
           - $(SRCROOT)/ThirdParty/Collabora/FloeOfficeNative/FloeOfficeNative.mm
+          - $(SRCROOT)/ThirdParty/Collabora/FloeOfficeNative/FloeOfficeAttachment.cpp
+          - $(SRCROOT)/ThirdParty/Collabora/FloeOfficeNative/FloeOfficeAttachment.hxx
           - $(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Info.plist
         inputFileLists:
           - $(SRCROOT)/Vendor/Office/native-host-inputs.xcfilelist
@@ -447,7 +452,7 @@ targets:
         ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
         "FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]":
           - $(inherited)
-          - $(PROJECT_DIR)/Vendor/Office/34296658499/OfficeNativeHost
+          - $(FLOE_OFFICE_HOST_DIR)
         "OTHER_LDFLAGS[sdk=iphoneos*]":
           - $(inherited)
           - -framework

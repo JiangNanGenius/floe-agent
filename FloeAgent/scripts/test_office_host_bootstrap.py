@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import zipfile
-from bootstrap_office_host import digest, install, relative, checked_lock, verify_installed, write_project_inputs
+from bootstrap_office_host import digest, install, relative, checked_lock, verify_installed, write_project_inputs, write_project_configuration
 from embed_office_host import embed
 from verify_office_app_embedding import verify_payload
 
@@ -80,6 +80,20 @@ class OfficeHostBootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
             self.install()
         self.assertEqual(binary.read_text(), 'edited locally')
+
+    def test_configuration_tracks_the_verified_host_after_an_artifact_upgrade(self):
+        self.install()
+        output = self.root / 'native-host.xcconfig'
+        write_project_configuration(self.destination, output, self.root, self.lock)
+        self.assertIn('$(PROJECT_DIR)/installed/OfficeNativeHost', output.read_text())
+        newer = self.root / 'next-run/OfficeNativeHost'
+        install(self.archive, newer, self.lock)
+        write_project_configuration(newer, output, self.root, self.lock)
+        self.assertIn('$(PROJECT_DIR)/next-run/OfficeNativeHost', output.read_text())
+        self.assertNotIn('/installed/', output.read_text())
+        (newer / 'FloeOfficeNative.framework/FloeOfficeNative').write_text('unqualified')
+        with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+            write_project_configuration(newer, output, self.root, self.lock)
 
     def test_changed_manifest_cannot_redefine_trusted_resource_hashes(self):
         self.install()

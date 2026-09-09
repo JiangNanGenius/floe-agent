@@ -153,18 +153,20 @@ import CryptoKit
                 controller.navigationItem.leftBarButtonItems?.forEach { $0.isEnabled = false }
                 controller.navigationItem.rightBarButtonItem?.isEnabled = false
                 controller.listAttachments { attachments, error in
+                  let items = (attachments ?? []).map { (identifier: $0.identifier, name: $0.name, byteCount: $0.byteCount) }
+                  MainActor.assumeIsolated {
                     func finish(_ detail: String) {
                         controller.title = detail
                         controller.navigationItem.leftBarButtonItems?.forEach { $0.isEnabled = true }
                         controller.navigationItem.rightBarButtonItem?.isEnabled = true
                     }
                     if let error { self.record("attachmentListFailed", detail: error.localizedDescription); finish(error.localizedDescription); return }
-                    let items = attachments ?? []
                     self.record("attachmentsListed", detail: "\(items.count); readonly=\(readOnly)")
                     func export(_ index: Int) {
                         guard index < items.count else { finish("Exported \(items.count) embedded attachments"); return }
                         let item = items[index]
                         controller.exportAttachment(withIdentifier: item.identifier) { url, error in
+                          MainActor.assumeIsolated {
                             guard let url, error == nil else {
                                 self.record("attachmentExportFailed", detail: error?.localizedDescription ?? "missing URL")
                                 finish("Attachment export failed"); return
@@ -175,9 +177,11 @@ import CryptoKit
                                 self.record("attachmentExported", detail: "name=\(item.name); bytes=\(bytes.count); declared=\(item.byteCount); sha256=\(hash); path=\(url.path)")
                                 export(index + 1)
                             } catch { self.record("attachmentExportFailed", detail: error.localizedDescription); finish(error.localizedDescription) }
+                          }
                         }
                     }
                     export(0)
+                  }
                 }
             }))
             controller.navigationItem.leftBarButtonItems = buttons

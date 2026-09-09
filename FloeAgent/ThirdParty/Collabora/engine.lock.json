@@ -1,30 +1,30 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "word-attachment-native-undo-and-roundtrip-isolated-mac-verified",
+  "qualificationStatus": "attachment-export-cloud-qualified-runtime-pending",
   "qualifiedHostArtifact": {
-    "runID": "34313654241",
+    "runID": "34315555634",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10089340053,
-    "workflowCommit": "5ae367c0464e8c0c4aa8be7dafde88f6aebd6851",
-    "archiveSHA256": "5953109e9ce885dde0b10313c105837653a9ac7d6d09abfa528eb9a3b0567382",
-    "executableSHA256": "1997dd9493f8da2a61591ab8d3fa14f4eb2fa45952878b59e4a752fc762f259f",
+    "artifactID": 10089982979,
+    "workflowCommit": "5a2d34206661aa3e2cfb1f7da191fbbe57fb0a78",
+    "archiveSHA256": "c05aebfcdfbf199340a9242325f0fe6ab65bf8760a8119c4a2114490f45efebf",
+    "executableSHA256": "b30bf5a3500e45f40119a4e8f2ad96cfb7d9beda570f1fb9fe902db7004e8b61",
     "overlaySHA256": "600f480a2ccfde4e7d8d9641332197556a4dc79466860943e207c6c2fd7618fd",
     "hostSourceSHA256": {
-      "FloeOfficeNative.h": "34e84db6dc3408c4eacf54331f034af9e8062a86403ffb8fea5fb74804dfaba1",
-      "FloeOfficeNative.mm": "5a291fa6447b033986b90b831e01d8f6417f8db54b4791c578b965370029ff38",
-      "FloeOfficeAttachment.cpp": "eaf194d05f2ba1e1899c37b1f6e695fc476650d1f47f1a8df74d8d1944da976b",
-      "FloeOfficeAttachment.hxx": "c9f5afb7fa500698d7372e5303d609fab2b865f0c2a1fae573e0009daeaaf6e5"
+      "FloeOfficeNative.h": "a76833ac808cfa759c39886defbef81fccd4fde66f59dfbbe9a659d1d339a660",
+      "FloeOfficeNative.mm": "d64d58a0fc5b6ebf2af6370a7ec738341498d5934a5dc0993b9048ce9c53d128",
+      "FloeOfficeAttachment.cpp": "1d8134d0701bf7880b39304d578653554df8af09238ed17752b9cc9252074d81",
+      "FloeOfficeAttachment.hxx": "4deb33492f38047211492686b94153bef5748248342c16d5c7485bd127a0f6c3"
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "540adf4d3fe8fdd81d54e8cb2916024fdca37ffe532b7cc8ec7ebe1bb72bf0f7",
+    "manifestSHA256": "208d19b5b13f6c9fef39be9c636d28615dd0587715b79b1f97a96acea5226381",
     "frameworkAuxiliarySHA256": {
-      "Headers/FloeOfficeNative.h": "34e84db6dc3408c4eacf54331f034af9e8062a86403ffb8fea5fb74804dfaba1",
+      "Headers/FloeOfficeNative.h": "a76833ac808cfa759c39886defbef81fccd4fde66f59dfbbe9a659d1d339a660",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
       "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac"
     },
-    "note": "Compiled, linked and Swift-imported. Isolated Mac Word attachment insertion, two single-step undo/redo cycles, saved readonly reopen and 18 structural checks passed. Full Floe picker/writeback, all attachment operations, Excel/PPT and physical-device acceptance remain open."
+    "note": "34315555634 compiled, linked and Swift-imported native Word attachment listing and extraction. Runtime extraction, full Floe workspace selection, complete Office editing and physical-device acceptance remain pending."
   },
   "qualifiedNativeArtifact": {
     "runID": "34268468731",
