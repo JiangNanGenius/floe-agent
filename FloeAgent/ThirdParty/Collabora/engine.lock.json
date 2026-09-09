@@ -1,14 +1,14 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "drawing-redo-metadata-host-compiled-runtime-pending",
+  "qualificationStatus": "xlsx-anchor-flags-runtime-passed-font-metrics-runtime-failed",
   "qualifiedHostArtifact": {
-    "runID": "34340935668",
+    "runID": "34344605828",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10099788215,
-    "workflowCommit": "69da4ce523c0ab3a1c0d249fcef9c24436730452",
-    "archiveSHA256": "c5dbf8c59150fe1205524dcc82086ac947c87652d6eb3788d649420eff15ef7a",
-    "executableSHA256": "396dd505b215dddcdda4ddc645084ce02390dc399d468054410cfa65b0eba4aa",
+    "artifactID": 10101264162,
+    "workflowCommit": "3ae718e12cbbd1382cf40e9fc9e5827036ad726f",
+    "archiveSHA256": "69eb43741add6d8718ba683429d63f8dcdcbe7e553e8736dc57912439949def2",
+    "executableSHA256": "2062ae907d8b9dabc70e8f3bff5cbfc65a66f546e9abe66dbf79c0dd2227197a",
     "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
@@ -18,15 +18,15 @@
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "2a02fc40a61207b936d1648a6200577de06b7469fe07cd5bff929af290ae28d9",
+    "manifestSHA256": "3ef7c024d7fa40c729f6aa9543ebab0ec9f4b559fa57eb7aa0369eb30824ab64",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
       "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac"
     },
-    "note": "Compiled, linked and Swift-imported pinned native host. Runtime roundtrip, full fidelity and physical-device acceptance remain separate gates.",
+    "note": "Compiled host; actual Mac probe preserves attachment bytes, redo metadata and fixed-page anchor flags, but repeated-save font metrics and geometry fail. Not release-qualified.",
     "filterOverlay": {
-      "patchSHA256": "23a98229f5595a3b54e6a290cf663891847a4725613a2dce8c1e6ce2b089ab5b",
+      "patchSHA256": "64b0b48e5336eb3fa7a9afff5ca236984c4ef63b059c65a62f2e1a4c409e52e9",
       "sourceFiles": {
         "engine/sc/source/filter/inc/xcl97rec.hxx": {
           "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
@@ -34,12 +34,16 @@
         },
         "engine/sc/source/filter/xcl97/xcl97rec.cxx": {
           "originalSHA256": "cfc6ad7262deb1ef682662c3c05e9b49c05b246796c637c4f7ed9d57164ce5b9",
-          "patchedSHA256": "2013f58b8ed6e9e4ec6fbbba30cc73e7b1b88b9b6ee0977e85db05f7c613049f"
+          "patchedSHA256": "bf3b6c8d6eab56610019ee4e445f06dc72e47941bb46a1fd71c6ddff0e5baed0"
+        },
+        "engine/sc/source/filter/excel/xlroot.cxx": {
+          "originalSHA256": "a03e6d3c8f5fc179dd1599d9dc2ea1012ac672ab839adaecaa6f72831052bc88",
+          "patchedSHA256": "93d47f925747054e16e82c41362f8beb5202a4b8345a80c53c4aabd3d86be2fd"
         }
       },
-      "archiveSHA256": "1e6d582211acb017222ddd97cbdc30a22143dfb58c5e2bae97e6835952ead1a7",
-      "objectSHA256": "4f38e6a2e1507cee47c718132a5421738e50aac02792c3b529716f426c26980f",
-      "selectedArchiveSHA256": "1e6d582211acb017222ddd97cbdc30a22143dfb58c5e2bae97e6835952ead1a7"
+      "archiveSHA256": "93ad2c510a9a3a99e2cc1a3bc9832d8a1d0efdc768b9b67efa0cdc55127528e1",
+      "objectSHA256": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
+      "selectedArchiveSHA256": "93ad2c510a9a3a99e2cc1a3bc9832d8a1d0efdc768b9b67efa0cdc55127528e1"
     }
   },
   "qualifiedNativeArtifact": {

@@ -1,0 +1,169 @@
+{
+  "hostRunID": "34344605828",
+  "workflowCommit": "3ae718e12cbbd1382cf40e9fc9e5827036ad726f",
+  "probeSessionID": "7967B159-38B9-4FC8-8BAF-2509B292A66A",
+  "appLabel": "Floe Office Qualification 20",
+  "runtime": "Mac Designed for iPad",
+  "installedBinariesMatchSignedPayload": true,
+  "signedPayload": {
+    "purpose": "Independent native XLSX runtime qualification, not a full Floe release",
+    "hostRunID": "34344605828",
+    "signaturePassed": true,
+    "runtimePassed": false,
+    "mainSHA256": "9aa49e5249a9ccda470d0434e5b75250e76801127ca56f8aed7e48e3427663b0",
+    "nativeSHA256": "81a7eaac2cbbf43c09c31acd86afe6afa2a529a6aebac505db44cbe40837caf3"
+  },
+  "saveAndReopenCount": 2,
+  "attachmentExportCount": 3,
+  "attachmentSHA256": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+  "attachmentBytes": 65539,
+  "attachmentStructuralChecksPerSave": 29,
+  "allAttachmentStructuralChecksPassed": true,
+  "fixedPageAnchorFlagsPreservedAcrossSaves": true,
+  "sourceColumnAWidth": 22,
+  "firstSaveColumnAWidth": 22.82,
+  "secondSaveColumnAWidth": 21.8,
+  "fontMetricCandidateRuntimePassed": false,
+  "untouchedGeometryPassed": false,
+  "physicalDevicePassed": false,
+  "fullFloeRuntimePassed": false,
+  "testFlightUploaded": false,
+  "events": [
+    {
+      "detail": "xlsx",
+      "event": "fixtureCopied",
+      "time": "2026-09-09T11:23:01Z"
+    },
+    {
+      "detail": "zh-Hans-TW",
+      "event": "preferredLanguage",
+      "time": "2026-09-09T11:23:01Z"
+    },
+    {
+      "detail": "true; readonly=false",
+      "event": "opened",
+      "time": "2026-09-09T11:23:02Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T11:23:04Z"
+    },
+    {
+      "detail": "附件 测试 📎.bin",
+      "event": "attachmentRequested",
+      "time": "2026-09-09T11:23:38Z"
+    },
+    {
+      "detail": "success",
+      "event": "attachmentCompleted",
+      "time": "2026-09-09T11:23:38Z"
+    },
+    {
+      "detail": "0; readonly=false",
+      "event": "attachmentsListed",
+      "time": "2026-09-09T11:23:54Z"
+    },
+    {
+      "detail": "1; readonly=false",
+      "event": "attachmentsListed",
+      "time": "2026-09-09T11:23:59Z"
+    },
+    {
+      "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "event": "attachmentExported",
+      "time": "2026-09-09T11:23:59Z"
+    },
+    {
+      "detail": "",
+      "event": "saveRequested",
+      "time": "2026-09-09T11:24:17Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T11:24:18Z"
+    },
+    {
+      "detail": "success",
+      "event": "saveCompleted",
+      "time": "2026-09-09T11:24:18Z"
+    },
+    {
+      "detail": "success",
+      "event": "editingClosed",
+      "time": "2026-09-09T11:24:18Z"
+    },
+    {
+      "detail": "true; readonly=true",
+      "event": "opened",
+      "time": "2026-09-09T11:24:18Z"
+    },
+    {
+      "detail": "1; readonly=true",
+      "event": "attachmentsListed",
+      "time": "2026-09-09T11:24:31Z"
+    },
+    {
+      "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "event": "attachmentExported",
+      "time": "2026-09-09T11:24:31Z"
+    },
+    {
+      "detail": "",
+      "event": "resumeEditingRequested",
+      "time": "2026-09-09T11:25:13Z"
+    },
+    {
+      "detail": "success",
+      "event": "previewClosedForEditing",
+      "time": "2026-09-09T11:25:13Z"
+    },
+    {
+      "detail": "true; readonly=false",
+      "event": "opened",
+      "time": "2026-09-09T11:25:14Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T11:25:15Z"
+    },
+    {
+      "detail": "",
+      "event": "saveRequested",
+      "time": "2026-09-09T11:25:26Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T11:25:26Z"
+    },
+    {
+      "detail": "success",
+      "event": "saveCompleted",
+      "time": "2026-09-09T11:25:26Z"
+    },
+    {
+      "detail": "success",
+      "event": "editingClosed",
+      "time": "2026-09-09T11:25:26Z"
+    },
+    {
+      "detail": "true; readonly=true",
+      "event": "opened",
+      "time": "2026-09-09T11:25:27Z"
+    },
+    {
+      "detail": "1; readonly=true",
+      "event": "attachmentsListed",
+      "time": "2026-09-09T11:25:32Z"
+    },
+    {
+      "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "event": "attachmentExported",
+      "time": "2026-09-09T11:25:32Z"
+    }
+  ],
+  "nextAction": "Keep verified Excel VML anchor convention fix; instrument import/export effective font and reference-device metrics before replacing the failed metric candidate. Fixed-page CSS geometry still needs precise import."
+}
