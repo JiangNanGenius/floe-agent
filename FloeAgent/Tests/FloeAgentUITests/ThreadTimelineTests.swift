@@ -18,6 +18,21 @@ import FloeTools
 
 @Suite("FloeApp.ThreadTimeline")
 struct ThreadTimelineTests {
+    @Test("An image model directory retains complete parameter JSON")
+    func imageModelDirectoryOutputBudget() throws {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "models": (1...25).map { ["modelID": "model-\($0)", "parameters": String(repeating: "参数配置", count: 200)] },
+            "nextOffset": 25
+        ])
+        let text = String(decoding: data, as: UTF8.self)
+        #expect(text.count > 4096)
+        let output = try RemoteImageModelsTool.catalogOutput(text)
+        #expect(output.summary == text)
+        #expect(throws: (any Error).self) {
+            try RemoteImageModelsTool.catalogOutput(String(repeating: "x", count: 262_145))
+        }
+    }
+
     @MainActor @Test("Reopening a long timeline retains history and pages through reconnect gaps")
     func timelineReconnectGaps() async throws {
         let environment = AppEnvironment.preview()

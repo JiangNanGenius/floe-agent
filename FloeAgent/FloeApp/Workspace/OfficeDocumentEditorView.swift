@@ -66,10 +66,21 @@ final class OfficeFileSession: ObservableObject {
         }
         #if canImport(FloeOfficeNative)
         guard let native = controller as? FloeOfficeNativeViewController else { throw CocoaError(.featureUnsupported) }
-        try await withCheckedThrowingContinuation { (receipt: CheckedContinuation<Void, Error>) in
-            native.insertAttachment(fromFileURL: url) { error in
-                if let error { receipt.resume(throwing: error) } else { receipt.resume() }
+        do {
+            try await withCheckedThrowingContinuation { (receipt: CheckedContinuation<Void, Error>) in
+                native.insertAttachment(fromFileURL: url) { error in
+                    if let error { receipt.resume(throwing: error) } else { receipt.resume() }
+                }
             }
+        } catch {
+            // The engine may fail after creating the object but before its
+            // metadata/undo receipt settles. Do not claim a failed callback
+            // means nothing changed, or encourage a blind duplicate insertion.
+            hasUncommittedChanges = true
+            throw NSError(domain: "org.floeagent.office.attachment", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "附件插入未能完成，文档可能已有部分修改。请先检查当前文档，必要时撤销后再试；编辑副本已保留。",
+                NSUnderlyingErrorKey: error
+            ])
         }
         hasUncommittedChanges = true
         #else

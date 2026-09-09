@@ -472,7 +472,18 @@ struct RemoteImageModelsTool: AgentTool {
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try validate(args)
-        return PDFToolSupport.output(try await list(args), status: 0)
+        try context.cancellation.throwIfCancelled()
+        return try Self.catalogOutput(await list(args))
+    }
+
+    static func catalogOutput(_ text: String) throws -> ToolExecutionOutput {
+        let data = Data(text.utf8)
+        guard data.count <= 262_144 else {
+            throw FloeError.validationFailed("Image catalog page is too large; request a smaller limit")
+        }
+        return ToolExecutionOutput(summary: text,
+            fullOutputSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+            exitStatus: 0, maximumSummaryCharacters: 262_144)
     }
 }
 

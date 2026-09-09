@@ -1,10 +1,32 @@
 import Foundation
 import Testing
 import FloeTools
+import FloeCore
+import FloeModels
 @testable import FloeAgentRuntime
 
 @Suite("Deferred tool discovery")
 struct ToolDiscoveryTests {
+    @Test func executorPreservesCompleteImageCatalog() async throws {
+        let registry = ToolRunnerRegistry()
+        let json = try JSONSerialization.data(withJSONObject: [
+            "models": (1...25).map { ["id": "model-\($0)", "parameters": String(repeating: "supported ", count: 100)] },
+            "nextOffset": 25
+        ])
+        let text = String(decoding: json, as: UTF8.self)
+        registry.register(AnyAgentTool(descriptor: descriptor("image.models")) { _, _ in
+            .init(summary: text, fullOutputSHA256: "", maximumSummaryCharacters: 262_144)
+        })
+        let result = try await CatalogToolExecutor(runners: registry).execute(
+            ToolCall(id: "catalog", toolName: "image.models", argumentsJSON: Data("{}".utf8), scope: .local),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(result.status == .ok)
+        #expect(result.outputSummary == text)
+        let decoded = try #require(JSONSerialization.jsonObject(with: Data(result.outputSummary.utf8)) as? [String: Any])
+        #expect(decoded["nextOffset"] as? Int == 25)
+    }
+
     @Test func instructionsRespectTheEffectiveCatalog() {
         let limited = ToolDiscovery.index([descriptor("workspace.readFile")])
         #expect(!limited.contains("task.updatePlan"))
