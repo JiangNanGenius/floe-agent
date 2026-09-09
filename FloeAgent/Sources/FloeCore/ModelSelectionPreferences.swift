@@ -31,6 +31,8 @@ public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
     /// Tool-free model used for managed Python package review. On-device
     /// format and sandbox checks remain authoritative.
     public var packageReviewModelID: UUID?
+    /// Nil in older synced records keeps the explicitly configured route.
+    public var autonomousImageRouting: Bool?
     public var auxiliaryImageMode: AuxiliaryImageMode
     public var sharedImageModelID: UUID?
     public var imageGenerationModelID: UUID?
@@ -50,6 +52,7 @@ public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
         canvasVisionModelID: UUID? = nil,
         approvalModelID: UUID? = nil,
         packageReviewModelID: UUID? = nil,
+        autonomousImageRouting: Bool? = false,
         auxiliaryImageMode: AuxiliaryImageMode = .shared,
         sharedImageModelID: UUID? = nil,
         imageGenerationModelID: UUID? = nil,
@@ -66,6 +69,7 @@ public struct ModelSelectionPreferences: Sendable, Codable, Hashable {
         self.canvasVisionModelID = canvasVisionModelID
         self.approvalModelID = approvalModelID
         self.packageReviewModelID = packageReviewModelID
+        self.autonomousImageRouting = autonomousImageRouting
         self.auxiliaryImageMode = auxiliaryImageMode
         self.sharedImageModelID = sharedImageModelID
         self.imageGenerationModelID = imageGenerationModelID

@@ -57,6 +57,12 @@ struct AuxiliaryModelsView: View {
             }
 
             Section {
+                Toggle("模型自主选择生图配置", isOn: $viewModel.autonomousImageRouting)
+            } footer: {
+                Text("允许模型按任务选择已配置的供应商、图像模型和参数。下方预设作为优先选择和备选；关闭后使用指定模型。")
+            }
+
+            Section {
                 Toggle("auxiliary.shared.toggle", isOn: Binding(
                     get: { viewModel.mode == .shared },
                     set: { viewModel.setSharedMode($0) }
@@ -106,6 +112,7 @@ struct AuxiliaryModelsView: View {
             }
         }
         .task { await viewModel.load() }
+        .onChange(of: viewModel.autonomousImageRouting) { _, _ in viewModel.scheduleSave() }
         .onChange(of: viewModel.mode) { _, _ in viewModel.scheduleSave() }
         .onChange(of: viewModel.generalLLMModelID) { _, _ in viewModel.scheduleSave() }
         .onChange(of: viewModel.visionModelID) { _, _ in viewModel.scheduleSave() }
@@ -149,6 +156,7 @@ struct AuxiliaryModelsView: View {
 @MainActor
 final class AuxiliaryModelsViewModel: ObservableObject {
     @Published var generalLLMModelID: UUID?
+    @Published var autonomousImageRouting = false
     @Published var mode: AuxiliaryImageMode = .shared
     @Published var visionModelID: UUID?
     @Published var visionReasoningEnabled = false
@@ -210,6 +218,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
         let preferences = center.modelPreferences
         generalLLMModelID = preferences.generalAuxiliaryLLMModelID
         mode = preferences.auxiliaryImageMode
+        autonomousImageRouting = preferences.autonomousImageRouting == true
         visionModelID = preferences.visionModelID
         if cloudPreferences.object(
             forKey: ConversationCenter.auxiliaryVisionReasoningDefaultsKey
@@ -276,6 +285,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
             preferences.generalAuxiliaryLLMModelID = generalLLMModelID
             preferences.visionModelID = visionModelID
             preferences.packageReviewModelID = packageReviewModelID
+            preferences.autonomousImageRouting = autonomousImageRouting
             preferences.auxiliaryImageMode = mode
             preferences.sharedImageModelID = mode == .shared ? sharedModelID : nil
             preferences.imageGenerationModelID = mode == .separate ? generationModelID : nil

@@ -72,6 +72,52 @@ private final class ImageAdapterURLProtocol: URLProtocol, @unchecked Sendable {
 @Suite("FloeProviders.ImageAdapters", .serialized)
 struct ImageAdapterTests {
 
+    @Test("Fallback excludes policy failures, ambiguous errors and polling accepted tasks")
+    func imageRouteFallbackBoundary() throws {
+        for status in [401, 404, 429] {
+            let response = HTTPURLResponse(url: URL(string: "https://example.com")!, statusCode: status, httpVersion: nil, headerFields: nil)!
+            do {
+                try RemoteImageHTTP.validate(response, data: Data(), provider: "Test", apiKey: nil, allowRouteFallback: true)
+                Issue.record("Expected refusal")
+            } catch { #expect((error as? RemoteImageError)?.allowsRouteFallback == true) }
+            do {
+                try RemoteImageHTTP.validate(response, data: Data(), provider: "Test", apiKey: nil)
+                Issue.record("Expected polling error")
+            } catch { #expect((error as? RemoteImageError)?.allowsRouteFallback == false) }
+        }
+        #expect(!RemoteImageError.requestFailed("timeout").allowsRouteFallback)
+        #expect(!RemoteImageError.providerRejected(statusCode: 403, message: "policy").allowsRouteFallback)
+        #expect(!RemoteImageError.providerRejected(statusCode: 500, message: "unknown").allowsRouteFallback)
+    }
+
+    @Test("Agent parameter directory and request validation share model limits")
+    func agentImageParameterContract() throws {
+        let profile = provider(kind: .openAI)
+        let model = ModelProfile(providerID: profile.id, remoteModelID: "gpt-image-2.5-sunburst",
+            displayName: "Sunburst", limits: .init(contextTokens: 0, maxOutputTokens: 0),
+            capabilities: [.imageGeneration, .imageEditing])
+        let contract = ImageGenerationPresetResolver.parameterContract(provider: profile, model: model, operation: .edit)
+        #expect(contract.verifiedModel)
+        #expect(contract.quality.contains("max"))
+        #expect(contract.maximumReferenceImages == 16)
+        try ImageGenerationPresetResolver.validateSelection(.init(aspectRatio: "16:9", resolution: "1K", quality: "max"),
+            provider: profile, model: model, operation: .edit, count: 2, referenceCount: 16)
+        #expect(throws: RemoteImageError.self) {
+            try ImageGenerationPresetResolver.validateSelection(.init(quality: "ultra"),
+                provider: profile, model: model, operation: .generate, count: 1, referenceCount: 0)
+        }
+        #expect(throws: RemoteImageError.self) {
+            try ImageGenerationPresetResolver.validateSelection(.init(),
+                provider: profile, model: model, operation: .edit, count: 1, referenceCount: 17)
+        }
+        var unknown = model; unknown.remoteModelID = "unverified-proxy-model"
+        #expect(!ImageGenerationPresetResolver.parameterContract(provider: profile, model: unknown, operation: .generate).verifiedModel)
+        #expect(throws: RemoteImageError.self) {
+            try ImageGenerationPresetResolver.validateSelection(.init(quality: "max"),
+                provider: profile, model: unknown, operation: .generate, count: 1, referenceCount: 0)
+        }
+    }
+
     private func provider(kind: ProviderKind) -> ProviderProfile {
         ProviderProfile(
             kind: kind,

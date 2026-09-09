@@ -79,12 +79,22 @@ public struct RemoteImageResult: Sendable, Hashable {
 public enum RemoteImageError: Error, Sendable, Hashable, LocalizedError {
     case unsupportedOperation(RemoteImageOperation, provider: String)
     case requestFailed(String)
+    case providerRejected(statusCode: Int, message: String)
     case invalidResponse(String)
+
+    /// Only explicit pre-execution auth/model/rate refusals may switch routes.
+    /// Timeouts, policy refusals and server failures have no such guarantee.
+    public var allowsRouteFallback: Bool {
+        if case .providerRejected(let status, _) = self { return [401, 404, 429].contains(status) }
+        return false
+    }
 
     public var errorDescription: String? {
         switch self {
         case .unsupportedOperation(let operation, let provider):
             "\(provider) 不支持图片操作 \(operation.rawValue)。"
+        case .providerRejected(_, let message):
+            message
         case .requestFailed(let message):
             message.isEmpty ? "图片服务请求失败。" : message
         case .invalidResponse(let message):

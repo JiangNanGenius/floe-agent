@@ -5,6 +5,94 @@ import FloeCore
 /// provider-native `size` value. Keeping this at the adapter boundary prevents
 /// UI labels such as `16:9` from leaking into incompatible wire fields.
 public enum ImageGenerationPresetResolver {
+    public struct ParameterContract: Codable, Sendable {
+        public var verifiedModel: Bool
+        public var aspectRatio: [String]
+        public var resolution: [String]
+        public var quality: [String]
+        public var defaultAspectRatio: String
+        public var defaultResolution: String?
+        public var defaultQuality: String?
+        public var minimumCount: Int
+        public var maximumCount: Int
+        public var maximumReferenceImages: Int
+        public var nativeSizeOverride: Bool
+        /// These provider features are not accepted by the current image tool.
+        public var unavailableControls: [String]
+    }
+
+    public static func parameterContract(
+        provider: ProviderProfile, model: ModelProfile, operation: RemoteImageOperation
+    ) -> ParameterContract {
+        let family: MediaProviderFamily? = switch provider.kind {
+        case .openAI: .openAI
+        case .googleGemini: .googleGemini
+        case .volcengineArk: .volcengineArk
+        case .alibabaStudio: .alibabaModelStudio
+        default: nil
+        }
+        let descriptor = OfficialMediaModelCatalog.models.first {
+            $0.provider == family && $0.kind == .image && $0.remoteModelID == model.remoteModelID
+        }
+        let adapter = ImageProviderAdapterFactory().adapter(for: provider)
+        let resolutions = (descriptor?.supportedResolutions ?? []).filter {
+            !(provider.kind == .alibabaStudio && operation != .generate && $0 == "4K")
+        }
+        return ParameterContract(
+            verifiedModel: descriptor != nil,
+            aspectRatio: descriptor?.supportedAspectRatios ?? [], resolution: resolutions,
+            quality: descriptor?.supportedQualities ?? [], defaultAspectRatio: "1:1",
+            defaultResolution: descriptor?.defaultResolution,
+            defaultQuality: descriptor?.defaultQuality,
+            minimumCount: 1, maximumCount: min(4, adapter?.maximumOutputImages(modelRemoteID: model.remoteModelID) ?? 1),
+            maximumReferenceImages: operation == .generate ? 0 : ImageReferenceCapabilityResolver.maximumReferenceImages(provider: provider, model: model),
+            nativeSizeOverride: provider.kind != .googleGemini,
+            unavailableControls: ["seed", "watermark", "promptOptimization"]
+        )
+    }
+
+    public static func applyingDefaults(
+        _ selection: ImageGenerationSelection, provider: ProviderProfile, model: ModelProfile,
+        operation: RemoteImageOperation
+    ) -> ImageGenerationSelection {
+        let contract = parameterContract(provider: provider, model: model, operation: operation)
+        return ImageGenerationSelection(
+            aspectRatio: selection.aspectRatio ?? contract.defaultAspectRatio,
+            resolution: selection.resolution ?? contract.defaultResolution,
+            quality: selection.quality ?? contract.defaultQuality,
+            nativeSizeOverride: selection.nativeSizeOverride)
+    }
+
+    public static func validateSelection(
+        _ selection: ImageGenerationSelection, provider: ProviderProfile, model: ModelProfile,
+        operation: RemoteImageOperation, count: Int, referenceCount: Int
+    ) throws {
+        let contract = parameterContract(provider: provider, model: model, operation: operation)
+        guard (contract.minimumCount...max(contract.minimumCount, contract.maximumCount)).contains(count),
+              referenceCount >= 0, referenceCount <= contract.maximumReferenceImages else {
+            throw RemoteImageError.requestFailed("Image count or reference count exceeds this model's limit; inspect image.models.")
+        }
+        for (value, allowed, label) in [
+            (selection.aspectRatio, contract.aspectRatio, "aspectRatio"),
+            (selection.resolution?.uppercased(), contract.resolution, "resolution"),
+            (selection.quality?.lowercased(), contract.quality, "quality")
+        ] {
+            if let value, !allowed.contains(value) {
+                throw RemoteImageError.requestFailed("Unsupported or unverified \(label)=\(value) for \(model.remoteModelID); inspect image.models.")
+            }
+        }
+        if let size = selection.nativeSizeOverride {
+            let parts = size.replacingOccurrences(of: "*", with: "x").split(separator: "x")
+            guard contract.nativeSizeOverride, parts.count == 2,
+                  let width = Int(parts[0]), let height = Int(parts[1]),
+                  width > 0, height > 0, width <= 8192, height <= 8192 else {
+                throw RemoteImageError.requestFailed("Invalid or unsupported native image size")
+            }
+        }
+        _ = try nativeSize(provider: provider.kind, modelRemoteID: model.remoteModelID, operation: operation, selection: selection)
+        _ = try normalizedQuality(selection.quality, provider: provider.kind, modelRemoteID: model.remoteModelID)
+    }
+
     public static func defaultResolution(provider: ProviderKind, modelRemoteID: String?) -> String {
         let model = modelRemoteID?.lowercased() ?? ""
         if provider == .openAI { return "1K" }

@@ -297,14 +297,30 @@ final class FilesCenter: ObservableObject {
 
     @discardableResult
     func performRemoteImage(
+        operation: RemoteImageOperation, prompt: String, source: AttachmentRef? = nil,
+        count: Int = 1, size: String? = nil
+    ) async throws -> [AttachmentRef] {
+        try await performRemoteImageResult(operation: operation, prompt: prompt, source: source,
+            count: count, size: size).0
+    }
+
+    @discardableResult
+    func performRemoteImageResult(
         operation: RemoteImageOperation,
         prompt: String,
         source: AttachmentRef? = nil,
         count: Int = 1,
-        size: String? = nil
-    ) async throws -> [AttachmentRef] {
+        size: String? = nil,
+        modelID: UUID? = nil,
+        selection: ImageGenerationSelection? = nil,
+        agentInitiated: Bool = false
+    ) async throws -> ([AttachmentRef], String) {
         let center = environment.conversationCenter
-        guard let (provider, model) = center.auxiliaryProviderAndModel(for: operation),
+        let chosen = agentInitiated
+            ? try center.resolveAgentImageRoute(operation: operation, modelID: modelID,
+                selection: selection ?? .init(nativeSizeOverride: size), count: count, referenceCount: source == nil ? 0 : 1)
+            : modelID.flatMap({ center.mediaProviderAndModel(modelID: $0) }) ?? center.auxiliaryProviderAndModel(for: operation)
+        guard var (provider, model) = chosen,
               let adapter = ImageProviderAdapterFactory().adapter(for: provider),
               adapter.supports(operation, for: provider) else {
             throw FloeError.invalidConfiguration("No compatible image model is configured for this operation")
@@ -320,18 +336,26 @@ final class FilesCenter: ObservableObject {
             }
             sources = [data]
         }
-        let result = try await adapter.perform(
+        let result: RemoteImageResult
+        if agentInitiated {
+            let routed = try await center.performAgentImage(operation: operation, prompt: prompt,
+                sourceImages: sources, modelID: model.id, selection: selection ?? .init(nativeSizeOverride: size), count: count)
+            result = routed.0; provider = routed.1; model = routed.2
+        } else {
+            result = try await adapter.perform(
             RemoteImageRequest(
                 operation: operation,
                 prompt: prompt,
                 sourceImages: sources,
                 sizeHint: size,
+                selection: selection,
                 count: count,
                 modelRemoteID: model.remoteModelID
             ),
             provider: provider,
             credentials: center.resolveCredentials(for: provider)
         )
+        }
         try FileManager.default.createDirectory(
             at: generatedImageDirectory,
             withIntermediateDirectories: true
@@ -359,7 +383,7 @@ final class FilesCenter: ObservableObject {
             )
         }
         recentFiles.insert(contentsOf: attachments, at: 0)
-        return attachments
+        return (attachments, "providerID=\(provider.id.uuidString) modelID=\(model.id.uuidString) model=\(model.remoteModelID) fallbackUsed=\(result.metadata["fallbackUsed"] ?? "false") parameters=\(result.metadata["parameters"] ?? "{}")")
     }
 
     // MARK: - Document working copies

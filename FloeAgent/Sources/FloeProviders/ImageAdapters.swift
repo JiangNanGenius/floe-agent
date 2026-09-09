@@ -45,7 +45,8 @@ enum RemoteImageHTTP {
         _ response: URLResponse,
         data: Data,
         provider: String,
-        apiKey: String?
+        apiKey: String?,
+        allowRouteFallback: Bool = false
     ) throws {
         guard let http = response as? HTTPURLResponse else {
             throw RemoteImageError.invalidResponse("\(provider) returned a non-HTTP response")
@@ -55,7 +56,11 @@ enum RemoteImageHTTP {
                 String(decoding: data.prefix(512), as: UTF8.self),
                 secret: apiKey
             )
-            throw RemoteImageError.requestFailed("\(provider) HTTP \(http.statusCode): \(body)")
+            let message = "\(provider) HTTP \(http.statusCode): \(body)"
+            if allowRouteFallback, [401, 404, 429].contains(http.statusCode) {
+                throw RemoteImageError.providerRejected(statusCode: http.statusCode, message: message)
+            }
+            throw RemoteImageError.requestFailed(message)
         }
     }
 }
@@ -252,7 +257,7 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
             response,
             data: data,
             provider: "OpenAI",
-            apiKey: credentials.apiKey
+            apiKey: credentials.apiKey, allowRouteFallback: true
         )
         let images = try await RemoteImageDecoder.images(
             from: data,
@@ -316,7 +321,7 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
             session: session,
             maxBytes: 32 * 1_024 * 1_024
         )
-        try RemoteImageHTTP.validate(response, data: data, provider: "OpenAI", apiKey: credentials.apiKey)
+        try RemoteImageHTTP.validate(response, data: data, provider: "OpenAI", apiKey: credentials.apiKey, allowRouteFallback: true)
         return RemoteImageResult(images: try await RemoteImageDecoder.images(
             from: data,
             b64Key: "b64_json",
@@ -428,7 +433,7 @@ public struct GoogleGeminiImageAdapter: ImageProviderAdapter {
             response,
             data: data,
             provider: "Google Gemini Images",
-            apiKey: apiKey
+            apiKey: apiKey, allowRouteFallback: true
         )
         let decoded = try Self.decodeResponse(
             data,
@@ -622,7 +627,7 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
             maxBytes: 48 * 1_024 * 1_024
         )
         try RemoteImageHTTP.validate(
-            response, data: data, provider: "Volcengine Ark", apiKey: credentials.apiKey
+            response, data: data, provider: "Volcengine Ark", apiKey: credentials.apiKey, allowRouteFallback: true
         )
         let output = try await RemoteImageDecoder.images(
             from: data,
@@ -808,7 +813,7 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             maxBytes: 2 * 1_024 * 1_024
         )
         try RemoteImageHTTP.validate(
-            response, data: data, provider: "DashScope", apiKey: credentials.apiKey
+            response, data: data, provider: "DashScope", apiKey: credentials.apiKey, allowRouteFallback: true
         )
         let urls = try Self.multimodalImageURLs(from: data)
         let images = try await downloadImages(
@@ -943,7 +948,7 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             maxBytes: 1_048_576
         )
         try RemoteImageHTTP.validate(
-            response, data: data, provider: "DashScope", apiKey: credentials.apiKey
+            response, data: data, provider: "DashScope", apiKey: credentials.apiKey, allowRouteFallback: true
         )
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         guard let output = object?["output"] as? [String: Any],

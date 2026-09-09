@@ -11,6 +11,23 @@ struct ModelConfigurationStoreTests {
         return ModelConfigurationStore(database: database)
     }
 
+    @Test("Image autonomy persists without changing preset routes and older records decode")
+    func imageAutonomyPreference() async throws {
+        let store = try await makeStore()
+        var preferences = try await store.preferences()
+        #expect(preferences.autonomousImageRouting != true)
+        preferences.autonomousImageRouting = true
+        try await store.savePreferences(preferences)
+        #expect(try await store.preferences().autonomousImageRouting == true)
+        preferences.autonomousImageRouting = false
+        try await store.savePreferences(preferences)
+        #expect(try await store.preferences().autonomousImageRouting == false)
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(preferences)) as? [String: Any])
+        json.removeValue(forKey: "autonomousImageRouting")
+        let legacy = try JSONDecoder().decode(ModelSelectionPreferences.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(legacy.autonomousImageRouting == nil)
+    }
+
     @Test("General auxiliary LLM persists independently and unrelated stale routes do not block saving")
     func generalAuxiliaryRouting() async throws {
         let store = try await makeStore()

@@ -363,7 +363,7 @@ actor CanvasToolCoordinator {
         prompt: String, documentID: UUID?, sourceNodeIDs: [UUID]?,
         configurationNodeID: UUID?, position: CanvasPoint,
         expectedRevision: Int64, aspectRatio: String?, quality: String?,
-        count: Int, durationSeconds: Int?
+        count: Int, durationSeconds: Int?, resolution: String? = nil
     ) async throws -> CanvasGenerationOutcome {
         let activeProject = try await project(for: runID)
         let persisted = try await runContexts.context(runID: runID)
@@ -380,7 +380,7 @@ actor CanvasToolCoordinator {
         let fingerprint = generationFingerprint(
             kind: kind, prompt: prompt, modelID: modelID,
             sourceNodeIDs: sources, aspectRatio: aspectRatio,
-            quality: quality, count: count, durationSeconds: durationSeconds
+            quality: quality, count: count, durationSeconds: durationSeconds, resolution: resolution
         )
         if let existing = document.nodes.first(where: {
             $0.kind == .generationTask
@@ -424,7 +424,7 @@ actor CanvasToolCoordinator {
             prompt: prompt,
             modelID: modelID,
             aspectRatio: aspectRatio ?? "1:1",
-            quality: quality,
+            resolution: resolution, quality: quality,
             count: kind == .image ? count : 1,
             durationSeconds: kind == .video ? durationSeconds : nil,
             sourceNodeIDs: sources
@@ -471,7 +471,7 @@ actor CanvasToolCoordinator {
                 let batch = try await generateImages(
                     providerPrompt(prompt: prompt, sourceNodeIDs: sources, document: document),
                     ImageGenerationOptions(
-                        aspectRatio: aspectRatio, quality: quality,
+                        aspectRatio: aspectRatio, resolution: resolution, quality: quality,
                         count: max(1, min(count, 4))
                     ),
                     referenceData, modelID,
@@ -485,11 +485,18 @@ actor CanvasToolCoordinator {
                 )
                 generatedImageBatch = batch
                 let assets = batch.assets
+                var actualConfiguration = generationConfiguration
+                if let actualModelID = batch.modelID { actualConfiguration.modelID = actualModelID }
+                if let actualSelection = batch.selection {
+                    actualConfiguration.aspectRatio = actualSelection.aspectRatio ?? actualConfiguration.aspectRatio
+                    actualConfiguration.resolution = actualSelection.resolution
+                    actualConfiguration.quality = actualSelection.quality
+                }
                 let commitPlan = try CanvasSavedImageBatchCommitPlanner.plan(
                     configurationNodeID: graph.configurationNodeID,
                     preparedResultNodeIDs: graph.resultNodeIDs,
                     assets: assets,
-                    configuration: generationConfiguration,
+                    configuration: actualConfiguration,
                     sourceNodeIDs: graph.sourceNodeIDs,
                     generationAttemptID: generationAttemptID
                 )
@@ -732,12 +739,12 @@ actor CanvasToolCoordinator {
     private func generationFingerprint(
         kind: CanvasGenerationGraphKind, prompt: String, modelID: UUID?,
         sourceNodeIDs: [UUID], aspectRatio: String?, quality: String?,
-        count: Int, durationSeconds: Int?
+        count: Int, durationSeconds: Int?, resolution: String? = nil
     ) -> String {
         let canonical = [
             kind.rawValue, prompt.trimmingCharacters(in: .whitespacesAndNewlines),
             modelID?.uuidString ?? "", sourceNodeIDs.map(\.uuidString).sorted().joined(separator: ","),
-            aspectRatio ?? "", quality ?? "", String(count), durationSeconds.map(String.init) ?? ""
+            aspectRatio ?? "", resolution ?? "", quality ?? "", String(count), durationSeconds.map(String.init) ?? ""
         ].joined(separator: "|")
         return SHA256.hash(data: Data(canonical.utf8))
             .map { String(format: "%02x", $0) }.joined()
@@ -1006,11 +1013,11 @@ private struct CanvasGenerateMediaTool: AgentTool {
         var documentID: UUID?; var sourceNodeIDs: [UUID]?
         var configurationNodeID: UUID?; var position: CanvasPoint
         var expectedRevision: Int64; var aspectRatio: String?
-        var quality: String?; var count: Int?; var durationSeconds: Int?
+        var quality: String?; var count: Int?; var durationSeconds: Int?; var resolution: String?
     }
     static let name = "canvas.generate"
-    static let toolDescription = "Generate media through the canonical canvas workflow. Reference context follows only source-kind ancestry; ordinary arrows and prior generated results are never implicit inputs. For an existing configuration, omit sourceNodeIDs to inherit its incoming source connections and persisted source metadata, provide an array to replace the complete source set, or provide [] to clear it. Every resolved reference image is sent or the request fails before networking. The workflow creates or reuses a visible generation-configuration node and connected image/video results. Inspect first and pass the exact revision. For a standalone image not tied to a canvas document or generation graph, use image.generate instead."
-    static let parametersJSON = #"{"type":"object","properties":{"kind":{"type":"string","enum":["image","video"]},"prompt":{"type":"string"},"modelID":{"type":"string","format":"uuid"},"documentID":{"type":"string","format":"uuid"},"sourceNodeIDs":{"type":"array","description":"Exact reference/context override. Omit this property to inherit the existing configuration's incoming source-kind connections and persisted generationSourceNodeIDs. A provided array replaces the complete source set; an empty array clears it. Only source-kind ancestry is expanded.","items":{"type":"string","format":"uuid"}},"configurationNodeID":{"type":"string","format":"uuid"},"position":{"type":"object","description":"Preferred flow area. New nodes are aligned on a fixed grid to the right of explicit sources without moving existing nodes.","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false},"expectedRevision":{"type":"integer"},"aspectRatio":{"type":"string"},"quality":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":4},"durationSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["kind","prompt","position","expectedRevision"],"additionalProperties":false}"#
+    static let toolDescription = "Generate media through the canonical canvas workflow. For images inspect image.models first for autonomyEnabled, configured suppliers, modelID, priority/fallback and supported aspectRatio/resolution/quality/count/reference limits; never guess parameters. Reference context follows only source-kind ancestry; ordinary arrows and prior generated results are never implicit inputs. For an existing configuration, omit sourceNodeIDs to inherit its incoming source connections and persisted source metadata, provide an array to replace the complete source set, or provide [] to clear it. Every resolved reference image is sent or the request fails before networking. The workflow creates or reuses a visible generation-configuration node and connected image/video results. Inspect first and pass the exact revision. For a standalone image not tied to a canvas document or generation graph, use image.generate instead."
+    static let parametersJSON = #"{"type":"object","properties":{"kind":{"type":"string","enum":["image","video"]},"prompt":{"type":"string"},"modelID":{"type":"string","format":"uuid"},"documentID":{"type":"string","format":"uuid"},"sourceNodeIDs":{"type":"array","description":"Exact reference/context override. Omit this property to inherit the existing configuration's incoming source-kind connections and persisted generationSourceNodeIDs. A provided array replaces the complete source set; an empty array clears it. Only source-kind ancestry is expanded.","items":{"type":"string","format":"uuid"}},"configurationNodeID":{"type":"string","format":"uuid"},"position":{"type":"object","description":"Preferred flow area. New nodes are aligned on a fixed grid to the right of explicit sources without moving existing nodes.","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false},"expectedRevision":{"type":"integer"},"aspectRatio":{"type":"string"},"resolution":{"type":"string","description":"Image resolution from image.models, separate from quality"},"quality":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":4},"durationSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["kind","prompt","position","expectedRevision"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.networkAccess, .sendsDataToProvider, .persistsPersonalData]
     static let isSideEffecting = true
     let coordinator: CanvasToolCoordinator
@@ -1034,7 +1041,7 @@ private struct CanvasGenerateMediaTool: AgentTool {
             configurationNodeID: args.configurationNodeID,
             position: args.position, expectedRevision: args.expectedRevision,
             aspectRatio: args.aspectRatio, quality: args.quality,
-            count: args.count ?? 1, durationSeconds: args.durationSeconds
+            count: args.count ?? 1, durationSeconds: args.durationSeconds, resolution: args.resolution
         ))
     }
 }
@@ -1088,12 +1095,14 @@ func registerCanvasAgentTools(environment: AppEnvironment, registry: ToolRunnerR
         },
         generateImages: { [weak environment] prompt, options, sourceImages, modelID, owner in
             guard let environment else { throw FloeError.internalError("Canvas environment unavailable") }
+            let route = try environment.conversationCenter.resolveAgentImageRoute(
+                operation: sourceImages.isEmpty ? .generate : .edit, modelID: modelID,
+                selection: ImageGenerationSelection(aspectRatio: options.aspectRatio, resolution: options.resolution,
+                    quality: options.quality, nativeSizeOverride: options.size),
+                count: options.count, referenceCount: sourceImages.count)
             return try await environment.mediaGenerationService.generateImages(
-                prompt: prompt,
-                options: options,
-                sourceImages: sourceImages,
-                modelID: modelID,
-                owner: owner
+                prompt: prompt, options: options, sourceImages: sourceImages,
+                modelID: route.1.id, owner: owner, agentInitiated: true
             )
         },
         markGeneratedAssetsReferenced: { [weak environment] batch in

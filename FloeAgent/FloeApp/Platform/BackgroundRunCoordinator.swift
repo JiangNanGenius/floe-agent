@@ -1455,6 +1455,10 @@ struct GeneratedImageReservationOwner: Sendable, Hashable {
 struct ReservedGeneratedImageBatch: Sendable, Hashable {
     var reservationID: UUID
     var assets: [CanvasAssetReference]
+    var modelID: UUID? = nil
+    var providerID: UUID? = nil
+    var selection: ImageGenerationSelection? = nil
+    var fallbackUsed = false
 }
 
 enum GeneratedAssetReservationRecoveryDecision: Sendable, Hashable {
@@ -1548,13 +1552,14 @@ final class MediaGenerationService {
         options: ImageGenerationOptions = .init(),
         sourceImages: [Data] = [],
         modelID: UUID? = nil,
-        owner: GeneratedImageReservationOwner
+        owner: GeneratedImageReservationOwner,
+        agentInitiated: Bool = false
     ) async throws -> ReservedGeneratedImageBatch {
         let center = environment.conversationCenter
         let operation: RemoteImageOperation = sourceImages.isEmpty ? .generate : .edit
         let selected = modelID.flatMap { center.mediaProviderAndModel(modelID: $0) }
             ?? center.auxiliaryProviderAndModel(for: operation == .generate ? .generate : .edit)
-        guard let (provider, model) = selected,
+        guard var (provider, model) = selected,
               let adapter = ImageProviderAdapterFactory().adapter(for: provider),
               adapter.supports(operation, for: provider) else {
             throw FloeError.invalidConfiguration(
@@ -1594,7 +1599,7 @@ final class MediaGenerationService {
         let qualityLooksLikeResolution = options.quality.map {
             ["1K", "2K", "4K"].contains($0.uppercased())
         } ?? false
-        let selection = ImageGenerationSelection(
+        var selection = ImageGenerationSelection(
             aspectRatio: options.aspectRatio,
             resolution: options.resolution ?? (qualityLooksLikeResolution ? options.quality : nil),
             quality: qualityLooksLikeResolution ? nil : options.quality,
@@ -1610,6 +1615,12 @@ final class MediaGenerationService {
         )
         let result: RemoteImageResult
         do {
+            if agentInitiated {
+                let routed = try await center.performAgentImage(operation: operation, prompt: prompt,
+                    sourceImages: sourceImages, modelID: model.id, selection: selection, count: requestedOutputCount)
+                result = routed.0; provider = routed.1; model = routed.2
+                selection = ImageGenerationPresetResolver.applyingDefaults(selection, provider: provider, model: model, operation: operation)
+            } else {
             result = try await adapter.perform(
                 RemoteImageRequest(
                     operation: operation, prompt: prompt,
@@ -1621,6 +1632,7 @@ final class MediaGenerationService {
                 provider: provider,
                 credentials: center.resolveCredentials(for: provider)
             )
+            }
         } catch {
             let nsError = error as NSError
             let elapsed = Int(Date().timeIntervalSince(startedAt) * 1_000)
@@ -1788,7 +1800,8 @@ final class MediaGenerationService {
         }
         return ReservedGeneratedImageBatch(
             reservationID: reservationID,
-            assets: assets
+            assets: assets, modelID: model.id, providerID: provider.id, selection: selection,
+            fallbackUsed: result.metadata["fallbackUsed"] == "true"
         )
     }
 

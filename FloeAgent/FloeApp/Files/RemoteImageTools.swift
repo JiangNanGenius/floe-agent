@@ -342,23 +342,165 @@ struct RemoteImageInspectTool: AgentTool {
     }
 }
 
+/// Shared by ordinary chat and the Canvas agent; manual pickers keep their own route.
+@MainActor
+extension ConversationCenter {
+    func agentImageRoutes(operation: RemoteImageOperation) -> [(ProviderProfile, ModelProfile)] {
+        let preferred = auxiliaryProviderAndModel(for: operation)?.1.id
+        let factory = ImageProviderAdapterFactory()
+        return imageModels.compactMap { model -> (ProviderProfile, ModelProfile)? in
+            guard model.isEnabled,
+                  model.capabilities.contains(operation == .generate ? .imageGeneration : .imageEditing),
+                  let provider = providers.first(where: { $0.id == model.providerID && $0.isEnabled }),
+                  let adapter = factory.adapter(for: provider), adapter.supports(operation, for: provider)
+            else { return nil }
+            return (provider, model)
+        }.sorted {
+            if ($0.1.id == preferred) != ($1.1.id == preferred) { return $0.1.id == preferred }
+            return $0.1.id.uuidString < $1.1.id.uuidString
+        }
+    }
+
+    func performAgentImage(
+        operation: RemoteImageOperation, prompt: String, sourceImages: [Data], modelID: UUID?,
+        selection: ImageGenerationSelection, count: Int
+    ) async throws -> (RemoteImageResult, ProviderProfile, ModelProfile) {
+        let initial = try resolveAgentImageRoute(operation: operation, modelID: modelID,
+            selection: selection, count: count, referenceCount: sourceImages.count)
+        let automatic = modelPreferences.autonomousImageRouting == true
+        var candidates = [initial]
+        if automatic, let fallback = agentImageRoutes(operation: operation).first(where: {
+            guard $0.1.id != initial.1.id else { return false }
+            return (try? ImageGenerationPresetResolver.validateSelection(selection, provider: $0.0,
+                model: $0.1, operation: operation, count: count, referenceCount: sourceImages.count)) != nil
+        }) { candidates.append(fallback) }
+        for (index, route) in candidates.enumerated() {
+            try Task.checkCancellation()
+            guard let adapter = ImageProviderAdapterFactory().adapter(for: route.0) else {
+                throw FloeError.invalidConfiguration("Image adapter unavailable")
+            }
+            let effective = ImageGenerationPresetResolver.applyingDefaults(selection,
+                provider: route.0, model: route.1, operation: operation)
+            do {
+                let result = try await adapter.perform(RemoteImageRequest(operation: operation, prompt: prompt,
+                    sourceImages: sourceImages, selection: effective, count: count, modelRemoteID: route.1.remoteModelID),
+                    provider: route.0, credentials: resolveCredentials(for: route.0))
+                var traced = result
+                traced.metadata["providerID"] = route.0.id.uuidString
+                traced.metadata["modelID"] = route.1.id.uuidString
+                traced.metadata["fallbackUsed"] = String(index > 0)
+                traced.metadata["parameters"] = String(decoding: try JSONEncoder().encode(effective), as: UTF8.self)
+                return (traced, route.0, route.1)
+            } catch {
+                guard !Task.isCancelled, modelPreferences.autonomousImageRouting == true, index == 0, candidates.count > 1,
+                      (error as? RemoteImageError)?.allowsRouteFallback == true else { throw error }
+            }
+        }
+        throw FloeError.internalError("Image route attempts exhausted")
+    }
+
+    func resolveAgentImageRoute(
+        operation: RemoteImageOperation, modelID: UUID?, selection: ImageGenerationSelection,
+        count: Int, referenceCount: Int = 0
+    ) throws -> (ProviderProfile, ModelProfile) {
+        let automatic = modelPreferences.autonomousImageRouting == true
+        let preferred = auxiliaryProviderAndModel(for: operation)?.1.id
+        if !automatic, let modelID, modelID != preferred {
+            throw FloeError.validationFailed("Autonomous image routing is disabled. Use the preferred model from image.models.")
+        }
+        let routes = agentImageRoutes(operation: operation)
+        let selectedID = automatic ? modelID : preferred
+        let candidates = selectedID.map { id in routes.filter { $0.1.id == id } }
+            ?? (automatic ? routes : [])
+        guard !candidates.isEmpty else {
+            throw FloeError.invalidConfiguration("No compatible configured image route. Inspect image.models; configure a preferred model or enable autonomous selection.")
+        }
+        var lastError: Error?
+        for route in candidates {
+            do {
+                try ImageGenerationPresetResolver.validateSelection(
+                    selection, provider: route.0, model: route.1, operation: operation,
+                    count: count, referenceCount: referenceCount
+                )
+                return route
+            } catch { lastError = error }
+        }
+        throw lastError ?? FloeError.invalidConfiguration("No image model accepts these parameters")
+    }
+}
+
+struct RemoteImageModelsTool: AgentTool {
+    struct Arguments: Decodable, Sendable { var operation: String?; var offset: Int?; var limit: Int? }
+    static let name = "image.models"
+    static let toolDescription = "List configured image suppliers, exact model IDs, priority/fallback order and the parameters accepted by image.generate and canvas.generate. Inspect before selecting a route. modelID selects its owning supplier too. Check autonomyEnabled: when false use only the preferred route. With autonomy enabled, choose a suitable route and supported parameters; presets are preferences and fallbacks. Never guess enum values. Do not resubmit a timed-out or still-running generation because its outcome is unknown."
+    static let parametersJSON = #"{"type":"object","properties":{"operation":{"type":"string","enum":["generate","edit"]},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = []
+    static let isSideEffecting = false
+    static let toolEffect: ToolEffect = .readOnly
+    private let list: @MainActor @Sendable (Arguments) throws -> String
+    init(center: FilesCenter) {
+        list = { args in
+            let conversation = center.environment.conversationCenter
+            let operation: RemoteImageOperation = args.operation == "edit" ? .edit : .generate
+            let preferred = conversation.auxiliaryProviderAndModel(for: operation)?.1.id
+            let routes = conversation.agentImageRoutes(operation: operation)
+            let offset = min(args.offset ?? 0, routes.count)
+            let end = min(offset + (args.limit ?? 25), routes.count)
+            let entries = try routes[offset..<end].enumerated().map { index, route -> [String: Any] in
+                let contract = ImageGenerationPresetResolver.parameterContract(provider: route.0, model: route.1, operation: operation)
+                let parameters = try JSONSerialization.jsonObject(with: JSONEncoder().encode(contract))
+                return ["modelID": route.1.id.uuidString, "remoteModelID": route.1.remoteModelID,
+                        "modelName": route.1.displayName, "providerID": route.0.id.uuidString,
+                        "providerName": route.0.displayName ?? route.0.kind.rawValue, "providerKind": route.0.kind.rawValue,
+                        "preferred": route.1.id == preferred, "priority": offset + index + 1,
+                        "selectable": conversation.modelPreferences.autonomousImageRouting == true || route.1.id == preferred,
+                        "parameters": parameters]
+            }
+            let output: [String: Any] = [
+                "autonomyEnabled": conversation.modelPreferences.autonomousImageRouting == true,
+                "operation": operation.rawValue, "total": routes.count, "models": entries,
+                "nextOffset": end < routes.count ? end as Any : NSNull(),
+                "fallbackPolicy": "Prefer the configured preset when suitable; explicitly selected model IDs remain exact. If modelID is omitted in autonomous mode, the first compatible route is selected before networking. A definite HTTP 401/404/429 may try one compatible fallback within the same generation. No fallback after cancellation, timeout, policy refusal, server error or unknown result. Never automatically submit a second generation to work around this policy."]
+            return String(decoding: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), as: UTF8.self)
+        }
+    }
+    func validate(_ args: Arguments) throws {
+        guard args.operation == nil || ["generate", "edit"].contains(args.operation!),
+              (args.offset ?? 0) >= 0, (1...50).contains(args.limit ?? 25) else {
+            throw FloeError.validationFailed("Invalid image catalog operation or pagination")
+        }
+    }
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
+        return PDFToolSupport.output(try await list(args), status: 0)
+    }
+}
+
 struct RemoteImageGenerateTool: AgentTool {
     struct Arguments: Decodable, Sendable {
         var prompt: String
         var count: Int?
         var size: String?
+        var modelID: UUID?
+        var aspectRatio: String?
+        var resolution: String?
+        var quality: String?
     }
 
     static let name = "image.generate"
     static let toolDescription =
-        "Generate standalone images with the image model configured in Settings. Use this for user requests to draw, create, or render an image. Returns durable image artifacts; do not substitute SVG/HTML/Python when this tool is available. Canvas graph operations are available only inside a Canvas task, not ordinary chat; do not search repeatedly for Canvas tools outside that surface."
+        "Generate standalone images. Inspect image.models for configured suppliers, modelID, preference/fallback order and supported parameters. When autonomy is enabled choose the best suitable model and parameters; otherwise use the preferred model. Use this for user requests to draw, create, or render an image. Returns durable image artifacts; do not substitute SVG/HTML/Python when this tool is available. Canvas graph operations are available only inside a Canvas task, not ordinary chat; do not search repeatedly for Canvas tools outside that surface."
     static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "prompt": {"type": "string", "description": "Detailed description of the image to create"},
         "count": {"type": "integer", "minimum": 1, "maximum": 4, "description": "Number of images; default 1"},
-        "size": {"type": "string", "description": "Optional provider-supported size such as 1024x1024"}
+        "size": {"type": "string", "description": "Advanced native size override; use only when supported by image.models"},
+        "modelID": {"type":"string","format":"uuid","description":"Configured modelID from image.models; also selects its supplier"},
+        "aspectRatio": {"type":"string","description":"Allowed aspect ratio from image.models"},
+        "resolution": {"type":"string","description":"Allowed resolution from image.models"},
+        "quality": {"type":"string","description":"Allowed quality from image.models"}
       },
       "required": ["prompt"],
       "additionalProperties": false
@@ -368,17 +510,16 @@ struct RemoteImageGenerateTool: AgentTool {
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .mutating
 
-    private let generate: @MainActor @Sendable (String, Int, String?) async throws -> [AttachmentRef]
+    private let generate: @MainActor @Sendable (Arguments) async throws -> ([AttachmentRef], String)
     private let resolveURL: @MainActor @Sendable (AttachmentRef) throws -> URL
 
     init(center: FilesCenter) {
-        self.generate = { prompt, count, size in
-            try await center.performRemoteImage(
-                operation: .generate,
-                prompt: prompt,
-                count: count,
-                size: size
-            )
+        self.generate = { args in
+            try await center.performRemoteImageResult(operation: .generate,
+                prompt: args.prompt.trimmingCharacters(in: .whitespacesAndNewlines), count: args.count ?? 1,
+                modelID: args.modelID, selection: ImageGenerationSelection(aspectRatio: args.aspectRatio,
+                    resolution: args.resolution, quality: args.quality, nativeSizeOverride: args.size),
+                agentInitiated: true)
         }
         self.resolveURL = { attachment in
             try center.resolveURL(for: attachment)
@@ -396,11 +537,7 @@ struct RemoteImageGenerateTool: AgentTool {
 
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        let attachments = try await generate(
-            args.prompt.trimmingCharacters(in: .whitespacesAndNewlines),
-            args.count ?? 1,
-            args.size
-        )
+        let (attachments, routeDescription) = try await generate(args)
         let workspacePaths = try await persistInTaskWorkspace(
             attachments,
             context: context
@@ -415,7 +552,7 @@ struct RemoteImageGenerateTool: AgentTool {
                 sha256: attachment.sha256
             )
         }
-        let summary = zip(attachments, workspacePaths).map { attachment, path in
+        let summary = routeDescription + "\n" + zip(attachments, workspacePaths).map { attachment, path in
             "\(attachment.displayName) saved to \(path) [attachment:\(attachment.id.uuidString) sha256:\(attachment.sha256)]"
         }.joined(separator: "\n")
         let summaryDigest = SHA256.hash(data: Data(summary.utf8))
@@ -1175,6 +1312,8 @@ enum PDFToolSupport {
 func registerRemoteImageTools(center: FilesCenter, registry: ToolRunnerRegistry = .shared) {
     ToolCatalog.register(RemoteImageInspectTool.self)
     registry.register(RemoteImageInspectTool(center: center))
+    ToolCatalog.register(RemoteImageModelsTool.self)
+    registry.register(RemoteImageModelsTool(center: center))
     ToolCatalog.register(RemoteImageGenerateTool.self)
     registry.register(RemoteImageGenerateTool(center: center))
     ToolCatalog.register(PDFInspectTool.self)

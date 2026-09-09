@@ -195,9 +195,9 @@ public actor ModelConfigurationStore {
                         approval_model_id, package_review_model_id,
                         auxiliary_image_mode, shared_image_model_id,
                         image_generation_model_id, image_editing_model_id,
-                        default_video_model_id,
+                        default_video_model_id, autonomous_image_routing,
                         updated_at, sync_revision
-                    ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         onboarding_status = excluded.onboarding_status,
                         default_agent_model_id = excluded.default_agent_model_id,
@@ -212,6 +212,7 @@ public actor ModelConfigurationStore {
                         image_generation_model_id = excluded.image_generation_model_id,
                         image_editing_model_id = excluded.image_editing_model_id,
                         default_video_model_id = excluded.default_video_model_id,
+                        autonomous_image_routing = excluded.autonomous_image_routing,
                         updated_at = excluded.updated_at,
                         sync_revision = excluded.sync_revision
                     """,
@@ -229,6 +230,7 @@ public actor ModelConfigurationStore {
                     preferences.imageGenerationModelID?.uuidString,
                     preferences.imageEditingModelID?.uuidString,
                     preferences.defaultVideoModelID?.uuidString,
+                    preferences.autonomousImageRouting,
                     ConfigurationCodec.encode(preferences.updatedAt),
                     preferences.syncRevision
                 ]
@@ -458,6 +460,7 @@ enum ConfigurationCodec {
             canvasVisionModelID: uuid("canvas_vision_model_id"),
             approvalModelID: uuid("approval_model_id"),
             packageReviewModelID: uuid("package_review_model_id"),
+            autonomousImageRouting: row["autonomous_image_routing"],
             auxiliaryImageMode: imageMode,
             sharedImageModelID: uuid("shared_image_model_id"),
             imageGenerationModelID: uuid("image_generation_model_id"),
