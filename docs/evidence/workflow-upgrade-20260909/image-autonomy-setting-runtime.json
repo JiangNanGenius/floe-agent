@@ -1,0 +1,22 @@
+{
+  "observedAt": "2026-09-09T09:08:23.551647+00:00",
+  "buildRunID": "34328151744",
+  "sourceCommit": "c6bb803",
+  "app": "Floe Agent 3",
+  "platform": "iOS app on Mac",
+  "checks": {
+    "settingVisible": true,
+    "initiallyDisabled": true,
+    "enabledAndAutoSaved": true,
+    "valueRetainedAfterNavigatingAwayAndBack": true,
+    "restoredDisabledAndAutoSaved": true
+  },
+  "screenshot": "image-autonomy-setting-enabled-mac.jpg",
+  "limits": [
+    "App restart persistence not tested in this run",
+    "No real generation request sent",
+    "Physical iPhone/iPad not tested"
+  ],
+  "uiFollowup": "Vision empty state wrongly described generation/editing; corrected specific vision wording and added image configuration heading in source; rebuilt UI retest pending.",
+  "navigationObservation": "Background accessibility selection did not immediately render the detail; raising the actual window displayed the selected settings. Not classified as a confirmed foreground product defect."
+}

@@ -1,0 +1,36 @@
+{
+  "runID": "34332381585",
+  "workflowCommit": "9a5e6a46349c9579080a981980452fb53ebf656d",
+  "archiveSHA256": "eb2d4ee9ce2c34a382d698683e16fefbe39aaaab78e745f6f2c13cb665b90d5e",
+  "executableSHA256": "bc45744887a9f30c993a0dd8b5608ad39e2f5d1537296386e198968830352a83",
+  "hostSourceSHA256": {
+    "FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
+    "FloeOfficeNative.mm": "3b01a57ef31a010170e6bdd40d87e69e3197701d8216850e5c88c9e9bc356840",
+    "FloeOfficeAttachment.cpp": "1265ec61e2144a8e5fc8e715c000cfc6254de2588f228b29d4bbb045fc29cfa6",
+    "FloeOfficeAttachment.hxx": "6a3c976e41df1ec3c7d339c3762522c46b3cc8b23574522559f8b83e60e7088e"
+  },
+  "hostCompilePassed": true,
+  "hostLinkPassed": true,
+  "swiftModuleImportPassed": true,
+  "bootstrapVerifiedFiles": 4785,
+  "bootstrapVerifiedDirectories": 178,
+  "cloudNativeDrainContract": {
+    "checksPassed": [
+      "1000 idle-burst notifications coalesce without dropping response bytes",
+      "notifications during an active response trigger a subsequent drain",
+      "HTTP, error, abort and timeout fail without automatic replay",
+      "unload does not report a spurious failure",
+      "initial open and in-flight preinstallation requests retain notifications",
+      "remote sockets stay untouched and installation is idempotent",
+      "future native sockets receive the same protection"
+    ],
+    "upstreamFalseDisconnectReproduced": true,
+    "actualFullAppAttachmentRetestPassed": false,
+    "nativeCompilationPassed": false,
+    "scriptSHA256": "de2f7c4b8d7d9fdde2923531e5fcadf9ec2a4f5b20ba7cbd74923f6abfa2bc8f",
+    "upstreamSHA256": "dca8dfc71c2a50c937edea0bf48bf71bfa21f5273af9bc652a734e0aa0d5ff79"
+  },
+  "fullAppAttachmentRetestPassed": false,
+  "originalFileWritebackPassed": false,
+  "physicalDevicePassed": false
+}

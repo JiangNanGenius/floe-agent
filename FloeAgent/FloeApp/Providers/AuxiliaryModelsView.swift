@@ -35,7 +35,7 @@ struct AuxiliaryModelsView: View {
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
                 if viewModel.visionCandidates.isEmpty {
-                    Label("auxiliary.shared.empty", systemImage: "eye.slash")
+                        Label("auxiliary.vision.empty", systemImage: "eye.slash")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -58,6 +58,8 @@ struct AuxiliaryModelsView: View {
 
             Section {
                 Toggle("模型自主选择生图配置", isOn: $viewModel.autonomousImageRouting)
+            } header: {
+                Text("auxiliary.image.configuration")
             } footer: {
                 Text("允许模型按任务选择已配置的供应商、图像模型和参数。下方预设作为优先选择和备选；关闭后使用指定模型。")
             }

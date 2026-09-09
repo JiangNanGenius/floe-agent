@@ -1752,6 +1752,20 @@
         }
       }
     },
+    "auxiliary.image.configuration": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Image Generation" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "生图配置" } }
+      }
+    },
+    "auxiliary.vision.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Add a model that can understand images." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请添加支持图片理解的模型。" } }
+      }
+    },
     "auxiliary.shared.empty": {
       "extractionState": "manual",
       "localizations": {

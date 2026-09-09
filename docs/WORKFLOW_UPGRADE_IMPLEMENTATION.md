@@ -187,3 +187,5 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 - CI 34328152852 的 125 项应用回归全部通过；后续运行时 218 项测试中 1 项使用旧目录断言，只期望 tools.search，实际正确包含新增 tools.list。断言已更新为两种常驻发现入口，仍保证 test.echo 延迟加载；待新提交重跑。Linux 构建通过，App Store SDK 在观察时仍运行，发布后续扫描与清单未执行。
 
 - Office 断连继续定位：使用锁定 `browser/js/global.js` 中实际 ProxySocket/MobileSocket 复现空闲后通知突发触发代理 30 秒误断连。原生接收新增顺序合并读取，当前请求结束后补读待处理通知，保留原帧解析与原生命令发送；HTTP/错误/取消仍失败且不自动重放。实际脚本 7 组契约通过，包含 1,000 次通知、完整两帧、初次连接、旧在途请求及远程连接隔离；见 [通信契约](evidence/workflow-upgrade-20260909/office-native-drain-contract.json)。该结果证明源码风险及定向修复，尚不能认定完整应用附件故障同根或已经解决；新宿主编译、工作区选择返回及原文件保存重开仍待实测。CI 34328152852 的 App Store SDK 最终也通过，34331257197 仍在验证更新后的发现工具断言。
+
+- 通信合并宿主 34332381585（9a5e6a4）已通过云端实际源码对照、编译、链接和 Swift 导入，本地 4,785 文件/178 目录校验通过并锁定，见 [组件回执](evidence/workflow-upgrade-20260909/office-native-drain-host-qualified.json)。完整应用尚待用该产物重建及附件保存复测。M02 开关已在完整 Floe 3 中实际开启、离开再进入保留状态，并恢复关闭，见 [设置实测](evidence/workflow-upgrade-20260909/image-autonomy-setting-runtime.json)；这不替代应用重启/真机/真实生成验收。修正视觉空状态的生图模型误提示，新增生图配置标题，重建后复核。
