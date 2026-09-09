@@ -2391,7 +2391,7 @@ final class ConversationCenter: ObservableObject {
             let payload = Self.stringMap(from: event.payloadJSON)
             guard payload["status"] == "success" else { continue }
             // Discovery is preparation, not proof that the goal advanced.
-            guard !["tools.search", "skill.search", "skill.read"].contains(payload["tool"] ?? "") else { continue }
+            guard !GoalEvidenceReviewContract.isPreparationTool(payload["tool"] ?? "") else { continue }
             let reference = "run:\(completedRunID.uuidString):event:\(event.sequence)"
             guard !existingReferences.contains(reference) else { continue }
             let summary = String((payload["summary"] ?? payload["tool"] ?? "Successful tool result").prefix(1_000))
@@ -2417,7 +2417,6 @@ final class ConversationCenter: ObservableObject {
                 model: model
             )
             goal.progress.modelCallCount += 1
-            let evidenceIDs = newEvidence.map(\.id)
             if let blockingCondition = review.blockingCondition {
                 goal.status = .blocked
                 goal.progress.repeatedBlockerKey = "user-condition:\(blockingCondition)"
@@ -2426,17 +2425,19 @@ final class ConversationCenter: ObservableObject {
             if review.isValid && goal.status != .blocked {
                 goal.recordProgress()
                 for index in goal.steps.indices
-                    where review.completedStepIDs.contains(goal.steps[index].id)
+                    where review.stepEvidence[goal.steps[index].id] != nil
                         && goal.steps[index].status != .skipped {
                     goal.steps[index].status = .completed
-                    goal.steps[index].evidenceIDs = Array(Set(goal.steps[index].evidenceIDs + evidenceIDs))
+                    goal.steps[index].evidenceIDs = Array(Set(goal.steps[index].evidenceIDs).union(
+                        review.stepEvidence[goal.steps[index].id] ?? []
+                    ))
                 }
                 for index in goal.acceptanceCriteria.indices
-                    where review.satisfiedCriterionIDs.contains(goal.acceptanceCriteria[index].id) {
+                    where review.criterionEvidence[goal.acceptanceCriteria[index].id] != nil {
                     goal.acceptanceCriteria[index].isSatisfied = true
                     goal.acceptanceCriteria[index].evidenceIDs = Array(Set(
-                        goal.acceptanceCriteria[index].evidenceIDs + evidenceIDs
-                    ))
+                        goal.acceptanceCriteria[index].evidenceIDs
+                    ).union(review.criterionEvidence[goal.acceptanceCriteria[index].id] ?? []))
                 }
                 let proposal = GoalCompletionProposal(
                     goalID: goal.id,
@@ -2476,7 +2477,7 @@ final class ConversationCenter: ObservableObject {
                     return
                 }
             }
-            if !review.isValid {
+            if review.reviewSucceeded && !review.isValid {
                 goal.recordBlocker(key: "evidence-review-rejected")
             }
             if goal.status != .blocked && goal.status != .completed { goal.status = .active }
@@ -2561,40 +2562,26 @@ final class ConversationCenter: ObservableObject {
         return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
     }
 
-    private struct GoalEvidenceReview {
-        var isValid = false
-        var satisfiedCriterionIDs: Set<UUID> = []
-        var completedStepIDs: Set<UUID> = []
-        var blockingCondition: String?
-    }
-
     private func reviewGoalEvidence(
         goal: ConversationGoal,
         newEvidence: [GoalEvidence],
         provider: ProviderProfile,
         model: ModelProfile
-    ) async -> GoalEvidenceReview {
-        let evidenceText = newEvidence.map {
-            "[\($0.reference)] \($0.summary)"
-        }.joined(separator: "\n")
-        let criteriaWithIDs = goal.acceptanceCriteria.map {
-            "\($0.id.uuidString): \($0.text)"
-        }.joined(separator: "\n")
-        let stepsWithIDs = goal.steps.map {
-            "\($0.id.uuidString): \($0.title) — \($0.detail)"
-        }.joined(separator: "\n")
-        let blockers = (goal.blockingConditions ?? []).joined(separator: "\n")
+    ) async -> GoalEvidenceReviewContract.Result {
+        guard let input = try? GoalEvidenceReviewContract.input(goal: goal, evidence: newEvidence) else {
+            return GoalEvidenceReviewContract.Result()
+        }
         let request = ProviderStreamRequest(
             provider: provider,
             model: model,
             contentMessages: [
                 ProviderMessage(
                     role: "system",
-                    text: "Review inspectable evidence item by item. Return strict JSON only: {\"valid\":true|false,\"satisfiedCriterionIDs\":[\"uuid\"],\"completedStepIDs\":[\"uuid\"],\"blockingCondition\":null|\"exact matched condition\"}. Include an ID only when this evidence specifically proves it. Never approve from a completion claim alone. No tools are available."
+                    text: GoalEvidenceReviewContract.instructions
                 ),
                 ProviderMessage(
                     role: "user",
-                    text: "Goal: \(goal.objective)\nCriteria:\n\(criteriaWithIDs)\nSteps:\n\(stepsWithIDs)\nUser blocking conditions:\n\(blockers)\nEvidence:\n\(evidenceText)"
+                    text: input
                 )
             ]
         )
@@ -2606,31 +2593,11 @@ final class ConversationCenter: ObservableObject {
             ) {
                 if case .textDelta(let delta) = event {
                     output += delta.text
-                    if output.utf8.count > 4_096 { return GoalEvidenceReview() }
+                    if output.utf8.count > 16_384 { return GoalEvidenceReviewContract.Result() }
                 }
             }
-        } catch { return GoalEvidenceReview() }
-        guard let start = output.firstIndex(of: "{"),
-              let end = output.lastIndex(of: "}"), start <= end,
-              let data = String(output[start...end]).data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return GoalEvidenceReview() }
-        let knownCriteria = Set(goal.acceptanceCriteria.map(\.id))
-        let knownSteps = Set(goal.steps.map(\.id))
-        let criterionIDs = (object["satisfiedCriterionIDs"] as? [String] ?? [])
-            .compactMap(UUID.init(uuidString:))
-        let stepIDs = (object["completedStepIDs"] as? [String] ?? [])
-            .compactMap(UUID.init(uuidString:))
-        let reportedBlocker = object["blockingCondition"] as? String
-        let blockingCondition = reportedBlocker.flatMap { reported in
-            (goal.blockingConditions ?? []).first { $0 == reported }
-        }
-        return GoalEvidenceReview(
-            isValid: object["valid"] as? Bool == true,
-            satisfiedCriterionIDs: Set(criterionIDs).intersection(knownCriteria),
-            completedStepIDs: Set(stepIDs).intersection(knownSteps),
-            blockingCondition: blockingCondition
-        )
+        } catch { return GoalEvidenceReviewContract.Result() }
+        return GoalEvidenceReviewContract.parse(output, goal: goal, evidence: newEvidence)
     }
 
     func persistActiveRecoveryPoints() async {
@@ -2660,9 +2627,9 @@ final class ConversationCenter: ObservableObject {
             contentMessages: [
                 ProviderMessage(
                     role: "system",
-                    text: "Create only a task title. Chinese: 4-12 characters. English: 2-8 words. No quotes, punctuation suffix, explanation, or tools."
+                    text: TaskTitlePrompt.instructions
                 ),
-                ProviderMessage(role: "user", text: goal)
+                ProviderMessage(role: "user", text: TaskTitlePrompt.input(goal))
             ]
         )
         do {

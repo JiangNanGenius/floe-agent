@@ -1,0 +1,7 @@
+44 Swift tests in 3 suites passed: GoalEvidenceReviewContractTests, TaskTitlePromptTests, HarnessPlanningTests.
+Command: DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test --package-path FloeAgent --jobs 2 --enable-swift-testing --filter 'GoalEvidenceReviewContractTests|TaskTitlePromptTests|HarnessPlanningTests'
+Log: /tmp/floe-goal-evidence-title-tests.log
+ConversationCenter.swift syntax parse passed. Full iOS application build not yet verified for this change.
+Per-item evidence citations and input/output boundaries are tested; semantic evidence judgment and actual model efficiency are not established.
+3 shell download-function tests passed in scripts/test_python_wheel_download.py using controlled curl outcomes; real remote availability awaits next CI.
+Previous actual app run 34300793264: terminal failure during NumPy dependency download with HTTP 503; application build was skipped.

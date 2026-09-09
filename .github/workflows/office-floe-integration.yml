@@ -29,6 +29,7 @@ jobs:
           xcodebuild -downloadComponent MetalToolchain
           python3 scripts/test_office_host_bootstrap.py
           python3 scripts/test_office_app_load_chain.py
+          python3 scripts/test_python_wheel_download.py
           scripts/bootstrap_python_runtime.sh
           scripts/gen_project.sh
       - name: Build Floe with shared native Office preview and fullscreen editing

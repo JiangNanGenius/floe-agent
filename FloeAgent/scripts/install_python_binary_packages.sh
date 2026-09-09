@@ -31,8 +31,26 @@ download_wheel() {
         if [ "$package" = pandas ]; then
             url="https://github.com/JiangNanGenius/floe-agent/releases/download/runtime-pandas-3.0.5-cp313/pandas-3.0.5-cp313-cp313-ios_17_0_arm64_$arch.whl"
         fi
-        curl --fail --location --retry 3 --output "$file" \
-            "$url"
+        local partial
+        partial="$(mktemp "$file.partial.XXXXXX")" || return 1
+        # This function runs inside command substitution, where Bash does not
+        # reliably propagate errexit. Handle transfer failure explicitly and
+        # never publish a partial wheel as a reusable cache entry.
+        if ! curl --fail --location --retry 5 --retry-all-errors \
+            --connect-timeout 30 --max-time 300 --retry-max-time 900 \
+            --output "$partial" "$url"; then
+            rm -f "$partial"
+            echo "error: $package $arch wheel download failed" >&2
+            return 1
+        fi
+        local downloaded
+        downloaded="$(shasum -a 256 "$partial" | awk '{print $1}')" || { rm -f "$partial"; return 1; }
+        if [ "$downloaded" != "$expected" ]; then
+            rm -f "$partial"
+            echo "error: $package $arch downloaded wheel SHA256 mismatch" >&2
+            return 1
+        fi
+        mv "$partial" "$file" || { rm -f "$partial"; return 1; }
     fi
     local actual
     actual="$(shasum -a 256 "$file" | awk '{print $1}')"
