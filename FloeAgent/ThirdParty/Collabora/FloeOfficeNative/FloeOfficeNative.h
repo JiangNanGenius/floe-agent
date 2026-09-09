@@ -36,6 +36,9 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 /// Stop waiting for an explicit save. An already running engine save may still
 /// finish in its private files; this never cancels or commits the original file.
 - (void)cancelPendingSave;
+/// Settle the native document before releasing its view. This does not request
+/// an engine save or remove any files; save first when committing user edits.
+- (void)closeWorkingCopyWithCompletion:(void (^)(NSError * _Nullable error))completion;
 - (nullable instancetype)initWithWorkingFileURL:(NSURL *)workingFileURL
                              sessionDirectory:(NSURL *)sessionDirectory
                                      readOnly:(BOOL)readOnly

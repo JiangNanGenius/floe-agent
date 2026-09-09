@@ -480,7 +480,7 @@
 +{
 +    if (requestID.size() > 128 || requestID.rfind("floe-save:", 0) != 0)
 +        return;
-+    CODocument *document = DocumentData::getDocument(broker->getMobileAppDocId());
++    CODocument *document = DocumentData::getDocument(broker->floeMobileAppDocId());
 +    NSString *nativeID = [NSString stringWithUTF8String:requestID.c_str()] ?: @"";
 +    dispatch_async(dispatch_get_main_queue(), ^{
 +        if (document.floeSaveRequestRejected)
@@ -570,7 +570,7 @@
 +                    const std::string request = docBroker->floeActiveSaveRequestID();
 +                    if (!sequence.empty() && sequence.size() <= 32)
 +                    {
-+                        CODocument *document = DocumentData::getDocument(docBroker->getMobileAppDocId());
++                        CODocument *document = DocumentData::getDocument(docBroker->floeMobileAppDocId());
 +                        NSString *nativeSequence = [NSString stringWithUTF8String:sequence.c_str()];
 +                        NSString *nativeRequest = request.size() <= 128 && request.rfind("floe-save:", 0) == 0
 +                            ? ([NSString stringWithUTF8String:request.c_str()] ?: @"") : @"";
@@ -585,11 +585,12 @@
  
 --- a/wsd/DocumentBroker.hpp
 +++ b/wsd/DocumentBroker.hpp
-@@ -361,6 +361,13 @@
+@@ -361,6 +361,14 @@
  
      /// Get whether the next save operation is an autosave.
      bool isNextSaveAutosave() const;
 +#ifdef IOS
++    unsigned floeMobileAppDocId() const { return getMobileAppDocId(); }
 +    std::string floeActiveSaveRequestID() const
 +    {
 +        return _docState.activity() == DocumentState::Activity::Save

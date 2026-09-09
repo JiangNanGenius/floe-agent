@@ -263,6 +263,9 @@ static void ServerReady() {
 @property (nonatomic, copy, readwrite) NSURL *workingFileURL;
 @property DocumentViewController *editor;
 @property (nonatomic, strong) FloeSaveReceiptJoiner *saveReceipts;
+@property (nonatomic) BOOL closing;
+@property (nonatomic) BOOL closed;
+@property (nonatomic, strong) NSMutableArray *closeWaiters;
 @end
 
 @implementation FloeOfficeNativeViewController
@@ -286,6 +289,7 @@ static void ServerReady() {
         _readOnly = readOnly;
         _workingFileURL = file;
         _saveReceipts = [FloeSaveReceiptJoiner new];
+        _closeWaiters = [NSMutableArray array];
         _editor = [[DocumentViewController alloc] initWithNibName:nil bundle:nil];
         FloeOfficeDocument *document = [[FloeOfficeDocument alloc] initWithFileURL:file];
         document->readOnly = readOnly;
@@ -313,6 +317,13 @@ static void ServerReady() {
         _editor.floeCloseCompletion = ^(BOOL success) {
             FloeOfficeNativeViewController *host = weakSelf;
             [host.saveReceipts cancel];
+            host.closing = NO;
+            host.closed = success;
+            if (!success) host.editor.view.userInteractionEnabled = YES;
+            NSArray *waiters = [host.closeWaiters copy];
+            [host.closeWaiters removeAllObjects];
+            for (void (^completion)(NSError *) in waiters)
+                completion(success ? nil : OfficeError(10, @"Office could not close this document. Your document copies have been retained."));
             if (host.onClosed) host.onClosed(success);
         };
     }
@@ -320,7 +331,7 @@ static void ServerReady() {
 }
 - (void)saveWorkingCopyWithCompletion:(void (^)(NSError *))completion {
     NSAssert(NSThread.isMainThread, @"Office saves are main-queue owned");
-    if (self.readOnly || !self.editor.webView || self.editor.document->fakeClientFd < 0) {
+    if (self.readOnly || self.closing || self.closed || !self.editor.webView || self.editor.document->fakeClientFd < 0) {
         completion(OfficeError(7, @"Open the document for editing before saving."));
         return;
     }
@@ -343,6 +354,16 @@ static void ServerReady() {
 }
 - (void)cancelPendingSave {
     [self.saveReceipts cancel];
+}
+- (void)closeWorkingCopyWithCompletion:(void (^)(NSError *))completion {
+    NSAssert(NSThread.isMainThread, @"Office closes are main-queue owned");
+    if (self.closed) { completion(nil); return; }
+    [self.closeWaiters addObject:[completion copy]];
+    if (self.closing) return;
+    self.closing = YES;
+    [self.saveReceipts cancel];
+    self.editor.view.userInteractionEnabled = NO;
+    [self.editor bye];
 }
 - (void)viewDidLoad {
     [super viewDidLoad];

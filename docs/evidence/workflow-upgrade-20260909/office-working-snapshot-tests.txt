@@ -1,0 +1,30 @@
+◇ Test run started.
+◇ Suite "FloeDocuments.DocumentWorkspace" started.
+◇ Test "Normal close preserves unsettled engine generations even when the working file is unchanged" started.
+◇ Test "Failed or inconsistent recovery refresh preserves the previous recovery bytes" started.
+◇ Test "Save replaces the original through a private working copy" started.
+◇ Test "Security-scoped bookmark round-trip resolves back to the original" started.
+◇ Test "Only explicit discard may remove a native generation before it reaches the working file" started.
+◇ Test "Forged session paths cannot direct writeback or cleanup" started.
+◇ Test "External same-size changes survive save conflicts and normal close" started.
+◇ Test "Conflict-safe writeback leaves a recovery copy when the original vanished" started.
+◇ Test "Close is idempotent and releases the working copy" started.
+◇ Test "Opening a non-file URL throws validationFailed" started.
+◇ Test "A later autosave cannot change the snapshot committed by an earlier save" started.
+◇ Test "Repeated saves advance the baseline and explicit discard preserves the original" started.
+◇ Test case passing 1 argument fault → .changedCopy to "Failed or inconsistent recovery refresh preserves the previous recovery bytes" started.
+◇ Test case passing 1 argument fault → .copyFailure to "Failed or inconsistent recovery refresh preserves the previous recovery bytes" started.
+✔ Test "Only explicit discard may remove a native generation before it reaches the working file" passed after 0.059 seconds.
+✔ Test "Normal close preserves unsettled engine generations even when the working file is unchanged" passed after 0.060 seconds.
+✔ Test "Failed or inconsistent recovery refresh preserves the previous recovery bytes" with 2 test cases passed after 0.060 seconds.
+✔ Test "Opening a non-file URL throws validationFailed" passed after 0.060 seconds.
+✔ Test "Conflict-safe writeback leaves a recovery copy when the original vanished" passed after 0.060 seconds.
+✔ Test "Forged session paths cannot direct writeback or cleanup" passed after 0.061 seconds.
+✔ Test "Close is idempotent and releases the working copy" passed after 0.064 seconds.
+✔ Test "External same-size changes survive save conflicts and normal close" passed after 0.081 seconds.
+✔ Test "Repeated saves advance the baseline and explicit discard preserves the original" passed after 0.082 seconds.
+✔ Test "A later autosave cannot change the snapshot committed by an earlier save" passed after 0.084 seconds.
+✔ Test "Security-scoped bookmark round-trip resolves back to the original" passed after 0.084 seconds.
+✔ Test "Save replaces the original through a private working copy" passed after 0.085 seconds.
+✔ Suite "FloeDocuments.DocumentWorkspace" passed after 0.085 seconds.
+✔ Test run with 12 tests in 1 suite passed after 0.086 seconds.

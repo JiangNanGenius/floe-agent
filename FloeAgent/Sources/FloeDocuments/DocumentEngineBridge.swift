@@ -97,7 +97,9 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
                 guard try Self.digest(destination) == expectedDigest else {
                     throw FloeError.validationFailed("Document changed outside this editor; keep the edited copy and resolve the conflict before saving")
                 }
-                try fileManager.copyItem(at: session.workingURL, to: staging)
+                // Use the verified recovery snapshot. A later engine autosave
+                // may replace workingURL while coordinated writeback waits.
+                try fileManager.copyItem(at: session.recoveryURL, to: staging)
                 guard try Self.digest(staging) == newDigest else {
                     throw FloeError.validationFailed("Editor is still writing; finish the edit before saving")
                 }

@@ -86,7 +86,7 @@
   "sourcePatchSHA256": "09517b9a2dd4002a767491976762410d4cefd45172ea8cf401196268f5817ad7",
   "embeddingOverlay": {
     "patch": "patches/ios-embedding-boundaries.patch",
-    "sha256": "b63ec15247773dfb07cb780bf88b1b4ae4d4f54c34861348796e3832516cf79d",
+    "sha256": "47a0fd887e75baa3eff57b128e5e9013a39b7ec4c4101029b31a3e83eb15b188",
     "requiredFrameworks": [
       "GameController"
     ],
@@ -129,11 +129,11 @@
       },
       "wsd/ClientSession.cpp": {
         "originalSHA256": "2d36958e81dafa3189aef458b73668efa989f955000426d05c4f4cf008332da4",
-        "preparedSHA256": "e25527cfa89a088c4ba84c989741f71531b6997377725238c9059a14aba8d37a"
+        "preparedSHA256": "e50cf1e6f7c85a4ffaf8820b3dadb0376ad6bffee418b4639a27bb7ac4af1d2c"
       },
       "wsd/DocumentBroker.hpp": {
         "originalSHA256": "4de47bd1034fc4811e74e7ee7416499579c8fca038330fc21213dee7d43806d0",
-        "preparedSHA256": "d459cca250f73898532bdb42f0fda01ae213f89651eff8abfd94401fa917a53d"
+        "preparedSHA256": "9bd9405f5b0fe1f5c0871d087d0dc5e220aee9e704c7b7f0bafa6a99b1b3910a"
       },
       "common/MobileApp.hpp": {
         "originalSHA256": "9956a535f39793b4096161434a3dfc33ba09ad263d6f23eee71655fc464f9517",

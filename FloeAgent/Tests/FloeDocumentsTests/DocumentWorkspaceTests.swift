@@ -3,6 +3,16 @@ import Testing
 @testable import FloeDocuments
 @testable import FloeCore
 
+private final class LaterAutosaveFileManager: FileManager, @unchecked Sendable {
+    override func copyItem(at srcURL: URL, to dstURL: URL) throws {
+        if dstURL.lastPathComponent.hasPrefix(".floe-save-") {
+            let workingURL = srcURL.deletingLastPathComponent().appendingPathComponent("working").appendingPathExtension(srcURL.pathExtension)
+            try Data("later autosave".utf8).write(to: workingURL, options: .atomic)
+        }
+        try super.copyItem(at: srcURL, to: dstURL)
+    }
+}
+
 private final class RecoveryCopyFaultFileManager: FileManager, @unchecked Sendable {
     enum Fault { case copyFailure, changedCopy }
     let fault: Fault
@@ -24,6 +34,24 @@ private final class RecoveryCopyFaultFileManager: FileManager, @unchecked Sendab
 
 @Suite("FloeDocuments.DocumentWorkspace")
 struct DocumentWorkspaceTests {
+
+    @Test("A later autosave cannot change the snapshot committed by an earlier save")
+    func laterAutosaveKeepsItsOwnWorkingCopy() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("floe-autosave-race-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let manager = LaterAutosaveFileManager()
+        let workspace = try SecurityScopedDocumentWorkspace(root: root.appendingPathComponent("sessions"), fileManager: manager)
+        let original = root.appendingPathComponent("document.docx")
+        try Data("original".utf8).write(to: original)
+        let session = try await workspace.open(securityScopedURL: original)
+        try Data("explicit save".utf8).write(to: session.workingURL)
+        try await workspace.save(session)
+        #expect(try Data(contentsOf: original) == Data("explicit save".utf8))
+        #expect(try Data(contentsOf: session.workingURL) == Data("later autosave".utf8))
+        await workspace.close(session)
+        #expect(try Data(contentsOf: session.workingURL) == Data("later autosave".utf8))
+    }
 
     @Test("Normal close preserves unsettled engine generations even when the working file is unchanged")
     func engineGenerationSurvivesCleanWorkingClose() async throws {
