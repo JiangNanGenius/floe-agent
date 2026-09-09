@@ -64,13 +64,17 @@ public struct PersistedMessage: Sendable, Hashable, Identifiable {
 
 /// Stable keyset cursor for long conversation timelines. UUID is the
 /// deterministic tie-breaker when several events share a timestamp.
-public struct ConversationMessageCursor: Sendable, Codable, Hashable {
+public struct ConversationMessageCursor: Sendable, Codable, Hashable, Comparable {
     public var createdAt: Date
     public var messageID: UUID
 
     public init(createdAt: Date, messageID: UUID) {
         self.createdAt = createdAt
         self.messageID = messageID
+    }
+
+    public static func < (lhs: Self, rhs: Self) -> Bool {
+        (lhs.createdAt, lhs.messageID.uuidString) < (rhs.createdAt, rhs.messageID.uuidString)
     }
 }
 

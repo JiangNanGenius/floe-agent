@@ -18,6 +18,50 @@ import FloeTools
 
 @Suite("FloeApp.ThreadTimeline")
 struct ThreadTimelineTests {
+    @MainActor @Test("Reopening a long timeline retains history and pages through reconnect gaps")
+    func timelineReconnectGaps() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let center = environment.conversationCenter
+        let conversation = try await center.createConversation(title: "Paged history")
+        let run = makeRun(state: "completed", conversationID: conversation.id)
+        try await environment.runStore.saveRun(run)
+        func append(_ range: ClosedRange<Int>) async throws {
+            for index in range {
+                try await environment.conversationStore.appendMessage(PersistedMessage(
+                    id: UUID(), conversationID: conversation.id, role: "user",
+                    content: "Message \(index)", createdAt: Date(timeIntervalSince1970: Double(index)), parts: []
+                ))
+                try await environment.runStore.appendEvent(runID: run.id, kind: .status, payloadJSON: "{}")
+            }
+        }
+        try await append(1...60)
+        let model = ThreadDetailViewModel(conversationID: conversation.id, center: center)
+        await model.load()
+        model.stopLiveUpdates()
+        #expect(model.actionError == nil)
+        let previousMessages = Set(model.messages.map(\.id))
+        let previousEvents = Set(model.events.map(\.id))
+        try await append(61...240)
+        await model.load()
+        model.stopLiveUpdates()
+        defer { model.stopLiveUpdates() }
+        #expect(model.actionError == nil)
+        #expect(previousMessages.isSubset(of: Set(model.messages.map(\.id))))
+        #expect(previousEvents.isSubset(of: Set(model.events.map(\.id))))
+        #expect(model.events.last?.sequence == 240)
+        // Each press stays bounded; it fills the unseen middle before older history.
+        for _ in 0..<12 {
+            if model.hasEarlierMessages { await model.loadEarlierMessages() }
+            if model.earlierEventRunIDs.contains(run.id) { await model.loadEarlierEvents(runID: run.id) }
+        }
+        #expect(model.actionError == nil)
+        #expect(model.messages.count == 240)
+        #expect(model.events.map(\.sequence) == Array(1...240))
+        #expect(!model.hasEarlierMessages)
+        #expect(!model.earlierEventRunIDs.contains(run.id))
+    }
+
     @Test("A live argument stream outlasts watchdog deadlines; a silent stream still fails")
     func argumentStreamWatchdog() async throws {
         for reportsProgress in [true, false] {

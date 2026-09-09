@@ -510,7 +510,6 @@ final class ConversationCenter: ObservableObject {
         visibleRunIDs.formUnion(
             pendingApprovals.lazy.filter { $0.conversationID == conversationID }.map(\.runID)
         )
-        let cachedEvents = sessionSnapshotCache[conversationID]?.eventsByRun ?? [:]
         let mutableRunIDs = Set(runs.prefix(1).map(\.id)).union(
             pendingApprovals.lazy
                 .filter { $0.conversationID == conversationID }
@@ -519,24 +518,11 @@ final class ConversationCenter: ObservableObject {
         var events: [UUID: [RunEventRecord]] = [:]
         try await withThrowingTaskGroup(of: (UUID, [RunEventRecord]).self) { group in
             for runID in visibleRunIDs.intersection(mutableRunIDs) {
-                if !mutableRunIDs.contains(runID), let cached = cachedEvents[runID] {
-                    events[runID] = cached
-                } else {
-                    group.addTask { [runStore = environment.runStore] in
-                        if let cached = cachedEvents[runID],
-                           let watermark = cached.last?.sequence {
-                            let additions = try await runStore.events(
-                                runID: runID,
-                                afterSequence: watermark,
-                                limit: 1_000
-                            )
-                            return (runID, Array((cached + additions).suffix(51)))
-                        }
-                        return (
-                            runID,
-                            try await runStore.recentEvents(runID: runID, limit: 51)
-                        )
-                    }
+                group.addTask { [runStore = environment.runStore] in
+                    // A resumed scene needs the actual latest tail, even when
+                    // thousands of events arrived after its cached watermark.
+                    // Older and disjoint pages remain the view model's job.
+                    (runID, try await runStore.recentEvents(runID: runID, limit: 51))
                 }
             }
             for try await (runID, loaded) in group { events[runID] = loaded }

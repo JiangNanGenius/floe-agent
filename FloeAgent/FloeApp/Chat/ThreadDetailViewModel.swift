@@ -137,7 +137,8 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var hasEarlierMessages = false
 
     private var liveEventTask: Task<Void, Never>?
-    private var earlierMessageCursor: ConversationMessageCursor?
+    private var messageCoverage = TimelinePageCoverage<ConversationMessageCursor>()
+    private var eventCoverage: [UUID: TimelinePageCoverage<Int>] = [:]
     /// Run whose concrete runtime service is currently being observed. A
     /// durable run exists before attachment/vision preprocessing finishes,
     /// so `selectedRunID` alone cannot tell us whether the live subscription
@@ -367,9 +368,7 @@ final class ThreadDetailViewModel: ObservableObject {
             let page = try await center.environment.conversationStore.messagePage(
                 conversationID: conversationID, before: nil, limit: 20
             )
-            messages = page.messages
-            earlierMessageCursor = page.earlierCursor
-            hasEarlierMessages = page.hasEarlier
+            mergeMessagePage(page)
             stage = "visibleRunDetails"
             try await hydrateVisibleRunDetails()
             stage = "planLoad"
@@ -423,15 +422,8 @@ final class ThreadDetailViewModel: ObservableObject {
         )
         async let selectedUsage = center.environment.runStore.usage(runID: runID)
         let (loadedEvents, loadedUsage) = try await (selectedEvents, selectedUsage)
-        let existing = eventsByRun[runID, default: []]
-        let merged = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
-            .merging(Dictionary(loadedEvents.suffix(50).map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })) { _, new in new }
-        events = merged.values.sorted { $0.sequence < $1.sequence }
-        eventsByRun[runID] = events
-        if existing.isEmpty {
-            if loadedEvents.count > 50 { earlierEventRunIDs.insert(runID) }
-            else { earlierEventRunIDs.remove(runID) }
-        }
+        mergeEventPage(loadedEvents, runID: runID)
+        events = eventsByRun[runID, default: []]
         usageByRun[runID] = loadedUsage
         // Historical failures already live in this run's ordered timeline.
         // Never resurrect one as a new composer error when it is selected.
@@ -464,38 +456,59 @@ final class ThreadDetailViewModel: ObservableObject {
         guard loadingEventRunIDs.insert(runID).inserted else { return }
         defer { loadingEventRunIDs.remove(runID) }
         do {
-            let current = eventsByRun[runID, default: []]
+            let before = eventCoverage[runID]?.earlierCursor
             let page: [RunEventRecord]
-            if let first = current.first {
-                page = try await center.environment.runStore.earlierEvents(runID: runID, beforeSequence: first.sequence, limit: 51)
+            if let before {
+                page = try await center.environment.runStore.earlierEvents(runID: runID, beforeSequence: before, limit: 51)
             } else {
                 page = try await center.environment.runStore.recentEvents(runID: runID, limit: 51)
             }
-            let latest = eventsByRun[runID, default: []]
-            let known = Set(latest.map(\.id))
-            eventsByRun[runID] = (page.suffix(50).filter { !known.contains($0.id) } + latest).sorted { $0.sequence < $1.sequence }
-            if page.count > 50 { earlierEventRunIDs.insert(runID) }
-            else { earlierEventRunIDs.remove(runID) }
+            mergeEventPage(page, runID: runID, before: before)
             if selectedRunID == runID { events = eventsByRun[runID, default: []] }
         } catch { actionError = presentableError(error, stage: "olderEvents") }
     }
 
     func loadEarlierMessages() async {
-        guard !loadingEarlierMessages, hasEarlierMessages, let earlierMessageCursor else { return }
+        guard !loadingEarlierMessages, hasEarlierMessages, let earlierMessageCursor = messageCoverage.earlierCursor else { return }
         loadingEarlierMessages = true
         defer { loadingEarlierMessages = false }
         do {
             let page = try await center.environment.conversationStore.messagePage(
                 conversationID: conversationID, before: earlierMessageCursor, limit: 30
             )
-            let knownIDs = Set(messages.map(\.id))
-            messages = page.messages.filter { !knownIDs.contains($0.id) } + messages
-            self.earlierMessageCursor = page.earlierCursor
-            hasEarlierMessages = page.hasEarlier
+            mergeMessagePage(page, before: earlierMessageCursor)
             try await hydrateVisibleRunDetails()
         } catch {
             actionError = presentableError(error, stage: "olderMessages")
         }
+    }
+
+    /// Record page coverage separately from row identity. Merging only row IDs
+    /// loses the cursor for gaps after reconnecting to a bounded live snapshot.
+    private func mergeEventPage(_ page: [RunEventRecord], runID: UUID, before: Int? = nil) {
+        let tail = page.suffix(50)
+        eventCoverage[runID, default: .init()].record(
+            first: tail.first?.sequence, last: tail.last?.sequence,
+            before: before, hasEarlier: page.count > 50
+        )
+        var merged = Dictionary(eventsByRun[runID, default: []].map { ($0.id, $0) },
+                                uniquingKeysWith: { _, new in new })
+        for event in tail { merged[event.id] = event }
+        eventsByRun[runID] = merged.values.sorted { $0.sequence < $1.sequence }
+        if eventCoverage[runID]?.earlierCursor != nil { earlierEventRunIDs.insert(runID) }
+        else { earlierEventRunIDs.remove(runID) }
+    }
+
+    private func mergeMessagePage(_ page: ConversationMessagePage, before: ConversationMessageCursor? = nil) {
+        func cursor(_ message: PersistedMessage) -> ConversationMessageCursor {
+            .init(createdAt: message.createdAt, messageID: message.id)
+        }
+        messageCoverage.record(first: page.messages.first.map(cursor), last: page.messages.last.map(cursor),
+                               before: before, hasEarlier: page.hasEarlier)
+        var merged = Dictionary(messages.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+        for message in page.messages { merged[message.id] = message }
+        messages = merged.values.sorted { cursor($0) < cursor($1) }
+        hasEarlierMessages = messageCoverage.earlierCursor != nil
     }
 
     func dismissActionError() {
@@ -904,25 +917,13 @@ final class ThreadDetailViewModel: ObservableObject {
                 let previousRunID = self.selectedRunID
                 let wasFollowingLatest = self.selectedRunID == self.runs.first?.id
                 self.taskTitle = snapshot.conversation.title
-                let known = Dictionary(uniqueKeysWithValues: self.messages.map { ($0.id, $0) })
-                let merged = known.merging(
-                    Dictionary(uniqueKeysWithValues: snapshot.messages.map { ($0.id, $0) })
-                ) { _, newest in newest }
-                self.messages = merged.values.sorted {
-                    ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString)
-                }
-                if self.messages.count <= snapshot.messages.count {
-                    self.earlierMessageCursor = snapshot.earlierMessageCursor
-                    self.hasEarlierMessages = snapshot.hasEarlierMessages
-                }
+                self.mergeMessagePage(ConversationMessagePage(
+                    messages: snapshot.messages, earlierCursor: snapshot.earlierMessageCursor,
+                    hasEarlier: snapshot.hasEarlierMessages
+                ))
                 self.mergeRunHeaders(snapshot.runs)
                 for (runID, incoming) in snapshot.eventsByRun {
-                    let existing = self.eventsByRun[runID, default: []]
-                    if existing.isEmpty, incoming.count > 50 { self.earlierEventRunIDs.insert(runID) }
-                    let tail = incoming.suffix(50)
-                    let updated = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
-                        .merging(Dictionary(tail.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })) { _, new in new }
-                    self.eventsByRun[runID] = updated.values.sorted { $0.sequence < $1.sequence }
+                    self.mergeEventPage(incoming, runID: runID)
                 }
                 self.earlierEventRunIDs.formUnion(self.messages.compactMap(\.runID).filter { self.eventsByRun[$0] == nil })
                 if wasFollowingLatest || self.selectedRunID.flatMap({ id in
@@ -1109,17 +1110,7 @@ final class ThreadDetailViewModel: ObservableObject {
         if let page = try? await center.environment.conversationStore.messagePage(
             conversationID: conversationID, before: nil, limit: 20
         ) {
-            let known = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
-            let merged = known.merging(
-                Dictionary(uniqueKeysWithValues: page.messages.map { ($0.id, $0) })
-            ) { _, newest in newest }
-            messages = merged.values.sorted {
-                ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString)
-            }
-            if messages.count <= page.messages.count {
-                earlierMessageCursor = page.earlierCursor
-                hasEarlierMessages = page.hasEarlier
-            }
+            mergeMessagePage(page)
         }
         if let latestRuns = try? await center.environment.runStore
             .recentRuns(conversationID: conversationID, limit: 30) {
