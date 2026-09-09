@@ -1,0 +1,57 @@
+name: Qualify Office in Floe Device App
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/office-workflow-upgrade']
+    paths: ['.github/workflows/office-floe-integration.yml']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: office-floe-device-integration
+  cancel-in-progress: false
+jobs:
+  device-app:
+    runs-on: xcode-27
+    timeout-minutes: 75
+    defaults:
+      run:
+        working-directory: FloeAgent
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare pinned native runtimes
+        run: |
+          brew install xcodegen cmake
+          xcodebuild -downloadComponent MetalToolchain
+          python3 scripts/test_office_host_bootstrap.py
+          scripts/bootstrap_python_runtime.sh
+          scripts/gen_project.sh
+      - name: Build the actual Floe device app with Office framework and resources
+        run: |
+          set -o pipefail
+          xcodebuild -project FloeAgent.xcodeproj -scheme FloeAgent \
+            -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' \
+            -jobs 2 -skipPackagePluginValidation -skipMacroValidation \
+            -derivedDataPath "$RUNNER_TEMP/FloeOfficeIntegration" \
+            -resultBundlePath "$RUNNER_TEMP/FloeOfficeIntegration.xcresult" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' \
+            build > "$RUNNER_TEMP/FloeOfficeIntegration-build.log" 2>&1
+      - name: Verify the copied native framework and main-bundle editor resources
+        run: |
+          python3 scripts/verify_office_app_embedding.py \
+            "$RUNNER_TEMP/FloeOfficeIntegration/Build/Products/Debug-iphoneos/Floe Agent.app" \
+            --output "$RUNNER_TEMP/FloeOfficeIntegration-receipt.json"
+      - name: Preserve device-app build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-floe-device-app-evidence
+          path: |
+            ${{ runner.temp }}/FloeOfficeIntegration-build.log
+            ${{ runner.temp }}/FloeOfficeIntegration.xcresult
+            ${{ runner.temp }}/FloeOfficeIntegration-receipt.json
+          if-no-files-found: warn

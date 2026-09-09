@@ -94,5 +94,6 @@ scripts/install_python_binary_packages.sh
 # Native PDF content editing is independent of Python and signed into the app.
 python3 scripts/bootstrap_pdfium.py
 python3 scripts/bootstrap_libarchive.py
+python3 scripts/bootstrap_office_host.py
 
 echo "Installed CPython 3.13-b10 runtime in Vendor/ and FloeApp/Resources/python"

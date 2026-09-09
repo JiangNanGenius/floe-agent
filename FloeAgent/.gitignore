@@ -49,4 +49,5 @@ LICENSES-THIRD-PARTY.md
 # not source files.
 Vendor/Python.xcframework/
 Vendor/PythonExtensions/
+Vendor/Office/
 FloeApp/Resources/python/

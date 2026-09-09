@@ -21,6 +21,11 @@
 [API 探针](../../../FloeAgent/scripts/fixtures/office_native_host_api.swift)。
 它没有执行引擎或打开真实 UI。
 
+[11 项安装与主应用复制检查](office-host-bootstrap-embed-tests-summary.txt)通过；
+[本地安装产物校验](office-host-installed-verification.json)覆盖 4,785 个文件和
+178 个目录（包含框架、清单及全部资源）。主应用工程和云端设备版构建入口已接线，
+实际应用编译、运行与 Office UI 验收仍需分别取得证据。
+
 ## 已验证
 
 - 46 项工具/数据层回归通过：多查询搜索、目录分页、内置升级来源策略、跟随状态、历史事件分页、HTTP 下载失败不覆盖目的文件。

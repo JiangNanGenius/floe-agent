@@ -100,6 +100,31 @@ prepare-only flags; the `hostCompilePassed`, `hostLinkPassed`, and
 `swiftModuleImportPassed` fields record the host result. New receipts identify
 the framework target and keep those generic native flags consistent.
 
+## Floe device-app packaging
+
+`scripts/bootstrap_office_host.py` installs the pinned archive into the ignored,
+versioned `Vendor/Office/<runID>/OfficeNativeHost` directory. It checks the archive,
+qualification manifest, native source/overlay, binary, module map, Info.plist,
+public header, all resources and empty directories. Reuse verifies existing
+content; changed or unexpected files are preserved and rejected. The regular
+runtime bootstrap invokes it with a developer gh login or a read-only Actions
+token. No runtime executable download is added to the app.
+
+The app's generated Xcode project links the framework only for `iphoneos` and
+copies its main-bundle resources in a sandboxed post-build phase with explicit
+input/output paths. Simulator has no native engine slice and skips embedding;
+Simulator success cannot certify Office. Signing-enabled builds sign the copied
+framework; unsigned qualification builds leave it unsigned. The host was built
+with SDK 27 targeting iOS 26, so accepted-SDK packaging and Apple validation
+remain separate release gates.
+
+`verify_office_app_embedding.py` checks the actual unsigned Floe app's native
+payload against the pin, preserves required empty directories, and requires a
+real Office load command in the Floe executable. Its receipt keeps runtime open,
+UI editing, original writeback and device fidelity false. Eleven bootstrap and
+copy/verification tests cover tampering, missing assets/directories, aliases,
+changed source, repeat installation, and preservation of unrelated app resources.
+
 Twenty-two synthetic packaging/preparation/repair tests pass. The overlay also applies to
 the actual pinned source hashes, and its public keyboard helper passes an
 iphoneos arm64 Objective-C syntax check. This is not a full controller compile,

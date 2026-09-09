@@ -16,7 +16,13 @@
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "note": "Complete Floe native host framework compiled and linked for arm64 iphoneos; Swift module import passed. Retrieved binary, public header and all resources match the cloud receipt. Unsigned framework plus main-bundle resources only; Floe UI integration, original writeback, device editing and fidelity remain unverified."
+    "note": "Complete Floe native host framework compiled and linked for arm64 iphoneos; Swift module import passed. Retrieved binary, public header and all resources match the cloud receipt. Unsigned framework plus main-bundle resources only; Floe UI integration, original writeback, device editing and fidelity remain unverified.",
+    "manifestSHA256": "deaedc135b813a37a1d66ce9e84a673f93b4e17d6675525876a6cc3352b04d35",
+    "frameworkAuxiliarySHA256": {
+      "Headers/FloeOfficeNative.h": "55bc616fc6ac3b61b5209ec94262881752d214efa8439eb48e56379683513adc",
+      "Info.plist": "e3b21fcb94865972fb8908dcce886fc39e73f28e20bf1439cbb70a0139a3ec00",
+      "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83"
+    }
   },
   "qualifiedNativeArtifact": {
     "runID": "34268468731",

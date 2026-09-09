@@ -249,6 +249,9 @@ jobs:
   testflight:
     name: Archive and upload the same commit to TestFlight
     needs: build-verify-release
+    permissions:
+      contents: read
+      actions: read
     # App Store Connect rejects the public Xcode 27 preview runner until Apple
     # ships an accepted RC. Keep the Xcode 27 source/feature gate above, then
     # rebuild this exact tag with the latest accepted stable SDK for upload.
@@ -257,6 +260,7 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       REQUIRED_XCODE_VERSION: Xcode 26.6
       REQUIRED_XCODE_BUILD: 17F113
+      GH_TOKEN: ${{ github.token }}
     defaults:
       run:
         working-directory: FloeAgent

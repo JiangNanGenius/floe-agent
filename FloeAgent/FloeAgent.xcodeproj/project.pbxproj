@@ -1870,6 +1870,7 @@
 				DB3143927DF1F8F8F1F9C9EF /* Frameworks */,
 				8738858F5A808168E1A98E8D /* Embed Foundation Extensions */,
 				E1B72AF5A74C71B63652C55B /* Embed Frameworks */,
+				F210E408ECEE4FD397A223EE /* Embed verified native Office host */,
 			);
 			buildRules = (
 			);
@@ -2085,6 +2086,29 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		F210E408ECEE4FD397A223EE /* Embed verified native Office host */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed verified native Office host";
+			outputFileListPaths = (
+				"$(SRCROOT)/scripts/office_host_outputs.xcfilelist",
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/usr/bin/python3 -B \"${SRCROOT}/scripts/embed_office_host.py\"";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		635456F5C5F24F3879B481C5 /* Sources */ = {
@@ -2373,6 +2397,10 @@
 					"\"Vendor/PDFium\"",
 					"\"Vendor/PythonExtensions\"",
 				);
+				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/Office/34292622779/OfficeNativeHost",
+				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FloeApp/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
@@ -2381,6 +2409,11 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.5.3;
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"-framework",
+					FloeOfficeNative,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios;
 				PRODUCT_MODULE_NAME = FloeApp;
 				PRODUCT_NAME = "Floe Agent";
@@ -2679,6 +2712,10 @@
 					"\"Vendor/PDFium\"",
 					"\"Vendor/PythonExtensions\"",
 				);
+				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/Office/34292622779/OfficeNativeHost",
+				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FloeApp/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
@@ -2687,6 +2724,11 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.5.3;
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"-framework",
+					FloeOfficeNative,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios;
 				PRODUCT_MODULE_NAME = FloeApp;
 				PRODUCT_NAME = "Floe Agent";

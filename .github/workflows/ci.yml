@@ -83,6 +83,9 @@ jobs:
             git push origin HEAD
           fi
   build-test:
+    permissions:
+      contents: read
+      actions: read
     if: ${{ !inputs.publish_skill_hub && !inputs.build_native_pandas }}
     # Foundation Models is guarded by Swift 6.4. Building on the generic
     # macOS 26 image (Xcode 26.6) silently selects the unsupported stub.
@@ -92,6 +95,7 @@ jobs:
         working-directory: FloeAgent
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
 
@@ -201,6 +205,9 @@ jobs:
           if-no-files-found: ignore
 
   appstore-sdk-compatibility:
+    permissions:
+      contents: read
+      actions: read
     if: ${{ !inputs.publish_skill_hub && !inputs.build_native_pandas }}
     # TestFlight upload currently rebuilds the exact release commit with the
     # App Store-accepted Xcode 26.6 toolchain. Keep this independent gate so
@@ -212,6 +219,7 @@ jobs:
         working-directory: FloeAgent
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
 
