@@ -35,7 +35,8 @@ Build and qualification:
    delete, export and multiple-sheet/object cases. Compare original payload bytes.
 
 The build regenerates headers using the exact upstream generators. It compiles
-two translation units and checks that replacing `xcl97rec.o` and `xlroot.o` preserves every other
+three translation units and checks that replacing `xcl97rec.o`, `xlroot.o` and
+`unitconverter.o` preserves every other
 archive member. No class layout, virtual method table or token table is changed.
 The verified source archive is never modified; only an owned library is selected
 in the host's new linker list. Copy/preview errors propagate as failed saves.
@@ -45,15 +46,15 @@ only for shape start attributes and restoring it afterward. Normal XML escaping
 remains active. Actual attachment insert, undo/redo and two saves/reopens now retain
 the original payload and Package metadata. Microsoft Office validation remains pending.
 
-Repeated saves still shrank default column widths and untouched attachment geometry.
-The XLSX-only `XclRoot::SetCharWidth` candidate now uses the document ReferenceDevice
-and the importer's ApiFontData descriptor defaults, matching the serialized name,
-family, charset, bold, italic, underline and strikeout settings. Binary XLS retains
-its existing metric path; unavailable reference-font metrics use the existing fallback.
-This avoids combining fresh VCL font/forced virtual-device measurements on export
-with UNO descriptor/reference-device measurements on import. The local arm64 build
-and all 166 untouched archive members passed verification; a new host and actual
-repeated-save tests are required before calling the metric mismatch fixed.
+Repeated saves still shrink default column widths and untouched attachment geometry.
+The ReferenceDevice/ApiFontData export candidate failed real repeated-save testing
+and has been removed from conversion behavior. Its measurement is retained only as
+an opt-in diagnostic control, alongside actual import and original export metrics.
+Set `FLOE_OFFICE_FONT_METRICS_TRACE` only in the synthetic qualification probe to
+collect requested/effective/device fonts, digit widths, DPI and map scaling. The
+trace excludes document contents and file names and stops at 1 MiB. Unset by default,
+it does not replace export metrics or change document conversion state. No class
+layout changes are involved; the added UnitConverter methods are static.
 
 The repeated-save comparator also found VML and modern movement flags disagreed.
 The exporter now follows Excel's convention used by the pinned ClientDataContext:
@@ -65,8 +66,8 @@ and [SizeWithCells implementation note](https://learn.microsoft.com/en-us/opensp
 Actual repeated-save verification of host 34344605828 confirms fixed-page flags
 now remain correct and attachment bytes survive undo/redo and two saves/reopens.
 The reference-font metric candidate FAILED: an untouched column changed from
-22 to 22.82 to 21.8. It is retained as a recorded failed candidate pending effective
-font/device instrumentation, not qualified as a fix. The attachment left position
+22 to 22.82 to 21.8. It is recorded as a failed candidate, not qualified as a fix.
+The attachment left position
 stayed fixed, but width/height still drifted by 5/1 hundredths of a millimeter.
 The pinned VML importer rounds offsets to integer pixels; its handling of the
 precise `objectPr` anchors needs runtime fidelity checks and potentially a follow-up

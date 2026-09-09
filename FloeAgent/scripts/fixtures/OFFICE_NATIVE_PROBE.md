@@ -48,3 +48,11 @@ and agreement of modern anchor flags with the pinned VML import convention.
 Do not run this scenario after intentionally changing column widths or moving
 attachments. The payload verifier and geometry comparator are separate gates:
 30 successful attachment byte/type checks do not prove an untouched layout.
+
+Compile only the independent probe with `FLOE_FONT_METRICS_PROBE` to enable the
+engine's bounded `font-metrics.jsonl` trace inside each synthetic session. It records
+requested/effective/device fonts, digit measurements, DPI and map scaling during
+import, reference-export control and original export. It contains no cell contents
+or document paths. The release application does not set this environment variable.
+Read measurements together with actual saved files and UI events; the presence of
+a trace is not a successful roundtrip result.

@@ -19,6 +19,7 @@ SPARSE_PATHS = [
     '/engine/sc/inc/', '/engine/sc/source/filter/inc/',
     '/engine/sc/source/filter/xcl97/xcl97rec.cxx', '/engine/oox/inc/',
     '/engine/sc/source/filter/excel/xlroot.cxx', '/engine/sc/source/ui/inc/',
+    '/engine/sc/source/filter/oox/unitconverter.cxx',
     '/engine/officecfg/registry/cppheader.xsl',
     '/engine/officecfg/registry/component-schema.dtd',
     '/engine/officecfg/registry/schema/org/openoffice/Office/Common.xcs',

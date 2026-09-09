@@ -1,8 +1,11 @@
 {
-  "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "patch": "patches/xlsx-embedded-objects.patch",
+  "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "patchSHA256": "d946d312777857a10e5b94bcc20d4561670e2653a9fc39d27928e567529de185",
-  "files": {
+  "originalArchiveSHA256": "a7e5961052e204adfb5694d584de17f8b7a7f0f6462a972303fd6baf78c11b77",
+  "compilePassed": true,
+  "archiveReplacementPassed": true,
+  "runtimeRoundtripPassed": false,
+  "sourceFiles": {
     "engine/sc/source/filter/inc/xcl97rec.hxx": {
       "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
       "patchedSHA256": "025398a1044e4faf26cb113f11031cae2f19025d5f3b40221e04c86140d19b93"
@@ -24,13 +27,17 @@
       "patchedSHA256": "cbd0998189d52a87004706fea207362893b2602fa7a96edb71095e0dce013848"
     }
   },
-  "archive": "source/engine/instdir/program/libscfiltlo.a",
-  "originalArchiveSHA256": "a7e5961052e204adfb5694d584de17f8b7a7f0f6462a972303fd6baf78c11b77",
-  "member": "xcl97rec.o",
-  "qualificationStatus": "xlsx-anchor-fix-font-metric-diagnostics-runtime-pending",
-  "members": {
-    "xcl97rec.o": "engine/sc/source/filter/xcl97/xcl97rec.cxx",
-    "xlroot.o": "engine/sc/source/filter/excel/xlroot.cxx",
-    "unitconverter.o": "engine/sc/source/filter/oox/unitconverter.cxx"
-  }
+  "objectSHA256ByMember": {
+    "xcl97rec.o": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
+    "xlroot.o": "3fbca52897617167217f09cbff137f982482d1a8987e261bf856986454c644e4",
+    "unitconverter.o": "f6df5c9cb8cd66b73a7d7d90f36ab2198cd1171a5043bd8febfd1e59e2d21a04"
+  },
+  "archiveSHA256": "31c5872fc4296cd6466e725f7f7e501340b744b89ede6447b1dba5f824c9836a",
+  "replacedMembers": [
+    "xcl97rec.o",
+    "xlroot.o",
+    "unitconverter.o"
+  ],
+  "preservedMemberCount": 165,
+  "scope": "Local arm64 compilation of preserved anchor fix, reverted failed metric candidate, and opt-in import/export font diagnostics. Runtime trace still pending."
 }

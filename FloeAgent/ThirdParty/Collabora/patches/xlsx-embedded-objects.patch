@@ -1,5 +1,5 @@
 diff --git a/engine/sc/source/filter/excel/xlroot.cxx b/engine/sc/source/filter/excel/xlroot.cxx
-index dd58d60..c387a7e 100644
+index dd58d60..a795c15 100644
 --- a/engine/sc/source/filter/excel/xlroot.cxx
 +++ b/engine/sc/source/filter/excel/xlroot.cxx
 @@ -21,7 +21,11 @@
@@ -14,24 +14,24 @@ index dd58d60..c387a7e 100644
  #include <com/sun/star/frame/Desktop.hpp>
  #include <com/sun/star/frame/XFrame.hpp>
  #include <com/sun/star/i18n/ScriptType.hpp>
-@@ -62,6 +66,7 @@
+@@ -62,6 +66,9 @@
  #include <comphelper/configuration.hxx>
  #include <unotools/useroptions.hxx>
  #include <root.hxx>
 +#include <stylesbuffer.hxx>
++#include <unitconverter.hxx>
++#include <toolkit/helper/vclunohelper.hxx>
  
  namespace ApiScriptType = ::com::sun::star::i18n::ScriptType;
  
-@@ -215,6 +220,75 @@ void XclRoot::SetTextEncoding( rtl_TextEncoding eTextEnc )
+@@ -215,6 +222,68 @@ void XclRoot::SetTextEncoding( rtl_TextEncoding eTextEnc )
  
  void XclRoot::SetCharWidth( const XclFontData& rFontData )
  {
-+    // XLSX widths are digit counts. Measure the font that the XML importer
-+    // will reconstruct, on the same document ReferenceDevice. The legacy
-+    // fresh vcl::Font / forced virtual-device path does not use the importer's
-+    // width, posture and device settings, causing repeated saves to rescale
-+    // columns even when no column was edited.
-+    if (mrData.mbExport && mrData.meOutput == EXC_OUTPUT_XML_2007)
++    // The reference-font candidate did not fix repeated-save width drift.
++    // Keep it only as an opt-in measurement control, not as export behavior.
++    if (mrData.mbExport && mrData.meOutput == EXC_OUTPUT_XML_2007
++        && oox::xls::UnitConverter::fontMetricTraceEnabled())
 +    {
 +        try
 +        {
@@ -80,13 +80,8 @@ index dd58d60..c387a7e 100644
 +                    for (sal_Unicode cChar = '0'; cChar <= '9'; ++cChar)
 +                        nDigitWidth = std::max(nDigitWidth,
 +                            static_cast<tools::Long>(xFont->getCharWidth(cChar)));
-+                    const tools::Long nSpaceWidth = xFont->getCharWidth(' ');
-+                    if (nDigitWidth > 0 && nSpaceWidth > 0)
-+                    {
-+                        mrData.mnCharWidth = nDigitWidth;
-+                        mrData.mnSpaceWidth = nSpaceWidth;
-+                        return;
-+                    }
++                    oox::xls::UnitConverter::traceFontMetrics("export-reference-control",
++                        VCLUnoHelper::GetOutputDevice(xDevice), &rDesc, xFont, nDigitWidth);
 +                }
 +            }
 +        }
@@ -98,6 +93,45 @@ index dd58d60..c387a7e 100644
      mrData.mnCharWidth = 0;
      bool bIsKit = comphelper::COKit::isActive();
      if( OutputDevice* pPrinter = GetPrinter( bIsKit ) )
+@@ -244,6 +313,10 @@ void XclRoot::SetCharWidth( const XclFontData& rFontData )
+         SAL_WARN( "sc", "XclRoot::SetCharWidth - invalid character width (no printer?)" );
+         mrData.mnSpaceWidth = 45;
+     }
++    if (mrData.mbExport && mrData.meOutput == EXC_OUTPUT_XML_2007
++        && oox::xls::UnitConverter::fontMetricTraceEnabled())
++        oox::xls::UnitConverter::traceFontMetrics("export-legacy",
++            GetPrinter(bIsKit), nullptr, {}, mrData.mnCharWidth);
+ }
+ 
+ sal_Int32 XclRoot::GetHmmFromPixelX( double fPixelX ) const
+diff --git a/engine/sc/source/filter/inc/unitconverter.hxx b/engine/sc/source/filter/inc/unitconverter.hxx
+index 6149962..761116a 100644
+--- a/engine/sc/source/filter/inc/unitconverter.hxx
++++ b/engine/sc/source/filter/inc/unitconverter.hxx
+@@ -26,7 +26,9 @@
+ 
+ namespace com::sun::star {
+     namespace util { struct Date; struct DateTime; }
++    namespace awt { struct FontDescriptor; class XFont; }
+ }
++class OutputDevice;
+ 
+ namespace oox::xls {
+ 
+@@ -59,6 +61,13 @@ class UnitConverter : public WorkbookHelper
+ public:
+     explicit            UnitConverter( const WorkbookHelper& rHelper );
+ 
++    // Opt-in synthetic-probe diagnostics; never changes conversion state.
++    static bool         fontMetricTraceEnabled();
++    static void         traceFontMetrics(const char* phase, OutputDevice* device,
++                            const css::awt::FontDescriptor* requested,
++                            const css::uno::Reference<css::awt::XFont>& font,
++                            sal_Int64 measuredDigitWidth);
++
+     /** Final processing after import of all style settings. */
+     void                finalizeImport();
+     /** Updates internal nulldate for date/serial conversion. */
 diff --git a/engine/sc/source/filter/inc/xcl97rec.hxx b/engine/sc/source/filter/inc/xcl97rec.hxx
 index 0eb5408..a5fdebd 100644
 --- a/engine/sc/source/filter/inc/xcl97rec.hxx
@@ -111,6 +145,110 @@ index 0eb5408..a5fdebd 100644
      virtual void                Save( XclExpStream& rStrm ) override;
  };
  
+diff --git a/engine/sc/source/filter/oox/unitconverter.cxx b/engine/sc/source/filter/oox/unitconverter.cxx
+index 0922569..f67c8b0 100644
+--- a/engine/sc/source/filter/oox/unitconverter.cxx
++++ b/engine/sc/source/filter/oox/unitconverter.cxx
+@@ -18,6 +18,12 @@
+  */
+ 
+ #include <unitconverter.hxx>
++#include <cstdio>
++#include <cstdlib>
++#include <toolkit/helper/vclunohelper.hxx>
++#include <tools/json_writer.hxx>
++#include <vcl/outdev.hxx>
++#include <vcl/metric.hxx>
+ 
+ #include <com/sun/star/awt/DeviceInfo.hpp>
+ #include <com/sun/star/awt/XDevice.hpp>
+@@ -140,6 +146,86 @@ void UnitConverter::finalizeImport()
+         = o3tl::convert(xFont->getCharWidth(' '), o3tl::Length::twip, o3tl::Length::emu);
+     if( nSpaceWidth > 0 )
+         maCoeffs[ Unit::Space ] = nSpaceWidth;
++    traceFontMetrics("import-reference", VCLUnoHelper::GetOutputDevice(xDevice),
++                     &aDesc, xFont, static_cast<sal_Int64>(
++                         o3tl::convert(nDigitWidth, o3tl::Length::emu, o3tl::Length::twip)));
++}
++
++bool UnitConverter::fontMetricTraceEnabled()
++{
++    const char* path = std::getenv("FLOE_OFFICE_FONT_METRICS_TRACE");
++    return path && path[0] == '/';
++}
++
++void UnitConverter::traceFontMetrics(const char* phase, OutputDevice* device,
++        const awt::FontDescriptor* requested, const Reference<awt::XFont>& font,
++        sal_Int64 measuredDigitWidth)
++{
++    if (!fontMetricTraceEnabled() || !device)
++        return;
++    // Explicitly enabled only by the independent synthetic-file probe. No
++    // document text, cell contents, file names, or credentials enter this log.
++    try
++    {
++        tools::JsonWriter json;
++        json.put("phase", phase);
++        json.put("measuredDigitWidth", measuredDigitWidth);
++        const auto descriptor = [&](const char* name, const awt::FontDescriptor& d)
++        {
++            auto node = json.startNode(name);
++            json.put("name", d.Name);
++            json.put("style", d.StyleName);
++            json.put("height", d.Height);
++            json.put("width", d.Width);
++            json.put("family", d.Family);
++            json.put("charset", d.CharSet);
++            json.put("pitch", d.Pitch);
++            json.put("characterWidth", d.CharacterWidth);
++            json.put("weight", d.Weight);
++            json.put("slant", static_cast<int>(d.Slant));
++            json.put("underline", d.Underline);
++            json.put("strikeout", d.Strikeout);
++            json.put("orientation", d.Orientation);
++            json.put("kerning", d.Kerning);
++            json.put("wordLineMode", d.WordLineMode);
++        };
++        if (requested)
++            descriptor("requested", *requested);
++        if (font.is())
++            descriptor("effective", font->getFontDescriptor());
++        descriptor("deviceFont", VCLUnoHelper::CreateFontDescriptor(device->GetFont()));
++        descriptor("deviceMetric", VCLUnoHelper::CreateFontDescriptor(device->GetFontMetric()));
++        json.put("dpiX", device->GetDPIX());
++        json.put("dpiY", device->GetDPIY());
++        json.put("layoutMode", static_cast<int>(device->GetLayoutMode()));
++        const auto& map = device->GetMapMode();
++        json.put("mapUnit", static_cast<int>(map.GetMapUnit()));
++        json.put("scaleX", map.GetScaleX());
++        json.put("scaleY", map.GetScaleY());
++        json.put("deviceDigitsWidth", device->GetTextWidth(u"0123456789"_ustr));
++        {
++            auto node = json.startArray("individualDigitWidths");
++            for (sal_Unicode c = '0'; c <= '9'; ++c)
++                json.putSimpleValue(font.is() ? font->getCharWidth(c)
++                    : device->GetTextWidth(OUString(c)));
++        }
++        const OString line = json.finishAndGetAsOString();
++        if (std::FILE* out = std::fopen(std::getenv("FLOE_OFFICE_FONT_METRICS_TRACE"), "a"))
++        {
++            std::fseek(out, 0, SEEK_END);
++            const auto length = std::ftell(out);
++            if (length >= 0 && length < 1024 * 1024)
++            {
++                std::fwrite(line.getStr(), 1, line.getLength(), out);
++                std::fputc('\n', out);
++            }
++            std::fclose(out);
++        }
++    }
++    catch (...)
++    {
++        // Diagnostics must never turn a successful open/save into a failure.
++    }
+ }
+ 
+ void UnitConverter::finalizeNullDate( const util::Date& rNullDate )
 diff --git a/engine/sc/source/filter/xcl97/xcl97rec.cxx b/engine/sc/source/filter/xcl97/xcl97rec.cxx
 index 0960883..6ebdc6e 100644
 --- a/engine/sc/source/filter/xcl97/xcl97rec.cxx

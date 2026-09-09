@@ -3,6 +3,7 @@
 import UIKit
 import FloeOfficeNative
 import CryptoKit
+import Darwin
 
 @main final class OfficeEditorProbe: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
@@ -72,6 +73,11 @@ import CryptoKit
                         self.events = []
                         self.record("fixtureCopied", detail: ext)
                         self.record("preferredLanguage", detail: Locale.preferredLanguages.first ?? "unknown")
+                        #if FLOE_FONT_METRICS_PROBE
+                        let trace = root.appendingPathComponent("font-metrics.jsonl")
+                        setenv("FLOE_OFFICE_FONT_METRICS_TRACE", trace.path, 1)
+                        self.record("fontMetricTracingEnabled", detail: trace.lastPathComponent)
+                        #endif
                         try self.open(readOnly: false)
                     } catch { label.text = error.localizedDescription }
                 }
