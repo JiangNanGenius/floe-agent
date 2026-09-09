@@ -1,0 +1,548 @@
+{
+  "hostRunID": "34350509488",
+  "hostWorkflowCommit": "e28e48dd36a6ae2546d8740f73c21cd40fdae2f0",
+  "probeFixtureCommit": "ba1f6cb",
+  "installedBinariesMatchSignedPayload": true,
+  "signedPayload": {
+    "purpose": "Independent native XLSX runtime qualification, not a full Floe release",
+    "hostRunID": "34350509488",
+    "signaturePassed": true,
+    "runtimePassed": false,
+    "mainSHA256": "97abba4cd406a86c330f50b46f591f509b6d7b20b0d97aefd34e5c1b37b1f100",
+    "nativeSHA256": "fba0e056bc71d16247c91837a2cdf0b396bf56b3a177fe51ee5576c5d26a0fd5"
+  },
+  "appLabel": "Floe Office Qualification 23",
+  "platform": "Mac Designed for iPad; not physical iPhone/iPad",
+  "verifiedHostFiles": 4785,
+  "verifiedHostDirectories": 178,
+  "attachmentSHA256": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+  "attachmentBytes": 65539,
+  "modes": {
+    "page": {
+      "sessionID": "6F718ABF-2303-4F83-B1AF-8233FDDB3C88",
+      "events": [
+        {
+          "detail": "xlsx",
+          "event": "fixtureCopied",
+          "time": "2026-09-09T12:29:28Z"
+        },
+        {
+          "detail": "fixture-anchor-page",
+          "event": "fixtureResource",
+          "time": "2026-09-09T12:29:28Z"
+        },
+        {
+          "detail": "zh-Hans-TW",
+          "event": "preferredLanguage",
+          "time": "2026-09-09T12:29:28Z"
+        },
+        {
+          "detail": "font-metrics.jsonl",
+          "event": "fontMetricTracingEnabled",
+          "time": "2026-09-09T12:29:28Z"
+        },
+        {
+          "detail": "true; readonly=false",
+          "event": "opened",
+          "time": "2026-09-09T12:29:29Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T12:29:30Z"
+        },
+        {
+          "detail": "",
+          "event": "saveRequested",
+          "time": "2026-09-09T12:29:43Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T12:29:43Z"
+        },
+        {
+          "detail": "success",
+          "event": "saveCompleted",
+          "time": "2026-09-09T12:29:43Z"
+        },
+        {
+          "detail": "success",
+          "event": "editingClosed",
+          "time": "2026-09-09T12:29:43Z"
+        },
+        {
+          "detail": "true; readonly=true",
+          "event": "opened",
+          "time": "2026-09-09T12:29:44Z"
+        },
+        {
+          "detail": "1; readonly=true",
+          "event": "attachmentsListed",
+          "time": "2026-09-09T12:30:22Z"
+        },
+        {
+          "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/6F718ABF-2303-4F83-B1AF-8233FDDB3C88/attachment-exports/B91C85A7-8CD5-4634-9518-E57C0E53CCBF/附件 测试 📎.bin",
+          "event": "attachmentExported",
+          "time": "2026-09-09T12:30:22Z"
+        },
+        {
+          "detail": "",
+          "event": "resumeEditingRequested",
+          "time": "2026-09-09T12:30:22Z"
+        },
+        {
+          "detail": "success",
+          "event": "previewClosedForEditing",
+          "time": "2026-09-09T12:30:22Z"
+        },
+        {
+          "detail": "true; readonly=false",
+          "event": "opened",
+          "time": "2026-09-09T12:30:22Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T12:30:24Z"
+        },
+        {
+          "detail": "",
+          "event": "saveRequested",
+          "time": "2026-09-09T12:30:35Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T12:30:36Z"
+        },
+        {
+          "detail": "success",
+          "event": "saveCompleted",
+          "time": "2026-09-09T12:30:36Z"
+        },
+        {
+          "detail": "success",
+          "event": "editingClosed",
+          "time": "2026-09-09T12:30:36Z"
+        },
+        {
+          "detail": "true; readonly=true",
+          "event": "opened",
+          "time": "2026-09-09T12:30:36Z"
+        },
+        {
+          "detail": "",
+          "event": "resumeEditingRequested",
+          "time": "2026-09-09T12:31:01Z"
+        },
+        {
+          "detail": "success",
+          "event": "previewClosedForEditing",
+          "time": "2026-09-09T12:31:01Z"
+        },
+        {
+          "detail": "true; readonly=false",
+          "event": "opened",
+          "time": "2026-09-09T12:31:01Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T12:31:02Z"
+        },
+        {
+          "detail": "",
+          "event": "saveRequested",
+          "time": "2026-09-09T12:31:42Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T12:31:42Z"
+        },
+        {
+          "detail": "success",
+          "event": "saveCompleted",
+          "time": "2026-09-09T12:31:42Z"
+        },
+        {
+          "detail": "success",
+          "event": "editingClosed",
+          "time": "2026-09-09T12:31:42Z"
+        },
+        {
+          "detail": "true; readonly=true",
+          "event": "opened",
+          "time": "2026-09-09T12:31:43Z"
+        },
+        {
+          "detail": "1; readonly=true",
+          "event": "attachmentsListed",
+          "time": "2026-09-09T12:32:06Z"
+        },
+        {
+          "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/6F718ABF-2303-4F83-B1AF-8233FDDB3C88/attachment-exports/9CB1D330-4521-4F11-82FA-863F9FD8B736/附件 测试 📎.bin",
+          "event": "attachmentExported",
+          "time": "2026-09-09T12:32:06Z"
+        },
+        {
+          "detail": "success",
+          "event": "previewClosed",
+          "time": "2026-09-09T12:32:06Z"
+        }
+      ],
+      "saveCount": 3,
+      "layouts": {
+        "first": true,
+        "second": true
+      },
+      "structureChecks": {
+        "first": {
+          "count": 29,
+          "passed": true
+        },
+        "second": {
+          "count": 29,
+          "passed": true
+        }
+      },
+      "texts": {
+        "first": {
+          "C10": "Page first save",
+          "C11": null
+        },
+        "second": {
+          "C10": "Page first save",
+          "C11": "Page second save"
+        }
+      },
+      "exportCount": 2,
+      "allExportedBytesMatch": true,
+      "columnOrRowResizingActuallyExercised": false,
+      "extraSaveNote": "One intermediate second save contained no C11 text; original sample retained as page-empty-second.xlsx. A third save was performed after visually confirming the full input. Final second-labeled sample is the third save and contains both exact texts."
+    },
+    "move": {
+      "sessionID": "3E64E80A-C746-4C50-8837-8DDBF3B70BC0",
+      "events": [
+        {
+          "detail": "xlsx",
+          "event": "fixtureCopied",
+          "time": "2026-09-09T12:32:16Z"
+        },
+        {
+          "detail": "fixture-anchor-move",
+          "event": "fixtureResource",
+          "time": "2026-09-09T12:32:16Z"
+        },
+        {
+          "detail": "zh-Hans-TW",
+          "event": "preferredLanguage",
+          "time": "2026-09-09T12:32:16Z"
+        },
+        {
+          "detail": "font-metrics.jsonl",
+          "event": "fontMetricTracingEnabled",
+          "time": "2026-09-09T12:32:16Z"
+        },
+        {
+          "detail": "true; readonly=false",
+          "event": "opened",
+          "time": "2026-09-09T12:32:16Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T12:32:17Z"
+        },
+        {
+          "detail": "",
+          "event": "saveRequested",
+          "time": "2026-09-09T12:32:50Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T12:32:50Z"
+        },
+        {
+          "detail": "success",
+          "event": "saveCompleted",
+          "time": "2026-09-09T12:32:50Z"
+        },
+        {
+          "detail": "success",
+          "event": "editingClosed",
+          "time": "2026-09-09T12:32:50Z"
+        },
+        {
+          "detail": "true; readonly=true",
+          "event": "opened",
+          "time": "2026-09-09T12:32:51Z"
+        },
+        {
+          "detail": "1; readonly=true",
+          "event": "attachmentsListed",
+          "time": "2026-09-09T12:33:09Z"
+        },
+        {
+          "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/3E64E80A-C746-4C50-8837-8DDBF3B70BC0/attachment-exports/24373241-1077-4048-91B0-B1092F40E7A3/附件 测试 📎.bin",
+          "event": "attachmentExported",
+          "time": "2026-09-09T12:33:09Z"
+        },
+        {
+          "detail": "",
+          "event": "resumeEditingRequested",
+          "time": "2026-09-09T12:33:10Z"
+        },
+        {
+          "detail": "success",
+          "event": "previewClosedForEditing",
+          "time": "2026-09-09T12:33:10Z"
+        },
+        {
+          "detail": "true; readonly=false",
+          "event": "opened",
+          "time": "2026-09-09T12:33:10Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T12:33:11Z"
+        },
+        {
+          "detail": "",
+          "event": "saveRequested",
+          "time": "2026-09-09T12:33:59Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T12:33:59Z"
+        },
+        {
+          "detail": "success",
+          "event": "saveCompleted",
+          "time": "2026-09-09T12:33:59Z"
+        },
+        {
+          "detail": "success",
+          "event": "editingClosed",
+          "time": "2026-09-09T12:33:59Z"
+        },
+        {
+          "detail": "true; readonly=true",
+          "event": "opened",
+          "time": "2026-09-09T12:34:00Z"
+        },
+        {
+          "detail": "1; readonly=true",
+          "event": "attachmentsListed",
+          "time": "2026-09-09T12:34:22Z"
+        },
+        {
+          "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/3E64E80A-C746-4C50-8837-8DDBF3B70BC0/attachment-exports/2BACCAFC-F457-48A8-944D-48F2102F91B9/附件 测试 📎.bin",
+          "event": "attachmentExported",
+          "time": "2026-09-09T12:34:22Z"
+        },
+        {
+          "detail": "success",
+          "event": "previewClosed",
+          "time": "2026-09-09T12:34:22Z"
+        }
+      ],
+      "saveCount": 2,
+      "layouts": {
+        "first": true,
+        "second": true
+      },
+      "structureChecks": {
+        "first": {
+          "count": 29,
+          "passed": true
+        },
+        "second": {
+          "count": 29,
+          "passed": true
+        }
+      },
+      "texts": {
+        "first": {
+          "C10": "Move first save",
+          "C11": null
+        },
+        "second": {
+          "C10": "Move first save",
+          "C11": "Move second save"
+        }
+      },
+      "exportCount": 2,
+      "allExportedBytesMatch": true,
+      "columnOrRowResizingActuallyExercised": false
+    },
+    "resize": {
+      "sessionID": "B6F447FD-73E2-4814-8657-59D6EFD81092",
+      "events": [
+        {
+          "detail": "xlsx",
+          "event": "fixtureCopied",
+          "time": "2026-09-09T12:34:40Z"
+        },
+        {
+          "detail": "fixture-anchor-resize",
+          "event": "fixtureResource",
+          "time": "2026-09-09T12:34:40Z"
+        },
+        {
+          "detail": "zh-Hans-TW",
+          "event": "preferredLanguage",
+          "time": "2026-09-09T12:34:40Z"
+        },
+        {
+          "detail": "font-metrics.jsonl",
+          "event": "fontMetricTracingEnabled",
+          "time": "2026-09-09T12:34:40Z"
+        },
+        {
+          "detail": "true; readonly=false",
+          "event": "opened",
+          "time": "2026-09-09T12:34:40Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T12:34:42Z"
+        },
+        {
+          "detail": "",
+          "event": "saveRequested",
+          "time": "2026-09-09T12:35:15Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T12:35:15Z"
+        },
+        {
+          "detail": "success",
+          "event": "saveCompleted",
+          "time": "2026-09-09T12:35:15Z"
+        },
+        {
+          "detail": "success",
+          "event": "editingClosed",
+          "time": "2026-09-09T12:35:15Z"
+        },
+        {
+          "detail": "true; readonly=true",
+          "event": "opened",
+          "time": "2026-09-09T12:35:16Z"
+        },
+        {
+          "detail": "1; readonly=true",
+          "event": "attachmentsListed",
+          "time": "2026-09-09T12:35:47Z"
+        },
+        {
+          "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/B6F447FD-73E2-4814-8657-59D6EFD81092/attachment-exports/4EACF0A3-4418-40C3-A9F7-3F2E9F903AF9/附件 测试 📎.bin",
+          "event": "attachmentExported",
+          "time": "2026-09-09T12:35:47Z"
+        },
+        {
+          "detail": "",
+          "event": "resumeEditingRequested",
+          "time": "2026-09-09T12:35:48Z"
+        },
+        {
+          "detail": "success",
+          "event": "previewClosedForEditing",
+          "time": "2026-09-09T12:35:48Z"
+        },
+        {
+          "detail": "true; readonly=false",
+          "event": "opened",
+          "time": "2026-09-09T12:35:48Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T12:35:50Z"
+        },
+        {
+          "detail": "",
+          "event": "saveRequested",
+          "time": "2026-09-09T12:36:29Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T12:36:30Z"
+        },
+        {
+          "detail": "success",
+          "event": "saveCompleted",
+          "time": "2026-09-09T12:36:30Z"
+        },
+        {
+          "detail": "success",
+          "event": "editingClosed",
+          "time": "2026-09-09T12:36:30Z"
+        },
+        {
+          "detail": "true; readonly=true",
+          "event": "opened",
+          "time": "2026-09-09T12:36:30Z"
+        },
+        {
+          "detail": "1; readonly=true",
+          "event": "attachmentsListed",
+          "time": "2026-09-09T12:37:43Z"
+        },
+        {
+          "detail": "name=附件 测试 📎.bin; bytes=65539; declared=65539; sha256=32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05; path=/Users/jiangnangenius/Library/Containers/19A4ADAD-7EFD-443F-82B3-129CF7B96E31/Data/Library/Application Support/OfficeRoundtrip/B6F447FD-73E2-4814-8657-59D6EFD81092/attachment-exports/95E47FE2-5EEE-4829-BB9D-434090929C70/附件 测试 📎.bin",
+          "event": "attachmentExported",
+          "time": "2026-09-09T12:37:43Z"
+        }
+      ],
+      "saveCount": 2,
+      "layouts": {
+        "first": false,
+        "second": false
+      },
+      "structureChecks": {
+        "first": {
+          "count": 29,
+          "passed": true
+        },
+        "second": {
+          "count": 29,
+          "passed": true
+        }
+      },
+      "texts": {
+        "first": {
+          "C10": "Resize first save",
+          "C11": null
+        },
+        "second": {
+          "C10": "Resize first save",
+          "C11": "Resize second save"
+        }
+      },
+      "exportCount": 2,
+      "allExportedBytesMatch": true,
+      "columnOrRowResizingActuallyExercised": false
+    }
+  },
+  "pageAndMoveGeometryPreserved": true,
+  "resizeGeometryPreserved": false,
+  "physicalDevicePassed": false,
+  "fullFloeRuntimePassed": false,
+  "microsoftOfficeReopenPassed": false,
+  "releaseQualified": false,
+  "limitations": [
+    "Cell-resizing mode still loses 0.05/0.01 mm on initial import/save; subsequent save is stable.",
+    "Tests modify C10/C11 text; live row/column changes, drag/resize/rotate, grouped/multiple/protected objects remain unverified.",
+    "Fast automated typing sometimes did not enter complete text; switched to focus-confirmed paste and checked both displayed and saved text. General typing behavior needs separate qualification."
+  ]
+}

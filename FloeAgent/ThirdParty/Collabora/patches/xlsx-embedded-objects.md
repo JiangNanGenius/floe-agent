@@ -98,3 +98,11 @@ Calc importer no longer upgrades move-only anchors to resizing merely because
 the anchor contains a row and column. Runtime coverage of all three anchor modes
 is required. The pipeline now verifies both Calc and shared OOXML archive inputs
 and rejects an omitted, corrupt, duplicated or stale companion archive.
+
+Host 34350509488 passed actual Mac testing with separate page, move-only and
+cell-resizing inputs. Page and move-only geometry and modes now match the input
+after two confirmed text edits and saves/reopens (60x18 mm retained). The
+cell-resizing input still changes to 59.95x17.99 mm on first save; the second save
+is stable. All six saved samples pass 29 attachment structure checks, and six
+exports retain original bytes. This does not qualify live row/column resizing,
+rotations, groups, full Floe or physical devices; precise cell-resize import is open.

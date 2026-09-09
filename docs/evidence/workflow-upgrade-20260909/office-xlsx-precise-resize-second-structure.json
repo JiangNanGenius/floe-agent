@@ -1,0 +1,187 @@
+{
+  "sourceAttachmentSHA256": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+  "savedSHA256": "248cbf5f552a5461d3f9733bf9c6fb63c635c0088132e40d36ef009d320b91db",
+  "checks": [
+    {
+      "name": "selected sheet or slide exists",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "one embedded object in attachment fixture",
+      "expected": 1,
+      "actual": 1,
+      "passed": true
+    },
+    {
+      "name": "0 declared Package type",
+      "expected": "Package",
+      "actual": "Package",
+      "passed": true
+    },
+    {
+      "name": "0 attachment in selected sheet or slide",
+      "expected": "xl/worksheets/sheet2.xml",
+      "actual": "xl/worksheets/sheet2.xml",
+      "passed": true
+    },
+    {
+      "name": "0 embedded object relationship",
+      "expected": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject",
+      "actual": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject",
+      "passed": true
+    },
+    {
+      "name": "0 not an external link",
+      "expected": false,
+      "actual": false,
+      "passed": true
+    },
+    {
+      "name": "0 payload inside document",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 icon presentation",
+      "expected": "DVASPECT_ICON",
+      "actual": "DVASPECT_ICON",
+      "passed": true
+    },
+    {
+      "name": "0 VML drawing relationship",
+      "expected": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing",
+      "actual": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing",
+      "passed": true
+    },
+    {
+      "name": "0 VML drawing exists",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 exactly one corresponding VML shape",
+      "expected": 1,
+      "actual": 1,
+      "passed": true
+    },
+    {
+      "name": "0 exactly one corresponding VML shape type",
+      "expected": 1,
+      "actual": 1,
+      "passed": true
+    },
+    {
+      "name": "0 VML image relationship",
+      "expected": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+      "actual": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+      "passed": true
+    },
+    {
+      "name": "0 nonempty VML preview image",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 modern embedded object properties",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 worksheet preview image relationship",
+      "expected": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+      "actual": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+      "passed": true
+    },
+    {
+      "name": "0 modern and VML preview bytes agree",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 from complete nonnegative cell marker",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 to complete nonnegative cell marker",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 positive anchor width",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 positive anchor height",
+      "expected": true,
+      "actual": true,
+      "passed": true
+    },
+    {
+      "name": "0 Package compound class",
+      "expected": "0003000C-0000-0000-C000-000000000046",
+      "actual": "0003000C-0000-0000-C000-000000000046",
+      "passed": true
+    },
+    {
+      "name": "0 embedded bytes not a link",
+      "expected": false,
+      "actual": false,
+      "passed": true
+    },
+    {
+      "name": "0 original byte length",
+      "expected": 65539,
+      "actual": 65539,
+      "passed": true
+    },
+    {
+      "name": "0 original byte hash",
+      "expected": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "actual": "32beb7b57583420f652233c9c0b774fbe19e611c9374f26c5b4722e5c940cf05",
+      "passed": true
+    },
+    {
+      "name": "0 Unicode command",
+      "expected": "附件 测试 📎.bin",
+      "actual": "附件 测试 📎.bin",
+      "passed": true
+    },
+    {
+      "name": "0 Unicode label",
+      "expected": "附件 测试 📎.bin",
+      "actual": "附件 测试 📎.bin",
+      "passed": true
+    },
+    {
+      "name": "0 Unicode filename",
+      "expected": "附件 测试 📎.bin",
+      "actual": "附件 测试 📎.bin",
+      "passed": true
+    },
+    {
+      "name": "0 complete native stream parsed",
+      "expected": "",
+      "actual": "",
+      "passed": true
+    }
+  ],
+  "allNamedChecksPassed": true,
+  "geometryPassed": false,
+  "visualFidelityPassed": false,
+  "undoRedoPassed": false,
+  "microsoftOfficeReopenPassed": false,
+  "originalFileWritebackPassed": false,
+  "physicalDevicePassed": false
+}

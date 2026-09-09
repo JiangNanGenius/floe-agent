@@ -1,0 +1,196 @@
+{
+  "beforeSHA256": "179717f004b546fab1ca2246bc4d7c401452f209a934e63ab09a42008a3b754c",
+  "afterSHA256": "b8d56e7cb9cd55fa1c3a923c557e3d682a9f813873380cc1acf249227d73e012",
+  "before": {
+    "Quarterly": {
+      "defaultWidth": "8.6796875",
+      "baseWidth": "8",
+      "columns": [
+        [
+          1,
+          1,
+          "22"
+        ],
+        [
+          2,
+          3,
+          "14"
+        ]
+      ],
+      "objects": []
+    },
+    "Notes": {
+      "defaultWidth": "8.6796875",
+      "baseWidth": "8",
+      "columns": [],
+      "objects": [
+        {
+          "hmm": {
+            "margin-left": 1699,
+            "margin-top": 2117,
+            "width": 6000,
+            "height": 1800
+          },
+          "moveWithCells": true,
+          "sizeWithCells": false,
+          "vmlImportedMoveWithCells": true,
+          "vmlImportedSizeWithCells": false
+        }
+      ]
+    }
+  },
+  "after": {
+    "Quarterly": {
+      "defaultWidth": "8.6796875",
+      "baseWidth": "8",
+      "columns": [
+        [
+          1,
+          1,
+          "22"
+        ],
+        [
+          2,
+          3,
+          "14"
+        ]
+      ],
+      "objects": []
+    },
+    "Notes": {
+      "defaultWidth": "8.6796875",
+      "baseWidth": "8",
+      "columns": [],
+      "objects": [
+        {
+          "hmm": {
+            "margin-left": 1699,
+            "margin-top": 2117,
+            "width": 6000,
+            "height": 1800
+          },
+          "moveWithCells": true,
+          "sizeWithCells": false,
+          "vmlImportedMoveWithCells": true,
+          "vmlImportedSizeWithCells": false
+        }
+      ]
+    }
+  },
+  "checks": [
+    {
+      "name": "sheet order",
+      "expected": [
+        "Quarterly",
+        "Notes"
+      ],
+      "actual": [
+        "Quarterly",
+        "Notes"
+      ],
+      "passed": true
+    },
+    {
+      "name": "Quarterly default column width",
+      "expected": "8.6796875",
+      "actual": "8.6796875",
+      "passed": true
+    },
+    {
+      "name": "Quarterly base column width",
+      "expected": "8",
+      "actual": "8",
+      "passed": true
+    },
+    {
+      "name": "Quarterly columns 1-1 width",
+      "expected": "22",
+      "actual": "22",
+      "passed": true
+    },
+    {
+      "name": "Quarterly columns 2-3 width",
+      "expected": "14",
+      "actual": "14",
+      "passed": true
+    },
+    {
+      "name": "Quarterly columns 4-16384 width",
+      "expected": "8.6796875",
+      "actual": "8.6796875",
+      "passed": true
+    },
+    {
+      "name": "Quarterly ordered attachment geometry and movement",
+      "expected": [],
+      "actual": [],
+      "passed": true
+    },
+    {
+      "name": "Notes default column width",
+      "expected": "8.6796875",
+      "actual": "8.6796875",
+      "passed": true
+    },
+    {
+      "name": "Notes base column width",
+      "expected": "8",
+      "actual": "8",
+      "passed": true
+    },
+    {
+      "name": "Notes columns 1-16384 width",
+      "expected": "8.6796875",
+      "actual": "8.6796875",
+      "passed": true
+    },
+    {
+      "name": "Notes ordered attachment geometry and movement",
+      "expected": [
+        {
+          "hmm": {
+            "margin-left": 1699,
+            "margin-top": 2117,
+            "width": 6000,
+            "height": 1800
+          },
+          "moveWithCells": true,
+          "sizeWithCells": false,
+          "vmlImportedMoveWithCells": true,
+          "vmlImportedSizeWithCells": false
+        }
+      ],
+      "actual": [
+        {
+          "hmm": {
+            "margin-left": 1699,
+            "margin-top": 2117,
+            "width": 6000,
+            "height": 1800
+          },
+          "moveWithCells": true,
+          "sizeWithCells": false,
+          "vmlImportedMoveWithCells": true,
+          "vmlImportedSizeWithCells": false
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "Notes attachment 0 VML and modern movement agree",
+      "expected": [
+        true,
+        false
+      ],
+      "actual": [
+        true,
+        false
+      ],
+      "passed": true
+    }
+  ],
+  "allNamedChecksPassed": true,
+  "visualFidelityPassed": false,
+  "microsoftOfficeReopenPassed": false,
+  "scope": "Untouched widths and ordered OLE geometry between two XLSX saves only"
+}

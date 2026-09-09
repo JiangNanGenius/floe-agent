@@ -1,14 +1,14 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "xlsx-kit-column-metrics-runtime-passed-precise-geometry-open",
+  "qualificationStatus": "xlsx-page-move-geometry-runtime-passed-cell-resize-precision-open",
   "qualifiedHostArtifact": {
-    "runID": "34348631751",
+    "runID": "34350509488",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10102861523,
-    "workflowCommit": "a3ff3704249dd49cea2130a8c1053a03d97aa95e",
-    "archiveSHA256": "d4cd5813a92c789cbc00a151e606b645d76b007ffd6760580ca97747375822f7",
-    "executableSHA256": "62a7cbf2f09d43ef76c2418011a6a2bcbffea0815e44e2831e2e73650c6513da",
+    "artifactID": 10103635716,
+    "workflowCommit": "e28e48dd36a6ae2546d8740f73c21cd40fdae2f0",
+    "archiveSHA256": "6b3cd0011c4899cd4dc510692e0f1c2017a5bdb88f63037c13053c9f782f3f0e",
+    "executableSHA256": "eafacb69dbf4e6c06adcbf2853646a9e61cfcb219c2c842862d9552b3688a614",
     "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
@@ -18,15 +18,15 @@
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "2152cf44918371ae149df39ae1dd327bc45a34332465b4491c4b092f706f711a",
+    "manifestSHA256": "61417a61427290fe08b4c81241fdd8f52ef99833e408d06e1f3addd37dfd37ec",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "e54063ea03190f3ea2332069f5334ea8db333f7f2540749d4ef139a12cf52f2b",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
       "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac"
     },
-    "note": "Mac native XLSX sample passes repeated-save column stability, fixed-page position/flags, attachment payloads and redo metadata. Width/height still drift by 0.05/0.01 mm. Complete Office and physical-device validation remain open; not release-qualified.",
+    "note": "Mac sample: page and move-only OLE positions, sizes, modes and column widths preserved across real text edits and repeated saves. Six attachment exports match original bytes. Cell-resizing mode still loses 0.05/0.01 mm on initial save. Full Floe, all Office features and physical-device acceptance remain open.",
     "filterOverlay": {
-      "patchSHA256": "b5f67fa7928912e2fb6fbc1f2b8b91067d8c62ebf500fdde0a21ac908e5c49f1",
+      "patchSHA256": "7634bb072a7f582df7c05a703c10a23e9655863399aa6dfba1abf84482d83e18",
       "sourceFiles": {
         "engine/sc/source/filter/inc/xcl97rec.hxx": {
           "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
@@ -47,11 +47,36 @@
         "engine/sc/source/filter/oox/unitconverter.cxx": {
           "originalSHA256": "baa3a9cba59b78637c14a46cf67d0be3d2a809c622732010030757f3ddd93eca",
           "patchedSHA256": "7d2bd9fe65d966025ade2a8f96a365b9ccc3f7d986ccb1c80e09f8966c5906fa"
+        },
+        "engine/oox/source/vml/vmlshape.cxx": {
+          "originalSHA256": "7016e58713cc845b5ad73daca1b67d6bda64247d599cfe04f85c549805ba47ca",
+          "patchedSHA256": "140834ee400ed62b7fb2c77b0245bc83f8d3d8d6513a159b5ab8a019fe2669ad"
+        },
+        "engine/sc/source/filter/oox/drawingfragment.cxx": {
+          "originalSHA256": "2a84bf22221574e078cf33c3b3867d00f1c4f32fe4301c0186e9b9a9ad85e48d",
+          "patchedSHA256": "16adf3bef5739a24186eced8e55798f9bad6909908820bba01f12ed821e7124a"
         }
       },
-      "archiveSHA256": "479410fd477a822603f36ed9d78f01f23c1ccf3a067e66463a6f9ff09ed488f4",
+      "archiveSHA256": "43527d3918f8a2fab34448234a63936ce05c942ced4650c6e330140d292c23a7",
       "objectSHA256": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
-      "selectedArchiveSHA256": "479410fd477a822603f36ed9d78f01f23c1ccf3a067e66463a6f9ff09ed488f4"
+      "selectedArchiveSHA256": "43527d3918f8a2fab34448234a63936ce05c942ced4650c6e330140d292c23a7",
+      "additionalArchives": {
+        "libooxlo.a": {
+          "originalArchiveSHA256": "55120d505e2b6565e5b4c3b8a5df651537ed43d0117c3cf76d4c88bc104251e9",
+          "archiveSHA256": "c8c7eda8ebc5b41e707ceda797be984080deca7b244496ad0e536477c504ee18",
+          "objectSHA256ByMember": {
+            "vmlshape.o": "06f74f3ced0937e0144325caca56213c5af6e7ffd6075543d47c4a4d5f8f3d47"
+          },
+          "replacedMembers": [
+            "vmlshape.o"
+          ],
+          "preservedMemberCount": 235
+        }
+      },
+      "selectedArchiveSHA256ByName": {
+        "libscfiltlo.a": "43527d3918f8a2fab34448234a63936ce05c942ced4650c6e330140d292c23a7",
+        "libooxlo.a": "c8c7eda8ebc5b41e707ceda797be984080deca7b244496ad0e536477c504ee18"
+      }
     }
   },
   "qualifiedNativeArtifact": {
