@@ -59,20 +59,20 @@ public enum AgentPromptComposer {
             let criteria = activeGoal.acceptanceCriteria.map { "- \($0.text)" }.joined(separator: "\n")
             let blockers = (activeGoal.blockingConditions ?? []).map { "- \($0)" }.joined(separator: "\n")
             let stops = (activeGoal.stoppingConditions ?? []).map { "- \($0)" }.joined(separator: "\n")
-            let steps = activeGoal.steps
-                .sorted { $0.order < $1.order }
-                .prefix(12)
+            let orderedSteps = activeGoal.steps.sorted { $0.order < $1.order }
+            let unfinished = orderedSteps.filter { $0.status != .completed && $0.status != .skipped }
+            let visibleSteps = Array(unfinished.prefix(12))
+            let steps = visibleSteps
                 .map { "- [\($0.status.rawValue)] \($0.title): \($0.detail.prefix(200))" }
                 .joined(separator: "\n")
-            let next = activeGoal.steps
-                .sorted { $0.order < $1.order }
-                .first { $0.status != .completed && $0.status != .skipped }
+            let next = unfinished.first
                 .map { $0.title } ?? "Verify completion evidence"
             layers.append("""
             # Durable goal state
             Objective: \(activeGoal.objective)
             Status: \(activeGoal.status.rawValue); next incomplete step: \(next)
-            Steps:
+            Progress: \(orderedSteps.filter { $0.status == .completed }.count) completed, \(orderedSteps.filter { $0.status == .skipped }.count) skipped, \(unfinished.count) unfinished; \(orderedSteps.count) total.
+            Next unfinished steps (showing \(visibleSteps.count) of \(unfinished.count); each detail is an excerpt of at most 200 characters):
             \(steps)
             Acceptance criteria:
             \(criteria)
@@ -81,6 +81,7 @@ public enum AgentPromptComposer {
             Stopping conditions:
             \(stops)
             Continue from the next incomplete step; do not repeat completed steps unless their evidence is invalid or stale.
+            This bounded projection does not remove later steps or acceptance criteria. Do not declare the whole goal complete because only the displayed steps are finished.
             """)
         }
         return layers.joined(separator: "\n\n")

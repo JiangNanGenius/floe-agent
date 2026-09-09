@@ -75,6 +75,23 @@ struct HarnessPlanningTests {
         #expect(!prompt.contains("call the native `plan.submit`"))
     }
 
+    @Test("Goal resumption shows unfinished work beyond a long completed prefix")
+    func goalProjectionAdvancesPastCompletedSteps() {
+        var steps = (0..<20).map { GoalStep(title: "Done \($0)", status: .completed, order: $0) }
+        steps.append(GoalStep(title: "Skipped", status: .skipped, order: 20))
+        steps += (21..<36).map { GoalStep(title: "Pending \($0)", detail: "Specific next action \($0)", order: $0) }
+        let goal = ConversationGoal(conversationID: UUID(), objective: "Complete all sections", acceptanceCriteria: [GoalCriterion(text: "All sections verified")], steps: steps)
+        for local in [false, true] {
+            let prompt = AgentPromptComposer.compose(mode: .goal, runtimeContext: "Available tools: none", activeGoal: goal, compactForLocal: local)
+            #expect(prompt.contains("Pending 21: Specific next action 21"))
+            #expect(prompt.contains("Pending 32: Specific next action 32"))
+            #expect(!prompt.contains("Specific next action 33"))
+            #expect(prompt.contains("20 completed, 1 skipped, 15 unfinished; 36 total"))
+            #expect(prompt.contains("showing 12 of 15"))
+            #expect(prompt.contains("does not remove later steps"))
+        }
+    }
+
     @Test("Local composition shortens reusable rules while preserving dynamic state")
     func localCompositionPreservesGoalWorkspaceAndGuideContext() {
         let goal = ConversationGoal(conversationID: UUID(), objective: "Finish invoice migration",
