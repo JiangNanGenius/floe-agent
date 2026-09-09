@@ -292,10 +292,18 @@ std::vector<OUString> FloeLiveWordPackages(SfxObjectShell *shell) {
         css::uno::Reference<css::beans::XPropertySet> properties(objects->getByName(name), css::uno::UNO_QUERY_THROW);
         css::uno::Reference<css::embed::XEmbeddedObject> embedded(properties->getPropertyValue(u"EmbeddedObject"_ustr), css::uno::UNO_QUERY);
         if (!embedded) continue;
-        const SvGlobalName classID(embedded->getClassID());
-        if (classID != SvGlobalName(0x0003000c, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46)) continue;
         const auto storageName = shell->GetEmbeddedObjectContainer().GetEmbeddedObjectName(embedded);
-        if (!storageName.isEmpty()) result.push_back(storageName);
+        if (storageName.isEmpty() || !shell->GetStorage()->isStreamElement(storageName)) continue;
+        // On mobile the UNO object may be a generic foreign-object wrapper.
+        // Identify Package from its actual compound storage, not that wrapper's
+        // class ID. Native charts/subdocuments use their own storage types.
+        auto stream = shell->GetStorage()->openStreamElement(storageName, css::embed::ElementModes::READ);
+        auto input = utl::UcbStreamHelper::CreateStream(stream->getInputStream());
+        if (!input || !SotStorage::IsStorageFile(input.get())) continue;
+        rtl::Reference<SotStorage> storage = new SotStorage(*input);
+        if (storage->GetError()) throw std::runtime_error("Embedded object storage is damaged.");
+        if (storage->GetClassName() == SvGlobalName(0x0003000c, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46))
+            result.push_back(storageName);
     }
     return result;
 }
