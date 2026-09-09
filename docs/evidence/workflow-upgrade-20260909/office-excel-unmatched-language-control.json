@@ -1,0 +1,57 @@
+{
+  "hostRunID": "34306039335",
+  "observedEditorLanguage": "zh-Hans-TW",
+  "operation": "open original synthetic XLSX, enter edit, save without modifying any cells, close and reopen readonly",
+  "savedSHA256": "6decf3b9a8a3fb0364eca75a3c8b102d662e9f23eb49bb2a6636c8e17035ea59",
+  "numberFormats": {
+    "A1": "ge\\ner\"al\"",
+    "B2": "ge\\ner\"al\"",
+    "B3": "ge\\ner\"al\"",
+    "C2": "ge\\ner\"al\"",
+    "C3": "ge\\ner\"al\""
+  },
+  "events": [
+    {
+      "detail": "xlsx",
+      "event": "fixtureCopied",
+      "time": "2026-09-09T03:59:21Z"
+    },
+    {
+      "detail": "true; readonly=false",
+      "event": "opened",
+      "time": "2026-09-09T03:59:22Z"
+    },
+    {
+      "detail": "false",
+      "event": "workingPersistence",
+      "time": "2026-09-09T03:59:29Z"
+    },
+    {
+      "detail": "",
+      "event": "saveRequested",
+      "time": "2026-09-09T03:59:40Z"
+    },
+    {
+      "detail": "true",
+      "event": "workingPersistence",
+      "time": "2026-09-09T03:59:40Z"
+    },
+    {
+      "detail": "success",
+      "event": "saveCompleted",
+      "time": "2026-09-09T03:59:40Z"
+    },
+    {
+      "detail": "success",
+      "event": "editingClosed",
+      "time": "2026-09-09T03:59:40Z"
+    },
+    {
+      "detail": "true; readonly=true",
+      "event": "opened",
+      "time": "2026-09-09T03:59:41Z"
+    }
+  ],
+  "generalPreserved": false,
+  "physicalDevicePassed": false
+}

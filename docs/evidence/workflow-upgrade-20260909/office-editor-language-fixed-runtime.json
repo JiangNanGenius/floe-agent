@@ -1,0 +1,146 @@
+{
+  "hostRunID": "34309184148",
+  "sourceCommit": "bef6849f0b4e23fb18ed009cbed44978ef9e14bc",
+  "environment": "Mac Designed for iPad, isolated developer-signed app",
+  "systemPreferredLanguage": "zh-Hans-TW",
+  "observedEditorLanguage": "zh-CN",
+  "languagePreferenceOverride": false,
+  "regressionGeneralFormatResolvedForFixture": true,
+  "fullOfficeEditingComplete": false,
+  "physicalDevicePassed": false,
+  "sessions": {
+    "unchanged": {
+      "savedSHA256": "f5771f632cfeb2605d8b132614f79431f3c97061da2623a9cf9bf60cf50661aa",
+      "numberFormats": {
+        "A1": "General",
+        "B2": "General",
+        "B3": "General",
+        "C2": "General",
+        "C3": "General"
+      },
+      "B2": 12,
+      "C2Formula": "=B2*2",
+      "C2Cache": 24,
+      "columnAWidth": 22.0,
+      "events": [
+        {
+          "detail": "xlsx",
+          "event": "fixtureCopied",
+          "time": "2026-09-09T04:05:21Z"
+        },
+        {
+          "detail": "zh-Hans-TW",
+          "event": "preferredLanguage",
+          "time": "2026-09-09T04:05:21Z"
+        },
+        {
+          "detail": "true; readonly=false",
+          "event": "opened",
+          "time": "2026-09-09T04:05:21Z"
+        },
+        {
+          "detail": "false",
+          "event": "workingPersistence",
+          "time": "2026-09-09T04:05:23Z"
+        },
+        {
+          "detail": "",
+          "event": "saveRequested",
+          "time": "2026-09-09T04:05:35Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T04:05:36Z"
+        },
+        {
+          "detail": "success",
+          "event": "saveCompleted",
+          "time": "2026-09-09T04:05:36Z"
+        },
+        {
+          "detail": "success",
+          "event": "editingClosed",
+          "time": "2026-09-09T04:05:36Z"
+        },
+        {
+          "detail": "true; readonly=true",
+          "event": "opened",
+          "time": "2026-09-09T04:05:36Z"
+        },
+        {
+          "detail": "success",
+          "event": "previewClosed",
+          "time": "2026-09-09T04:06:01Z"
+        }
+      ]
+    },
+    "edited": {
+      "savedSHA256": "5df89a4e2dfa5b08fdabbe88ebd3eebbc4724a47bc52f14b19a1d2da487733cd",
+      "numberFormats": {
+        "A1": "General",
+        "B2": "General",
+        "B3": "General",
+        "C2": "General",
+        "C3": "General"
+      },
+      "B2": 36,
+      "C2Formula": "=B2*2",
+      "C2Cache": 72,
+      "columnAWidth": 21.21,
+      "events": [
+        {
+          "detail": "xlsx",
+          "event": "fixtureCopied",
+          "time": "2026-09-09T04:06:15Z"
+        },
+        {
+          "detail": "zh-Hans-TW",
+          "event": "preferredLanguage",
+          "time": "2026-09-09T04:06:15Z"
+        },
+        {
+          "detail": "true; readonly=false",
+          "event": "opened",
+          "time": "2026-09-09T04:06:15Z"
+        },
+        {
+          "detail": "false",
+          "event": "workingPersistence",
+          "time": "2026-09-09T04:06:16Z"
+        },
+        {
+          "detail": "",
+          "event": "saveRequested",
+          "time": "2026-09-09T04:07:03Z"
+        },
+        {
+          "detail": "true",
+          "event": "workingPersistence",
+          "time": "2026-09-09T04:07:03Z"
+        },
+        {
+          "detail": "success",
+          "event": "saveCompleted",
+          "time": "2026-09-09T04:07:03Z"
+        },
+        {
+          "detail": "success",
+          "event": "editingClosed",
+          "time": "2026-09-09T04:07:03Z"
+        },
+        {
+          "detail": "true; readonly=true",
+          "event": "opened",
+          "time": "2026-09-09T04:07:04Z"
+        }
+      ]
+    }
+  },
+  "remainingFailures": [
+    "Column A width changes from 22 to 21.21 during edited save; reproduced with only cell selection and formula-bar paste.",
+    "First chart data point is still not visible.",
+    "Prior AX-triggered WebContent crashes and keyboard behavior remain unverified.",
+    "Inserting attachments and all complete frontend operations remain incomplete."
+  ]
+}

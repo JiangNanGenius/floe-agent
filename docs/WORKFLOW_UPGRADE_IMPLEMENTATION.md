@@ -3,6 +3,8 @@
 本文件落实 2026-09-09 用户确认的完整计划。所有条目未经对应验收不得标完成。
 完整 Office 和其他条目一起验收后发布；不以既有 1.5.3 发布结果证明新功能完成。
 
+Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.md) 完成，不以完整界面接入或简单文字/单元格编辑代替完整功能。该表细分附件、Word、Excel、PPT 和跨功能保存；附件必须真正嵌入、可操作、可保存重开和提取原文件，不能用超链接或占位按钮替代。已确认通用附件导入与嵌入链路缺失，列为接下来的实际实现优先项。
+
 ## 产品契约
 
 **Office 必须是用户直接操作的完整前端。** Word 显示真实文档页面；Excel 显示网格、公式栏和工作表；PowerPoint 显示缩略图、幻灯片画布和可操作对象。复用完整 Collabora 移动前端及原生引擎，不能用字段表单、转换图片、外部 App 或仅模型修改来替代。
@@ -139,3 +141,5 @@
 - O02 保真失败：Excel 原生网格把 B2 从 12 改为 36，C2 重算为 72；保存/关闭/重开回执成功，23 项结构检查中 18 项通过，包括公式、缓存、工作表、表头、列宽与图表锚点。但五项常规格式检查失败：General 被保存为异常自定义格式，重开后出现日期样式，必须修复后再验收。英语进程对照原样保存保持 General；当前 zh-Hans-TW 与 en-US 的差异仅证明需要继续调查语言路径，尚未确诊或修复，不能通过强制英语掩盖问题。见 [Excel 失败回执](evidence/workflow-upgrade-20260909/office-excel-roundtrip-structure-failure.json) 与 [语言对照](evidence/workflow-upgrade-20260909/office-excel-english-control.json)。
 - O02/O03 稳定性失败：Mac 测试中 AX 名称框操作、PPT 位置尺寸操作分别触发 WebContent 的 SwiftNativeNSArray 数组越界，内容进程终止；坐标方式完成了 Excel 编辑，但未证明故障已解决。PPT 已显示缩略图和可选形状，尚未完成编辑往返。两种图表首点显示仍需验证；Excel 图表缓存保留 12/24，不能用结构值正确替代视觉正确。日志摘要、失败截图均保留在 [辅助功能失败记录](evidence/workflow-upgrade-20260909/office-editor-accessibility-failures.json)。独立测试程序补齐异常关闭提示和旧控制器回调身份检查；正式 Floe 已有同类身份检查。完整 Office、原文件提交、Microsoft Office 重开及真机仍未完成。
 - O02 中文语言修复候选：同一原生宿主在进程级 `zh-CN` 下，原样保存和 B2=36 编辑保存均保持 General，重开 C2=72；编辑样本 23 项结构检查通过 22 项，列 A 宽度从 22 变成 21.21，仍不满足完整保真。新增 [中文对照回执](evidence/workflow-upgrade-20260909/office-excel-zhcn-controls.json)、[编辑结构检查](evidence/workflow-upgrade-20260909/office-excel-zhcn-edited-structure.json) 和两张重开截图。宿主改用 Foundation 按用户语言顺序及简繁脚本匹配实际打包的 en-US/zh-CN/zh-TW；18 项实际 Objective-C++ 匹配检查通过，包括 zh-Hans-TW→zh-CN、zh-Hant-CN→zh-TW。该修复不会修改系统偏好或直接改写文档格式。新宿主编译及原异常语言环境下的保存重开仍待验证；列宽、图表首点、输入焦点及辅助功能故障继续保留。
+- O04 语言修复已取得实际回归结果：宿主 34309184148（bef6849）云端编译/链接/Swift 导入成功，4,785 文件及 178 目录完整验证，已更新产物锁定。独立 Mac 测试保持系统原 `zh-Hans-TW`，未覆盖偏好，原生编辑器自动匹配 zh-CN；原样保存和 B2=36 实际编辑保存均保留 General，重开 C2=72。旧宿主相同无编辑保存仍复现格式乱码，形成对照。见 [修复运行回执](evidence/workflow-upgrade-20260909/office-editor-language-fixed-runtime.json)。编辑样本仍为 22/23 项通过，单次选区和公式栏粘贴也使列宽 22→21.21；列宽、首图表点、附件和其他完整前端操作未完成。该局部修复不勾选 Office 整体完成或发布。
+- O03/O04/O05 附件审查：确认移动 insertfile 通道没有通用附件类型，现有文件选择回调主要用于导出，Word 的 InsertObject 命令只读取类 ID 而不接受文件 URL；仅增加菜单或传 FileName 无法完成附件插入。已将实际断点、逐项操作闭环和对应源码列入 [Office 前端明细](OFFICE_FRONTEND_ACCEPTANCE.md)。接下来优先贯通真实附件选择、会话复制、嵌入对象、编辑操作、原格式保存与原附件提取，再按矩阵补齐所有操作；H06 最终提示词/Skill 宣称审查仍必须执行。

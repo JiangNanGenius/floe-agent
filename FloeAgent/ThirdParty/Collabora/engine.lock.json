@@ -1,28 +1,28 @@
 {
   "repository": "https://github.com/CollaboraOnline/online.mirror.git",
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-  "qualificationStatus": "editor-language-host-qualification-pending",
+  "qualificationStatus": "editor-language-host-compiled-isolated-mac-regression-checked",
   "qualifiedHostArtifact": {
-    "runID": "34306039335",
+    "runID": "34309184148",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10086728988,
-    "workflowCommit": "0c3006975dfc9d76c6fcee162c3e4ef4cfd90da8",
-    "archiveSHA256": "46df1fe2687474216339822f9abdf908d73a14af0856c2aec4bbee6c6075d376",
-    "executableSHA256": "800ea33718b89b6db623ad6c26495d1ee3e37823683df64fea27b8e5d5fe9857",
+    "artifactID": 10087788175,
+    "workflowCommit": "bef6849f0b4e23fb18ed009cbed44978ef9e14bc",
+    "archiveSHA256": "c7a5c91a8eba45fc801ec0560ad97ea92a78723a226e83c8533b2c03f8bfbeb8",
+    "executableSHA256": "20e851c3a60a68b6271237e22be719f728fd41b342dcad9d2322469fc12ad839",
     "overlaySHA256": "600f480a2ccfde4e7d8d9641332197556a4dc79466860943e207c6c2fd7618fd",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "ef44f6d2948a0dedacb1e0077f06bd9f73660697ebb8bb1936d7f0f06c6eb32c",
-      "FloeOfficeNative.mm": "18b7612abc3567394a3078ac65a2d3aba9e109fa6af52a436bc73503aa6dcb3a"
+      "FloeOfficeNative.mm": "0d460926c0d2a6d7687418fb2470df69f33feeead4183ed9d10bbe7fb2c42963"
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "758791b39af44a2fc48a6acc5ddce15f3d5487d721e95dfafad0d2190ba68ae2",
+    "manifestSHA256": "dc65e3d2c28c08a77b5dc657daeea22b2b88982d7df2f065bd725983134a3d95",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "ef44f6d2948a0dedacb1e0077f06bd9f73660697ebb8bb1936d7f0f06c6eb32c",
-      "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac",
-      "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83"
+      "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83",
+      "Info.plist": "f3d774b7a39a14076760521477d86b8a5faac15d8d4fab6bf4f60bb1c95178ac"
     },
-    "note": "Compiled, linked, Swift-imported and retrieved with complete inventory verification. Isolated signed Mac Designed for iPad Word preview hid edit entry, preserved selection under typing, rejected host save, and retained byte-identical working and engine files. Paste dispatch, forced backend commands, full Floe, editable roundtrip and physical-device fidelity remain unverified."
+    "note": "Compiled, linked, Swift-imported and retrieved with full inventory verification. Isolated Mac native Excel under original zh-Hans-TW preferences resolves to zh-CN; unchanged and edited saves preserve General and formulas. Edited sample passes 22/23 named checks, but column width, chart rendering, attachments, complete frontend, original-file commit and physical-device acceptance remain incomplete."
   },
   "qualifiedNativeArtifact": {
     "runID": "34268468731",

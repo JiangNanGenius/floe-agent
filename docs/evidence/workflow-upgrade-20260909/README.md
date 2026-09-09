@@ -110,3 +110,11 @@ Office 接入补丁的 [锁定源码检查](office-native-overlay-check.json) �
 旧归档与解包保存在外置盘 `/Volumes/TECLAST/FloeOfficeBuilds/34268468731`，避免占满系统盘。新打包器保留 `.a` 与显式 `.o` 的完整顺序，缺失对象拒绝打包。[16 项测试](office-complete-input-tests-summary.txt)覆盖这些边界及复用任务在摘要不符/已有目录时不覆盖。依赖补齐流水线尚需运行成功；此处不声称完整原生编辑器已接入。
 
 补齐任务 [34286492116](https://github.com/JiangNanGenius/floe-agent/actions/runs/34286492116) 已启动；同一提交的常规打包/补丁及预检任务 [34286492003](https://github.com/JiangNanGenius/floe-agent/actions/runs/34286492003) 成功，后者不执行完整引擎重建。原始库抽样对象确认为 iOS、最低 26.0、SDK 27.0；仅是单对象平台检查，不代替全部链接和真机验证。
+
+## 2026-09-09 原生 Excel 语言回归与完整编辑边界
+
+宿主 [34309184148](https://github.com/JiangNanGenius/floe-agent/actions/runs/34309184148) 编译、链接和 Swift 导入通过；[实际取回清单验证](office-language-host-installed.json) 与 [18 项 Foundation 语言匹配检查](office-editor-language-tests.json)通过。系统原 zh-Hans-TW 不变，编辑器匹配 zh-CN；[运行回执](office-editor-language-fixed-runtime.json)记录原样保存及 B2=36 编辑保存重开，General 和公式保留。
+
+对照：[旧未匹配语言的无编辑保存](office-excel-unmatched-language-control.json) 仍产生乱码；[简体中文旧宿主对照](office-excel-zhcn-controls.json) 保持 General。[修复后无编辑截图](office-excel-language-fixed-control-mac.jpg) 和 [编辑重开截图](office-excel-language-fixed-edited-mac.jpg)已保存。编辑样本 [23 项结构检查](office-excel-language-fixed-edited-structure.json)通过 22 项；列 A 宽度 22→21.21 仍失败，图表首点显示异常也未解决。
+
+这些只证明局部 Excel 回归。完整编辑功能仍未完成，尤其通用附件导入/嵌入通道缺失。用户要求的真实操作与断点见 [Office 前端逐项验收](../../OFFICE_FRONTEND_ACCEPTANCE.md)。不以原生界面或简单文字/数字编辑成功代替完整 Word/Excel/PPT，也不代表 Floe 原文件写回、真机、Microsoft Office 重开或新版本发布通过。
