@@ -3,12 +3,26 @@ import Foundation
 /// Versioned, product-owned presets for official first-party endpoints. The
 /// remote IDs remain editable because providers retire model revisions.
 public enum OfficialMediaModelCatalog {
-    public static let manifestVersion = 3
+    public static let manifestVersion = 4
     public static let verifiedAt = ISO8601DateFormatter().date(from: "2026-08-29T00:00:00Z")!
 
     private static let mediaRefreshDate = ISO8601DateFormatter().date(from: "2026-09-08T00:00:00Z")!
 
     public static let models: [MediaModelDescriptor] = [
+        .init(id: "openai.gpt-image-2.5-flare", provider: .openAI, kind: .image,
+              remoteModelID: "gpt-image-2.5-flare", displayName: "GPT Image 2.5 Flare",
+              supportedAspectRatios: ["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"],
+              supportedResolutions: ["1K"], supportedQualities: ["low", "medium", "high", "xhigh", "max", "auto"],
+              defaultResolution: "1K", defaultQuality: "medium", maximumReferenceAssets: 16,
+              verifiedAt: mediaRefreshDate, manifestVersion: manifestVersion),
+
+        .init(id: "openai.gpt-image-2.5-sunburst", provider: .openAI, kind: .image,
+              remoteModelID: "gpt-image-2.5-sunburst", displayName: "GPT Image 2.5 Sunburst",
+              supportedAspectRatios: ["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"],
+              supportedResolutions: ["1K"], supportedQualities: ["low", "medium", "high", "xhigh", "max", "auto"],
+              defaultResolution: "1K", defaultQuality: "medium", maximumReferenceAssets: 16,
+              verifiedAt: mediaRefreshDate, manifestVersion: manifestVersion),
+
         .init(id: "openai.gpt-image-2", provider: .openAI, kind: .image,
               remoteModelID: "gpt-image-2", displayName: "GPT Image 2",
               supportedAspectRatios: ["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"],

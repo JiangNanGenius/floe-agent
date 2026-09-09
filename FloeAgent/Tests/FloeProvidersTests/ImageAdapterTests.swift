@@ -173,8 +173,12 @@ struct ImageAdapterTests {
             .localizedDescription.contains("Example"))
     }
 
-    @Test("OpenAI GPT Image 2 preserves a configurable proxy base URL")
-    func openAIProxyWireContract() async throws {
+    @Test("OpenAI image presets preserve model, quality and proxy URL", arguments: [
+        ("gpt-image-2", "high"),
+        ("gpt-image-2.5-flare", "xhigh"),
+        ("gpt-image-2.5-sunburst", "max")
+    ])
+    func openAIProxyWireContract(model: String, quality: String) async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ImageAdapterURLProtocol.self]
         let session = URLSession(configuration: configuration)
@@ -198,8 +202,9 @@ struct ImageAdapterTests {
                 selection: ImageGenerationSelection(
                     aspectRatio: "16:9",
                     resolution: "1K",
-                    quality: "high"
-                )
+                    quality: quality
+                ),
+                modelRemoteID: model
             ),
             provider: profile,
             credentials: ProviderCredentials(apiKey: "test-key")
@@ -211,9 +216,9 @@ struct ImageAdapterTests {
         #expect(request.timeoutInterval >= 300)
         let body = try #require(request.httpBody)
         let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
-        #expect(json["model"] as? String == "gpt-image-2")
+        #expect(json["model"] as? String == model)
         #expect(json["size"] as? String == "1536x864")
-        #expect(json["quality"] as? String == "high")
+        #expect(json["quality"] as? String == quality)
     }
 
     @Test("OpenAI GPT Image edits transmit every reference without truncation")

@@ -230,7 +230,7 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
             operation: request.operation, selection: request.selection
         ) ?? "1024x1024"
         let quality = try ImageGenerationPresetResolver.normalizedQuality(
-            request.selection.quality, provider: provider.kind
+            request.selection.quality, provider: provider.kind, modelRemoteID: model
         )
         let body = GenerationBody(
             model: model,
@@ -287,7 +287,7 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
             operation: request.operation, selection: request.selection
         ) ?? "1024x1024"
         let quality = try ImageGenerationPresetResolver.normalizedQuality(
-            request.selection.quality, provider: provider.kind
+            request.selection.quality, provider: provider.kind, modelRemoteID: model
         )
         field("model", model)
         field("prompt", request.prompt)

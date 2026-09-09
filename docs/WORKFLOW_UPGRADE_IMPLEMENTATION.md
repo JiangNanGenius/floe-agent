@@ -64,7 +64,8 @@ Office 必须按照 [前端逐项实施与验收表](OFFICE_FRONTEND_ACCEPTANCE.
 - [ ] C02 iPhone可视区域/横竖屏/键盘/安全区，助手统一素材与完整弹层。
 - [ ] C03 列表+海报墙真实缩略图/视频封面、后台降采样/缓存失效/云端状态/引用保护。
 - [ ] N01 真正本机ICMP与主机路径，IPv4/6/取消/权限；TCP区分；HTTP错误不能成功下载；Stata/PDF回归。
-- [ ] M01 火山阿里官方ID/参数/素材限制、旧和自定义配置保留；目录/请求/权限/真实生成分开验证。
+- [ ] M01 火山、阿里、OpenAI 官方ID/参数/素材限制、旧和自定义配置保留；目录/请求/权限/真实生成分开验证。
+  - 2026-09-09：新增 GPT Image 2.5 Flare / Sunburst 预设，目录版本 4；使用官方 `gpt-image-2.5-flare` / `gpt-image-2.5-sunburst`，保留 GPT Image 2。新模型画质包含 low/medium/high/xhigh/max/auto；生成与编辑请求按模型校验，旧模型不开放新画质值。来源：[Flare](https://developers.openai.com/api/docs/models/gpt-image-2.5-flare)、[Sunburst](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst)。隔离 Swift 包中 61 项媒体契约与适配器测试通过，包括新模型 ID、xhigh/max、代理路径的实际请求编码；真实联网生成和 TestFlight 发布尚未验收。
 
 ## 发布门槛
 

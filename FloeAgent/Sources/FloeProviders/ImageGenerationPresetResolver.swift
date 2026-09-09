@@ -61,10 +61,17 @@ public enum ImageGenerationPresetResolver {
         }
     }
 
-    public static func normalizedQuality(_ quality: String?, provider: ProviderKind) throws -> String? {
+    public static func normalizedQuality(_ quality: String?, provider: ProviderKind, modelRemoteID: String? = nil) throws -> String? {
         guard let value = cleaned(quality)?.lowercased() else { return nil }
         guard provider == .openAI else { return nil }
-        guard ["low", "medium", "high", "auto"].contains(value) else {
+        let model = modelRemoteID?.lowercased() ?? ""
+        let isImage25 = ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"].contains {
+            model == $0 || model.hasPrefix($0 + "-")
+        }
+        let allowed = isImage25
+            ? ["low", "medium", "high", "xhigh", "max", "auto"]
+            : ["low", "medium", "high", "auto"]
+        guard allowed.contains(value) else {
             throw RemoteImageError.requestFailed("OpenAI 图片质量参数无效：\(value)。")
         }
         return value
