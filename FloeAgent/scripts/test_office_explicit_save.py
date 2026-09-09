@@ -29,14 +29,15 @@ for (const deferred of [false, true]) {
     function Map() {
         this.readonly = false;
         this.saveState = {
-            saved: 0, failed: 0,
+            saved: 0, failed: 0, modified: 0,
             showSavedStatus() { this.saved++; },
-            showSaveFailedStatus() { this.failed++; }
+            showSaveFailedStatus() { this.failed++; },
+            showModifiedStatus() { this.modified++; }
         };
     }
     Map.prototype.fire = function (...args) { forwarded.push(args); return this; };
     Map.prototype.isReadOnlyMode = function () { return this.readonly; };
-    const window = { webkit: {messageHandlers: {floeCommitDocument: {
+    const window = { app: {file: {modified: false}}, webkit: {messageHandlers: {floeCommitDocument: {
         postMessage(value) { if (failTransport) throw Error('transport gone'); calls.push(value); }
     }}}};
     if (!deferred) window.L = {Map};
@@ -78,6 +79,12 @@ for (const deferred of [false, true]) {
     window.floeCompleteOriginalSave(false); // CAS conflict or damaged export.
     assert.equal(map.saveState.saved, beforeFailure); assert.equal(map.saveState.failed, 1);
     assert.equal(map.saveState.showSavedStatus, originalSaved);
+    map.fire('postMessage', {msgId: 'UI_Save'});
+    window.app.file.modified = true; // New edit between commit and its UI acknowledgement.
+    window.floeCompleteOriginalSave(true);
+    assert.equal(map.saveState.saved, beforeFailure);
+    assert.equal(map.saveState.modified, 1);
+    window.app.file.modified = false;
     const count = calls.length;
     map.readonly = true;
     map.fire('postMessage', {msgId: 'UI_Save'});

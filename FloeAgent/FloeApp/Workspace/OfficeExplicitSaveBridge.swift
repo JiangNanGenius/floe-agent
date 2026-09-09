@@ -78,7 +78,10 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
                 const status = map.saveState;
                 if (status && savedStatus) status.showSavedStatus = savedStatus;
                 savedStatus = null;
-                if (success === true && status && typeof status.showSavedStatus === 'function')
+                const changedAgain = window.app && window.app.file && window.app.file.modified === true;
+                if (success === true && changedAgain && status) {
+                    if (typeof status.showModifiedStatus === 'function') status.showModifiedStatus();
+                } else if (success === true && status && typeof status.showSavedStatus === 'function')
                     status.showSavedStatus();
                 else if (status && typeof status.showSaveFailedStatus === 'function')
                     status.showSaveFailedStatus();
