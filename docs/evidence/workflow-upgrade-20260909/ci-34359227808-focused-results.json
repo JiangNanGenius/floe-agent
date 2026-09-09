@@ -1,0 +1,18 @@
+{
+  "runID": 34359227808,
+  "sourceSHA": "14b4f1390cfc0aaeb71bbfb6887a23cc67f87ce7",
+  "jobID": 102493478654,
+  "appRegressionTestsPassed": 127,
+  "jobConclusion": "failure",
+  "failure": "Old repeated-save fixture contains plain text with a pptx extension; corrected in v1.6.1 and 15 focused production-source tests passed locally.",
+  "releaseAvailabilityVerified": false,
+  "logExcerpts": [
+    "2026-09-09T14:12:18.0061810Z \u25c7 Test \"An image model directory retains complete parameter JSON\" started.",
+    "2026-09-09T14:12:18.0062580Z \u2714 Test \"An image model directory retains complete parameter JSON\" passed after 0.004 seconds.",
+    "2026-09-09T14:12:18.0063300Z \u25c7 Test \"Reopening a long timeline retains history and pages through reconnect gaps\" started.",
+    "2026-09-09T14:12:18.9138850Z \u2714 Test \"Reopening a long timeline retains history and pages through reconnect gaps\" passed after 0.974 seconds.",
+    "2026-09-09T14:12:22.6621910Z \u2714 Test run with 127 tests in 9 suites passed after 75.098 seconds.",
+    "2026-09-09T14:18:55.7559010Z \u2718 Test \"Repeated saves advance the baseline and explicit discard preserves the original\" recorded an issue at DocumentWorkspaceTests.swift:209:6: Caught error: .missingEndOfCentralDirectoryRecord",
+    "2026-09-09T14:18:55.7569610Z \u2714 Suite \"FloeDocuments.NativeSaveValidation\" passed after 0.875 seconds."
+  ]
+}
