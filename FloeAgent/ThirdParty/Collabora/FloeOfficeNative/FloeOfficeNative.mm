@@ -7,6 +7,7 @@
 #include <comphelper/kit.hxx>
 #include <i18nlangtag/languagetag.hxx>
 #include <common/LangUtil.hpp>
+#include <rtl/bootstrap.hxx>
 #include <exception>
 #include <string>
 #import "ios.h"
@@ -99,7 +100,7 @@ static void ServerReady() {
 }
 - (void)startEngine {
     NSBundle *bundle = NSBundle.mainBundle;
-    for (NSString *name in @[@"cool.html", @"rc", @"ICU.dat"]) {
+    for (NSString *name in @[@"cool.html", @"rc", @"fundamentalrc", @"ICU.dat"]) {
         if (![NSFileManager.defaultManager fileExistsAtPath:[bundle.resourcePath stringByAppendingPathComponent:name]]) {
             [self fail:OfficeError(1, @"Office resources are missing from the application.")];
             return;
@@ -124,7 +125,17 @@ static void ServerReady() {
         Log::initialize("FloeOffice", "warning");
         app_locale = NSLocale.preferredLanguages.firstObject ?: @"en-US";
         app_text_direction = LangUtil::isRtlLanguage(std::string(app_locale.UTF8String)) ? @"rtl" : @"";
-        lo_kit = cok_init_2(nullptr, profile.absoluteString.UTF8String);
+        // The kit's null-path fallback uses the image containing lo_initialize.
+        // In an embedded framework that is Frameworks/FloeOfficeNative.framework,
+        // while the qualified rc, fundamentalrc, program and share live in the
+        // application resource directory. Pass a filesystem path (not a URL);
+        // the kit converts it to a correctly escaped file URL itself.
+        // The kit's profile argument also applies a desktop-only ../ resource
+        // root. Set the private profile directly without moving BRAND_BASE_DIR
+        // away from the iOS main-bundle resources declared in fundamentalrc.
+        rtl::Bootstrap::set(u"UserInstallation"_ustr,
+                            OUString::fromUtf8(OString(profile.absoluteString.UTF8String)));
+        lo_kit = cok_init_2(bundle.resourcePath.UTF8String, nullptr);
         if (!lo_kit) { [self fail:OfficeError(2, @"Office could not initialize its document engine.")]; return; }
         comphelper::COKit::setLanguageTag(LanguageTag(OUString::fromUtf8(OString(app_locale.UTF8String)), true));
         fakeSocketSetLoggingCallback([](const std::string& line) { LOG_INF_NOFILE(line); });

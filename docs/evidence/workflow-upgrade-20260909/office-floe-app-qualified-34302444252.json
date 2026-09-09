@@ -1,0 +1,27 @@
+{
+  "hostRunID": "34296658499",
+  "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+  "hostExecutableSHA256": "1636a01b7526cd5e7d51b932ce74a8e16ee0f3fe2aa335e39d7feb74d2c0a3c5",
+  "verifiedResourceFiles": 4780,
+  "verifiedResourceDirectories": 174,
+  "appVersion": "1.5.3",
+  "appBuild": "134",
+  "unsignedPayloadVerified": true,
+  "engineOpened": false,
+  "embeddedEditorPassed": false,
+  "originalFileWritebackPassed": false,
+  "deviceRoundtripPassed": false,
+  "appCodeBinaryPath": "Floe Agent.debug.dylib",
+  "appCodeBinarySHA256": "c01b06041b3c44f5ed724760b5c9e94e0df8ab9eb134a769ba0396877fdef750",
+  "officeLoadChain": [
+    "Floe Agent",
+    "Floe Agent.debug.dylib",
+    "@rpath/FloeOfficeNative.framework/FloeOfficeNative"
+  ],
+  "appLinksOfficeHost": true,
+  "appExecutableSHA256": "cf0ab77cc83944c96b4ca39210ed686ccf7d44883fb43beb7432e315be6ad056",
+  "runID": "34302444252",
+  "workflowCommit": "56f28cfcd3a38e21de8323f775e72ff16a69b4c1",
+  "cloudWorkflowSucceeded": true,
+  "localArchiveReverified": false
+}

@@ -1,0 +1,28 @@
+{
+  "runID": "34301236609",
+  "workflowCommit": "bb6b2cee992f5ff40f67513d8e83ac6734ac3ed2",
+  "archiveSHA256": "ef341bd664f24d5bf858a7c48dfee6246e225f7bc694336bb090ffa7246d8890",
+  "cloudReceiptMatched": true,
+  "hostRunID": "34296658499",
+  "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+  "hostExecutableSHA256": "1636a01b7526cd5e7d51b932ce74a8e16ee0f3fe2aa335e39d7feb74d2c0a3c5",
+  "verifiedResourceFiles": 4780,
+  "verifiedResourceDirectories": 174,
+  "appVersion": "1.5.3",
+  "appBuild": "134",
+  "unsignedPayloadVerified": true,
+  "engineOpened": false,
+  "embeddedEditorPassed": false,
+  "originalFileWritebackPassed": false,
+  "deviceRoundtripPassed": false,
+  "appCodeBinaryPath": "Floe Agent.debug.dylib",
+  "appCodeBinarySHA256": "3e1833a93496785135a4fa7f128901dd782e05a05138cd899c89278e7ffdd28f",
+  "officeLoadChain": [
+    "Floe Agent",
+    "Floe Agent.debug.dylib",
+    "@rpath/FloeOfficeNative.framework/FloeOfficeNative"
+  ],
+  "appLinksOfficeHost": true,
+  "appExecutableSHA256": "cf0ab77cc83944c96b4ca39210ed686ccf7d44883fb43beb7432e315be6ad056",
+  "appPlatformLoadCommands": "/Volumes/TECLAST/FloeOfficeBuilds/34301236609/extracted/Floe Agent.app/Floe Agent:\nLoad command 11\n      cmd LC_BUILD_VERSION\n  cmdsize 32\n platform IOS\n    minos 26.0\n      sdk 27.0\n   ntools 1\n     tool LD\n  version 27037.1\n"
+}

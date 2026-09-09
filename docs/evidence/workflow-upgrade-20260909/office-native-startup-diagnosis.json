@@ -1,0 +1,35 @@
+{
+  "platform": "Mac Designed for iPad; not physical iPad",
+  "qualifiedHostRun": "34296658499",
+  "isolatedTestApplication": true,
+  "firstFailure": {
+    "errorCode": 3,
+    "exception": "cpo::uno::DeploymentException",
+    "message": "Cannot open uno ini <AppBundle>/Frameworks/FloeOfficeNative.framework/rc",
+    "stack": [
+      "cppu::defaultBootstrap_InitialComponentContext",
+      "lo_initialize",
+      "cokit_hook_2",
+      "FloeOfficeNativeRuntime.startEngine"
+    ]
+  },
+  "pinnedUpstreamSource": {
+    "repository": "CollaboraOnline/online.mirror",
+    "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+    "file": "engine/desktop/source/lib/init.cxx",
+    "nullInstallPath": "Uses the image containing lo_initialize",
+    "nonNullProfile": "Sets BRAND_BASE_DIR to install path /.."
+  },
+  "diagnosticExperiment": {
+    "freshProcess": true,
+    "installPath": "main application resource directory; filesystem path",
+    "privateProfile": "UserInstallation set independently",
+    "kitInitializationReturned": true,
+    "serverStartupPassed": false,
+    "resultErrorCode": 4,
+    "scope": "Debugger argument override on old qualified binary; not qualification of the changed source"
+  },
+  "editorOpened": false,
+  "fileWritebackPassed": false,
+  "physicalDevicePassed": false
+}
