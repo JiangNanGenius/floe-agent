@@ -62,9 +62,10 @@ export CIBW_XBUILD_TOOLS_IOS='ninja cmake'
 export CIBW_ENVIRONMENT_IOS="$FLOE_WHEEL_ENV"
 # Upstream sdists may carry their own [tool.cibuildwheel] config written for a
 # newer cibuildwheel than our pin (e.g. zstandard's cpython-freethreading
-# enable group). Our build fixes the exact target set above; neutralize the
-# sdist's own enable list instead of failing the parse.
-export CIBW_ENABLE=''
+# enable group). Our build fixes the exact target set via CIBW_BUILD; override
+# the sdist's enable list with a valid no-op group instead of failing the
+# parse (an empty value is treated as unset).
+export CIBW_ENABLE='cpython-prerelease'
 export CIBW_TEST_COMMAND='python -m floe_wheel_smoke'
 export CIBW_TEST_SOURCES='floe_wheel_smoke.py'
 export CIBW_TEST_EXTRAS=''
