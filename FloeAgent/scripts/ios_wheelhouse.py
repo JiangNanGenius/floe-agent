@@ -41,6 +41,7 @@ def main() -> int:
         "FLOE_WHEEL_PURE": "1" if package.get("pure") else "0",
         "FLOE_WHEEL_RUST": "1" if package.get("rust") else "0",
         "FLOE_WHEEL_ENV": " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items()),
+        "FLOE_WHEEL_STRIP_BUILD_REQUIRES": ",".join(package.get("stripBuildRequires", [])),
     }
     for key, value in values.items():
         print(f"{key}={shlex.quote(value)}")

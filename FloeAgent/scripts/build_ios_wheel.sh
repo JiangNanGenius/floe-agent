@@ -60,9 +60,10 @@ source_dir="$stage/$FLOE_WHEEL_SDIST_DIR"
 # enable group fails 4.2.1's parse before env overrides merge). We drive
 # cibuildwheel entirely through CIBW_* env vars, so the sdist's own table is
 # stripped after extraction.
-python3 - "$source_dir/pyproject.toml" <<'PYEOF'
+python3 - "$source_dir/pyproject.toml" "$FLOE_WHEEL_STRIP_BUILD_REQUIRES" <<'PYEOF'
 import re, sys
 path = sys.argv[1]
+strip_names = set(filter(None, sys.argv[2].split(",")))
 try:
     text = open(path, encoding="utf-8").read()
 except OSError:
@@ -70,8 +71,21 @@ except OSError:
 pattern = re.compile(r"(?ms)^\[tool\.cibuildwheel[^\]]*\].*?(?=^\[|\Z)")
 stripped = pattern.sub("", text)
 if stripped != text:
-    open(path, "w", encoding="utf-8").write(stripped)
     print("stripped sdist-native [tool.cibuildwheel] config")
+lowered = {name.lower() for name in strip_names}
+kept = []
+removed = 0
+for line in stripped.splitlines(keepends=True):
+    match = re.match(r'^\s*"([A-Za-z0-9_-]+)[^"]*",?\s*(#.*)?\r?\n?$', line)
+    if match and match.group(1).lower() in lowered:
+        removed += 1
+        continue
+    kept.append(line)
+stripped = "".join(kept)
+if removed:
+    print(f"stripped build requirement lines: {removed} ({sorted(lowered)})")
+if stripped != text:
+    open(path, "w", encoding="utf-8").write(stripped)
 PYEOF
 cp "$repo_root/ios-wheelhouse/$FLOE_WHEEL_SMOKE" "$source_dir/floe_wheel_smoke.py"
 
