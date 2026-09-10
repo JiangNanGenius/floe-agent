@@ -376,6 +376,8 @@ targets:
         embed: true
       - framework: Vendor/PythonExtensions/pandas__libs_writers.xcframework
         embed: true
+      - framework: Vendor/PythonExtensions/regex__regex.xcframework
+        embed: true
         # END embedded Python binary packages
         embed: true
       - package: FloeAgentPackages
