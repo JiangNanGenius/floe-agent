@@ -426,8 +426,17 @@ private enum XMLTextCodec {
                     continue
                 }
             }
-            guard let openEnd = source[candidate.lowerBound...].firstIndex(of: ">"),
-                  let close = source.range(of: closer, range: source.index(after: openEnd)..<source.endIndex)
+            guard let openEnd = source[candidate.lowerBound...].firstIndex(of: ">") else { break }
+            let openTagEnd = source.index(after: openEnd)
+            // Self-closing elements (<w:p/>, <c r="B3" s="7"/>, <a:p/>) have no
+            // closing tag. Searching forward for the next `</tag>` would merge
+            // following siblings into this element and corrupt the document.
+            if source[source.index(before: openEnd)] == "/" {
+                ranges.append(candidate.lowerBound..<openTagEnd)
+                cursor = openTagEnd
+                continue
+            }
+            guard let close = source.range(of: closer, range: openTagEnd..<source.endIndex)
             else { break }
             let end = close.upperBound
             ranges.append(candidate.lowerBound..<end)
@@ -446,7 +455,11 @@ private enum XMLTextCodec {
     }
 
     static func replaceTextContents(_ source: String, tag: String, text: String) -> String {
-        let ranges = elementRanges(source, tag: tag)
+        // Self-closing elements (<w:t/>) hold no text and must not consume a
+        // replacement slot, so only paired elements participate.
+        let ranges = elementRanges(source, tag: tag).filter { range in
+            source[range].range(of: "</\(tag)>") != nil
+        }
         guard !ranges.isEmpty else { return source }
         var output = source
         for (offset, range) in ranges.enumerated().reversed() {

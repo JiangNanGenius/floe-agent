@@ -63,7 +63,9 @@ actor CPythonLocalRuntime {
     ) async -> ScriptExecutionOutcome {
         if cancellation?.isCancelled == true { return .cancelled }
         let gate = CPythonRaceGate()
-        let timeout = max(0.05, min(request.timeout, 30))
+        // The interactive tool clamps to 30s; jobs.submit background work may
+        // legitimately run longer, so the runtime ceiling sits above both.
+        let timeout = max(0.05, min(request.timeout, 600))
         Task.detached(priority: .userInitiated) {
             let raw = FloeCPythonBridge.runScript(
                 request.script,

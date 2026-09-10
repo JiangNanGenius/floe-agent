@@ -11,7 +11,9 @@ public struct AnthropicRequest: Sendable, Codable, Hashable {
     public var model: String
     public var maxTokens: Int
     public var messages: [Message]
-    public var system: String?
+    /// System prompt blocks. The run-stable prefix carries an explicit
+    /// ephemeral cache breakpoint; the volatile tail stays uncached.
+    public var system: [SystemBlock]?
     public var tools: [ToolDefinition]
     public var thinking: Thinking?
     public var outputConfig: OutputConfig?
@@ -21,7 +23,7 @@ public struct AnthropicRequest: Sendable, Codable, Hashable {
         model: String,
         maxTokens: Int,
         messages: [Message],
-        system: String? = nil,
+        system: [SystemBlock]? = nil,
         tools: [ToolDefinition] = [],
         thinking: Thinking? = nil,
         outputConfig: OutputConfig? = nil,
@@ -35,6 +37,29 @@ public struct AnthropicRequest: Sendable, Codable, Hashable {
         self.thinking = thinking
         self.outputConfig = outputConfig
         self.stream = stream
+    }
+
+    /// One system text block with an optional explicit cache breakpoint.
+    public struct SystemBlock: Sendable, Codable, Hashable {
+        public var type: String
+        public var text: String
+        public var cacheControl: CacheControl?
+
+        public init(text: String, cacheable: Bool = false) {
+            self.type = "text"
+            self.text = text
+            self.cacheControl = cacheable ? CacheControl() : nil
+        }
+
+        public struct CacheControl: Sendable, Codable, Hashable {
+            public var type: String
+            public init(type: String = "ephemeral") { self.type = type }
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case type, text
+            case cacheControl = "cache_control"
+        }
     }
 
     public struct Thinking: Sendable, Codable, Hashable {

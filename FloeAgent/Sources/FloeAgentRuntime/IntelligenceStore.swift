@@ -977,24 +977,40 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         let match = Self.ftsQuery(request.query)
         guard !match.isEmpty else { return [] }
         return try await database.reader { db in
-            var filters = ["message_fts MATCH ?", "c.is_searchable = 1"]
+            // bm25()/snippet() are FTS5 auxiliary functions that are only valid
+            // while the FTS cursor is producing the row. Evaluating them in the
+            // ORDER BY of an aggregating (GROUP BY) query runs after that cursor
+            // context is gone and raises "unable to use function bm25 in the
+            // requested context". They live in the inner query instead; the
+            // `LIMIT -1` blocks SQLite subquery flattening, which would pull
+            // them back into the aggregate and re-trigger the same error.
+            var innerFilters = ["message_fts MATCH ?"]
             var arguments: StatementArguments = [match]
+            if let start = request.startDate { innerFilters.append("m.created_at >= ?"); arguments += [Self.date(start)] }
+            if let end = request.endDate { innerFilters.append("m.created_at <= ?"); arguments += [Self.date(end)] }
+            var outerFilters = ["c.is_searchable = 1"]
             if let workspaceID = request.workspaceID {
-                filters.append("wc.workspace_id = ?"); arguments += [workspaceID.uuidString]
+                outerFilters.append("wc.workspace_id = ?"); arguments += [workspaceID.uuidString]
             }
-            if let start = request.startDate { filters.append("m.created_at >= ?"); arguments += [Self.date(start)] }
-            if let end = request.endDate { filters.append("m.created_at <= ?"); arguments += [Self.date(end)] }
             arguments += [request.limit]
             let rows = try Row.fetchAll(db, sql: """
-                SELECT m.id AS message_id, m.conversation_id, m.created_at,
+                SELECT f.message_id, f.conversation_id, f.created_at,
                        c.title, MIN(wc.workspace_id) AS workspace_id,
-                       snippet(message_fts, 0, '[', ']', '…', 24) AS snippet
-                FROM message_fts
-                JOIN messages m ON m.rowid = message_fts.rowid
-                JOIN conversations c ON c.id = m.conversation_id
+                       f.snippet, MIN(f.rank) AS best_rank
+                FROM (
+                    SELECT m.id AS message_id, m.conversation_id, m.created_at,
+                           bm25(message_fts) AS rank,
+                           snippet(message_fts, 0, '[', ']', '…', 24) AS snippet
+                    FROM message_fts
+                    JOIN messages m ON m.rowid = message_fts.rowid
+                    WHERE \(innerFilters.joined(separator: " AND "))
+                    LIMIT -1
+                ) f
+                JOIN conversations c ON c.id = f.conversation_id
                 LEFT JOIN conversation_workspace_ownership wc ON wc.conversation_id = c.id
-                WHERE \(filters.joined(separator: " AND "))
-                GROUP BY m.id ORDER BY bm25(message_fts), m.created_at DESC LIMIT ?
+                WHERE \(outerFilters.joined(separator: " AND "))
+                GROUP BY f.message_id
+                ORDER BY best_rank, f.created_at DESC LIMIT ?
                 """, arguments: arguments)
             return rows.compactMap(Self.searchHit)
         }

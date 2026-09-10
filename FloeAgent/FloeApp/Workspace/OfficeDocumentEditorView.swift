@@ -24,6 +24,7 @@ final class OfficeFileSession: ObservableObject {
     private var expectedClose = false
     private var runtimeFailed = false
     private var runtimeFailureObservation: AnyCancellable?
+    private var explicitSaveBridge: OfficeExplicitSaveBridge?
     private var exportSnapshot: DocumentExportSnapshot?
     private var exportWorkspace: SecurityScopedDocumentWorkspace?
 
@@ -169,6 +170,14 @@ final class OfficeFileSession: ObservableObject {
     }
 
     func saveAndReturn() async -> Bool {
+        await save(returnToPreview: true)
+    }
+
+    private func saveInPlace() async -> Bool {
+        await save(returnToPreview: false)
+    }
+
+    private func save(returnToPreview: Bool) async -> Bool {
         guard canAct, !readOnly, let workspace, let session else { return false }
         operating = true
         defer { finishOperation() }
@@ -186,9 +195,13 @@ final class OfficeFileSession: ObservableObject {
             }
             try await workspace.save(session)
             hasUncommittedChanges = try await workspace.hasUncommittedWorkingCopy(session)
-            try await closeController()
-            readOnly = true
-            phase = .idle
+            if returnToPreview {
+                try await closeController()
+                readOnly = true
+                phase = .idle
+            } else {
+                phase = .ready
+            }
             return true
             #else
             throw CocoaError(.featureUnsupported)
@@ -380,6 +393,12 @@ final class OfficeFileSession: ObservableObject {
             self.error = "文档已关闭，编辑副本已保留。"
             self.phase = .failed
         }
+        if !readOnly {
+            explicitSaveBridge = try OfficeExplicitSaveBridge(controller: native) { [weak self, weak native] in
+                guard let self, let native, self.controller === native else { return false }
+                return await self.saveInPlace()
+            }
+        }
         controller = native
         #else
         throw CocoaError(.featureUnsupported)
@@ -389,7 +408,12 @@ final class OfficeFileSession: ObservableObject {
         guard let controller else { return }
         // No view means the upstream viewWillAppear has not opened a document.
         // Do not load a WebView merely to close an abandoned preview request.
-        guard controller.isViewLoaded else { self.controller = nil; return }
+        guard controller.isViewLoaded else {
+            explicitSaveBridge?.invalidate()
+            explicitSaveBridge = nil
+            self.controller = nil
+            return
+        }
         phase = .closing
         expectedClose = true
         defer { expectedClose = false }
@@ -402,6 +426,8 @@ final class OfficeFileSession: ObservableObject {
             }
         }
         #endif
+        explicitSaveBridge?.invalidate()
+        explicitSaveBridge = nil
         self.controller = nil
     }
     private func fail(_ error: Error) {

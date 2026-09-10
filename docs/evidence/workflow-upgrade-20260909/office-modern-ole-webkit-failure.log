@@ -1,0 +1,4 @@
+2026-09-10 00:41:24.327 E  Floe Office Qualification[66300:12ac7d5] [com.apple.Accessibility:AXRuntimeCommon] WebContent[66889] error in stringWithAXAttribute. AXUIElement:0x797b06d980 ref:0x797b157660 attr:3003 error:-25215
+2026-09-10 00:41:24.336 Df Floe Office Qualification[66300:12ac7d5] (WebKit) WebContent[66889] Swift/SwiftNativeNSArray.swift:78: Fatal error: Array index out of range
+2026-09-10 00:41:24.339 E  Floe Office Qualification[66300:12ab841] [com.apple.WebKit:Process] 0x12a0e00c0 - [PID=66889] WebProcessProxy::processDidTerminateOrFailedToLaunch: reason=Crash
+2026-09-10 00:41:24.367 E  Floe Office Qualification[66300:12ab841] [com.apple.WebKit:Process] 0x79cd771518 - [pageProxyID=9, webPageID=10, PID=66889] WebPageProxy::processDidTerminate: (pid 66889), reason=Crash

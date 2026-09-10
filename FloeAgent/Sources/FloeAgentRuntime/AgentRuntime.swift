@@ -369,6 +369,7 @@ public actor FloeAgentRuntime {
     private let auditSink: (any AuditSink)?
     private let checkpointStore: (any CheckpointStore)?
     private let intelligenceStore: SQLiteIntelligenceStore?
+    private let discoveryStore: SQLiteConversationDiscoveryStore?
     private let sink: (any AgentEventSink)?
     private let contextEngine: (any ContextEngine)?
     private let budgetLedger: HarnessBudgetLedger
@@ -380,6 +381,11 @@ public actor FloeAgentRuntime {
     private var messages: [ConversationMessage] = []
     private var pendingToolCalls: [ToolCall] = []
     private var pendingToolResults: [ToolResult] = []
+    /// Settled (call, result) pairs from every completed tool batch in this
+    /// run, in settlement order. Each dispatch replays them as provider
+    /// history (budget-trimmed at assembly; this record stays intact) so tool
+    /// evidence no longer collapses into the ledger excerpt after one turn.
+    private var replayableToolHistory: [ReplayedToolPair] = []
     /// Tool calls collected from the current model response, executed as a
     /// batch on the provider's completion event.
     private var pendingToolBatch: [ToolCall] = []
@@ -470,6 +476,7 @@ public actor FloeAgentRuntime {
     private var providerLastProgressAt = Date()
     private var discoveredToolNames: Set<String> = []
     private var discoveryPriority: [String] = []
+    private var persistedDiscovery: (names: Set<String>, priority: [String])?
     private var discoverableDescriptors: [ToolCatalog.Descriptor] = []
     private var providerAttemptStartedAt = Date()
     private var providerRetryRequested = false
@@ -499,6 +506,7 @@ public actor FloeAgentRuntime {
         auditSink: (any AuditSink)? = nil,
         checkpointStore: (any CheckpointStore)? = nil,
         intelligenceStore: SQLiteIntelligenceStore? = nil,
+        discoveryStore: SQLiteConversationDiscoveryStore? = nil,
         contextEngine: (any ContextEngine)? = nil,
         toolCallNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)? = nil,
         sink: (any AgentEventSink)? = nil,
@@ -513,6 +521,7 @@ public actor FloeAgentRuntime {
         self.auditSink = auditSink
         self.checkpointStore = checkpointStore
         self.intelligenceStore = intelligenceStore
+        self.discoveryStore = discoveryStore
         self.contextEngine = contextEngine
         self.toolCallNormalizer = toolCallNormalizer
         self.sink = sink
@@ -646,6 +655,19 @@ public actor FloeAgentRuntime {
         guard case .idle = state else {
             throw FloeError.invalidConfiguration("start(goal:) requires idle state, currently \(state.name)")
         }
+        // Seed deferred-schema discovery from the conversation-level store so a
+        // fresh run keeps previously loaded tools instead of re-guessing from
+        // the goal text or re-enumerating the catalog.
+        if let discoveryStore,
+           let saved = try? await discoveryStore.load(conversationID: configuration.conversationID) {
+            let available = Set(executor.allDescriptors.map(\.name))
+            let names = saved.names.intersection(available)
+            if !names.isEmpty {
+                discoveredToolNames = names
+                discoveryPriority = saved.priority.filter { names.contains($0) }
+                    + discoveryPriority.filter { !names.contains($0) && available.contains($0) }
+            }
+        }
         messages.append(ConversationMessage(role: "user", content: goal, images: images))
         await transition(to: .preparing(AgentState.PreparingInfo(goal: goal)))
         await runModelTurn()
@@ -775,6 +797,7 @@ public actor FloeAgentRuntime {
         messages = checkpoint.messages
         pendingToolCalls = checkpoint.pendingToolCalls
         pendingToolResults = checkpoint.pendingToolResults
+        replayableToolHistory = checkpoint.replayedToolPairs ?? []
         activeProviderPendingCalls = []
         activeProviderPendingResults = []
         grants = checkpoint.approvals
@@ -1126,6 +1149,9 @@ public actor FloeAgentRuntime {
         }
         discoverableDescriptors = catalogDescriptors
         let userTask = messages.last(where: { $0.role == "user" })?.content ?? ""
+        // Eviction notices only make sense for schemas the model actually saw
+        // in a previous request, not the first-turn guess set.
+        let hadPriorDiscovery = !discoveredToolNames.isEmpty
         if discoveredToolNames.isEmpty {
             let initial = ToolDiscovery.matches(query: userTask, descriptors: catalogDescriptors)
             discoveredToolNames.formUnion(initial.map(\.name))
@@ -1138,10 +1164,16 @@ public actor FloeAgentRuntime {
         }
         let statefulGroups: Set<String> = ["vnc", "executor", "terminal"]
         let pinned = Set(catalogDescriptors.filter { statefulGroups.contains(ToolDiscovery.group($0.name)) && recentGroups.contains(ToolDiscovery.group($0.name)) }.map(\.name))
+        let schemasLoadedBeforeBudget = discoveredToolNames
         catalogDescriptors = ToolDiscovery.bounded(catalogDescriptors, priority: discoveryPriority, pinned: pinned)
-        discoveredToolNames = Set(catalogDescriptors.map(\.name))
+        let retainedAfterBudget = Set(catalogDescriptors.map(\.name))
+        let evictedSchemaNames = hadPriorDiscovery
+            ? schemasLoadedBeforeBudget.subtracting(retainedAfterBudget).sorted()
+            : []
+        discoveredToolNames = retainedAfterBudget
         catalogDescriptors.append(ToolDiscovery.descriptor)
         catalogDescriptors.append(ToolDiscovery.listDescriptor)
+        persistDiscoveryIfChanged()
         // Prerequisite wording belongs to the current user turn. Do not let a
         // historical SSH-before-VNC request constrain a later, unrelated turn.
         let statefulRouteGoal = messages.last(where: { $0.role == "user" })?.content ?? ""
@@ -1165,16 +1197,11 @@ public actor FloeAgentRuntime {
         }
         // Refresh on every dispatch, including long-running and resumed tasks.
         // This is transient request context, never a durable historical fact.
+        // Volatile content goes LAST in the system envelope so provider prefix
+        // caches survive up to the live-state marker (see Anthropic split).
         let now = Date()
         let zone = TimeZone.current
         let temporalContext = "Current runtime time: \(ISO8601DateFormatter().string(from: now)); timeZone=\(zone.identifier); utcOffsetSeconds=\(zone.secondsFromGMT(for: now)); locale=\(Locale.current.identifier). This timestamp supersedes older time context."
-        if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
-            legacyMessages[index].content += "\n\n" + temporalContext
-            contentMessages[index].content.append(.text(temporalContext))
-        } else {
-            legacyMessages.insert((role: "system", content: temporalContext), at: 0)
-            contentMessages.insert(ProviderMessage(role: "system", content: [.text(temporalContext)]), at: 0)
-        }
         if supportsTools, !prerequisiteNotes.isEmpty {
             let note = "Installed tools remain callable; satisfy these execution prerequisites first:\n"
                 + prerequisiteNotes.joined(separator: "\n")
@@ -1183,12 +1210,32 @@ public actor FloeAgentRuntime {
                 contentMessages[index].content.append(.text(note))
             }
         }
+        // Make schema-budget eviction visible. Silently dropping a schema makes
+        // models believe the capability vanished and re-enumerate the catalog.
+        if supportsTools, !evictedSchemaNames.isEmpty {
+            let note = "Schema budget unloaded these previously discovered tools for this request only: "
+                + evictedSchemaNames.joined(separator: ", ")
+                + ". They remain installed and callable, and results already obtained stay valid. Reload one schema by exact name with tools.search; do not re-enumerate the catalog with tools.list."
+            if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
+                legacyMessages[index].content += "\n\n" + note
+                contentMessages[index].content.append(.text(note))
+            } else {
+                legacyMessages.insert((role: "system", content: note), at: 0)
+                contentMessages.insert(ProviderMessage(role: "system", content: [.text(note)]), at: 0)
+            }
+        }
         // Local adapters build their own admitted tool metadata. Keep runtime
         // state and receipts, without appending a second full cloud directory.
         if supportsTools, configuration.provider.kind != .local, let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
             let discovery = ToolDiscovery.index(discoverableDescriptors)
             legacyMessages[index].content += "\n\n" + discovery
             contentMessages[index].content.append(.text(discovery))
+        }
+        // Everything below the marker changes per turn; everything above it is
+        // stable within the run and eligible for provider prefix caching.
+        if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
+            legacyMessages[index].content += "\n\n" + Self.liveStateMarker
+            contentMessages[index].content.append(.text(Self.liveStateMarker))
         }
         // Hermes-style budget pressure is ephemeral: it guides this provider
         // request but never pollutes durable conversation history.
@@ -1221,10 +1268,25 @@ public actor FloeAgentRuntime {
                 )
             }
         }
+        if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
+            legacyMessages[index].content += "\n\n" + temporalContext
+            contentMessages[index].content.append(.text(temporalContext))
+        } else {
+            legacyMessages.insert((role: "system", content: temporalContext), at: 0)
+            contentMessages.insert(ProviderMessage(role: "system", content: [.text(temporalContext)]), at: 0)
+        }
+        // Replay every settled pair from earlier turns as provider history.
+        // The pending batch keeps its existing follow-up semantics, so pairs
+        // awaiting this dispatch are excluded here to avoid double evidence.
+        let replayedToolPairs = Self.replayedToolPairsForDispatch(
+            history: replayableToolHistory,
+            pendingCalls: pendingToolCalls
+        )
         let providerInvariantViolations = HarnessInvariantRegistry.validateProviderBoundary(
             calls: pendingToolCalls,
             results: pendingToolResults,
-            lifecycleByCallID: toolLifecycleByCallID
+            lifecycleByCallID: toolLifecycleByCallID,
+            replayedPairs: replayedToolPairs
         )
         guard providerInvariantViolations.isEmpty else {
             await failRun(
@@ -1255,6 +1317,7 @@ public actor FloeAgentRuntime {
             // issue another tool. A forced tool-free finalization must hide
             // schemas while still replaying the complete ordered pair.
             pendingToolCalls: pendingToolCalls,
+            replayedToolPairs: replayedToolPairs,
             pendingAssistantReasoning: pendingToolCalls.isEmpty || responseReasoning.isEmpty
                 ? nil : responseReasoning,
             toolSchemas: supportsTools ? catalogDescriptors.map {
@@ -2259,6 +2322,7 @@ public actor FloeAgentRuntime {
                 let names = selected.map(\.name)
                 discoveredToolNames.formUnion(names)
                 discoveryPriority = names + discoveryPriority.filter { !names.contains($0) }
+                persistDiscoveryIfChanged()
                 let deferred = matches.filter { !names.contains($0.name) }.map(\.name)
                 let matchedSummary = matches.isEmpty
                     ? "No matching executable tool in this task's capability set. " + ToolDiscovery.index(discoverableDescriptors)
@@ -2430,6 +2494,14 @@ public actor FloeAgentRuntime {
             setToolLifecycle(call: call, phase: .resultCommitted)
             orderedResults.append((call, result))
         }
+        // Graduate the settled batch into the run-level replay history before
+        // the settlement checkpoint so a resumed run keeps its tool evidence.
+        // A provider can reuse a call identifier across turns; the first
+        // settled pair stays authoritative for replay.
+        let existingReplayIDs = Set(replayableToolHistory.map { $0.call.id })
+        for item in orderedResults where !existingReplayIDs.contains(item.call.id) {
+            replayableToolHistory.append(ReplayedToolPair(call: item.call, result: item.result))
+        }
         do {
             try await writeCheckpoint()
         } catch {
@@ -2537,6 +2609,26 @@ public actor FloeAgentRuntime {
                   withJSONObject: envelope, options: [.sortedKeys]
               ) else { return result.outputSummary }
         return String(decoding: data, as: UTF8.self) + "\n" + result.outputSummary
+    }
+
+    /// Builds the replayed history for one dispatch. The run-level record is
+    /// never mutated here: pairs overlapping the pending batch are excluded
+    /// (the pending channel already carries them once), each summary gets the
+    /// same model-visible provenance envelope and compaction a pending result
+    /// would receive, and the replay budget drops oldest whole pairs.
+    private static func replayedToolPairsForDispatch(
+        history: [ReplayedToolPair],
+        pendingCalls: [ToolCall]
+    ) -> [ReplayedToolPair] {
+        let pendingIDs = Set(pendingCalls.map(\.id))
+        let candidates = history.filter { !pendingIDs.contains($0.call.id) }.map { pair in
+            var result = pair.result
+            result.outputSummary = ToolReplayPlanner.compactResultSummary(
+                modelVisibleToolResult(pair.result)
+            )
+            return ReplayedToolPair(call: pair.call, result: result)
+        }
+        return ToolReplayPlanner.trimToBudget(candidates)
     }
 
     /// Executes read-only calls in parallel. Context construction, audit,
@@ -3053,7 +3145,8 @@ public actor FloeAgentRuntime {
             },
             providerDispatchEnvelope: latestProviderDispatchEnvelope,
             providerDispatchRequest: latestProviderDispatchRequest,
-            pendingAssistantReasoning: responseReasoning
+            pendingAssistantReasoning: responseReasoning,
+            replayedToolPairs: replayableToolHistory
         )
         let invariantViolations = HarnessInvariantRegistry.validateCheckpoint(checkpoint)
         guard invariantViolations.isEmpty else {
@@ -3143,6 +3236,11 @@ public actor FloeAgentRuntime {
         case .resultCommitted: 3
         }
     }
+
+    /// Marker splitting the system envelope into a run-stable, cacheable
+    /// prefix and a per-turn volatile suffix; the wire-level definition lives
+    /// on ProviderStreamRequest so adapters can find the breakpoint.
+    static let liveStateMarker = ProviderStreamRequest.liveStateMarker
 
     private static func promptAssemblyDigest(
         messages: [(role: String, content: String)],
@@ -3247,7 +3345,20 @@ public actor FloeAgentRuntime {
             }
             discoveredToolNames.formUnion(selected)
             discoveryPriority = selected + discoveryPriority.filter { !selected.contains($0) }
+            persistDiscoveryIfChanged()
         }
+    }
+
+    /// Persist the deferred-schema discovery set when it actually changed, so
+    /// later runs in this conversation reopen with the same schemas loaded.
+    private func persistDiscoveryIfChanged() {
+        guard let discoveryStore else { return }
+        let names = discoveredToolNames
+        let priority = discoveryPriority
+        guard persistedDiscovery?.names != names || persistedDiscovery?.priority != priority else { return }
+        persistedDiscovery = (names, priority)
+        let conversationID = configuration.conversationID
+        Task { try? await discoveryStore.save(conversationID: conversationID, names: names, priority: priority) }
     }
 
     private func audit(toolCall: ToolCall, result: ToolResult, decision: String) async {
@@ -3428,6 +3539,10 @@ struct ToolLoopGuard {
     private var lastObservationInEpoch: String?
     private var nonretryableRoutesInEpoch: Set<String> = []
     private var blockedNonretryableRouteCounts: [String: Int] = [:]
+    /// Catalog enumeration results stay valid for the whole user turn; only
+    /// schemaLoaded flags drift. Counting them per route without the outcome
+    /// and across progress epochs stops wasteful re-listing loops.
+    private var catalogEnumerationCounts: [String: Int] = [:]
 
     mutating func advanceProgressEpoch() {
         outcomeCountsInEpoch.removeAll(keepingCapacity: true)
@@ -3459,6 +3574,25 @@ struct ToolLoopGuard {
         let observableOutput = result.outputDigest.isEmpty
             ? Self.digest(Data(result.outputSummary.utf8))
             : result.outputDigest.lowercased()
+
+        if result.status == .ok, Self.isCatalogEnumerationTool(call.toolName) {
+            let route = "\(call.toolName)|\(arguments)"
+            catalogEnumerationCounts[route, default: 0] += 1
+            let repeats = catalogEnumerationCounts[route, default: 0]
+            if repeats >= 3 {
+                return ToolLoopGuardrailDecision(
+                    shouldStop: true,
+                    message: "This exact catalog enumeration was already issued repeatedly in the current user turn. The inventory has not materially changed; reuse the earlier results and load any specific tool schema by exact name with tools.search."
+                )
+            }
+            if repeats == 2 {
+                return ToolLoopGuardrailDecision(
+                    shouldStop: false,
+                    message: "This exact catalog enumeration was already performed earlier in this turn. Reuse those results; only schemaLoaded flags drift between identical catalog calls. Load a specific schema by exact name with tools.search instead of re-listing."
+                )
+            }
+        }
+
         let route = "\(call.toolName)|\(arguments)"
         let outcome = "\(result.status.rawValue)|\(observableOutput)"
 
@@ -3503,6 +3637,14 @@ struct ToolLoopGuard {
         "\(call.toolName)|\(canonicalDigest(call.argumentsJSON))"
     }
 
+    private static let catalogEnumerationTools: Set<String> = [
+        "tools.list", "tools.search", "skill.list", "skill.search"
+    ]
+
+    private static func isCatalogEnumerationTool(_ name: String) -> Bool {
+        catalogEnumerationTools.contains(name)
+    }
+
     private static func isExplicitlyNonretryable(_ summary: String) -> Bool {
         let compact = summary.lowercased()
             .replacingOccurrences(of: " ", with: "")
@@ -3527,5 +3669,52 @@ struct ToolLoopGuard {
 
     private static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// Dispatch-time budget for cross-turn tool-pair replay. Trimming never
+/// mutates the run-level history: it produces a bounded copy for one
+/// request, dropping oldest whole pairs only — a pair is never split.
+enum ToolReplayPlanner {
+    static let defaultMaxPairs = 40
+    static let defaultMaxResultBytes = 96 * 1_024
+
+    /// Same truncation strategy as `ContextEngine.pruneToolOutput`: outputs
+    /// above 2 KiB keep a 1280-byte head and 640-byte tail around an explicit
+    /// marker, with the original byte count and FNV-1a digest recorded.
+    static func compactResultSummary(_ text: String) -> String {
+        guard text.utf8.count > 2_048 else { return text }
+        return """
+        \(text.prefix(1_280))
+        [middle of tool output compacted]
+        \(text.suffix(640))
+        [tool output compacted; originalBytes=\(text.utf8.count); digest=\(stableTextDigest(text))]
+        """
+    }
+
+    /// Drops oldest complete pairs until both limits hold. Pair count is
+    /// checked first, then total result-summary bytes; ordering is preserved.
+    static func trimToBudget(
+        _ pairs: [ReplayedToolPair],
+        maxPairs: Int = defaultMaxPairs,
+        maxResultBytes: Int = defaultMaxResultBytes
+    ) -> [ReplayedToolPair] {
+        let pairOverflow = max(0, pairs.count - max(0, maxPairs))
+        var kept = pairs.dropFirst(pairOverflow)
+        var byteTotal = kept.reduce(0) { $0 + $1.result.outputSummary.utf8.count }
+        while byteTotal > max(0, maxResultBytes), let oldest = kept.first {
+            byteTotal -= oldest.result.outputSummary.utf8.count
+            kept = kept.dropFirst()
+        }
+        return Array(kept)
+    }
+
+    private static func stableTextDigest(_ text: String) -> String {
+        var value: UInt64 = 14_695_981_039_346_656_037
+        for byte in text.utf8 {
+            value ^= UInt64(byte)
+            value &*= 1_099_511_628_211
+        }
+        return String(value, radix: 16)
     }
 }

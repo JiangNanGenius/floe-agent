@@ -34,6 +34,8 @@ final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
     ) {
         if identifier == MediaArtifactDownloadCoordinator.sessionIdentifier {
             MediaArtifactBackgroundEvents.shared.register(completionHandler)
+        } else if identifier == JobDownloadCoordinator.sessionIdentifier {
+            JobDownloadBackgroundEvents.shared.register(completionHandler)
         } else {
             LocalModelBackgroundEvents.shared.register(
                 identifier: identifier,

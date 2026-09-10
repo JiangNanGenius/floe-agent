@@ -28,9 +28,12 @@ exit "${MOCK_EXIT:-0}"
 ''')
         curl.chmod(0o755)
         source = (Path(__file__).parent / 'install_python_binary_packages.sh').read_text()
-        function = source[source.index('download_wheel() {'):source.index('\nmake_framework() {')]
+        # wheel_url resolves the per-package pinned template; download_wheel
+        # consumes it. Both live between the packages table and make_framework.
+        function = source[source.index('wheel_url() {'):source.index('\nmake_framework() {')]
+        table = source[source.index('packages=('):source.index(')\n\nwheel_url()') + 1]
         self.script = self.root / 'test.sh'
-        self.script.write_text('set -euo pipefail\ncache_root="$1"\n' + function +
+        self.script.write_text('set -euo pipefail\ncache_root="$1"\n' + table + '\n' + function +
             '\nresult="$(download_wheel numpy 2.5.2.post1 iphoneos "$2")"\nprintf "%s" "$result"\n')
         self.checksum = hashlib.sha256(b'verified wheel').hexdigest()
 

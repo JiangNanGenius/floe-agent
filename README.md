@@ -24,17 +24,16 @@
 
 Floe Agent turns a model conversation into a durable task. Each message continues the same task, while every model execution becomes a separate run with its own progress, tool evidence, approvals, checkpoints, and recovery state. A task can use an app-managed private workspace or an explicitly selected project workspace.
 
-## Current upgrade — 1.6.1 beta candidate
+## Current upgrade — 1.6.2 beta candidate
 
-**1.6.1 (136)** is being prepared for release; installation availability requires separate TestFlight verification. See the [beta notes](docs/RELEASE_NOTES_1.6.1.md), [code audit](docs/RELEASE_CODE_AUDIT_20260909.md) and [Office interaction screenshots](docs/OFFICE_SCREENSHOT_INDEX.md). PPTX chart export still has data-fidelity issues; recognized damaged exports are rejected while retaining recovery copies.
+**1.6.2 (137)** is being prepared for release; installation availability requires separate TestFlight verification. See the [beta notes](docs/RELEASE_NOTES_1.6.2.md). This round hardens the toolchain itself and the Chinese-document experience:
 
-This round covers editing correctness and everyday workflows: the plugin marketplace, task selection from a long-press menu, all-workspace management, inline PDF reading, iPhone canvas support, live execution feedback, long-reasoning reading, and reliable long-text tool calls. Word, Excel, and PowerPoint share the Office tool group; PDF stays separate. The native Office engine and frontend are integrated on the development branch and remain under qualification; complete editing functionality has not yet passed acceptance.
+- **Background jobs (jobs.\*)**: large downloads and long Python data pulls/cleaning leave the task's critical path — the agent gets a durable jobID immediately, keeps working, and completion re-enters the conversation automatically. Downloads survive app suspension with transparent resume (2 GB cap).
+- **Tool results replay as history**: evidence the model already read stays available across turns instead of vanishing after one follow-up, ending repeated catalog re-enumeration; schema-budget eviction is announced and loaded tool definitions persist across runs of a task.
+- **Curated CJK font bundle**: nine core families (Source Han Sans/Serif SC+TC, LXGW WenKai, HarmonyOS Sans, MiSans, Alibaba PuHuiTi 3.0, Sarasa Mono) in selected weights make Office preview/editing render Chinese correctly; nineteen more display families remain installable on demand.
+- **Office correctness**: extraction/editing no longer merges self-closing XML elements (empty styled cells, empty paragraphs); the engine prewarms after launch.
+- **Harness cost control**: prompts are layered into cacheable/volatile sections with an explicit Anthropic cache breakpoint, and a 100-step tool-iteration budget forces degenerate loops to wrap up.
 
-See the [upgrade scope, verification status, and interaction screenshots](docs/WORKFLOW_UPGRADE.md). These changes describe the development branch; TestFlight availability is verified separately.
-
-The [implementation checklist](docs/WORKFLOW_UPGRADE_IMPLEMENTATION.md) defines the full Office frontend: document pages, spreadsheet grids and slide objects, with read-only inspection and editing only in fullscreen. Tool/skill directories, multi-query discovery, bundled plugin upgrades and paged chat history are being implemented alongside it. [Current test evidence and screenshots](docs/evidence/workflow-upgrade-20260909/README.md) distinguish verified flows from outstanding acceptance work.
-
-The [detailed Office acceptance matrix](docs/OFFICE_FRONTEND_ACCEPTANCE.md) tracks attachment insertion, opening, export, replacement, object manipulation and original-format saving separately. Word attachment insertion, undo/redo and matching-byte extraction have operation evidence, including a full Floe workspace selection, original-file save and new-session reopen. Excel attachment roundtrips have component evidence; exact layout, complete operation coverage and physical-device acceptance remain open.
 
 ## Why Floe Agent
 
@@ -47,6 +46,8 @@ The [detailed Office acceptance matrix](docs/OFFICE_FRONTEND_ACCEPTANCE.md) trac
 - **Manage source without leaving the workspace.** Inspect changes and diffs, initialize a repository, stage, commit, branch, fetch, fast-forward pull, push, and connect GitHub from a lightweight native source-control surface.
 - **Convert existing documents directly.** Convert Markdown, Word, HTML, RTF and text files, with PDF input/output. The model supplies paths instead of rewriting the body; source files remain intact and scanned-page/format limits are reported.
 - **Create and revise Office files.** Build DOCX, XLSX and PPTX locally, inspect read-only inline previews, then enter fullscreen to edit document pages, spreadsheet cells and slide objects with the local Office engine. Full functionality and layout fidelity remain under qualification; documents need not be uploaded.
+- **Run long work in the background.** Submit large downloads and Python data jobs with a jobID, keep conversing, and collect results on completion — with suspension-surviving downloads and local notifications.
+- **Render Chinese documents correctly.** A curated bundle of nine open-license CJK font families serves the Office engine, PDF editing, and web previews alike.
 - **Approve consequential actions.** Task policies narrow file, network, browser, upload, credential, and remote-execution authority. Sensitive actions still require explicit confirmation.
 - **Resume honestly.** Checkpoints, notifications, and background coordination preserve safe progress. iOS suspension and uncertain side effects are reported instead of hidden.
 - **Extend with audited skills.** Skill Creator and Skill Finder install validated instruction and knowledge packages. A skill may bundle bounded UTF-8 Python scripts and exact-version pure-Python wheels: Floe audits them once at creation or installation, then permits only identical script and dependency fingerprints to run without repeated prompts. Native code, install hooks, changed code, and silent tool grants remain blocked.

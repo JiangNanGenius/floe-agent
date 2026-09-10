@@ -152,7 +152,9 @@ Floe 会向快捷指令公开**立即运行 Floe 任务**和**安排 Floe 任务
 
 Floe 内置 Python 3.13，可处理日常脚本、文件、JSON、SQLite、压缩包和基础数据工作。模型可以为用户当前任务申请安装兼容的软件包；下载前，Floe 会审核用途是否与任务一致，下载后还会检查内容。来自任意地址的安装命令、系统程序、后台进程和可能逃离 App 范围的内容不会运行。
 
-NumPy、Pillow 和 pandas 在支持的构建中原生提供，以当前运行时检查为准；可用时直接在设备上执行。未提供的 SciPy、Matplotlib 等二进制依赖可走明确标注的浏览器 Pyodide 路径或已配置的可信 SSH 主机。模型必须区分本机、浏览器和远端的实际执行结果。
+NumPy、Pillow 和 pandas 在支持的构建中原生提供，以当前运行时检查为准；更多锁定包（regex、PyYAML、MarkupSafe、orjson、pydantic-core）随 ios-wheelhouse 产线验收后内置。SciPy、scikit-learn、Matplotlib 因 iOS 没有 Fortran 工具链或过重原生栈无法内置，继续使用明确标注的浏览器 Pyodide 路径或已配置的可信 SSH 主机。模型必须区分本机、浏览器和远端的实际执行结果。
+
+耗时 Python 工作（批量下载、数据清洗）不应阻塞对话：`jobs.submit` 可把 `exec.localPython`、`network.download`、`network.http`、`web.fetch` 提交为持久后台任务并立即返回 jobID，Python 协作时限放宽到 600 秒。用 `jobs.status` 查进度、`jobs.result` 取结果、`jobs.cancel` 取消；完成后结果自动回注对话并发送本地通知。后台下载在 App 挂起后继续，网络中断后透明续传（上限 2 GB）。
 
 `exec.localNumerical` 提供无需额外运行时的受限 R、Stata 和 MATLAB/Octave 兼容数值表面，包括描述统计、分位数、协方差/相关和单自变量 OLS；Stata 兼容命令包括 `generate`、`display`、`summarize`、`correlate` 和 `regress`。它不是 GNU R 或 Stata。PyStata 仍要求另行安装并授权 Stata，`pyreadstat` 则依赖本机扩展，二者都不能伪装成纯 Python 包装进 iOS 沙箱；完整 R/Stata 应在已配置的可信 SSH 主机运行。
 

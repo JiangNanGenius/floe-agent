@@ -87,7 +87,8 @@
 
 | ID | 必须通过的闭环 | 当前状态 |
 |---|---|---|
-| C01 | 原生工具栏“保存”与 Floe 保存按钮都最终写回正确的原文件版本 | 私有工作副本保存已接通；工具栏到原文件提交仍待贯通 |
+| C01 | 原生工具栏“保存”与 Floe 保存按钮都最终写回正确的原文件版本 | 1.6.1 中未贯通，差异已写入测试说明。后续开发已用 UI_Save 事件接入相同的原文件保存/CAS/校验链，保存后保持编辑；重复点击合并，自动保存不触发原文件提交，原文件确认前不显示保存成功。实际桥接脚本检查、Swift 6 iOS 类型检查通过，完整 App 编译与真实工具栏保存重开仍待验收 |
+| C01a | 原生菜单的另存与格式导出也经过对应格式的内容检查，再交付文件；保留现有导出格式功能 | 未贯通：上游 downloadas 直接使用原生 saveAs 和文件选择器，没有经过 Floe 的 prepareExport。当前保存保护仅覆盖 Floe 的保存/另存入口；已明确写入测试版限制，仍需统一导出回执与校验，不能靠禁用所有导出替代 |
 | C02 | 快速连续保存、自动保存、切换预览、关闭、后台恢复不会乱序或丢操作 | 部分接口回归通过，完整前端与真机待验收 |
 | C03 | 异常退出、内容进程终止、磁盘不足、附件导入失败可恢复 | 部分副本保留基础具备；每个真实失败场景待验收 |
 | C04 | 原文件被模型或其他编辑器修改时有冲突处理、另存、恢复版本 | 文件会话基础已实现，带完整 Office 对象的实测待验收 |
@@ -140,6 +141,10 @@
 - 34327287597 新宿主在独立 Mac 应用 16 完成 Excel/PPT 附件对照：Excel 两组保存均丢失附件，PPT 保存及重开导出原字节一致，但插入后页面未即时显示。见 [运行记录](evidence/workflow-upgrade-20260909/office-drawing-attachment-runtime.json)、[Excel 直接保存失败](evidence/workflow-upgrade-20260909/office-excel-attachment-direct-structure.json)、[PPT 结构检查](evidence/workflow-upgrade-20260909/office-ppt-attachment-structure.json)。保存接口均完成，不能用该成功结果代替附件保真。新增对象选中/变更通知及全屏初次自动进入编辑的修复仍需新宿主运行验证。
 
 ## Excel 导出修复进行中
+
+最新补查（2026-09-09 14:41 UTC）：独立应用 24 使用宿主 34354533462，已打开随单元格缩放样本并显示附件。操作名称框及剪贴板时，WebContent 在 AX 属性读取错误后报告 Swift 数组越界并以 Crash 原因终止；容器记录 `unexpectedClose`，两个工作副本仍存在且哈希一致。未进入显式保存重开，不能将此样本计为位置/尺寸通过；触发根因及物理设备影响尚未隔离。见[运行记录](evidence/workflow-upgrade-20260909/office-modern-ole-interrupted-runtime.json)、[系统日志摘录](evidence/workflow-upgrade-20260909/office-modern-ole-webkit-failure.log)和[截图](evidence/workflow-upgrade-20260909/office-modern-ole-unexpected-close.png)。该独立 Mac 检查不代替正式 Floe 的 CI 或真机测试。
+
+对应正式 App 处理链已复核：上游 `webViewWebContentProcessDidTerminate` 调用 `bye`，补丁保留引擎副本并在关闭完成后通知宿主；`OfficeFileSession.activate` 的 `onClosed` 将非预期关闭置为 `runtimeFailed` / `.failed`，提示“文档已关闭，编辑副本已保留。”，`canAct` 不再允许保存等正常操作。此处为源码审阅，未把独立程序的崩溃现场当成正式 App 的恢复实测。
 
 原生 `XclObjOle` 缺少 XML 导出的修复已实际编译为 arm64 对象；只替换 `libscfiltlo.a` 中的导出对象，另外 167 个成员哈希不变。新导出读取当前对象存储，关联工作表、附件、图标和锚点；不是保存后修改 ZIP。见 [回执](evidence/workflow-upgrade-20260909/office-excel-filter-overlay-compile.json) 和 [补丁边界](../FloeAgent/ThirdParty/Collabora/patches/xlsx-embedded-objects.md)。实际保存重开、导出字节、多个对象、撤销重做与位置保真仍待验收，不能将本次编译结果作为 A04 通过证据。
 

@@ -125,4 +125,28 @@ struct TaskChecklistTests {
         }
         #expect(try await SQLiteIntelligenceStore(database: db).goals(conversationID: task).isEmpty)
     }
+
+    @Test func staleRevisionErrorCarriesCurrentRevisionForImmediateRetry() async throws {
+        let (db, _, run) = try await fixture()
+        let store = TaskChecklistStore(database: db)
+        _ = try await store.update(.init(expectedRevision: 0, title: "Work", steps: [
+            .init(id: "a", title: "Inspect", status: .inProgress)
+        ]), runID: run, operationID: "first")
+        do {
+            _ = try await store.update(.init(expectedRevision: 0, title: "Work", steps: [
+                .init(id: "a", title: "Inspect", status: .completed, evidence: ["report.txt"])
+            ]), runID: run, operationID: "second")
+            Issue.record("Expected a stale-revision CAS failure")
+        } catch {
+            let message = String(describing: error)
+            // The model must be able to retry immediately without readPlan.
+            #expect(message.contains("current revision is 1"))
+            #expect(message.contains("expectedRevision=1"))
+        }
+        // Retrying with the hinted revision succeeds.
+        let retried = try await store.update(.init(expectedRevision: 1, title: "Work", steps: [
+            .init(id: "a", title: "Inspect", status: .completed, evidence: ["report.txt"])
+        ]), runID: run, operationID: "third")
+        #expect(retried.revision == 2)
+    }
 }

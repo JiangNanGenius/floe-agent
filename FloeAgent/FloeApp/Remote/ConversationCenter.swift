@@ -875,7 +875,10 @@ final class ConversationCenter: ObservableObject {
             workspaceRootURL: taskRootLease?.url,
             allowedWorkspacePaths: taskPolicy.filePaths,
             toolsEnabled: executionMode.toolsEnabled,
-            maxToolSteps: Int.max / 4,
+            // A finite iteration budget turns the harness's wrap-up pressure
+            // and forced finalization on. 100 tool steps is far beyond any
+            // healthy single task and stops degenerate discovery/retry loops.
+            maxToolSteps: 100,
             verifyFinalAnswer: environment.settingsCenter.verifyFinalAnswer,
             forceInitialCompaction: forceInitialCompaction,
             maxProviderRetries: runSurface == .canvas ? 1 : 5,
@@ -914,6 +917,7 @@ final class ConversationCenter: ObservableObject {
                 )
             },
             intelligenceStore: environment.intelligenceStore,
+            discoveryStore: SQLiteConversationDiscoveryStore(database: environment.database),
             conversationStore: environment.conversationStore,
             runStore: environment.runStore,
             runningInputStore: environment.runningInputStore,
