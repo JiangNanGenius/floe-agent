@@ -2,7 +2,10 @@
   "schemaVersion": 1,
   "python": "cp313",
   "cibuildwheel": "4.2.1",
-  "platforms": ["ios_arm64_iphoneos", "ios_arm64_iphonesimulator"],
+  "platforms": [
+    "ios_arm64_iphoneos",
+    "ios_arm64_iphonesimulator"
+  ],
   "deploymentTarget": "17.0",
   "buildDepsIndex": "https://pypi.anaconda.org/beeware/simple",
   "notes": "每包构建配方。cibuildwheel 4.2.1 交叉构建 cp313-ios 双 slice；sdist 全部 SHA-256 锁定。rust=true 的包需要 rustup 目标，属实验链路，先在 CI 验证。",
@@ -26,10 +29,13 @@
         "dir": "pyyaml-6.0.3"
       },
       "smoke": "smoke/pyyaml_smoke.py",
-      "env": {"PYYAML_FORCE_LIBYAML": "0"},
+      "env": {
+        "PYYAML_FORCE_LIBYAML": "0"
+      },
       "license": "MIT",
       "homepage": "https://pyyaml.org/",
-      "note": "无 libyaml 交叉库，构建纯 Python 形态 wheel（无原生扩展）。"
+      "note": "无 libyaml 交叉库；主机侧强制纯 Python 产出 py3-none-any wheel。",
+      "pure": true
     },
     "markupsafe": {
       "version": "3.0.3",
@@ -40,7 +46,12 @@
       },
       "smoke": "smoke/markupsafe_smoke.py",
       "license": "BSD-3-Clause",
-      "homepage": "https://palletsprojects.com/p/markupsafe/"
+      "homepage": "https://palletsprojects.com/p/markupsafe/",
+      "pure": true,
+      "env": {
+        "CC": "/usr/bin/false"
+      },
+      "note": "CC 置失效触发官方 setup 的纯 Python 回退，产出 py3-none-any wheel。"
     },
     "orjson": {
       "version": "3.12.0",
