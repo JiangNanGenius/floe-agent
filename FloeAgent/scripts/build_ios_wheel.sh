@@ -60,6 +60,11 @@ cp "$repo_root/ios-wheelhouse/$FLOE_WHEEL_SMOKE" "$source_dir/floe_wheel_smoke.p
 export CIBW_BUILD='cp313-ios_arm64_iphoneos cp313-ios_arm64_iphonesimulator'
 export CIBW_XBUILD_TOOLS_IOS='ninja cmake'
 export CIBW_ENVIRONMENT_IOS="$FLOE_WHEEL_ENV"
+# Upstream sdists may carry their own [tool.cibuildwheel] config written for a
+# newer cibuildwheel than our pin (e.g. zstandard's cpython-freethreading
+# enable group). Our build fixes the exact target set above; neutralize the
+# sdist's own enable list instead of failing the parse.
+export CIBW_ENABLE=''
 export CIBW_TEST_COMMAND='python -m floe_wheel_smoke'
 export CIBW_TEST_SOURCES='floe_wheel_smoke.py'
 export CIBW_TEST_EXTRAS=''
